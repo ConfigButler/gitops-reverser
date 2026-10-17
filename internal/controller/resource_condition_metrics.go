@@ -32,6 +32,8 @@ const (
 	conditionKindClusterWatchRule = "ClusterWatchRule"
 	conditionKindGitProvider      = "GitProvider"
 	conditionKindClusterProvider  = "ClusterProvider"
+	conditionKindFluxTrigger      = configbutleraiv1alpha3.ApplyTriggerKindFlux
+	conditionKindArgoCDTrigger    = configbutleraiv1alpha3.ApplyTriggerKindArgoCD
 )
 
 // conditionMetricKind names the kind an object publishes under, or "" for one that is not on the
@@ -55,6 +57,10 @@ func conditionMetricKind(obj client.Object) string {
 		return conditionKindGitProvider
 	case *configbutleraiv1alpha3.ClusterProvider:
 		return conditionKindClusterProvider
+	case *configbutleraiv1alpha3.FluxTrigger:
+		return conditionKindFluxTrigger
+	case *configbutleraiv1alpha3.ArgoCDTrigger:
+		return conditionKindArgoCDTrigger
 	default:
 		return ""
 	}

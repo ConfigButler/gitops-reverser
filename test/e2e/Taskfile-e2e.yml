@@ -1323,7 +1323,8 @@ tasks:
         {{.KUBECTL}} --context "{{.CTX}}" wait --for=condition=Established --timeout=60s \
           crd/clusterproviders.configbutler.ai crd/clusterwatchrules.configbutler.ai \
           crd/commitrequests.configbutler.ai crd/gitproviders.configbutler.ai \
-          crd/gittargets.configbutler.ai crd/watchrules.configbutler.ai
+          crd/gittargets.configbutler.ai crd/watchrules.configbutler.ai \
+          crd/fluxtriggers.configbutler.ai crd/argocdtriggers.configbutler.ai
       - touch "{{.CS}}/crds.installed"
 
   _install-config-dir:

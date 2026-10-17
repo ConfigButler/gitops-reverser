@@ -271,31 +271,39 @@ func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s Stamp
 	}, nil
 }
 
-// Validate answers ApplierConfigured for an Application: that it exists in the cluster and its
-// kind is served there, that it applies want from a single source, that automated sync is off,
-// and that this identity may update it, since a request is an update.
-func (a *ArgoCD) Validate(ctx context.Context, ref types.NamespacedName, want Binding) Verdict {
+// Validate answers Configured for an ArgoCDTrigger's Application: that it exists in its cluster and
+// its kind is served there, that it syncs a single source, that automated sync is off, and that this
+// identity may update it, since a request is an update. Which repository and revision it syncs, it
+// reports in the verdict's Source, for the GitTargets naming the trigger to check against what they
+// write.
+func (a *ArgoCD) Validate(ctx context.Context, ref types.NamespacedName) Verdict {
 	app, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
 		return readFailure("Argo CD", kindApplication, applicationGVR(), ref, err)
 	}
-	if msg := applicationMismatch(app, ref, want); msg != "" {
-		return Verdict{Reason: ReasonSourceMismatch, Message: msg}
+	if msg := applicationUnsupported(app, ref); msg != "" {
+		return Verdict{Reason: ReasonUnsupportedSource, Message: msg}
 	}
+	url, _, _ := unstructured.NestedString(app.Object, "spec", "source", "repoURL")
+	revision, _, _ := unstructured.NestedString(app.Object, "spec", "source", "targetRevision")
+	read := &Source{URL: url, Revision: revision}
 	if automatedSyncEnabled(app) {
 		return Verdict{
 			Reason:  ReasonAutomatedSyncEnabled,
 			Message: fmt.Sprintf("%s %s %s", kindApplication, ref, automatedSyncMessage),
+			Source:  read,
 		}
 	}
 	if verdict := accessVerdict(ctx, a.CanI, kindApplication, applicationGVR(), ref, "update"); verdict != nil {
+		verdict.Source = read
 		return *verdict
 	}
 	return Verdict{
 		OK:     true,
 		Reason: ReasonSucceeded,
-		Message: fmt.Sprintf("%s %s syncs branch %s, with automated sync off",
-			kindApplication, ref, want.Branch),
+		Message: fmt.Sprintf("%s %s syncs revision %q of %s, with automated sync off",
+			kindApplication, ref, revision, url),
+		Source: read,
 	}
 }
 
@@ -392,18 +400,10 @@ func automatedPrune(app *unstructured.Unstructured) bool {
 // single source, or "" when it does. targetRevision must name the branch, as its name or as
 // refs/heads/<name>: HEAD, a tag or a commit would never follow the branch GitOps Reverser writes.
 func applicationMismatch(app *unstructured.Unstructured, ref types.NamespacedName, want Binding) string {
-	if sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); len(sources) > 0 {
-		return fmt.Sprintf("%s %s has spec.sources; GitOps Reverser syncs only a single-source Application",
-			kindApplication, ref)
+	if msg := applicationUnsupported(app, ref); msg != "" {
+		return msg
 	}
-	if _, found, _ := unstructured.NestedFieldNoCopy(app.Object, "spec", "sourceHydrator"); found {
-		return fmt.Sprintf("%s %s has spec.sourceHydrator; GitOps Reverser syncs only an Application "+
-			"whose spec.source it writes", kindApplication, ref)
-	}
-	source, found, _ := unstructured.NestedMap(app.Object, "spec", "source")
-	if !found {
-		return fmt.Sprintf("%s %s names no spec.source", kindApplication, ref)
-	}
+	source, _, _ := unstructured.NestedMap(app.Object, "spec", "source")
 	url, _, _ := unstructured.NestedString(source, "repoURL")
 	if !repourl.Same(url, want.RepositoryURL) {
 		return fmt.Sprintf("%s %s syncs %s, not %s", kindApplication, ref, url, want.RepositoryURL)
@@ -414,6 +414,23 @@ func applicationMismatch(app *unstructured.Unstructured, ref types.NamespacedNam
 			revision = "HEAD"
 		}
 		return fmt.Sprintf("%s %s targets revision %q, not branch %s", kindApplication, ref, revision, want.Branch)
+	}
+	return ""
+}
+
+// applicationUnsupported returns why an Application has no single source GitOps Reverser can sync,
+// or "" when it has one.
+func applicationUnsupported(app *unstructured.Unstructured, ref types.NamespacedName) string {
+	if sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); len(sources) > 0 {
+		return fmt.Sprintf("%s %s has spec.sources; GitOps Reverser syncs only a single-source Application",
+			kindApplication, ref)
+	}
+	if _, found, _ := unstructured.NestedFieldNoCopy(app.Object, "spec", "sourceHydrator"); found {
+		return fmt.Sprintf("%s %s has spec.sourceHydrator; GitOps Reverser syncs only an Application "+
+			"whose spec.source it writes", kindApplication, ref)
+	}
+	if _, found, _ := unstructured.NestedMap(app.Object, "spec", "source"); !found {
+		return fmt.Sprintf("%s %s names no spec.source", kindApplication, ref)
 	}
 	return ""
 }

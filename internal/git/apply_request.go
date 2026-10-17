@@ -3,24 +3,31 @@
 package git
 
 import (
+	"context"
+	"fmt"
 	"slices"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// ApplierRef is one applier, as the GitTargets on a branch name it: a Flux Kustomization or an
-// Argo CD Application in a cluster. Several GitTargets may name one applier, and it is asked once
-// for all of them.
+// ApplierRef is one applier, as the apply trigger that holds it names it: a Flux Kustomization or
+// an Argo CD Application in a cluster. Several GitTargets may name one trigger, and its applier is
+// asked once for all of them.
 type ApplierRef struct {
-	// Cluster is the ClusterProvider whose cluster the applier lives in (GitTarget.ApplierCluster()).
+	// Trigger is the apply trigger that holds the applier.
+	Trigger TriggerRef
+	// Cluster is the ClusterProvider whose cluster the applier lives in (the trigger's
+	// spec.clusterProviderRef).
 	Cluster string
 	// Kind is v1alpha3.ApplierKindKustomization or v1alpha3.ApplierKindApplication.
 	Kind string
-	// Namespace and Name are the object's, the namespace defaulted to the GitTarget's own.
+	// Namespace and Name are the object's, the namespace defaulted to the trigger's own.
 	Namespace string
 	Name      string
 }
@@ -34,16 +41,46 @@ func (a ApplierRef) String() string {
 // stale state for a catch-up to correct.
 func (a ApplierRef) CatchesUp() bool { return a.Kind != v1alpha3.ApplierKindApplication }
 
-// ApplierOf is the applier a GitTarget names. Call it only for a target with spec.applier.
-func ApplierOf(target *v1alpha3.GitTarget) ApplierRef {
-	ref := target.Spec.Applier.Reference()
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = target.Namespace
-	}
+// TriggerRef is one apply trigger: its kind (v1alpha3.ApplyTriggerKind*), namespace and name.
+type TriggerRef struct {
+	Kind      string
+	Namespace string
+	Name      string
+}
+
+func (t TriggerRef) String() string { return t.Kind + "/" + t.Namespace + "/" + t.Name }
+
+// ApplierOf is the applier a trigger holds.
+func ApplierOf(trigger v1alpha3.ApplyTrigger) ApplierRef {
+	applier := trigger.Applier()
 	return ApplierRef{
-		Cluster: target.ApplierCluster(), Kind: target.Spec.Applier.Kind(), Namespace: namespace, Name: ref.Name,
+		Trigger: TriggerRef{Kind: trigger.TriggerKind(), Namespace: trigger.GetNamespace(), Name: trigger.GetName()},
+		Cluster: trigger.ClusterProvider(), Kind: trigger.ApplierKind(),
+		Namespace: applier.Namespace, Name: applier.Name,
 	}
+}
+
+// ResolveApplyTrigger reads the apply trigger a GitTarget names, in the GitTarget's namespace. It
+// returns nil, and no error, when the GitTarget names none, names a kind this release does not
+// know, or names one that does not exist.
+func ResolveApplyTrigger(
+	ctx context.Context, reader client.Reader, target *v1alpha3.GitTarget,
+) (v1alpha3.ApplyTrigger, error) {
+	ref := target.Spec.ApplyTriggerRef
+	if ref == nil {
+		return nil, nil //nolint:nilnil // a GitTarget that names no trigger has none, and is no error
+	}
+	trigger := v1alpha3.NewApplyTrigger(ref.Kind)
+	if trigger == nil {
+		return nil, nil //nolint:nilnil // as above: a kind this release does not serve names none
+	}
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: ref.Name}, trigger); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil //nolint:nilnil // as above: a trigger not created yet holds nothing
+		}
+		return nil, fmt.Errorf("read %s %s/%s: %w", ref.Kind, target.Namespace, ref.Name, err)
+	}
+	return trigger, nil
 }
 
 // ApplyRequest is one attempt, decided by a branch worker on a quiet branch, to have one applier
@@ -159,8 +196,28 @@ func (o ApplyOutcome) Operated() bool { return o == ApplySucceeded || o == Apply
 type ApplyResult struct {
 	ID      uint64
 	Outcome ApplyOutcome
+	// Token identifies the request in the applier's own status, once one was made (ApplyRequested
+	// carries it).
+	Token string
 	// Err is the cause of a RequestFailed, Rejected or Failed attempt.
 	Err error
+}
+
+// ApplyTriggerStatus is what a branch worker publishes on an apply trigger: the operation it last
+// started on the trigger's applier, and whether a Repair is owed.
+type ApplyTriggerStatus struct {
+	// Operation replaces status.operation. Nil leaves it as it is: a worker that has started no
+	// operation since it began has nothing to say about the last one.
+	Operation *v1alpha3.ApplyOperation
+	// RepairOwed is status.repairOwed.
+	RepairOwed bool
+}
+
+// ApplyTriggerStatusWriter writes what the branch workers publish on their triggers' status.
+// PublishApplyTriggerStatus must not block: it is called on a branch worker's loop goroutine. A
+// later publication for the same trigger supersedes one not yet written.
+type ApplyTriggerStatusWriter interface {
+	PublishApplyTriggerStatus(trigger TriggerRef, status ApplyTriggerStatus)
 }
 
 // ApplyRequester carries out apply requests. RequestApply must not block: it is called on the

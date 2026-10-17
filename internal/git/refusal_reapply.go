@@ -100,7 +100,7 @@ type owedRefusal struct {
 // refusal. The worker asks before it owes a Refusal request and again before it sends one, and the
 // applier dispatcher asks before every attempt to deliver one.
 func ConsentsToReapply(gitTarget *v1alpha3.GitTarget) bool {
-	if gitTarget.EffectiveOnRefusal() != v1alpha3.RefusalActionReapply || gitTarget.Spec.Applier == nil {
+	if gitTarget.EffectiveOnRefusal() != v1alpha3.RefusalActionReapply || gitTarget.Spec.ApplyTriggerRef == nil {
 		return false
 	}
 	// A suspended target has stopped publishing the live edits a reapply would be weighed against.

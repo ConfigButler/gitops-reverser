@@ -3,6 +3,8 @@
 package v1alpha3
 
 import (
+	"time"
+
 	"testing"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
@@ -322,20 +324,97 @@ func TestIsLocalSource_IsANameTest(t *testing.T) {
 	}
 }
 
-// TestApplierCluster_DefaultsToTheSourceCluster: an omitted spec.applier.clusterProviderRef is the
-// GitTarget's own source cluster, never the "default" provider, so a remote-source target keeps its
-// meaning when the field is added to the API.
-func TestApplierCluster_DefaultsToTheSourceCluster(t *testing.T) {
-	target := &GitTarget{Spec: GitTargetSpec{
-		ClusterProviderRef: &meta.LocalObjectReference{Name: "prod-eu-1"},
-		Applier:            &GitTargetApplier{},
-	}}
-	assert.Equal(t, "prod-eu-1", target.ApplierCluster())
+// TestApplyTrigger_AppliersDefaultToTheTriggersNamespace: a reference with no namespace names an
+// applier in the trigger's own namespace, as Flux defaults a sourceRef.
+func TestApplyTrigger_AppliersDefaultToTheTriggersNamespace(t *testing.T) {
+	flux := &FluxTrigger{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
+		Spec: FluxTriggerSpec{
+			ClusterProviderRef: meta.LocalObjectReference{Name: "hub"},
+			KustomizationRef:   meta.NamespacedObjectReference{Name: "apps"},
+		},
+	}
+	assert.Equal(t, "team-a/apps", flux.Applier().String())
+	assert.Equal(t, "hub", flux.ClusterProvider())
+	assert.True(t, flux.CatchesUp())
+	assert.Equal(t, DefaultApplierQuietPeriod, flux.EffectiveQuietPeriod())
 
-	target.Spec.Applier.ClusterProviderRef = &meta.LocalObjectReference{Name: "hub"}
-	assert.Equal(t, "hub", target.ApplierCluster())
+	argo := &ArgoCDTrigger{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
+		Spec: ArgoCDTriggerSpec{
+			ApplicationRef: meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
+		},
+	}
+	assert.Equal(t, "argocd/apps", argo.Applier().String())
+	assert.False(t, argo.CatchesUp(), "an Application with automated sync off is never asked to catch up")
+}
 
-	target.Spec.ClusterProviderRef = nil
-	target.Spec.Applier.ClusterProviderRef = nil
-	assert.Equal(t, DefaultClusterProviderName, target.ApplierCluster())
+// TestArgoCDTrigger_SourceBindingNamesTheBranch: targetRevision may spell a branch as refs/heads/,
+// and an empty one is Argo CD's HEAD, which follows no branch GitOps Reverser writes.
+func TestArgoCDTrigger_SourceBindingNamesTheBranch(t *testing.T) {
+	trigger := &ArgoCDTrigger{}
+	_, _, known := trigger.SourceBinding()
+	assert.False(t, known)
+
+	for revision, branch := range map[string]string{"main": "main", "refs/heads/main": "main", "": "HEAD"} {
+		trigger.Status.Source = &ArgoCDTriggerSource{RepoURL: "https://example.com/r.git", TargetRevision: revision}
+		url, got, known := trigger.SourceBinding()
+		assert.True(t, known)
+		assert.Equal(t, "https://example.com/r.git", url)
+		assert.Equal(t, branch, got, "targetRevision %q", revision)
+	}
+}
+
+// TestNewApplyTrigger_KnowsBothKinds: a kind this release does not know is nil, never a guess.
+func TestNewApplyTrigger_KnowsBothKinds(t *testing.T) {
+	assert.IsType(t, &FluxTrigger{}, NewApplyTrigger(ApplyTriggerKindFlux))
+	assert.IsType(t, &ArgoCDTrigger{}, NewApplyTrigger(ApplyTriggerKindArgoCD))
+	assert.Nil(t, NewApplyTrigger("WebhookTrigger"))
+}
+
+// TestApplyTrigger_StatusAccessors: both kinds answer the shared interface from their own status,
+// and SetOperation replaces the operation and repairOwed together.
+func TestApplyTrigger_StatusAccessors(t *testing.T) {
+	operation := &ApplyOperation{Phase: ApplyOperationRunning, Commit: "abc"}
+	quiet := &metav1.Duration{Duration: time.Minute}
+	flux := &FluxTrigger{Spec: FluxTriggerSpec{QuietPeriod: quiet}}
+	argo := &ArgoCDTrigger{}
+	for _, trigger := range []ApplyTrigger{flux, argo} {
+		assert.Nil(t, trigger.Operation())
+		assert.False(t, trigger.RepairOwed())
+		trigger.SetOperation(operation, true)
+		assert.Equal(t, operation, trigger.Operation())
+		assert.True(t, trigger.RepairOwed())
+		trigger.SetObservedGeneration(3)
+		assert.NotNil(t, trigger.StatusConditions())
+	}
+	assert.Equal(t, int64(3), flux.Status.ObservedGeneration)
+	assert.Equal(t, int64(3), argo.Status.ObservedGeneration)
+
+	assert.Equal(t, ApplyTriggerKindFlux, flux.TriggerKind())
+	assert.Equal(t, ApplierKindKustomization, flux.ApplierKind())
+	assert.Equal(t, time.Minute, flux.EffectiveQuietPeriod())
+	assert.Equal(t, ApplyTriggerKindArgoCD, argo.TriggerKind())
+	assert.Equal(t, ApplierKindApplication, argo.ApplierKind())
+	assert.Equal(t, DefaultApplierQuietPeriod, argo.EffectiveQuietPeriod())
+	argo.Spec.ClusterProviderRef.Name = "hub"
+	assert.Equal(t, "hub", argo.ClusterProvider())
+
+	_, _, known := flux.SourceBinding()
+	assert.False(t, known)
+	flux.Status.Source = &FluxTriggerSource{URL: "https://example.com/r.git", Branch: "main"}
+	url, branch, known := flux.SourceBinding()
+	assert.True(t, known)
+	assert.Equal(t, "https://example.com/r.git", url)
+	assert.Equal(t, "main", branch)
+}
+
+// TestApplyOperationPhase_Completed: only Succeeded and Failed end an operation.
+func TestApplyOperationPhase_Completed(t *testing.T) {
+	for phase, completed := range map[ApplyOperationPhase]bool{
+		ApplyOperationRequested: false, ApplyOperationRunning: false, ApplyOperationSettling: false,
+		ApplyOperationUnresolved: false, ApplyOperationSucceeded: true, ApplyOperationFailed: true,
+	} {
+		assert.Equal(t, completed, phase.Completed(), phase)
+	}
 }

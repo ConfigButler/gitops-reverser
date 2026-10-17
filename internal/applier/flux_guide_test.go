@@ -31,17 +31,19 @@ const fluxGuide = "../../docs/flux.md"
 
 // TestFluxGuide_TheCompleteExampleIsAccepted reads the guide's complete example and checks it
 // against the code that validates and drives a Flux applier: the GitOps Reverser objects decode
-// into the API types with no unknown field, ApplierConfigured comes out True for the Flux objects
-// as written, and a request stamps the GitRepository. It also holds the example to the guide's own
+// into the API types with no unknown field, Configured comes out True for the Flux objects as
+// written, the trigger's source binds the GitTarget, and a request stamps the GitRepository. It also holds the example to the guide's own
 // advice, so the page cannot recommend one thing and show another.
 func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	objects := guideExampleObjects(t, fluxGuide)
 
 	var provider v1alpha3.GitProvider
 	var target v1alpha3.GitTarget
+	var trigger v1alpha3.FluxTrigger
 	var secret corev1.Secret
 	decodeStrict(t, objects, "GitProvider", &provider)
 	decodeStrict(t, objects, "GitTarget", &target)
+	decodeStrict(t, objects, v1alpha3.ApplyTriggerKindFlux, &trigger)
 	decodeStrict(t, objects, "Secret", &secret)
 	repository := one(t, objects, "GitRepository")
 	kustomization := one(t, objects, "Kustomization")
@@ -54,9 +56,12 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	assert.Equal(t, secret.Name, provider.Spec.Receiver.SecretRef.Name)
 	assert.Equal(t, provider.Namespace, secret.Namespace)
 	assert.NotEmpty(t, secret.StringData[v1alpha3.ReceiverTokenKey], "the receiver reads the token key")
-	require.NotNil(t, target.Spec.Applier)
+	require.NotNil(t, target.Spec.ApplyTriggerRef)
+	assert.Equal(t, v1alpha3.ApplyTriggerReference{Kind: v1alpha3.ApplyTriggerKindFlux, Name: trigger.Name},
+		*target.Spec.ApplyTriggerRef)
+	assert.Equal(t, target.Namespace, trigger.Namespace, "a GitTarget names a trigger in its own namespace")
 	assert.Equal(t, v1alpha3.RefusalActionReapply, target.Spec.OnRefusal)
-	assert.LessOrEqual(t, target.Spec.Applier.EffectiveQuietPeriod(), time.Hour)
+	assert.LessOrEqual(t, trigger.EffectiveQuietPeriod(), time.Hour)
 
 	// The Flux objects follow the guide's advice.
 	for _, obj := range []*unstructured.Unstructured{repository, kustomization} {
@@ -74,20 +79,19 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	suspended, _, _ := unstructured.NestedBool(kustomization.Object, "spec", "suspend")
 	assert.False(t, suspended, "a suspended Kustomization ignores the requests")
 
-	// The applier, as written, is accepted and driven.
-	ref := types.NamespacedName{
-		Namespace: target.Spec.Applier.KustomizationRef.Namespace, Name: target.Spec.Applier.KustomizationRef.Name,
-	}
-	if ref.Namespace == "" {
-		ref.Namespace = target.Namespace
-	}
+	// The applier, as written, is accepted, binds the GitTarget, and is driven.
+	ref := trigger.Applier()
+	assert.Equal(t, types.NamespacedName{Namespace: kustomization.GetNamespace(), Name: kustomization.GetName()}, ref)
 	want := Binding{RepositoryURL: provider.Spec.URL, Branch: target.Spec.Branch}
 
 	client := newSourceClient(kustomization, repository)
 	flux := pinnedFlux(client)
 	flux.CanI = allowAll
-	verdict := flux.Validate(context.Background(), ref, want)
-	assert.True(t, verdict.OK, "ApplierConfigured for the guide's example: %s: %s", verdict.Reason, verdict.Message)
+	verdict := flux.Validate(context.Background(), ref)
+	assert.True(t, verdict.OK, "Configured for the guide's example: %s: %s", verdict.Reason, verdict.Message)
+	require.NotNil(t, verdict.Source)
+	trigger.Status.Source = &v1alpha3.FluxTriggerSource{URL: verdict.Source.URL, Branch: verdict.Source.Revision}
+	assert.Empty(t, BindingMismatch(&trigger, want), "the trigger's Kustomization applies what the GitTarget writes")
 
 	stamped, err := flux.Request(context.Background(), ref, want, testCommit, v1alpha3.ApplyReasonForeignCommit, nil)
 	require.NoError(t, err)

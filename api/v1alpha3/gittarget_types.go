@@ -3,8 +3,6 @@
 package v1alpha3
 
 import (
-	"time"
-
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -37,7 +35,7 @@ import (
 // gitProviderRef/branch/path above — and defaults to a ClusterProvider named "default", so it is
 // always populated (never nil) and always jumpable.
 // +kubebuilder:validation:XValidation:rule="self.clusterProviderRef == oldSelf.clusterProviderRef",message="spec.clusterProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
-// +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applier)",message="spec.onRefusal: Reapply needs spec.applier, the object asked to reapply"
+// +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applyTriggerRef)",message="spec.onRefusal: Reapply needs spec.applyTriggerRef, the trigger asked to reapply"
 type GitTargetSpec struct {
 	// GitProviderRef names the GitProvider that backs this target, in this GitTarget's own
 	// namespace. Many GitTargets may name the same GitProvider.
@@ -92,17 +90,17 @@ type GitTargetSpec struct {
 	// be guessing on Flux's behalf, and the guess would drive a write. A reference the user declares
 	// claims nothing. See docs/design/apply-trigger.md.
 
-	// Applier names the object that applies this folder back to its source cluster. With it set,
-	// GitOps Reverser decides when that object applies: it asks for an apply only when the branch
-	// holds no open commit window and no pending writes, after a commit it did not push, after a
-	// refused edit (spec.onRefusal: Reapply), and, for a Kustomization, once the branch has been
-	// quiet for quietPeriod, to keep it current with its own pushes. Switch off the applier's own
-	// triggers (short Flux intervals, Git-host webhooks into Flux, Argo CD automated sync), or they
-	// go on applying without that check. The reference is looked up in the cluster
-	// spec.applier.clusterProviderRef names, by default the source cluster, with the identity that
-	// ClusterProvider uses.
+	// ApplyTriggerRef names the apply trigger, in this GitTarget's namespace, that holds the applier
+	// of this folder: a FluxTrigger (a Flux Kustomization) or an ArgoCDTrigger (an Argo CD
+	// Application). With it set, GitOps Reverser decides when that applier applies: only when the
+	// branch holds no open commit window and no pending writes, after a commit it did not push,
+	// after a refused edit (spec.onRefusal: Reapply), after an apply reverted a newer API edit, and,
+	// for a Kustomization, once the branch has been quiet for the trigger's quietPeriod, to keep it
+	// current with its own pushes. The trigger's applier must apply this target's repository and
+	// branch; the ApplyTriggerReady condition says whether it does. Several GitTargets may name one
+	// trigger, and it is asked once for all of them.
 	// +optional
-	Applier *GitTargetApplier `json:"applier,omitempty"`
+	ApplyTriggerRef *ApplyTriggerReference `json:"applyTriggerRef,omitempty"`
 
 	// OnRefusal decides what happens when a live edit is refused because it has no legal
 	// destination in the Git folder. A refusal produces no commit, so nothing reverts the edit
@@ -110,12 +108,12 @@ type GitTargetSpec struct {
 	//
 	// "Ignore", the default, records the refusal in conditions and events and does nothing else.
 	//
-	// "Reapply" asks this target's applier (spec.applier, which it requires) to apply the current
-	// tip once the branch holds no open window and no pending writes, which reverts the refused
-	// edit and nothing that is still waiting to be published. Only this target's applier is asked;
-	// if its GitRepository has to fetch to reach the tip, every Kustomization on that GitRepository
-	// applies the new revision, as for any push. Give the folder its own GitRepository to keep the
-	// apply to it alone.
+	// "Reapply" asks this target's applier (through spec.applyTriggerRef, which it requires) to
+	// apply the current tip once the branch holds no open window and no pending writes, which
+	// reverts the refused edit and nothing that is still waiting to be published. Only this
+	// target's applier is asked; if its GitRepository has to fetch to reach the tip, every
+	// Kustomization on that GitRepository applies the new revision, as for any push. Give the
+	// folder its own GitRepository to keep the apply to it alone.
 	//
 	// It fires only for an edit to a document the folder ALREADY holds, in a write that removes no
 	// document anywhere: re-applying would otherwise prune, or put back, an object somebody else is
@@ -444,11 +442,6 @@ type GitTargetStatus struct {
 	// one this target points at.
 	// +optional
 	Remote *GitTargetRemoteStatus `json:"remote,omitempty"`
-
-	// Applier is the last apply request made to spec.applier: the commit, when, and why. Absent
-	// until the first request.
-	// +optional
-	Applier *GitTargetApplierStatus `json:"applier,omitempty"`
 }
 
 // GitTargetRemoteStatus is the answer to "where is my branch, and when did we last prove it".
@@ -635,7 +628,7 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="LayoutResolved",type=string,JSONPath=`.status.conditions[?(@.type=="LayoutResolved")].reason`,priority=1
 // +kubebuilder:printcolumn:name="GitPathAccepted",type=string,JSONPath=`.status.conditions[?(@.type=="GitPathAccepted")].status`,priority=1
 // +kubebuilder:printcolumn:name="RenderMatchesLive",type=string,JSONPath=`.status.conditions[?(@.type=="RenderMatchesLive")].status`,priority=1
-// +kubebuilder:printcolumn:name="ApplierConfigured",type=string,JSONPath=`.status.conditions[?(@.type=="ApplierConfigured")].status`,priority=1
+// +kubebuilder:printcolumn:name="ApplyTriggerReady",type=string,JSONPath=`.status.conditions[?(@.type=="ApplyTriggerReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
 // +kubebuilder:printcolumn:name="SourceReachable",type=string,JSONPath=`.status.conditions[?(@.type=="SourceClusterReachable")].reason`,priority=1
 // +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1
@@ -676,15 +669,6 @@ func (g *GitTarget) SourceCluster() string {
 	return g.Spec.ClusterProviderRef.Name
 }
 
-// ApplierCluster is the ClusterProvider whose cluster holds spec.applier: its clusterProviderRef,
-// or the source cluster (SourceCluster) when that is omitted. Call it only with spec.applier set.
-func (g *GitTarget) ApplierCluster() string {
-	if ref := g.Spec.Applier.ClusterProviderRef; ref != nil && ref.Name != "" {
-		return ref.Name
-	}
-	return g.SourceCluster()
-}
-
 // IsLocalSource reports whether this GitTarget references the "default" ClusterProvider, which the
 // watch data plane maps to its local cluster context. It is a NAME test, not a claim about the
 // physical cluster: a "default" provider may carry a kubeConfig. It only supplies the pre-discovery
@@ -717,146 +701,6 @@ const (
 	// refused edit.
 	RefusalActionReapply RefusalAction = "Reapply"
 )
-
-// Why quietPeriod is refused rather than ignored with an applicationRef: it times the CatchUp, and
-// Argo CD is never asked to catch up (with automated sync off it applies nothing on its own, so it
-// holds no stale state to correct). Accepting it would be a knob that does nothing. That is also
-// why the field carries no schema default: a default would be present on every object and fail the
-// rule for every Application.
-
-// GitTargetApplier names the object that applies a GitTarget's folder to its source cluster.
-// +kubebuilder:validation:XValidation:rule="has(self.kustomizationRef) != has(self.applicationRef)",message="spec.applier names exactly one of kustomizationRef and applicationRef"
-// +kubebuilder:validation:XValidation:rule="!has(self.applicationRef) || !has(self.quietPeriod)",message="spec.applier.quietPeriod applies only to a kustomizationRef: Argo CD is never asked to catch up"
-type GitTargetApplier struct {
-	// The same reference spec.clusterProviderRef is, for the same reason: a ClusterProvider is how
-	// GitOps Reverser reaches any cluster, with its credential and its accessFrom gate. Flux run
-	// from a management cluster is the usual way to deploy to a remote one, so the applier's
-	// cluster cannot be assumed to be the source cluster. Unlike the source, it may change: moving
-	// an applier does not change what the folder means.
-
-	// ClusterProviderRef names the ClusterProvider whose cluster holds the applier, such as a
-	// management cluster running Flux or Argo CD for the source cluster. Omitted, it is the
-	// GitTarget's own spec.clusterProviderRef. The provider must admit this GitTarget's namespace
-	// (spec.accessFrom). Its identity needs get and patch on a Kustomization and its GitRepository,
-	// or get and update on an Application. A provider without spec.kubeConfig is the operator's own
-	// cluster.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.applier.clusterProviderRef.name must not be empty"
-	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
-
-	// KustomizationRef is a Flux Kustomization whose spec.sourceRef is a GitRepository on this
-	// target's repository and branch. Its namespace defaults to the GitTarget's namespace. GitOps
-	// Reverser asks it to apply the way `flux reconcile kustomization --with-source` does: it
-	// stamps reconcile.fluxcd.io/requestedAt on the GitRepository, and on the Kustomization too
-	// when the GitRepository's artifact already holds the commit. Exactly one of kustomizationRef
-	// and applicationRef is set.
-	// +optional
-	KustomizationRef *meta.NamespacedObjectReference `json:"kustomizationRef,omitempty"`
-
-	// ApplicationRef is an Argo CD Application whose spec.source is this target's repository, with
-	// targetRevision this target's branch (the branch name, or refs/heads/ and the name). Its
-	// namespace defaults to the GitTarget's namespace. Automated sync must be off: the Application
-	// either has no spec.syncPolicy.automated, or sets automated.enabled: false, which keeps
-	// automated.prune for the syncs GitOps Reverser starts. One with automated sync on is
-	// ApplierConfigured=False (AutomatedSyncEnabled) and is never synced. GitOps Reverser starts
-	// each sync by setting the Application's operation, as Argo CD's automated sync does, pinned to
-	// the commit it checked, and never replaces an operation that is running. A multi-source
-	// Application is not supported. Exactly one of kustomizationRef and applicationRef is set.
-	// +optional
-	ApplicationRef *meta.NamespacedObjectReference `json:"applicationRef,omitempty"`
-
-	// QuietPeriod is how long the branch must hold no open commit window and no pending writes,
-	// after GitOps Reverser's own pushes, before a Kustomization is asked to catch up with them.
-	// Flux applies on its own timers and on a controller restart from whatever artifact it holds,
-	// so an artifact left behind those pushes would revert edits that are already in Git. Every new
-	// write restarts the wait. A Go duration of at most "1h". Omitted, it is "30s". Only for a
-	// kustomizationRef: it is rejected with an applicationRef.
-	// +optional
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
-	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('1h')",message="spec.applier.quietPeriod must be a Go duration of at most 1h"
-	QuietPeriod *metav1.Duration `json:"quietPeriod,omitempty"`
-}
-
-// The kinds of applier spec.applier can name.
-const (
-	// ApplierKindKustomization is a Flux Kustomization (spec.applier.kustomizationRef).
-	ApplierKindKustomization = "Kustomization"
-	// ApplierKindApplication is an Argo CD Application (spec.applier.applicationRef).
-	ApplierKindApplication = "Application"
-)
-
-// Kind is the kind of object the applier names: ApplierKindApplication for an applicationRef,
-// otherwise ApplierKindKustomization.
-func (a *GitTargetApplier) Kind() string {
-	if a.ApplicationRef != nil {
-		return ApplierKindApplication
-	}
-	return ApplierKindKustomization
-}
-
-// Reference is the object the applier names, whichever kind it is. The zero reference when it
-// names none, which the schema rejects.
-func (a *GitTargetApplier) Reference() meta.NamespacedObjectReference {
-	switch {
-	case a.ApplicationRef != nil:
-		return *a.ApplicationRef
-	case a.KustomizationRef != nil:
-		return *a.KustomizationRef
-	default:
-		return meta.NamespacedObjectReference{}
-	}
-}
-
-// CatchesUp reports whether the applier is asked to catch up with GitOps Reverser's own pushes.
-// Only a Kustomization is: an Argo CD Application with automated sync off applies nothing on its
-// own, so it never holds a stale state to correct.
-func (a *GitTargetApplier) CatchesUp() bool {
-	return a.Kind() == ApplierKindKustomization
-}
-
-// DefaultApplierQuietPeriod is spec.applier.quietPeriod when it is omitted.
-const DefaultApplierQuietPeriod = 30 * time.Second
-
-// EffectiveQuietPeriod is spec.applier.quietPeriod, resolving an omitted field to the default.
-func (a *GitTargetApplier) EffectiveQuietPeriod() time.Duration {
-	if a == nil || a.QuietPeriod == nil {
-		return DefaultApplierQuietPeriod
-	}
-	return a.QuietPeriod.Duration
-}
-
-// ApplyReason is why GitOps Reverser asked an applier to apply.
-// +kubebuilder:validation:Enum=ForeignCommit;Refusal;Repair;CatchUp
-type ApplyReason string
-
-const (
-	// ApplyReasonForeignCommit is a commit GitOps Reverser did not push.
-	ApplyReasonForeignCommit ApplyReason = "ForeignCommit"
-	// ApplyReasonRefusal is a refused edit on a target with spec.onRefusal: Reapply.
-	ApplyReasonRefusal ApplyReason = "Refusal"
-	// ApplyReasonRepair puts back an API edit that an earlier apply reverted on the cluster after
-	// the edit was made. Git kept the edit; the cluster runs the older value until the repair.
-	ApplyReasonRepair ApplyReason = "Repair"
-	// ApplyReasonCatchUp keeps the applier current with GitOps Reverser's own pushes.
-	ApplyReasonCatchUp ApplyReason = "CatchUp"
-)
-
-// GitTargetApplierStatus is the last apply request GitOps Reverser made for this target.
-type GitTargetApplierStatus struct {
-	// RequestedCommit is the commit the applier was asked to apply.
-	// +optional
-	RequestedCommit string `json:"requestedCommit,omitempty"`
-
-	// RequestedAt is when the request was made. It says the applier was asked, never that it
-	// applied: read the applier's own status for that.
-	// +optional
-	RequestedAt *metav1.Time `json:"requestedAt,omitempty"`
-
-	// Reason is why it was asked.
-	// +optional
-	Reason ApplyReason `json:"reason,omitempty"`
-}
 
 // EffectiveOnRefusal returns the refusal action, resolving an omitted field to the default. The
 // CRD default makes this redundant for objects that went through the API server, and not for a

@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
@@ -25,7 +24,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
-	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // Event reasons recorded on a GitTarget.
@@ -61,7 +59,8 @@ const shortCommitLength = 8
 var errNotRunning = errors.New("the apply request dispatcher is not running")
 
 // SourceClients resolves the dynamic client of the cluster an applier lives in, by ClusterProvider
-// name (GitTarget.ApplierCluster()). In production it is (*watch.Manager).ApplierDynamicClient.
+// name (a trigger's spec.clusterProviderRef). In production it is
+// (*watch.Manager).ApplierDynamicClient.
 type SourceClients func(ctx context.Context, clusterID string) (dynamic.Interface, error)
 
 // DefaultAttemptTimeout bounds one attempt up to its request: a source cluster that does not
@@ -100,8 +99,8 @@ const DefaultPollTimeout = 10 * time.Second
 //
 // What it does check is what can change between the worker's decision and the patch. It reads each
 // GitTarget again and asks only for those that are still the incarnation the worker decided for,
-// still name this applier on this branch, are still admitted by their ClusterProvider, and, for a
-// Refusal, still consent. When no target still holds the request's reason it asks nothing at all,
+// still name a trigger that holds this applier on this branch, are still admitted by their
+// ClusterProviders, and, for a Refusal, still consent. When no target still holds the request's reason it asks nothing at all,
 // rather than ask for something weaker: a weaker request is the worker's to decide. Then the
 // applier's client (Flux or Argo CD, by the applier's kind) checks the source binding before it
 // writes.
@@ -123,15 +122,12 @@ type Dispatcher struct {
 	PollInterval      time.Duration
 	UnresolvedPollMax time.Duration
 	PollTimeout       time.Duration
-	// Now is the clock request tokens and the ledger read.
+	// Now is the clock request tokens are taken from.
 	Now func() time.Time
 
 	runMu    sync.RWMutex
 	run      context.Context
 	attempts sync.WaitGroup
-
-	ledgerMu sync.RWMutex
-	ledger   map[string]ledgerEntry
 }
 
 var (
@@ -160,7 +156,6 @@ func NewDispatcher(
 		UnresolvedPollMax: DefaultUnresolvedPollMax,
 		PollTimeout:       DefaultPollTimeout,
 		Now:               time.Now,
-		ledger:            map[string]ledgerEntry{},
 	}
 }
 
@@ -212,36 +207,6 @@ func (d *Dispatcher) carryOut(ctx context.Context, req git.ApplyRequest) {
 	if res, followed := d.follow(ctx, req, op); followed {
 		req.Report(res)
 	}
-}
-
-// ledgerEntry is the last request delivered for one GitTarget, and which incarnation of it the
-// request was for.
-type ledgerEntry struct {
-	uid    types.UID
-	status v1alpha3.GitTargetApplierStatus
-}
-
-// LastRequest is the last apply request delivered for a GitTarget's applier, for status.applier.
-// It is false until one was delivered for this uid: a GitTarget deleted and recreated under the
-// same name does not inherit its predecessor's. A CatchUp that found the applier already current is
-// not a request made, and leaves it unchanged.
-func (d *Dispatcher) LastRequest(
-	ref itypes.ResourceReference, uid types.UID,
-) (v1alpha3.GitTargetApplierStatus, bool) {
-	d.ledgerMu.RLock()
-	defer d.ledgerMu.RUnlock()
-	entry, ok := d.ledger[ref.Key()]
-	if !ok || entry.uid != uid {
-		return v1alpha3.GitTargetApplierStatus{}, false
-	}
-	return *entry.status.DeepCopy(), true
-}
-
-// Forget drops what the ledger holds for a GitTarget that is gone.
-func (d *Dispatcher) Forget(ref itypes.ResourceReference) {
-	d.ledgerMu.Lock()
-	defer d.ledgerMu.Unlock()
-	delete(d.ledger, ref.Key())
 }
 
 // eligibleTarget is a GitTarget an attempt found may still ask the applier, as read for it.
@@ -308,8 +273,9 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	}
 	log.Info("apply requested", "outcome", stamped.Outcome)
 	d.delivered(req, eligible)
-	return report(git.ApplyRequested, nil),
-		&operation{applier: applier, ref: applierName(req.Applier), stamped: stamped, log: log}
+	requested := report(git.ApplyRequested, nil)
+	requested.Token = stamped.Token
+	return requested, &operation{applier: applier, ref: applierName(req.Applier), stamped: stamped, log: log}
 }
 
 // client is the Client for an applier of kind, over its cluster's client and this dispatcher's
@@ -501,8 +467,7 @@ func (d *Dispatcher) recheck(ctx context.Context, req git.ApplyRequest) ([]eligi
 //
 // A ClusterProvider's client is shared by every GitTarget that uses the cluster, so a client being
 // available is no permission to use it: a GitTarget its ClusterProviders do not admit (its own, and
-// the applier's when that is another) would otherwise drive the applier on the strength of another
-// GitTarget's admission.
+// its trigger's) would otherwise drive the applier on the strength of another GitTarget's admission.
 func (d *Dispatcher) recheckTarget(
 	ctx context.Context, req git.ApplyRequest, candidate git.ApplyTarget,
 ) (*v1alpha3.GitTarget, error) {
@@ -515,11 +480,18 @@ func (d *Dispatcher) recheckTarget(
 		}
 		return nil, fmt.Errorf("read GitTarget %s: %w", candidate.Ref, err)
 	}
-	if target.UID != candidate.UID || !target.DeletionTimestamp.IsZero() || !namesApplier(target, req) {
+	if target.UID != candidate.UID || !target.DeletionTimestamp.IsZero() || !onBranch(target, req) {
 		log.V(1).Info("GitTarget is no longer the one that named this applier on this branch; not asking for it")
 		return nil, nil //nolint:nilnil // as above
 	}
-	decision, err := authz.ApplierAdmitted(ctx, d.reader, target)
+	trigger, err := holdingTrigger(ctx, d.reader, target, req)
+	if err != nil || trigger == nil {
+		if err == nil {
+			log.V(1).Info("GitTarget no longer names a trigger that holds this applier; not asking for it")
+		}
+		return nil, err
+	}
+	decision, err := authz.ApplierAdmitted(ctx, d.reader, target, trigger)
 	if err != nil {
 		return nil, fmt.Errorf("check GitTarget %s against its ClusterProviders: %w", candidate.Ref, err)
 	}
@@ -535,32 +507,29 @@ func (d *Dispatcher) recheckTarget(
 	return target, nil
 }
 
-// namesApplier reports whether a GitTarget still names the request's applier on its branch.
-func namesApplier(target *v1alpha3.GitTarget, req git.ApplyRequest) bool {
-	if target.Spec.Applier == nil || target.Namespace != req.Branch.RepoNamespace ||
-		target.Spec.GitProviderRef.Name != req.Branch.RepoName || target.Spec.Branch != req.Branch.Branch {
-		return false
+// holdingTrigger is the trigger a GitTarget names when it still holds the request's applier, or nil.
+func holdingTrigger(
+	ctx context.Context, reader client.Reader, target *v1alpha3.GitTarget, req git.ApplyRequest,
+) (v1alpha3.ApplyTrigger, error) {
+	trigger, err := git.ResolveApplyTrigger(ctx, reader, target)
+	if err != nil || trigger == nil {
+		return nil, err
 	}
-	return git.ApplierOf(target) == req.Applier
+	if !trigger.GetDeletionTimestamp().IsZero() || git.ApplierOf(trigger) != req.Applier {
+		return nil, nil //nolint:nilnil // a trigger that holds another applier holds none of this one
+	}
+	return trigger, nil
 }
 
-// delivered records a delivered request in the ledger and as an ApplyRequested Event on every
-// GitTarget it was for, each with its own reason.
-func (d *Dispatcher) delivered(req git.ApplyRequest, eligible []eligibleTarget) {
-	at := metav1.NewTime(d.Now())
-	d.ledgerMu.Lock()
-	for _, e := range eligible {
-		d.ledger[itypes.NewResourceReference(e.target.Name, e.target.Namespace).Key()] = ledgerEntry{
-			uid: e.target.UID,
-			status: v1alpha3.GitTargetApplierStatus{
-				RequestedCommit: req.Commit,
-				RequestedAt:     at.DeepCopy(),
-				Reason:          e.reason,
-			},
-		}
-	}
-	d.ledgerMu.Unlock()
+// onBranch reports whether a GitTarget still names a trigger, on the request's branch.
+func onBranch(target *v1alpha3.GitTarget, req git.ApplyRequest) bool {
+	return target.Spec.ApplyTriggerRef != nil && target.Namespace == req.Branch.RepoNamespace &&
+		target.Spec.GitProviderRef.Name == req.Branch.RepoName && target.Spec.Branch == req.Branch.Branch
+}
 
+// delivered records a delivered request as an ApplyRequested Event on every GitTarget it was for,
+// each with its own reason. The operation itself is recorded on the trigger, by the branch worker.
+func (d *Dispatcher) delivered(req git.ApplyRequest, eligible []eligibleTarget) {
 	if d.recorder == nil {
 		return
 	}

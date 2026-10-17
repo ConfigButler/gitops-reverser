@@ -9,6 +9,7 @@ package git
 // an older value than Git, and owes a Repair. See docs/design/suspended-appliers-plan.md.
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ func TestApplier_AnApplierNoLongerNamedAbandonsItsOperation(t *testing.T) {
 	loop.serviceAppliers()
 	require.Equal(t, int64(1), loop.w.unresolvedOperations.Load())
 
-	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.Applier = nil })
+	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil })
 	owesForeign(loop.w)
 	loop.serviceAppliers()
 
@@ -184,4 +185,114 @@ func onlyApplier(t *testing.T, loop *branchWorkerEventLoop) *applierState {
 		return state
 	}
 	return nil
+}
+
+// recordingStatusWriter records what a worker publishes on its triggers' status, in order.
+type recordingStatusWriter struct {
+	mu        sync.Mutex
+	published map[TriggerRef][]ApplyTriggerStatus
+}
+
+func (r *recordingStatusWriter) PublishApplyTriggerStatus(trigger TriggerRef, status ApplyTriggerStatus) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.published == nil {
+		r.published = map[TriggerRef][]ApplyTriggerStatus{}
+	}
+	r.published[trigger] = append(r.published[trigger], status)
+}
+
+// last is the last publication for trigger, and how many there were.
+func (r *recordingStatusWriter) last(trigger TriggerRef) (ApplyTriggerStatus, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	all := r.published[trigger]
+	if len(all) == 0 {
+		return ApplyTriggerStatus{}, 0
+	}
+	return all[len(all)-1], len(all)
+}
+
+// TestApplier_TheTriggerStatusFollowsEveryTransition: the operation is on the trigger's status from
+// the moment the applier was asked, and moves with every report, so `kubectl get fluxtriggers`
+// shows where an apply stands without anything having to reconcile. A worker that has started
+// nothing says nothing, and Unresolved holds until the operation completes.
+func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+	writer := &recordingStatusWriter{}
+	loop.w.triggerStatus = writer
+	trigger := applierRef("alpha").Trigger
+
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	sent := requester.taken()
+	require.Len(t, sent, 1)
+	_, n := writer.last(trigger)
+	assert.Zero(t, n, "nothing is published before the applier was asked")
+
+	phase := func(outcome ApplyOutcome) *configv1alpha3.ApplyOperation {
+		t.Helper()
+		sent[0].Report(ApplyResult{ID: sent[0].ID, Outcome: outcome, Token: "T1"})
+		loop.serviceAppliers()
+		status, _ := writer.last(trigger)
+		require.NotNil(t, status.Operation)
+		return status.Operation
+	}
+
+	requested := phase(ApplyRequested)
+	assert.Equal(t, configv1alpha3.ApplyOperationRequested, requested.Phase)
+	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requested.Reason)
+	assert.Equal(t, "bbb", requested.Commit)
+	assert.Equal(t, "T1", requested.Token)
+	assert.False(t, requested.RequestedAt.IsZero())
+	assert.Nil(t, requested.FinishedAt)
+
+	assert.Equal(t, configv1alpha3.ApplyOperationRunning, phase(ApplyRunning).Phase)
+	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, phase(ApplyUnresolved).Phase)
+	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, phase(ApplyRunning).Phase,
+		"Unresolved holds until the operation completes")
+
+	done := phase(ApplySucceeded)
+	assert.Equal(t, configv1alpha3.ApplyOperationSucceeded, done.Phase)
+	require.NotNil(t, done.FinishedAt)
+	assert.Equal(t, requested.RequestedAt, done.RequestedAt, "one operation, one record")
+
+	_, before := writer.last(trigger)
+	loop.serviceAppliers()
+	_, after := writer.last(trigger)
+	assert.Equal(t, before, after, "an unchanged status is not published again")
+}
+
+// TestApplier_TheTriggerStatusSaysARepairIsOwed: repairOwed is published from the withheld write
+// until an operation that carried the repair succeeded.
+func TestApplier_TheTriggerStatusSaysARepairIsOwed(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+	writer := &recordingStatusWriter{}
+	loop.w.triggerStatus = writer
+	trigger := applierRef("alpha").Trigger
+
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	first := requester.taken()
+	require.Len(t, first, 1)
+	report(first[0], ApplyRequested)
+	loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit"))
+	require.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)))
+	loop.serviceAppliers()
+	status, _ := writer.last(trigger)
+	assert.True(t, status.RepairOwed, "the withheld write owes a repair")
+
+	report(first[0], ApplySucceeded)
+	loop.serviceAppliers()
+	repair := requester.taken()
+	require.Len(t, repair, 1)
+	status, _ = writer.last(trigger)
+	assert.True(t, status.RepairOwed, "still owed while the repair is out")
+
+	report(repair[0], ApplyRequested)
+	report(repair[0], ApplySucceeded)
+	loop.serviceAppliers()
+	status, _ = writer.last(trigger)
+	assert.False(t, status.RepairOwed, "repaired")
+	assert.Equal(t, configv1alpha3.ApplyReasonRepair, status.Operation.Reason)
 }

@@ -1,0 +1,310 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: fluxtriggers.configbutler.ai
+spec:
+  group: configbutler.ai
+  names:
+    kind: FluxTrigger
+    listKind: FluxTriggerList
+    plural: fluxtriggers
+    singular: fluxtrigger
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .spec.kustomizationRef.name
+      name: Kustomization
+      type: string
+    - jsonPath: .status.operation.phase
+      name: Operation
+      type: string
+    - jsonPath: .status.operation.commit
+      name: Commit
+      priority: 1
+      type: string
+    - jsonPath: .spec.clusterProviderRef.name
+      name: Cluster
+      priority: 1
+      type: string
+    - jsonPath: .status.repairOwed
+      name: RepairOwed
+      priority: 1
+      type: boolean
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha3
+    schema:
+      openAPIV3Schema:
+        description: |-
+          FluxTrigger holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes:
+          only on a branch with nothing live missing from the commit, after a commit GitOps Reverser did
+          not push, after a refused edit, after a reverted edit, and to catch up with its own pushes.
+          GitTargets name it with spec.applyTriggerRef.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the Kustomization the trigger holds
+            properties:
+              clusterProviderRef:
+                description: |-
+                  ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as a
+                  management cluster running Flux for the source cluster. A provider without spec.kubeConfig is
+                  the operator's own cluster. The provider must admit this trigger's namespace
+                  (spec.accessFrom). Its identity needs get and patch on the Kustomization and its
+                  GitRepository. Immutable.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.clusterProviderRef.name must not be empty
+                  rule: self.name != ''
+                - message: spec.clusterProviderRef is immutable; delete and recreate
+                    the FluxTrigger to hold a Kustomization elsewhere
+                  rule: self == oldSelf
+              kustomizationRef:
+                description: |-
+                  KustomizationRef is the Flux Kustomization that applies the folders of the GitTargets naming
+                  this trigger. Its spec.sourceRef must be a GitRepository that follows a branch. Its namespace
+                  defaults to the trigger's namespace. Immutable.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.kustomizationRef is immutable; delete and recreate
+                    the FluxTrigger to hold another Kustomization
+                  rule: self == oldSelf
+                - message: spec.kustomizationRef.name must not be empty
+                  rule: self.name != ''
+              quietPeriod:
+                default: 30s
+                description: |-
+                  QuietPeriod is how long the branch must hold no open commit window and no pending writes,
+                  after GitOps Reverser's own pushes, before the Kustomization is asked to catch up with them.
+                  Every new write restarts the wait. A Go duration of at most "1h".
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: spec.quietPeriod must be a Go duration of at most 1h
+                  rule: duration(self) <= duration('1h')
+            required:
+            - clusterProviderRef
+            - kustomizationRef
+            type: object
+          status:
+            description: status defines the observed state of FluxTrigger
+            properties:
+              conditions:
+                description: |-
+                  Conditions are Configured (the Kustomization exists, applies a GitRepository that follows a
+                  branch, and may be patched) and the kstatus Ready/Reconciling/Stalled trio.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              operation:
+                description: |-
+                  Operation is the apply GitOps Reverser started on the Kustomization: the one in flight, or
+                  the last one. Absent until the first.
+                properties:
+                  appliedRevision:
+                    description: |-
+                      AppliedRevision is the revision the applier reports it applied once the operation completed.
+                      It can differ from commit when the branch moved between the check and the apply.
+                    type: string
+                  commit:
+                    description: |-
+                      Commit is the commit the applier was asked to apply. Empty when the remote did not carry the
+                      branch.
+                    type: string
+                  fenceToken:
+                    description: |-
+                      FenceToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
+                      Once the Kustomization reports it handled, nothing started before the suspend is still
+                      running. Flux only.
+                    type: string
+                  finishedAt:
+                    description: FinishedAt is when the operation was seen to complete.
+                    format: date-time
+                    type: string
+                  message:
+                    description: Message says why a Failed operation failed, or why
+                      an Unresolved one is overdue.
+                    type: string
+                  phase:
+                    description: |-
+                      Phase is where the operation stands. Requested, Running, Settling and Unresolved are in
+                      flight: while one is, an edit to an object the applier applies can still be reverted by it,
+                      and the applier is asked nothing else. Succeeded and Failed have completed.
+                    enum:
+                    - Requested
+                    - Running
+                    - Settling
+                    - Unresolved
+                    - Succeeded
+                    - Failed
+                    type: string
+                  reason:
+                    description: |-
+                      Reason is why the apply was asked for. With several GitTargets on the trigger, it is the
+                      strongest of their reasons.
+                    enum:
+                    - ForeignCommit
+                    - Refusal
+                    - Repair
+                    - CatchUp
+                    type: string
+                  requestedAt:
+                    description: RequestedAt is when the applier was asked.
+                    format: date-time
+                    type: string
+                  token:
+                    description: |-
+                      Token identifies the request in the applier's own status: the reconcile.fluxcd.io/requestedAt
+                      value on a Flux object, or the "gitops-reverser request" entry in an Argo CD operation's info.
+                    type: string
+                required:
+                - phase
+                - requestedAt
+                type: object
+              repairOwed:
+                description: |-
+                  RepairOwed is true while the Kustomization owes a Repair: an apply reverted an API edit made
+                  after it was asked for, so the cluster runs an older value than Git until the next apply.
+                type: boolean
+              source:
+                description: |-
+                  Source is the GitRepository the Kustomization applies, as last read. A GitTarget naming this
+                  trigger must write the repository and branch it fetches.
+                properties:
+                  branch:
+                    description: Branch is the GitRepository's spec.ref.branch.
+                    type: string
+                  gitRepository:
+                    description: GitRepository is the Kustomization's spec.sourceRef,
+                      its namespace defaulted.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        type: string
+                      namespace:
+                        description: Namespace of the referent, when not specified
+                          it acts as LocalObjectReference.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  url:
+                    description: URL is the GitRepository's spec.url.
+                    type: string
+                required:
+                - gitRepository
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

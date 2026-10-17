@@ -427,19 +427,17 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 	// only once the branch has been quiet, so the later value survives and Flux still ends on the
 	// tip, without anybody reconciling it by hand.
 	It("asks Flux to apply only on a quiet branch, so the later of two quick API edits survives", func() {
-		By("naming the live Kustomization as the GitTarget's applier")
-		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName, "--type=merge", "-p",
-			fmt.Sprintf(`{"spec":{"applier":{"kustomizationRef":{"namespace":"flux-system","name":%q},`+
-				`"quietPeriod":"5s"}}}`, run.fluxLiveName))
-		Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier")
-		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierConfigured", "True", "Succeeded", "")
+		By("naming a trigger that holds the live Kustomization")
+		createFluxTrigger(testNs, run.fluxLiveName, run.fluxLiveName, "5s")
+		nameApplyTrigger(testNs, run.gitTargetName, "FluxTrigger", run.fluxLiveName, "")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 		run.waitForGitTargetReady()
 
 		Expect(run.gitPull()).To(Succeed())
 		baseline := run.waitForStableRemoteCommitCount(biStableCountMediumWait)
 
 		By("editing the second order through the API, and again seconds after that edit is pushed")
-		_, err = kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
+		_, err := kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
 			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"Cone"}}`)
 		Expect(err).NotTo(HaveOccurred())
 		run.waitForCommittedOrderSpec(run.secondOrderName, "Cone", "Strawberry", "WhippedCream")

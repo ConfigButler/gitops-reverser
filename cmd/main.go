@@ -182,12 +182,17 @@ func main() {
 	// and a folder somebody else broke in Git produces no Kubernetes event to notice it by.
 	workerManager.SetScanAcceptanceReporter(watchMgr.ReportGitPathScan)
 	// The branch workers decide when a GitTarget's applier may apply; the dispatcher delivers it,
-	// off their queues, to the Flux objects in each target's source cluster.
+	// off their queues, to the applier its apply trigger holds, in the trigger's cluster. The status
+	// writer records each operation on the trigger, also off their queues.
 	applyDispatcher := applier.NewDispatcher(
 		mgr.GetClient(), watchMgr.ApplierDynamicClient, mgr.GetEventRecorderFor("gittarget"),
 		ctrl.Log.WithName("applier"))
 	fatalIfErr(mgr.Add(applyDispatcher), "unable to add apply request dispatcher to manager")
 	workerManager.SetApplyRequester(applyDispatcher)
+	triggerStatusWriter := applier.NewStatusWriter(mgr.GetAPIReader(), mgr.GetClient(),
+		ctrl.Log.WithName("applier").WithName("status"))
+	fatalIfErr(mgr.Add(triggerStatusWriter), "unable to add apply trigger status writer to manager")
+	workerManager.SetApplyTriggerStatusWriter(triggerStatusWriter)
 
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{
@@ -354,11 +359,17 @@ func main() {
 		Recorder:      mgr.GetEventRecorderFor("gittarget"),
 
 		GitRefreshInterval: cfg.gitRefreshInterval,
-		ApplierClients:     watchMgr.ApplierDynamicClient,
-		ApplyRequests:      applyDispatcher,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
+	}
+	for _, kind := range []string{configbutleraiv1alpha3.ApplyTriggerKindFlux, configbutleraiv1alpha3.ApplyTriggerKindArgoCD} {
+		fatalIfErr((&controller.ApplyTriggerReconciler{
+			Client:         mgr.GetClient(),
+			Kind:           kind,
+			Recorder:       mgr.GetEventRecorderFor(strings.ToLower(kind)),
+			ApplierClients: watchMgr.ApplierDynamicClient,
+		}).SetupWithManager(mgr), "unable to create controller", "controller", kind)
 	}
 	// Command authorship is captured at admission by the validate-operator-types webhook and
 	// lives in its own Redis corner (author:v1:command), independent of

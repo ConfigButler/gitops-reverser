@@ -15,7 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// GitTarget spec.applier against a real Flux, from what a request is allowed to do to how GitOps
+// A FluxTrigger, named by a GitTarget's spec.applyTriggerRef, against a real Flux, from what a request is allowed to do to how GitOps
 // Reverser learns that it has to make one. See docs/design/apply-trigger.md.
 //
 // The Kustomization applies its own folder (fluxApplierFolder) into a namespace the WatchRule does
@@ -66,6 +66,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		deleteRepoHook(repo.RepoName, receiverHookID)
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
+		cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
 		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
 		cleanupNamespacedResource(testNs, "secret", receiverSecretName)
 		cleanupNamespacedResource("flux-system", "kustomization", fluxName)
@@ -77,19 +78,21 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 
 	// A Kustomization whose source follows another branch is reported, and a request for it never
 	// stamps that source, however it is triggered; once the source is fixed, Flux reaches the tip.
-	It("reports the applier from the source cluster, and never stamps a source on another branch", func() {
-		By("naming a Kustomization that does not exist yet")
+	It("reports the applier through its trigger, and never stamps a source on another branch", func() {
+		By("naming a trigger whose Kustomization does not exist yet")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", destName, "--type=merge", "-p",
-			fmt.Sprintf(`{"spec":{"applier":{"kustomizationRef":{"namespace":"flux-system","name":%q}}}}`, fluxName))
-		Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier")
-		verifyResourceCondition("gittarget", destName, testNs, "ApplierConfigured", "False", "ApplierNotFound",
-			"not found in the source cluster")
+		createFluxTrigger(testNs, fluxName, fluxName, "")
+		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Configured", "False", "ApplierNotFound",
+			"not found in the applier's cluster")
+		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "False", "ApplierNotFound",
+			"not found in the applier's cluster")
 
 		By("creating it, with a GitRepository that follows the release branch")
 		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "release", "./"+fluxApplierFolder)
-		verifyResourceCondition("gittarget", destName, testNs, "ApplierConfigured", "False", "SourceMismatch",
-			`fetches branch "release", not main`)
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "False", "SourceMismatch",
+			`applies branch "release", not main`)
 		Expect(fluxRequestStamps(fluxName)).To(Equal("|"), "nothing has asked Flux for anything yet")
 
 		By("mirroring a first API edit, so the branch has a tip GitOps Reverser pushed")
@@ -127,10 +130,11 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		// half (an obligation kept across a rejected attempt) is proven in apply_attempt_test.go.
 		By("pointing the GitRepository at main, after which Flux reaches the tip")
 		head := remoteHeadSHA(Default, repo.CheckoutDir)
-		_, err = kubectlRunInNamespace("flux-system", "patch", "gitrepository", fluxName, "--type=merge", "-p",
+		_, err := kubectlRunInNamespace("flux-system", "patch", "gitrepository", fluxName, "--type=merge", "-p",
 			`{"spec":{"ref":{"branch":"main"}}}`)
 		Expect(err).NotTo(HaveOccurred(), "failed to point the GitRepository at main")
-		verifyResourceCondition("gittarget", destName, testNs, "ApplierConfigured", "True", "Succeeded", "")
+		requestTriggerReconcile(testNs, fluxTriggerResource, fluxName)
+		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 		Eventually(func(g Gomega) {
 			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
 			g.Expect(appliedColor(g, appliedNs)).To(Equal("green"))

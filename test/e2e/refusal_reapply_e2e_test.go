@@ -94,11 +94,9 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 
 		By("creating the GitTarget on the OVERLAY, naming the Kustomization and asking it to reapply")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", destName, "--type=merge", "-p",
-			fmt.Sprintf(`{"spec":{"applier":{"kustomizationRef":{"namespace":"flux-system","name":%q}},`+
-				`"onRefusal":"Reapply"}}`, fluxName))
-		Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier and spec.onRefusal")
-		verifyResourceCondition("gittarget", destName, testNs, "ApplierConfigured", "True", "Succeeded", "")
+		createFluxTrigger(testNs, fluxName, fluxName, "")
+		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "Reapply")
+		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 
 		// The overlay renders into THIS namespace, so the rule watches its own and needs no
 		// sourceNamespace override. ConfigMaps ride along so this target has an ACCEPTED watched

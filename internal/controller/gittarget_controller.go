@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -31,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
-	"github.com/ConfigButler/gitops-reverser/internal/applier"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -153,15 +152,6 @@ type GitTargetReconciler struct {
 	// clock is the source of "now" for the publication ledger, so a test can hold time still
 	// across a reconcile that is measured in wall clock. Nil means time.Now.
 	clock func() time.Time
-
-	// ApplierClients resolves the dynamic client of a GitTarget's source cluster, where its
-	// spec.applier lives, and ApplyRequests is the ledger of requests delivered to it. Nil leaves
-	// ApplierConfigured Unknown and status.applier unpublished (tests, and the CLI).
-	ApplierClients applier.SourceClients
-	ApplyRequests  ApplyRequestLedger
-	// newApplier builds the client that checks an applier of a kind; nil is applier.NewClient. A
-	// seam for tests, whose fake source cluster cannot answer an access review.
-	newApplier func(kind string, client dynamic.Interface) applier.Client
 }
 
 // clockNow is the reconciler's wall clock.
@@ -175,11 +165,12 @@ func (r *GitTargetReconciler) clockNow() time.Time {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers;argocdtriggers,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// The Flux and Argo CD kinds a spec.applier names are NOT granted here: no GitTarget needs them
-// until one names an applier, and an install that does not use Flux or Argo CD should not hold
+// The Flux and Argo CD kinds a trigger holds are NOT granted here: nothing needs them until a
+// trigger names an applier, and an install that does not use Flux or Argo CD should not hold
 // write rights on their objects. config/rbac/flux-applier-role.yaml and argocd-applier-role.yaml,
 // and the chart's applierAccess.flux and applierAccess.argocd, grant them.
 
@@ -297,13 +288,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
 
 	refs := r.publishReferenceReadiness(st, &target, providerNS, gitProvider, sourceProvider)
-	applierValue, hasApplier := r.observeApplier(ctx, st, &target, gitProvider)
+	triggerVerdict, hasTrigger := r.observeApplyTrigger(ctx, st, &target, gitProvider)
 
 	rd := newGitTargetReadiness()
 	convergeAsSuspended(rd, &target)
 	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS, repoIdentityOf(gitProvider)),
 		refs.gitProvider, refs.clusterProvider, refs.sourceCluster, publicationCondition(publication))
-	applierReadiness(rd, applierValue, hasApplier)
+	applyTriggerReadiness(rd, triggerVerdict, hasTrigger)
 	parentRecoveryReadiness(rd, recoveringParent)
 	st.applyReadiness(rd)
 
@@ -1487,10 +1478,6 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// said, and an entry that outlives the object is a rate limit held against a name that may be
 	// recreated tomorrow with nothing published.
 	r.remotePublications.forget(gitDest)
-	// Same terms: the last apply request delivered for it.
-	if r.ApplyRequests != nil {
-		r.ApplyRequests.Forget(gitDest)
-	}
 	telemetry.ForgetResourceConditions(conditionKindGitTarget, namespacedName.Namespace, namespacedName.Name)
 	// Same terms, same reason: a join series that outlives its GitTarget keeps attributing a live
 	// branch's push failures to an object that no longer exists.
@@ -1618,6 +1605,19 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.clusterWatchRuleToGitTarget),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		// React to an apply trigger appearing, going, or changing its Ready or its source, so
+		// ApplyTriggerReady follows the trigger within one reconcile. The trigger's own reconciler
+		// checks its applier; a status write that moves neither is filtered.
+		Watches(
+			&configbutleraiv1alpha3.FluxTrigger{},
+			handler.EnqueueRequestsFromMapFunc(r.applyTriggerToGitTargets),
+			builder.WithPredicates(applyTriggerReadinessChanged()),
+		).
+		Watches(
+			&configbutleraiv1alpha3.ArgoCDTrigger{},
+			handler.EnqueueRequestsFromMapFunc(r.applyTriggerToGitTargets),
+			builder.WithPredicates(applyTriggerReadinessChanged()),
+		).
 		Named("gittarget")
 
 	// React to a change of the branch worker's publication report (an outage starting, intake
@@ -1707,9 +1707,8 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 	return requests
 }
 
-// clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it, as
-// its source or as its applier's cluster,
-// across ALL namespaces (the provider is cluster-scoped). It re-enqueues dependents when the
+// clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it as
+// its source, across ALL namespaces (the provider is cluster-scoped). It re-enqueues dependents when the
 // provider's Ready flips or its accessFrom policy changes, so the projected
 // ClusterProviderReady and the namespace-authorization refusal converge without waiting for the
 // periodic reconcile.
@@ -1726,8 +1725,7 @@ func (r *GitTargetReconciler) clusterProviderToGitTargets(
 	var requests []ctrlreconcile.Request
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		usesApplier := t.Spec.Applier != nil && t.ApplierCluster() == obj.GetName()
-		if t.SourceCluster() != obj.GetName() && !usesApplier {
+		if t.SourceCluster() != obj.GetName() {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{
@@ -1735,6 +1733,64 @@ func (r *GitTargetReconciler) clusterProviderToGitTargets(
 		})
 	}
 	return requests
+}
+
+// applyTriggerToGitTargets maps an apply trigger event to every GitTarget in its namespace that
+// names it.
+func (r *GitTargetReconciler) applyTriggerToGitTargets(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	trigger, ok := obj.(configbutleraiv1alpha3.ApplyTrigger)
+	if !ok {
+		return nil
+	}
+	var targets configbutleraiv1alpha3.GitTargetList
+	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
+		return nil
+	}
+	var requests []ctrlreconcile.Request
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		ref := t.Spec.ApplyTriggerRef
+		if ref == nil || ref.Kind != trigger.TriggerKind() || ref.Name != obj.GetName() {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: k8stypes.NamespacedName{Name: t.Name, Namespace: t.Namespace},
+		})
+	}
+	return requests
+}
+
+// applyTriggerReadinessChanged fires on create and delete, and on an update that changes the
+// trigger's generation, its Ready or Stalled condition, or its source: what ApplyTriggerReady reads.
+func applyTriggerReadinessChanged() predicate.Predicate {
+	summary := func(obj client.Object) string {
+		trigger, ok := obj.(configbutleraiv1alpha3.ApplyTrigger)
+		if !ok {
+			return ""
+		}
+		var out strings.Builder
+		out.WriteString(strconv.FormatInt(trigger.GetGeneration(), 10))
+		for _, conditionType := range []string{ConditionTypeReady, ConditionTypeStalled} {
+			if c := findCondition(*trigger.StatusConditions(), conditionType); c != nil {
+				fmt.Fprintf(&out, "|%s/%s/%s/%d", c.Status, c.Reason, c.Message, c.ObservedGeneration)
+			}
+		}
+		url, branch, known := trigger.SourceBinding()
+		fmt.Fprintf(&out, "|%s|%s|%t", url, branch, known)
+		return out.String()
+	}
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld == nil || e.ObjectNew == nil || summary(e.ObjectOld) != summary(e.ObjectNew)
+		},
+	}
 }
 
 // namespaceToGitTargets maps a Namespace label change to every GitTarget in that namespace, so the

@@ -17,7 +17,7 @@
 preamble: |
   ## Field overview
 
-  Ready-made manifests for all six objects live in [`config/samples/`](../config/samples/). They
+  Ready-made manifests for all eight objects live in [`config/samples/`](../config/samples/). They
   cross-reference the same `example-provider` / `example-target` names, so the set can be applied
   together and edited down, rather than assembled from the fragments below.
 
@@ -137,13 +137,12 @@ kinds:
         doc: >-
           Which deletions reach Git. See
           [deletion policy](#deletion-policy-specprunemode)
-      - path: applier
+      - path: applyTriggerRef
         default: the applier applies on its own schedule
         doc: >-
-          The Flux `Kustomization` (`kustomizationRef`) or Argo CD `Application` (`applicationRef`)
-          that applies this folder, which GitOps Reverser then asks to apply, and for a
-          `Kustomization` how long the branch stays quiet before it catches up (`quietPeriod`,
-          `30s`). See [who applies this folder](#who-applies-this-folder-specapplier)
+          The `FluxTrigger` or `ArgoCDTrigger`, in this namespace, holding the applier of this
+          folder, which GitOps Reverser then asks to apply. See
+          [who applies this folder](#who-applies-this-folder-specapplytriggerref)
       - path: onRefusal
         doc: >-
           What happens to an edit with no legal destination. See
@@ -206,6 +205,34 @@ kinds:
         doc: >-
           Label selector the API server applies to the item's LIST and WATCH. See
           [selecting objects by label](#selecting-objects-by-label-rulesobjectselector)
+
+  - kind: FluxTrigger
+    title: "`FluxTrigger` (namespaced): the Flux `Kustomization` GitOps Reverser asks to apply"
+    intro: "The references are immutable: to hold another `Kustomization`, delete the trigger and create a new one."
+    fields:
+      - path: clusterProviderRef
+        doc: >-
+          The `ClusterProvider` whose cluster holds the `Kustomization`. Its `accessFrom` must admit
+          the trigger's namespace
+      - path: kustomizationRef
+        doc: >-
+          The `Kustomization` that applies the folders of the `GitTarget`s naming this trigger. See
+          [who applies this folder](#who-applies-this-folder-specapplytriggerref)
+      - path: quietPeriod
+        doc: How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp`
+
+  - kind: ArgoCDTrigger
+    title: "`ArgoCDTrigger` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync"
+    intro: "The references are immutable: to hold another `Application`, delete the trigger and create a new one."
+    fields:
+      - path: clusterProviderRef
+        doc: >-
+          The `ClusterProvider` whose cluster holds the `Application`. Its `accessFrom` must admit
+          the trigger's namespace
+      - path: applicationRef
+        doc: >-
+          The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s
+          naming this trigger. See [who applies this folder](#who-applies-this-folder-specapplytriggerref)
 
   - kind: CommitRequest
     title: "`CommitRequest` (namespaced): save now"

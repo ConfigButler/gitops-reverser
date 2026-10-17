@@ -100,9 +100,8 @@ func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
 // the requester only reports that the reason no longer holds, and the worker decides: no Refusal,
 // and a CatchUp only after the quiet period.
 func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
-	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying, func(g *configv1alpha3.GitTarget) {
-		g.Spec.Applier.QuietPeriod = &metav1.Duration{Duration: time.Hour}
-	}))
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying),
+		fluxTrigger("alpha", quietFor(time.Hour)))
 	loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // owes a catch-up
 	oweAlphaRefusal(loop)
 	loop.serviceAppliers()
@@ -201,19 +200,15 @@ func TestApplier_EachApplierRetriesOnItsOwnClock(t *testing.T) {
 	assert.Equal(t, applierRef("alpha"), retry[0].Applier)
 }
 
-// TestApplier_OneAttemptForEveryTargetNamingIt: GitTargets that share a Kustomization are asked for
-// together, each with its own reason, and the shared applier waits for the longest of their quiet
-// periods, because its apply reaches every one of their folders.
+// TestApplier_OneAttemptForEveryTargetNamingIt: GitTargets that share a trigger are asked for
+// together, each with its own reason, and wait for the trigger's quiet period, because its apply
+// reaches every one of their folders.
 func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
-	shared := func(quiet time.Duration) func(*configv1alpha3.GitTarget) {
-		return func(g *configv1alpha3.GitTarget) {
-			g.Spec.Applier = testApplier("shared")
-			g.Spec.Applier.QuietPeriod = &metav1.Duration{Duration: quiet}
-		}
-	}
+	shared := func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("shared") }
 	loop, requester := applyTriggerLoop(t,
-		applierTestTarget("alpha", true, shared(time.Minute), reapplying),
-		applierTestTarget("bravo", true, shared(time.Hour)),
+		applierTestTarget("alpha", true, shared, reapplying),
+		applierTestTarget("bravo", true, shared),
+		fluxTrigger("shared", quietFor(time.Hour)),
 	)
 	loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
 	loop.serviceAppliers()
@@ -273,7 +268,7 @@ func TestApplier_ATargetThatNoLongerNamesAnApplierIsOwedNothing(t *testing.T) {
 	out := requester.taken()
 	require.Len(t, out, 1)
 
-	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.Applier = nil })
+	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil })
 	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	loop.serviceAppliers()
 	report(out[0], ApplyRequestFailed)

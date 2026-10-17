@@ -332,7 +332,7 @@ func TestArgoCDRequest_RefusesWhatIsNotUnderControl(t *testing.T) {
 	}
 }
 
-// TestArgoCDValidate_Reasons covers every ApplierConfigured answer for an Application.
+// TestArgoCDValidate_Reasons covers every Configured answer for an Application.
 func TestArgoCDValidate_Reasons(t *testing.T) {
 	sources := map[string]any{"sources": []any{map[string]any{"repoURL": testRepoURL}}}
 	tests := []struct {
@@ -346,7 +346,8 @@ func TestArgoCDValidate_Reasons(t *testing.T) {
 		wantErr     bool
 	}{
 		{name: "configured", objs: []runtime.Object{manualApp()}, wantReason: ReasonSucceeded,
-			wantMessage: "Application argocd/platform syncs branch main, with automated sync off"},
+			wantMessage: `Application argocd/platform syncs revision "main" of ` + testRepoURL +
+				", with automated sync off"},
 		{name: "configured, as refs/heads/ names the branch",
 			objs: []runtime.Object{applicationObj(testRepoURL, "refs/heads/main", nil)}, wantReason: ReasonSucceeded},
 		{name: "configured, with the off switch that keeps prune",
@@ -365,33 +366,25 @@ func TestArgoCDValidate_Reasons(t *testing.T) {
 			wantReason:  ReasonApplierNotFound,
 			wantMessage: "does not serve Application (argoproj.io/v1alpha1); is Argo CD installed there?",
 		},
-		{name: "another repository",
-			objs:       []runtime.Object{applicationObj("https://github.com/acme/other", testBranch, nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: "syncs https://github.com/acme/other, not"},
-		{name: "another branch", objs: []runtime.Object{applicationObj(testRepoURL, "release", nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: `targets revision "release", not branch main`},
-		{name: "HEAD", objs: []runtime.Object{applicationObj(testRepoURL, "HEAD", nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: `targets revision "HEAD"`},
-		{name: "no targetRevision, which is HEAD", objs: []runtime.Object{applicationObj(testRepoURL, "", nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: `targets revision "HEAD"`},
-		{name: "a tag", objs: []runtime.Object{applicationObj(testRepoURL, "v1.0.0", nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: `targets revision "v1.0.0"`},
+		{name: "another repository and revision, which only a GitTarget can judge",
+			objs:       []runtime.Object{applicationObj("https://github.com/acme/other", "v1.0.0", nil)},
+			wantReason: ReasonSucceeded, wantMessage: `syncs revision "v1.0.0" of https://github.com/acme/other`},
 		{name: "multi-source", objs: []runtime.Object{manualApp()},
 			mutate: func(app *unstructured.Unstructured) {
 				unstructured.RemoveNestedField(app.Object, "spec", "source")
 				_ = unstructured.SetNestedField(app.Object, sources["sources"], "spec", "sources")
 			},
-			wantReason: ReasonSourceMismatch, wantMessage: "syncs only a single-source Application"},
+			wantReason: ReasonUnsupportedSource, wantMessage: "syncs only a single-source Application"},
 		{name: "a source hydrator", objs: []runtime.Object{manualApp()},
 			mutate: func(app *unstructured.Unstructured) {
 				_ = unstructured.SetNestedMap(app.Object, map[string]any{}, "spec", "sourceHydrator")
 			},
-			wantReason: ReasonSourceMismatch, wantMessage: "has spec.sourceHydrator"},
+			wantReason: ReasonUnsupportedSource, wantMessage: "has spec.sourceHydrator"},
 		{
 			name:        "no source",
 			objs:        []runtime.Object{manualApp()},
 			mutate:      func(app *unstructured.Unstructured) { unstructured.RemoveNestedField(app.Object, "spec", "source") },
-			wantReason:  ReasonSourceMismatch,
+			wantReason:  ReasonUnsupportedSource,
 			wantMessage: "names no spec.source",
 		},
 		{name: "automated sync on, as an empty block turns it on",
@@ -434,7 +427,7 @@ func TestArgoCDValidate_Reasons(t *testing.T) {
 				argo.CanI = tt.canI
 			}
 
-			verdict := argo.Validate(context.Background(), platformApp, testBinding)
+			verdict := argo.Validate(context.Background(), platformApp)
 
 			assert.Equal(t, tt.wantReason, verdict.Reason, verdict.Message)
 			assert.Equal(t, tt.wantReason == ReasonSucceeded, verdict.OK)
@@ -454,7 +447,7 @@ func TestArgoCDValidate_AsksForUpdate(t *testing.T) {
 		return true, nil
 	}
 
-	require.True(t, argo.Validate(context.Background(), platformApp, testBinding).OK)
+	require.True(t, argo.Validate(context.Background(), platformApp).OK)
 	assert.Equal(t, []authorizationv1.ResourceAttributes{{
 		Namespace: argoNS, Verb: "update", Group: "argoproj.io", Version: "v1alpha1",
 		Resource: "applications", Name: "platform",
@@ -517,10 +510,33 @@ func TestArgoCD_Progress(t *testing.T) {
 	assert.Equal(t, git.ApplySucceeded, current.Outcome, "nothing asked is nothing to wait for")
 }
 
-// TestNewClient_PicksTheClientByKind: the dispatcher and the ApplierConfigured check use the kind
-// spec.applier names.
+// TestNewClient_PicksTheClientByKind: the dispatcher and the Configured check use the kind of
+// applier the trigger holds.
 func TestNewClient_PicksTheClientByKind(t *testing.T) {
 	client := newArgoSource()
 	assert.IsType(t, &ArgoCD{}, NewClient(v1alpha3.ApplierKindApplication, client))
 	assert.IsType(t, &Flux{}, NewClient(v1alpha3.ApplierKindKustomization, client))
+}
+
+// TestArgoCDTrigger_BindingMismatchReadsTheTargetRevision: an Application binds a GitTarget when its
+// targetRevision names the GitTarget's branch, as its name or as refs/heads/ and the name. HEAD, an
+// empty targetRevision (which is HEAD), a tag and another branch never follow it.
+func TestArgoCDTrigger_BindingMismatchReadsTheTargetRevision(t *testing.T) {
+	for revision, want := range map[string]string{
+		testBranch:                 "",
+		"refs/heads/" + testBranch: "",
+		"release":                  `applies branch "release", not main`,
+		"HEAD":                     `applies branch "HEAD"`,
+		"":                         `applies branch "HEAD"`,
+		"v1.0.0":                   `applies branch "v1.0.0"`,
+	} {
+		trigger := &v1alpha3.ArgoCDTrigger{ObjectMeta: metav1.ObjectMeta{Name: "platform"}}
+		trigger.Status.Source = &v1alpha3.ArgoCDTriggerSource{RepoURL: testRepoURL + ".git", TargetRevision: revision}
+		got := BindingMismatch(trigger, testBinding)
+		if want == "" {
+			assert.Empty(t, got, revision)
+			continue
+		}
+		assert.Contains(t, got, want, revision)
+	}
 }

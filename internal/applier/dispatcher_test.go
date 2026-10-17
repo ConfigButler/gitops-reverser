@@ -39,7 +39,17 @@ const (
 
 var testBranchKey = git.BranchKey{RepoNamespace: targetNS, RepoName: "platform", Branch: testBranch}
 
-// gitTarget builds a GitTarget on testBranchKey; a nil kustomizationRef declares no applier.
+// Test-only annotations on a GitTarget, which newDispatcherFixture reads to create the trigger the
+// GitTarget names: the applier it holds ("namespace/name") and the cluster it is in.
+const (
+	testKustomizationAnnotation  = "test.gitops-reverser/kustomization"
+	testApplicationAnnotation    = "test.gitops-reverser/application"
+	testTriggerClusterAnnotation = "test.gitops-reverser/trigger-cluster"
+)
+
+// gitTarget builds a GitTarget on testBranchKey, mirroring cluster (the default when empty). A
+// kustomizationRef makes it name the FluxTrigger of that Kustomization's name, which holds it in the
+// same cluster; nil names no trigger.
 func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference, cluster string) *v1alpha3.GitTarget {
 	target := &v1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: name, UID: uid(name)},
@@ -49,13 +59,63 @@ func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference
 			Path:           name,
 		},
 	}
-	if kustomizationRef != nil {
-		target.Spec.Applier = &v1alpha3.GitTargetApplier{KustomizationRef: kustomizationRef}
-	}
 	if cluster != "" {
 		target.Spec.ClusterProviderRef = &fluxmeta.LocalObjectReference{Name: cluster}
 	}
+	if kustomizationRef != nil {
+		namesKustomization(target, kustomizationRef.Namespace, kustomizationRef.Name)
+		target.Annotations[testTriggerClusterAnnotation] = target.SourceCluster()
+	}
 	return target
+}
+
+// namesKustomization makes a GitTarget name the FluxTrigger called name, which holds the
+// Kustomization namespace/name (the trigger's own namespace when namespace is empty).
+func namesKustomization(target *v1alpha3.GitTarget, namespace, name string) {
+	if target.Annotations == nil {
+		target.Annotations = map[string]string{}
+	}
+	target.Spec.ApplyTriggerRef = &v1alpha3.ApplyTriggerReference{Kind: v1alpha3.ApplyTriggerKindFlux, Name: name}
+	target.Annotations[testKustomizationAnnotation] = namespace + "/" + name
+}
+
+// triggersFor returns the trigger each GitTarget names, as its test annotations describe it.
+func triggersFor(objects []client.Object) []client.Object {
+	var triggers []client.Object
+	seen := map[string]bool{}
+	for _, obj := range objects {
+		target, ok := obj.(*v1alpha3.GitTarget)
+		if !ok || target.Spec.ApplyTriggerRef == nil {
+			continue
+		}
+		key := target.Spec.ApplyTriggerRef.Kind + "/" + target.Spec.ApplyTriggerRef.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		cluster := target.Annotations[testTriggerClusterAnnotation]
+		if cluster == "" {
+			cluster = v1alpha3.DefaultClusterProviderName
+		}
+		meta := metav1.ObjectMeta{Namespace: target.Namespace, Name: target.Spec.ApplyTriggerRef.Name}
+		provider := fluxmeta.LocalObjectReference{Name: cluster}
+		if app, ok := target.Annotations[testApplicationAnnotation]; ok {
+			namespace, name, _ := strings.Cut(app, "/")
+			triggers = append(triggers, &v1alpha3.ArgoCDTrigger{ObjectMeta: meta, Spec: v1alpha3.ArgoCDTriggerSpec{
+				ClusterProviderRef: provider,
+				ApplicationRef:     fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
+			}})
+			continue
+		}
+		if ks, ok := target.Annotations[testKustomizationAnnotation]; ok {
+			namespace, name, _ := strings.Cut(ks, "/")
+			triggers = append(triggers, &v1alpha3.FluxTrigger{ObjectMeta: meta, Spec: v1alpha3.FluxTriggerSpec{
+				ClusterProviderRef: provider,
+				KustomizationRef:   fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
+			}})
+		}
+	}
+	return triggers
 }
 
 // reapplying makes a GitTarget consent to a Refusal request.
@@ -95,9 +155,13 @@ func ref(name string) itypes.ResourceReference { return itypes.NewResourceRefere
 // uid is the uid gitTarget gives the GitTarget of that name.
 func uid(name string) types.UID { return types.UID("uid-" + name) }
 
-// kustomizationApplier is a Kustomization applier in a cluster.
+// kustomizationApplier is a Kustomization applier in a cluster, held by the FluxTrigger in targetNS
+// of the Kustomization's name.
 func kustomizationApplier(cluster, namespace, name string) git.ApplierRef {
-	return git.ApplierRef{Cluster: cluster, Kind: v1alpha3.ApplierKindKustomization, Namespace: namespace, Name: name}
+	return git.ApplierRef{
+		Trigger: git.TriggerRef{Kind: v1alpha3.ApplyTriggerKindFlux, Namespace: targetNS, Name: name},
+		Cluster: cluster, Kind: v1alpha3.ApplierKindKustomization, Namespace: namespace, Name: name,
+	}
 }
 
 // checkout is the applier most tests ask: flux-system/checkout in the default cluster.
@@ -149,7 +213,7 @@ func newDispatcherFixture(t *testing.T, targets []client.Object, sourceObjs ...r
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, v1alpha3.AddToScheme(scheme))
 	controlClient := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(append(controlPlane(), targets...)...).Build()
+		WithObjects(append(append(controlPlane(), targets...), triggersFor(targets)...)...).Build()
 
 	source := &sourceStub{client: newSourceClient(sourceObjs...)}
 	recorder := record.NewFakeRecorder(64)
@@ -264,18 +328,10 @@ func TestDispatcher_AsksOnceForEveryTarget(t *testing.T) {
 
 	res := f.attempt(req)
 
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, res)
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested, Token: requestToken(stampTime)}, res,
+		"the report carries the request's token, for the trigger's status.operation")
 	assert.Equal(t, []string{"gitrepositories " + fluxSystemNS}, f.patches(), "one stamp for the applier")
 	assert.Equal(t, []string{v1alpha3.DefaultClusterProviderName}, f.source.clusters)
-	for name, want := range map[string]v1alpha3.ApplyReason{
-		"a": v1alpha3.ApplyReasonRefusal, "b": v1alpha3.ApplyReasonCatchUp,
-	} {
-		got, ok := f.dispatcher.LastRequest(ref(name), uid(name))
-		require.True(t, ok, name)
-		assert.Equal(t, testCommit, got.RequestedCommit, name)
-		assert.Equal(t, want, got.Reason, name)
-		assert.True(t, got.RequestedAt.Equal(&metav1.Time{Time: stampTime}), name)
-	}
 	assert.ElementsMatch(t, []string{
 		"Normal ApplyRequested asked Kustomization flux-system/checkout to apply 4f2c1ab9 (Refusal)",
 		"Normal ApplyRequested asked Kustomization flux-system/checkout to apply 4f2c1ab9 (CatchUp)",
@@ -299,9 +355,9 @@ func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
 	assert.Equal(t, []string{"gitrepositories " + targetNS}, f.patches())
 }
 
-// appliedFrom puts a GitTarget's applier in the cluster another ClusterProvider names.
+// appliedFrom puts the applier of a GitTarget's trigger in the cluster another ClusterProvider names.
 func appliedFrom(target *v1alpha3.GitTarget, cluster string) *v1alpha3.GitTarget {
-	target.Spec.Applier.ClusterProviderRef = &fluxmeta.LocalObjectReference{Name: cluster}
+	target.Annotations[testTriggerClusterAnnotation] = cluster
 	return target
 }
 
@@ -368,12 +424,10 @@ func TestDispatcher_AFailureIsReportedAndNeverRetried(t *testing.T) {
 	assert.Equal(t, git.ApplyRequestFailed, f.attempt(retry).Outcome)
 	assert.Empty(t, f.events(), "a failure already reported is not reported again")
 	assert.Equal(t, int64(2), f.count(v1alpha3.ApplyReasonForeignCommit, outcomeFailed))
-	_, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
-	assert.False(t, ok)
 }
 
 // TestDispatcher_ASourceMismatchIsRejectedAndNeverStamped is the first review's finding 2:
-// ApplierConfigured said SourceMismatch, and a foreign commit stamped the other branch's source.
+// the applier was reported SourceMismatch, and a foreign commit stamped the other branch's source.
 func TestDispatcher_ASourceMismatchIsRejectedAndNeverStamped(t *testing.T) {
 	f := newDispatcherFixture(t,
 		[]client.Object{gitTarget("a", checkoutRef(), "")},
@@ -435,12 +489,15 @@ func TestDispatcher_WithdrawnConsentAsksNothing(t *testing.T) {
 // third finding is the first case: a recreated GitTarget executed its predecessor's request.
 func TestDispatcher_ATargetThatChangedAsksNothing(t *testing.T) {
 	for name, change := range map[string]func(*v1alpha3.GitTarget){
-		"it was deleted and recreated":   func(g *v1alpha3.GitTarget) { g.UID = "uid-recreated" },
-		"it moved to another branch":     func(g *v1alpha3.GitTarget) { g.Spec.Branch = "release" },
-		"it names another Kustomization": func(g *v1alpha3.GitTarget) { g.Spec.Applier.KustomizationRef.Name = "other" },
-		"it names no applier any more":   func(g *v1alpha3.GitTarget) { g.Spec.Applier = nil },
-		"it applies through another cluster": func(g *v1alpha3.GitTarget) {
-			g.Spec.ClusterProviderRef = &fluxmeta.LocalObjectReference{Name: "prod-eu-1"}
+		"it was deleted and recreated": func(g *v1alpha3.GitTarget) { g.UID = "uid-recreated" },
+		"it moved to another branch":   func(g *v1alpha3.GitTarget) { g.Spec.Branch = "release" },
+		"it names another trigger":     func(g *v1alpha3.GitTarget) { namesKustomization(g, fluxSystemNS, "other") },
+		"it names no trigger any more": func(g *v1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil },
+		"its trigger is gone": func(g *v1alpha3.GitTarget) {
+			g.Spec.ApplyTriggerRef.Kind = v1alpha3.ApplyTriggerKindArgoCD // no test annotation creates one
+		},
+		"its trigger holds the applier in another cluster": func(g *v1alpha3.GitTarget) {
+			appliedFrom(g, "prod-eu-1")
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -452,8 +509,6 @@ func TestDispatcher_ATargetThatChangedAsksNothing(t *testing.T) {
 
 			assert.Equal(t, git.ApplyDropped, res.Outcome)
 			assert.Empty(t, f.patches())
-			_, ok := f.dispatcher.LastRequest(ref("a"), target.UID)
-			assert.False(t, ok, "and records nothing for the incarnation it finds")
 		})
 	}
 }
@@ -488,27 +543,7 @@ func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {
 	assert.Equal(t, git.ApplyCurrent, res.Outcome)
 	assert.Empty(t, f.patches())
 	assert.Empty(t, f.events())
-	_, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
-	assert.False(t, ok)
-}
-
-// TestDispatcher_TheLedgerIsPerIncarnation: a GitTarget deleted and recreated under the same name
-// does not inherit its predecessor's last request, and a forgotten one holds nothing.
-func TestDispatcher_TheLedgerIsPerIncarnation(t *testing.T) {
-	f := newDispatcherFixture(
-		t,
-		[]client.Object{gitTarget("a", checkoutRef(), "")},
-		behindSource()...)
-	require.Equal(t, git.ApplyRequested,
-		f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
-
-	_, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
-	assert.True(t, ok)
-	_, ok = f.dispatcher.LastRequest(ref("a"), "the-recreated-one")
-	assert.False(t, ok, "a recreated GitTarget does not inherit the last request")
-	f.dispatcher.Forget(ref("a"))
-	_, ok = f.dispatcher.LastRequest(ref("a"), uid("a"))
-	assert.False(t, ok)
+	assert.Empty(t, res.Token, "nothing was asked")
 }
 
 // TestDispatcher_RequestApplyReportsFromItsOwnGoroutine: RequestApply returns at once and the
@@ -575,7 +610,8 @@ func TestDispatcher_ARequestedApplyIsFollowedUntilFluxFinished(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
 
 	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, next(t, reports))
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested, Token: requestToken(stampTime)},
+		next(t, reports))
 	quiet(t, reports, "before Flux finished the apply")
 
 	setStatus(t, f.source.client, kustomizationGVR(), types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"},
@@ -637,17 +673,21 @@ func TestDispatcher_AnApplierThatIsGoneFailsItsOperation(t *testing.T) {
 	require.ErrorContains(t, res.Err, "the applier is gone")
 }
 
-// argoTarget is the GitTarget "a", whose applier is the Application argocd/platform.
+// argoTarget is the GitTarget "a", which names the ArgoCDTrigger "platform", holding the
+// Application argocd/platform.
 func argoTarget() *v1alpha3.GitTarget {
 	target := gitTarget("a", nil, "")
-	target.Spec.Applier = &v1alpha3.GitTargetApplier{
-		ApplicationRef: &fluxmeta.NamespacedObjectReference{Namespace: argoNS, Name: "platform"},
+	target.Annotations = map[string]string{testApplicationAnnotation: argoNS + "/platform"}
+	target.Spec.ApplyTriggerRef = &v1alpha3.ApplyTriggerReference{
+		Kind: v1alpha3.ApplyTriggerKindArgoCD,
+		Name: "platform",
 	}
 	return target
 }
 
-// argoPlatform is the applier argoTarget names.
+// argoPlatform is the applier argoTarget's trigger holds.
 var argoPlatform = git.ApplierRef{
+	Trigger: git.TriggerRef{Kind: v1alpha3.ApplyTriggerKindArgoCD, Namespace: targetNS, Name: "platform"},
 	Cluster: v1alpha3.DefaultClusterProviderName, Kind: v1alpha3.ApplierKindApplication,
 	Namespace: argoNS, Name: "platform",
 }
@@ -669,7 +709,8 @@ func TestDispatcher_AsksAnApplicationToSync(t *testing.T) {
 
 	res := f.attempt(request(argoPlatform, v1alpha3.ApplyReasonRefusal, "a"))
 
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, res)
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested, Token: requestToken(stampTime)}, res,
+		"the token is the operation's info entry")
 	assert.Equal(t, []string{"applications " + argoNS}, f.updates())
 	assert.Empty(t, f.patches(), "no Flux object is stamped")
 	app, err := f.source.client.Resource(applicationGVR()).Namespace(argoNS).

@@ -22,7 +22,7 @@ import (
 // node. `task test-e2e` skips these specs; `task test-e2e-bi-directional` runs them.
 //
 // Every spec runs the standard (docs/argocd.md): the Application has automated sync
-// off and is named by the GitTarget's spec.applier.applicationRef, so every sync it
+// off and is held by the ArgoCDTrigger the GitTarget names, so every sync it
 // runs is one GitOps Reverser started, pinned to a commit it checked. Argo CD's own
 // Gitea webhook stays wired, and is shown to be harmless: with automated sync off it
 // only refreshes. The last spec turns automated sync on and proves GitOps Reverser
@@ -198,13 +198,13 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		By("GitOps Reverser asks Argo CD to sync exactly that commit, as a ForeignCommit")
 		run.waitForReverserSync(head, "ForeignCommit")
 		run.waitForOrderContainer(run.syncedOrderName, "Cone")
-		// status.applier is published on the GitTarget's reconcile, which a delivered
-		// request does not trigger; a converged target reconciles every few minutes.
-		run.requestGitTargetReconcile()
+		// The branch worker writes the operation on the trigger at every transition, so nothing
+		// has to reconcile for it to show.
 		Eventually(func(g Gomega) {
-			reason, commit := run.gitTargetApplierStatus(g)
-			g.Expect(reason).To(Equal("ForeignCommit"))
-			g.Expect(commit).To(Equal(head))
+			operation := run.triggerOperation(g)
+			g.Expect(operation.Reason).To(Equal("ForeignCommit"))
+			g.Expect(operation.Commit).To(Equal(head))
+			g.Expect(operation.Phase).To(Equal("Succeeded"))
 		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 
 		By("verifying Argo CD stamped its bookkeeping onto the live object")
@@ -282,15 +282,17 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		automated := run.baseAppConfig()
 		automated.Automated = true
 		run.applyArgoApp(automated)
-		// The applier is read on the GitTarget's reconcile, not watched; a converged
-		// target reconciles every few minutes, so ask for one now.
-		run.requestGitTargetReconcile()
-		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierConfigured", "False",
+		// The applier is read on the trigger's reconcile, not watched; a Ready trigger
+		// reconciles every few minutes, so ask for one now.
+		requestTriggerReconcile(testNs, argoCDTriggerResource, run.appName)
+		verifyResourceCondition(argoCDTriggerResource, run.appName, testNs, "Configured", "False",
+			"AutomatedSyncEnabled", "has automated sync on")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "False",
 			"AutomatedSyncEnabled", "has automated sync on")
 		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "Stalled", "True",
 			"AutomatedSyncEnabled", "")
 
-		_, requestedBefore := run.gitTargetApplierStatus(Default)
+		requestedBefore := run.triggerOperation(Default)
 
 		By("pushing a Git-side change, which GitOps Reverser hears of and refuses to sync")
 		run.writeLiveOrder(iceCreamOrderFile{
@@ -317,8 +319,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 				g.Expect(revision).NotTo(Equal(head),
 					"GitOps Reverser must not sync an Application that syncs on its own")
 			}
-			_, requested := run.gitTargetApplierStatus(g)
-			g.Expect(requested).To(Equal(requestedBefore), "no request was delivered")
+			g.Expect(run.triggerOperation(g)).To(Equal(requestedBefore), "no request was delivered")
 		}, argoNoSyncWindow, biPollInterval).Should(Succeed())
 	})
 })
@@ -392,11 +393,9 @@ var _ = Describe("Bi Directional (Argo CD) refusal", Label("bi-directional", "ar
 
 		By("creating the GitTarget on the overlay, naming the Application and asking it to reapply")
 		createGitTarget(run.gitTargetName, testNs, run.gitProviderName, overlayPath, "main")
-		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName, "--type=merge", "-p",
-			fmt.Sprintf(`{"spec":{"applier":{"applicationRef":{"namespace":%q,"name":%q}},"onRefusal":"Reapply"}}`,
-				run.argoNs, run.appName))
-		Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier and spec.onRefusal")
-		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierConfigured", "True", "Succeeded", "")
+		createArgoCDTrigger(testNs, run.appName, run.argoNs, run.appName)
+		nameApplyTrigger(testNs, run.gitTargetName, "ArgoCDTrigger", run.appName, "Reapply")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 		Expect(applyFromTemplate("test/e2e/templates/manager/watchrule-resources.tmpl", struct {
 			Name            string
 			Namespace       string
@@ -501,10 +500,9 @@ func (r argoBiDirectionalRun) startReverserPipeline() int64 {
 	hookID := registerOperatorReceiver(r.testNs, r.gitProviderName, r.receiverSecretName, r.repoName)
 
 	createGitTarget(r.gitTargetName, r.testNs, r.gitProviderName, r.livePath, "main")
-	_, err := kubectlRunInNamespace(r.testNs, "patch", "gittarget", r.gitTargetName, "--type=merge", "-p",
-		fmt.Sprintf(`{"spec":{"applier":{"applicationRef":{"namespace":%q,"name":%q}}}}`, r.argoNs, r.appName))
-	Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier")
-	verifyResourceCondition("gittarget", r.gitTargetName, r.testNs, "ApplierConfigured", "True", "Succeeded", "")
+	createArgoCDTrigger(r.testNs, r.appName, r.argoNs, r.appName)
+	nameApplyTrigger(r.testNs, r.gitTargetName, "ArgoCDTrigger", r.appName, "")
+	verifyResourceCondition("gittarget", r.gitTargetName, r.testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 
 	Expect(applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", struct {
 		Name            string
@@ -689,24 +687,10 @@ func (r argoBiDirectionalRun) lastOperation(g Gomega) (string, string) {
 	return username, revision
 }
 
-// requestGitTargetReconcile asks the GitTarget controller to reconcile now, the way
-// its reconcile-request annotation does: the applier check and status.applier are
-// published on a reconcile, and nothing about an applier triggers one.
-func (r argoBiDirectionalRun) requestGitTargetReconcile() {
-	GinkgoHelper()
-	_, err := kubectlRunInNamespace(r.testNs, "annotate", "gittarget", r.gitTargetName, "--overwrite",
-		"reconcile.configbutler.ai/requestedAt="+strconv.FormatInt(time.Now().UnixNano(), 10))
-	Expect(err).NotTo(HaveOccurred(), "failed to request a GitTarget reconcile")
-}
-
-// gitTargetApplierStatus is the GitTarget's status.applier: the reason and the
-// commit of the last request delivered.
-func (r argoBiDirectionalRun) gitTargetApplierStatus(g Gomega) (string, string) {
-	out, err := kubectlRunInNamespace(r.testNs, "get", "gittarget", r.gitTargetName,
-		"-o", "jsonpath={.status.applier.reason}|{.status.applier.requestedCommit}")
-	g.Expect(err).NotTo(HaveOccurred())
-	reason, commit, _ := strings.Cut(strings.TrimSpace(out), "|")
-	return reason, commit
+// triggerOperation is the ArgoCDTrigger's status.operation: the sync GitOps Reverser
+// last started on the Application.
+func (r argoBiDirectionalRun) triggerOperation(g Gomega) triggerOperation {
+	return readTriggerOperation(g, r.testNs, argoCDTriggerResource, r.appName)
 }
 
 // operationFinishedAt returns "" when the Application has never run an operation.

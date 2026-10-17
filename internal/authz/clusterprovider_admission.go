@@ -75,26 +75,39 @@ func GitTargetAdmitted(
 		providerName, configv1alpha3.DefaultClusterProviderName))
 }
 
-// ApplierAdmitted reports whether target may ask its applier to apply: its namespace is admitted
-// by its own ClusterProvider (GitTargetAdmitted) and, when spec.applier.clusterProviderRef names
-// another one, by that one too. The applier is reached with that provider's credential, so the
-// provider's accessFrom decides who may wield it, exactly as for mirroring. Call it only with
-// spec.applier set.
+// ApplyTriggerAdmitted reports whether a trigger's namespace is admitted by the ClusterProvider it
+// names (spec.clusterProviderRef). The applier is reached with that provider's credential, so the
+// provider's accessFrom decides who may wield it, exactly as for mirroring.
+func ApplyTriggerAdmitted(
+	ctx context.Context,
+	reader client.Reader,
+	trigger configv1alpha3.ApplyTrigger,
+) (Decision, error) {
+	providerName := trigger.ClusterProvider()
+	return namespaceAdmitted(ctx, reader, trigger.GetNamespace(), providerName, fmt.Sprintf(
+		"ClusterProvider %q named by %s %s/%s spec.clusterProviderRef was not found",
+		providerName, trigger.TriggerKind(), trigger.GetNamespace(), trigger.GetName()))
+}
+
+// ApplierAdmitted reports whether target may ask the applier its trigger holds to apply: its
+// namespace is admitted by its own ClusterProvider (GitTargetAdmitted) and by the trigger's
+// (ApplyTriggerAdmitted). A GitTarget names a trigger in its own namespace only, so the second
+// answers for the GitTarget's namespace too. A ClusterProvider's client is shared by every object
+// that uses the cluster, so a client being available is no permission to use it.
 func ApplierAdmitted(
 	ctx context.Context,
 	reader client.Reader,
 	target *configv1alpha3.GitTarget,
+	trigger configv1alpha3.ApplyTrigger,
 ) (Decision, error) {
 	decision, err := GitTargetAdmitted(ctx, reader, target)
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
-	providerName := target.ApplierCluster()
-	if providerName == target.SourceCluster() {
+	if trigger.ClusterProvider() == target.SourceCluster() && trigger.GetNamespace() == target.Namespace {
 		return decision, nil
 	}
-	return namespaceAdmitted(ctx, reader, target.Namespace, providerName, fmt.Sprintf(
-		"ClusterProvider %q named by spec.applier.clusterProviderRef was not found", providerName))
+	return ApplyTriggerAdmitted(ctx, reader, trigger)
 }
 
 // namespaceAdmitted is the check both admissions share: the provider exists, and its accessFrom

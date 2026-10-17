@@ -45,8 +45,9 @@ func standingRefusalFixture(t *testing.T, slug string) *ledgerFixture {
 	require.NoError(t, f.worker.Client.Get(f.worker.ctx,
 		client.ObjectKey{Name: ledgerTargetName, Namespace: "default"}, target))
 	target.Spec.OnRefusal = configv1alpha3.RefusalActionReapply
-	target.Spec.Applier = testApplier(ledgerTargetName)
+	target.Spec.ApplyTriggerRef = testApplier(ledgerTargetName)
 	require.NoError(t, f.worker.Client.Update(f.worker.ctx, target))
+	createTestTrigger(t, f.worker.Client, target)
 	f.worker.applyRequester = &recordingRequester{}
 
 	f.worker.mapper = deploymentMapper()
@@ -521,8 +522,9 @@ func overlayRefusalFixture(t *testing.T, slug string) *ledgerFixture {
 	require.NoError(t, f.worker.Client.Get(f.worker.ctx,
 		client.ObjectKey{Name: ledgerTargetName, Namespace: "default"}, target))
 	target.Spec.OnRefusal = configv1alpha3.RefusalActionReapply
-	target.Spec.Applier = testApplier(ledgerTargetName)
+	target.Spec.ApplyTriggerRef = testApplier(ledgerTargetName)
 	require.NoError(t, f.worker.Client.Update(f.worker.ctx, target))
+	createTestTrigger(t, f.worker.Client, target)
 	f.worker.applyRequester = &recordingRequester{}
 	f.worker.mapper = deploymentMapper()
 	return f

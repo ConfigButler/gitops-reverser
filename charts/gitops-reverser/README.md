@@ -182,7 +182,7 @@ nodeSelector:
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
 | `receiver.bindAddress` | `host:port` the push receiver listens on, over plain HTTP (`--receiver-bind-address`), for Git hosts' push webhooks to `GitProvider.status.webhookPath`. Empty or `"0"` serves no receiver. When set, the chart adds a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `""` |
 | `applierAccess.flux` | Grant the operator `get` and `patch` on Flux `Kustomizations` and `GitRepositories`, and `create` on `SelfSubjectAccessReviews`, so it can ask Flux to apply a commit somebody else pushed | `false` |
-| `applierAccess.argocd` | Grant the operator `get` and `update` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can start the syncs of an `Application` named by `spec.applier.applicationRef` | `false` |
+| `applierAccess.argocd` | Grant the operator `get` and `update` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can start the syncs of an `Application` an `ArgoCDTrigger` holds | `false` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |

@@ -140,7 +140,9 @@ type BranchWorker struct {
 	// WorkerManager before Start; a nil requester switches the apply trigger off (the CLI, and tests
 	// that do not exercise it).
 	applyRequester ApplyRequester
-	debt           applyDebt
+	// triggerStatus writes each applier's operation to its trigger's status; nil writes nothing.
+	triggerStatus ApplyTriggerStatusWriter
+	debt          applyDebt
 	// applyWake wakes the loop to service the appliers without queueing a work item: an attempt
 	// reported back, or another worker writing this repository and branch went quiet.
 	applyWake chan struct{}

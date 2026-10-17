@@ -172,6 +172,10 @@ type WorkerManager struct {
 	// (SetApplyRequester) before any worker is created; nil in the CLI and in tests, which switches
 	// the apply trigger off.
 	applyRequester ApplyRequester
+
+	// triggerStatus writes what every worker publishes on its apply triggers' status. Set once at
+	// startup (SetApplyTriggerStatusWriter); nil in the CLI and in tests, which publishes nothing.
+	triggerStatus ApplyTriggerStatusWriter
 }
 
 // NewWorkerManager creates a new worker manager. limits bounds every worker this manager
@@ -272,6 +276,14 @@ func (m *WorkerManager) SetApplyRequester(requester ApplyRequester) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.applyRequester = requester
+}
+
+// SetApplyTriggerStatusWriter injects what writes every worker's apply trigger status. Like
+// SetApplyRequester, it is called once at startup before any worker is created.
+func (m *WorkerManager) SetApplyTriggerStatusWriter(writer ApplyTriggerStatusWriter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.triggerStatus = writer
 }
 
 // recordRemoteObservation is the delivery point for one branch's confirmed observation. Every
@@ -392,6 +404,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.publicationReporter = func() { go m.notifyPublication(managerCtx, key) }
 		worker.scanAcceptance = m.scanAcceptance
 		worker.applyRequester = m.applyRequester
+		worker.triggerStatus = m.triggerStatus
 		m.siblings.add(worker)
 		worker.renderFidelityGate = m.renderFidelityGate
 		worker.crOwners = m.commitRequests

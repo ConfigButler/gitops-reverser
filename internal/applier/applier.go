@@ -7,8 +7,8 @@ commit is safe to apply. The worker decides WHEN; this package decides HOW, off 
 so a slow or unreachable applier never holds a branch.
 
 Two kinds are served, behind one Client: a Flux Kustomization whose sourceRef is a GitRepository
-(spec.applier.kustomizationRef, flux.go), and an Argo CD Application with automated sync off
-(spec.applier.applicationRef, argocd.go). See docs/design/apply-trigger.md.
+(a FluxTrigger's spec.kustomizationRef, flux.go), and an Argo CD Application with automated sync
+off (an ArgoCDTrigger's spec.applicationRef, argocd.go). See docs/design/apply-trigger.md.
 
 A request asks and never reports. Nothing here claims an apply happened; the applier's own status
 (lastAppliedRevision on a Kustomization, status.operationState on an Application) is the record of
@@ -35,13 +35,15 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 )
 
-// Client asks one kind of applier, in one cluster, to apply. The dispatcher and the
-// ApplierConfigured check pick one by the applier's kind (NewClient), and use nothing else of it.
+// Client asks one kind of applier, in one cluster, to apply. The dispatcher and the trigger's
+// Configured check pick one by the applier's kind (NewClient), and use nothing else of it.
 type Client interface {
-	// Validate answers ApplierConfigured: the applier exists, applies want, and may be asked.
-	Validate(ctx context.Context, ref types.NamespacedName, want Binding) Verdict
+	// Validate answers a trigger's Configured condition: the applier exists, applies a source GitOps
+	// Reverser can drive, and may be asked. It reports the source it read, whatever the verdict.
+	Validate(ctx context.Context, ref types.NamespacedName) Verdict
 	// Request asks the applier to apply commit, after checking it still applies want and asking
 	// current just before it writes. A permanent error is a configuration no retry can fix;
 	// errStale is a decision that no longer held.
@@ -93,29 +95,36 @@ type Outcome string
 // OutcomeCurrent asked for nothing: the applier needed no request (see each client's Request).
 const OutcomeCurrent Outcome = "Current"
 
-// ApplierConfigured reasons (docs/configuration.md, "Who applies this folder"). Succeeded and
-// Failed are the generic reasons, aliased from Flux's meta package as the conditions guide asks.
+// Configured and ApplyTriggerReady reasons (docs/configuration.md, "Who applies this folder").
+// Succeeded and Failed are the generic reasons, aliased from Flux's meta package as the conditions
+// guide asks.
 const (
-	// ReasonSucceeded is ApplierConfigured=True: the applier exists, applies this repository and
-	// branch, and may be asked to apply.
+	// ReasonSucceeded is Configured=True: the applier exists, applies a source GitOps Reverser can
+	// drive, and may be asked to apply.
 	ReasonSucceeded = fluxmeta.SucceededReason
-	// ReasonApplierNotFound is no such object in the source cluster, or its kind is not served there.
+	// ReasonApplierNotFound is no such object in the applier's cluster, or its kind is not served
+	// there.
 	ReasonApplierNotFound = "ApplierNotFound"
-	// ReasonSourceMismatch is an applier that applies a different repository or branch.
+	// ReasonUnsupportedSource is an applier whose source GitOps Reverser cannot drive: a
+	// Kustomization that applies no GitRepository, or one pinned to anything but a branch, or an
+	// Application with several sources.
+	ReasonUnsupportedSource = "UnsupportedSource"
+	// ReasonSourceMismatch is ApplyTriggerReady=False on a GitTarget whose trigger's applier applies
+	// a different repository or branch than the GitTarget writes.
 	ReasonSourceMismatch = "SourceMismatch"
 	// ReasonAutomatedSyncEnabled is an Argo CD Application with automated sync on, which syncs on
 	// its own and so is never asked to.
 	ReasonAutomatedSyncEnabled = "AutomatedSyncEnabled"
-	// ReasonForbidden is a source-cluster identity that may not read or write the applier.
+	// ReasonForbidden is a ClusterProvider identity that may not read or write the applier.
 	ReasonForbidden = "Forbidden"
-	// ReasonCheckFailed is a check that could not complete: the source cluster did not answer.
+	// ReasonCheckFailed is a check that could not complete: the applier's cluster did not answer.
 	// Verdict.Err carries the cause; it says nothing about the applier itself.
 	ReasonCheckFailed = fluxmeta.FailedReason
 )
 
-// Verdict is the answer Validate gives for the ApplierConfigured condition.
+// Verdict is the answer Validate gives for a trigger's Configured condition.
 type Verdict struct {
-	// OK is ApplierConfigured=True.
+	// OK is Configured=True.
 	OK bool
 	// Reason is the condition reason.
 	Reason string
@@ -124,6 +133,20 @@ type Verdict struct {
 	// Err is set only with ReasonCheckFailed: the read that failed. A caller may prefer to keep the
 	// verdict it already published over replacing a known answer with "could not tell".
 	Err error
+	// Source is what the applier applies, when Validate could read it.
+	Source *Source
+}
+
+// Source is what an applier applies from: a GitRepository's spec.url and spec.ref.branch for a
+// Kustomization, or an Application's spec.source repoURL and targetRevision.
+type Source struct {
+	// GitRepository is the Kustomization's GitRepository (Flux only).
+	GitRepository types.NamespacedName
+	// URL is the repository.
+	URL string
+	// Revision is the branch a GitRepository follows, or an Application's targetRevision as
+	// written.
+	Revision string
 }
 
 // Stamped is what one Request did, with what the applier reported before it, so Progress can tell
@@ -145,14 +168,32 @@ type Stamped struct {
 }
 
 // Binding is the repository and branch an applier must apply from: the GitProvider's spec.url and
-// the GitTarget's spec.branch. Request checks it before it writes anything, not only Validate,
-// because a published ApplierConfigured verdict can be older than the applier it describes.
+// the GitTarget's spec.branch. Request checks it before it writes anything, because a trigger's
+// published source can be older than the applier it describes.
 type Binding struct {
 	RepositoryURL string
 	Branch        string
 }
 
-// AccessCheck reports whether the source-cluster identity may perform attrs.
+// BindingMismatch returns why the source a trigger last read is not want, or "" when it is. The
+// GitTarget's ApplyTriggerReady condition reads it; Request checks the same against the applier
+// itself before it writes.
+func BindingMismatch(trigger v1alpha3.ApplyTrigger, want Binding) string {
+	url, branch, known := trigger.SourceBinding()
+	if !known {
+		return ""
+	}
+	name := trigger.TriggerKind() + " " + trigger.GetName()
+	if !repourl.Same(url, want.RepositoryURL) {
+		return fmt.Sprintf("the applier of %s applies %s, not %s", name, url, want.RepositoryURL)
+	}
+	if branch != want.Branch {
+		return fmt.Sprintf("the applier of %s applies branch %q, not %s", name, branch, want.Branch)
+	}
+	return ""
+}
+
+// AccessCheck reports whether the ClusterProvider identity may perform attrs.
 type AccessCheck func(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error)
 
 // permanentError marks a request no retry can make succeed: the applier is configured in a way a
@@ -200,18 +241,18 @@ func readFailure(
 	case apimeta.IsNoMatchError(err) || (apierrors.IsNotFound(err) && !namesObject(err, ref.Name)):
 		return Verdict{
 			Reason: ReasonApplierNotFound,
-			Message: fmt.Sprintf("the source cluster does not serve %s (%s); is %s installed there?",
+			Message: fmt.Sprintf("the applier's cluster does not serve %s (%s); is %s installed there?",
 				kind, gvr.GroupVersion(), product),
 		}
 	case apierrors.IsNotFound(err):
 		return Verdict{
 			Reason:  ReasonApplierNotFound,
-			Message: fmt.Sprintf("%s %s not found in the source cluster", kind, ref),
+			Message: fmt.Sprintf("%s %s not found in the applier's cluster", kind, ref),
 		}
 	case apierrors.IsForbidden(err):
 		return Verdict{
 			Reason:  ReasonForbidden,
-			Message: fmt.Sprintf("the source-cluster identity may not get %s %s: %v", kind, ref, err),
+			Message: fmt.Sprintf("the ClusterProvider identity may not get %s %s: %v", kind, ref, err),
 		}
 	default:
 		return Verdict{
@@ -256,7 +297,7 @@ func accessVerdict(
 	if !allowed {
 		return &Verdict{
 			Reason: ReasonForbidden,
-			Message: fmt.Sprintf("the source-cluster identity may not %s %s %s (%s)",
+			Message: fmt.Sprintf("the ClusterProvider identity may not %s %s %s (%s)",
 				verb, kind, ref, gvr.GroupResource()),
 		}
 	}
@@ -273,7 +314,7 @@ func pastTense(verb string) string {
 
 // SelfSubjectAccessCheck answers an AccessCheck with a SelfSubjectAccessReview created through
 // client, so it is answered for the identity client authenticates as. It goes through the dynamic
-// client rather than a typed clientset because that client is the only one a source cluster has.
+// client rather than a typed clientset because that client is the only one a remote cluster has.
 func SelfSubjectAccessCheck(client dynamic.Interface) AccessCheck {
 	return func(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error) {
 		review := &authorizationv1.SelfSubjectAccessReview{

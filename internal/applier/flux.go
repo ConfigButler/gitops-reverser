@@ -266,21 +266,22 @@ func splitRevision(revision string) (string, string) {
 	return named, revision
 }
 
-// Validate answers ApplierConfigured for a Kustomization: that it exists in the source cluster and
-// its kind is served there, that it applies a GitRepository fetching want (the GitProvider's
-// spec.url, compared after normalization, and the GitTarget's branch), and that this identity may
-// patch both objects, since a request patches one or the other.
+// Validate answers Configured for a FluxTrigger's Kustomization: that it exists in its cluster and
+// its kind is served there, that it applies a GitRepository that follows a branch, and that this
+// identity may patch both objects, since a request patches one or the other. Which repository and
+// branch that is, it reports in the verdict's Source, for the GitTargets naming the trigger to
+// check against what they write.
 //
 // It reads; it never watches. A cluster without Flux installed answers ApplierNotFound from one
 // failed GET and keeps no informer for kinds it does not serve.
-func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Binding) Verdict {
+func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName) Verdict {
 	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
 		return readFailure("Flux", kindKustomization, kustomizationGVR(), ref, err)
 	}
 	sourceRef, err := gitRepositoryRef(ks)
 	if err != nil {
-		return Verdict{Reason: ReasonSourceMismatch, Message: err.Error()}
+		return Verdict{Reason: ReasonUnsupportedSource, Message: err.Error()}
 	}
 	source, err := f.client.Resource(gitRepositoryGVR()).Namespace(sourceRef.Namespace).
 		Get(ctx, sourceRef.Name, metav1.GetOptions{})
@@ -289,8 +290,11 @@ func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Bind
 		verdict.Message = fmt.Sprintf("%s (the sourceRef of %s %s)", verdict.Message, kindKustomization, ref)
 		return verdict
 	}
-	if msg := sourceMismatch(source, sourceRef, want.RepositoryURL, want.Branch); msg != "" {
-		return Verdict{Reason: ReasonSourceMismatch, Message: msg}
+	url, _, _ := unstructured.NestedString(source.Object, "spec", "url")
+	branch, _, _ := unstructured.NestedString(source.Object, "spec", "ref", "branch")
+	read := &Source{GitRepository: sourceRef, URL: url, Revision: branch}
+	if msg := sourceUnsupported(source, sourceRef); msg != "" {
+		return Verdict{Reason: ReasonUnsupportedSource, Message: msg, Source: read}
 	}
 
 	for _, obj := range []struct {
@@ -302,6 +306,7 @@ func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Bind
 		{kindKustomization, kustomizationGVR(), ref},
 	} {
 		if verdict := accessVerdict(ctx, f.CanI, obj.kind, obj.gvr, obj.ref, "patch"); verdict != nil {
+			verdict.Source = read
 			return *verdict
 		}
 	}
@@ -309,33 +314,43 @@ func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Bind
 	return Verdict{
 		OK:     true,
 		Reason: ReasonSucceeded,
-		Message: fmt.Sprintf("%s %s applies %s %s, which fetches branch %s",
-			kindKustomization, ref, kindGitRepository, sourceRef, want.Branch),
+		Message: fmt.Sprintf("%s %s applies %s %s, which fetches branch %s of %s",
+			kindKustomization, ref, kindGitRepository, sourceRef, branch, url),
+		Source: read,
 	}
 }
 
+// sourceUnsupported returns why a GitRepository does not follow a branch, or "" when it does. A ref
+// that pins anything stronger than a branch does not follow one even when it also names it: Flux
+// resolves commit, then name, then semver, then tag, before branch, so the pin wins and the
+// artifact never follows the branch GitOps Reverser writes.
+func sourceUnsupported(source *unstructured.Unstructured, ref types.NamespacedName) string {
+	gitRef, found, _ := unstructured.NestedStringMap(source.Object, "spec", "ref")
+	for _, pin := range []string{"commit", "name", "semver", "tag"} {
+		if value := gitRef[pin]; value != "" {
+			return fmt.Sprintf("%s %s pins spec.ref.%s %q, so it never follows a branch",
+				kindGitRepository, ref, pin, value)
+		}
+	}
+	if !found || gitRef["branch"] == "" {
+		return fmt.Sprintf("%s %s names no spec.ref.branch, so it follows no branch GitOps Reverser writes",
+			kindGitRepository, ref)
+	}
+	return ""
+}
+
 // sourceMismatch returns why a GitRepository does not fetch branch of repositoryURL, or "" when it
-// does. A ref that pins anything stronger than a branch is a mismatch even when it also names the
-// branch: Flux resolves commit, then name, then semver, then tag, before branch, so the pin wins and
-// the artifact never follows the branch GitOps Reverser writes.
+// does.
 func sourceMismatch(source *unstructured.Unstructured, ref types.NamespacedName, repositoryURL, branch string) string {
 	url, _, _ := unstructured.NestedString(source.Object, "spec", "url")
 	if !repourl.Same(url, repositoryURL) {
 		return fmt.Sprintf("%s %s fetches %s, not %s", kindGitRepository, ref, url, repositoryURL)
 	}
-	gitRef, found, _ := unstructured.NestedStringMap(source.Object, "spec", "ref")
-	if !found || len(gitRef) == 0 {
-		return fmt.Sprintf("%s %s names no spec.ref.branch; GitOps Reverser writes branch %s",
-			kindGitRepository, ref, branch)
+	if msg := sourceUnsupported(source, ref); msg != "" {
+		return msg
 	}
-	for _, pin := range []string{"commit", "name", "semver", "tag"} {
-		if value := gitRef[pin]; value != "" {
-			return fmt.Sprintf("%s %s pins spec.ref.%s %q, so it never follows branch %s",
-				kindGitRepository, ref, pin, value, branch)
-		}
-	}
-	if gitRef["branch"] != branch {
-		return fmt.Sprintf("%s %s fetches branch %q, not %s", kindGitRepository, ref, gitRef["branch"], branch)
+	if got, _, _ := unstructured.NestedString(source.Object, "spec", "ref", "branch"); got != branch {
+		return fmt.Sprintf("%s %s fetches branch %q, not %s", kindGitRepository, ref, got, branch)
 	}
 	return ""
 }

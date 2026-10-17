@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -31,7 +33,7 @@ import (
 //   - Refusal: a refused edit on a target with spec.onRefusal: Reapply (refusal_reapply.go).
 //   - CatchUp: this worker's own pushes. Flux applies on its own timers and on a restart from
 //     whatever artifact it holds, and an artifact behind these pushes would revert edits already in
-//     Git. Asked only once the branch has stayed quiet for the applier's quiet period, and never of
+//     Git. Asked only once the branch has stayed quiet for the trigger's quiet period, and never of
 //     an Argo CD Application: with automated sync off it applies nothing on its own, so it holds no
 //     stale state to correct (ApplierRef.CatchesUp).
 //   - Repair: the apply window withheld a late apply over a newer API edit (apply_window.go), so
@@ -152,9 +154,11 @@ type branchTarget struct {
 	consents bool
 }
 
-// appliersOnBranch lists the GitTargets on this worker's (provider, branch) that name an applier. A
-// GitTarget names its GitProvider in its own namespace, so the provider's namespace is the only one
-// to look in. The client is cached, so this costs no round trip.
+// appliersOnBranch lists the GitTargets on this worker's (provider, branch) that name an apply
+// trigger that exists, with the applier each trigger holds. A GitTarget names its GitProvider and
+// its trigger in its own namespace, so the provider's namespace is the only one to look in. The
+// client is cached, so this costs no round trip. A GitTarget whose trigger does not exist (yet)
+// names no applier: its ApplyTriggerReady condition says so.
 func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, error) {
 	var targets v1alpha3.GitTargetList
 	if err := w.Client.List(ctx, &targets, client.InNamespace(w.GitProviderNamespace)); err != nil {
@@ -163,15 +167,22 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 	listed := make([]branchTarget, 0, len(targets.Items))
 	for i := range targets.Items {
 		target := &targets.Items[i]
-		if !target.DeletionTimestamp.IsZero() || target.Spec.Applier == nil ||
+		if !target.DeletionTimestamp.IsZero() || target.Spec.ApplyTriggerRef == nil ||
 			target.Spec.GitProviderRef.Name != w.GitProviderRef || target.Spec.Branch != w.Branch {
+			continue
+		}
+		trigger, err := ResolveApplyTrigger(ctx, w.Client, target)
+		if err != nil {
+			return nil, err
+		}
+		if trigger == nil || !trigger.GetDeletionTimestamp().IsZero() {
 			continue
 		}
 		listed = append(listed, branchTarget{
 			ref:         itypes.NewResourceReference(target.Name, target.Namespace),
 			uid:         target.UID,
-			applier:     ApplierOf(target),
-			quietPeriod: target.Spec.Applier.EffectiveQuietPeriod(),
+			applier:     ApplierOf(trigger),
+			quietPeriod: trigger.EffectiveQuietPeriod(),
 			consents:    ConsentsToReapply(target),
 		})
 	}
@@ -198,12 +209,27 @@ type applierState struct {
 	// window is the applier's apply window: open from sending an attempt until the applier
 	// finished it (apply_window.go). Nil when no attempt was sent, or the last asked for no apply.
 	window *applyWindow
+	// operation is the last operation an attempt started, as its trigger's status.operation shows
+	// it, and operationID the attempt it belongs to. Nil until this worker started one.
+	operation   *v1alpha3.ApplyOperation
+	operationID uint64
+	// published is what was last handed to the trigger status writer, nil before the first.
+	published *ApplyTriggerStatus
+}
+
+// repairOwed reports whether a Repair is owed: not yet carried, or carried by the attempt out.
+func (s *applierState) repairOwed() bool {
+	return s.repair || (s.inflight != nil && s.inflight.repair)
 }
 
 // inflightAttempt is what an attempt carries away from its applier's obligations. One that did not
 // succeed gives it back (restoreAttempt); one that succeeded keeps it.
 type inflightAttempt struct {
-	id       uint64
+	id uint64
+	// reason, commit and sentAt are what the attempt asked for, and when, for its operation record.
+	reason   v1alpha3.ApplyReason
+	commit   string
+	sentAt   time.Time
 	foreign  bool
 	catchUp  bool
 	repair   bool
@@ -214,8 +240,8 @@ type inflightAttempt struct {
 	abandon context.CancelFunc
 }
 
-// quietPeriod is how long the branch must be quiet before a CatchUp: the longest among the
-// GitTargets naming the applier, because its apply reaches every one of their folders.
+// quietPeriod is how long the branch must be quiet before a CatchUp: the trigger's, as listed with
+// each GitTarget naming it. The longest wins should a listing straddle an edit of the trigger.
 func (s *applierState) quietPeriod() time.Duration {
 	var longest time.Duration
 	for _, target := range s.targets {
@@ -258,6 +284,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	if w.applyRequester == nil {
 		return
 	}
+	defer l.publishTriggerStatus()
 	now := time.Now()
 	l.settleApplyResults(now)
 	if !l.branchQuiet(now) || len(w.eventQueue) > 0 {
@@ -437,7 +464,8 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	l.nextApplyID++
 	abandoned, abandon := context.WithCancel(l.w.ctx)
 	attempt := &inflightAttempt{
-		id: l.nextApplyID, foreign: state.foreign, catchUp: state.catchUp, repair: state.repair,
+		id: l.nextApplyID, reason: reason, commit: tip, sentAt: time.Now(),
+		foreign: state.foreign, catchUp: state.catchUp, repair: state.repair,
 		refusals: refusals, abandon: abandon,
 	}
 	state.foreign, state.catchUp, state.repair, state.inflight = false, false, false, attempt
@@ -477,6 +505,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 			continue
 		}
 		attempt := state.inflight
+		state.recordOperation(attempt, res, now)
 		if !res.Outcome.Ends() {
 			l.advanceOperation(state, attempt, res.Outcome)
 			continue
@@ -527,6 +556,83 @@ func (l *branchWorkerEventLoop) advanceOperation(state *applierState, attempt *i
 	l.w.Log.Info("The applier has not completed the apply in time; its apply window stays open, and "+
 		"nothing more is asked of it until the apply completes", "branch", l.w.Branch,
 		"applier", state.ref.String(), "attempt", attempt.id)
+}
+
+// operationPhase is the phase of the operation an attempt's report describes, and false for the
+// outcomes that started no operation, which leave the last one recorded as it is.
+func operationPhase(outcome ApplyOutcome) (v1alpha3.ApplyOperationPhase, bool) {
+	switch outcome {
+	case ApplyRequested:
+		return v1alpha3.ApplyOperationRequested, true
+	case ApplyRunning:
+		return v1alpha3.ApplyOperationRunning, true
+	case ApplySettling:
+		return v1alpha3.ApplyOperationSettling, true
+	case ApplyUnresolved:
+		return v1alpha3.ApplyOperationUnresolved, true
+	case ApplySucceeded:
+		return v1alpha3.ApplyOperationSucceeded, true
+	case ApplyFailed:
+		return v1alpha3.ApplyOperationFailed, true
+	case ApplyCurrent, ApplyRequestFailed, ApplyRejected, ApplyDropped, ApplyStale:
+	}
+	return "", false
+}
+
+// recordOperation records an attempt's report in the operation its trigger's status shows. The
+// first report of an attempt that asked for an apply starts a new record; the later ones move it.
+// Unresolved stays until the operation completes, as advanceOperation keeps it.
+func (s *applierState) recordOperation(attempt *inflightAttempt, res ApplyResult, now time.Time) {
+	phase, operated := operationPhase(res.Outcome)
+	if !operated {
+		return
+	}
+	var operation *v1alpha3.ApplyOperation
+	if s.operation != nil && s.operationID == attempt.id {
+		operation = s.operation.DeepCopy()
+	} else {
+		operation = &v1alpha3.ApplyOperation{
+			Reason: attempt.reason, Commit: attempt.commit, RequestedAt: metav1.NewTime(attempt.sentAt),
+		}
+	}
+	if res.Token != "" {
+		operation.Token = res.Token
+	}
+	if operation.Phase != v1alpha3.ApplyOperationUnresolved || phase.Completed() {
+		operation.Phase = phase
+	}
+	switch {
+	case phase.Completed():
+		finished := metav1.NewTime(now)
+		operation.FinishedAt, operation.Message = &finished, errString(res.Err)
+	case phase == v1alpha3.ApplyOperationUnresolved:
+		operation.Message = "the applier has not completed the apply in the time it was given; it is still " +
+			"followed, and nothing more is asked of it until it completes"
+	}
+	s.operation, s.operationID = operation, attempt.id
+}
+
+// publishTriggerStatus hands each applier's trigger what its status should show, when that changed
+// since the last time. A worker that has started no operation and owes no Repair has nothing to
+// say yet, and says nothing: the status may hold what an earlier process recorded.
+func (l *branchWorkerEventLoop) publishTriggerStatus() {
+	writer := l.w.triggerStatus
+	if writer == nil {
+		return
+	}
+	for _, ref := range l.sortedAppliers() {
+		state := l.appliers[ref]
+		next := ApplyTriggerStatus{Operation: state.operation, RepairOwed: state.repairOwed()}
+		if state.published == nil && next.Operation == nil && !next.RepairOwed {
+			continue
+		}
+		if state.published != nil && state.published.RepairOwed == next.RepairOwed &&
+			equality.Semantic.DeepEqual(state.published.Operation, next.Operation) {
+			continue
+		}
+		writer.PublishApplyTriggerStatus(ref.Trigger, next)
+		state.published = &next
+	}
 }
 
 // publishUnresolved publishes how many of this branch's operations are Unresolved, for the
