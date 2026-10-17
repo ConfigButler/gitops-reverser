@@ -256,6 +256,15 @@ applier with automated sync off as the standard. After it, in order, each one pu
    Standbys need ownership coordination first (the HA plan in `docs/future/`), and deliveries then
    need routing to the pod that owns the branch.
 
+The third review asked for explicit ownership instead of a 24h interval: keep a `Kustomization`
+suspended while it is idle and resume it only to apply. That lifecycle is measured in
+[`flux-suspend-lifecycle.md`](flux-suspend-lifecycle.md): it costs about 50 ms per apply, gives
+Flux the fetch-only mode this page says it lacks, and found a bug in `Handled()` (a suspended
+`Kustomization` marks a `requestedAt` handled without applying). **It is the new direction**,
+planned in [`suspended-appliers-plan.md`](suspended-appliers-plan.md) and built as a stack on #419
+that releases with it: Flux is suspended while idle as Argo CD has automated sync off, and the
+applier becomes its own resource (`FluxApplier`, `ArgoCDApplier`) with a durable operation status.
+
 Test gaps to close along the way: a remote source cluster and an applier in another cluster (a hub
 Argo CD among them) in e2e, `Forbidden` against real RBAC, the receiver and applier roles installed
 by the Helm chart, two `GitTarget`s sharing one `Kustomization` in e2e, an apply-window collision in
