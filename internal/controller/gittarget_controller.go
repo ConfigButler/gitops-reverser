@@ -159,9 +159,9 @@ type GitTargetReconciler struct {
 	// ApplierConfigured Unknown and status.applier unpublished (tests, and the CLI).
 	ApplierClients applier.SourceClients
 	ApplyRequests  ApplyRequestLedger
-	// newFlux builds the client that checks a Kustomization; nil is applier.NewFlux. A seam for
-	// tests, whose fake source cluster cannot answer an access review.
-	newFlux func(dynamic.Interface) *applier.Flux
+	// newApplier builds the client that checks an applier of a kind; nil is applier.NewClient. A
+	// seam for tests, whose fake source cluster cannot answer an access review.
+	newApplier func(kind string, client dynamic.Interface) applier.Client
 }
 
 // clockNow is the reconciler's wall clock.
@@ -178,9 +178,10 @@ func (r *GitTargetReconciler) clockNow() time.Time {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// The Flux kinds a spec.applier names are NOT granted here: no GitTarget needs them until one names
-// an applier, and an install that does not use Flux should not hold patch rights on Flux objects.
-// config/rbac/flux-applier-role.yaml and the chart's applierAccess.flux grant them.
+// The Flux and Argo CD kinds a spec.applier names are NOT granted here: no GitTarget needs them
+// until one names an applier, and an install that does not use Flux or Argo CD should not hold
+// write rights on their objects. config/rbac/flux-applier-role.yaml and argocd-applier-role.yaml,
+// and the chart's applierAccess.flux and applierAccess.argocd, grant them.
 
 // newGitTargetReadiness starts the accumulator that owns this kind's kstatus trio. Its converged
 // outcome is what Ready reports when no gate objected.

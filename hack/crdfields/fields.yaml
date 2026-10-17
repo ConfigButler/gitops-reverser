@@ -138,11 +138,12 @@ kinds:
           Which deletions reach Git. See
           [deletion policy](#deletion-policy-specprunemode)
       - path: applier
-        default: Flux applies on its own schedule
+        default: the applier applies on its own schedule
         doc: >-
-          The Flux `Kustomization` that applies this folder (`kustomizationRef`), which GitOps
-          Reverser then asks to apply, and how long the branch stays quiet before it catches up
-          (`quietPeriod`, `30s`). See [who applies this folder](#who-applies-this-folder-specapplier)
+          The Flux `Kustomization` (`kustomizationRef`) or Argo CD `Application` (`applicationRef`)
+          that applies this folder, which GitOps Reverser then asks to apply, and for a
+          `Kustomization` how long the branch stays quiet before it catches up (`quietPeriod`,
+          `30s`). See [who applies this folder](#who-applies-this-folder-specapplier)
       - path: onRefusal
         doc: >-
           What happens to an edit with no legal destination. See

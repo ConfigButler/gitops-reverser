@@ -32,9 +32,9 @@ The usual flow is:
 3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
 4. Create a `CommitRequest` only when you want a save: your writes in one commit, on the request's
    timers rather than the target's, and optionally with your message.
-5. When Flux also applies the folder back to the cluster, name its `Kustomization` on the
-   `GitTarget` and give the `GitProvider` a push receiver, so GitOps Reverser decides when Git is
-   applied. See [who applies this folder](#who-applies-this-folder-specapplier) and the
+5. When Flux or Argo CD also applies the folder back to the cluster, name its `Kustomization` or
+   `Application` on the `GitTarget` and give the `GitProvider` a push receiver, so GitOps Reverser
+   decides when Git is applied. See [who applies this folder](#who-applies-this-folder-specapplier) and the
    [bi-directional guide](bi-directional.md).
 
 That means one repository connection can back multiple targets, and one target can be fed by
@@ -97,7 +97,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `placement.useKustomize` | off | Keep the folder a kustomize folder. See [keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize) |
 | `serializeNamespace` | inferred per document | Whether a committed document carries its own `metadata.namespace`. An explicit `false` admits exactly one source namespace. See [whether documents carry their namespace](#whether-documents-carry-their-namespace-specserializenamespace) |
 | `prune.mode` | `OnEvent` | Which deletions reach Git. See [deletion policy](#deletion-policy-specprunemode) |
-| `applier` | Flux applies on its own schedule | The Flux `Kustomization` that applies this folder (`kustomizationRef`), which GitOps Reverser then asks to apply, and how long the branch stays quiet before it catches up (`quietPeriod`, `30s`). See [who applies this folder](#who-applies-this-folder-specapplier) |
+| `applier` | the applier applies on its own schedule | The Flux `Kustomization` (`kustomizationRef`) or Argo CD `Application` (`applicationRef`) that applies this folder, which GitOps Reverser then asks to apply, and for a `Kustomization` how long the branch stays quiet before it catches up (`quietPeriod`, `30s`). See [who applies this folder](#who-applies-this-folder-specapplier) |
 | `onRefusal` | `Ignore` | What happens to an edit with no legal destination. See [reverting a refused edit](#reverting-a-refused-edit-speconrefusal) |
 | `encryption` | off | SOPS + age encryption for sensitive resources |
 | `suspend` | `false` | Stop writing without deleting the target. See [stopping a target from writing](#stopping-a-target-from-writing-specsuspend) |
@@ -634,8 +634,8 @@ The important fields are:
   omit it and each document's namespace is inferred from the folder
 - `spec.prune`: which deletion paths may remove documents from this target's folder (see
   [Deletion policy](#deletion-policy-specprunemode)); omit it for the safe default
-- `spec.applier`: the Flux `Kustomization` that applies this folder, so GitOps Reverser decides when
-  it applies (see
+- `spec.applier`: the Flux `Kustomization` or Argo CD `Application` that applies this folder, so
+  GitOps Reverser decides when it applies (see
   [Who applies this folder](#who-applies-this-folder-specapplier)); omit it when nothing applies the
   folder back
 - `spec.onRefusal`: whether a refused edit asks the applier to reapply Git (see
@@ -721,7 +721,7 @@ summary reason, while the domain conditions name the axis to fix:
 | `ClusterProviderReady=False` or `SourceClusterReachable=False` | Source-cluster credentials and access. |
 | `GitPathAccepted=False` | Repository files under `spec.path`; the message includes the issue kind, path, and actor when known. |
 | `RenderMatchesLive=False` | Fields that no longer match the rendered source, often transformer-owned values. |
-| `ApplierConfigured=False` | The applier named in `spec.applier`, its source, and the permission to patch it. Commits still flow; apply requests may not. |
+| `ApplierConfigured=False` | The applier named in `spec.applier`, its source, its automated sync (an `Application`), and the permission to write it. Commits still flow; apply requests may not. |
 
 A green `GitTarget` with a red `WatchRule` or `ClusterWatchRule` means the destination may be fine,
 but the selected source objects are not being watched or authorized. Inspect the rule's `Ready`,
@@ -1105,7 +1105,8 @@ When a GitOps tool applies this folder back to the cluster, `spec.applier` names
 does it, and GitOps Reverser becomes the one that decides when it applies. The tool keeps doing the
 fetching, rendering, applying and pruning. The reason it has to be this way is the
 [apply trigger design](design/apply-trigger.md); the [bi-directional guide](bi-directional.md) is
-the model, and [Using GitOps Reverser with Flux](flux.md) the whole Flux setup.
+the model, [Using GitOps Reverser with Flux](flux.md) the whole Flux setup, and
+[Using GitOps Reverser with Argo CD](argocd.md) the whole Argo CD setup.
 
 ```yaml
 spec:
@@ -1116,26 +1117,35 @@ spec:
     quietPeriod: 30s
 ```
 
+```yaml
+spec:
+  applier:
+    applicationRef:
+      namespace: argocd        # default: this GitTarget's namespace
+      name: checkout
+```
+
 | Field | Default | What it does |
 | --- | --- | --- |
-| `kustomizationRef` | **required** | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` on this target's repository and branch |
-| `quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` request. At most `1h` |
+| `kustomizationRef` | one of the two | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` on this target's repository and branch |
+| `applicationRef` | one of the two | An Argo CD `Application` on a single source, with this target's repository and branch, and automated sync off |
+| `quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` request. At most `1h`. Only with a `kustomizationRef`: rejected with an `applicationRef` |
 
-**The appliers.** A Flux `Kustomization` (`kustomizationRef`) is built. Two more are the aim, and
-the API does not accept them yet:
+**The appliers.** A Flux `Kustomization` (`kustomizationRef`) and an Argo CD `Application`
+(`applicationRef`); exactly one of the two. The `Application` runs with automated sync off
+(`syncPolicy.automated.enabled: false`, or no `automated` block), and every sync it runs is one
+GitOps Reverser starts, pinned to the commit it checked. It is never asked to catch up with GitOps
+Reverser's own commits, since with automated sync off it applies nothing by itself. One with
+automated sync on is `ApplierConfigured=False` with `AutomatedSyncEnabled`, and is never synced.
 
-- **An Argo CD `Application` (`applicationRef`).** The `Application` runs with
-  `syncPolicy.automated.enabled: false`, and a request sets its sync operation exactly as automated
-  sync would, pinned to the commit GitOps Reverser checked. It is never asked to catch up with
-  GitOps Reverser's own commits, so `quietPeriod` will not apply to it. Until it lands, an
-  `Application` keeps its own triggers.
-- **A webhook (`webhook`)** for any other tool: a POST of `{"repository", "branch", "commit",
-  "reason"}`, signed the way Flux's `generic-hmac` `Receiver` checks.
+A third is the aim, and the API does not accept it yet: **a webhook (`webhook`)** for any other tool,
+a POST of `{"repository", "branch", "commit", "reason"}`, signed the way Flux's `generic-hmac`
+`Receiver` checks.
 
 **Where the reference is looked up.** In the cluster `spec.applier.clusterProviderRef` names, with
 the identity that [`ClusterProvider`](#clusterprovider) uses. Omitted, it is the `GitTarget`'s own
-`spec.clusterProviderRef`, the source cluster. Name another provider when Flux runs in a management
-cluster and applies to the source cluster from there; a provider without `spec.kubeConfig` is the
+`spec.clusterProviderRef`, the source cluster. Name another provider when Flux or Argo CD runs in a
+management cluster and applies to the source cluster from there; a provider without `spec.kubeConfig` is the
 operator's own cluster. That provider's `spec.accessFrom` must admit the `GitTarget`'s namespace,
 as for mirroring, or `ApplierConfigured` is `False` with `NamespaceNotAuthorized` (or
 `ClusterProviderNotFound`) and nothing is asked.
@@ -1152,10 +1162,12 @@ spec:
       name: prod-eu-1-apps
 ```
 
-The identity needs `get` and `patch` on `kustomizations` (`kustomize.toolkit.fluxcd.io`) and
-`gitrepositories` (`source.toolkit.fluxcd.io`), and `create` on `selfsubjectaccessreviews` to check
-it. For the operator's own cluster the chart grants them with `applierAccess.flux: true`; for a
-remote cluster, grant the same to the kubeconfig's identity.
+For a `Kustomization`, the identity needs `get` and `patch` on `kustomizations`
+(`kustomize.toolkit.fluxcd.io`) and `gitrepositories` (`source.toolkit.fluxcd.io`); for an
+`Application`, `get` and `update` on `applications` (`argoproj.io`); and `create` on
+`selfsubjectaccessreviews` to check it. For the operator's own cluster the chart grants them with
+`applierAccess.flux: true` and `applierAccess.argocd: true`; for a remote cluster, grant the same to
+the kubeconfig's identity.
 
 **When a request is made.** Only on a quiet branch: no open commit window and no pending writes on
 the branch worker, or on any other worker writing the same repository and branch through another
@@ -1163,9 +1175,9 @@ the branch worker, or on any other worker writing the same repository and branch
 
 | `reason` | When | Sent to |
 | --- | --- | --- |
-| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed and pending writes replayed and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per `Kustomization` |
+| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed and pending writes replayed and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per applier |
 | `Refusal` | An eligible refused edit, with `spec.onRefusal: Reapply` | This target's applier |
-| `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes, or since the operator started | Every applier declared on the branch |
+| `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes, or since the operator started | Every `Kustomization` declared on the branch; never an `Application` |
 
 Flux applies on its own timers and on a controller restart, from whatever artifact the
 `GitRepository` holds. `CatchUp` keeps that artifact at the tip, so such an apply applies values the
@@ -1174,7 +1186,7 @@ cluster already holds; an artifact left behind would revert edits that are alrea
 `GitTarget`s name one `Kustomization`, it waits for the longest of their quiet periods, since its
 apply reaches all their folders, and it is asked once for all of them.
 
-**What a request does.** What `flux reconcile kustomization --with-source` does: stamp
+**What a request does to a `Kustomization`.** What `flux reconcile kustomization --with-source` does: stamp
 `reconcile.fluxcd.io/requestedAt` on the `GitRepository` when its artifact does not hold the
 requested commit; the new artifact wakes the `Kustomization` by itself. When the artifact already
 holds the commit, only a `Refusal` stamps the `Kustomization`, to revert drift at an unchanged
@@ -1182,21 +1194,27 @@ commit; a `ForeignCommit` or `CatchUp` stamps nothing, since that artifact alrea
 is stamped when, by the time of the patch, the commit is no longer the branch tip or an edit is
 waiting to be published: the request is decided again at the next quiet moment.
 
+**What a request does to an `Application`.** It sets the `Application`'s `operation` to the sync
+Argo CD's automated sync would start (`prune` from `syncPolicy.automated`, `syncOptions` and `retry`
+from `syncPolicy`), with `revision` pinned to the requested commit and `initiatedBy`
+`{username: gitops-reverser, automated: true}`. It never replaces an operation already running: it
+waits for it to end, at most 5 minutes. The details are in [the Argo CD guide](argocd.md#what-gitops-reverser-asks-and-when).
+
 A request asks; it never claims the apply happened. It runs off the publication path, and a failed
 request never fails a publication that succeeded. Read the `Kustomization`'s
-`status.lastAppliedRevision` for what it applied.
+`status.lastAppliedRevision`, or the `Application`'s `status.operationState`, for what it applied.
 
 **Every attempt checks again.** Just before it patches, GitOps Reverser reads each `GitTarget` again
 and asks nothing for one that has been deleted or recreated, no longer names this applier on this
 branch, is no longer admitted by its `ClusterProvider`, or, for a `Refusal`, no longer consents
 (`onRefusal: Reapply`, not suspended). It never asks for something weaker in place of what it was
-told; when no target still holds the request's reason it asks nothing. And nothing is stamped unless
-the `Kustomization`'s `GitRepository` fetches this repository and branch, whatever
-`ApplierConfigured` last said.
+told; when no target still holds the request's reason it asks nothing. And nothing is asked unless
+the `Kustomization`'s `GitRepository` fetches this repository and branch, or the `Application` syncs
+it with automated sync off, whatever `ApplierConfigured` last said.
 
 **A request that fails is decided again from scratch.** The branch worker keeps what the
 applier is owed until a request delivers it. After a failure it waits out that applier's own backoff
-(2 seconds doubling to 5 minutes, at least 15 seconds when the `Kustomization` cannot take a
+(2 seconds doubling to 5 minutes, at least 15 seconds when the applier cannot take a
 request), then waits for a quiet branch like any first request, and asks for the tip as it is then.
 A refusal that recovered in the meantime is not asked for again.
 
@@ -1219,14 +1237,15 @@ status:
 
 | Reason | Means |
 | --- | --- |
-| `ApplierNotFound` | No such `Kustomization` in the applier's cluster, or Flux is not installed there |
-| `SourceMismatch` | The `Kustomization` applies a different repository or branch, or a source that is not a `GitRepository` |
-| `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository` |
+| `ApplierNotFound` | No such `Kustomization` or `Application` in the applier's cluster, or Flux or Argo CD is not installed there |
+| `SourceMismatch` | The `Kustomization` applies a different repository or branch, or a source that is not a `GitRepository`; or the `Application` syncs a different repository or revision, or more than one source |
+| `AutomatedSyncEnabled` | The `Application` has automated sync on |
+| `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository`, or update the `Application` |
 | `NamespaceNotAuthorized` | `spec.applier.clusterProviderRef` names a provider whose `accessFrom` does not admit this namespace |
 | `ClusterProviderNotFound` | `spec.applier.clusterProviderRef` names a provider that does not exist |
 
-It is checked on the target's reconcile tick rather than watched, so a cluster without the Flux CRDs
-installed costs nothing. Each delivered request also records an `ApplyRequested` Event on the
+It is checked on the target's reconcile tick rather than watched, so a cluster without the Flux or
+Argo CD CRDs installed costs nothing. Each delivered request also records an `ApplyRequested` Event on the
 `GitTarget`, and a request that could not be delivered records `ApplyRequestFailed` once, not again
 each time the worker asks again.
 
@@ -1250,12 +1269,12 @@ spec:
 | `Reapply` | Once the branch is quiet, this target's [applier](#who-applies-this-folder-specapplier) is asked to apply the current tip, with reason `Refusal`. The refused edit is reverted when the applier applies it; the request asks, and the applier's own status says whether it did |
 
 `Reapply` requires `spec.applier`; a target without one is rejected at admission. The request goes
-to this target's applier alone, and it waits for a quiet branch, so an allowed edit still in a commit
-window is published before the apply and is not reverted with the refused one. When the applier's
-`GitRepository` has to fetch to reach the tip, every `Kustomization` on that `GitRepository` applies
-the new revision, as it would for any push; give the folder its own `GitRepository` if the apply
-must reach it alone. The [bi-directional guide](bi-directional.md#choosing-speconrefusal)
-covers when to choose it.
+to this target's applier alone, and it waits for a quiet branch, so an allowed edit still in a
+commit window is published before the apply and is not reverted with the refused one. An
+`Application` is asked to sync the tip. When a `Kustomization`'s `GitRepository` has to fetch to
+reach the tip, every `Kustomization` on that `GitRepository` applies the new revision, as it would
+for any push; give the folder its own `GitRepository` if the apply must reach it alone. The
+[bi-directional guide](bi-directional.md#choosing-speconrefusal) covers when to choose it.
 
 **It only fires for an edit to a document the folder already holds, and never for a write that
 removes one.** That is the pruning fence. Re-applying corrects drift on an object Git manages,

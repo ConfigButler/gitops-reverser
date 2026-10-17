@@ -48,3 +48,46 @@ subjects:
   name: {{ include "gitops-reverser.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if and .Values.rbac.create .Values.applierAccess.argocd }}
+---
+# What GitOps Reverser needs to ask an Argo CD Application to sync a commit it checked: read the
+# Application and update it with a sync operation (how Argo CD's own automated sync starts one), and
+# create SelfSubjectAccessReviews so the operator can check it holds that access before relying on
+# it. Separate from the manager role because it is optional and names another project's API: an
+# install without Argo CD grants nothing on it. See docs/argocd.md.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-applier-argocd
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - argoproj.io
+  resources:
+  - applications
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - selfsubjectaccessreviews
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-applier-argocd
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gitops-reverser.fullname" . }}-applier-argocd
+subjects:
+- kind: ServiceAccount
+  name: {{ include "gitops-reverser.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

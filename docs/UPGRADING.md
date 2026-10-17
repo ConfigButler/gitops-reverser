@@ -12,11 +12,12 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 **Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
 GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
 `Reapply` it asks the target's applier, the Flux `Kustomization` named in the new
-`spec.applier.kustomizationRef`, to apply the current tip once the branch holds no open commit window
-and no pending writes. Only that applier is asked, rather than every applier watching the branch,
-though a `GitRepository` that has to fetch the tip still wakes every `Kustomization` that reads it.
-An allowed edit still in a commit window is published before the apply instead of being reverted
-with the refused one. The API rejects `Reapply` without `spec.applier`.
+`spec.applier.kustomizationRef` or the Argo CD `Application` named in `spec.applier.applicationRef`,
+to apply the current tip once the branch holds no open commit window and no pending writes. Only
+that applier is asked, rather than every applier watching the branch, though a `GitRepository` that
+has to fetch the tip still wakes every `Kustomization` that reads it. An allowed edit still in a
+commit window is published before the apply instead of being reverted with the refused one. The API
+rejects `Reapply` without `spec.applier`.
 
 A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`, and any update to it is
 rejected until the field changes. The old CRD rejects `Reapply`, so move in this order:
@@ -36,6 +37,12 @@ intervals and remove any Git-host webhook into a Flux `Receiver` for the reposit
 schedule as well. The operator needs `get` and `patch` on `kustomizations` and `gitrepositories`,
 and `create` on `selfsubjectaccessreviews`, in the source cluster: Helm `applierAccess.flux: true`
 grants them for the operator's own cluster.
+
+For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its automated sync off
+(`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before naming it; one with automated
+sync on reports `ApplierConfigured=False` (`AutomatedSyncEnabled`) and is never synced. The operator
+needs `get` and `update` on `applications`: Helm `applierAccess.argocd: true`. See
+[Using GitOps Reverser with Argo CD](argocd.md).
 
 ## `git_queue_drops_total` is now `git_queue_refusals_total`
 

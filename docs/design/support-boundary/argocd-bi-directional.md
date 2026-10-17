@@ -9,12 +9,20 @@ amount of configuration reconciles them — because the moment a live write land
 Argo already has everything it needs to revert it, and there is no hook where an
 external system can say "wait, this one is legitimate."
 
-The one Argo CD configuration that supports a shared field changing from **both**
+The Argo CD configuration that supports a shared field changing from **both**
 directions is:
 
-- **automated sync with `selfHeal: false`**, plus
-- **a push webhook** (Gitea/GitHub → argocd-server `/api/webhook`) for the
-  Git → cluster direction.
+- **automated sync off** (`syncPolicy.automated.enabled: false`), with the
+  `Application` named by the `GitTarget`'s `spec.applier.applicationRef`, so GitOps
+  Reverser starts every sync, pinned to a commit it checked
+  ([the Argo CD guide](../../argocd.md)), plus
+- **a push webhook** into GitOps Reverser's receiver for the Git → cluster
+  direction.
+
+Automated sync with `selfHeal: false` was the answer before GitOps Reverser could
+drive an `Application`, and is still the best an unnamed `Application` can do; it
+leaves the timed refresh syncing GitOps Reverser's own pushes over whatever is
+pending ([why](#why-selfheal-false-is-not-enough)).
 
 Everything else that looks like a solution — `ignoreDifferences`,
 `managedFieldsManagers`, three-way merge, PreSync hooks, self-heal timing knobs —
@@ -145,8 +153,19 @@ setting. Verdict: **cannot be used to be slow.**
 
 ## The configuration that works
 
-Turn self-heal **off** and let the two directions flow without a reverting
-controller in the middle:
+Turn automated sync **off** and let GitOps Reverser start every sync. It is
+`selfHeal: false` taken to its end: nothing in Argo CD applies on its own, so the
+only syncs are ones started on a quiet branch, pinned to a commit with nothing live
+missing from it. Argo CD's own rules make it safe to drive this way: a sync is
+started by setting the `Application`'s `operation` as automated sync would
+(`controller/appcontroller.go` `autoSync`), and never while another operation is set
+(`util/argo/argo.go` `SetAppOperation`). With automated sync off, a refresh only
+compares (`autoSync` returns at once when `IsAutomatedSyncEnabled` is false).
+
+### Why `selfHeal: false` is not enough
+
+The intermediate step, still useful for an `Application` no `GitTarget` names, is
+automated sync with self-heal **off**:
 
 - **Cluster → Git.** With `selfHeal: false`, Argo does not revert live drift — it
   marks the app `OutOfSync` and waits. GitOps Reverser captures the live change to
@@ -163,10 +182,13 @@ controller in the middle:
       └──────────── apply ◀── Argo CD (selfHeal off) ◀─push webhook┘
 ```
 
-This is genuinely bi-directional on a shared field, and it is exactly the
-configuration the e2e corner exercises once you drop the `selfHeal` flag. The
-webhook is what makes it comfortable rather than sluggish — without it, the
-Git → cluster direction waits on Argo's 120s poll.
+This is bi-directional on a shared field, with one hole: automated sync still
+applies **every new commit**, including each one GitOps Reverser pushes, two to three
+minutes later on the timed refresh (or seconds later with Argo CD's webhook), over
+whatever is pending at that moment. Two API edits a few seconds apart are enough to
+have the first commit synced over the second edit. Only switching automated sync
+off and letting GitOps Reverser start the syncs closes it, which is what the e2e
+corner now exercises.
 
 **What you give up** is self-heal's one unique service: reverting drift that
 *should not* be captured (a rogue or accidental change). That loss is inherent —
@@ -194,12 +216,14 @@ forgotten.
 | PreSync hook (delay) | **No** | target frozen at operation start; reverts stale later |
 | PreSync hook (veto) | **No** | also aborts legitimate deploys; can't tell them apart |
 | self-heal timeout / backoff | **No** | throttles repeats; first drift reverted immediately |
-| `selfHeal: false` + push webhook | **Yes** | nothing reverts; both directions flow, fast |
+| `selfHeal: false` + push webhook | **Mostly** | nothing reverts drift, but every new commit, GitOps Reverser's own included, is synced over pending edits |
+| automated sync off + `spec.applier.applicationRef` | **Yes** | GitOps Reverser starts every sync, on a quiet branch, pinned to a checked commit |
 | admission gate on Argo's writes | (recovers "revert unauthorized") | per-write authority decision; external to Argo |
 
 ## References
 
-- User-facing guidance: [`../../bi-directional.md`](../../bi-directional.md)
+- User-facing guidance: [`../../bi-directional.md`](../../bi-directional.md) and
+  [`../../argocd.md`](../../argocd.md)
 - E2E corner design: [`../e2e-bi-directional-corner.md`](../../spec/e2e-bi-directional-corner.md)
 - Exercised behavior: [`../../../test/e2e/argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go)
 - Argo CD source (vendored): `external-sources/argo-cd` — cited inline by file:line.

@@ -30,6 +30,7 @@ If you only want the supported product docs, start with the files below.
 - [`rbac.md`](rbac.md): the two ClusterRoles, and how to stop the reverser enumerating Secrets
 - [`bi-directional.md`](bi-directional.md): safe shared-path and handoff patterns
 - [`flux.md`](flux.md): the complete Flux setup when GitOps Reverser decides when Flux applies
+- [`argocd.md`](argocd.md): the complete Argo CD setup when GitOps Reverser starts every sync
 - [`alternatives.md`](alternatives.md): nearby tools and when another approach fits better
 - [`UPGRADING.md`](UPGRADING.md): breaking changes and migration steps, newest first
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md): contributor workflow and validation commands

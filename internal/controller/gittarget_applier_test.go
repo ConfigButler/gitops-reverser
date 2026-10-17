@@ -56,6 +56,7 @@ func applierFakeSource(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
 		map[schema.GroupVersionResource]string{
 			{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Resource: "kustomizations"}: "KustomizationList",
 			{Group: "source.toolkit.fluxcd.io", Version: "v1", Resource: "gitrepositories"}:   "GitRepositoryList",
+			{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}:             "ApplicationList",
 		}, objs...)
 }
 
@@ -87,9 +88,15 @@ func applierTarget(applierSet bool) *configbutleraiv1alpha3.GitTarget {
 func applierReconciler(source dynamic.Interface, sourceErr error, allowed bool) *GitTargetReconciler {
 	return &GitTargetReconciler{
 		ApplierClients: func(context.Context, string) (dynamic.Interface, error) { return source, sourceErr },
-		newFlux: func(client dynamic.Interface) *applier.Flux {
+		newApplier: func(kind string, client dynamic.Interface) applier.Client {
+			canI := func(context.Context, authorizationv1.ResourceAttributes) (bool, error) { return allowed, nil }
+			if kind == configbutleraiv1alpha3.ApplierKindApplication {
+				argo := applier.NewArgoCD(client)
+				argo.CanI = canI
+				return argo
+			}
 			flux := applier.NewFlux(client)
-			flux.CanI = func(context.Context, authorizationv1.ResourceAttributes) (bool, error) { return allowed, nil }
+			flux.CanI = canI
 			return flux
 		},
 	}
@@ -147,6 +154,74 @@ func TestObserveApplier_Verdicts(t *testing.T) {
 	}
 }
 
+// applierArgoApplication is an Application argocd/checkout syncing branch of the test repository,
+// with a syncPolicy when one is given.
+func applierArgoApplication(branch string, syncPolicy map[string]any) runtime.Object {
+	app := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind":       "Application",
+		"metadata":   map[string]any{"namespace": "argocd", "name": "checkout"},
+		"spec": map[string]any{
+			"source": map[string]any{
+				"repoURL": "https://github.com/acme/platform", "targetRevision": branch, "path": "apps",
+			},
+		},
+	}}
+	if syncPolicy != nil {
+		_ = unstructured.SetNestedMap(app.Object, syncPolicy, "spec", "syncPolicy")
+	}
+	return app
+}
+
+// TestObserveApplier_ArgoCDVerdicts: an applicationRef is checked as an Argo CD Application, with
+// automated sync on as a verdict of its own.
+func TestObserveApplier_ArgoCDVerdicts(t *testing.T) {
+	cases := []struct {
+		name        string
+		objects     []runtime.Object
+		allowed     bool
+		wantStatus  metav1.ConditionStatus
+		wantReason  string
+		wantMessage string
+	}{
+		{name: "automated sync off", objects: []runtime.Object{applierArgoApplication("main", nil)}, allowed: true,
+			wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded,
+			wantMessage: "Application argocd/checkout applies this repository and branch"},
+		{name: "automated sync switched off, keeping prune", allowed: true,
+			objects: []runtime.Object{applierArgoApplication("main", map[string]any{
+				"automated": map[string]any{"enabled": false, "prune": true},
+			})},
+			wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded},
+		{name: "automated sync on", allowed: true,
+			objects: []runtime.Object{applierArgoApplication("main", map[string]any{
+				"automated": map[string]any{"prune": true},
+			})},
+			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonAutomatedSyncEnabled},
+		{name: "another branch", objects: []runtime.Object{applierArgoApplication("release", nil)}, allowed: true,
+			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonSourceMismatch},
+		{name: "no such Application", allowed: true,
+			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonApplierNotFound},
+		{name: "an identity that may not update it", objects: []runtime.Object{applierArgoApplication("main", nil)},
+			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := applierTarget(true)
+			target.Spec.Applier = &configbutleraiv1alpha3.GitTargetApplier{
+				ApplicationRef: &meta.NamespacedObjectReference{Namespace: "argocd", Name: "checkout"},
+			}
+
+			value, present := applierReconciler(applierFakeSource(tc.objects...), nil, tc.allowed).
+				observeApplier(context.Background(), beginStatus(nil, nil, target), target, applierProvider())
+
+			require.True(t, present)
+			assert.Equal(t, tc.wantStatus, value.Status, value.Message)
+			assert.Equal(t, tc.wantReason, value.Reason)
+			assert.Contains(t, value.Message, tc.wantMessage)
+		})
+	}
+}
+
 // TestObserveApplier_AnUnreachableSourceKeepsThePublishedVerdict: a blip reading the source cluster
 // says nothing about the applier, so it must not flip a True to Unknown and back on every hiccup.
 func TestObserveApplier_AnUnreachableSourceKeepsThePublishedVerdict(t *testing.T) {
@@ -175,7 +250,7 @@ func TestObserveApplier_AHangingSourceIsBounded(t *testing.T) {
 			_, sawDeadline = ctx.Deadline()
 			return applierFakeSource(applierFluxObjects("main")...), nil
 		},
-		newFlux: func(client dynamic.Interface) *applier.Flux {
+		newApplier: func(_ string, client dynamic.Interface) applier.Client {
 			flux := applier.NewFlux(client)
 			flux.CanI = func(ctx context.Context, _ authorizationv1.ResourceAttributes) (bool, error) {
 				deadline, ok := ctx.Deadline()
@@ -231,6 +306,8 @@ func TestApplierReadiness_StallsOnlyWhatNeedsAHuman(t *testing.T) {
 			value: conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonForbidden}},
 		{name: "not checked yet", present: true,
 			value: conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonProgressing}},
+		{name: "an Application with automated sync on", present: true, wantStalled: true,
+			value: conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonAutomatedSyncEnabled}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -152,7 +152,11 @@
       "properties": {
         "flux": {
           "type": "boolean",
-          "description": "Grant get/list/watch/patch on Flux Kustomizations and GitRepositories, plus create on SelfSubjectAccessReviews."
+          "description": "Grant get/patch on Flux Kustomizations and GitRepositories, plus create on SelfSubjectAccessReviews."
+        },
+        "argocd": {
+          "type": "boolean",
+          "description": "Grant get/update on Argo CD Applications, plus create on SelfSubjectAccessReviews."
         }
       }
     },

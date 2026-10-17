@@ -1,9 +1,10 @@
 # The apply trigger
 
-> **design**: decided 2026-10-16, extended 2026-10-17; the Flux applier (in any cluster), the push
-> receiver, `onRefusal: Reapply` and the apply window are built, Argo CD and the webhook applier are
-> the aim. Index: [`../INDEX.md`](../INDEX.md).
-> How to use it: [`../flux.md`](../flux.md) and [`../bi-directional.md`](../bi-directional.md).
+> **design**: decided 2026-10-16, extended 2026-10-17; the Flux and Argo CD appliers (in any
+> cluster), the push receiver, `onRefusal: Reapply` and the apply window are built, the webhook
+> applier is the aim. Index: [`../INDEX.md`](../INDEX.md).
+> How to use it: [`../flux.md`](../flux.md), [`../argocd.md`](../argocd.md) and
+> [`../bi-directional.md`](../bi-directional.md).
 > Fields: [`../configuration.md`](../configuration.md#who-applies-this-folder-specapplier).
 
 **GitOps Reverser decides when Git is applied to the cluster.** Flux and Argo CD keep fetching,
@@ -102,10 +103,12 @@ flowchart LR
     end
     EXEC["Dispatcher<br/>one attempt, no retries"]
     FLUX["Flux<br/>GitRepository · Kustomization"]
+    ARGO["Argo CD<br/>Application"]
 
     OBS --> OWE --> QUIET
     QUIET -- "yes, and due" --> EXEC
     EXEC -- "recheck targets, check source,<br/>stamp requestedAt, wait for it" --> FLUX
+    EXEC -- "recheck targets, check source,<br/>set a pinned sync, wait for it" --> ARGO
     EXEC -. "report: Delivered · Current ·<br/>Failed · Rejected · Dropped" .-> OWE
 ```
 
@@ -123,11 +126,13 @@ flowchart LR
   another), and for a `Refusal` still consent. If no target still holds the request's
   reason, it asks nothing (`Dropped`). Just before the stamp it asks the worker whether the decision
   still holds (the commit is still the tip, nothing is waiting to be published); if not, it stamps
-  nothing (`Stale`, no failure). Then Flux: stamp `reconcile.fluxcd.io/requestedAt` on the
+  nothing (`Stale`, no failure). Then the applier's kind decides. Flux: stamp `reconcile.fluxcd.io/requestedAt` on the
   `GitRepository` when its artifact lacks the commit; when the artifact holds it, only a `Refusal`
-  stamps the `Kustomization`, because the artifact already woke it for anything else. A source on
-  another repository or branch is `Rejected`. A delivered attempt is reported only once Flux has
-  finished the apply, or after 5 minutes, so the attempt is out for exactly the apply window.
+  stamps the `Kustomization`, because the artifact already woke it for anything else. Argo CD: set
+  the `Application`'s sync operation, pinned to the commit ([below](#the-argo-cd-applier)). A
+  source on another repository or branch, or an `Application` with automated sync on, is
+  `Rejected`. A delivered attempt is reported only once the applier has finished the apply, or
+  after 5 minutes, so the attempt is out for exactly the apply window.
 - **Settling.** A delivered attempt is done. A stale one gives back what it carried and is decided
   again at the next quiet moment. Any other outcome gives back what the attempt carried,
   a refusal only if it still stands, and starts that applier's backoff (2s doubling to 5m, at least
@@ -148,42 +153,72 @@ The quiet-branch rule confines the window to three moments: right after somebody
 after a refusal the target asked to have reverted, and after `quietPeriod` of silence on a branch
 whose artifact is behind. Inside it, **the API wins**, as it does for any object both sides changed:
 
-- **The window is known.** The dispatcher reports a delivered attempt only once Flux has finished
-  the apply: `status.lastHandledReconcileAt` carries the stamp of a stamped `Kustomization`, or the
-  `Kustomization` attempted a new revision after a source stamp (or the source handled the stamp
-  with no new artifact). At most 5 minutes; the worker keeps the window open 10 seconds more,
-  because Flux's writes reach it through the watch.
-- **The late apply is withheld.** A write whose latest `managedFields` entry is
-  `kustomize-controller` alone, inside the window, to an object in the applier's folders that the
-  API side edited after the attempt was sent, is not mirrored. Git keeps the edit, and the
-  `CatchUp` its push owes applies it back. The cluster runs the reverted value until then.
-- **Only proof withholds.** `managedFields` times resolve to the second. When `kustomize-controller`
-  ties with another manager, the write could be the edit itself, and withholding an edit loses it
+- **The window is known.** The dispatcher reports a delivered attempt only once the applier has
+  finished the apply: for Flux, `status.lastHandledReconcileAt` carries the stamp of a stamped
+  `Kustomization`, or the `Kustomization` attempted a new revision after a source stamp (or the
+  source handled the stamp with no new artifact); for Argo CD, the operation state carrying the
+  request's token has completed. At most 5 minutes; the worker keeps the window open 10 seconds
+  more, because the applier's writes reach it through the watch.
+- **The late apply is withheld.** A write whose latest `managedFields` entries are the applier's
+  own managers alone (`kustomize-controller`; `argocd-controller` or
+  `argocd-application-controller`), inside the window, to an object in the applier's folders that
+  the API side edited after the attempt was sent, is not mirrored. Git keeps the edit; for Flux the
+  `CatchUp` its push owes applies it back, for Argo CD the next sync does. The cluster runs the
+  reverted value until then.
+- **Only proof withholds.** `managedFields` times resolve to the second. When the applier ties
+  with another manager, the write could be the edit itself, and withholding an edit loses it
   outright; it is mirrored as before. A DELETE carries nothing about its deleter and is never
   withheld. Both are logged.
 
 Every collision is logged with the object, the applier and the requested commit, and counted in
 `apply_window_collisions_total` (`withheld` or `ambiguous`). What remains: an edit reverted on the
-cluster for up to `quietPeriod` until the `CatchUp`, an ambiguous tie mirrored as the applier's
-commit, and a Flux write that reaches the watch more than 10 seconds after Flux reported done.
+cluster until the next apply (for Flux, up to `quietPeriod`), an ambiguous tie mirrored as the
+applier's commit, and an applier's write that reaches the watch more than 10 seconds after it
+reported done.
 
-## The aim beyond Flux
+## The Argo CD applier
 
-**Argo CD (`applicationRef`).** The `Application` runs with `syncPolicy.automated.enabled: false`
-(Argo CD 3.1 and later), so its refresh only compares and nothing syncs it but us. A request sets
-`operation.sync` exactly as Argo CD's automated sync builds it, with `prune`, `syncOptions` and
-`retry` from the `Application`, and **`revision` pinned to the commit the worker checked**. Three
-consequences:
+**GitOps Reverser takes full control of when Argo CD syncs.** The `Application` named by
+`spec.applier.applicationRef` has automated sync off (`syncPolicy.automated.enabled: false`, or no
+`automated` block), so its timed refresh and its webhook only compare, and every sync it runs is
+one GitOps Reverser asked for, pinned to a commit the branch worker checked. This is the supported
+setup for bi-directional editing with Argo CD, not an option next to automated sync: an
+`Application` with automated sync on is `ApplierConfigured=False` (`AutomatedSyncEnabled`) and is
+never synced. The user guide is [`../argocd.md`](../argocd.md).
 
-- **No `CatchUp`.** With automated sync off Argo CD applies nothing on its own, so there is no stale
-  artifact to catch up, and every sync runs the `Application`'s hooks.
-- **The commit is pinned**, so a sync applies exactly what the worker checked.
-- **A running operation is waited for, never replaced**, as Argo CD's own `SetAppOperation` does.
+Argo CD is the easier half. Flux has no fetch-only mode, so it needs a `CatchUp` to keep its
+artifact from going stale. With automated sync off Argo CD applies nothing on its own, so it holds
+nothing that can go stale, and **it gets no `CatchUp`**: `quietPeriod` is rejected with an
+`applicationRef`, and the worker never owes an `Application` one.
 
-A hub Argo CD keeps `Application`s in a management cluster, not the cluster they deploy to. That is
-answered as for Flux: `spec.applier.clusterProviderRef` names the cluster the `Application` lives
-in, and the `Application`'s own field manager (`argocd-controller`) takes `kustomize-controller`'s
-place in the apply window.
+Every rule the client relies on is Argo CD's own, read from its source (3.5.0):
+
+| Fact | Consequence |
+| --- | --- |
+| Automated sync is on when `syncPolicy.automated` is present and its `enabled` is unset or true (`IsAutomatedSyncEnabled`) | `AutomatedSyncEnabled` is exactly this rule; `automated: {enabled: false, prune: …}` is the off switch that keeps prune |
+| Automated sync builds `Operation{Sync{Revision, Prune: automated.prune, SyncOptions, Source}, InitiatedBy{Automated: true}, Retry: syncPolicy.retry or {Limit: 5}}` (`autoSync`) | A request builds the same, with `Revision` pinned to the checked commit |
+| A sync starts by setting `operation`, never while one is set, in an update that also clears `status.operationState` (`SetAppOperation`; the CRD has no status subresource) | A request updates the whole `Application`, guarded by the `resourceVersion` it read, and waits out a running operation instead of replacing it |
+| The controller clears `operation` when the operation completes and leaves the result in `status.operationState`; a failed operation that will be retried is `Running` again, with a `finishedAt` | An attempt's window closes when the operation state carrying its token has completed (`Succeeded`, `Failed`, `Error`); a pending retry is still running |
+| A retry with `retry.refresh: true` drops the operation's revision and syncs the newest one | That one field is dropped from the copied retry: a retry stays pinned |
+| Every apply writes as field manager `argocd-controller`, client-side and server-side alike; a `Replace=true` sync creates and replaces with no field manager, so the API server takes it from the user agent, `argocd-application-controller` | The apply window knows both as Argo CD's managers |
+| Sync windows are checked for every operation, by `InitiatedBy.Automated` | A sync GitOps Reverser starts obeys the project's windows for automated syncs |
+
+Three choices were decided (2026-10-17):
+
+1. **Prune** comes from `syncPolicy.automated.prune` when `automated` is present with
+   `enabled: false`. Without the block, a sync does not prune, and the guide says so. There is no
+   `spec.applier.prune`.
+2. **The initiator** is `InitiatedBy{Username: "gitops-reverser", Automated: true}`. GitOps Reverser
+   replaces automated sync, so a sync window that blocks automated syncs blocks its syncs too.
+3. **Hooks run on every sync**, so on every `ForeignCommit`, which asks every applier on the
+   branch. Narrowing it by changed paths waits for a measured complaint.
+
+A hub Argo CD keeps `Application`s in a management cluster: `spec.applier.clusterProviderRef`
+reaches it as it reaches a Flux in another cluster. Out of scope: multi-source `Application`s (and
+`sourceHydrator`), which are `SourceMismatch`; `ApplicationSet`s, which own the spec of the
+`Application`s they generate; and Argo CD's own sharding and HA.
+
+## The aim beyond Flux and Argo CD
 
 **A webhook applier** for any other tool: POST `{"repository", "branch", "commit", "reason"}`,
 signed `X-Signature: sha256=<hex HMAC>` the way Flux's `generic-hmac` `Receiver` checks. It gets
@@ -204,25 +239,27 @@ in-process plugin: it would run with every credential the operator holds.
 - **Every applier on the branch is asked on a `ForeignCommit`**, whether or not the push touched its
   folder. Harmless for Flux; for Argo CD it runs hooks. Narrowing it needs the applier's own source
   paths, so it waits for a measured complaint.
+- **A sync somebody else started holds an Argo CD request**, for up to 5 minutes, and then fails
+  it; the worker asks again after its backoff.
 
 ## Where this goes next
 
 The Flux applier PR (#419) carries what gitops-api, the first adopter, needs before it can drop its
 own gate: both reviews' findings and the customer review's three blockers (stale stamps, a late
 webhook cutting a save's window, a `Kustomization` in the management cluster via
-`spec.applier.clusterProviderRef`), the hardened receiver, and the apply window. After it, in order,
-each one pull request:
+`spec.applier.clusterProviderRef`), the hardened receiver, the apply window, and the Argo CD
+applier with automated sync off as the standard. After it, in order, each one pull request:
 
-1. **The Argo CD applier**, as described above, with automated sync off as the standard. The
-   implementation plan is [`argocd-applier-plan.md`](argocd-applier-plan.md).
-2. **The webhook applier.**
-3. **More than one replica.** Leader election is not switched on, and the chart runs one replica.
+1. **The webhook applier.**
+2. **More than one replica.** Leader election is not switched on, and the chart runs one replica.
    Standbys need ownership coordination first (the HA plan in `docs/future/`), and deliveries then
    need routing to the pod that owns the branch.
 
-Test gaps to close along the way: a remote source cluster and an applier in another cluster in e2e,
-`Forbidden` against real RBAC, the receiver and applier role installed by the Helm chart, two
-`GitTarget`s sharing one `Kustomization` in e2e, an apply-window collision in e2e, and `-race` in CI.
+Test gaps to close along the way: a remote source cluster and an applier in another cluster (a hub
+Argo CD among them) in e2e, `Forbidden` against real RBAC, the receiver and applier roles installed
+by the Helm chart, two `GitTarget`s sharing one `Kustomization` in e2e, an apply-window collision in
+e2e, a `Replace=true` Argo CD sync's field manager measured rather than read from the source, and
+`-race` in CI.
 
 **What adopting it changes for gitops-api.** Its gate shrinks to "one save, one window", which
 protects commit messages and has nothing to do with Flux. Its push handler relays each push to the
@@ -244,6 +281,11 @@ been quiet; `quietPeriod` is the knob for that trade.
 | `SourceMismatch` is never stamped and is delivered once fixed; a Gitea webhook and the refresh alone each get a push applied | [Manager Flux Applier](../../test/e2e/flux_applier_e2e_test.go) |
 | A refused edit is reverted by its `Kustomization` | [Refusal reapply](../../test/e2e/refusal_reapply_e2e_test.go) |
 | The Flux guide's example is accepted by the code | [`flux_guide_test.go`](../../internal/applier/flux_guide_test.go) |
+| An Argo CD sync is the one automated sync builds, pinned to the commit, with a pinned retry; a running operation is waited out and never replaced; an operation set between the read and the update makes it fail; every `ApplierConfigured` reason, `AutomatedSyncEnabled` among them; when a sync counts as finished | [`argocd_test.go`](../../internal/applier/argocd_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
+| An `Application` is never owed a `CatchUp`; Argo CD's late write over a newer edit is withheld by its own managers | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go), [`apply_window_test.go`](../../internal/git/apply_window_test.go) |
+| Exactly one of `kustomizationRef` and `applicationRef`, and no `quietPeriod` with an `applicationRef` | [`gittarget_applier_schema_test.go`](../../internal/controller/gittarget_applier_schema_test.go) |
+| With Argo CD: two API edits keep the later value with no extra commit; a Git-side push is synced by a pinned `ForeignCommit`; a refused edit is reverted by a sync; an `Application` with automated sync on is `AutomatedSyncEnabled` and never synced | [bi-directional Argo CD corner](../../test/e2e/argocd_bi_directional_e2e_test.go) |
+| The Argo CD guide's example is accepted by the code | [`argocd_guide_test.go`](../../internal/applier/argocd_guide_test.go) |
 
 The history of how this was decided, with the options weighed and the Git-side reference the code
 cites, is in [`../finished/push-notification-and-reconcile-trigger.md`](../finished/push-notification-and-reconcile-trigger.md).

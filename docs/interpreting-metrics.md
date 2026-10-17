@@ -816,20 +816,21 @@ are unbounded, and both are in the log line at the write site.
 
 ## Apply requests and the push receiver
 
-With `GitTarget.spec.applier` set, the branch worker decides when the Flux `Kustomization` applies,
-and the push receiver tells it that somebody else pushed. See
+With `GitTarget.spec.applier` set, the branch worker decides when the Flux `Kustomization` or Argo
+CD `Application` applies, and the push receiver tells it that somebody else pushed. See
 [who applies this folder](configuration.md#who-applies-this-folder-specapplier).
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `apply_requests_total` | counter | `applier_kind`, `reason`, `outcome` | One per attempt to one applier. `applier_kind` is `kustomization`; `reason` is `ForeignCommit` / `Refusal` / `CatchUp`; `outcome` is `sent` (delivered, or a `CatchUp` that found Flux already current), `failed` (could not ask, including a `Kustomization` that applies another repository or branch; the branch worker keeps the obligation and decides the retry on a quiet branch, so a failure that persists keeps counting at its backoff) or `dropped` (no `GitTarget` may still ask for that reason: each was deleted or recreated, moved to another branch or applier, is no longer admitted by its `ClusterProvider`, or withdrew its consent to a `Refusal`) or `stale` (asked nothing because, by the time of the patch, the commit was no longer the branch tip or an edit was waiting to be published; the worker decides again at the next quiet moment) |
-| `apply_window_collisions_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per write by the applier, while an apply it was asked for runs, to an object the API side edited after the request was sent: the apply arriving late over a newer edit. `outcome` is `withheld` (proven to be the applier's write, so not mirrored: Git keeps the API's value and the next apply restores it on the cluster) or `ambiguous` (the applier and another field manager wrote in the same second, so it was mirrored as ever; if it was the apply, the revert is in Git as the applier's commit) |
+| `apply_requests_total` | counter | `applier_kind`, `reason`, `outcome` | One per attempt to one applier. `applier_kind` is `kustomization` (a Flux `Kustomization`) or `application` (an Argo CD `Application`); `reason` is `ForeignCommit` / `Refusal` / `CatchUp` (never `CatchUp` for an `application`); `outcome` is `sent` (delivered, or a `CatchUp` that found Flux already current), `failed` (could not ask, including an applier that applies another repository or branch, an `Application` with automated sync on, or one whose running sync did not end within 5 minutes; the branch worker keeps the obligation and decides the retry on a quiet branch, so a failure that persists keeps counting at its backoff) or `dropped` (no `GitTarget` may still ask for that reason: each was deleted or recreated, moved to another branch or applier, is no longer admitted by its `ClusterProvider`, or withdrew its consent to a `Refusal`) or `stale` (asked nothing because, by the time of the write, the commit was no longer the branch tip or an edit was waiting to be published; the worker decides again at the next quiet moment) |
+| `apply_window_collisions_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per write by the applier, while an apply it was asked for runs, to an object the API side edited after the request was sent: the apply arriving late over a newer edit. `outcome` is `withheld` (proven to be the applier's write, by its field manager: `kustomize-controller`, or `argocd-controller` / `argocd-application-controller`; so not mirrored: Git keeps the API's value and the next apply restores it on the cluster) or `ambiguous` (the applier and another field manager wrote in the same second, so it was mirrored as ever; if it was the apply, the revert is in Git as the applier's commit) |
 | `receiver_deliveries_total` | counter | `type`, `outcome` | One per verified-or-refused delivery to `/git-push/`. `type` is the `GitProvider.spec.receiver.type`; `outcome` is `notified` (handed to the branch worker), `unmatched` (no worker for that branch), `ignored` (a ping, a tag, another branch's event type, or a `generic-hmac` body naming another repository), `rejected` (bad signature or an oversized body) or `invalid` (verified but unparseable) |
 
 A delivery counted `notified` is only a hint: the worker reads the advertisement, and fetches under
 `git_fetches_total{reason="refresh"}` only when the branch actually moved. A `ForeignCommit` request
 follows when it did. So on a branch where only GitOps Reverser pushes, `notified` deliveries are
-followed by `CatchUp` requests and never by `ForeignCommit`.
+followed by `CatchUp` requests (to a `Kustomization`; an `Application` gets none) and never by
+`ForeignCommit`.
 
 ```promql
 # Requests that could not be delivered, by reason. A failure that persists keeps counting, at the

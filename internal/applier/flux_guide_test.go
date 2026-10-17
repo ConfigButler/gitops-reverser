@@ -35,7 +35,7 @@ const fluxGuide = "../../docs/flux.md"
 // as written, and a request stamps the GitRepository. It also holds the example to the guide's own
 // advice, so the page cannot recommend one thing and show another.
 func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
-	objects := guideExampleObjects(t)
+	objects := guideExampleObjects(t, fluxGuide)
 
 	var provider v1alpha3.GitProvider
 	var target v1alpha3.GitTarget
@@ -95,17 +95,17 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	assert.NotEmpty(t, requestedAt(t, client, gitRepositoryGVR(), repository.GetNamespace(), repository.GetName()))
 }
 
-// guideExampleObjects returns every object in the yaml blocks of the guide's "A complete example"
+// guideExampleObjects returns every object in the yaml blocks of a guide's "A complete example"
 // section, by kind.
-func guideExampleObjects(t *testing.T) map[string][]*unstructured.Unstructured {
+func guideExampleObjects(t *testing.T, guide string) map[string][]*unstructured.Unstructured {
 	t.Helper()
-	content, err := os.ReadFile(fluxGuide)
+	content, err := os.ReadFile(guide)
 	require.NoError(t, err)
 	text := string(content)
 
 	const heading = "\n## A complete example\n"
 	start := strings.Index(text, heading)
-	require.GreaterOrEqual(t, start, 0, "%s must keep its %q section", fluxGuide, strings.TrimSpace(heading))
+	require.GreaterOrEqual(t, start, 0, "%s must keep its %q section", guide, strings.TrimSpace(heading))
 	section := text[start+len(heading):]
 	if end := strings.Index(section, "\n## "); end >= 0 {
 		section = section[:end]

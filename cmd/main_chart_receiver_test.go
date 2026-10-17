@@ -196,3 +196,38 @@ func TestChartApplierAccess_Flux(t *testing.T) {
 	assert.Equal(t, "ServiceAccount", binding.Subjects[0].Kind)
 	assert.Equal(t, "gitops-reverser", binding.Subjects[0].Name)
 }
+
+// applierAccess.argocd is off by default, and on it grants exactly what starting an Argo CD sync
+// needs (get, and update to set the Application's operation), apart from the Flux grant.
+func TestChartApplierAccess_ArgoCD(t *testing.T) {
+	assert.Empty(t, helmTemplateDocs(t, "templates/applier-rbac.yaml",
+		"applierAccess.argocd=true", "rbac.create=false"), "rbac.create=false renders no RBAC at all")
+
+	docs := helmTemplateDocs(t, "templates/applier-rbac.yaml", "applierAccess.argocd=true")
+	require.Len(t, docs, 2, "the Flux grant stays off")
+
+	var role rbacv1.ClusterRole
+	require.NoError(t, yaml.Unmarshal([]byte(docs[0]), &role))
+	assert.Equal(t, "gitops-reverser-applier-argocd", role.Name)
+	assert.Equal(t, []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{"argoproj.io"},
+			Resources: []string{"applications"},
+			Verbs:     []string{"get", "update"},
+		},
+		{
+			APIGroups: []string{"authorization.k8s.io"},
+			Resources: []string{"selfsubjectaccessreviews"},
+			Verbs:     []string{"create"},
+		},
+	}, role.Rules)
+
+	var binding rbacv1.ClusterRoleBinding
+	require.NoError(t, yaml.Unmarshal([]byte(docs[1]), &binding))
+	assert.Equal(t, role.Name, binding.RoleRef.Name)
+	require.Len(t, binding.Subjects, 1)
+	assert.Equal(t, "gitops-reverser", binding.Subjects[0].Name)
+
+	assert.Len(t, helmTemplateDocs(t, "templates/applier-rbac.yaml",
+		"applierAccess.argocd=true", "applierAccess.flux=true"), 4, "both grants together")
+}

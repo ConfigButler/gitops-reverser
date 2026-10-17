@@ -13,16 +13,18 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // GitTargetConditionApplierConfigured reports whether spec.applier names an object GitOps Reverser
 // can ask to apply: it exists in the applier's cluster, applies this target's repository and branch,
-// and may be patched. Present only while spec.applier is set.
+// may be written, and (an Argo CD Application) has automated sync off. Present only while
+// spec.applier is set.
 const GitTargetConditionApplierConfigured = "ApplierConfigured"
 
-// applierCheckTimeout bounds the ApplierConfigured check: two GETs and two access reviews against
-// the source cluster. Its client has no request timeout, because it also carries the watches, and
+// applierCheckTimeout bounds the ApplierConfigured check: at most two GETs and two access reviews
+// against the applier's cluster. Its client has no request timeout, because it also carries the watches, and
 // this controller runs one reconcile worker, so a source API server that accepts the connection and
 // never answers would otherwise stop every GitTarget's reconcile, not only this one's.
 const applierCheckTimeout = 10 * time.Second
@@ -39,8 +41,8 @@ type ApplyRequestLedger interface {
 // condition for the readiness trio. present is false when the target names no applier, in which
 // case both are removed.
 //
-// The check reads the applier on this reconcile rather than watching it. Flux may not be installed
-// in a source cluster at all, and an informer on a kind that is not served would be a failure to
+// The check reads the applier on this reconcile rather than watching it. Flux or Argo CD may not be
+// installed in the applier's cluster at all, and an informer on a kind that is not served would be a failure to
 // report rather than a check that answers "not found"; the cadence is the target's own.
 func (r *GitTargetReconciler) observeApplier(
 	ctx context.Context,
@@ -74,14 +76,16 @@ func (r *GitTargetReconciler) applierVerdict(
 	target *configbutleraiv1alpha3.GitTarget,
 	gitProvider *configbutleraiv1alpha3.GitProvider,
 ) conditionValue {
-	ref := applierReference(target)
+	applierRef := git.ApplierOf(target)
+	ref := k8stypes.NamespacedName{Namespace: applierRef.Namespace, Name: applierRef.Name}
+	kind := applierRef.Kind
 	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
 	defer cancel()
 	if r.ApplierClients == nil || gitProvider == nil {
 		return conditionValue{
 			Status:  metav1.ConditionUnknown,
 			Reason:  GitTargetReasonNotChecked,
-			Message: fmt.Sprintf("Kustomization %s has not been checked: no cluster client is wired", ref),
+			Message: fmt.Sprintf("%s %s has not been checked: no cluster client is wired", kind, ref),
 		}
 	}
 	cluster := target.ApplierCluster()
@@ -97,20 +101,20 @@ func (r *GitTargetReconciler) applierVerdict(
 	client, err := r.ApplierClients(ctx, cluster)
 	if err != nil {
 		return keptOrUnknown(target,
-			fmt.Sprintf("Cannot reach cluster %q to check Kustomization %s: %v", cluster, ref, err))
+			fmt.Sprintf("Cannot reach cluster %q to check %s %s: %v", cluster, kind, ref, err))
 	}
-	newFlux := r.newFlux
-	if newFlux == nil {
-		newFlux = applier.NewFlux
+	newApplier := r.newApplier
+	if newApplier == nil {
+		newApplier = applier.NewClient
 	}
-	verdict := newFlux(client).Validate(ctx, ref,
+	verdict := newApplier(kind, client).Validate(ctx, ref,
 		applier.Binding{RepositoryURL: gitProvider.Spec.URL, Branch: target.Spec.Branch})
 	switch {
 	case verdict.OK:
 		return conditionValue{
 			Status:  metav1.ConditionTrue,
 			Reason:  ReasonSucceeded,
-			Message: fmt.Sprintf("Kustomization %s applies this repository and branch, and can be asked to apply", ref),
+			Message: fmt.Sprintf("%s %s applies this repository and branch, and can be asked to apply", kind, ref),
 		}
 	case verdict.Err != nil:
 		return keptOrUnknown(target, verdict.Message)
@@ -129,20 +133,10 @@ func keptOrUnknown(target *configbutleraiv1alpha3.GitTarget, message string) con
 	return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonProgressing, Message: message}
 }
 
-// applierReference is spec.applier.kustomizationRef, its namespace defaulting to the GitTarget's.
-func applierReference(target *configbutleraiv1alpha3.GitTarget) k8stypes.NamespacedName {
-	ref := target.Spec.Applier.Reference()
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = target.Namespace
-	}
-	return k8stypes.NamespacedName{Namespace: namespace, Name: ref.Name}
-}
-
-// applierReadiness contributes ApplierConfigured to the trio. A Kustomization that applies another
-// repository, or that the operator may not patch, needs a human; one that is missing may be on its
-// way (Flux objects are often created after the GitTarget), and an unknown verdict is still
-// settling.
+// applierReadiness contributes ApplierConfigured to the trio. An applier that applies another
+// repository, that the operator may not write, or (an Argo CD Application) that has automated sync
+// on, needs a human; one that is missing may be on its way (Flux and Argo CD objects are often
+// created after the GitTarget), and an unknown verdict is still settling.
 func applierReadiness(rd *readiness, value conditionValue, present bool) {
 	if !present {
 		return

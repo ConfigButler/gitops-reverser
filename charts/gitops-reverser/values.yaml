@@ -134,6 +134,10 @@ applierAccess:
   # on it). Cluster-wide, because a GitTarget's applier can live in any
   # namespace.
   flux: false
+  # Grant get/update on argoproj.io Applications (a sync is started by updating the Application's
+  # operation, as Argo CD's own automated sync does), plus create on SelfSubjectAccessReviews.
+  # Cluster-wide, like the Flux grant.
+  argocd: false
 
 # cert-manager issuer shared by every certificate the chart mints. One self-signed CA
 # backs them all, so the issuer is genuinely cross-cutting and lives here; each server
