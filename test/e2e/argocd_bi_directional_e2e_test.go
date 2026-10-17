@@ -198,6 +198,9 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		By("GitOps Reverser asks Argo CD to sync exactly that commit, as a ForeignCommit")
 		run.waitForReverserSync(head, "ForeignCommit")
 		run.waitForOrderContainer(run.syncedOrderName, "Cone")
+		// status.applier is published on the GitTarget's reconcile, which a delivered
+		// request does not trigger; a converged target reconciles every few minutes.
+		run.requestGitTargetReconcile()
 		Eventually(func(g Gomega) {
 			reason, commit := run.gitTargetApplierStatus(g)
 			g.Expect(reason).To(Equal("ForeignCommit"))
@@ -281,9 +284,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		run.applyArgoApp(automated)
 		// The applier is read on the GitTarget's reconcile, not watched; a converged
 		// target reconciles every few minutes, so ask for one now.
-		_, err := kubectlRunInNamespace(testNs, "annotate", "gittarget", run.gitTargetName, "--overwrite",
-			"reconcile.configbutler.ai/requestedAt="+strconv.FormatInt(time.Now().UnixNano(), 10))
-		Expect(err).NotTo(HaveOccurred(), "failed to request a GitTarget reconcile")
+		run.requestGitTargetReconcile()
 		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierConfigured", "False",
 			"AutomatedSyncEnabled", "has automated sync on")
 		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "Stalled", "True",
@@ -686,6 +687,16 @@ func (r argoBiDirectionalRun) lastOperation(g Gomega) (string, string) {
 	revision, _, _ := unstructured.NestedString(app.Object,
 		"status", "operationState", "operation", "sync", "revision")
 	return username, revision
+}
+
+// requestGitTargetReconcile asks the GitTarget controller to reconcile now, the way
+// its reconcile-request annotation does: the applier check and status.applier are
+// published on a reconcile, and nothing about an applier triggers one.
+func (r argoBiDirectionalRun) requestGitTargetReconcile() {
+	GinkgoHelper()
+	_, err := kubectlRunInNamespace(r.testNs, "annotate", "gittarget", r.gitTargetName, "--overwrite",
+		"reconcile.configbutler.ai/requestedAt="+strconv.FormatInt(time.Now().UnixNano(), 10))
+	Expect(err).NotTo(HaveOccurred(), "failed to request a GitTarget reconcile")
 }
 
 // gitTargetApplierStatus is the GitTarget's status.applier: the reason and the
