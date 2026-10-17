@@ -43,6 +43,7 @@ func newSourceClient(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
 		map[schema.GroupVersionResource]string{
 			kustomizationGVR(): "KustomizationList",
 			gitRepositoryGVR(): "GitRepositoryList",
+			applicationGVR():   "ApplicationList",
 		}, objs...)
 }
 

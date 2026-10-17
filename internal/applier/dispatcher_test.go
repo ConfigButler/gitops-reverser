@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
@@ -164,8 +165,12 @@ func (f *dispatcherFixture) attempt(req git.ApplyRequest) git.ApplyResult {
 }
 
 func (f *dispatcherFixture) count(reason v1alpha3.ApplyReason, outcome string) int64 {
+	return f.countKind(applierKindKustomization, reason, outcome)
+}
+
+func (f *dispatcherFixture) countKind(kind string, reason v1alpha3.ApplyReason, outcome string) int64 {
 	value, _ := telemetry.CollectInt64Sum(f.reader, applyRequestsMetric, map[string]string{
-		"applier_kind": applierKindKustomization, "reason": string(reason), "outcome": outcome,
+		"applier_kind": kind, "reason": string(reason), "outcome": outcome,
 	})
 	return value
 }
@@ -233,8 +238,8 @@ func TestDispatcher_AsksOnceForEveryTarget(t *testing.T) {
 		assert.True(t, got.RequestedAt.Equal(&metav1.Time{Time: stampTime}), name)
 	}
 	assert.ElementsMatch(t, []string{
-		"Normal ApplyRequested asked flux-system/checkout to apply 4f2c1ab9 (Refusal)",
-		"Normal ApplyRequested asked flux-system/checkout to apply 4f2c1ab9 (CatchUp)",
+		"Normal ApplyRequested asked Kustomization flux-system/checkout to apply 4f2c1ab9 (Refusal)",
+		"Normal ApplyRequested asked Kustomization flux-system/checkout to apply 4f2c1ab9 (CatchUp)",
 	}, f.events())
 	assert.Equal(t, int64(1), f.count(v1alpha3.ApplyReasonRefusal, outcomeSent))
 }
@@ -314,8 +319,10 @@ func TestDispatcher_AFailureIsReportedAndNeverRetried(t *testing.T) {
 	assert.Len(t, f.source.clusters, 1, "one attempt, no retry")
 	events := f.events()
 	require.Len(t, events, 1)
-	assert.True(t, strings.HasPrefix(events[0],
-		"Warning ApplyRequestFailed could not ask flux-system/checkout to apply 4f2c1ab9 (ForeignCommit)"), events[0])
+	assert.True(t, strings.HasPrefix(
+		events[0],
+		"Warning ApplyRequestFailed could not ask Kustomization flux-system/checkout to apply 4f2c1ab9 (ForeignCommit)",
+	), events[0])
 
 	retry := request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")
 	retry.PriorFailures = 1
@@ -555,4 +562,95 @@ func TestDispatcher_AnApplyFluxNeverFinishesClosesByTime(t *testing.T) {
 	f.dispatcher.HandledPollInterval = 5 * time.Millisecond
 
 	assert.Equal(t, git.ApplyDelivered, f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
+}
+
+// argoTarget is the GitTarget "a", whose applier is the Application argocd/platform.
+func argoTarget() *v1alpha3.GitTarget {
+	target := gitTarget("a", nil, "")
+	target.Spec.Applier = &v1alpha3.GitTargetApplier{
+		ApplicationRef: &fluxmeta.NamespacedObjectReference{Namespace: argoNS, Name: "platform"},
+	}
+	return target
+}
+
+// argoPlatform is the applier argoTarget names.
+var argoPlatform = git.ApplierRef{
+	Cluster: v1alpha3.DefaultClusterProviderName, Kind: v1alpha3.ApplierKindApplication,
+	Namespace: argoNS, Name: "platform",
+}
+
+func (f *dispatcherFixture) updates() []string {
+	var out []string
+	for _, action := range f.source.client.Actions() {
+		if action.GetVerb() == "update" {
+			out = append(out, action.GetResource().Resource+" "+action.GetNamespace())
+		}
+	}
+	return out
+}
+
+// TestDispatcher_AsksAnApplicationToSync: an Application applier is asked through the Argo CD
+// client, with the commit pinned, counted and recorded under its own kind.
+func TestDispatcher_AsksAnApplicationToSync(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{reapplying(argoTarget())}, manualApp())
+
+	res := f.attempt(request(argoPlatform, v1alpha3.ApplyReasonRefusal, "a"))
+
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyDelivered}, res)
+	assert.Equal(t, []string{"applications " + argoNS}, f.updates())
+	assert.Empty(t, f.patches(), "no Flux object is stamped")
+	app, err := f.source.client.Resource(applicationGVR()).Namespace(argoNS).
+		Get(context.Background(), "platform", metav1.GetOptions{})
+	require.NoError(t, err)
+	revision, _, _ := unstructured.NestedString(app.Object, "operation", "sync", "revision")
+	assert.Equal(t, testCommit, revision)
+	assert.Equal(t, []string{
+		"Normal ApplyRequested asked Application argocd/platform to apply 4f2c1ab9 (Refusal)",
+	}, f.events())
+	assert.Equal(t, int64(1), f.countKind(applierKindApplication, v1alpha3.ApplyReasonRefusal, outcomeSent))
+	assert.Zero(t, f.count(v1alpha3.ApplyReasonRefusal, outcomeSent))
+}
+
+// TestDispatcher_AnApplicationWithAutomatedSyncIsRejectedAndNeverSynced: the standard is full
+// control, so an Application that syncs on its own is never asked to, whatever its verdict says.
+func TestDispatcher_AnApplicationWithAutomatedSyncIsRejectedAndNeverSynced(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{argoTarget()},
+		applicationObj(testRepoURL, testBranch, map[string]any{"automated": map[string]any{"prune": true}}))
+
+	res := f.attempt(request(argoPlatform, v1alpha3.ApplyReasonForeignCommit, "a"))
+
+	assert.Equal(t, git.ApplyRejected, res.Outcome)
+	require.ErrorContains(t, res.Err, "has automated sync on")
+	assert.Empty(t, f.updates())
+	assert.Equal(t, int64(1), f.countKind(applierKindApplication, v1alpha3.ApplyReasonForeignCommit, outcomeFailed))
+}
+
+// TestDispatcher_AnApplicationIsNotTheKustomizationOfItsName: the kind is part of which applier a
+// GitTarget names, so a request for a Kustomization of the same name asks nothing for it.
+func TestDispatcher_AnApplicationIsNotTheKustomizationOfItsName(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{argoTarget()}, manualApp())
+	sameName := kustomizationApplier(v1alpha3.DefaultClusterProviderName, argoNS, "platform")
+
+	assert.Equal(t, git.ApplyDropped, f.attempt(request(sameName, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
+	assert.Empty(t, f.updates())
+}
+
+// TestDispatcher_AnApplicationAttemptWaitsWithinItsWindow: an Argo CD attempt may wait out an
+// operation already running, so it is bounded by the apply window on top of the attempt timeout.
+func TestDispatcher_AnApplicationAttemptWaitsWithinItsWindow(t *testing.T) {
+	running := manualApp()
+	_ = unstructured.SetNestedMap(running.Object, theirOperation(), "operation")
+	f := newDispatcherFixture(t, []client.Object{argoTarget()}, running)
+	f.dispatcher.AttemptTimeout = 30 * time.Millisecond
+	f.dispatcher.ApplyWindowTimeout = 100 * time.Millisecond
+	f.dispatcher.HandledPollInterval = time.Millisecond
+	f.dispatcher.Now = time.Now
+
+	res := f.attempt(request(argoPlatform, v1alpha3.ApplyReasonForeignCommit, "a"))
+
+	assert.Equal(t, git.ApplyFailed, res.Outcome)
+	require.ErrorContains(t, res.Err, "has an operation in progress")
+	require.NotErrorIs(t, res.Err, context.DeadlineExceeded,
+		"the wait ends by the operation wait, not by the shorter attempt timeout")
+	assert.Empty(t, f.updates())
 }

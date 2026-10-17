@@ -1,34 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
-/*
-Package applier delivers apply requests: what GitOps Reverser sends the object that applies a
-GitTarget's folder back to its source cluster (its applier) when the branch worker has decided a
-commit is safe to apply. The worker decides WHEN; this package decides HOW, off the worker's queue,
-so a slow or unreachable applier never holds a branch.
-
-Only Flux is served: spec.applier.kustomizationRef, a Kustomization whose sourceRef is a
-GitRepository. See docs/design/apply-trigger.md.
-
-A request asks and never reports. Nothing here claims an apply happened; the applier's own status
-(lastAppliedRevision on a Kustomization) is the record of that.
-*/
 package applier
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
-	authorizationv1 "k8s.io/api/authorization/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
@@ -52,21 +35,13 @@ func gitRepositoryGVR() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: "source.toolkit.fluxcd.io", Version: "v1", Resource: "gitrepositories"}
 }
 
-// selfSubjectAccessReviewGVR is the access check Validate creates.
-func selfSubjectAccessReviewGVR() schema.GroupVersionResource {
-	return schema.GroupVersionResource{
-		Group: "authorization.k8s.io", Version: "v1", Resource: "selfsubjectaccessreviews",
-	}
-}
-
 const (
 	kindKustomization = "Kustomization"
 	kindGitRepository = "GitRepository"
 )
 
-// Outcome is what one Flux request did.
-type Outcome string
-
+// What a Flux request stamped. OutcomeCurrent stamps nothing: a CatchUp or ForeignCommit found the
+// artifact already at the commit, so the Kustomization was already woken by it.
 const (
 	// OutcomeStampedSource stamped the GitRepository: its artifact did not hold the commit, and the
 	// new artifact it produces wakes the Kustomization by itself.
@@ -74,66 +49,7 @@ const (
 	// OutcomeStampedKustomization stamped the Kustomization: the artifact already held the commit,
 	// so a source stamp would produce no new artifact and wake nothing.
 	OutcomeStampedKustomization Outcome = "StampedKustomization"
-	// OutcomeCurrent stamped nothing: a CatchUp or ForeignCommit found the artifact already at the
-	// commit, so the Kustomization was already woken by it.
-	OutcomeCurrent Outcome = "Current"
 )
-
-// ApplierConfigured reasons (docs/configuration.md, "Who applies this folder"). Succeeded and
-// Failed are the generic reasons, aliased from Flux's meta package as the conditions guide asks.
-const (
-	// ReasonSucceeded is ApplierConfigured=True: the applier exists, applies this repository and
-	// branch, and may be asked to apply.
-	ReasonSucceeded = fluxmeta.SucceededReason
-	// ReasonApplierNotFound is no such object in the source cluster, or its kind is not served there.
-	ReasonApplierNotFound = "ApplierNotFound"
-	// ReasonSourceMismatch is an applier that applies a different repository or branch.
-	ReasonSourceMismatch = "SourceMismatch"
-	// ReasonForbidden is a source-cluster identity that may not read or patch the applier.
-	ReasonForbidden = "Forbidden"
-	// ReasonCheckFailed is a check that could not complete: the source cluster did not answer.
-	// Verdict.Err carries the cause; it says nothing about the applier itself.
-	ReasonCheckFailed = fluxmeta.FailedReason
-)
-
-// Verdict is the answer Validate gives for the ApplierConfigured condition.
-type Verdict struct {
-	// OK is ApplierConfigured=True.
-	OK bool
-	// Reason is the condition reason.
-	Reason string
-	// Message names the object and what is wrong with it.
-	Message string
-	// Err is set only with ReasonCheckFailed: the read that failed. A caller may prefer to keep the
-	// verdict it already published over replacing a known answer with "could not tell".
-	Err error
-}
-
-// Stamped is what one Request did, with what Flux reported before it, so Handled can tell when
-// Flux has finished the apply it asked for.
-type Stamped struct {
-	// Outcome is what was stamped, if anything.
-	Outcome Outcome
-	// Token is the reconcile.fluxcd.io/requestedAt value stamped; empty when nothing was.
-	Token string
-	// Source is the GitRepository the Kustomization applies from.
-	Source types.NamespacedName
-	// PriorAttemptedRevision is the Kustomization's status.lastAttemptedRevision before the stamp.
-	PriorAttemptedRevision string
-	// PriorArtifactRevision is the GitRepository's status.artifact.revision before the stamp.
-	PriorArtifactRevision string
-}
-
-// Binding is the repository and branch an applier must apply from: the GitProvider's spec.url and
-// the GitTarget's spec.branch. Request checks it before it writes anything, not only Validate,
-// because a published ApplierConfigured verdict can be older than the applier it describes.
-type Binding struct {
-	RepositoryURL string
-	Branch        string
-}
-
-// AccessCheck reports whether the source-cluster identity may perform attrs.
-type AccessCheck func(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error)
 
 // Flux asks a Flux Kustomization to apply, in one source cluster.
 type Flux struct {
@@ -150,24 +66,6 @@ type Flux struct {
 // NewFlux returns a Flux client over a source cluster's dynamic client.
 func NewFlux(client dynamic.Interface) *Flux {
 	return &Flux{client: client, Now: time.Now, CanI: SelfSubjectAccessCheck(client)}
-}
-
-// permanentError marks a request no retry can make succeed: the Kustomization is configured in a
-// way a request cannot work with, or applies another repository or branch. The dispatcher hands it
-// back to the branch worker at once rather than retrying it, and the worker asks again later,
-// because the configuration may have been fixed in between.
-type permanentError struct{ err error }
-
-func (e permanentError) Error() string { return e.err.Error() }
-func (e permanentError) Unwrap() error { return e.err }
-
-// errStale reports a request whose decision no longer held when the stamp was due.
-var errStale = errors.New("the decision no longer holds: the branch moved on or became busy")
-
-// isPermanent reports whether err is a permanentError.
-func isPermanent(err error) bool {
-	var p permanentError
-	return errors.As(err, &p)
 }
 
 // Request asks the Kustomization ref to apply commit, the way `flux reconcile kustomization
@@ -278,12 +176,6 @@ func (f *Flux) Handled(ctx context.Context, ref types.NamespacedName, s Stamped)
 		statusString(source, "artifact", "revision") == s.PriorArtifactRevision, nil
 }
 
-// statusString reads a string under an object's status.
-func statusString(obj *unstructured.Unstructured, fields ...string) string {
-	value, _, _ := unstructured.NestedString(obj.Object, append([]string{"status"}, fields...)...)
-	return value
-}
-
 // stamp sets reconcile.fluxcd.io/requestedAt to now, which is the whole of what `flux reconcile`
 // does to ask: requestReconciliation in external-sources/flux/flux2/cmd/flux/reconcile.go
 // (@1ed703a3) merge-patches that annotation, and only that, with time.Now().Format(time.RFC3339Nano).
@@ -292,7 +184,7 @@ func statusString(obj *unstructured.Unstructured, fields ...string) string {
 //
 // It returns the value stamped, which Flux copies to status.lastHandledReconcileAt once handled.
 func (f *Flux) stamp(ctx context.Context, gvr schema.GroupVersionResource, ref types.NamespacedName) (string, error) {
-	token := f.Now().Format(time.RFC3339Nano)
+	token := requestToken(f.Now())
 	patch, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{
 			"annotations": map[string]string{fluxmeta.ReconcileRequestAnnotation: token},
@@ -374,7 +266,7 @@ func splitRevision(revision string) (string, string) {
 func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Binding) Verdict {
 	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
-		return readFailure(kindKustomization, kustomizationGVR(), ref, err)
+		return readFailure("Flux", kindKustomization, kustomizationGVR(), ref, err)
 	}
 	sourceRef, err := gitRepositoryRef(ks)
 	if err != nil {
@@ -383,7 +275,7 @@ func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Bind
 	source, err := f.client.Resource(gitRepositoryGVR()).Namespace(sourceRef.Namespace).
 		Get(ctx, sourceRef.Name, metav1.GetOptions{})
 	if err != nil {
-		verdict := readFailure(kindGitRepository, gitRepositoryGVR(), sourceRef, err)
+		verdict := readFailure("Flux", kindGitRepository, gitRepositoryGVR(), sourceRef, err)
 		verdict.Message = fmt.Sprintf("%s (the sourceRef of %s %s)", verdict.Message, kindKustomization, ref)
 		return verdict
 	}
@@ -399,27 +291,8 @@ func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Bind
 		{kindGitRepository, gitRepositoryGVR(), sourceRef},
 		{kindKustomization, kustomizationGVR(), ref},
 	} {
-		allowed, err := f.CanI(ctx, authorizationv1.ResourceAttributes{
-			Namespace: obj.ref.Namespace,
-			Verb:      "patch",
-			Group:     obj.gvr.Group,
-			Version:   obj.gvr.Version,
-			Resource:  obj.gvr.Resource,
-			Name:      obj.ref.Name,
-		})
-		if err != nil {
-			return Verdict{
-				Reason:  ReasonCheckFailed,
-				Message: fmt.Sprintf("could not check whether %s %s may be patched: %v", obj.kind, obj.ref, err),
-				Err:     err,
-			}
-		}
-		if !allowed {
-			return Verdict{
-				Reason: ReasonForbidden,
-				Message: fmt.Sprintf("the source-cluster identity may not patch %s %s (%s)",
-					obj.kind, obj.ref, obj.gvr.GroupResource()),
-			}
+		if verdict := accessVerdict(ctx, f.CanI, obj.kind, obj.gvr, obj.ref, "patch"); verdict != nil {
+			return *verdict
 		}
 	}
 
@@ -429,50 +302,6 @@ func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Bind
 		Message: fmt.Sprintf("%s %s applies %s %s, which fetches branch %s",
 			kindKustomization, ref, kindGitRepository, sourceRef, want.Branch),
 	}
-}
-
-// readFailure classifies a failed GET for Validate.
-//
-// A kind that is not served is ApplierNotFound like a missing object, because the fix is the same
-// (install Flux, or name the right object) and the condition is a gate either way. The two are
-// told apart only for the message: a client with a RESTMapper says so with a NoKindMatch, and the
-// API server answers the dynamic client's GET of an unserved resource with a 404 whose details name
-// no object, where a missing object's 404 names it.
-func readFailure(kind string, gvr schema.GroupVersionResource, ref types.NamespacedName, err error) Verdict {
-	switch {
-	case apimeta.IsNoMatchError(err) || (apierrors.IsNotFound(err) && !namesObject(err, ref.Name)):
-		return Verdict{
-			Reason: ReasonApplierNotFound,
-			Message: fmt.Sprintf("the source cluster does not serve %s (%s); is Flux installed there?",
-				kind, gvr.GroupVersion()),
-		}
-	case apierrors.IsNotFound(err):
-		return Verdict{
-			Reason:  ReasonApplierNotFound,
-			Message: fmt.Sprintf("%s %s not found in the source cluster", kind, ref),
-		}
-	case apierrors.IsForbidden(err):
-		return Verdict{
-			Reason:  ReasonForbidden,
-			Message: fmt.Sprintf("the source-cluster identity may not get %s %s: %v", kind, ref, err),
-		}
-	default:
-		return Verdict{
-			Reason:  ReasonCheckFailed,
-			Message: fmt.Sprintf("could not read %s %s: %v", kind, ref, err),
-			Err:     err,
-		}
-	}
-}
-
-// namesObject reports whether a NotFound error is about the named object, rather than the resource.
-func namesObject(err error, name string) bool {
-	var status apierrors.APIStatus
-	if !errors.As(err, &status) {
-		return false
-	}
-	details := status.Status().Details
-	return details != nil && details.Name == name
 }
 
 // sourceMismatch returns why a GitRepository does not fetch branch of repositoryURL, or "" when it
@@ -499,33 +328,4 @@ func sourceMismatch(source *unstructured.Unstructured, ref types.NamespacedName,
 		return fmt.Sprintf("%s %s fetches branch %q, not %s", kindGitRepository, ref, gitRef["branch"], branch)
 	}
 	return ""
-}
-
-// SelfSubjectAccessCheck answers an AccessCheck with a SelfSubjectAccessReview created through
-// client, so it is answered for the identity client authenticates as. It goes through the dynamic
-// client rather than a typed clientset because that client is the only one a source cluster has.
-func SelfSubjectAccessCheck(client dynamic.Interface) AccessCheck {
-	return func(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error) {
-		review := &authorizationv1.SelfSubjectAccessReview{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: authorizationv1.SchemeGroupVersion.String(),
-				Kind:       "SelfSubjectAccessReview",
-			},
-			Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &attrs},
-		}
-		content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(review)
-		if err != nil {
-			return false, err
-		}
-		created, err := client.Resource(selfSubjectAccessReviewGVR()).
-			Create(ctx, &unstructured.Unstructured{Object: content}, metav1.CreateOptions{})
-		if err != nil {
-			return false, fmt.Errorf("create SelfSubjectAccessReview: %w", err)
-		}
-		allowed, _, err := unstructured.NestedBool(created.Object, "status", "allowed")
-		if err != nil {
-			return false, fmt.Errorf("read SelfSubjectAccessReview status: %w", err)
-		}
-		return allowed, nil
-	}
 }

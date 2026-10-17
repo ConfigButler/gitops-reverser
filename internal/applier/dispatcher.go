@@ -40,6 +40,7 @@ const (
 // apply_requests_total label values.
 const (
 	applierKindKustomization = "kustomization"
+	applierKindApplication   = "application"
 
 	outcomeSent    = "sent"
 	outcomeFailed  = "failed"
@@ -61,13 +62,14 @@ type SourceClients func(ctx context.Context, clusterID string) (dynamic.Interfac
 // branch worker decides when to try again.
 const DefaultAttemptTimeout = 30 * time.Second
 
-// DefaultApplyWindowTimeout bounds how long a delivered attempt stays out waiting for Flux to finish
-// the apply. An apply that waits on health checks can take minutes; one Flux never finishes (the
-// controller is down, the fetch failed) must not hold the applier forever, so the window then
-// closes by time.
+// DefaultApplyWindowTimeout bounds how long a delivered attempt stays out waiting for the applier to
+// finish the apply. An apply that waits on health checks can take minutes; one the applier never
+// finishes (the controller is down, the fetch failed) must not hold the applier forever, so the
+// window then closes by time. It also bounds how long an Argo CD attempt waits for an operation
+// already running on the Application before it sets its own.
 const DefaultApplyWindowTimeout = 5 * time.Minute
 
-// DefaultHandledPollInterval is how often a delivered attempt reads whether Flux finished.
+// DefaultHandledPollInterval is how often a delivered attempt reads whether the applier finished.
 const DefaultHandledPollInterval = 2 * time.Second
 
 // Dispatcher carries out the apply requests the branch workers decide. It implements
@@ -84,22 +86,24 @@ const DefaultHandledPollInterval = 2 * time.Second
 // GitTarget again and asks only for those that are still the incarnation the worker decided for,
 // still name this applier on this branch, are still admitted by their ClusterProvider, and, for a
 // Refusal, still consent. When no target still holds the request's reason it asks nothing at all,
-// rather than ask for something weaker: a weaker request is the worker's to decide. Then the Flux
-// client checks the source binding before it stamps.
+// rather than ask for something weaker: a weaker request is the worker's to decide. Then the
+// applier's client (Flux or Argo CD, by the applier's kind) checks the source binding before it
+// writes.
 type Dispatcher struct {
 	reader        client.Reader
 	sourceClients SourceClients
 	recorder      record.EventRecorder
 	log           logr.Logger
 
-	// AttemptTimeout bounds one attempt up to its stamp. Set before Start.
+	// AttemptTimeout bounds one attempt up to its request. An Argo CD attempt may wait out an
+	// operation already running for up to ApplyWindowTimeout more. Set before Start.
 	AttemptTimeout time.Duration
-	// ApplyWindowTimeout bounds the wait, after a stamp, for Flux to finish the apply it asked for;
-	// zero does not wait. Set before Start.
+	// ApplyWindowTimeout bounds the wait, after a request, for the applier to finish the apply it
+	// asked for; zero does not wait. Set before Start.
 	ApplyWindowTimeout time.Duration
-	// HandledPollInterval is how often that wait reads Flux's status. Set before Start.
+	// HandledPollInterval is how often that wait reads the applier's status. Set before Start.
 	HandledPollInterval time.Duration
-	// Now is the clock requestedAt stamps and the ledger read.
+	// Now is the clock request tokens and the ledger read.
 	Now func() time.Time
 
 	runMu    sync.RWMutex
@@ -209,12 +213,16 @@ type eligibleTarget struct {
 	reason v1alpha3.ApplyReason
 }
 
-// attempt carries out one request and returns its report. A delivered one is reported once Flux has
-// finished the apply (awaitHandled), so the branch worker's attempt stays out for exactly the apply
-// window: the seconds in which an edit can be reverted by it.
+// attempt carries out one request and returns its report. A delivered one is reported once the
+// applier has finished the apply (awaitHandled), so the branch worker's attempt stays out for
+// exactly the apply window: the seconds in which an edit can be reverted by it.
 func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.ApplyResult {
 	run := ctx
-	ctx, cancel := context.WithTimeout(ctx, d.AttemptTimeout)
+	timeout := d.AttemptTimeout
+	if req.Applier.Kind == v1alpha3.ApplierKindApplication {
+		timeout += d.ApplyWindowTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log := d.log.WithValues("applier", req.Applier.String(), "branch", req.Branch.String(),
 		"reason", req.Reason, "commit", req.Commit)
@@ -227,7 +235,7 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.Appl
 		return d.failure(ctx, req, nil, report(git.ApplyFailed, err), log)
 	}
 	if !holdsReason(eligible, req.Reason) {
-		d.count(ctx, req.Reason, outcomeDropped)
+		d.count(ctx, req, outcomeDropped)
 		log.Info("no GitTarget may still ask this applier for this; asking nothing")
 		return report(git.ApplyDropped, nil)
 	}
@@ -237,12 +245,11 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.Appl
 		return d.failure(ctx, req, eligible,
 			report(git.ApplyFailed, fmt.Errorf("source cluster %q: %w", req.Applier.Cluster, err)), log)
 	}
-	flux := NewFlux(sourceClient)
-	flux.Now = d.Now
-	stamped, err := flux.Request(ctx, applierName(req.Applier), want, req.Commit, req.Reason, req.Current)
+	applier := d.client(req.Applier.Kind, sourceClient)
+	stamped, err := applier.Request(ctx, applierName(req.Applier), want, req.Commit, req.Reason, req.Current)
 	switch {
 	case errors.Is(err, errStale):
-		d.count(ctx, req.Reason, outcomeStale)
+		d.count(ctx, req, outcomeStale)
 		log.Info("the decision no longer holds; asking nothing, the branch worker decides again")
 		return report(git.ApplyStale, nil)
 	case isPermanent(err):
@@ -251,22 +258,37 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.Appl
 		return d.failure(ctx, req, eligible, report(git.ApplyFailed, err), log)
 	}
 
-	d.count(ctx, req.Reason, outcomeSent)
+	d.count(ctx, req, outcomeSent)
 	if stamped.Outcome == OutcomeCurrent {
-		log.V(1).Info("applier already holds the commit; nothing to request")
+		log.V(1).Info("the applier needs no request for this commit; asking nothing")
 		return report(git.ApplyCurrent, nil)
 	}
 	log.Info("apply requested", "outcome", stamped.Outcome)
 	d.delivered(req, eligible)
-	d.awaitHandled(run, flux, applierName(req.Applier), stamped, log)
+	d.awaitHandled(run, applier, applierName(req.Applier), stamped, log)
 	return report(git.ApplyDelivered, nil)
 }
 
-// awaitHandled waits, up to ApplyWindowTimeout, for Flux to finish the apply stamped asked for. It
-// decides nothing: the request was delivered either way, and a wait that ends by time or by
-// shutdown only closes the window sooner than Flux did.
+// client is the Client for an applier of kind, over its cluster's client and this dispatcher's
+// clock and timings.
+func (d *Dispatcher) client(kind string, sourceClient dynamic.Interface) Client {
+	if kind == v1alpha3.ApplierKindApplication {
+		argo := NewArgoCD(sourceClient)
+		argo.Now = d.Now
+		argo.OperationWait = d.ApplyWindowTimeout
+		argo.PollInterval = d.HandledPollInterval
+		return argo
+	}
+	flux := NewFlux(sourceClient)
+	flux.Now = d.Now
+	return flux
+}
+
+// awaitHandled waits, up to ApplyWindowTimeout, for the applier to finish the apply stamped asked
+// for. It decides nothing: the request was delivered either way, and a wait that ends by time or by
+// shutdown only closes the window sooner than the applier did.
 func (d *Dispatcher) awaitHandled(
-	ctx context.Context, flux *Flux, ref types.NamespacedName, stamped Stamped, log logr.Logger,
+	ctx context.Context, applier Client, ref types.NamespacedName, stamped Stamped, log logr.Logger,
 ) {
 	if d.ApplyWindowTimeout <= 0 {
 		return
@@ -277,18 +299,18 @@ func (d *Dispatcher) awaitHandled(
 	ticker := time.NewTicker(d.HandledPollInterval)
 	defer ticker.Stop()
 	for {
-		handled, err := flux.Handled(ctx, ref, stamped)
+		handled, err := applier.Handled(ctx, ref, stamped)
 		switch {
 		case handled:
-			log.V(1).Info("Flux finished the requested apply", "after", d.Now().Sub(started).String())
+			log.V(1).Info("the applier finished the requested apply", "after", d.Now().Sub(started).String())
 			return
 		case err != nil && ctx.Err() == nil:
-			log.V(1).Info("could not read whether Flux finished the requested apply", "error", err.Error())
+			log.V(1).Info("could not read whether the applier finished the requested apply", "error", err.Error())
 		}
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				log.Info("Flux did not report the requested apply finished in time; the apply window closes now",
+				log.Info("the applier did not report the requested apply finished in time; the apply window closes now",
 					"waited", d.Now().Sub(started).String(), "timeout", d.ApplyWindowTimeout.String())
 			}
 			return
@@ -297,7 +319,7 @@ func (d *Dispatcher) awaitHandled(
 	}
 }
 
-// applierName is the Kustomization an applier reference names.
+// applierName is the object an applier reference names.
 func applierName(ref git.ApplierRef) types.NamespacedName {
 	return types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
 }
@@ -317,14 +339,14 @@ func holdsReason(eligible []eligibleTarget, reason v1alpha3.ApplyReason) bool {
 func (d *Dispatcher) failure(
 	ctx context.Context, req git.ApplyRequest, eligible []eligibleTarget, res git.ApplyResult, log logr.Logger,
 ) git.ApplyResult {
-	d.count(ctx, req.Reason, outcomeFailed)
+	d.count(ctx, req, outcomeFailed)
 	log.Error(res.Err, "apply attempt failed; the branch worker decides when to try again",
 		"outcome", res.Outcome, "priorFailures", req.PriorFailures)
 	if req.PriorFailures == 0 && d.recorder != nil {
 		for _, e := range eligible {
 			d.recorder.Eventf(e.target, corev1.EventTypeWarning, EventReasonApplyRequestFailed,
 				"could not ask %s to apply %s (%s), and will ask again once the branch is quiet: %v",
-				applierName(req.Applier), describeCommit(req.Commit), e.reason, res.Err)
+				describeApplier(req.Applier), describeCommit(req.Commit), e.reason, res.Err)
 		}
 	}
 	return res
@@ -427,8 +449,13 @@ func (d *Dispatcher) delivered(req git.ApplyRequest, eligible []eligibleTarget) 
 	}
 	for _, e := range eligible {
 		d.recorder.Eventf(e.target, corev1.EventTypeNormal, EventReasonApplyRequested,
-			"asked %s to apply %s (%s)", applierName(req.Applier), describeCommit(req.Commit), e.reason)
+			"asked %s to apply %s (%s)", describeApplier(req.Applier), describeCommit(req.Commit), e.reason)
 	}
+}
+
+// describeApplier names an applier in an Event: its kind and namespaced name.
+func describeApplier(ref git.ApplierRef) string {
+	return ref.Kind + " " + applierName(ref).String()
 }
 
 // describeCommit names a commit in an Event: its short hash, or what an empty one means.
@@ -443,13 +470,17 @@ func describeCommit(commit string) string {
 }
 
 // count records one apply_requests_total attempt.
-func (d *Dispatcher) count(ctx context.Context, reason v1alpha3.ApplyReason, outcome string) {
+func (d *Dispatcher) count(ctx context.Context, req git.ApplyRequest, outcome string) {
 	if telemetry.ApplyRequestsTotal == nil {
 		return
 	}
+	kind := applierKindKustomization
+	if req.Applier.Kind == v1alpha3.ApplierKindApplication {
+		kind = applierKindApplication
+	}
 	telemetry.ApplyRequestsTotal.Add(context.WithoutCancel(ctx), 1, metric.WithAttributes(
-		attribute.String("applier_kind", applierKindKustomization),
-		attribute.String("reason", string(reason)),
+		attribute.String("applier_kind", kind),
+		attribute.String("reason", string(req.Reason)),
 		attribute.String("outcome", outcome),
 	))
 }
