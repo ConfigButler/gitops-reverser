@@ -1,10 +1,10 @@
 # Suspended appliers: the plan
 
-> **design, planned, not built.** Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
+> **design, being built.** Steps 1 and 2 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
 > as a stack on top of it (branch `feat/suspended-appliers`); the two release together. Inputs: the
 > third review of #419 (five findings, summarized in the table below) and
 > [`flux-suspend-lifecycle.md`](flux-suspend-lifecycle.md) (the measurement). It settles the
-> direction, the API shape and the order of work, and ends with the decisions still open. Once
+> direction, the API shape and the order of work, and ends with the decisions taken on it. Once
 > built, it is folded into [`apply-trigger.md`](apply-trigger.md), as the Argo CD plan was.
 > Index: [`../INDEX.md`](../INDEX.md).
 
@@ -15,9 +15,11 @@ this way: automated sync is off, and every sync is one we asked for. Flux gets t
 keeping its `Kustomization` **suspended while idle**. To apply, GitOps Reverser resumes it, watches
 that one reconcile finish, and suspends it again. Today's setup only asks Flux to apply sooner than
 its 24h interval would. The new one hands Flux's apply moment to GitOps Reverser completely. In the
-API, each kind of applier becomes its own resource (`FluxApplier`, `ArgoCDApplier`, later
-`WebhookApplier`), referenced by the `GitTarget`. The applier's in-flight operation, the repairs it
-owes and its suspension are durable state, and that state needs a status of its own.
+API, each kind of applier gets its own trigger resource (`FluxTrigger`, `ArgoCDTrigger`, later
+`WebhookTrigger`), referenced by the `GitTarget`. The trigger's in-flight operation, the repairs it
+owes and its suspension are durable state, and that state needs a status of its own. "Applier" keeps
+its meaning from [`../definitions.md`](../definitions.md): the `Kustomization` or `Application`
+itself. The trigger is our resource that holds it.
 
 ## Why the direction changes
 
@@ -54,7 +56,7 @@ cluster. The objections it answers are the ones that would have stopped this dir
   page's lesson "Flux has no fetch-only mode" stops being true, so push webhooks can reach the source
   again.
 - **A bug in today's code (point 3):** `Handled()` treats a `requestedAt` as handled on a suspended
-  `Kustomization` that applied nothing. In the lifecycle below that same behaviour becomes the fence
+  `Kustomization` that applied nothing. In the lifecycle below that same behavior becomes the fence
   that proves quiescence.
 
 ### Source facts the lifecycle relies on
@@ -91,7 +93,7 @@ resume alone applies (measured: it reverted a drifted object with no new commit)
 3. **Recheck just before resuming:** the decision still holds (`ApplyRequest.Current`, as today),
    *and* the artifact still holds the commit. That closes the race in measurement point 6 as far as
    it can be closed (see residual risk).
-4. **Record the operation** durably in the applier's status: `phase: Requested`, the commit, the
+4. **Record the operation** durably in the trigger's status: `phase: Requested`, the commit, the
    reason and the token.
 5. **Resume with a token.** One merge patch sets `spec.suspend: false` and
    `reconcile.fluxcd.io/requestedAt: <T1>`. The patch enqueues a reconcile that reads both, so the
@@ -124,7 +126,7 @@ is sound. `Refusal` and `Repair` always run the operation.
 
 ### Operation states
 
-These are shared by every applier kind, in worker memory and in the applier's `status.operation`:
+These are shared by every applier kind, in worker memory and in the trigger's `status.operation`:
 
 | Phase | Meaning | Window | Next attempt to this applier |
 | --- | --- | --- | --- |
@@ -134,12 +136,12 @@ These are shared by every applier kind, in worker memory and in the applier's `s
 | `Unresolved` | The poll budget ran out, or a restart found work with no completion | Open; `Ready=False` with reason `OperationUnresolved`, logged, counted | Waits; polling continues with backoff |
 | `Succeeded` / `Failed` | Completed, and for Flux suspended again | Grace (10 s), then closed | Allowed (a `Failed` one after backoff) |
 
-Separately, an applier can owe a **`Repair`**: a late apply was withheld (finding 2), so the cluster
+Separately, a trigger can owe a **`Repair`**: a late apply was withheld (finding 2), so the cluster
 runs an older value than Git. It is decided like a `Refusal`: on a quiet branch, with no quiet
 period, and always running the operation.
 
 `Unresolved` is never closed by a timer. That was finding 4: the timer closed the window but did not
-stop the apply. It resolves when its token is handled, or when the applier is deleted, or when no
+stop the apply. It resolves when its token is handled, or when the trigger is deleted, or when no
 `GitTarget` names it any more. For Flux, an `Unresolved` operation is suspended at once (the suspend
 does not stop the running apply, but it does stop whatever would follow), and the fence then decides
 when the window closes. There is no automatic cancellation. The condition message says how to clear
@@ -147,37 +149,39 @@ it.
 
 ### Who owns `spec.suspend`
 
-- **Adoption.** Once a `FluxApplier` is configured, GitOps Reverser suspends the `Kustomization`. It
+- **Adoption.** Once a `FluxTrigger` is configured, GitOps Reverser suspends the `Kustomization`. It
   applies `spec.suspend` server-side under its own field manager, so `managedFields` record who owns
-  it. The applier is not `Ready` until the first fence is handled.
+  it. The trigger is not `Ready` until the first fence is handled.
 - **The manifest omits `suspend`.** Whatever applies the `Kustomization` object (a parent
   `Kustomization`, Helm, flux-operator) must not set the field, or it takes ownership back on its
   next apply. Validation reads `managedFields`. If another manager owns `f:spec.f:suspend`, the
-  applier is `Configured=False` with reason `SuspendOwnedElsewhere`, naming the manager.
-- **Resumed by someone else.** `flux resume` is the documented manual override. The applier
+  trigger is `Configured=False` with reason `SuspendOwnedElsewhere`, naming the manager.
+- **Resumed by someone else.** `flux resume` is the documented manual override. The trigger
   reconciler finds the `Kustomization` unsuspended with no operation recorded. It treats that as
   `Unresolved` (the window opens, because an unchecked apply is running), suspends it with a fence,
-  and records an Event. It never fights more than that: if the object is resumed again, the
-  condition says so.
-- **Hand-back.** The applier carries a finalizer. Deleting it waits out any operation, then resumes
+  and records a `Normal` Event. It does this every time, with an Event each time: there is no
+  step-back state (decision 3).
+- **Hand-back.** The trigger carries a finalizer. Deleting it waits out any operation, then resumes
   the `Kustomization` (`suspend: false`, the field released), so Flux owns it again. A `GitTarget`
-  that stops referencing the applier releases nothing. The applier object is what holds the
+  that stops referencing the trigger releases nothing. The trigger object is what holds the
   `Kustomization`.
 
 ### Shared sources and prefetch
 
 With suspension, finding 3 becomes a **precondition** instead of a race:
 
-- The applier reconciler lists the consumers of its `GitRepository` in the applier cluster:
+- The trigger reconciler lists the consumers of its `GitRepository` in the applier's cluster:
   `Kustomization`s with that `sourceRef`, and `HelmRelease`s whose chart comes from it.
-- **Every consumer is suspended by one of our appliers:** the source is free. A stamp wakes nobody,
+- **Every consumer is suspended by one of our triggers:** the source is free. A stamp wakes nobody,
   and **prefetch** is on. When the worker observes a push (the receiver, a rejected compare-and-swap,
   the refresh), it stamps the `GitRepository`. The rule: no prefetch while any consumer of that source
   has an operation that is not completed, because a resumed consumer applies whatever the artifact
   becomes.
-- **Some consumer is not ours:** `SharedSource=True`, naming it. Prefetch is off, and a source stamp
-  still applies that consumer, as today. It is a warning, not a refusal. A consumer that no applier
-  names applies a folder that has no promise of protection anyway.
+- **Some consumer is not ours:** `status.source.otherConsumers` lists it. Prefetch is off, and a
+  source stamp still applies that consumer, as today. It is information only (decision 2): it never
+  affects `Ready`, and no `Warning` Event is sent, because one `GitRepository` for `apps` and `infra`
+  is a normal setup. A consumer that no trigger names applies a folder that has no promise of
+  protection anyway.
 - If listing is forbidden, the precondition cannot be checked, so it counts as not holding.
 
 Flux appliers on one branch that read one `GitRepository` form a group. A group has one operation at
@@ -185,7 +189,7 @@ a time, because the artifact is shared.
 
 ### Restart recovery
 
-Before live events for a covered `GitTarget` are mirrored, the worker reads each applier's
+Before live events for a covered `GitTarget` are mirrored, the worker reads each trigger's
 `status.operation`:
 
 - **Not completed:** reopen the window and resume polling the recorded token (T1 or T2). For Flux, if
@@ -219,24 +223,24 @@ restart recovery from `status.operation`. Its completion signal (the operation s
 our token, `Succeeded`/`Failed`/`Error`) is already exact. It has no fence step: an Argo CD
 operation that has completed is not followed by another we did not start.
 
-## The API: typed applier kinds
+## The API: typed trigger kinds
 
 ### Shape
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: FluxApplier
+kind: FluxTrigger
 metadata: { name: apps, namespace: team-a }
 spec:
   clusterProviderRef: { name: management }        # required: where the Kustomization lives
   kustomizationRef: { name: apps, namespace: flux-system }
   quietPeriod: 30s                                # CatchUp only
 status:
-  conditions:                                     # Ready, Configured, Suspended, SharedSource
+  conditions:                                     # Ready, Configured, Suspended
   source:
     gitRepository: flux-system/apps-repo
     artifactRevision: main@sha1:…
-    otherConsumers: [flux-system/infra]           # consumers no applier suspends
+    otherConsumers: [flux-system/infra]           # consumers no trigger suspends
   operation:
     id: 42
     reason: Refusal                               # ForeignCommit | Refusal | CatchUp | Repair
@@ -250,7 +254,7 @@ status:
     appliedRevision: main@sha1:3f2a…
   repairOwed: false
 ---
-kind: ArgoCDApplier
+kind: ArgoCDTrigger
 spec:
   clusterProviderRef: { name: management }
   applicationRef: { name: apps, namespace: argocd }
@@ -261,24 +265,24 @@ status:
 ---
 kind: GitTarget
 spec:
-  applierRef: { kind: FluxApplier, name: apps }   # same namespace, like gitProviderRef
+  applyTriggerRef: { kind: FluxTrigger, name: apps }  # same namespace, like gitProviderRef
   onRefusal: Reapply
 ```
 
-### Why the applier gets its own resource
+### Why the trigger is its own resource
 
 1. **It names the unit the code already uses.** One `applierState` per applier: one attempt in
    flight, its own backoff, its own window. Today that state has no object. It lives in worker memory,
    and each `GitTarget` shows only its last request.
 2. **Suspension needs an owner object.** Who holds the `Kustomization` suspended, and who resumes it
    on hand-back, has to be one object with a finalizer. A `GitTarget` cannot be that object, because
-   several can name one applier.
+   several can name one trigger.
 3. **The fixes need a durable status.** The operation record (restart recovery), `repairOwed`, the
-   source group and the consumer check all need a home that `kubectl get fluxappliers` can show.
+   source group and the consumer check all need a home that `kubectl get fluxtriggers` can show.
 4. **Declared once.** `quietPeriod` is today "the longest among the targets naming it", and
-   `clusterProviderRef` is per target even though it describes the applier. Both move to the applier.
+   `clusterProviderRef` is per target even though it describes the applier. Both move to the trigger.
 5. **Typed kinds remove the union.** The CEL rules "exactly one of" and "no `quietPeriod` with an
-   `applicationRef`" disappear. Each kind gets its own schema, status and RBAC. The webhook applier
+   `applicationRef`" disappear. Each kind gets its own schema, status and RBAC. The webhook trigger
    becomes a third kind, not a third branch. This follows Flux's own convention:
    `sourceRef: {kind: GitRepository|OCIRepository|…}`.
 6. **It fixes the e2e gotcha.** `status.applier` refreshes today only when the `GitTarget`
@@ -291,18 +295,18 @@ spec:
   writes `status.operation` and `repairOwed` on each transition. That replaces the dispatcher's
   in-memory ledger.
 - **The dispatcher executes.** It runs one operation and reports transitions back. It never retries.
-- **The applier reconciler holds and validates.** It adopts (suspends), validates (source, consumers,
+- **The trigger reconciler holds and validates.** It adopts (suspends), validates (source, consumers,
   automated sync, field ownership, RBAC), handles external resumes and hand-back, and publishes
   `status.source`. It never starts an apply.
-- **The `GitTarget` keeps consent** (`onRefusal`, by uid) and an `ApplierReady` condition that
-  mirrors its applier's, so `kubectl get gittarget` still says whether it is wired.
+- **The `GitTarget` keeps consent** (`onRefusal`, by uid) and an `ApplyTriggerReady` condition
+  that mirrors its trigger's, so `kubectl get gittarget` still says whether it is wired.
 
 ### What it costs
 
 - One more object to create, one more reconciler, and RBAC for two kinds now and three later.
-- `clusterProviderRef` is required on the applier, since "the target's own" stops meaning anything
-  once several targets reference one applier. The applier's namespace is gated by that
-  `ClusterProvider`'s `accessFrom`, and a `GitTarget` may reference only an applier in its own
+- `clusterProviderRef` is required on the trigger, since "the target's own" stops meaning anything
+  once several targets reference one trigger. The trigger's namespace is gated by that
+  `ClusterProvider`'s `accessFrom`, and a `GitTarget` may reference only a trigger in its own
   namespace. That is simpler than today's per-target `authz.ApplierAdmitted`.
 - New RBAC in the applier cluster: list `kustomizations` and `helmreleases` cluster-wide, for the
   consumer check. Without it, prefetch is off.
@@ -348,17 +352,18 @@ Argo CD benefits at once. Tests: the reviewer's Argo CD sequence (sync 2, edit 3
 ends with a second, pinned sync; a timeout keeps the window open; an `Unresolved` operation resolves
 on its token.
 
-**Step 3. The applier kinds.** `FluxApplier` and `ArgoCDApplier` types, CRDs, RBAC and deepcopy.
-`GitTarget.spec.applierRef`; drop `spec.applier` and `status.applier`; add `ApplierReady`. Move the
-validation in [`gittarget_applier.go`](../../internal/controller/gittarget_applier.go) to the applier
-reconciler. Have the worker resolve appliers through their objects and write `status.operation`.
+**Step 3. The trigger kinds.** `FluxTrigger` and `ArgoCDTrigger` types, CRDs, RBAC and deepcopy.
+`GitTarget.spec.applyTriggerRef`; drop `spec.applier` and `status.applier`; add `ApplyTriggerReady`.
+Move the validation in [`gittarget_applier.go`](../../internal/controller/gittarget_applier.go) to
+the trigger reconciler. Have the worker resolve appliers through their triggers and write
+`status.operation`.
 Update [`flux_guide_test.go`](../../internal/applier/flux_guide_test.go),
 [`argocd_guide_test.go`](../../internal/applier/argocd_guide_test.go), the schema tests and the e2e
 helpers. Review the generated CRDs with the `k8s-crd-design-review` skill.
 
 **Step 4. The suspend lifecycle.** A new Flux client that does adoption, the resume token, the
 outcome table, the suspend fence and failure re-suspension, with the recheck before resume. Delete
-the request paths listed under "What goes away". The applier reconciler checks `suspend` ownership,
+the request paths listed under "What goes away". The trigger reconciler checks `suspend` ownership,
 handles external resumes and hand-back through the finalizer. Unit tests against a fake that applies
 the source facts above: a token is handled on every return, a suspended object ignores artifacts,
 reconciles never overlap. e2e: the Flux corner and the manager specs run with suspended
@@ -369,7 +374,7 @@ after a failure.
 above. e2e: restart the manager in the middle of a 200-object apply; the late write over a newer edit
 is withheld, and the `Kustomization` ends up suspended.
 
-**Step 6. Consumers, groups and prefetch.** The consumer list, `SharedSource`, operation groups per
+**Step 6. Consumers, groups and prefetch.** The consumer list (`status.source`), operation groups per
 `GitRepository`, and prefetch from the worker's observations when the precondition holds. Tests: the
 reviewer's A/B sequence (an edit to B during A's fetch keeps its value), and a push to the receiver
 that leaves an artifact ready while nothing applies.
@@ -392,21 +397,30 @@ that leaves an artifact ready while nothing applies.
 Steps 1 and 2 do not depend on the API. Steps 4 to 6 need step 3's status. Step 4 is the large one,
 and the step to run a local e2e on before pushing (AGENTS.md, "When to push").
 
-## Open decisions
+## Decisions
 
 Decided 2026-10-17: the work is a stack on #419 (`feat/suspended-appliers`), released together
 with it, so `spec.applier` is never released and gitops-api sees one API, not two.
 
-1. **Suspension as the only Flux mode?** Recommended: yes, the way "automated sync off" is the only
-   Argo CD mode. A second, request-based mode would keep every hole in the 24h table alive, along
-   with two completion protocols.
-2. **Shared sources: warn or refuse?** Recommended: warn (`SharedSource`, prefetch off). Refusing
-   rejects the common setup of one `GitRepository` for `apps` and `infra`.
-3. **External resume: re-suspend or step back?** Recommended: fence and re-suspend once, with an
-   Event. Stepping back (the applier becomes `Ready=False` until a person acts) is safer against a
-   tool that keeps resuming, and noisier for the person who ran `flux resume` on purpose.
-4. **Keep `CatchUp` for Flux?** Recommended: keep it, as convergence: inventory adoption, so that a
-   later Git-side deletion is pruned. The same inventory question exists for Argo CD, which was
-   decided without `CatchUp`. Noted here, not reopened.
-5. **Name of the Flux kind.** `FluxApplier` with `kustomizationRef`, leaving room for a
-   `helmReleaseRef` later. The alternative, `FluxKustomizationApplier`, is more exact and longer.
+The open decisions were settled the same day:
+
+1. **Suspension is the only Flux mode,** the way "automated sync off" is the only Argo CD mode. A
+   second, request-based mode would keep every hole in the 24h table alive, along with two
+   completion protocols.
+2. **A shared source is information only.** `status.source.otherConsumers` lists the source's
+   other consumers, and prefetch is off while it is not empty. It never affects `Ready`, and no
+   `Warning` Event is sent: one `GitRepository` for `apps` and `infra` is a normal setup. There is no
+   `SharedSource` condition.
+3. **An external resume is always fenced and re-suspended,** with a `Normal` Event each time. There
+   is no step-back state: the person who runs `flux resume` on purpose gets one checked apply, and a
+   tool that keeps resuming gets an Event per resume.
+4. **`CatchUp` stays for Flux,** as convergence: inventory adoption, so that a later Git-side
+   deletion is pruned. The same inventory question exists for Argo CD, which was decided without
+   `CatchUp`. Noted here, not reopened.
+5. **The resources are triggers.** "Applier" keeps its meaning in
+   [`../definitions.md`](../definitions.md): the Flux `Kustomization` or Argo CD `Application`
+   itself. Our kinds are `FluxTrigger` (`spec.kustomizationRef`) and `ArgoCDTrigger`
+   (`spec.applicationRef`); "Argo" alone would collide with the triggers of Argo Events. A
+   `GitTarget` names one with `spec.applyTriggerRef: {kind: FluxTrigger | ArgoCDTrigger, name}` in its
+   own namespace, and carries an `ApplyTriggerReady` condition. `spec.applier` was never released, so
+   it is replaced outright, with no migration.

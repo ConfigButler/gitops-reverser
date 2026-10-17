@@ -191,9 +191,15 @@ and the two are not interchangeable.
 ## Applying back
 
 **Applier.** The object that applies a folder to its source cluster: a Flux `Kustomization`, an
-Argo CD `Application`, or a webhook standing in for another tool. `GitTarget.spec.applier` names
-it. Not "reconciler", which also names this operator's own controllers, and not "orchestrator",
-which says nothing about what it does to the cluster.
+Argo CD `Application`, or a webhook standing in for another tool. An apply trigger names it. Not
+"reconciler", which also names this operator's own controllers, and not "orchestrator", which says
+nothing about what it does to the cluster.
+
+**Apply trigger.** This operator's resource that holds one applier and starts every apply it makes: a
+`FluxTrigger` (`spec.kustomizationRef`) or an `ArgoCDTrigger` (`spec.applicationRef`). A
+`GitTarget` names one with `spec.applyTriggerRef` and reports it in its `ApplyTriggerReady`
+condition. The trigger is never called the applier: the applier is the object it triggers. Not
+"Argo trigger", which names a trigger of Argo Events.
 
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
 (`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`). It asks; the operation it starts is followed
