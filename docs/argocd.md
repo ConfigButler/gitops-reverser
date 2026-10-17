@@ -57,6 +57,23 @@ Reverser's own commits are already live (they were read from the cluster), and a
 refresh the `Application` reports them `Synced`. So `spec.applier.quietPeriod` is rejected with an
 `applicationRef`.
 
+## Requirements
+
+Running bi-directional with Argo CD is a supported setup, with a narrow configuration. Each row is
+checked by GitOps Reverser or is a condition of the guarantees on this page.
+
+| Requirement | Why | When it is not met |
+| --- | --- | --- |
+| Argo CD 3.1 or later | `spec.syncPolicy.automated.enabled` exists from 3.1.0. It is the only way to switch automated sync off and keep `prune` | Before 3.1 the `Application` schema has no `enabled`, so the API server drops it, the block reads as on, and the target reports `AutomatedSyncEnabled`. Remove the `automated` block instead, and accept that a file deleted in Git leaves its object running |
+| Automated sync off | GitOps Reverser starts every sync, on a quiet branch | `AutomatedSyncEnabled`; the `Application` is never synced by GitOps Reverser |
+| A single Git source: `spec.source`, on the `GitProvider`'s repository | A sync is pinned to one commit of one repository | `SourceMismatch` for `spec.sources`, `spec.sourceHydrator`, or another repository |
+| `targetRevision` is the `GitTarget`'s branch (`main` or `refs/heads/main`) | The tip GitOps Reverser checks is the tip of that branch | `SourceMismatch` for `HEAD`, an empty `targetRevision`, a tag or a commit |
+| The source renders the folder GitOps Reverser writes: `directory.recurse: true` for a plain directory, or a kustomization at the path | GitOps Reverser writes `<path>/<namespace>/<group>/<plural>/<name>.yaml` | A non-recursive directory sees no files, and the sync applies nothing |
+| Resource tracking by `annotation`, Argo CD's default | GitOps Reverser strips `argocd.argoproj.io/tracking-id` before writing; it cannot strip `app.kubernetes.io/instance`, a label people set on purpose | With `label` or `annotation+label`, Argo CD's tracking label reaches Git on every object |
+| `get` and `update` on the `Application`, for the identity of the `ClusterProvider` that reaches it | A sync is an update of the `Application` | `Forbidden` |
+| The Git host's push webhook goes to GitOps Reverser's receiver | A Git-side push reaches the cluster in seconds | It still arrives, by the periodic refresh (`git.refreshInterval`, `10m` by default) |
+| Nothing but GitOps Reverser syncs the `Application` while GitOps Reverser runs | See [what not to do](#what-not-to-do) | Not checked: an unchecked sync can revert live edits |
+
 ## A complete example
 
 One folder, `apps/checkout` on branch `main` of `github.com/acme/platform`, published by GitOps
@@ -239,8 +256,8 @@ these differences:
 - `sync.revision` is **pinned to the commit GitOps Reverser checked**, so the sync applies exactly
   that commit, not whatever the branch holds by then.
 - `initiatedBy` is `{username: gitops-reverser, automated: true}`. Argo CD's UI and history show
-  the sync as GitOps Reverser's, and a [sync window](https://argo-cd.readthedocs.io/en/stable/user-guide/sync_windows/)
-  that blocks automated syncs blocks it too.
+  the sync as GitOps Reverser's, and [sync windows](#sync-windows-that-block-automated-syncs) treat
+  it as an automated sync.
 - `info` carries the request's reason, and a token that tells this sync's result from any other.
 - A `retry` with `refresh: true` is copied without it. Argo CD's refresh-on-retry drops the pinned
   revision and syncs the newest one, a commit GitOps Reverser never checked.
@@ -278,6 +295,86 @@ in the same second, the write could be the edit itself, so it is mirrored as bef
 The request runs off the branch worker, so a slow Argo CD never holds a publication. A request that
 fails is decided again from scratch, after that `Application`'s own backoff, exactly as for
 [Flux](flux.md#what-gitops-reverser-asks-and-when).
+
+## What not to do
+
+Each of these applies Git to the cluster without the check that nothing live is missing from it,
+or makes GitOps Reverser mirror something that is not an edit. None is refused by the API; most
+are invisible until an edit is lost.
+
+### Syncing by hand, from CI, or by rollback
+
+A sync somebody else starts applies the commit they chose, over whatever is pending at that moment.
+A Sync button pressed while an edit sits in a commit window reverts the edit on the cluster, and
+GitOps Reverser publishes the revert as Argo CD's commit. The same holds for `argocd app sync` in a
+CI pipeline that runs on push: it is the Argo CD form of a Flux `Receiver`, and the push webhook into
+GitOps Reverser replaces it. A sync in progress also holds GitOps Reverser's next request, for up to
+5 minutes.
+
+`argocd app rollback` needs automated sync off, so the standard makes it possible. A rollback applies
+an older commit over everything since, API edits included, and GitOps Reverser then publishes the
+result as a new commit. To undo a change, revert it in Git instead, and GitOps Reverser asks for the
+sync.
+
+A manual sync is the right tool only [while GitOps Reverser is down](#while-gitops-reverser-is-down).
+
+### Sync windows that block automated syncs
+
+GitOps Reverser's syncs carry `automated: true`, so an `AppProject` sync window treats them as
+automated syncs. An active `deny` window blocks them, and so does an `allow` window outside its
+schedule; `manualSync: true` on the window does not let them through.
+
+A blocked sync is not refused. Argo CD keeps the operation `Running`, with the message `Sync
+operation blocked by sync window`, and runs it when the window opens, still pinned to the commit it
+was asked for. By then the branch may hold newer commits from API edits, and the late sync reverts
+them on the cluster, outside any apply window, so GitOps Reverser publishes the revert. Meanwhile
+every new request waits behind the blocked operation and fails after 5 minutes. Keep sync windows
+off the `AppProject`s of `Application`s that a `GitTarget` names.
+
+### Watching the objects your hooks create
+
+[Hooks](https://argo-cd.readthedocs.io/en/stable/user-guide/resource_hooks/) run on every sync, so on
+every `ForeignCommit` and `Refusal`, whether or not the push touched the folder. Argo CD's default
+delete policy, `BeforeHookCreation`, deletes a hook's object and creates it again on each sync, and a
+hook named with `generateName` is a new object every time. GitOps Reverser mirrors objects of the
+kinds a `WatchRule` covers, hooks included, and with the default `spec.prune.mode` (`OnEvent`) it
+mirrors their deletion too. A `WatchRule` covering a hook's kind (usually `Job`) in the namespace
+it runs in therefore commits on every sync, and can remove the hook's own manifest from Git.
+Keep hook kinds out of the folder's `WatchRule`s.
+
+### Switching automated sync back on
+
+There is no temporary automated sync. The moment `enabled` turns true, Argo CD syncs every new commit
+on its own again, GitOps Reverser's included, and the next one can land over an unpublished edit.
+GitOps Reverser stops syncing the `Application` and reports `AutomatedSyncEnabled`, but it cannot stop
+Argo CD. Name another applier, or none, before switching it on.
+
+### Generating the `Application` from an `ApplicationSet`
+
+The `ApplicationSet` controller owns the spec of the `Application`s it generates, and by default
+writes its template back over any change. Its template must carry `automated: {enabled: false}`; a hand edit to
+the generated `Application` does not last. This setup is not covered by tests.
+
+### Expecting `selfHeal` or `ignoreDifferences` to protect an edit
+
+`selfHeal` does nothing with automated sync off; live drift is published to Git instead of
+reverted. `ignoreDifferences` with `RespectIgnoreDifferences=true` still works on the syncs GitOps
+Reverser starts, and hands the field to the API side in both directions: a later Git edit to it does
+not reach an existing object. That is [split ownership](bi-directional.md#the-split-ownership-alternative),
+not bi-directional editing.
+
+### Relying on `Replace=true`
+
+A `Replace=true` sync, by sync option or resource annotation, creates and replaces objects without a
+field manager, so their writes carry `argocd-application-controller`. GitOps Reverser counts that as
+Argo CD's in the apply window, but no test measures it yet. The default apply, client-side or
+`ServerSideApply=true`, writes as `argocd-controller` and is what the end-to-end tests cover.
+
+### Expecting a retry to pick up a newer commit
+
+A `syncPolicy.retry` with `refresh: true` makes each retry sync the newest revision. GitOps Reverser
+copies the retry without `refresh`, so a failed sync retries the commit it was asked for. A newer
+commit gets its own request once the branch is quiet.
 
 ## Reverting refused edits
 
@@ -317,7 +414,8 @@ it.
 | `ApplierConfigured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.argocd: true` |
 | A Warning `ApplyRequestFailed` Event | A request could not be delivered; the message says why, such as a sync somebody else started that did not end within 5 minutes | GitOps Reverser keeps asking on a quiet branch, at most every five minutes |
 | A file deleted in Git leaves its object running | The `Application` has no `automated.prune: true` | Add `automated: {enabled: false, prune: true}` |
-| A sync is skipped | A sync window denies automated syncs now | Wait for the window, or allow automated syncs in it |
+| The last sync stays `Running`: `Sync operation blocked by sync window` | A sync window blocks automated syncs, GitOps Reverser's included | Remove the window from the `AppProject`; see [sync windows](#sync-windows-that-block-automated-syncs) |
+| A commit appears on every sync, adding or removing a `Job` | A `WatchRule` covers the objects a hook creates | Keep hook kinds out of the `WatchRule`s; see [hooks](#watching-the-objects-your-hooks-create) |
 
 ## While GitOps Reverser is down
 

@@ -201,7 +201,8 @@ Every rule the client relies on is Argo CD's own, read from its source (3.5.0):
 | The controller clears `operation` when the operation completes and leaves the result in `status.operationState`; a failed operation that will be retried is `Running` again, with a `finishedAt` | An attempt's window closes when the operation state carrying its token has completed (`Succeeded`, `Failed`, `Error`); a pending retry is still running |
 | A retry with `retry.refresh: true` drops the operation's revision and syncs the newest one | That one field is dropped from the copied retry: a retry stays pinned |
 | Every apply writes as field manager `argocd-controller`, client-side and server-side alike; a `Replace=true` sync creates and replaces with no field manager, so the API server takes it from the user agent, `argocd-application-controller` | The apply window knows both as Argo CD's managers |
-| Sync windows are checked for every operation, by `InitiatedBy.Automated` | A sync GitOps Reverser starts obeys the project's windows for automated syncs |
+| Sync windows are checked for every operation, by `InitiatedBy.Automated`, and a blocked operation stays `Running` until the window opens (`syncWindowPreventsSync`, `CanSync`) | A sync GitOps Reverser starts obeys the project's windows for automated syncs, and a blocked one runs later, still pinned: by then it can be older than the tip. The guide forbids sync windows on a named `Application`; `ApplierConfigured` does not check them yet |
+| Hooks default to `BeforeHookCreation`: each sync deletes and recreates the hook's object (`DeletePolicies`) | A `WatchRule` covering a hook's kind mirrors that delete and create on every sync; the guide keeps hook kinds out of them |
 
 Three choices were decided (2026-10-17):
 
