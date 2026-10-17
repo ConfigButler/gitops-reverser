@@ -816,9 +816,9 @@ are unbounded, and both are in the log line at the write site.
 
 ## Apply requests and the push receiver
 
-With `GitTarget.spec.applier` set, the branch worker decides when the Flux `Kustomization` or Argo
-CD `Application` applies, and the push receiver tells it that somebody else pushed. See
-[who applies this folder](configuration.md#who-applies-this-folder-specapplier).
+With `GitTarget.spec.applyTriggerRef` set, the branch worker decides when the Flux `Kustomization`
+or Argo CD `Application` the trigger holds applies, and the push receiver tells it that somebody
+else pushed. See [who applies this folder](configuration.md#who-applies-this-folder-specapplytriggerref).
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |

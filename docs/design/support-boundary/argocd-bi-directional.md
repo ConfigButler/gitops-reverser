@@ -13,7 +13,7 @@ The Argo CD configuration that supports a shared field changing from **both**
 directions is:
 
 - **automated sync off** (`syncPolicy.automated.enabled: false`), with the
-  `Application` named by the `GitTarget`'s `spec.applier.applicationRef`, so GitOps
+  `Application` held by the `ArgoCDTrigger` the `GitTarget` names, so GitOps
   Reverser starts every sync, pinned to a commit it checked
   ([the Argo CD guide](../../argocd.md)), plus
 - **a push webhook** into GitOps Reverser's receiver for the Git → cluster
@@ -218,7 +218,7 @@ forgotten.
 | PreSync hook (veto) | **No** | also aborts legitimate deploys; can't tell them apart |
 | self-heal timeout / backoff | **No** | throttles repeats; first drift reverted immediately |
 | `selfHeal: false` + push webhook | **Mostly** | nothing reverts drift, but every new commit, GitOps Reverser's own included, is synced over pending edits |
-| automated sync off + `spec.applier.applicationRef` | **Yes** | GitOps Reverser starts every sync, on a quiet branch, pinned to a checked commit |
+| automated sync off + an `ArgoCDTrigger` | **Yes** | GitOps Reverser starts every sync, on a quiet branch, pinned to a checked commit |
 | admission gate on Argo's writes | (recovers "revert unauthorized") | per-write authority decision; external to Argo |
 
 ## References

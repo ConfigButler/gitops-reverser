@@ -361,8 +361,8 @@ turns automated sync on, and there the webhook's refresh does auto-sync.
 ## Test design: `argocd_bi_directional_e2e_test.go`
 
 Every spec runs the standard of [`docs/argocd.md`](../argocd.md): the `Application`
-has automated sync off (`automated: {enabled: false, prune: true}`) and is named by
-the `GitTarget`'s `spec.applier.applicationRef`, so every sync it runs is one GitOps
+has automated sync off (`automated: {enabled: false, prune: true}`) and is held by
+the `ArgoCDTrigger` the `GitTarget` names, so every sync it runs is one GitOps
 Reverser started, pinned to a commit it checked. The earlier phases that ran
 automated sync (`selfHeal: true` losing the edit, `ignoreDifferences`, and
 `selfHeal: false` with the webhook) are gone with it: they characterized an Argo CD
@@ -382,8 +382,8 @@ The `Application` lives in the `argocd` namespace, targets
 
 Ordering matters: `SetupRepo` leaves the Gitea repo **empty**, so the spec seeds
 `main` first, creates the `Application` (nothing to sync yet), and only then stands
-up the reverser pipeline, whose `GitTarget` needs the `Application` to report
-`ApplierConfigured=True`.
+up the reverser pipeline, whose `GitTarget` needs its trigger's `Application` to
+report `ApplyTriggerReady=True`.
 
 ### Spec A — a Git-side push is synced through a pinned `ForeignCommit`
 
@@ -393,7 +393,8 @@ up the reverser pipeline, whose `GitTarget` needs the `Application` to report
 3. Assert the `Application`'s operation state is GitOps Reverser's: initiated by
    `gitops-reverser` with `automated: true`, reason `ForeignCommit` in its info,
    `sync.revision` and `syncResult.revision` both the pushed commit, `Succeeded`,
-   with resources. The `GitTarget`'s `status.applier` names the same commit.
+   with resources. The trigger's `status.operation` names the same commit, as
+   `Succeeded`, written by the branch worker with no reconcile asked for.
 4. Assert the **live** object carries `argocd.argoproj.io/tracking-id` (exact
    value format) and `kubectl.kubernetes.io/last-applied-configuration`, and the
    **committed file** carries neither, nor `managedFields` or `resourceVersion`.
@@ -436,13 +437,14 @@ env var no overlay declaration can express.
 ### Spec E — an `Application` with automated sync on is never synced
 
 1. Re-apply the `Application` with automated sync on (an `automated` block with no
-   `enabled`), and request a `GitTarget` reconcile, since the applier is read on
+   `enabled`), and request a trigger reconcile, since the applier is read on
    reconcile rather than watched.
-2. Assert `ApplierConfigured=False` with `AutomatedSyncEnabled`, and `Stalled`.
+2. Assert the trigger's `Configured=False` with `AutomatedSyncEnabled`, and the
+   `GitTarget`'s `ApplyTriggerReady=False` with the same reason, and `Stalled`.
 3. Push a Git-side change. Assert an `ApplyRequestFailed` Event: the `ForeignCommit`
    was decided and refused at the `Application`.
 4. `Consistently` assert no operation initiated by `gitops-reverser` names the
-   pushed commit, and `status.applier` is unchanged. Argo CD's own automated sync
+   pushed commit, and the trigger's `status.operation` is unchanged. Argo CD's own automated sync
    applies the push; that is not GitOps Reverser's.
 
 ### Spec D — arming the landmine (phase 2)

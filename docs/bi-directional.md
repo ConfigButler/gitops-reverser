@@ -88,7 +88,7 @@ branch worker. That is the moment nothing live is missing from the tip.
 | --- | --- | --- |
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push | Every applier declared on the branch |
 | `Refusal` | An edit was refused and the target has `onRefusal: Reapply` | The refusing target's applier |
-| `CatchUp` | The branch has been quiet for `spec.applier.quietPeriod` after GitOps Reverser's own pushes | Every Flux `Kustomization` on the branch |
+| `CatchUp` | The branch has been quiet for the `FluxTrigger`'s `quietPeriod` after GitOps Reverser's own pushes | Every Flux `Kustomization` on the branch |
 
 The cluster already holds the values of GitOps Reverser's own commits, because they were read from
 it, so applying them changes nothing. Flux is asked to catch up with them anyway, and
@@ -128,10 +128,23 @@ it applied.
 
 ## Declaring the applier
 
-`spec.applier` names exactly one applier per `GitTarget`, a Flux `Kustomization` or an Argo CD
-`Application`:
+An **apply trigger** holds the applier, and the `GitTarget` names the trigger, in its own
+namespace, with `spec.applyTriggerRef`. A `FluxTrigger` holds a Flux `Kustomization`, and an
+`ArgoCDTrigger` an Argo CD `Application`:
 
 ```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: FluxTrigger
+metadata:
+  name: checkout
+  namespace: team-a
+spec:
+  clusterProviderRef:
+    name: default
+  kustomizationRef:
+    namespace: flux-system
+    name: checkout
+---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
@@ -142,38 +155,45 @@ spec:
     name: platform-repo
   branch: main
   path: apps/checkout
-  applier:
-    kustomizationRef:
-      namespace: flux-system
-      name: checkout
+  applyTriggerRef:
+    kind: FluxTrigger
+    name: checkout
   onRefusal: Reapply
 ```
 
 ```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: ArgoCDTrigger
+metadata:
+  name: checkout
+  namespace: team-a
 spec:
-  applier:
-    applicationRef:
-      namespace: argocd
-      name: checkout
+  clusterProviderRef:
+    name: default
+  applicationRef:
+    namespace: argocd
+    name: checkout
 ```
 
-GitOps Reverser looks the applier up in the **source cluster**, the cluster it applies to, with
-the identity the `ClusterProvider` already uses, or in the cluster `spec.applier.clusterProviderRef`
-names. That identity needs permission to read and write the applier; the chart grants it for the
-operator's own cluster with `applierAccess.flux: true` or `applierAccess.argocd: true`.
-The applier must apply this folder's repository and branch, or the target reports
-`ApplierConfigured=False`. The
-[configuration reference](configuration.md#who-applies-this-folder-specapplier) has every field
-and reason.
+GitOps Reverser looks the applier up in the cluster the trigger's `clusterProviderRef` names, with
+the identity that `ClusterProvider` uses: `default` for the operator's own cluster, or a management
+cluster where Flux or Argo CD runs. That identity needs permission to read and write the applier;
+the chart grants it for the operator's own cluster with `applierAccess.flux: true` or
+`applierAccess.argocd: true`. The trigger reports whether its applier can be driven (`Configured`),
+and the `GitTarget` whether that applier applies this folder's repository and branch
+(`ApplyTriggerReady`). The
+[configuration reference](configuration.md#who-applies-this-folder-specapplytriggerref) has every
+field and reason.
 
-Several `GitTarget`s may name the same applier, for example a `Kustomization` whose path covers
-several folders. Requests to one applier are sent once.
+Several `GitTarget`s may name the same trigger, for example for a `Kustomization` whose path covers
+several folders. Requests to one applier are sent once, and the trigger's `status.operation` shows
+the one in flight.
 
 ## Configure Argo CD
 
 [Using GitOps Reverser with Argo CD](argocd.md) is the complete setup, with a worked example a unit
-test holds to the code. The standard is full control: the `Application` named by
-`spec.applier.applicationRef` has **automated sync off**, and every sync it runs is one GitOps
+test holds to the code. The standard is full control: the `Application` an `ArgoCDTrigger` holds
+has **automated sync off**, and every sync it runs is one GitOps
 Reverser started, pinned to a commit it checked.
 
 ```yaml
@@ -184,14 +204,14 @@ spec:
       prune: true      # kept for the syncs GitOps Reverser starts
 ```
 
-An `Application` with automated sync on is `ApplierConfigured=False` with `AutomatedSyncEnabled`,
-and GitOps Reverser never syncs it. `selfHeal` means nothing with automated sync off. Argo CD's
+An `Application` with automated sync on makes its trigger `Configured=False` with
+`AutomatedSyncEnabled`, and GitOps Reverser never syncs it. `selfHeal` means nothing with automated sync off. Argo CD's
 timed refresh and its `/api/webhook` may stay: with automated sync off they only compare. A sync
 GitOps Reverser starts is the one automated sync would (`prune`, `syncOptions` and `retry` from the
 `Application`), with the revision pinned and `initiatedBy` set to `gitops-reverser`; it waits for a
 sync already running rather than replace it.
 
-Without `spec.applier`, an `Application` with automated sync keeps its own triggers, with the
+Without an apply trigger, an `Application` with automated sync keeps syncing on its own, with the
 exposure [why GitOps Reverser owns the trigger](#why-gitops-reverser-owns-the-trigger) describes:
 each of GitOps Reverser's pushes is synced over whatever is pending at that moment, and with
 `selfHeal: true` a live edit is reverted in about a second, before GitOps Reverser can publish it.
@@ -214,7 +234,7 @@ holds to the code. In short: Flux has no fetch-only mode (a new `GitRepository` 
 set both intervals to a long backstop such as `24h`, keep the `Kustomization` unsuspended, and
 remove any Git-host webhook into a Flux `Receiver` for the repository. GitOps Reverser then asks the
 `GitRepository` to fetch: after a foreign push, after a refusal, and, once the branch has been
-quiet for `spec.applier.quietPeriod` (`30s` by default), to catch up with its own pushes, so a
+quiet for the trigger's `quietPeriod` (`30s` by default), to catch up with its own pushes, so a
 Flux restart never applies a stale artifact.
 
 Flux's equivalent of split ownership is `Kustomization.spec.ignore`, added in kustomize-controller
@@ -254,10 +274,10 @@ tells GitOps Reverser about Git; it says nothing about the cluster.
 Read where the branch is, what proved it, and what was last requested:
 
 ```bash
-kubectl get gittarget checkout -n team-a \
-  -o jsonpath='{.status.remote}{"\n"}{.status.applier}{"\n"}'
+kubectl get gittarget checkout -n team-a -o jsonpath='{.status.remote}{"\n"}'
 # {"commit":"4f2c1ab9...","lastVerifiedAt":"2026-10-20T10:14:02Z","verifiedBy":"Fetch"}
-# {"requestedCommit":"4f2c1ab9...","requestedAt":"2026-10-20T10:14:03Z","reason":"ForeignCommit"}
+kubectl get fluxtrigger checkout -n team-a -o jsonpath='{.status.operation}{"\n"}'
+# {"commit":"4f2c1ab9...","phase":"Succeeded","reason":"ForeignCommit","requestedAt":"2026-10-20T10:14:03Z",...}
 ```
 
 ## One queue per branch

@@ -40,7 +40,7 @@ Almost every naming mistake in this project's history came from one ambiguity: t
 without a side, or "namespace" without a direction. Fix the side first and the rest of the
 vocabulary follows.
 
-**Control cluster.** The cluster the operator runs in, and where its own six kinds live. When a
+**Control cluster.** The cluster the operator runs in, and where its own eight kinds live. When a
 document says "a namespace" with no qualifier, it means a control-cluster namespace.
 
 **Source cluster.** The cluster whose objects are mirrored into Git. A `ClusterProvider` names one.

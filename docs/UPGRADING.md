@@ -7,42 +7,44 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
-## `onRefusal: PushEmptyCommit` is now `onRefusal: Reapply`, and needs `spec.applier`
+## `onRefusal: PushEmptyCommit` is now `onRefusal: Reapply`, and needs an apply trigger
 
 **Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
 GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
-`Reapply` it asks the target's applier, the Flux `Kustomization` named in the new
-`spec.applier.kustomizationRef` or the Argo CD `Application` named in `spec.applier.applicationRef`,
-to apply the current tip once the branch holds no open commit window and no pending writes. Only
-that applier is asked, rather than every applier watching the branch, though a `GitRepository` that
-has to fetch the tip still wakes every `Kustomization` that reads it. An allowed edit still in a
-commit window is published before the apply instead of being reverted with the refused one. The API
-rejects `Reapply` without `spec.applier`.
+`Reapply` it asks the target's applier to apply the current tip once the branch holds no open
+commit window and no pending writes. The applier is the Flux `Kustomization` a `FluxTrigger` holds,
+or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget` names the trigger in the
+new `spec.applyTriggerRef`. Only that applier is asked, rather than every applier watching the
+branch, though a `GitRepository` that has to fetch the tip still wakes every `Kustomization` that
+reads it. An allowed edit still in a commit window is published before the apply instead of being
+reverted with the refused one. The API rejects `Reapply` without `spec.applyTriggerRef`.
 
 A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`, and any update to it is
 rejected until the field changes. The old CRD rejects `Reapply`, so move in this order:
 
 1. Before upgrading, set `onRefusal: Ignore` on those targets.
 2. Upgrade the CRDs, the controller and its permissions.
-3. Set `spec.applier` on each target and wait for `ApplierConfigured=True`.
+3. Create a `FluxTrigger` or `ArgoCDTrigger` for each applier, name it in each target's
+   `spec.applyTriggerRef`, and wait for `ApplyTriggerReady=True`.
 4. Set `onRefusal: Reapply` where you want it.
 
-See [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
+See [who applies this folder](configuration.md#who-applies-this-folder-specapplytriggerref) and
+[reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
 
-`spec.applier` also changes what else applies the folder: GitOps Reverser asks the Kustomization to
+A trigger also changes what else applies the folder: GitOps Reverser asks the `Kustomization` to
 apply when somebody else pushes to the branch, and to catch up with its own pushes once the branch
-has been quiet for `spec.applier.quietPeriod`. Lengthen the `GitRepository` and `Kustomization`
+has been quiet for the trigger's `quietPeriod`. Lengthen the `GitRepository` and `Kustomization`
 intervals and remove any Git-host webhook into a Flux `Receiver` for the repository, as the
 [bi-directional guide](bi-directional.md#configure-flux) describes, or Flux keeps applying on its own
 schedule as well. The operator needs `get` and `patch` on `kustomizations` and `gitrepositories`,
-and `create` on `selfsubjectaccessreviews`, in the source cluster: Helm `applierAccess.flux: true`
+and `create` on `selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true`
 grants them for the operator's own cluster.
 
 For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its automated sync off
-(`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before naming it; one with automated
-sync on reports `ApplierConfigured=False` (`AutomatedSyncEnabled`) and is never synced. The operator
-needs `get` and `update` on `applications`: Helm `applierAccess.argocd: true`. See
-[Using GitOps Reverser with Argo CD](argocd.md).
+(`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before its trigger holds it; one with
+automated sync on reports `Configured=False` (`AutomatedSyncEnabled`) on the trigger and is never
+synced. The operator needs `get` and `update` on `applications`: Helm `applierAccess.argocd: true`.
+See [Using GitOps Reverser with Argo CD](argocd.md).
 
 ## `git_queue_drops_total` is now `git_queue_refusals_total`
 

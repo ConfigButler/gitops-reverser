@@ -1,6 +1,6 @@
 # Suspended appliers: the plan
 
-> **design, being built.** Steps 1 and 2 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
+> **design, being built.** Steps 1 to 3 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
 > as a stack on top of it (branch `feat/suspended-appliers`); the two release together. Inputs: the
 > third review of #419 (five findings, summarized in the table below) and
 > [`flux-suspend-lifecycle.md`](flux-suspend-lifecycle.md) (the measurement). It settles the
@@ -354,12 +354,27 @@ on its token.
 
 **Step 3. The trigger kinds.** `FluxTrigger` and `ArgoCDTrigger` types, CRDs, RBAC and deepcopy.
 `GitTarget.spec.applyTriggerRef`; drop `spec.applier` and `status.applier`; add `ApplyTriggerReady`.
-Move the validation in [`gittarget_applier.go`](../../internal/controller/gittarget_applier.go) to
-the trigger reconciler. Have the worker resolve appliers through their triggers and write
-`status.operation`.
+Move the validation in `gittarget_applier.go` to the trigger reconciler. Have the worker resolve
+appliers through their triggers and write `status.operation`.
 Update [`flux_guide_test.go`](../../internal/applier/flux_guide_test.go),
 [`argocd_guide_test.go`](../../internal/applier/argocd_guide_test.go), the schema tests and the e2e
 helpers. Review the generated CRDs with the `k8s-crd-design-review` skill.
+
+As built, step 3 settled four things the plan left open:
+
+- **The references are immutable** (`clusterProviderRef`, `kustomizationRef`, `applicationRef`):
+  the trigger holds what it names, so a re-pointed trigger would leave the old applier held by
+  nothing. Delete and recreate it; step 4's finalizer hands the old one back.
+- **The binding check is split.** The trigger checks its applier alone (exists, a source GitOps
+  Reverser can drive, writable, automated sync off) and publishes `status.source`; reasons for the
+  source alone are `UnsupportedSource`. Each `GitTarget` compares that source with its own
+  repository and branch, so `SourceMismatch` is the `GitTarget`'s `ApplyTriggerReady` reason. The
+  dispatcher still checks the binding against the applier itself before every write.
+- **The worker publishes through a writer, never from its loop.** `applier.StatusWriter` coalesces
+  per trigger and updates the status from a fresh read, so the reconciler's conditions are never
+  overwritten. The record is published once the request is reported `Requested`; step 4 must write
+  it before the resume instead, for restart recovery to rely on it.
+- **`fenceToken` and `appliedRevision`** are in `status.operation` already, for step 4 to fill.
 
 **Step 4. The suspend lifecycle.** A new Flux client that does adoption, the resume token, the
 outcome table, the suspend fence and failure re-suspension, with the recheck before resume. Delete
