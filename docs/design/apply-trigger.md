@@ -213,7 +213,8 @@ webhook cutting a save's window, a `Kustomization` in the management cluster via
 `spec.applier.clusterProviderRef`), the hardened receiver, and the apply window. After it, in order,
 each one pull request:
 
-1. **The Argo CD applier**, as described above.
+1. **The Argo CD applier**, as described above, with automated sync off as the standard. The
+   implementation plan is [`argocd-applier-plan.md`](argocd-applier-plan.md).
 2. **The webhook applier.**
 3. **More than one replica.** Leader election is not switched on, and the chart runs one replica.
    Standbys need ownership coordination first (the HA plan in `docs/future/`), and deliveries then
