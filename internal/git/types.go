@@ -660,6 +660,14 @@ type Event struct {
 	// Operation is the admission operation (CREATE, UPDATE, DELETE).
 	Operation string
 
+	// LastFieldManagers names who wrote the object last: the managers of its managedFields
+	// entries for the object itself (not a subresource such as status) that carry the latest
+	// time. More than one when they tie, since those times resolve to the second. It is PROVENANCE
+	// like ResourceVersion, stamped where the live watch holds the unsanitized object (sanitize
+	// removes managedFields); empty for a DELETE and for producers that observed no object. The
+	// apply window reads it to tell an applier's write from an API edit (apply_window.go).
+	LastFieldManagers []string
+
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo
 

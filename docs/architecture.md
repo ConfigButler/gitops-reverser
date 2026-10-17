@@ -1740,16 +1740,13 @@ Current limitations:
 - **GitOps Reverser is the fast path to a deployment.** With `spec.applier` set, the applier's own
   triggers are off, so while the operator is down a Git-side push reaches the cluster only through a
   manual sync, `flux reconcile`, or Flux's long backstop interval.
-- **The applier must live in the cluster it applies to.** It is looked up in the source cluster
-  with the `ClusterProvider`'s identity, which rules out a hub Argo CD for now.
 - **Only Flux can be an applier yet.** An Argo CD `Application` keeps its own triggers until
-  `applicationRef` lands.
-- **An apply request cannot reserve time.** The request is asynchronous: an edit made while the
-  requested apply runs, to a field the applier sets, is reverted and mirrored as the applier's
-  commit. The rule confines that to the seconds after a foreign push, a refusal with `Reapply`, or a
-  quiet period on a Flux branch;
-  [the apply trigger design](design/apply-trigger.md#the-apply-window-what-is-still-racy) weighs the
-  options to shrink it further.
+  `applicationRef` lands. The `Kustomization` may live in any cluster a `ClusterProvider` reaches
+  (`spec.applier.clusterProviderRef`), such as a management cluster.
+- **An apply request cannot reserve time.** An edit made while the requested apply runs, to a field
+  the applier sets, is reverted on the cluster. Its value stays in Git, because the applier's write
+  over it is not mirrored, and the next apply restores it; until then the cluster runs the older
+  value. See [the apply window](design/apply-trigger.md#the-apply-window).
 - **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
   certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not

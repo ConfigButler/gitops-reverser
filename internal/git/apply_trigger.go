@@ -185,6 +185,9 @@ type applierState struct {
 	// next attempt may go.
 	failures int
 	retryAt  time.Time
+	// window is the applier's apply window: open from sending an attempt until Flux finished it
+	// (apply_window.go). Nil when no attempt was sent, or the last asked for no apply.
+	window *applyWindow
 }
 
 // inflightAttempt is what an attempt carries away from its applier's obligations. A failed attempt
@@ -413,6 +416,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		id: l.nextApplyID, foreign: state.foreign, catchUp: state.catchUp, refusals: refusals,
 	}
 	state.foreign, state.catchUp, state.inflight = false, false, attempt
+	state.openApplyWindow(attempt.id, tip, time.Now())
 	for key := range refusals {
 		delete(l.reapplyOwed, key)
 	}
@@ -446,6 +450,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 		}
 		attempt := state.inflight
 		state.inflight = nil
+		state.settleApplyWindow(attempt.id, res.Outcome == ApplyDelivered, now)
 		switch res.Outcome {
 		case ApplyDelivered, ApplyCurrent:
 			state.failures, state.retryAt = 0, time.Time{}

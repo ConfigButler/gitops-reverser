@@ -57,7 +57,10 @@ flowchart LR
 An apply is safe only when nothing live is missing from the commit being applied. Between an edit
 and its push, the edit is live in the cluster and absent from Git: it sits in an open commit window
 or in the pending writes. An apply at that moment writes Git's older value over it. GitOps Reverser
-then mirrors that revert faithfully, as a commit authored by the applier, and the edit is gone.
+would then mirror that revert faithfully, as a commit authored by the applier, and the edit would be
+gone. (An edit that lands while an apply GitOps Reverser asked for is running keeps its value in
+Git: the applier's write over it is not mirrored. See
+[the Flux guide](flux.md#what-gitops-reverser-asks-and-when).)
 
 Only GitOps Reverser can see those pending edits. The applier cannot. So an apply nobody asked
 GitOps Reverser about is an apply nobody checked, and every trigger the applier runs by itself is

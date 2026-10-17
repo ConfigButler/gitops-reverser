@@ -1356,6 +1356,9 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
 			continue
 		}
+		if l.withholdLateApply(event) {
+			continue
+		}
 		if l.openWindow != nil && !l.openWindow.canAppend(event) {
 			// Log the identity that broke the window so an unexpected split is
 			// diagnosable: the common cause is an incoming event whose author is empty

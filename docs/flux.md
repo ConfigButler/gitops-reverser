@@ -275,14 +275,22 @@ decided, it stamps nothing and decides again at the next quiet moment. Without t
 request decided at one commit could stamp the `Kustomization` after a newer push and re-apply the
 older commit over a published edit.
 
-**It is asynchronous.** The patch returns as soon as the API server accepts it, and nothing waits
-for Flux to fetch or apply. It runs off the branch worker, so a slow source cluster never holds a
-publication, and a failed request never fails one. That leaves a window of a few seconds while Flux
-applies: an API edit made then, to a field the `Kustomization` sets, is reverted by the apply. The
-quiet-branch rule confines the window to the moments listed above; waiting for the apply would not
-close it, because waiting does not stop anybody editing.
-[The apply trigger design](design/apply-trigger.md#the-apply-window-what-is-still-racy) weighs the
-ways to shrink it.
+**An edit made while Flux applies keeps its value.** The patch returns at once, and Flux fetches and
+applies a few seconds later. Until Flux reports it finished (`status.lastHandledReconcileAt` for a
+stamped `Kustomization`, a new `status.lastAttemptedRevision` after a source stamp, at most
+5 minutes), GitOps Reverser treats the apply as running. An API edit made in those seconds, to a
+field the `Kustomization` sets, is reverted on the cluster by that apply, because the commit Flux
+was asked for does not hold it yet. GitOps Reverser recognizes that write by its field manager,
+`kustomize-controller`, and does not mirror it: the API's value stays in Git, and the `CatchUp` its
+push owes applies it back once the branch has been quiet for `quietPeriod`. Each such write is
+logged and counted in `apply_window_collisions_total{outcome="withheld"}`.
+
+Only a write proven to be Flux's is withheld. When `kustomize-controller` and another manager wrote
+the object in the same second, the write could be the edit itself, so it is mirrored as before and
+counted as `ambiguous`. A delete is never withheld.
+
+The request runs off the branch worker, so a slow source cluster never holds a publication, and a
+failed request never fails one.
 
 Before it patches, GitOps Reverser reads each `GitTarget` again: it must still be the same
 object (a deleted and recreated one inherits nothing), still name this `Kustomization` on this

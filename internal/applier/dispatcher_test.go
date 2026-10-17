@@ -149,6 +149,7 @@ func newDispatcherFixture(t *testing.T, targets []client.Object, sourceObjs ...r
 	recorder := record.NewFakeRecorder(64)
 	d := NewDispatcher(controlClient, source.get, recorder, logr.Discard())
 	d.Now = func() time.Time { return stampTime }
+	d.ApplyWindowTimeout = 0 // the tests that wait for Flux set their own
 	return &dispatcherFixture{dispatcher: d, control: controlClient, source: source, recorder: recorder, reader: reader}
 }
 
@@ -259,8 +260,12 @@ func appliedFrom(target *v1alpha3.GitTarget, cluster string) *v1alpha3.GitTarget
 // lives in a management cluster is asked through that cluster's client, never the source's.
 func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
 	hub := git.ApplierRef{Cluster: "hub", Namespace: fluxSystemNS, Name: "checkout"}
-	f := newDispatcherFixture(t,
-		[]client.Object{appliedFrom(gitTarget("a", checkoutRef(), "prod-eu-1"), "hub"), clusterProvider("hub", targetNS)},
+	f := newDispatcherFixture(
+		t,
+		[]client.Object{
+			appliedFrom(gitTarget("a", checkoutRef(), "prod-eu-1"), "hub"),
+			clusterProvider("hub", targetNS),
+		},
 		behindSource()...,
 	)
 
@@ -508,4 +513,41 @@ func TestDescribeCommit(t *testing.T) {
 	assert.Equal(t, "4f2c1ab9", describeCommit(testCommit))
 	assert.Equal(t, "abc", describeCommit("abc"))
 	assert.Equal(t, "the branch, which the remote does not carry", describeCommit(""))
+}
+
+// TestDispatcher_ADeliveredAttemptStaysOutUntilFluxFinished: the worker's attempt is the apply
+// window, so a delivered one is reported only once Flux has finished the apply, or by time.
+func TestDispatcher_ADeliveredAttemptStaysOutUntilFluxFinished(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	f.dispatcher.ApplyWindowTimeout = time.Minute
+	f.dispatcher.HandledPollInterval = 5 * time.Millisecond
+
+	done := make(chan git.ApplyResult, 1)
+	go func() { done <- f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")) }()
+
+	require.Eventually(t, func() bool { return len(f.patches()) == 1 }, 5*time.Second, 5*time.Millisecond)
+	select {
+	case res := <-done:
+		t.Fatalf("reported %s before Flux finished the apply", res.Outcome)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	setStatus(t, f.source.client, kustomizationGVR(), types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"},
+		"main@sha1:"+testCommit, "lastAttemptedRevision")
+	select {
+	case res := <-done:
+		assert.Equal(t, git.ApplyDelivered, res.Outcome)
+	case <-time.After(5 * time.Second):
+		t.Fatal("not reported after Flux finished the apply")
+	}
+}
+
+// TestDispatcher_AnApplyFluxNeverFinishesClosesByTime: Flux down, or a fetch that never lands,
+// must not hold the applier's attempt out forever.
+func TestDispatcher_AnApplyFluxNeverFinishesClosesByTime(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	f.dispatcher.ApplyWindowTimeout = 30 * time.Millisecond
+	f.dispatcher.HandledPollInterval = 5 * time.Millisecond
+
+	assert.Equal(t, git.ApplyDelivered, f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
 }

@@ -1,7 +1,8 @@
 # The apply trigger
 
-> **design**: decided 2026-10-16; the Flux applier, the push receiver and `onRefusal: Reapply` are
-> built, Argo CD and the webhook applier are the aim. Index: [`../INDEX.md`](../INDEX.md).
+> **design**: decided 2026-10-16, extended 2026-10-17; the Flux applier (in any cluster), the push
+> receiver, `onRefusal: Reapply` and the apply window are built, Argo CD and the webhook applier are
+> the aim. Index: [`../INDEX.md`](../INDEX.md).
 > How to use it: [`../flux.md`](../flux.md) and [`../bi-directional.md`](../bi-directional.md).
 > Fields: [`../configuration.md`](../configuration.md#who-applies-this-folder-specapplier).
 
@@ -104,7 +105,7 @@ flowchart LR
 
     OBS --> OWE --> QUIET
     QUIET -- "yes, and due" --> EXEC
-    EXEC -- "recheck targets, check source,<br/>stamp requestedAt" --> FLUX
+    EXEC -- "recheck targets, check source,<br/>stamp requestedAt, wait for it" --> FLUX
     EXEC -. "report: Delivered · Current ·<br/>Failed · Rejected · Dropped" .-> OWE
 ```
 
@@ -118,13 +119,15 @@ flowchart LR
   reason.
 - **Attempting.** The dispatcher re-reads each target. It asks only for those that are still the
   same incarnation, still name this applier on this branch, are still admitted by their
-  `ClusterProvider`, and for a `Refusal` still consent. If no target still holds the request's
+  `ClusterProvider`s (their own, and the applier's when `spec.applier.clusterProviderRef` names
+  another), and for a `Refusal` still consent. If no target still holds the request's
   reason, it asks nothing (`Dropped`). Just before the stamp it asks the worker whether the decision
   still holds (the commit is still the tip, nothing is waiting to be published); if not, it stamps
   nothing (`Stale`, no failure). Then Flux: stamp `reconcile.fluxcd.io/requestedAt` on the
   `GitRepository` when its artifact lacks the commit; when the artifact holds it, only a `Refusal`
   stamps the `Kustomization`, because the artifact already woke it for anything else. A source on
-  another repository or branch is `Rejected`.
+  another repository or branch is `Rejected`. A delivered attempt is reported only once Flux has
+  finished the apply, or after 5 minutes, so the attempt is out for exactly the apply window.
 - **Settling.** A delivered attempt is done. A stale one gives back what it carried and is decided
   again at the next quiet moment. Any other outcome gives back what the attempt carried,
   a refusal only if it still stands, and starts that applier's backoff (2s doubling to 5m, at least
@@ -133,35 +136,36 @@ flowchart LR
   compare-and-swap push (at the next publication), or the periodic refresh (minutes). All three
   feed the same observation point.
 
-## The apply window: what is still racy
+## The apply window
 
-**A request is asynchronous, and that leaves a window.** The patch returns at once; Flux fetches and
-applies a few seconds later. An API edit that lands in those seconds, to a field the
-`Kustomization` applies, is reverted by the apply, and GitOps Reverser mirrors the revert as Flux's
-commit. The edit survives in Git history only if its own commit was pushed first.
+**A request is asynchronous, and that leaves a window.** Flux fetches and applies a few seconds
+after the stamp. An API edit that lands in those seconds, to a field the `Kustomization` applies, is
+reverted by the apply, because the commit Flux was asked for does not hold it yet. Making the
+request synchronous would not help: waiting for the apply does not stop a user from editing during
+it, and refusing edits would halt the API for everyone to protect a few seconds.
 
-The quiet-branch rule confines that window to three moments: right after somebody else's push, right
-after a refusal the target asked to have reverted, and right after `quietPeriod` of silence on a
-branch whose artifact is behind. It does not close it, and making the request synchronous would not
-either: waiting for the apply to finish does not stop a user from editing during it. Only refusing
-edits would, which halts the API for everyone to protect a few seconds, so we do not.
+The quiet-branch rule confines the window to three moments: right after somebody else's push, right
+after a refusal the target asked to have reverted, and after `quietPeriod` of silence on a branch
+whose artifact is behind. Inside it, **the API wins**, as it does for any object both sides changed:
 
-What would make the window smaller and visible, in order of cost:
+- **The window is known.** The dispatcher reports a delivered attempt only once Flux has finished
+  the apply: `status.lastHandledReconcileAt` carries the stamp of a stamped `Kustomization`, or the
+  `Kustomization` attempted a new revision after a source stamp (or the source handled the stamp
+  with no new artifact). At most 5 minutes; the worker keeps the window open 10 seconds more,
+  because Flux's writes reach it through the watch.
+- **The late apply is withheld.** A write whose latest `managedFields` entry is
+  `kustomize-controller` alone, inside the window, to an object in the applier's folders that the
+  API side edited after the attempt was sent, is not mirrored. Git keeps the edit, and the
+  `CatchUp` its push owes applies it back. The cluster runs the reverted value until then.
+- **Only proof withholds.** `managedFields` times resolve to the second. When `kustomize-controller`
+  ties with another manager, the write could be the edit itself, and withholding an edit loses it
+  outright; it is mirrored as before. A DELETE carries nothing about its deleter and is never
+  withheld. Both are logged.
 
-1. **Know when the window closes.** Flux copies the requested stamp into the `Kustomization`'s
-   `status.lastHandledReconcileAt` once it has handled it. The dispatcher can report `Delivered`
-   only then, so an attempt stays "out" for exactly the apply's duration and nothing is stacked on
-   an apply still running.
-2. **Name the collision.** An edit observed while an attempt is out, on an object the applier owns,
-   is the case that can be reverted. Recording it (an Event on the `GitTarget`, a counter) turns a
-   silent revert into a visible one.
-3. **Let the API win the window.** A write by the applier's own field manager during an attempt we
-   made, that undoes a field edited after that attempt was sent, is our apply arriving late, with no
-   new intent behind it. Not mirroring it keeps the edit in Git, and the next request applies it
-   back. This is the rule "for an object both sides changed, the API value wins", applied to the
-   apply window. It needs
-   the field manager from `managedFields` (no audit), and it is the only option that changes what
-   reaches Git, so it needs its own decision.
+Every collision is logged with the object, the applier and the requested commit, and counted in
+`apply_window_collisions_total` (`withheld` or `ambiguous`). What remains: an edit reverted on the
+cluster for up to `quietPeriod` until the `CatchUp`, an ambiguous tie mirrored as the applier's
+commit, and a Flux write that reaches the watch more than 10 seconds after Flux reported done.
 
 ## The aim beyond Flux
 
@@ -176,8 +180,10 @@ consequences:
 - **The commit is pinned**, so a sync applies exactly what the worker checked.
 - **A running operation is waited for, never replaced**, as Argo CD's own `SetAppOperation` does.
 
-The open question that shapes its API: a hub Argo CD keeps `Application`s in a management cluster,
-not the cluster they deploy to, and today an applier is looked up in the source cluster.
+A hub Argo CD keeps `Application`s in a management cluster, not the cluster they deploy to. That is
+answered as for Flux: `spec.applier.clusterProviderRef` names the cluster the `Application` lives
+in, and the `Application`'s own field manager (`argocd-controller`) takes `kustomize-controller`'s
+place in the apply window.
 
 **A webhook applier** for any other tool: POST `{"repository", "branch", "commit", "reason"}`,
 signed `X-Signature: sha256=<hex HMAC>` the way Flux's `generic-hmac` `Receiver` checks. It gets
@@ -192,44 +198,30 @@ in-process plugin: it would run with every credential the operator holds.
 - **One replica.** The receiver, the branch workers and the dispatcher run in one pod, and the chart
   refuses more than one replica. Leader election is not switched on; more than one replica needs
   ownership coordination first, and deliveries routed to the pod that owns the branch.
+- **A request holds its applier while Flux applies.** The next request to that applier waits for
+  the running apply (up to 5 minutes), which is the point: nothing is stacked on an apply still
+  running. A Flux that never reports done costs those 5 minutes per request.
 - **Every applier on the branch is asked on a `ForeignCommit`**, whether or not the push touched its
   folder. Harmless for Flux; for Argo CD it runs hooks. Narrowing it needs the applier's own source
   paths, so it waits for a measured complaint.
 
 ## Where this goes next
 
-In order. Each step is one pull request, and the first three are what the first adopter, gitops-api,
-needs before it can drop its own gate.
+The Flux applier PR (#419) carries what gitops-api, the first adopter, needs before it can drop its
+own gate: both reviews' findings and the customer review's three blockers (stale stamps, a late
+webhook cutting a save's window, a `Kustomization` in the management cluster via
+`spec.applier.clusterProviderRef`), the hardened receiver, and the apply window. After it, in order,
+each one pull request:
 
-1. **Merge the Flux applier (#419).** Both reviews' findings and the customer review's blockers on
-   stale stamps and on a late webhook cutting a save's window are fixed, each with a regression test.
-2. **Find the applier in the `GitTarget`'s own cluster.** Today the `Kustomization` is looked up in
-   the source cluster. The usual way to run Flux against a remote cluster (gitops-api's kcp
-   workspaces, and every hub-and-spoke install) keeps it in the management cluster and applies
-   through `spec.kubeConfig`; such a target sits at `ApplierNotFound` forever. Proposed:
-   `spec.applier.cluster: Source | Local`, `Source` the default. `Local` resolves the reference with
-   the operator's own identity and only in the `GitTarget`'s own namespace, so it reaches nothing a
-   namespace-scoped `Role` does not grant. It is the same question as hub Argo CD, so it is settled
-   first and the Argo CD API follows it.
-3. **Harden the receiver.** Today a route answers 401 or 503 when its `GitProvider` exists and 404
-   when it does not, on a guessable `/git-push/<namespace>/<name>`, so it lists namespaces; and an
-   unsigned request reads a Secret and buffers up to 25 MiB with no limit on concurrent requests, in
-   the pod that also mirrors. Proposed: a path derived from a hash of the token, namespace and name,
-   as Flux's `Receiver` does; one answer for an unknown route and a bad signature; a small limit on
-   requests in flight and a lower body cap before verification.
-4. **Close the apply window's loop.** Report an attempt as delivered only once Flux has handled the
-   stamp (`status.lastHandledReconcileAt`), so the worker knows exactly when an apply is running, and
-   name an edit that lands inside one. Whether to also let the API win the window (option 3 above)
-   is a separate decision, because it changes what reaches Git.
-5. **The Argo CD applier**, as described above, once step 2 has decided where an applier lives.
-6. **The webhook applier.**
-7. **More than one replica.** Leader election is not switched on, and the chart runs one replica.
+1. **The Argo CD applier**, as described above.
+2. **The webhook applier.**
+3. **More than one replica.** Leader election is not switched on, and the chart runs one replica.
    Standbys need ownership coordination first (the HA plan in `docs/future/`), and deliveries then
    need routing to the pod that owns the branch.
 
-Test gaps to close along the way: a remote source cluster, `Forbidden` against real RBAC, the receiver
-and applier role installed by the Helm chart, two `GitTarget`s sharing one `Kustomization` in e2e,
-and `-race` in CI.
+Test gaps to close along the way: a remote source cluster and an applier in another cluster in e2e,
+`Forbidden` against real RBAC, the receiver and applier role installed by the Helm chart, two
+`GitTarget`s sharing one `Kustomization` in e2e, an apply-window collision in e2e, and `-race` in CI.
 
 **What adopting it changes for gitops-api.** Its gate shrinks to "one save, one window", which
 protects commit messages and has nothing to do with Flux. Its push handler relays each push to the
@@ -244,6 +236,9 @@ been quiet; `quietPeriod` is the knob for that trade.
 | The decision: quiet branch, reasons, quiet period, baseline | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go) |
 | Retries are decided by the worker; recovered refusals, withdrawn consent and recreated targets are not retried; each applier keeps its own clock; one attempt for a shared applier; a busy sibling worker holds the branch | [`apply_attempt_test.go`](../../internal/git/apply_attempt_test.go) |
 | Every attempt rechecks targets, asks for nothing weaker than it was told, and stamps no source on another branch | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`flux_test.go`](../../internal/applier/flux_test.go) |
+| An applier in another cluster is reached through its own `ClusterProvider`, behind that provider's `accessFrom` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`clusterprovider_admission_test.go`](../../internal/authz/clusterprovider_admission_test.go), [`gittarget_applier_test.go`](../../internal/controller/gittarget_applier_test.go) |
+| An attempt stays out until Flux finished the apply; the applier's late write over a newer edit is withheld, and nothing that could be the edit is | [`flux_test.go`](../../internal/applier/flux_test.go), [`apply_window_test.go`](../../internal/git/apply_window_test.go), [`last_field_managers_test.go`](../../internal/watch/last_field_managers_test.go) |
+| The receiver's path names no provider, and every miss answers the same | [`receiver_test.go`](../../internal/webhook/receiver_test.go) |
 | The original race: two API edits end at the later value with no extra commit | [bi-directional Flux corner](../../test/e2e/flux_bi_directional_e2e_test.go) |
 | `SourceMismatch` is never stamped and is delivered once fixed; a Gitea webhook and the refresh alone each get a push applied | [Manager Flux Applier](../../test/e2e/flux_applier_e2e_test.go) |
 | A refused edit is reverted by its `Kustomization` | [Refusal reapply](../../test/e2e/refusal_reapply_e2e_test.go) |

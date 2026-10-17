@@ -61,6 +61,15 @@ type SourceClients func(ctx context.Context, clusterID string) (dynamic.Interfac
 // branch worker decides when to try again.
 const DefaultAttemptTimeout = 30 * time.Second
 
+// DefaultApplyWindowTimeout bounds how long a delivered attempt stays out waiting for Flux to finish
+// the apply. An apply that waits on health checks can take minutes; one Flux never finishes (the
+// controller is down, the fetch failed) must not hold the applier forever, so the window then
+// closes by time.
+const DefaultApplyWindowTimeout = 5 * time.Minute
+
+// DefaultHandledPollInterval is how often a delivered attempt reads whether Flux finished.
+const DefaultHandledPollInterval = 2 * time.Second
+
 // Dispatcher carries out the apply requests the branch workers decide. It implements
 // git.ApplyRequester, and runs as a manager.Runnable beside the branch workers (it asks for leader
 // election as they do, which keeps the two together should it ever be switched on).
@@ -83,8 +92,13 @@ type Dispatcher struct {
 	recorder      record.EventRecorder
 	log           logr.Logger
 
-	// AttemptTimeout bounds one attempt. Set before Start.
+	// AttemptTimeout bounds one attempt up to its stamp. Set before Start.
 	AttemptTimeout time.Duration
+	// ApplyWindowTimeout bounds the wait, after a stamp, for Flux to finish the apply it asked for;
+	// zero does not wait. Set before Start.
+	ApplyWindowTimeout time.Duration
+	// HandledPollInterval is how often that wait reads Flux's status. Set before Start.
+	HandledPollInterval time.Duration
 	// Now is the clock requestedAt stamps and the ledger read.
 	Now func() time.Time
 
@@ -111,13 +125,15 @@ func NewDispatcher(
 	log logr.Logger,
 ) *Dispatcher {
 	return &Dispatcher{
-		reader:         reader,
-		sourceClients:  sourceClients,
-		recorder:       recorder,
-		log:            log,
-		AttemptTimeout: DefaultAttemptTimeout,
-		Now:            time.Now,
-		ledger:         map[string]ledgerEntry{},
+		reader:              reader,
+		sourceClients:       sourceClients,
+		recorder:            recorder,
+		log:                 log,
+		AttemptTimeout:      DefaultAttemptTimeout,
+		ApplyWindowTimeout:  DefaultApplyWindowTimeout,
+		HandledPollInterval: DefaultHandledPollInterval,
+		Now:                 time.Now,
+		ledger:              map[string]ledgerEntry{},
 	}
 }
 
@@ -193,8 +209,11 @@ type eligibleTarget struct {
 	reason v1alpha3.ApplyReason
 }
 
-// attempt carries out one request and returns its report.
+// attempt carries out one request and returns its report. A delivered one is reported once Flux has
+// finished the apply (awaitHandled), so the branch worker's attempt stays out for exactly the apply
+// window: the seconds in which an edit can be reverted by it.
 func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.ApplyResult {
+	run := ctx
 	ctx, cancel := context.WithTimeout(ctx, d.AttemptTimeout)
 	defer cancel()
 	log := d.log.WithValues("applier", req.Applier.String(), "branch", req.Branch.String(),
@@ -220,7 +239,7 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.Appl
 	}
 	flux := NewFlux(sourceClient)
 	flux.Now = d.Now
-	outcome, err := flux.Request(ctx, applierName(req.Applier), want, req.Commit, req.Reason, req.Current)
+	stamped, err := flux.Request(ctx, applierName(req.Applier), want, req.Commit, req.Reason, req.Current)
 	switch {
 	case errors.Is(err, errStale):
 		d.count(ctx, req.Reason, outcomeStale)
@@ -233,13 +252,49 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.Appl
 	}
 
 	d.count(ctx, req.Reason, outcomeSent)
-	if outcome == OutcomeCurrent {
+	if stamped.Outcome == OutcomeCurrent {
 		log.V(1).Info("applier already holds the commit; nothing to request")
 		return report(git.ApplyCurrent, nil)
 	}
-	log.Info("apply requested", "outcome", outcome)
+	log.Info("apply requested", "outcome", stamped.Outcome)
 	d.delivered(req, eligible)
+	d.awaitHandled(run, flux, applierName(req.Applier), stamped, log)
 	return report(git.ApplyDelivered, nil)
+}
+
+// awaitHandled waits, up to ApplyWindowTimeout, for Flux to finish the apply stamped asked for. It
+// decides nothing: the request was delivered either way, and a wait that ends by time or by
+// shutdown only closes the window sooner than Flux did.
+func (d *Dispatcher) awaitHandled(
+	ctx context.Context, flux *Flux, ref types.NamespacedName, stamped Stamped, log logr.Logger,
+) {
+	if d.ApplyWindowTimeout <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, d.ApplyWindowTimeout)
+	defer cancel()
+	started := d.Now()
+	ticker := time.NewTicker(d.HandledPollInterval)
+	defer ticker.Stop()
+	for {
+		handled, err := flux.Handled(ctx, ref, stamped)
+		switch {
+		case handled:
+			log.V(1).Info("Flux finished the requested apply", "after", d.Now().Sub(started).String())
+			return
+		case err != nil && ctx.Err() == nil:
+			log.V(1).Info("could not read whether Flux finished the requested apply", "error", err.Error())
+		}
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				log.Info("Flux did not report the requested apply finished in time; the apply window closes now",
+					"waited", d.Now().Sub(started).String(), "timeout", d.ApplyWindowTimeout.String())
+			}
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // applierName is the Kustomization an applier reference names.

@@ -185,7 +185,7 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 			got, err := pinnedFlux(client).Request(context.Background(),
 				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testBinding, tt.commit, tt.reason, nil)
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.want, got.Outcome)
 
 			wantStamp := func(want bool) string {
 				if want {
@@ -246,7 +246,7 @@ func TestFluxRequest_SourceRefNamespace(t *testing.T) {
 			got, err := pinnedFlux(client).Request(context.Background(), kustomization, testBinding, testCommit,
 				v1alpha3.ApplyReasonForeignCommit, nil)
 			require.NoError(t, err)
-			assert.Equal(t, OutcomeStampedSource, got)
+			assert.Equal(t, OutcomeStampedSource, got.Outcome)
 			assert.NotEmpty(t, requestedAt(t, client, gitRepositoryGVR(), tt.wantNamespace, "platform"))
 		})
 	}
@@ -546,4 +546,76 @@ func TestSelfSubjectAccessCheck_AsksTheSourceCluster(t *testing.T) {
 		})
 	_, err = check(context.Background(), authorizationv1.ResourceAttributes{Verb: "patch"})
 	require.Error(t, err)
+}
+
+// setStatus writes fields under an object's status in the fake source cluster, as Flux would.
+func setStatus(t *testing.T, client *dynamicfake.FakeDynamicClient, gvr schema.GroupVersionResource,
+	ref types.NamespacedName, value string, fields ...string,
+) {
+	t.Helper()
+	resource := client.Resource(gvr).Namespace(ref.Namespace)
+	obj, err := resource.Get(context.Background(), ref.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.NoError(t, unstructured.SetNestedField(obj.Object, value, append([]string{"status"}, fields...)...))
+	_, err = resource.Update(context.Background(), obj, metav1.UpdateOptions{})
+	require.NoError(t, err)
+}
+
+// TestFlux_Handled pins when an apply window closes: when Flux reports it finished the apply the
+// stamp asked for, and not before, for each thing a request can stamp.
+func TestFlux_Handled(t *testing.T) {
+	checkout := types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}
+	platform := types.NamespacedName{Namespace: fluxSystemNS, Name: "platform"}
+	newClient := func() *dynamicfake.FakeDynamicClient {
+		ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
+		_ = unstructured.SetNestedField(ks.Object, "main@sha1:"+olderCommit, "status", "lastAttemptedRevision")
+		return newSourceClient(ks,
+			gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+olderCommit))
+	}
+	request := func(t *testing.T, client *dynamicfake.FakeDynamicClient, reason v1alpha3.ApplyReason, commit string) Stamped {
+		t.Helper()
+		stamped, err := pinnedFlux(client).Request(context.Background(), checkout, testBinding, commit, reason, nil)
+		require.NoError(t, err)
+		return stamped
+	}
+	handled := func(t *testing.T, client *dynamicfake.FakeDynamicClient, stamped Stamped) bool {
+		t.Helper()
+		ok, err := pinnedFlux(client).Handled(context.Background(), checkout, stamped)
+		require.NoError(t, err)
+		return ok
+	}
+
+	t.Run("a stamped Kustomization, once it handled the stamp", func(t *testing.T) {
+		client := newClient()
+		stamped := request(t, client, v1alpha3.ApplyReasonRefusal, olderCommit)
+		require.Equal(t, OutcomeStampedKustomization, stamped.Outcome)
+		assert.False(t, handled(t, client, stamped))
+		setStatus(t, client, kustomizationGVR(), checkout, "an older stamp", "lastHandledReconcileAt")
+		assert.False(t, handled(t, client, stamped), "another request's answer is not this one's")
+		setStatus(t, client, kustomizationGVR(), checkout, stamped.Token, "lastHandledReconcileAt")
+		assert.True(t, handled(t, client, stamped))
+	})
+
+	t.Run("a stamped source, once the Kustomization attempted the new revision", func(t *testing.T) {
+		client := newClient()
+		stamped := request(t, client, v1alpha3.ApplyReasonForeignCommit, testCommit)
+		require.Equal(t, OutcomeStampedSource, stamped.Outcome)
+		assert.False(t, handled(t, client, stamped))
+		setStatus(t, client, kustomizationGVR(), checkout, "main@sha1:"+testCommit, "lastAttemptedRevision")
+		assert.True(t, handled(t, client, stamped))
+	})
+
+	t.Run("a stamped source whose fetch brought nothing new, once the source handled the stamp", func(t *testing.T) {
+		client := newClient()
+		stamped := request(t, client, v1alpha3.ApplyReasonForeignCommit, testCommit)
+		setStatus(t, client, gitRepositoryGVR(), platform, stamped.Token, "lastHandledReconcileAt")
+		assert.True(t, handled(t, client, stamped), "no new artifact: nothing for the Kustomization to apply")
+
+		setStatus(t, client, gitRepositoryGVR(), platform, "main@sha1:"+testCommit, "artifact", "revision")
+		assert.False(t, handled(t, client, stamped), "a new artifact: the Kustomization's apply is still to come")
+	})
+
+	t.Run("nothing stamped is nothing to wait for", func(t *testing.T) {
+		assert.True(t, handled(t, newClient(), Stamped{Outcome: OutcomeCurrent}))
+	})
 }
