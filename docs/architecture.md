@@ -451,7 +451,8 @@ Represents a Git repository and the credentials/configuration used to write it. 
 - `spec.receiver`: optional push receiver, `type` (`github`, `gitlab`, `gitea`, `generic-hmac`) and
   the `secretRef` holding its token, named after Flux's `Receiver`.
 - `status.signingPublicKey`: populated when signing is configured and key material is available.
-- `status.webhookPath`: the receiver's path, `/git-push/<namespace>/<name>`, when `spec.receiver` is set.
+- `status.webhookPath`: the receiver's path, `/git-push/<hex HMAC of namespace/name, keyed by the token>`,
+  when `spec.receiver` is set and its token Secret holds a token.
 
 The controller verifies repository reachability and manages the signing key lifecycle. It generates an
 ed25519 keypair when `signing.generateWhenMissing` is set. The portable artifact across GitOps

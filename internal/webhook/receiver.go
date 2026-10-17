@@ -23,7 +23,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -32,16 +31,37 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
-// ReceiverPathPrefix is the path prefix the push receiver serves. A route is
-// ReceiverPathPrefix + "<GitProvider namespace>/<GitProvider name>", as v1alpha3.ReceiverPath builds it.
-const ReceiverPathPrefix = "/git-push/"
+// ReceiverPathPrefix is the path prefix the push receiver serves. A route is the prefix and a hex
+// HMAC-SHA256 digest, as v1alpha3.ReceiverPath builds it.
+const ReceiverPathPrefix = v1alpha3.ReceiverPathPrefix
 
-// DefaultReceiverMaxRequestBodyBytes caps a delivery's body. It is GitHub's own cap on a webhook
-// payload (25 MiB), the largest of the hosts the receiver speaks to, so no genuine push event is
-// refused for its size. A push event is a few kilobytes in practice; the cap exists so an
-// unauthenticated client cannot make the receiver buffer an unbounded body before the signature
-// over it can be checked.
-const DefaultReceiverMaxRequestBodyBytes = int64(25 * 1024 * 1024)
+// receiverDigestHexLength is the length of a route's digest: a hex SHA-256.
+const receiverDigestHexLength = 2 * sha256.Size
+
+// GitProviderWebhookPathIndex is the cache index the receiver finds a route's GitProvider by. It is
+// registered on the manager's cache (IndexGitProviderWebhookPath), so a request for a path nothing
+// publishes costs no API read.
+const GitProviderWebhookPathIndex = "status.webhookPath"
+
+// IndexGitProviderWebhookPath indexes a GitProvider by its published status.webhookPath.
+func IndexGitProviderWebhookPath(obj client.Object) []string {
+	provider, ok := obj.(*v1alpha3.GitProvider)
+	if !ok || provider.Status.WebhookPath == "" {
+		return nil
+	}
+	return []string{provider.Status.WebhookPath}
+}
+
+// DefaultReceiverMaxRequestBodyBytes caps a delivery's body before its signature is checked. A
+// push event is a few kilobytes in practice: GitHub and GitLab list at most 20 commits. The cap
+// keeps an unauthenticated client from making the receiver buffer much; a genuine push over it is
+// refused (413), and the branch worker still finds the push at the next refresh.
+const DefaultReceiverMaxRequestBodyBytes = int64(2 * 1024 * 1024)
+
+// DefaultReceiverMaxInFlight is how many deliveries the receiver handles at once. One is answered
+// in milliseconds, so a burst of genuine pushes stays far below it; above it a request is answered
+// 429 before anything is read, which bounds what the listener can cost the pod that also mirrors.
+const DefaultReceiverMaxInFlight = 8
 
 // Headers each receiver type is signed or classified by. The names are the hosts' own; the
 // generic-hmac header is the one Flux's generic-hmac Receiver checks, so a relay written for Flux
@@ -90,9 +110,11 @@ type ReceiverHandlerConfig struct {
 	Notifier PushNotifier
 	// MaxRequestBodyBytes caps a delivery's body. Zero means DefaultReceiverMaxRequestBodyBytes.
 	MaxRequestBodyBytes int64
+	// MaxInFlight bounds the deliveries handled at once. Zero means DefaultReceiverMaxInFlight.
+	MaxInFlight int
 }
 
-// ReceiverHandler serves POST /git-push/<namespace>/<name>: the endpoint a Git host's push webhook
+// ReceiverHandler serves POST /git-push/<digest>: the endpoint a Git host's push webhook
 // points at, so GitOps Reverser learns quickly that somebody pushed to a branch.
 //
 // A delivery is a hint, never a fact. The handler authenticates it, extracts the branch, and asks
@@ -104,8 +126,14 @@ type ReceiverHandlerConfig struct {
 // Authentication comes first. The signature (or GitLab's token) is checked over the raw bytes
 // before the body is parsed for anything, in constant time, so an unsigned request cannot make a
 // target do work or probe which branches are tracked.
+//
+// The route does not name the GitProvider. Its digest is keyed by the receiver token, so only
+// whoever holds the token can find it, and every way a request can fail to reach a verified
+// receiver (no such path, a path from before the token rotated, no token, a wrong signature)
+// gets the same 404: the endpoint says nothing about which namespaces or providers exist.
 type ReceiverHandler struct {
-	config ReceiverHandlerConfig
+	config   ReceiverHandlerConfig
+	inFlight chan struct{}
 }
 
 // NewReceiverHandler builds the push receiver handler.
@@ -119,7 +147,10 @@ func NewReceiverHandler(config ReceiverHandlerConfig) (*ReceiverHandler, error) 
 	if config.MaxRequestBodyBytes <= 0 {
 		config.MaxRequestBodyBytes = DefaultReceiverMaxRequestBodyBytes
 	}
-	return &ReceiverHandler{config: config}, nil
+	if config.MaxInFlight <= 0 {
+		config.MaxInFlight = DefaultReceiverMaxInFlight
+	}
+	return &ReceiverHandler{config: config, inFlight: make(chan struct{}, config.MaxInFlight)}, nil
 }
 
 // receiverResponse is the body of every 202. matched is 1 when a branch worker was told to look
@@ -143,8 +174,9 @@ var errDeliveryIgnored = errors.New("delivery ignored")
 //
 // The status codes are a contract with Git hosts, which disable a hook that keeps failing: every
 // verified delivery answers 202, including one that names a branch nothing writes, because that is
-// not the host's fault. Only an unauthenticated request (401), an unparseable verified one (400),
-// a route that does not serve (404) and a receiver that cannot verify anything yet (503) fail.
+// not the host's fault. Only an unparseable verified delivery (400), a request that reaches no
+// verified receiver (404, whatever the reason), a body over the cap (413), too many requests at
+// once (429) and a receiver that cannot read its own configuration (503) fail.
 func (h *ReceiverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := logf.Log.WithName("push-receiver")
@@ -155,22 +187,40 @@ func (h *ReceiverHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, ok := receiverRoute(r.URL.Path)
+	select {
+	case h.inFlight <- struct{}{}:
+		defer func() { <-h.inFlight }()
+	default:
+		log.V(1).Info("Refused a push delivery: too many in flight", "maxInFlight", h.config.MaxInFlight)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many requests in flight", http.StatusTooManyRequests)
+		return
+	}
+
+	path, ok := receiverRoute(r.URL.Path)
 	if !ok {
 		notFound(w)
 		return
 	}
-	log = log.WithValues("gitProvider", key.String())
 
-	provider, ok := h.lookupProvider(ctx, log, w, key)
+	provider, ok := h.lookupProvider(ctx, log, w, path)
 	if !ok {
 		return
 	}
+	key := types.NamespacedName{Namespace: provider.Namespace, Name: provider.Name}
 	receiverType := provider.Spec.Receiver.Type
-	log = log.WithValues("type", receiverType)
+	log = log.WithValues("gitProvider", key.String(), "type", receiverType)
 
 	token, ok := h.lookupToken(ctx, log, w, provider)
 	if !ok {
+		return
+	}
+	// The index holds what status last published. A token rotated since then moves the path, and
+	// the old one must stop serving now, not at the next reconcile.
+	if subtle.ConstantTimeCompare([]byte(v1alpha3.ReceiverPath(token, key.Namespace, key.Name)), []byte(path)) != 1 {
+		log.Info("Push delivery on a path the current receiver token no longer derives; the token was " +
+			"rotated, so register the provider's new status.webhookPath")
+		notFound(w)
 		return
 	}
 
@@ -209,9 +259,10 @@ func (h *ReceiverHandler) authenticate(
 	if !verifyDelivery(receiverType, r.Header, body, token) {
 		// Info, not V(1): a run of these is a misconfigured hook (a token that does not match) or
 		// somebody probing the endpoint, and either is worth seeing at the default level. Neither
-		// the token nor the body is logged.
+		// the token nor the body is logged. The answer is the unknown route's, so a caller cannot
+		// tell a wrong signature from a path that serves nothing.
 		log.Info("Rejected a push delivery: signature absent or wrong")
-		http.Error(w, "signature absent or wrong", http.StatusUnauthorized)
+		notFound(w)
 		h.record(ctx, receiverType, deliveryRejected)
 		return nil, false
 	}
@@ -264,55 +315,61 @@ func (h *ReceiverHandler) act(
 	h.record(ctx, receiverType, outcome)
 }
 
-// receiverRoute parses /git-push/<namespace>/<name>. Anything else under the prefix, including a
-// segment that cannot be a namespace or an object name, is no route: answering 404 for it without
-// an API read keeps a scanner from turning into apiserver traffic.
-func receiverRoute(path string) (types.NamespacedName, bool) {
-	rest, ok := strings.CutPrefix(path, ReceiverPathPrefix)
-	if !ok {
-		return types.NamespacedName{}, false
+// receiverRoute returns the path when it is /git-push/<lowercase hex SHA-256>. Anything else is no
+// route, answered 404 without even a cache read.
+func receiverRoute(path string) (string, bool) {
+	digest, ok := strings.CutPrefix(path, ReceiverPathPrefix)
+	if !ok || len(digest) != receiverDigestHexLength {
+		return "", false
 	}
-	namespace, name, ok := strings.Cut(rest, "/")
-	if !ok || strings.Contains(name, "/") {
-		return types.NamespacedName{}, false
+	for _, c := range digest {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", false
+		}
 	}
-	if len(validation.IsDNS1123Label(namespace)) > 0 || len(validation.IsDNS1123Subdomain(name)) > 0 {
-		return types.NamespacedName{}, false
-	}
-	return types.NamespacedName{Namespace: namespace, Name: name}, true
+	return path, true
 }
 
-// lookupProvider resolves the GitProvider a route names. A missing provider and one without
-// spec.receiver answer the same 404, so the endpoint does not reveal which GitProviders exist.
+// lookupProvider finds the GitProvider that published path, through the cache index. A path nobody
+// published and a provider without spec.receiver answer the same 404.
 func (h *ReceiverHandler) lookupProvider(
 	ctx context.Context,
 	log logr.Logger,
 	w http.ResponseWriter,
-	key types.NamespacedName,
+	path string,
 ) (*v1alpha3.GitProvider, bool) {
-	var provider v1alpha3.GitProvider
-	if err := h.config.Reader.Get(ctx, key, &provider); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.V(1).Info("Push delivery for a GitProvider that does not exist")
-			notFound(w)
-			return nil, false
-		}
-		log.Error(err, "Could not read the GitProvider a push delivery names")
+	var providers v1alpha3.GitProviderList
+	if err := h.config.Reader.List(
+		ctx,
+		&providers,
+		client.MatchingFields{GitProviderWebhookPathIndex: path},
+	); err != nil {
+		log.Error(err, "Could not look up the GitProvider for a push delivery")
 		http.Error(w, "receiver not ready", http.StatusServiceUnavailable)
 		return nil, false
 	}
-	if provider.Spec.Receiver == nil {
-		log.V(1).Info("Push delivery for a GitProvider without spec.receiver")
+	if len(providers.Items) != 1 {
+		if len(providers.Items) > 1 {
+			// Two digests keyed by tokens agree only if a status was written by hand.
+			log.Info("Push delivery path is published by more than one GitProvider; serving none",
+				"count", len(providers.Items))
+		}
 		notFound(w)
 		return nil, false
 	}
-	return &provider, true
+	provider := &providers.Items[0]
+	if provider.Spec.Receiver == nil {
+		log.V(1).Info("Push delivery for a GitProvider whose spec.receiver was removed",
+			"gitProvider", provider.Namespace+"/"+provider.Name)
+		notFound(w)
+		return nil, false
+	}
+	return provider, true
 }
 
 // lookupToken reads the receiver token from the Secret spec.receiver.secretRef names. A missing
-// Secret or key is the receiver not being ready, never the sender's fault, so it answers 503 and
-// not 401: a 401 would tell whoever set up the hook that their secret is wrong when it is ours
-// that is absent, and a host retries a 5xx where it may give up on a 4xx.
+// Secret or key answers the unknown route's 404: the path was derived from a token that is gone,
+// so nothing can be verified on it. Only a read that failed answers 503, so a host retries it.
 func (h *ReceiverHandler) lookupToken(
 	ctx context.Context,
 	log logr.Logger,
@@ -325,16 +382,17 @@ func (h *ReceiverHandler) lookupToken(
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("Push receiver token Secret not found", "secret", secretName)
+			notFound(w)
 		} else {
 			log.Error(err, "Could not read the push receiver token Secret", "secret", secretName)
+			http.Error(w, "receiver not ready", http.StatusServiceUnavailable)
 		}
-		http.Error(w, "receiver not ready", http.StatusServiceUnavailable)
 		return nil, false
 	}
 	token := secret.Data[v1alpha3.ReceiverTokenKey]
 	if len(token) == 0 {
 		log.Info("Push receiver token Secret has no token", "secret", secretName, "key", v1alpha3.ReceiverTokenKey)
-		http.Error(w, "receiver not ready", http.StatusServiceUnavailable)
+		notFound(w)
 		return nil, false
 	}
 	return token, true
@@ -511,8 +569,8 @@ func branchFromRef(ref string) (string, error) {
 	return branch, nil
 }
 
-// notFound answers a route that does not serve. One body for every reason, so the answer does not
-// say whether the GitProvider is missing or merely has no receiver.
+// notFound answers every request that reaches no verified receiver. One status and body for every
+// reason, so the answer does not say whether the path, the token or the signature was wrong.
 func notFound(w http.ResponseWriter) {
 	http.Error(w, "no push receiver at this path", http.StatusNotFound)
 }

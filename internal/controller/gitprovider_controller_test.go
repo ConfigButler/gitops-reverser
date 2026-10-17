@@ -378,6 +378,12 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				},
 			}
+			token := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "receiver-token", Namespace: "default"},
+				Data:       map[string][]byte{configbutleraiv1alpha3.ReceiverTokenKey: []byte("receiver-test-token")},
+			}
+			Expect(k8sClient.Create(ctx, token)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, token) })
 			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
 
 			key := types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace}
@@ -389,7 +395,8 @@ var _ = Describe("GitProvider Controller", func() {
 				return published.Status.WebhookPath
 			}
 
-			Eventually(webhookPath, "30s", "500ms").Should(Equal("/git-push/default/test-provider-receiver"))
+			Eventually(webhookPath, "30s", "500ms").Should(Equal(configbutleraiv1alpha3.ReceiverPath(
+				[]byte("receiver-test-token"), "default", "test-provider-receiver")))
 
 			Eventually(func(g Gomega) {
 				current := &configbutleraiv1alpha3.GitProvider{}

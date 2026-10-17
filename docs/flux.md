@@ -232,8 +232,12 @@ after GitOps Reverser has replayed any pending edits onto it.
 
    ```bash
    kubectl get gitprovider platform -n team-a -o jsonpath='{.status.webhookPath}'
-   # /git-push/team-a/platform
+   # /git-push/3f9a…c41e
    ```
+
+   The path is derived from the token, as Flux's `Receiver` path is, so it names no namespace or
+   provider. A wrong path and a wrong secret both answer `404`; the operator's log says which.
+   Rotating the token moves the path, so register the new one with the new secret.
 
 5. Delete the Flux `Receiver` for this repository and its webhook at the Git host.
 

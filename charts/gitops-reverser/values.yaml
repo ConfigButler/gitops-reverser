@@ -114,7 +114,7 @@ git:
 
 # The push receiver: the endpoint a Git host's push webhook points at, so GitOps Reverser learns in
 # seconds, instead of at the next refresh, that somebody else pushed. A GitProvider opts in with
-# spec.receiver and publishes its path as status.webhookPath (/git-push/<namespace>/<name>).
+# spec.receiver and publishes its path as status.webhookPath (/git-push/<digest of the token>).
 receiver:
   # host:port the receiver listens on (passed as --receiver-bind-address), e.g. ":9292". Empty (the
   # default) serves no receiver: a foreign push is then still found, by the next rejected push or by

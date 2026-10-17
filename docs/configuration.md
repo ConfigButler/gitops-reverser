@@ -408,11 +408,15 @@ spec:
     secretRef:
       name: platform-receiver-token   # key: token
 status:
-  webhookPath: /git-push/team-a/platform-repo
+  webhookPath: /git-push/3f9a…c41e   # 64 hex characters
 ```
 
 Point the host's push webhook at the receiver listener plus `status.webhookPath`, with the same
-token as the webhook secret. Each type verifies the request the way its host signs it:
+token as the webhook secret. The path is an HMAC of the provider's namespace and name, keyed by the
+token, so it names neither and only whoever holds the token can find it. Rotating the token moves
+the path: the old one stops serving at once, and the new one is published at the next reconcile
+(within 5 minutes, since Secrets are not watched). `status.webhookPath` stays empty while the Secret
+or its `token` key is missing. Each type verifies the request the way its host signs it:
 
 | `type` | Verifies | Body |
 | --- | --- | --- |
@@ -425,9 +429,16 @@ token as the webhook secret. Each type verifies the request the way its host sig
 header is the one Flux's `generic-hmac` `Receiver` checks.
 
 The signature is checked before anything in the body is read, so an unsigned request cannot probe
-which repositories or branches are tracked. A verified delivery answers `202 Accepted` even when it
-names a branch no `GitTarget` writes, because that is not the host's fault and an error teaches a
-host to disable the hook. Pushes to other branches and tag pushes are accepted and ignored.
+which repositories or branches are tracked. Every request that reaches no verified receiver gets the
+same `404`, whether the path is unknown, from before a token rotation, or its signature is wrong, so
+the endpoint reveals nothing about which namespaces or providers exist; the operator's log says
+which it was. A verified delivery answers `202 Accepted` even when it names a branch no `GitTarget`
+writes, because that is not the host's fault and an error teaches a host to disable the hook. Pushes
+to other branches and tag pushes are accepted and ignored.
+
+The listener handles at most 8 deliveries at once and answers `429` above that, and a body over
+2 MiB is refused with `413` before its signature is checked. A push event is a few kilobytes, and a
+delivery refused for either reason is still found by the periodic refresh.
 
 A delivery is a hint, never a fact. It makes the branch worker read the branch's ref advertisement
 (one request), and what the remote says decides whether the branch gained a foreign commit. A late

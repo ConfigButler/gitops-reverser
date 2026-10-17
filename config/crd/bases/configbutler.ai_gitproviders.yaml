@@ -148,8 +148,10 @@ spec:
                   the periodic refresh.
                 properties:
                   secretRef:
-                    description: SecretRef names a Secret in this namespace whose
-                      "token" key is the webhook secret.
+                    description: |-
+                      SecretRef names a Secret in this namespace whose "token" key is the webhook secret. The
+                      token also derives status.webhookPath, so rotating it moves the path: register the new path
+                      with the new secret.
                     properties:
                       name:
                         description: Name of the referent.
@@ -333,8 +335,9 @@ spec:
                 type: string
               webhookPath:
                 description: |-
-                  WebhookPath is the path spec.receiver is served on, under the receiver listener. Empty
-                  without spec.receiver.
+                  WebhookPath is the path spec.receiver is served on, under the receiver listener:
+                  /git-push/ and a hash of this provider's name and the receiver token. Empty without
+                  spec.receiver, and while the token Secret or its "token" key is missing.
                 type: string
             type: object
         required:

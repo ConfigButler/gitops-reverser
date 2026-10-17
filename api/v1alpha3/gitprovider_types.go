@@ -3,6 +3,10 @@
 package v1alpha3
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -77,7 +81,9 @@ type GitProviderReceiver struct {
 	// +kubebuilder:validation:Enum=github;gitlab;gitea;generic-hmac
 	Type ReceiverType `json:"type"`
 
-	// SecretRef names a Secret in this namespace whose "token" key is the webhook secret.
+	// SecretRef names a Secret in this namespace whose "token" key is the webhook secret. The
+	// token also derives status.webhookPath, so rotating it moves the path: register the new path
+	// with the new secret.
 	// +required
 	SecretRef meta.LocalObjectReference `json:"secretRef"`
 }
@@ -100,9 +106,20 @@ const (
 // ReceiverTokenKey is the Secret key holding a receiver's token, the key a Flux Receiver Secret uses.
 const ReceiverTokenKey = "token"
 
-// ReceiverPath is the path a GitProvider's receiver is served on.
-func ReceiverPath(namespace, name string) string {
-	return "/git-push/" + namespace + "/" + name
+// ReceiverPathPrefix is the prefix every receiver path starts with.
+const ReceiverPathPrefix = "/git-push/"
+
+// A path that names the GitProvider would let anybody who can reach the listener list which
+// namespaces and providers exist. Like Flux's Receiver, the path is derived from the token, so
+// only whoever holds the token can find it; unlike Flux's sha256(token+name+namespace), it is an
+// HMAC over "namespace/name", which no two providers sharing a token can collide on.
+
+// ReceiverPath is the path a GitProvider's receiver is served on: the prefix and the hex
+// HMAC-SHA256 of "<namespace>/<name>", keyed by the receiver token.
+func ReceiverPath(token []byte, namespace, name string) string {
+	mac := hmac.New(sha256.New, token)
+	mac.Write([]byte(namespace + "/" + name))
+	return ReceiverPathPrefix + hex.EncodeToString(mac.Sum(nil))
 }
 
 // KnownHostsReference points at a namespace-local ConfigMap or Secret that holds SSH known_hosts
@@ -216,8 +233,9 @@ type GitProviderStatus struct {
 	// +optional
 	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
 
-	// WebhookPath is the path spec.receiver is served on, under the receiver listener. Empty
-	// without spec.receiver.
+	// WebhookPath is the path spec.receiver is served on, under the receiver listener:
+	// /git-push/ and a hash of this provider's name and the receiver token. Empty without
+	// spec.receiver, and while the token Secret or its "token" key is missing.
 	// +optional
 	WebhookPath string `json:"webhookPath,omitempty"`
 }
