@@ -35,7 +35,7 @@ func statusWriterFixture(t *testing.T, funcs interceptor.Funcs) (*StatusWriter, 
 	trigger := &v1alpha3.FluxTrigger{
 		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: "apps"},
 		Spec: v1alpha3.FluxTriggerSpec{
-			ClusterProviderRef: fluxmeta.LocalObjectReference{Name: v1alpha3.DefaultClusterProviderName},
+			ClusterProviderRef: &fluxmeta.LocalObjectReference{Name: v1alpha3.DefaultClusterProviderName},
 			KustomizationRef:   fluxmeta.NamespacedObjectReference{Name: "apps"},
 		},
 		Status: v1alpha3.FluxTriggerStatus{Conditions: []metav1.Condition{{

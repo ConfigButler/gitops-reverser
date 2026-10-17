@@ -131,7 +131,7 @@ The references are immutable: to hold another `Kustomization`, delete the trigge
 
 | Field | Default | What it does |
 |---|---|---|
-| `clusterProviderRef` | **required** | The `ClusterProvider` whose cluster holds the `Kustomization`. Its `accessFrom` must admit the trigger's namespace |
+| `clusterProviderRef` | `{"name":"default"}` | The `ClusterProvider` whose cluster holds the `Kustomization`. Its `accessFrom` must admit the trigger's namespace |
 | `kustomizationRef` | **required** | The `Kustomization` that applies the folders of the `GitTarget`s naming this trigger. See [who applies this folder](#who-applies-this-folder-specapplytriggerref) |
 | `quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` |
 
@@ -141,7 +141,7 @@ The references are immutable: to hold another `Application`, delete the trigger 
 
 | Field | Default | What it does |
 |---|---|---|
-| `clusterProviderRef` | **required** | The `ClusterProvider` whose cluster holds the `Application`. Its `accessFrom` must admit the trigger's namespace |
+| `clusterProviderRef` | `{"name":"default"}` | The `ClusterProvider` whose cluster holds the `Application`. Its `accessFrom` must admit the trigger's namespace |
 | `applicationRef` | **required** | The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s naming this trigger. See [who applies this folder](#who-applies-this-folder-specapplytriggerref) |
 
 ### `CommitRequest` (namespaced): save now
@@ -1171,7 +1171,7 @@ spec:
 
 | Field | Default | What it does |
 | --- | --- | --- |
-| `FluxTrigger.spec.clusterProviderRef`, `ArgoCDTrigger.spec.clusterProviderRef` | required | The `ClusterProvider` whose cluster holds the applier. Immutable |
+| `FluxTrigger.spec.clusterProviderRef`, `ArgoCDTrigger.spec.clusterProviderRef` | `{name: default}` | The `ClusterProvider` whose cluster holds the applier, defaulted as a `GitTarget`'s is. Immutable |
 | `FluxTrigger.spec.kustomizationRef` | required | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` that follows a branch. Immutable |
 | `FluxTrigger.spec.quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` request. At most `1h` |
 | `ArgoCDTrigger.spec.applicationRef` | required | An Argo CD `Application` on a single source whose `targetRevision` names a branch, with automated sync off. Immutable |

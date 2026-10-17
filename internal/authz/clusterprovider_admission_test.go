@@ -310,7 +310,7 @@ func TestApplierAdmitted(t *testing.T) {
 	triggerOn := func(cluster string) configv1alpha3.ApplyTrigger {
 		return &configv1alpha3.FluxTrigger{
 			ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "apps"},
-			Spec:       configv1alpha3.FluxTriggerSpec{ClusterProviderRef: meta.LocalObjectReference{Name: cluster}},
+			Spec:       configv1alpha3.FluxTriggerSpec{ClusterProviderRef: &meta.LocalObjectReference{Name: cluster}},
 		}
 	}
 	tests := []struct {

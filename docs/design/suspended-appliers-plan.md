@@ -232,7 +232,7 @@ apiVersion: configbutler.ai/v1alpha3
 kind: FluxTrigger
 metadata: { name: apps, namespace: team-a }
 spec:
-  clusterProviderRef: { name: management }        # required: where the Kustomization lives
+  clusterProviderRef: { name: management }        # where the Kustomization lives; default "default"
   kustomizationRef: { name: apps, namespace: flux-system }
   quietPeriod: 30s                                # CatchUp only
 status:
@@ -304,8 +304,9 @@ spec:
 ### What it costs
 
 - One more object to create, one more reconciler, and RBAC for two kinds now and three later.
-- `clusterProviderRef` is required on the trigger, since "the target's own" stops meaning anything
-  once several targets reference one trigger. The trigger's namespace is gated by that
+- `clusterProviderRef` is on the trigger, since "the target's own" stops meaning anything once
+  several targets reference one trigger. Omitted, it is the `default` provider, exactly as a
+  `GitTarget`'s is (decided 2026-10-17, after step 3 first made it required). The trigger's namespace is gated by that
   `ClusterProvider`'s `accessFrom`, and a `GitTarget` may reference only a trigger in its own
   namespace. That is simpler than today's per-target `authz.ApplierAdmitted`.
 - New RBAC in the applier cluster: list `kustomizations` and `helmreleases` cluster-wide, for the

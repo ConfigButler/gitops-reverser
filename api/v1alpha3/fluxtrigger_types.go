@@ -20,11 +20,13 @@ type FluxTriggerSpec struct {
 	// management cluster running Flux for the source cluster. A provider without spec.kubeConfig is
 	// the operator's own cluster. The provider must admit this trigger's namespace
 	// (spec.accessFrom). Its identity needs get and patch on the Kustomization and its
-	// GitRepository. Immutable.
-	// +required
+	// GitRepository. Omitted,
+	// it is the ClusterProvider named "default", as for a GitTarget. Immutable.
+	// +optional
+	// +kubebuilder:default={name: "default"}
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.clusterProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.clusterProviderRef is immutable; delete and recreate the FluxTrigger to hold a Kustomization elsewhere"
-	ClusterProviderRef meta.LocalObjectReference `json:"clusterProviderRef"`
+	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// KustomizationRef is the Flux Kustomization that applies the folders of the GitTargets naming
 	// this trigger. Its spec.sourceRef must be a GitRepository that follows a branch. Its namespace
@@ -142,8 +144,9 @@ var _ ApplyTrigger = (*FluxTrigger)(nil)
 // TriggerKind is FluxTrigger.
 func (t *FluxTrigger) TriggerKind() string { return ApplyTriggerKindFlux }
 
-// ClusterProvider is spec.clusterProviderRef.name.
-func (t *FluxTrigger) ClusterProvider() string { return t.Spec.ClusterProviderRef.Name }
+// ClusterProvider is spec.clusterProviderRef.name, or "default" when it is unset, as the schema
+// defaults it: a literal built in a test or by an older client still names a concrete provider.
+func (t *FluxTrigger) ClusterProvider() string { return clusterProviderName(t.Spec.ClusterProviderRef) }
 
 // ApplierKind is Kustomization.
 func (t *FluxTrigger) ApplierKind() string { return ApplierKindKustomization }

@@ -98,7 +98,7 @@ func triggersFor(objects []client.Object) []client.Object {
 			cluster = v1alpha3.DefaultClusterProviderName
 		}
 		meta := metav1.ObjectMeta{Namespace: target.Namespace, Name: target.Spec.ApplyTriggerRef.Name}
-		provider := fluxmeta.LocalObjectReference{Name: cluster}
+		provider := &fluxmeta.LocalObjectReference{Name: cluster}
 		if app, ok := target.Annotations[testApplicationAnnotation]; ok {
 			namespace, name, _ := strings.Cut(app, "/")
 			triggers = append(triggers, &v1alpha3.ArgoCDTrigger{ObjectMeta: meta, Spec: v1alpha3.ArgoCDTriggerSpec{

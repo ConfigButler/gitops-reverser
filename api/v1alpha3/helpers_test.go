@@ -330,7 +330,7 @@ func TestApplyTrigger_AppliersDefaultToTheTriggersNamespace(t *testing.T) {
 	flux := &FluxTrigger{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
 		Spec: FluxTriggerSpec{
-			ClusterProviderRef: meta.LocalObjectReference{Name: "hub"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: "hub"},
 			KustomizationRef:   meta.NamespacedObjectReference{Name: "apps"},
 		},
 	}
@@ -397,7 +397,9 @@ func TestApplyTrigger_StatusAccessors(t *testing.T) {
 	assert.Equal(t, ApplyTriggerKindArgoCD, argo.TriggerKind())
 	assert.Equal(t, ApplierKindApplication, argo.ApplierKind())
 	assert.Equal(t, DefaultApplierQuietPeriod, argo.EffectiveQuietPeriod())
-	argo.Spec.ClusterProviderRef.Name = "hub"
+	assert.Equal(t, DefaultClusterProviderName, argo.ClusterProvider(),
+		"an omitted clusterProviderRef is the default provider, as for a GitTarget")
+	argo.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: "hub"}
 	assert.Equal(t, "hub", argo.ClusterProvider())
 
 	_, _, known := flux.SourceBinding()

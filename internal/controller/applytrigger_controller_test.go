@@ -98,7 +98,7 @@ func testFluxTrigger(cluster string) *configbutleraiv1alpha3.FluxTrigger {
 	return &configbutleraiv1alpha3.FluxTrigger{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a", Generation: 1},
 		Spec: configbutleraiv1alpha3.FluxTriggerSpec{
-			ClusterProviderRef: meta.LocalObjectReference{Name: cluster},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: cluster},
 			KustomizationRef:   meta.NamespacedObjectReference{Namespace: "flux-system", Name: "checkout"},
 		},
 	}
@@ -109,7 +109,7 @@ func testArgoCDTrigger(cluster string) *configbutleraiv1alpha3.ArgoCDTrigger {
 	return &configbutleraiv1alpha3.ArgoCDTrigger{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a", Generation: 1},
 		Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
-			ClusterProviderRef: meta.LocalObjectReference{Name: cluster},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: cluster},
 			ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: "checkout"},
 		},
 	}

@@ -485,7 +485,7 @@ func fluxTrigger(name string, mutate ...func(*configv1alpha3.FluxTrigger)) *conf
 	trigger := &configv1alpha3.FluxTrigger{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 		Spec: configv1alpha3.FluxTriggerSpec{
-			ClusterProviderRef: meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
 			KustomizationRef:   meta.NamespacedObjectReference{Name: name},
 		},
 	}
@@ -533,7 +533,7 @@ func testTrigger(namespace string, ref *configv1alpha3.ApplyTriggerReference) cl
 		return &configv1alpha3.ArgoCDTrigger{
 			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: namespace},
 			Spec: configv1alpha3.ArgoCDTriggerSpec{
-				ClusterProviderRef: meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
+				ClusterProviderRef: &meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
 				ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: ref.Name},
 			},
 		}

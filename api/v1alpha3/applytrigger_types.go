@@ -5,6 +5,7 @@ package v1alpha3
 import (
 	"time"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -193,4 +194,13 @@ func defaultedNamespace(namespace, fallback string) string {
 		return fallback
 	}
 	return namespace
+}
+
+// clusterProviderName is ref's name, or DefaultClusterProviderName when ref names none, the way
+// GitTarget.SourceCluster resolves an omitted clusterProviderRef.
+func clusterProviderName(ref *meta.LocalObjectReference) string {
+	if ref == nil || ref.Name == "" {
+		return DefaultClusterProviderName
+	}
+	return ref.Name
 }

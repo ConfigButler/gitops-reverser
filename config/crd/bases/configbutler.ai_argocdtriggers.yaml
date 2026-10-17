@@ -102,11 +102,14 @@ spec:
                 - message: spec.applicationRef.name must not be empty
                   rule: self.name != ''
               clusterProviderRef:
+                default:
+                  name: default
                 description: |-
                   ClusterProviderRef names the ClusterProvider whose cluster holds the Application, such as a
                   management cluster running Argo CD for the source cluster. A provider without
                   spec.kubeConfig is the operator's own cluster. The provider must admit this trigger's
-                  namespace (spec.accessFrom). Its identity needs get and update on the Application. Immutable.
+                  namespace (spec.accessFrom). Its identity needs get and update on the Application. Omitted,
+                  it is the ClusterProvider named "default", as for a GitTarget. Immutable.
                 properties:
                   name:
                     description: Name of the referent.
@@ -122,7 +125,6 @@ spec:
                   rule: self == oldSelf
             required:
             - applicationRef
-            - clusterProviderRef
             type: object
           status:
             description: status defines the observed state of ArgoCDTrigger

@@ -192,7 +192,7 @@ metadata:
   name: checkout
   namespace: team-a            # the GitTargets naming it are in this namespace
 spec:
-  clusterProviderRef:          # required: the cluster Flux runs in
+  clusterProviderRef:          # the cluster Flux runs in; default: "default"
     name: default
   kustomizationRef:
     namespace: flux-system     # default: the trigger's namespace
@@ -206,9 +206,10 @@ spec:
     name: checkout
 ```
 
-`clusterProviderRef` names the cluster that holds the `Kustomization`: `default`, the operator's
-own cluster, or another provider for Flux running in a management cluster with a `Kustomization`
-per workload cluster. It and `kustomizationRef` are immutable: delete and recreate the trigger to
+`clusterProviderRef` names the cluster that holds the `Kustomization`: omitted, the
+`ClusterProvider` named `default`, as for a `GitTarget`, often the operator's own cluster, or
+another provider for Flux running in a management cluster with a `Kustomization` per workload
+cluster. It and `kustomizationRef` are immutable: delete and recreate the trigger to
 hold another `Kustomization`.
 
 `quietPeriod` is how long the branch must stay quiet after GitOps Reverser's own pushes before Flux

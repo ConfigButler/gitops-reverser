@@ -31,7 +31,7 @@ var _ = Describe("Apply trigger schema", func() {
 		return &configbutleraiv1alpha3.FluxTrigger{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 			Spec: configbutleraiv1alpha3.FluxTriggerSpec{
-				ClusterProviderRef: meta.LocalObjectReference{Name: "hub"},
+				ClusterProviderRef: &meta.LocalObjectReference{Name: "hub"},
 				KustomizationRef:   meta.NamespacedObjectReference{Namespace: "flux-system", Name: "apps"},
 			},
 		}
@@ -40,7 +40,7 @@ var _ = Describe("Apply trigger schema", func() {
 		return &configbutleraiv1alpha3.ArgoCDTrigger{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 			Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
-				ClusterProviderRef: meta.LocalObjectReference{Name: "hub"},
+				ClusterProviderRef: &meta.LocalObjectReference{Name: "hub"},
 				ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
 			},
 		}
@@ -57,7 +57,13 @@ var _ = Describe("Apply trigger schema", func() {
 		Expect(create(long)).To(MatchError(ContainSubstring("spec.quietPeriod must be a Go duration of at most 1h")))
 	})
 
-	It("requires a cluster, and an applier with a name", func() {
+	It("defaults the cluster to the default ClusterProvider, as a GitTarget does, and requires names", func() {
+		omitted := argo("argo-default-cluster")
+		omitted.Spec.ClusterProviderRef = nil
+		Expect(create(omitted)).To(Succeed())
+		Expect(omitted.Spec.ClusterProviderRef).To(Equal(
+			&meta.LocalObjectReference{Name: configbutleraiv1alpha3.DefaultClusterProviderName}))
+
 		noCluster := flux("flux-no-cluster")
 		noCluster.Spec.ClusterProviderRef.Name = ""
 		Expect(create(noCluster)).To(MatchError(ContainSubstring("spec.clusterProviderRef.name must not be empty")))
@@ -132,7 +138,7 @@ var _ = Describe("Apply trigger reconcile", func() {
 		trigger := &configbutleraiv1alpha3.ArgoCDTrigger{
 			ObjectMeta: metav1.ObjectMeta{Name: "reconciled", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
-				ClusterProviderRef: meta.LocalObjectReference{Name: configbutleraiv1alpha3.DefaultClusterProviderName},
+				ClusterProviderRef: &meta.LocalObjectReference{Name: configbutleraiv1alpha3.DefaultClusterProviderName},
 				ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
 			},
 		}

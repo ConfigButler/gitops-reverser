@@ -76,12 +76,15 @@ spec:
             description: spec defines the Kustomization the trigger holds
             properties:
               clusterProviderRef:
+                default:
+                  name: default
                 description: |-
                   ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as a
                   management cluster running Flux for the source cluster. A provider without spec.kubeConfig is
                   the operator's own cluster. The provider must admit this trigger's namespace
                   (spec.accessFrom). Its identity needs get and patch on the Kustomization and its
-                  GitRepository. Immutable.
+                  GitRepository. Omitted,
+                  it is the ClusterProvider named "default", as for a GitTarget. Immutable.
                 properties:
                   name:
                     description: Name of the referent.
@@ -129,7 +132,6 @@ spec:
                 - message: spec.quietPeriod must be a Go duration of at most 1h
                   rule: duration(self) <= duration('1h')
             required:
-            - clusterProviderRef
             - kustomizationRef
             type: object
           status:

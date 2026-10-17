@@ -21,11 +21,13 @@ type ArgoCDTriggerSpec struct {
 	// ClusterProviderRef names the ClusterProvider whose cluster holds the Application, such as a
 	// management cluster running Argo CD for the source cluster. A provider without
 	// spec.kubeConfig is the operator's own cluster. The provider must admit this trigger's
-	// namespace (spec.accessFrom). Its identity needs get and update on the Application. Immutable.
-	// +required
+	// namespace (spec.accessFrom). Its identity needs get and update on the Application. Omitted,
+	// it is the ClusterProvider named "default", as for a GitTarget. Immutable.
+	// +optional
+	// +kubebuilder:default={name: "default"}
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.clusterProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.clusterProviderRef is immutable; delete and recreate the ArgoCDTrigger to hold an Application elsewhere"
-	ClusterProviderRef meta.LocalObjectReference `json:"clusterProviderRef"`
+	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// ApplicationRef is the Argo CD Application that applies the folders of the GitTargets naming
 	// this trigger. It must have a single spec.source whose targetRevision names a branch, and
@@ -134,8 +136,11 @@ var _ ApplyTrigger = (*ArgoCDTrigger)(nil)
 // TriggerKind is ArgoCDTrigger.
 func (t *ArgoCDTrigger) TriggerKind() string { return ApplyTriggerKindArgoCD }
 
-// ClusterProvider is spec.clusterProviderRef.name.
-func (t *ArgoCDTrigger) ClusterProvider() string { return t.Spec.ClusterProviderRef.Name }
+// ClusterProvider is spec.clusterProviderRef.name, or "default" when it is unset, as the schema
+// defaults it: a literal built in a test or by an older client still names a concrete provider.
+func (t *ArgoCDTrigger) ClusterProvider() string {
+	return clusterProviderName(t.Spec.ClusterProviderRef)
+}
 
 // ApplierKind is Application.
 func (t *ArgoCDTrigger) ApplierKind() string { return ApplierKindApplication }

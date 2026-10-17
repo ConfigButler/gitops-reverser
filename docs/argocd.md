@@ -200,7 +200,7 @@ metadata:
   name: checkout
   namespace: team-a            # the GitTargets naming it are in this namespace
 spec:
-  clusterProviderRef:          # required: the cluster the Application lives in
+  clusterProviderRef:          # the cluster the Application lives in; default: "default"
     name: management
   applicationRef:
     namespace: argocd          # default: the trigger's namespace
@@ -213,11 +213,11 @@ spec:
     name: checkout
 ```
 
-`clusterProviderRef` names the cluster that holds the `Application`: `default`, the operator's own
-cluster, or another provider for a hub Argo CD, which keeps its `Application`s in a management
-cluster and deploys to another. The `GitTarget`'s own `spec.clusterProviderRef` stays the cluster
-it mirrors. Both references are immutable: delete and recreate the trigger to hold another
-`Application`.
+`clusterProviderRef` names the cluster that holds the `Application`: omitted, the `ClusterProvider`
+named `default`, as for a `GitTarget`, often the operator's own cluster, or another provider for a
+hub Argo CD, which keeps its `Application`s in a management cluster and deploys to another. The
+`GitTarget`'s own `spec.clusterProviderRef` stays the cluster it mirrors. Both references are
+immutable: delete and recreate the trigger to hold another `Application`.
 
 The trigger reports `Configured`, and its `Ready` includes it:
 
