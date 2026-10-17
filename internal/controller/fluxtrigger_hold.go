@@ -11,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -303,3 +304,60 @@ func (r *ApplyTriggerReconciler) event(object client.Object, eventType, reason, 
 
 // fluxClientFactory builds the Flux client of a dynamic client; a test sets one.
 type fluxClientFactory func(client dynamic.Interface) *applier.Flux
+
+// publishConsumers sets the trigger's status.source.otherConsumers and status.source.prefetch: the
+// consumers of its GitRepository in the applier's cluster that no FluxTrigger on the same
+// ClusterProvider holds. A listing that fails publishes none and no prefetch, because the
+// precondition cannot be checked. Information only (decision 2): it never affects Ready.
+func (r *ApplyTriggerReconciler) publishConsumers(ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger) {
+	source := trigger.Status.Source
+	if source == nil || r.ApplierClients == nil {
+		return
+	}
+	source.OtherConsumers, source.Prefetch = nil, false
+	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
+	defer cancel()
+	flux, err := r.fluxClient(ctx, trigger)
+	if err != nil {
+		return
+	}
+	consumers, err := flux.Consumers(ctx, k8stypes.NamespacedName{
+		Namespace: source.GitRepository.Namespace, Name: source.GitRepository.Name,
+	})
+	if err != nil {
+		logf.FromContext(ctx).V(1).Info("cannot list the GitRepository's consumers; not prefetching it",
+			"gitRepository", source.GitRepository.Namespace+"/"+source.GitRepository.Name, "error", err.Error())
+		return
+	}
+	held, err := r.heldKustomizations(ctx, trigger.ClusterProvider())
+	if err != nil {
+		return
+	}
+	for _, consumer := range consumers {
+		key := k8stypes.NamespacedName{Namespace: consumer.Namespace, Name: consumer.Name}
+		if consumer.Kind == configbutleraiv1alpha3.ApplierKindKustomization && held[key] {
+			continue
+		}
+		source.OtherConsumers = append(source.OtherConsumers, consumer)
+	}
+	source.Prefetch = len(source.OtherConsumers) == 0
+}
+
+// heldKustomizations is every Kustomization a FluxTrigger on the ClusterProvider holds.
+func (r *ApplyTriggerReconciler) heldKustomizations(
+	ctx context.Context,
+	cluster string,
+) (map[k8stypes.NamespacedName]bool, error) {
+	var triggers configbutleraiv1alpha3.FluxTriggerList
+	if err := r.List(ctx, &triggers); err != nil {
+		return nil, err
+	}
+	held := map[k8stypes.NamespacedName]bool{}
+	for i := range triggers.Items {
+		trigger := &triggers.Items[i]
+		if trigger.DeletionTimestamp.IsZero() && trigger.ClusterProvider() == cluster {
+			held[trigger.Applier()] = true
+		}
+	}
+	return held, nil
+}

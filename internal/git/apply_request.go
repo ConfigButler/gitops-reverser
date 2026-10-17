@@ -243,10 +243,14 @@ type ApplyTriggerStatusWriter interface {
 	PersistApplyTriggerStatus(ctx context.Context, trigger TriggerRef) error
 }
 
-// ApplyRequester carries out apply requests. RequestApply must not block: it is called on the
-// branch worker's loop goroutine.
+// ApplyRequester carries out apply requests. RequestApply and PrefetchSource must not block: they
+// are called on the branch worker's loop goroutine.
 type ApplyRequester interface {
 	RequestApply(req ApplyRequest)
+	// PrefetchSource asks the source req.Applier applies to fetch req.Commit now, ahead of an apply,
+	// when its trigger says it may and no operation on that source is in flight. It applies nothing
+	// and reports nothing: only ID, Branch, Applier and Commit are read.
+	PrefetchSource(req ApplyRequest)
 }
 
 // StrongerApplyReason is the reason a target owed two requests is owed. A CatchUp asks for the

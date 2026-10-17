@@ -97,6 +97,24 @@ type FluxTriggerSource struct {
 	// Branch is the GitRepository's spec.ref.branch.
 	// +optional
 	Branch string `json:"branch,omitempty"`
+
+	// Why information only (decision 2 of docs/design/suspended-appliers-plan.md): one
+	// GitRepository for several Kustomizations is a normal setup, and a consumer no trigger names
+	// applies a folder that has no promise of protection anyway.
+
+	// OtherConsumers are the other objects in the cluster that apply this GitRepository and that no
+	// FluxTrigger holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
+	// new artifact the moment it arrives. Information only: it never affects Ready.
+	// +optional
+	// +listType=atomic
+	OtherConsumers []meta.NamespacedObjectKindReference `json:"otherConsumers,omitempty"`
+
+	// Prefetch is true while GitOps Reverser fetches the GitRepository as soon as it learns of a push,
+	// before the apply: every consumer of it was listed and is held by a FluxTrigger, so a new
+	// artifact applies nothing on its own. False when otherConsumers is not empty, or the consumers
+	// could not be listed (the identity needs list on kustomizations and helmreleases).
+	// +optional
+	Prefetch bool `json:"prefetch,omitempty"`
 }
 
 // +kubebuilder:object:root=true

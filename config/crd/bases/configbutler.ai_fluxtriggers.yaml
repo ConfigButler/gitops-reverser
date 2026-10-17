@@ -296,6 +296,43 @@ spec:
                     required:
                     - name
                     type: object
+                  otherConsumers:
+                    description: |-
+                      OtherConsumers are the other objects in the cluster that apply this GitRepository and that no
+                      FluxTrigger holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
+                      new artifact the moment it arrives. Information only: it never affects Ready.
+                    items:
+                      description: |-
+                        NamespacedObjectKindReference contains enough information to locate the typed referenced Kubernetes resource object
+                        in any namespace.
+                      properties:
+                        apiVersion:
+                          description: API version of the referent, if not specified
+                            the Kubernetes preferred version will be used.
+                          type: string
+                        kind:
+                          description: Kind of the referent.
+                          type: string
+                        name:
+                          description: Name of the referent.
+                          type: string
+                        namespace:
+                          description: Namespace of the referent, when not specified
+                            it acts as LocalObjectReference.
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  prefetch:
+                    description: |-
+                      Prefetch is true while GitOps Reverser fetches the GitRepository as soon as it learns of a push,
+                      before the apply: every consumer of it was listed and is held by a FluxTrigger, so a new
+                      artifact applies nothing on its own. False when otherConsumers is not empty, or the consumers
+                      could not be listed (the identity needs list on kustomizations and helmreleases).
+                    type: boolean
                   url:
                     description: URL is the GitRepository's spec.url.
                     type: string

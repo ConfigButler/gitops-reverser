@@ -149,7 +149,7 @@ func (r *ApplyTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	var held *conditionValue
 	if holds {
-		value := r.holdKustomization(ctx, flux, configured)
+		value := r.holdFlux(ctx, flux, configured, checked)
 		st.setValue(ApplyTriggerConditionSuspended, value)
 		held = &value
 	}
@@ -175,6 +175,17 @@ func (r *ApplyTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		requeue = applyTriggerSettleInterval
 	}
 	return ctrl.Result{RequeueAfter: st.requeueAfter(requeue)}, nil
+}
+
+// holdFlux publishes a Configured FluxTrigger's source consumers, when its applier was checked, and
+// holds its Kustomization; it returns the Suspended condition.
+func (r *ApplyTriggerReconciler) holdFlux(
+	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, configured conditionValue, checked bool,
+) conditionValue {
+	if checked && configured.Status == metav1.ConditionTrue {
+		r.publishConsumers(ctx, trigger)
+	}
+	return r.holdKustomization(ctx, trigger, configured)
 }
 
 // finalizeFluxTrigger hands a deleted FluxTrigger's Kustomization back, or puts the finalizer on a

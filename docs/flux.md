@@ -239,7 +239,8 @@ with the identity of that `ClusterProvider`. That identity needs:
 
 | API group | Resource | Verbs |
 | --- | --- | --- |
-| `kustomize.toolkit.fluxcd.io` | `kustomizations` | `get`, `patch` |
+| `kustomize.toolkit.fluxcd.io` | `kustomizations` | `get`, `list`, `patch` |
+| `helm.toolkit.fluxcd.io` | `helmreleases` | `list`, to find the `GitRepository`'s consumers; without it the source is never prefetched |
 | `source.toolkit.fluxcd.io` | `gitrepositories` | `get`, `patch` |
 | `authorization.k8s.io` | `selfsubjectaccessreviews` | `create`, to check the two above |
 

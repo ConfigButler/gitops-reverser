@@ -93,6 +93,11 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "Succeeded", "")
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Suspended", "True", "Held", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "the trigger holds its Kustomization")
+		prefetch, err := kubectlRunInNamespace(testNs, "get", fluxTriggerResource, fluxName,
+			"-o", "jsonpath={.status.source.prefetch}|{.status.source.otherConsumers}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(prefetch)).To(Equal("true|"),
+			"its Kustomization is the GitRepository's only consumer, so the source is prefetched")
 		Expect(eventMessages(Default, testNs, "FluxTrigger", fluxName, "Adopted")).
 			To(ContainSubstring("suspended Kustomization flux-system/" + fluxName))
 		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "False", "SourceMismatch",
@@ -134,7 +139,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		// kept across a rejected attempt) is proven in apply_attempt_test.go.
 		By("pointing the GitRepository at main, after which Flux reaches the tip")
 		head := remoteHeadSHA(Default, repo.CheckoutDir)
-		_, err := kubectlRunInNamespace("flux-system", "patch", "gitrepository", fluxName, "--type=merge", "-p",
+		_, err = kubectlRunInNamespace("flux-system", "patch", "gitrepository", fluxName, "--type=merge", "-p",
 			`{"spec":{"ref":{"branch":"main"}}}`)
 		Expect(err).NotTo(HaveOccurred(), "failed to point the GitRepository at main")
 		requestTriggerReconcile(testNs, fluxTriggerResource, fluxName)

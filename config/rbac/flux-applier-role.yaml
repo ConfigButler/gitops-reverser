@@ -1,6 +1,8 @@
-# What GitOps Reverser needs to drive a Flux Kustomization a FluxTrigger holds: read
-# the Kustomization and the GitRepository it applies from, stamp reconcile.fluxcd.io/requestedAt on
-# either (the request `flux reconcile kustomization --with-source` makes), and check that it may.
+# What GitOps Reverser needs to drive a Flux Kustomization a FluxTrigger holds: read the
+# Kustomization and the GitRepository it applies from, suspend and resume the Kustomization and
+# stamp reconcile.fluxcd.io/requestedAt on either, list the consumers of the GitRepository
+# (Kustomizations and HelmReleases; without it the source is never prefetched), and check that it
+# may.
 #
 # It is kept OUT of role.yaml because no GitTarget needs it until one names an applier, and an
 # install that does not use Flux should not hold patch rights on Flux objects. Drop this pair when
@@ -20,7 +22,14 @@ rules:
       - kustomizations
     verbs:
       - get
+      - list
       - patch
+  - apiGroups:
+      - helm.toolkit.fluxcd.io
+    resources:
+      - helmreleases
+    verbs:
+      - list
   - apiGroups:
       - source.toolkit.fluxcd.io
     resources:

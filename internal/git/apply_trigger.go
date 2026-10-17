@@ -63,9 +63,11 @@ type applyDebt struct {
 	// means the remote does not carry the branch.
 	known bool
 	tip   string
-	// foreign and catchUp are owed until the loop takes them on a quiet branch.
-	foreign bool
-	catchUp bool
+	// foreign and catchUp are owed until the loop takes them on a quiet branch. prefetch is a push
+	// somebody else made, until the loop takes it (apply_groups.go).
+	foreign  bool
+	catchUp  bool
+	prefetch bool
 	// results are the reports of finished attempts, until the loop reads them.
 	results []ApplyResult
 }
@@ -93,7 +95,17 @@ func (d *applyDebt) observe(observed RemoteObservation) {
 		d.catchUp = true
 		return
 	}
-	d.foreign = true
+	d.foreign, d.prefetch = true, true
+}
+
+// takePrefetch returns whether a push somebody else made is to be fetched ahead, with the tip, and
+// clears it.
+func (d *applyDebt) takePrefetch() (string, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	due := d.prefetch
+	d.prefetch = false
+	return d.tip, due
 }
 
 // take returns what is owed and clears it. The caller restores it if it cannot act on it.
@@ -156,6 +168,11 @@ type branchTarget struct {
 	// what an earlier process, or the trigger's reconciler, recorded (apply_recovery.go).
 	recorded   *v1alpha3.ApplyOperation
 	repairOwed bool
+	// group names the GitRepository a Flux trigger's Kustomization applies, in its cluster; empty
+	// for an Argo CD Application or a source not read yet. prefetch is the trigger's
+	// status.source.prefetch (apply_groups.go).
+	group    string
+	prefetch bool
 }
 
 // appliersOnBranch lists the GitTargets on this worker's (provider, branch) that name an apply
@@ -190,6 +207,8 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 			consents:    ConsentsToReapply(target),
 			recorded:    trigger.Operation(),
 			repairOwed:  trigger.RepairOwed(),
+			group:       sourceGroup(trigger),
+			prefetch:    prefetchesSource(trigger),
 		})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ref.String() < listed[j].ref.String() })
@@ -308,9 +327,12 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	l.followRecordedOperations(now)
 	if !l.branchQuiet(now) || len(w.eventQueue) > 0 {
 		// Queued work: the next wake looks again. The branch is still quiet until that work opens
-		// a window, so quietSince is kept.
+		// a window, so quietSince is kept. A push observed meanwhile is fetched ahead of the apply.
+		l.prefetchSources()
 		return
 	}
+	// Quiet: the attempts sent now fetch what they apply themselves.
+	w.debt.takePrefetch()
 
 	tip, foreign, catchUp := w.debt.take()
 	if !foreign && !catchUp && len(l.reapplyOwed) == 0 && !l.appliersOwe() {
@@ -408,7 +430,7 @@ func (l *branchWorkerEventLoop) sendDue(tip string, now time.Time) time.Time {
 	}
 	for _, ref := range l.sortedAppliers() {
 		state := l.appliers[ref]
-		if state.inflight != nil {
+		if l.attemptOut(state) {
 			continue
 		}
 		refusals := l.refusalsOwed(state)

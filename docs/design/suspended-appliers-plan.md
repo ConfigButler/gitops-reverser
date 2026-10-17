@@ -1,6 +1,6 @@
 # Suspended appliers: the plan
 
-> **design, being built.** Steps 1 to 5 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
+> **design, being built.** Steps 1 to 6 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
 > as a stack on top of it (branch `feat/suspended-appliers`); the two release together. Inputs: the
 > third review of #419 (five findings, summarized in the table below) and
 > [`flux-suspend-lifecycle.md`](flux-suspend-lifecycle.md) (the measurement). It settles the
@@ -464,6 +464,23 @@ As built, step 5 settled these:
 - e2e: `Flux Restart Recovery` (Serial) restarts the manager while a `wait: true` apply waits on a
   Deployment that cannot schedule yet, then lets it schedule: the new process completes the same
   operation (same token) and leaves the Kustomization suspended.
+
+As built, step 6 settled these:
+
+- **`status.source.otherConsumers`** lists, as `{kind, namespace, name}`, the `Kustomization`s and
+  `HelmRelease`s (by `spec.chart.spec.sourceRef`) that apply the `GitRepository` and that no
+  `FluxTrigger` on the same `ClusterProvider` holds; the trigger's own `Kustomization` is never
+  listed. **`status.source.prefetch`** is true only when that list was read and is empty. A listing
+  that fails (no `list` on `kustomizations` and `helmreleases`) publishes neither. Neither affects
+  `Ready`.
+- **A group is per worker,** by the trigger's cluster and `GitRepository`: one attempt in flight at
+  a time. Across sibling workers on the same branch, the dispatcher's prefetch reads every
+  `FluxTrigger` on that source and holds back while any has an operation in flight.
+- **Prefetch only while the branch is busy.** A push somebody else made is observed as a foreign
+  move; on a busy branch the worker asks each prefetching group to fetch it at once, once per
+  observation. On a quiet branch the attempt sent at once fetches for itself, so a second fetch
+  would only race it. The prefetch stamps the `GitRepository` and waits for nothing; the operation
+  reads the artifact again before it resumes.
 
 Steps 1 and 2 do not depend on the API. Steps 4 to 6 need step 3's status. Step 4 is the large one,
 and the step to run a local e2e on before pushing (AGENTS.md, "When to push").

@@ -90,7 +90,8 @@ func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
 		map[schema.GroupVersionResource]string{
 			fluxsim.KustomizationGVR(): "KustomizationList",
 			fluxsim.GitRepositoryGVR(): "GitRepositoryList",
-			{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}: "ApplicationList",
+			{Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases"}: "HelmReleaseList",
+			{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}:      "ApplicationList",
 		}, objs...)
 	return fluxsim.New(t, client)
 }
@@ -226,7 +227,7 @@ func TestApplyTriggerReconcile_FluxVerdicts(t *testing.T) {
 			allowed: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded,
 			wantSource: &configbutleraiv1alpha3.FluxTriggerSource{
 				GitRepository: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "platform"},
-				URL:           "https://github.com/acme/platform", Branch: "main",
+				URL:           "https://github.com/acme/platform", Branch: "main", Prefetch: true,
 			}},
 		{name: "no such Kustomization, which may be on its way", allowed: true,
 			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonApplierNotFound},

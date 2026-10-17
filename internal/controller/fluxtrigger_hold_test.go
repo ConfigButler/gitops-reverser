@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8sschema "k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	k8stesting "k8s.io/client-go/testing"
@@ -297,4 +299,49 @@ func kustomizationManagers(ks *unstructured.Unstructured) []string {
 		managers = append(managers, entry.Manager)
 	}
 	return managers
+}
+
+// TestFluxTrigger_PublishesTheSourcesOtherConsumers is decision 2: the consumers of the
+// GitRepository that no FluxTrigger holds are listed, information only, and the source is prefetched
+// only when there are none.
+func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
+	objs := applierFluxObjects()
+	infra := objs[0].(*unstructured.Unstructured).DeepCopy()
+	infra.SetName("infra")
+	release := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease",
+		"metadata": map[string]any{"namespace": "apps", "name": "podinfo"},
+		"spec": map[string]any{"chart": map[string]any{"spec": map[string]any{
+			"chart":     "./charts/podinfo",
+			"sourceRef": map[string]any{"kind": "GitRepository", "name": "platform", "namespace": "flux-system"},
+		}}},
+	}}
+	f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName),
+		append(objs, infra, release)...)
+
+	source := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger).Status.Source
+	require.NotNil(t, source)
+	assert.Equal(t, []meta.NamespacedObjectKindReference{
+		{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"},
+		{Kind: "Kustomization", Namespace: "flux-system", Name: "infra"},
+	}, source.OtherConsumers, "itself is not another consumer")
+	assert.False(t, source.Prefetch)
+	assert.True(t, conditionIsTrue(f.trigger(t).Status.Conditions, ConditionTypeReady), "information only")
+
+	infraTrigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	infraTrigger.Name, infraTrigger.Spec.KustomizationRef.Name = "infra", "infra"
+	require.NoError(t, f.r.Create(context.Background(), infraTrigger))
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, err)
+	assert.Equal(t, []meta.NamespacedObjectKindReference{{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"}},
+		f.trigger(t).Status.Source.OtherConsumers, "a Kustomization another trigger holds is not listed")
+
+	require.NoError(t, f.sim.Client.Resource(k8sschema.GroupVersionResource{
+		Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases",
+	}).Namespace("apps").Delete(context.Background(), "podinfo", metav1.DeleteOptions{}))
+	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, err)
+	got := f.trigger(t).Status.Source
+	assert.Empty(t, got.OtherConsumers)
+	assert.True(t, got.Prefetch, "every consumer is held: the source is prefetched")
 }

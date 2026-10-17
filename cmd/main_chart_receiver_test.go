@@ -158,8 +158,9 @@ func TestChartReceiver_MalformedBindAddressFailsTheRender(t *testing.T) {
 	assert.Contains(t, string(out), "receiver")
 }
 
-// applierAccess.flux is off by default, and on it grants exactly what an apply request to Flux
-// needs, to the operator's own ServiceAccount.
+// applierAccess.flux is off by default, and on it grants exactly what holding a Flux Kustomization
+// needs (suspend and resume it, fetch its source, list the source's consumers), to the operator's own
+// ServiceAccount.
 func TestChartApplierAccess_Flux(t *testing.T) {
 	assert.Empty(t, helmTemplateDocs(t, "templates/applier-rbac.yaml"), "off unless asked for")
 	assert.Empty(t, helmTemplateDocs(t, "templates/applier-rbac.yaml",
@@ -175,7 +176,12 @@ func TestChartApplierAccess_Flux(t *testing.T) {
 		{
 			APIGroups: []string{"kustomize.toolkit.fluxcd.io"},
 			Resources: []string{"kustomizations"},
-			Verbs:     []string{"get", "patch"},
+			Verbs:     []string{"get", "list", "patch"},
+		},
+		{
+			APIGroups: []string{"helm.toolkit.fluxcd.io"},
+			Resources: []string{"helmreleases"},
+			Verbs:     []string{"list"},
 		},
 		{
 			APIGroups: []string{"source.toolkit.fluxcd.io"},

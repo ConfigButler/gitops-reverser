@@ -1,8 +1,9 @@
 {{- if and .Values.rbac.create .Values.applierAccess.flux }}
-# What GitOps Reverser needs to ask Flux to apply a commit after somebody else pushed to a branch a
-# GitTarget writes: read and patch the Kustomization and its GitRepository (an apply request is a
-# reconcile request on them), and create SelfSubjectAccessReviews so the operator can check it holds
-# that access before relying on it. Separate from the manager role because it is optional and
+# What GitOps Reverser needs to drive a Kustomization a FluxTrigger holds: read and patch the
+# Kustomization and its GitRepository (it suspends and resumes the one and asks the other to fetch),
+# list the GitRepository's consumers (Kustomizations and HelmReleases; without it the source is
+# never prefetched), and create SelfSubjectAccessReviews so the operator can check it holds that
+# access before relying on it. Separate from the manager role because it is optional and
 # names another project's API: an install without Flux grants nothing on it. See
 # docs/design/apply-trigger.md.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -18,7 +19,14 @@ rules:
   - kustomizations
   verbs:
   - get
+  - list
   - patch
+- apiGroups:
+  - helm.toolkit.fluxcd.io
+  resources:
+  - helmreleases
+  verbs:
+  - list
 - apiGroups:
   - source.toolkit.fluxcd.io
   resources:

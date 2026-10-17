@@ -558,10 +558,18 @@ func createTestTrigger(t *testing.T, c client.Client, target *configv1alpha3.Git
 type recordingRequester struct {
 	mu       sync.Mutex
 	requests []ApplyRequest
+	// prefetches are the PrefetchSource requests, in order.
+	prefetches []ApplyRequest
 	// counted keeps the reasons of the requests taken, so refusals still sees them.
 	counted map[configv1alpha3.ApplyReason]int
 	outcome ApplyOutcome
 	manual  bool
+}
+
+func (r *recordingRequester) PrefetchSource(req ApplyRequest) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prefetches = append(r.prefetches, req)
 }
 
 func (r *recordingRequester) RequestApply(req ApplyRequest) {

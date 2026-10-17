@@ -688,3 +688,70 @@ func applierKindOf(req git.ApplyRequest) string {
 	}
 	return applierKindKustomization
 }
+
+// PrefetchSource asks the GitRepository a FluxTrigger's Kustomization applies to fetch now, ahead of
+// the apply, and returns at once. It asks nothing when the trigger's status.source.prefetch is not
+// true, when a FluxTrigger on the same source has an operation in flight (a resumed Kustomization
+// applies whatever the artifact becomes), or when the artifact already holds the commit. It applies
+// nothing, so it reports nothing.
+func (d *Dispatcher) PrefetchSource(req git.ApplyRequest) {
+	d.runMu.RLock()
+	ctx := d.run
+	if ctx != nil {
+		d.attempts.Add(1)
+	}
+	d.runMu.RUnlock()
+	if ctx == nil || req.Applier.Kind != v1alpha3.ApplierKindKustomization {
+		if ctx != nil {
+			d.attempts.Done()
+		}
+		return
+	}
+	go func() {
+		defer d.attempts.Done()
+		ctx, cancel := context.WithTimeout(ctx, d.AttemptTimeout)
+		defer cancel()
+		log := d.log.WithValues("applier", req.Applier.String(), "commit", req.Commit)
+		if err := d.prefetch(ctx, req); err != nil && !errors.Is(err, errNotPrefetched) {
+			log.V(1).Info("did not prefetch the source", "reason", err.Error())
+			return
+		}
+		log.V(1).Info("prefetched the source")
+	}()
+}
+
+// errPrefetchHeld is a prefetch held back by the trigger's source.
+var errPrefetchHeld = errors.New("the source may not be prefetched now")
+
+// prefetch checks the trigger and its source's other triggers, and stamps the source.
+func (d *Dispatcher) prefetch(ctx context.Context, req git.ApplyRequest) error {
+	trigger := &v1alpha3.FluxTrigger{}
+	key := client.ObjectKey{Namespace: req.Applier.Trigger.Namespace, Name: req.Applier.Trigger.Name}
+	if err := d.reader.Get(ctx, key, trigger); err != nil {
+		return err
+	}
+	if trigger.Status.Source == nil || !trigger.Status.Source.Prefetch || git.ApplierOf(trigger) != req.Applier {
+		return errPrefetchHeld
+	}
+	var triggers v1alpha3.FluxTriggerList
+	if err := d.reader.List(ctx, &triggers); err != nil {
+		return err
+	}
+	for i := range triggers.Items {
+		other := &triggers.Items[i]
+		if other.ClusterProvider() != trigger.ClusterProvider() || other.Status.Source == nil ||
+			other.Status.Source.GitRepository != trigger.Status.Source.GitRepository {
+			continue
+		}
+		if operation := other.Status.Operation; operation != nil && !operation.Phase.Completed() {
+			return errPrefetchHeld
+		}
+	}
+	sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
+	if err != nil {
+		return err
+	}
+	flux := NewFlux(sourceClient)
+	flux.Now = d.Now
+	return flux.Prefetch(ctx, applierName(req.Applier), req.Commit)
+}
