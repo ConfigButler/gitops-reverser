@@ -74,7 +74,7 @@ func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
 	first := requester.taken()
 	require.Len(t, first, 1)
 
-	report(first[0], ApplyFailed)
+	report(first[0], ApplyRequestFailed)
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "not before its backoff")
 	assert.NotNil(t, loop.applierTimer, "the backoff is armed")
@@ -136,7 +136,7 @@ func TestApplier_ARecoveredRefusalIsNotRetried(t *testing.T) {
 	require.Len(t, out, 1)
 
 	loop.refusalRecovered(key.target, key.collection)
-	report(out[0], ApplyFailed)
+	report(out[0], ApplyRequestFailed)
 	loop.serviceAppliers()
 	dueNow(loop)
 	loop.serviceAppliers()
@@ -188,7 +188,7 @@ func TestApplier_EachApplierRetriesOnItsOwnClock(t *testing.T) {
 
 	loop.appliers[applierRef("bravo")].failures = 6 // a long run of failures behind it
 	for _, req := range out {
-		report(req, ApplyFailed)
+		report(req, ApplyRequestFailed)
 	}
 	loop.serviceAppliers()
 	assert.Equal(t, 1, loop.appliers[applierRef("alpha")].failures)
@@ -256,7 +256,7 @@ func TestApplier_AnAttemptOutHoldsTheNext(t *testing.T) {
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "the first attempt is still out")
 
-	report(out[0], ApplyDelivered)
+	report(out[0], ApplySucceeded)
 	loop.serviceAppliers()
 	next := requester.taken()
 	require.Len(t, next, 1)
@@ -276,7 +276,7 @@ func TestApplier_ATargetThatNoLongerNamesAnApplierIsOwedNothing(t *testing.T) {
 	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.Applier = nil })
 	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	loop.serviceAppliers()
-	report(out[0], ApplyFailed)
+	report(out[0], ApplyRequestFailed)
 	loop.serviceAppliers()
 
 	assert.Empty(t, loop.appliers)

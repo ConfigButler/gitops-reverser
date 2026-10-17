@@ -75,8 +75,15 @@ type ApplyRequest struct {
 	// over an edit not yet pushed, is exactly what the quiet-branch rule exists to prevent. Nil is
 	// always current. It does not block.
 	Current func() bool
-	// Report receives the attempt's outcome. It is called exactly once, and does not block.
+	// Report receives the attempt's reports, in order, and does not block. An attempt that asked the
+	// applier for an apply reports its operation as it moves (ApplyRequested first) until a report
+	// that ends it (ApplyOutcome.Ends); one that asked nothing reports once, with an outcome that
+	// ends it.
 	Report func(ApplyResult)
+	// Abandoned is closed when the worker stops following the attempt: no GitTarget names its
+	// applier any more, or the worker stopped. The requester stops following the operation then,
+	// and reports nothing more. Nil is never closed.
+	Abandoned <-chan struct{}
 }
 
 // ApplyTarget is one GitTarget an ApplyRequest is for.
@@ -95,16 +102,33 @@ func (r ApplyRequest) TargetRefs() []itypes.ResourceReference {
 	return refs
 }
 
-// ApplyOutcome is how one attempt went.
+// ApplyOutcome is where one attempt stands. The first four are the operation of an attempt that
+// asked the applier for an apply, before it completed; they hold the attempt out and its applier's
+// apply window open. Every other outcome ends the attempt.
 type ApplyOutcome string
 
 const (
-	// ApplyDelivered asked the applier to apply.
-	ApplyDelivered ApplyOutcome = "Delivered"
+	// ApplyRequested asked the applier to apply: the stamp was patched or the sync operation set.
+	ApplyRequested ApplyOutcome = "Requested"
+	// ApplyRunning is an operation the applier is seen working on.
+	ApplyRunning ApplyOutcome = "Running"
+	// ApplySettling is an operation the applier has applied and GitOps Reverser has not yet seen
+	// settle: for a suspended Flux Kustomization, the suspend after the apply.
+	ApplySettling ApplyOutcome = "Settling"
+	// ApplyUnresolved is an operation that did not complete within the requester's budget. It is
+	// still followed, and resolves only when it completes or is abandoned: no timer stops an apply,
+	// so none closes its window.
+	ApplyUnresolved ApplyOutcome = "Unresolved"
+
+	// ApplySucceeded is an operation that completed, and applied.
+	ApplySucceeded ApplyOutcome = "Succeeded"
+	// ApplyFailed is an operation that completed without applying the commit: the applier reported
+	// a failure, or the operation is gone. It may have applied part of it.
+	ApplyFailed ApplyOutcome = "Failed"
 	// ApplyCurrent asked nothing: a CatchUp found the applier already at the commit.
 	ApplyCurrent ApplyOutcome = "Current"
-	// ApplyFailed could not ask; a later attempt may.
-	ApplyFailed ApplyOutcome = "Failed"
+	// ApplyRequestFailed could not ask; a later attempt may.
+	ApplyRequestFailed ApplyOutcome = "RequestFailed"
 	// ApplyRejected could not ask, and asking again will not help until the applier's
 	// configuration changes: it applies another repository or branch, or no GitRepository.
 	ApplyRejected ApplyOutcome = "Rejected"
@@ -118,11 +142,24 @@ const (
 	ApplyStale ApplyOutcome = "Stale"
 )
 
+// Ends reports whether the outcome ends its attempt.
+func (o ApplyOutcome) Ends() bool {
+	switch o {
+	case ApplyRequested, ApplyRunning, ApplySettling, ApplyUnresolved:
+		return false
+	case ApplySucceeded, ApplyFailed, ApplyCurrent, ApplyRequestFailed, ApplyRejected, ApplyDropped, ApplyStale:
+	}
+	return true
+}
+
+// Operated reports whether the outcome completes an operation the applier ran, whatever its result.
+func (o ApplyOutcome) Operated() bool { return o == ApplySucceeded || o == ApplyFailed }
+
 // ApplyResult is the report of one attempt.
 type ApplyResult struct {
 	ID      uint64
 	Outcome ApplyOutcome
-	// Err is the cause of a Failed or Rejected attempt.
+	// Err is the cause of a RequestFailed, Rejected or Failed attempt.
 	Err error
 }
 
@@ -134,11 +171,13 @@ type ApplyRequester interface {
 
 // StrongerApplyReason is the reason a target owed two requests is owed. A CatchUp asks for the
 // least: it stamps nothing when the artifact already holds the commit, where the others stamp the
-// Kustomization, so it never replaces either. A ForeignCommit outranks a Refusal because it needs
-// no consent. The empty reason ranks below all three.
+// Kustomization, so it never replaces any of them. A Repair and a ForeignCommit outrank a Refusal
+// because they need no consent, and a ForeignCommit outranks a Repair because the commit it
+// applies is news to the applier. The empty reason ranks below all four.
 func StrongerApplyReason(a, b v1alpha3.ApplyReason) v1alpha3.ApplyReason {
 	weakestFirst := []v1alpha3.ApplyReason{
-		"", v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonForeignCommit,
+		"", v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonRepair,
+		v1alpha3.ApplyReasonForeignCommit,
 	}
 	if slices.Index(weakestFirst, b) > slices.Index(weakestFirst, a) {
 		return b

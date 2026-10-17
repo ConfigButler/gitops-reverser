@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 // Client asks one kind of applier, in one cluster, to apply. The dispatcher and the
@@ -52,8 +53,17 @@ type Client interface {
 		reason v1alpha3.ApplyReason,
 		current func() bool,
 	) (Stamped, error)
-	// Handled reports whether the applier has finished the apply a Request asked for.
-	Handled(ctx context.Context, ref types.NamespacedName, s Stamped) (bool, error)
+	// Progress reports how far the applier is with the apply a Request asked for. A read that
+	// fails is an error, and its Progress says nothing.
+	Progress(ctx context.Context, ref types.NamespacedName, s Stamped) (Progress, error)
+}
+
+// Progress is where the operation a Request started stands, as the applier's status shows it.
+type Progress struct {
+	// Outcome is git.ApplyRequested, git.ApplyRunning, git.ApplySucceeded or git.ApplyFailed.
+	Outcome git.ApplyOutcome
+	// Message is why a Failed operation failed.
+	Message string
 }
 
 var (
@@ -116,7 +126,7 @@ type Verdict struct {
 	Err error
 }
 
-// Stamped is what one Request did, with what the applier reported before it, so Handled can tell
+// Stamped is what one Request did, with what the applier reported before it, so Progress can tell
 // when it has finished the apply it was asked for.
 type Stamped struct {
 	// Outcome is what was asked, if anything.

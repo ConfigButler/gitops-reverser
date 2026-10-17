@@ -155,13 +155,52 @@ func newDispatcherFixture(t *testing.T, targets []client.Object, sourceObjs ...r
 	recorder := record.NewFakeRecorder(64)
 	d := NewDispatcher(controlClient, source.get, recorder, logr.Discard())
 	d.Now = func() time.Time { return stampTime }
-	d.ApplyWindowTimeout = 0 // the tests that wait for Flux set their own
+	d.PollInterval, d.UnresolvedPollMax = time.Millisecond, 5*time.Millisecond
 	return &dispatcherFixture{dispatcher: d, control: controlClient, source: source, recorder: recorder, reader: reader}
 }
 
-// attempt carries out one request synchronously, as the dispatcher's goroutine does.
+// attempt carries out one request synchronously, as the dispatcher's goroutine does, up to the
+// request: it does not follow the operation a delivered request started.
 func (f *dispatcherFixture) attempt(req git.ApplyRequest) git.ApplyResult {
-	return f.dispatcher.attempt(context.Background(), req)
+	res, _ := f.dispatcher.attempt(context.Background(), req)
+	return res
+}
+
+// carryOut runs the request and follows its operation on a goroutine of its own, as RequestApply
+// does, and returns its reports; the channel is closed once it reports nothing more.
+func (f *dispatcherFixture) carryOut(ctx context.Context, req git.ApplyRequest) <-chan git.ApplyResult {
+	reports := make(chan git.ApplyResult, 64)
+	req.Report = func(res git.ApplyResult) { reports <- res }
+	go func() {
+		defer close(reports)
+		f.dispatcher.carryOut(ctx, req)
+	}()
+	return reports
+}
+
+// next is the next report, failing the test when none comes.
+func next(t *testing.T, reports <-chan git.ApplyResult) git.ApplyResult {
+	t.Helper()
+	select {
+	case res := <-reports:
+		return res
+	case <-time.After(5 * time.Second):
+		t.Fatal("no report")
+		return git.ApplyResult{}
+	}
+}
+
+// quiet asserts that no report comes for a while.
+func quiet(t *testing.T, reports <-chan git.ApplyResult, why string) {
+	t.Helper()
+	select {
+	case res, open := <-reports:
+		if open {
+			t.Fatalf("%s: reported %s", why, res.Outcome)
+		}
+		t.Fatalf("%s: stopped reporting", why)
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func (f *dispatcherFixture) count(reason v1alpha3.ApplyReason, outcome string) int64 {
@@ -225,7 +264,7 @@ func TestDispatcher_AsksOnceForEveryTarget(t *testing.T) {
 
 	res := f.attempt(req)
 
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyDelivered}, res)
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, res)
 	assert.Equal(t, []string{"gitrepositories " + fluxSystemNS}, f.patches(), "one stamp for the applier")
 	assert.Equal(t, []string{v1alpha3.DefaultClusterProviderName}, f.source.clusters)
 	for name, want := range map[string]v1alpha3.ApplyReason{
@@ -255,7 +294,7 @@ func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
 		gitRepositoryObj(targetNS, "own-source", testRepoURL, branchRef(testBranch), ""),
 	)
 
-	assert.Equal(t, git.ApplyDelivered, f.attempt(request(own, v1alpha3.ApplyReasonForeignCommit, "c")).Outcome)
+	assert.Equal(t, git.ApplyRequested, f.attempt(request(own, v1alpha3.ApplyReasonForeignCommit, "c")).Outcome)
 	assert.Equal(t, []string{"prod-eu-1"}, f.source.clusters)
 	assert.Equal(t, []string{"gitrepositories " + targetNS}, f.patches())
 }
@@ -279,7 +318,7 @@ func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
 		behindSource()...,
 	)
 
-	assert.Equal(t, git.ApplyDelivered, f.attempt(request(hub, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
+	assert.Equal(t, git.ApplyRequested, f.attempt(request(hub, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
 	assert.Equal(t, []string{"hub"}, f.source.clusters)
 
 	// The same Kustomization asked as if it lived in the source cluster is not this target's applier.
@@ -314,7 +353,7 @@ func TestDispatcher_AFailureIsReportedAndNeverRetried(t *testing.T) {
 	f.source.failing = true
 
 	res := f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
-	assert.Equal(t, git.ApplyFailed, res.Outcome)
+	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
 	require.Error(t, res.Err)
 	assert.Len(t, f.source.clusters, 1, "one attempt, no retry")
 	events := f.events()
@@ -326,7 +365,7 @@ func TestDispatcher_AFailureIsReportedAndNeverRetried(t *testing.T) {
 
 	retry := request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")
 	retry.PriorFailures = 1
-	assert.Equal(t, git.ApplyFailed, f.attempt(retry).Outcome)
+	assert.Equal(t, git.ApplyRequestFailed, f.attempt(retry).Outcome)
 	assert.Empty(t, f.events(), "a failure already reported is not reported again")
 	assert.Equal(t, int64(2), f.count(v1alpha3.ApplyReasonForeignCommit, outcomeFailed))
 	_, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
@@ -460,7 +499,7 @@ func TestDispatcher_TheLedgerIsPerIncarnation(t *testing.T) {
 		t,
 		[]client.Object{gitTarget("a", checkoutRef(), "")},
 		behindSource()...)
-	require.Equal(t, git.ApplyDelivered,
+	require.Equal(t, git.ApplyRequested,
 		f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
 
 	_, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
@@ -485,7 +524,7 @@ func TestDispatcher_RequestApplyReportsFromItsOwnGoroutine(t *testing.T) {
 
 	f.dispatcher.RequestApply(req)
 	res := <-reports
-	assert.Equal(t, git.ApplyFailed, res.Outcome, "not running yet")
+	assert.Equal(t, git.ApplyRequestFailed, res.Outcome, "not running yet")
 	require.ErrorIs(t, res.Err, errNotRunning)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -501,7 +540,7 @@ func TestDispatcher_RequestApplyReportsFromItsOwnGoroutine(t *testing.T) {
 	}, 5*time.Second, time.Millisecond)
 
 	f.dispatcher.RequestApply(req)
-	assert.Equal(t, git.ApplyDelivered, (<-reports).Outcome)
+	assert.Equal(t, git.ApplyRequested, (<-reports).Outcome)
 	cancel()
 	<-done
 }
@@ -515,6 +554,9 @@ func TestStrongerApplyReason(t *testing.T) {
 		{v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonForeignCommit, v1alpha3.ApplyReasonForeignCommit},
 		{v1alpha3.ApplyReasonForeignCommit, v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonForeignCommit},
 		{"", v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonCatchUp},
+		{v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonRepair, v1alpha3.ApplyReasonRepair},
+		{v1alpha3.ApplyReasonRepair, v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonRepair},
+		{v1alpha3.ApplyReasonRepair, v1alpha3.ApplyReasonForeignCommit, v1alpha3.ApplyReasonForeignCommit},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, git.StrongerApplyReason(tt.older, tt.newer), "%s then %s", tt.older, tt.newer)
@@ -527,41 +569,72 @@ func TestDescribeCommit(t *testing.T) {
 	assert.Equal(t, "the branch, which the remote does not carry", describeCommit(""))
 }
 
-// TestDispatcher_ADeliveredAttemptStaysOutUntilFluxFinished: the worker's attempt is the apply
-// window, so a delivered one is reported only once Flux has finished the apply, or by time.
-func TestDispatcher_ADeliveredAttemptStaysOutUntilFluxFinished(t *testing.T) {
+// TestDispatcher_ARequestedApplyIsFollowedUntilFluxFinished: the worker's attempt is the apply
+// window, so a requested apply reports Requested, then nothing, until Flux has finished it.
+func TestDispatcher_ARequestedApplyIsFollowedUntilFluxFinished(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
-	f.dispatcher.ApplyWindowTimeout = time.Minute
-	f.dispatcher.HandledPollInterval = 5 * time.Millisecond
 
-	done := make(chan git.ApplyResult, 1)
-	go func() { done <- f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")) }()
-
-	require.Eventually(t, func() bool { return len(f.patches()) == 1 }, 5*time.Second, 5*time.Millisecond)
-	select {
-	case res := <-done:
-		t.Fatalf("reported %s before Flux finished the apply", res.Outcome)
-	case <-time.After(50 * time.Millisecond):
-	}
+	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, next(t, reports))
+	quiet(t, reports, "before Flux finished the apply")
 
 	setStatus(t, f.source.client, kustomizationGVR(), types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"},
 		"main@sha1:"+testCommit, "lastAttemptedRevision")
-	select {
-	case res := <-done:
-		assert.Equal(t, git.ApplyDelivered, res.Outcome)
-	case <-time.After(5 * time.Second):
-		t.Fatal("not reported after Flux finished the apply")
-	}
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplySucceeded}, next(t, reports))
+	_, open := <-reports
+	assert.False(t, open, "and that ends the attempt")
 }
 
-// TestDispatcher_AnApplyFluxNeverFinishesClosesByTime: Flux down, or a fetch that never lands,
-// must not hold the applier's attempt out forever.
-func TestDispatcher_AnApplyFluxNeverFinishesClosesByTime(t *testing.T) {
+// TestDispatcher_AnApplyPastItsBudgetIsUnresolvedAndStillFollowed is the third review's fourth
+// finding: when the wait ran out, the attempt was reported delivered, and the window closed while
+// the apply could still run. Now the operation is reported Unresolved, once, and followed on until
+// its token is handled.
+func TestDispatcher_AnApplyPastItsBudgetIsUnresolvedAndStillFollowed(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
-	f.dispatcher.ApplyWindowTimeout = 30 * time.Millisecond
-	f.dispatcher.HandledPollInterval = 5 * time.Millisecond
+	f.dispatcher.Now = time.Now
+	f.dispatcher.UnresolvedAfter = 20 * time.Millisecond
 
-	assert.Equal(t, git.ApplyDelivered, f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
+	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	assert.Equal(t, git.ApplyUnresolved, next(t, reports).Outcome)
+	quiet(t, reports, "an unresolved operation is not closed by time")
+	events := f.events()
+	require.Len(t, events, 2)
+	assert.True(t, strings.HasPrefix(events[1], "Warning ApplyUnresolved Kustomization flux-system/checkout "+
+		"has not completed the apply of 4f2c1ab9 (ForeignCommit) within 20ms"), events[1])
+
+	setStatus(t, f.source.client, kustomizationGVR(), types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"},
+		"main@sha1:"+testCommit, "lastAttemptedRevision")
+	assert.Equal(t, git.ApplySucceeded, next(t, reports).Outcome, "it resolves when the apply finishes")
+}
+
+// TestDispatcher_AnAbandonedOperationIsNoLongerFollowed: once the worker stops following an
+// attempt (its applier is no longer named), the dispatcher stops reading it and reports nothing.
+func TestDispatcher_AnAbandonedOperationIsNoLongerFollowed(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	abandoned := make(chan struct{})
+	req := request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")
+	req.Abandoned = abandoned
+
+	reports := f.carryOut(context.Background(), req)
+	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	close(abandoned)
+	_, open := <-reports
+	assert.False(t, open, "nothing more is reported")
+}
+
+// TestDispatcher_AnApplierThatIsGoneFailsItsOperation: a deleted applier object runs nothing more,
+// so its operation completes as Failed and the worker decides again.
+func TestDispatcher_AnApplierThatIsGoneFailsItsOperation(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+
+	require.NoError(t, f.source.client.Resource(kustomizationGVR()).Namespace(fluxSystemNS).
+		Delete(context.Background(), "checkout", metav1.DeleteOptions{}))
+	res := next(t, reports)
+	assert.Equal(t, git.ApplyFailed, res.Outcome)
+	require.ErrorContains(t, res.Err, "the applier is gone")
 }
 
 // argoTarget is the GitTarget "a", whose applier is the Application argocd/platform.
@@ -596,7 +669,7 @@ func TestDispatcher_AsksAnApplicationToSync(t *testing.T) {
 
 	res := f.attempt(request(argoPlatform, v1alpha3.ApplyReasonRefusal, "a"))
 
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyDelivered}, res)
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, res)
 	assert.Equal(t, []string{"applications " + argoNS}, f.updates())
 	assert.Empty(t, f.patches(), "no Flux object is stamped")
 	app, err := f.source.client.Resource(applicationGVR()).Namespace(argoNS).
@@ -636,21 +709,66 @@ func TestDispatcher_AnApplicationIsNotTheKustomizationOfItsName(t *testing.T) {
 }
 
 // TestDispatcher_AnApplicationAttemptWaitsWithinItsWindow: an Argo CD attempt may wait out an
-// operation already running, so it is bounded by the apply window on top of the attempt timeout.
+// operation already running, so it is bounded by the operation wait on top of the attempt timeout.
 func TestDispatcher_AnApplicationAttemptWaitsWithinItsWindow(t *testing.T) {
 	running := manualApp()
 	_ = unstructured.SetNestedMap(running.Object, theirOperation(), "operation")
 	f := newDispatcherFixture(t, []client.Object{argoTarget()}, running)
 	f.dispatcher.AttemptTimeout = 30 * time.Millisecond
-	f.dispatcher.ApplyWindowTimeout = 100 * time.Millisecond
-	f.dispatcher.HandledPollInterval = time.Millisecond
+	f.dispatcher.OperationWait = 100 * time.Millisecond
 	f.dispatcher.Now = time.Now
 
 	res := f.attempt(request(argoPlatform, v1alpha3.ApplyReasonForeignCommit, "a"))
 
-	assert.Equal(t, git.ApplyFailed, res.Outcome)
+	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
 	require.ErrorContains(t, res.Err, "has an operation in progress")
 	require.NotErrorIs(t, res.Err, context.DeadlineExceeded,
 		"the wait ends by the operation wait, not by the shorter attempt timeout")
 	assert.Empty(t, f.updates())
+}
+
+// argoOperationState sets the Application's operation state to the operation it carries, at phase,
+// and clears the operation, as Argo CD's controller does once it completes one.
+func argoOperationState(t *testing.T, f *dispatcherFixture, phase string) {
+	t.Helper()
+	app := readApp(t, f.source.client)
+	operation, _, _ := unstructured.NestedMap(app.Object, "operation")
+	if operation == nil {
+		operation, _, _ = unstructured.NestedMap(app.Object, "status", "operationState", "operation")
+	}
+	_ = unstructured.SetNestedMap(app.Object, map[string]any{
+		"operation": operation, "phase": phase, "message": "a hook failed",
+	}, "status", "operationState")
+	if phase != "Running" {
+		unstructured.RemoveNestedField(app.Object, "operation")
+	}
+	writeApp(t, f.source.client, app)
+}
+
+// TestDispatcher_AnApplicationsSyncIsFollowedToItsOutcome: an Argo CD sync reports Running once the
+// controller started it, and its outcome once it completed; a failed one records ApplyFailed for the
+// first failure of a run, so the worker's retry of it is not reported twice.
+func TestDispatcher_AnApplicationsSyncIsFollowedToItsOutcome(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{argoTarget()}, manualApp())
+
+	reports := f.carryOut(context.Background(), request(argoPlatform, v1alpha3.ApplyReasonForeignCommit, "a"))
+	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	argoOperationState(t, f, "Running")
+	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
+	argoOperationState(t, f, "Failed")
+	res := next(t, reports)
+	assert.Equal(t, git.ApplyFailed, res.Outcome)
+	require.ErrorContains(t, res.Err, "the sync ended Failed: a hook failed")
+	events := f.events()
+	require.Len(t, events, 2)
+	assert.True(t, strings.HasPrefix(events[1], "Warning ApplyFailed Application argocd/platform did not "+
+		"complete the apply of 4f2c1ab9 (ForeignCommit)"), events[1])
+
+	retry := request(argoPlatform, v1alpha3.ApplyReasonForeignCommit, "a")
+	retry.PriorFailures = 1
+	reports = f.carryOut(context.Background(), retry)
+	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	argoOperationState(t, f, "Error")
+	assert.Equal(t, git.ApplyFailed, next(t, reports).Outcome)
+	assert.Len(t, f.events(), 1, "only the ApplyRequested: a failure already reported is not reported again")
 }

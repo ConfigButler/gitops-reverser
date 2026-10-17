@@ -35,6 +35,12 @@ const (
 	// EventReasonApplyRequestFailed is the first failed attempt of a run of them. The branch worker
 	// keeps the obligation and asks again on a quiet branch; the Event is not repeated for its retries.
 	EventReasonApplyRequestFailed = "ApplyRequestFailed"
+	// EventReasonApplyFailed is a requested apply the applier ran and did not complete, the first of
+	// a run of failed attempts. The branch worker asks again on a quiet branch.
+	EventReasonApplyFailed = "ApplyFailed"
+	// EventReasonApplyUnresolved is a requested apply that did not complete within
+	// UnresolvedAfter. It is still followed, and its apply window stays open until it completes.
+	EventReasonApplyUnresolved = "ApplyUnresolved"
 )
 
 // apply_requests_total label values.
@@ -58,29 +64,39 @@ var errNotRunning = errors.New("the apply request dispatcher is not running")
 // name (GitTarget.ApplierCluster()). In production it is (*watch.Manager).ApplierDynamicClient.
 type SourceClients func(ctx context.Context, clusterID string) (dynamic.Interface, error)
 
-// DefaultAttemptTimeout bounds one attempt: a source cluster that does not answer fails it, and the
-// branch worker decides when to try again.
+// DefaultAttemptTimeout bounds one attempt up to its request: a source cluster that does not
+// answer fails it, and the branch worker decides when to try again.
 const DefaultAttemptTimeout = 30 * time.Second
 
-// DefaultApplyWindowTimeout bounds how long a delivered attempt stays out waiting for the applier to
-// finish the apply. An apply that waits on health checks can take minutes; one the applier never
-// finishes (the controller is down, the fetch failed) must not hold the applier forever, so the
-// window then closes by time. It also bounds how long an Argo CD attempt waits for an operation
-// already running on the Application before it sets its own.
-const DefaultApplyWindowTimeout = 5 * time.Minute
+// DefaultOperationWait bounds how long an Argo CD attempt waits for an operation already running on
+// the Application before it sets its own.
+const DefaultOperationWait = 5 * time.Minute
 
-// DefaultHandledPollInterval is how often a delivered attempt reads whether the applier finished.
-const DefaultHandledPollInterval = 2 * time.Second
+// DefaultUnresolvedAfter is how long a requested apply may take before it is Unresolved. An apply
+// that waits on health checks can take minutes. Past it, the operation is still followed, and its
+// apply window stays open: the apply can still run, and closing the window would not stop it.
+const DefaultUnresolvedAfter = 5 * time.Minute
+
+// DefaultPollInterval is how often a requested apply's progress is read, until it is Unresolved.
+const DefaultPollInterval = 2 * time.Second
+
+// DefaultUnresolvedPollMax caps the interval an Unresolved operation is read at, which doubles from
+// the poll interval.
+const DefaultUnresolvedPollMax = time.Minute
+
+// DefaultPollTimeout bounds one read of a requested apply's progress.
+const DefaultPollTimeout = 10 * time.Second
 
 // Dispatcher carries out the apply requests the branch workers decide. It implements
 // git.ApplyRequester, and runs as a manager.Runnable beside the branch workers (it asks for leader
 // election as they do, which keeps the two together should it ever be switched on).
 //
 // It keeps no queue and makes no decision of its own. Each request is one attempt for one applier,
-// carried out on its own goroutine and reported back to the worker that decided it; the worker owns
-// the obligation until an attempt delivers it, and decides every retry on a quiet branch. So nothing
-// goes out that a worker did not check on a quiet branch, and nothing here can turn a delayed
-// decision into an apply nobody checked.
+// carried out on its own goroutine and reported back to the worker that decided it: the request,
+// then the operation it started as it moves, until it completes or the worker abandons it. The
+// worker owns the obligation until an operation completes it, and decides every retry on a quiet
+// branch. So nothing goes out that a worker did not check on a quiet branch, and nothing here can
+// turn a delayed decision into an apply nobody checked.
 //
 // What it does check is what can change between the worker's decision and the patch. It reads each
 // GitTarget again and asks only for those that are still the incarnation the worker decided for,
@@ -96,13 +112,17 @@ type Dispatcher struct {
 	log           logr.Logger
 
 	// AttemptTimeout bounds one attempt up to its request. An Argo CD attempt may wait out an
-	// operation already running for up to ApplyWindowTimeout more. Set before Start.
+	// operation already running for up to OperationWait more. Set before Start, as are the rest.
 	AttemptTimeout time.Duration
-	// ApplyWindowTimeout bounds the wait, after a request, for the applier to finish the apply it
-	// asked for; zero does not wait. Set before Start.
-	ApplyWindowTimeout time.Duration
-	// HandledPollInterval is how often that wait reads the applier's status. Set before Start.
-	HandledPollInterval time.Duration
+	// OperationWait bounds an Argo CD attempt's wait for an operation already running.
+	OperationWait time.Duration
+	// UnresolvedAfter is how long a requested apply may take before it is reported Unresolved.
+	UnresolvedAfter time.Duration
+	// PollInterval is how often a requested apply's progress is read, and UnresolvedPollMax caps the
+	// interval an Unresolved one is read at. PollTimeout bounds one read.
+	PollInterval      time.Duration
+	UnresolvedPollMax time.Duration
+	PollTimeout       time.Duration
 	// Now is the clock request tokens and the ledger read.
 	Now func() time.Time
 
@@ -129,15 +149,18 @@ func NewDispatcher(
 	log logr.Logger,
 ) *Dispatcher {
 	return &Dispatcher{
-		reader:              reader,
-		sourceClients:       sourceClients,
-		recorder:            recorder,
-		log:                 log,
-		AttemptTimeout:      DefaultAttemptTimeout,
-		ApplyWindowTimeout:  DefaultApplyWindowTimeout,
-		HandledPollInterval: DefaultHandledPollInterval,
-		Now:                 time.Now,
-		ledger:              map[string]ledgerEntry{},
+		reader:            reader,
+		sourceClients:     sourceClients,
+		recorder:          recorder,
+		log:               log,
+		AttemptTimeout:    DefaultAttemptTimeout,
+		OperationWait:     DefaultOperationWait,
+		UnresolvedAfter:   DefaultUnresolvedAfter,
+		PollInterval:      DefaultPollInterval,
+		UnresolvedPollMax: DefaultUnresolvedPollMax,
+		PollTimeout:       DefaultPollTimeout,
+		Now:               time.Now,
+		ledger:            map[string]ledgerEntry{},
 	}
 }
 
@@ -159,7 +182,9 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 }
 
 // RequestApply starts one attempt and returns at once; it is called on a branch worker's loop. The
-// attempt reports on req.Report when it ends.
+// attempt reports on req.Report: once when it asked nothing, or as its operation moves until it
+// completes. An operation the worker abandons, or one still out when the dispatcher stops, reports
+// nothing more.
 func (d *Dispatcher) RequestApply(req git.ApplyRequest) {
 	d.runMu.RLock()
 	ctx := d.run
@@ -168,13 +193,25 @@ func (d *Dispatcher) RequestApply(req git.ApplyRequest) {
 	}
 	d.runMu.RUnlock()
 	if ctx == nil {
-		req.Report(git.ApplyResult{ID: req.ID, Outcome: git.ApplyFailed, Err: errNotRunning})
+		req.Report(git.ApplyResult{ID: req.ID, Outcome: git.ApplyRequestFailed, Err: errNotRunning})
 		return
 	}
 	go func() {
 		defer d.attempts.Done()
-		req.Report(d.attempt(ctx, req))
+		d.carryOut(ctx, req)
 	}()
+}
+
+// carryOut runs one attempt and follows the operation it started, reporting each step.
+func (d *Dispatcher) carryOut(ctx context.Context, req git.ApplyRequest) {
+	res, op := d.attempt(ctx, req)
+	req.Report(res)
+	if op == nil {
+		return
+	}
+	if res, followed := d.follow(ctx, req, op); followed {
+		req.Report(res)
+	}
 }
 
 // ledgerEntry is the last request delivered for one GitTarget, and which incarnation of it the
@@ -213,14 +250,20 @@ type eligibleTarget struct {
 	reason v1alpha3.ApplyReason
 }
 
-// attempt carries out one request and returns its report. A delivered one is reported once the
-// applier has finished the apply (awaitHandled), so the branch worker's attempt stays out for
-// exactly the apply window: the seconds in which an edit can be reverted by it.
-func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.ApplyResult {
-	run := ctx
+// operation is an apply an attempt asked for, for follow to see through.
+type operation struct {
+	applier Client
+	ref     types.NamespacedName
+	stamped Stamped
+	log     logr.Logger
+}
+
+// attempt carries out one request and returns its report, with the operation it started when it
+// asked the applier for an apply (the report is then ApplyRequested), or nil when it asked nothing.
+func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.ApplyResult, *operation) {
 	timeout := d.AttemptTimeout
 	if req.Applier.Kind == v1alpha3.ApplierKindApplication {
-		timeout += d.ApplyWindowTimeout
+		timeout += d.OperationWait
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -232,18 +275,18 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.Appl
 
 	eligible, want, err := d.recheck(ctx, req)
 	if err != nil {
-		return d.failure(ctx, req, nil, report(git.ApplyFailed, err), log)
+		return d.failure(ctx, req, nil, report(git.ApplyRequestFailed, err), log), nil
 	}
 	if !holdsReason(eligible, req.Reason) {
 		d.count(ctx, req, outcomeDropped)
 		log.Info("no GitTarget may still ask this applier for this; asking nothing")
-		return report(git.ApplyDropped, nil)
+		return report(git.ApplyDropped, nil), nil
 	}
 
 	sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
 	if err != nil {
 		return d.failure(ctx, req, eligible,
-			report(git.ApplyFailed, fmt.Errorf("source cluster %q: %w", req.Applier.Cluster, err)), log)
+			report(git.ApplyRequestFailed, fmt.Errorf("source cluster %q: %w", req.Applier.Cluster, err)), log), nil
 	}
 	applier := d.client(req.Applier.Kind, sourceClient)
 	stamped, err := applier.Request(ctx, applierName(req.Applier), want, req.Commit, req.Reason, req.Current)
@@ -251,22 +294,22 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.Appl
 	case errors.Is(err, errStale):
 		d.count(ctx, req, outcomeStale)
 		log.Info("the decision no longer holds; asking nothing, the branch worker decides again")
-		return report(git.ApplyStale, nil)
+		return report(git.ApplyStale, nil), nil
 	case isPermanent(err):
-		return d.failure(ctx, req, eligible, report(git.ApplyRejected, err), log)
+		return d.failure(ctx, req, eligible, report(git.ApplyRejected, err), log), nil
 	case err != nil:
-		return d.failure(ctx, req, eligible, report(git.ApplyFailed, err), log)
+		return d.failure(ctx, req, eligible, report(git.ApplyRequestFailed, err), log), nil
 	}
 
 	d.count(ctx, req, outcomeSent)
 	if stamped.Outcome == OutcomeCurrent {
 		log.V(1).Info("the applier needs no request for this commit; asking nothing")
-		return report(git.ApplyCurrent, nil)
+		return report(git.ApplyCurrent, nil), nil
 	}
 	log.Info("apply requested", "outcome", stamped.Outcome)
 	d.delivered(req, eligible)
-	d.awaitHandled(run, applier, applierName(req.Applier), stamped, log)
-	return report(git.ApplyDelivered, nil)
+	return report(git.ApplyRequested, nil),
+		&operation{applier: applier, ref: applierName(req.Applier), stamped: stamped, log: log}
 }
 
 // client is the Client for an applier of kind, over its cluster's client and this dispatcher's
@@ -275,8 +318,8 @@ func (d *Dispatcher) client(kind string, sourceClient dynamic.Interface) Client 
 	if kind == v1alpha3.ApplierKindApplication {
 		argo := NewArgoCD(sourceClient)
 		argo.Now = d.Now
-		argo.OperationWait = d.ApplyWindowTimeout
-		argo.PollInterval = d.HandledPollInterval
+		argo.OperationWait = d.OperationWait
+		argo.PollInterval = d.PollInterval
 		return argo
 	}
 	flux := NewFlux(sourceClient)
@@ -284,38 +327,112 @@ func (d *Dispatcher) client(kind string, sourceClient dynamic.Interface) Client 
 	return flux
 }
 
-// awaitHandled waits, up to ApplyWindowTimeout, for the applier to finish the apply stamped asked
-// for. It decides nothing: the request was delivered either way, and a wait that ends by time or by
-// shutdown only closes the window sooner than the applier did.
-func (d *Dispatcher) awaitHandled(
-	ctx context.Context, applier Client, ref types.NamespacedName, stamped Stamped, log logr.Logger,
+// follow reads the operation's progress until it completes, reporting each move on req.Report, and
+// returns the report that ends the attempt. It decides nothing: it reports what the applier shows.
+//
+// An operation that has not completed within UnresolvedAfter is reported Unresolved, once, and is
+// read on at a doubling interval: the apply can still run, and only its completion closes the
+// window. The applier object being gone completes it as Failed. It returns false, and reports
+// nothing more, when the worker abandons the attempt or the dispatcher stops.
+func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *operation) (git.ApplyResult, bool) {
+	started := d.Now()
+	phase := git.ApplyRequested
+	interval := d.PollInterval
+	for {
+		read, cancel := context.WithTimeout(ctx, d.PollTimeout)
+		progress, err := op.applier.Progress(read, op.ref, op.stamped)
+		cancel()
+		if apierrors.IsNotFound(err) {
+			progress, err = Progress{Outcome: git.ApplyFailed, Message: "the applier is gone: " + err.Error()}, nil
+		}
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				op.log.V(1).Info("could not read the requested apply's progress", "error", err.Error())
+			}
+		case progress.Outcome.Ends():
+			return d.completed(ctx, req, op, progress, d.Now().Sub(started)), true
+		case phase != git.ApplyUnresolved && progress.Outcome != phase:
+			phase = progress.Outcome
+			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase})
+		}
+		if phase != git.ApplyUnresolved && d.Now().Sub(started) >= d.UnresolvedAfter {
+			phase = git.ApplyUnresolved
+			d.unresolved(ctx, req, op)
+			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase})
+		}
+		if phase == git.ApplyUnresolved {
+			interval = min(unresolvedBackoff*interval, max(d.UnresolvedPollMax, d.PollInterval))
+		}
+		if !wait(ctx, req.Abandoned, interval) {
+			op.log.V(1).Info("stopped following the requested apply", "abandoned", ctx.Err() == nil)
+			return git.ApplyResult{}, false
+		}
+	}
+}
+
+// unresolvedBackoff is the factor an Unresolved operation's poll interval grows by on each read.
+const unresolvedBackoff = 2
+
+// wait waits for interval, and reports false when ctx ends or abandoned is closed first.
+func wait(ctx context.Context, abandoned <-chan struct{}, interval time.Duration) bool {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-abandoned:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// completed is the report of an operation that completed. A Failed one records ApplyFailed on its
+// GitTargets for the first failure of a run, as a failed request records ApplyRequestFailed.
+func (d *Dispatcher) completed(
+	ctx context.Context, req git.ApplyRequest, op *operation, progress Progress, took time.Duration,
+) git.ApplyResult {
+	if progress.Outcome != git.ApplyFailed {
+		op.log.V(1).Info("the applier finished the requested apply", "after", took.String())
+		return git.ApplyResult{ID: req.ID, Outcome: progress.Outcome}
+	}
+	err := errors.New(progress.Message)
+	op.log.Info("the applier did not complete the requested apply; the branch worker decides when to ask again",
+		"after", took.String(), "message", progress.Message, "priorFailures", req.PriorFailures)
+	if req.PriorFailures == 0 {
+		d.event(ctx, req, corev1.EventTypeWarning, EventReasonApplyFailed,
+			"%s did not complete the apply of %s (%s), and will be asked again once the branch is quiet: %v",
+			describeApplier(req.Applier), describeCommit(req.Commit), req.Reason, err)
+	}
+	return git.ApplyResult{ID: req.ID, Outcome: git.ApplyFailed, Err: err}
+}
+
+// unresolved logs an operation that did not complete within UnresolvedAfter and records
+// ApplyUnresolved on its GitTargets.
+func (d *Dispatcher) unresolved(ctx context.Context, req git.ApplyRequest, op *operation) {
+	op.log.Info("the applier has not completed the requested apply in time; still following it, and its "+
+		"apply window stays open until it completes", "after", d.UnresolvedAfter.String())
+	d.event(ctx, req, corev1.EventTypeWarning, EventReasonApplyUnresolved,
+		"%s has not completed the apply of %s (%s) within %s; GitOps Reverser keeps following it, and asks "+
+			"it nothing more until it completes",
+		describeApplier(req.Applier), describeCommit(req.Commit), req.Reason, d.UnresolvedAfter)
+}
+
+// event records an Event on each of the request's GitTargets that still exists.
+func (d *Dispatcher) event(
+	ctx context.Context, req git.ApplyRequest, eventType, reason, messageFmt string, args ...any,
 ) {
-	if d.ApplyWindowTimeout <= 0 {
+	if d.recorder == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, d.ApplyWindowTimeout)
-	defer cancel()
-	started := d.Now()
-	ticker := time.NewTicker(d.HandledPollInterval)
-	defer ticker.Stop()
-	for {
-		handled, err := applier.Handled(ctx, ref, stamped)
-		switch {
-		case handled:
-			log.V(1).Info("the applier finished the requested apply", "after", d.Now().Sub(started).String())
-			return
-		case err != nil && ctx.Err() == nil:
-			log.V(1).Info("could not read whether the applier finished the requested apply", "error", err.Error())
+	for _, candidate := range req.Targets {
+		target := &v1alpha3.GitTarget{}
+		key := client.ObjectKey{Namespace: candidate.Ref.Namespace, Name: candidate.Ref.Name}
+		if err := d.reader.Get(ctx, key, target); err != nil || target.UID != candidate.UID {
+			continue
 		}
-		select {
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				log.Info("the applier did not report the requested apply finished in time; the apply window closes now",
-					"waited", d.Now().Sub(started).String(), "timeout", d.ApplyWindowTimeout.String())
-			}
-			return
-		case <-ticker.C:
-		}
+		d.recorder.Eventf(target, eventType, reason, messageFmt, args...)
 	}
 }
 

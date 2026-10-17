@@ -827,7 +827,7 @@ func (a *GitTargetApplier) EffectiveQuietPeriod() time.Duration {
 }
 
 // ApplyReason is why GitOps Reverser asked an applier to apply.
-// +kubebuilder:validation:Enum=ForeignCommit;Refusal;CatchUp
+// +kubebuilder:validation:Enum=ForeignCommit;Refusal;Repair;CatchUp
 type ApplyReason string
 
 const (
@@ -835,6 +835,9 @@ const (
 	ApplyReasonForeignCommit ApplyReason = "ForeignCommit"
 	// ApplyReasonRefusal is a refused edit on a target with spec.onRefusal: Reapply.
 	ApplyReasonRefusal ApplyReason = "Refusal"
+	// ApplyReasonRepair puts back an API edit that an earlier apply reverted on the cluster after
+	// the edit was made. Git kept the edit; the cluster runs the older value until the repair.
+	ApplyReasonRepair ApplyReason = "Repair"
 	// ApplyReasonCatchUp keeps the applier current with GitOps Reverser's own pushes.
 	ApplyReasonCatchUp ApplyReason = "CatchUp"
 )

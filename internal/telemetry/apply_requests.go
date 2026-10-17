@@ -8,8 +8,8 @@ import "go.opentelemetry.io/otel/metric"
 // object, labelled by {applier_kind, reason, outcome}.
 //
 // applier_kind names the applier: "kustomization" (a Flux Kustomization) or "application" (an Argo
-// CD Application). reason is the attempt's ApplyReason (ForeignCommit, Refusal, CatchUp; never
-// CatchUp for an application). outcome is a frozen enum:
+// CD Application). reason is the attempt's ApplyReason (ForeignCommit, Refusal, Repair, CatchUp;
+// never CatchUp for an application). outcome is a frozen enum:
 //
 //	sent     — the applier was asked and the ask landed: a requestedAt stamp was patched or a sync
 //	           operation set, or, for a CatchUp, the applier's source already held the commit and
@@ -26,8 +26,9 @@ import "go.opentelemetry.io/otel/metric"
 //	           moment. Frequent stale attempts mean edits keep arriving within an attempt's lifetime.
 //
 // It counts attempts, so a request that fails twice and then lands is two "failed" and one "sent".
-// It says nothing about whether the applier APPLIED: a request asks and never reports, and the
-// applier's own status is the record of what it did.
+// It says nothing about whether the applier APPLIED: the operation a sent request starts is
+// followed by the branch worker, and an ApplyFailed or ApplyUnresolved Event marks one that did not
+// complete, or not in time (apply_operations_unresolved counts the latter).
 //
 // No GitTarget identity: one attempt is for one applier, which several targets can share, so a
 // target label would have to invent an owner. The ApplyRequested and ApplyRequestFailed Events on

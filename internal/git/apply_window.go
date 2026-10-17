@@ -23,7 +23,8 @@ import (
 // The repository's rule for an object both sides changed is that the API value wins. Applied to
 // the window: a write by the applier's own field manager, during an attempt, to an object the API
 // side edited after that attempt was sent, is the apply arriving late with no intent behind it. It
-// is withheld. Git keeps the edit, and the CatchUp that edit's push owes applies it back.
+// is withheld. Git keeps the edit, and the cluster runs the reverted value until an apply puts it
+// back, so the withheld write owes its applier a Repair (apply_trigger.go).
 //
 // What the rule must never do is withhold an API edit, which would lose it outright. So it acts
 // only on proof: the object's latest managedFields entries are the applier's managers alone. When
@@ -80,8 +81,8 @@ const (
 	collisionAmbiguous = "ambiguous"
 )
 
-// applyWindow is one applier's open apply window: from sending an attempt until the applier
-// finished it, plus applyWindowGrace.
+// applyWindow is one applier's open apply window: from sending an attempt until its operation
+// completed, plus applyWindowGrace. An Unresolved operation holds it open.
 type applyWindow struct {
 	attempt uint64
 	commit  string
@@ -108,13 +109,14 @@ func (state *applierState) openApplyWindow(attempt uint64, commit string, now ti
 	state.window = &applyWindow{attempt: attempt, commit: commit, sentAt: now, edited: map[string]struct{}{}}
 }
 
-// settleApplyWindow ends an attempt's part in its applier's window: a delivered attempt's window
-// stays open for applyWindowGrace, and any other attempt asked for no apply, so there is no window.
-func (state *applierState) settleApplyWindow(attempt uint64, delivered bool, now time.Time) {
+// settleApplyWindow ends an attempt's part in its applier's window: once an operation completed,
+// succeeded or not, its window stays open for applyWindowGrace; any other attempt asked for no
+// apply, so there is no window.
+func (state *applierState) settleApplyWindow(attempt uint64, operated bool, now time.Time) {
 	if state.window == nil || state.window.attempt != attempt {
 		return
 	}
-	if !delivered {
+	if !operated {
 		state.window = nil
 		return
 	}
@@ -163,6 +165,7 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 			// commit's, which Git already holds. Mirrored as ever.
 		default:
 			l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
+			applier.repair = true
 			return true
 		}
 	}

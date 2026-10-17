@@ -277,13 +277,13 @@ older commit over a published edit.
 
 **An edit made while Flux applies keeps its value.** The patch returns at once, and Flux fetches and
 applies a few seconds later. Until Flux reports it finished (`status.lastHandledReconcileAt` for a
-stamped `Kustomization`, a new `status.lastAttemptedRevision` after a source stamp, at most
-5 minutes), GitOps Reverser treats the apply as running. An API edit made in those seconds, to a
+stamped `Kustomization`, a new `status.lastAttemptedRevision` after a source stamp), GitOps
+Reverser treats the apply as running. An API edit made in those seconds, to a
 field the `Kustomization` sets, is reverted on the cluster by that apply, because the commit Flux
 was asked for does not hold it yet. GitOps Reverser recognizes that write by its field manager,
-`kustomize-controller`, and does not mirror it: the API's value stays in Git, and the `CatchUp` its
-push owes applies it back once the branch has been quiet for `quietPeriod`. Each such write is
-logged and counted in `apply_window_collisions_total{outcome="withheld"}`.
+`kustomize-controller`, and does not mirror it: the API's value stays in Git, and the withheld write
+owes a `Repair`, which asks Flux to apply the tip again as soon as the branch is quiet. Each such
+write is logged and counted in `apply_window_collisions_total{outcome="withheld"}`.
 
 Only a write proven to be Flux's is withheld. When `kustomize-controller` and another manager wrote
 the object in the same second, the write could be the edit itself, so it is mirrored as before and
@@ -345,6 +345,7 @@ kubectl get kustomization checkout -n flux-system -o jsonpath='{.status.lastAppl
 | `ApplierConfigured=False`, `SourceMismatch` | The message names the broken [`GitRepository` rule](#the-gitrepository) | Fix the `GitRepository`; the request it was holding is delivered afterward |
 | `ApplierConfigured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.flux: true` |
 | A Warning `ApplyRequestFailed` Event | A request could not be delivered; the message says why | GitOps Reverser keeps asking on a quiet branch, at most every five minutes. It is recorded for the first failure of a run |
+| A Warning `ApplyUnresolved` Event | Flux has not reported the requested apply finished in 5 minutes | Nothing more is asked of the `Kustomization` until it does; look at its status |
 | Flux applies while edits are in flight | Something else still makes the source fetch: a short `interval`, a Flux `Receiver`, or someone running `flux reconcile` | Lengthen the intervals and remove the Flux `Receiver` |
 | A Git-side push takes minutes to reach the cluster | No receiver, so the refresh finds it | Configure [the webhook](#the-git-hosts-webhook) |
 | A refused edit is not reverted | The target is suspended, `onRefusal` is not `Reapply`, or the refusal is not eligible | See [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal) |

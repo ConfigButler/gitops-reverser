@@ -17,6 +17,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 )
 
@@ -69,7 +70,7 @@ func NewFlux(client dynamic.Interface) *Flux {
 }
 
 // Request asks the Kustomization ref to apply commit, the way `flux reconcile kustomization
-// --with-source` does, minus the waiting: Request only asks, and Handled tells when Flux is done.
+// --with-source` does, minus the waiting: Request only asks, and Progress tells when Flux is done.
 //
 // It first checks that the Kustomization applies want, and refuses with a permanent error when it
 // does not: stamping a GitRepository that follows another branch would deploy that branch and
@@ -78,8 +79,9 @@ func NewFlux(client dynamic.Interface) *Flux {
 //
 // When the GitRepository's artifact does not hold commit, it stamps the GitRepository: the fetch
 // produces a new artifact and the new artifact wakes the Kustomization by itself, so a second stamp
-// would only be a second apply. When the artifact already holds it, only a Refusal stamps the
-// Kustomization, because only a Refusal asks for an apply of an unchanged commit (to revert drift).
+// would only be a second apply. When the artifact already holds it, only a Refusal or a Repair
+// stamps the Kustomization, because only they ask for an apply of an unchanged commit (to revert
+// drift, or an edit an earlier apply reverted).
 // A ForeignCommit or CatchUp then needs nothing: the artifact that holds the commit already woke the
 // Kustomization when it arrived. An empty commit (the remote does not carry the branch) stamps the
 // GitRepository, so Flux finds out itself.
@@ -121,7 +123,7 @@ func (f *Flux) Request(
 		PriorArtifactRevision:  statusString(source, "artifact", "revision"),
 	}
 	if commit != "" && artifactHolds(source, commit) {
-		if reason != v1alpha3.ApplyReasonRefusal {
+		if reason != v1alpha3.ApplyReasonRefusal && reason != v1alpha3.ApplyReasonRepair {
 			stamped.Outcome = OutcomeCurrent
 			return stamped, nil
 		}
@@ -140,8 +142,11 @@ func (f *Flux) Request(
 	return stamped, nil
 }
 
-// Handled reports whether Flux has finished the apply s asked for, which is when the apply window
-// closes: until then an edit to an object the Kustomization applies can be reverted by it.
+// Progress reports whether Flux has finished the apply s asked for, which is when the apply window
+// closes: until then an edit to an object the Kustomization applies can be reverted by it. It is
+// Requested until then, and Succeeded once finished: this client cannot tell a running apply from
+// one not started, nor read the outcome of every path, so a finished apply is reported as one that
+// succeeded and Flux's own retry covers a failure.
 //
 // Flux records a request it handled in status.lastHandledReconcileAt, and does so when the
 // reconcile ends (external-sources/flux/pkg/runtime/reconcile/result.go). A stamped Kustomization
@@ -149,31 +154,36 @@ func (f *Flux) Request(
 // Kustomization through its new artifact, so that apply has finished once the Kustomization
 // attempted a revision other than the one it had attempted before; and if the fetch produced no new
 // artifact, there is nothing for it to apply, and the GitRepository's own handled request says so.
-func (f *Flux) Handled(ctx context.Context, ref types.NamespacedName, s Stamped) (bool, error) {
+func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s Stamped) (Progress, error) {
+	finished := Progress{Outcome: git.ApplySucceeded}
 	if s.Outcome != OutcomeStampedKustomization && s.Outcome != OutcomeStampedSource {
-		return true, nil
+		return finished, nil
 	}
+	requested := Progress{Outcome: git.ApplyRequested}
 	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
-		return false, fmt.Errorf("get %s %s: %w", kindKustomization, ref, err)
+		return requested, fmt.Errorf("get %s %s: %w", kindKustomization, ref, err)
 	}
 	if s.Outcome == OutcomeStampedKustomization {
-		return statusString(ks, "lastHandledReconcileAt") == s.Token, nil
+		if statusString(ks, "lastHandledReconcileAt") == s.Token {
+			return finished, nil
+		}
+		return requested, nil
 	}
-	if attempted := statusString(
-		ks,
-		"lastAttemptedRevision",
-	); attempted != "" &&
-		attempted != s.PriorAttemptedRevision {
-		return true, nil
+	attempted := statusString(ks, "lastAttemptedRevision")
+	if attempted != "" && attempted != s.PriorAttemptedRevision {
+		return finished, nil
 	}
 	source, err := f.client.Resource(gitRepositoryGVR()).Namespace(s.Source.Namespace).
 		Get(ctx, s.Source.Name, metav1.GetOptions{})
 	if err != nil {
-		return false, fmt.Errorf("get %s %s: %w", kindGitRepository, s.Source, err)
+		return requested, fmt.Errorf("get %s %s: %w", kindGitRepository, s.Source, err)
 	}
-	return statusString(source, "lastHandledReconcileAt") == s.Token &&
-		statusString(source, "artifact", "revision") == s.PriorArtifactRevision, nil
+	if statusString(source, "lastHandledReconcileAt") == s.Token &&
+		statusString(source, "artifact", "revision") == s.PriorArtifactRevision {
+		return finished, nil
+	}
+	return requested, nil
 }
 
 // stamp sets reconcile.fluxcd.io/requestedAt to now, which is the whole of what `flux reconcile`

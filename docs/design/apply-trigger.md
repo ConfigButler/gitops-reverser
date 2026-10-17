@@ -32,13 +32,14 @@ edit and its push, the edit is live and absent from Git: in an open commit windo
 writes waiting to be pushed. Only the branch worker can see those. So only it can say when an apply
 is safe, and every trigger the applier runs by itself fires without that knowledge.
 
-A request is sent only on a **quiet branch**: no open commit window and no pending writes. Three
+A request is sent only on a **quiet branch**: no open commit window and no pending writes. Four
 things owe one:
 
 | Reason | When | Asked |
 | --- | --- | --- |
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed early and pending writes replayed onto it and pushed first, so the applied commit carries the API side's answer | Every applier on the branch |
 | `Refusal` | An edit had no legal destination in Git and the target opted in with `onRefusal: Reapply` | The refusing target's applier |
+| `Repair` | The apply window withheld a late apply over a newer API edit, so the cluster runs an older value than Git | The applier that wrote it |
 | `CatchUp` | The branch has been quiet for `quietPeriod` after GitOps Reverser's own pushes, or since it started | Every Flux applier on the branch |
 
 ## What we learned
@@ -98,7 +99,7 @@ folder needing strict isolation gets its own `GitRepository`.
 flowchart LR
     subgraph WORKER["Branch worker (one per GitProvider and branch)"]
         OBS["Observations<br/>push · fetch · notification"]
-        OWE["Owed, per applier<br/>ForeignCommit · Refusal · CatchUp"]
+        OWE["Owed, per applier<br/>ForeignCommit · Refusal · Repair · CatchUp"]
         QUIET{"Quiet branch?<br/>this worker and its siblings"}
     end
     EXEC["Dispatcher<br/>one attempt, no retries"]
@@ -109,7 +110,7 @@ flowchart LR
     QUIET -- "yes, and due" --> EXEC
     EXEC -- "recheck targets, check source,<br/>stamp requestedAt, wait for it" --> FLUX
     EXEC -- "recheck targets, check source,<br/>set a pinned sync, wait for it" --> ARGO
-    EXEC -. "report: Delivered · Current ·<br/>Failed · Rejected · Dropped" .-> OWE
+    EXEC -. "report: Requested · Running · Unresolved ·<br/>Succeeded · Failed · Current ·<br/>RequestFailed · Rejected · Dropped · Stale" .-> OWE
 ```
 
 - **Observing.** Every observation of the remote passes one point. The first after a start is a
@@ -128,15 +129,21 @@ flowchart LR
   still holds (the commit is still the tip, nothing is waiting to be published); if not, it stamps
   nothing (`Stale`, no failure). Then the applier's kind decides. Flux: stamp `reconcile.fluxcd.io/requestedAt` on the
   `GitRepository` when its artifact lacks the commit; when the artifact holds it, only a `Refusal`
-  stamps the `Kustomization`, because the artifact already woke it for anything else. Argo CD: set
+  or a `Repair` stamps the `Kustomization`, because the artifact already woke it for anything else. Argo CD: set
   the `Application`'s sync operation, pinned to the commit ([below](#the-argo-cd-applier)). A
   source on another repository or branch, or an `Application` with automated sync on, is
-  `Rejected`. A delivered attempt is reported only once the applier has finished the apply, or
-  after 5 minutes, so the attempt is out for exactly the apply window.
-- **Settling.** A delivered attempt is done. A stale one gives back what it carried and is decided
-  again at the next quiet moment. Any other outcome gives back what the attempt carried,
-  a refusal only if it still stands, and starts that applier's backoff (2s doubling to 5m, at least
-  15s after a rejection). `ApplyRequestFailed` is recorded for the first failure of a run.
+  `Rejected`. A request that lands starts an operation, which the dispatcher follows and reports as
+  it moves (`Requested`, `Running`) until it completes (`Succeeded` or `Failed`), so the attempt is
+  out for exactly the apply window. One not completed after 5 minutes is `Unresolved`: it is still
+  followed, at an interval doubling to a minute, and never closed by time, because a timer that
+  closes the window does not stop the apply. The applier object being deleted completes it as
+  `Failed`; no `GitTarget` naming the applier any more abandons it.
+- **Settling.** An operation that succeeded is done. A stale attempt gives back what it carried and
+  is decided again at the next quiet moment. Any other outcome, a failed operation included, gives
+  back what the attempt carried, a refusal only if it still stands, and starts that applier's
+  backoff (2s doubling to 5m, at least 15s after a rejection). `ApplyRequestFailed` or
+  `ApplyFailed` is recorded for the first failure of a run, and `ApplyUnresolved` when an operation
+  becomes `Unresolved`; `apply_operations_unresolved` counts those still out.
 - **Learning about pushes.** A push webhook into GitOps Reverser's receiver (seconds), a rejected
   compare-and-swap push (at the next publication), or the periodic refresh (minutes). All three
   feed the same observation point.
@@ -157,14 +164,15 @@ whose artifact is behind. Inside it, **the API wins**, as it does for any object
   finished the apply: for Flux, `status.lastHandledReconcileAt` carries the stamp of a stamped
   `Kustomization`, or the `Kustomization` attempted a new revision after a source stamp (or the
   source handled the stamp with no new artifact); for Argo CD, the operation state carrying the
-  request's token has completed. At most 5 minutes; the worker keeps the window open 10 seconds
-  more, because the applier's writes reach it through the watch.
+  request's token has completed. An `Unresolved` operation keeps the window open until it
+  completes. Then the worker keeps it open 10 seconds more, because the applier's writes reach it
+  through the watch.
 - **The late apply is withheld.** A write whose latest `managedFields` entries are the applier's
   own managers alone (`kustomize-controller`; `argocd-controller` or
   `argocd-application-controller`), inside the window, to an object in the applier's folders that
-  the API side edited after the attempt was sent, is not mirrored. Git keeps the edit; for Flux the
-  `CatchUp` its push owes applies it back, for Argo CD the next sync does. The cluster runs the
-  reverted value until then.
+  the API side edited after the attempt was sent, is not mirrored. Git keeps the edit, and the
+  withheld write owes its applier a `Repair`: an apply of the tip at the next quiet moment, with no
+  quiet period, for Flux and Argo CD alike. The cluster runs the reverted value until then.
 - **Only proof withholds.** `managedFields` times resolve to the second. When the applier ties
   with another manager, the write could be the edit itself, and withholding an edit loses it
   outright; it is mirrored as before. It is also remembered as an edit, even as the first write in
@@ -235,9 +243,10 @@ in-process plugin: it would run with every credential the operator holds.
 - **One replica.** The receiver, the branch workers and the dispatcher run in one pod, and the chart
   refuses more than one replica. Leader election is not switched on; more than one replica needs
   ownership coordination first, and deliveries routed to the pod that owns the branch.
-- **A request holds its applier while Flux applies.** The next request to that applier waits for
-  the running apply (up to 5 minutes), which is the point: nothing is stacked on an apply still
-  running. A Flux that never reports done costs those 5 minutes per request.
+- **A request holds its applier while it applies.** The next request to that applier waits for
+  the running apply, however long it takes, which is the point: nothing is stacked on an apply
+  still running. An applier that never reports done holds its applier until it does, which
+  `apply_operations_unresolved` and an `ApplyUnresolved` Event show.
 - **Every applier on the branch is asked on a `ForeignCommit`**, whether or not the push touched its
   folder. Harmless for Flux; for Argo CD it runs hooks. Narrowing it needs the applier's own source
   paths, so it waits for a measured complaint.

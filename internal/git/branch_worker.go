@@ -150,6 +150,9 @@ type BranchWorker struct {
 	// means this worker is alone. See apply_siblings.go.
 	siblings    *branchSiblings
 	busyWriting atomic.Bool
+	// unresolvedOperations is how many of this branch's apply operations are Unresolved, as the
+	// loop last published it, for the apply_operations_unresolved gauge.
+	unresolvedOperations atomic.Int64
 
 	// Event processing
 	eventQueue chan WorkItem

@@ -23,6 +23,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 const (
@@ -562,9 +563,9 @@ func setStatus(t *testing.T, client *dynamicfake.FakeDynamicClient, gvr schema.G
 	require.NoError(t, err)
 }
 
-// TestFlux_Handled pins when an apply window closes: when Flux reports it finished the apply the
-// stamp asked for, and not before, for each thing a request can stamp.
-func TestFlux_Handled(t *testing.T) {
+// TestFlux_Progress pins when an apply window closes: when Flux reports it finished the apply the
+// stamp asked for, and not before, for each thing a request can stamp. Until then it is Requested.
+func TestFlux_Progress(t *testing.T) {
 	checkout := types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}
 	platform := types.NamespacedName{Namespace: fluxSystemNS, Name: "platform"}
 	newClient := func() *dynamicfake.FakeDynamicClient {
@@ -581,9 +582,13 @@ func TestFlux_Handled(t *testing.T) {
 	}
 	handled := func(t *testing.T, client *dynamicfake.FakeDynamicClient, stamped Stamped) bool {
 		t.Helper()
-		ok, err := pinnedFlux(client).Handled(context.Background(), checkout, stamped)
+		progress, err := pinnedFlux(client).Progress(context.Background(), checkout, stamped)
 		require.NoError(t, err)
-		return ok
+		if progress.Outcome != git.ApplySucceeded {
+			require.Equal(t, git.ApplyRequested, progress.Outcome)
+			return false
+		}
+		return true
 	}
 
 	t.Run("a stamped Kustomization, once it handled the stamp", func(t *testing.T) {
@@ -593,6 +598,15 @@ func TestFlux_Handled(t *testing.T) {
 		assert.False(t, handled(t, client, stamped))
 		setStatus(t, client, kustomizationGVR(), checkout, "an older stamp", "lastHandledReconcileAt")
 		assert.False(t, handled(t, client, stamped), "another request's answer is not this one's")
+		setStatus(t, client, kustomizationGVR(), checkout, stamped.Token, "lastHandledReconcileAt")
+		assert.True(t, handled(t, client, stamped))
+	})
+
+	t.Run("a Repair stamps the Kustomization as a Refusal does", func(t *testing.T) {
+		client := newClient()
+		stamped := request(t, client, v1alpha3.ApplyReasonRepair, olderCommit)
+		require.Equal(t, OutcomeStampedKustomization, stamped.Outcome,
+			"the artifact holds the commit, and the cluster still runs an older value")
 		setStatus(t, client, kustomizationGVR(), checkout, stamped.Token, "lastHandledReconcileAt")
 		assert.True(t, handled(t, client, stamped))
 	})

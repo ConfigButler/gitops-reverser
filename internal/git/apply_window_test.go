@@ -127,7 +127,7 @@ func TestApplyWindow_NoWindowBeforeAnAttempt(t *testing.T) {
 // closes.
 func TestApplyWindow_ClosesAGraceAfterFluxFinished(t *testing.T) {
 	loop, req := sentAttempt(t)
-	report(req, ApplyDelivered)
+	report(req, ApplySucceeded)
 	loop.serviceAppliers()
 
 	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")))
@@ -142,7 +142,7 @@ func TestApplyWindow_ClosesAGraceAfterFluxFinished(t *testing.T) {
 // TestApplyWindow_AnAttemptThatAppliedNothingHasNoWindow: a stale, failed or dropped attempt
 // stamped nothing, so nothing the applier writes afterwards is the apply it asked for.
 func TestApplyWindow_AnAttemptThatAppliedNothingHasNoWindow(t *testing.T) {
-	for _, outcome := range []ApplyOutcome{ApplyStale, ApplyFailed, ApplyRejected, ApplyDropped, ApplyCurrent} {
+	for _, outcome := range []ApplyOutcome{ApplyStale, ApplyRequestFailed, ApplyRejected, ApplyDropped, ApplyCurrent} {
 		t.Run(string(outcome), func(t *testing.T) {
 			loop, req := sentAttempt(t)
 			assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")))

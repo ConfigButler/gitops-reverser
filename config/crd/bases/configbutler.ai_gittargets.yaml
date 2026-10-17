@@ -637,6 +637,7 @@ spec:
                     enum:
                     - ForeignCommit
                     - Refusal
+                    - Repair
                     - CatchUp
                     type: string
                   requestedAt:

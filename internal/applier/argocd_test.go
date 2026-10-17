@@ -21,6 +21,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 const argoNS = "argocd"
@@ -460,9 +461,11 @@ func TestArgoCDValidate_AsksForUpdate(t *testing.T) {
 	}}, asked)
 }
 
-// TestArgoCD_Handled pins when an Argo CD apply window closes: when this request's operation has
-// completed, whatever its phase, and not while it runs or retries, nor on another operation's state.
-func TestArgoCD_Handled(t *testing.T) {
+// TestArgoCD_Progress pins how an Argo CD operation is followed: Requested while this request's
+// operation is set and not started, Running while its state runs (or waits for Argo CD's own retry),
+// and complete once Succeeded, Failed or Error, which is when the apply window closes. An operation
+// cleared before it recorded an outcome ran nothing, and is Failed so the worker asks again.
+func TestArgoCD_Progress(t *testing.T) {
 	client := newArgoSource(manualApp())
 	argo := pinnedArgo(client)
 	stamped, err := argo.Request(context.Background(), platformApp, testBinding, testCommit,
@@ -475,36 +478,43 @@ func TestArgoCD_Handled(t *testing.T) {
 		app := readApp(t, client)
 		_ = unstructured.SetNestedMap(app.Object, map[string]any{
 			"operation": operation, "phase": phase, "finishedAt": "2026-10-20T10:15:00Z",
+			"message": "one or more objects failed to apply",
 		}, "status", "operationState")
 		if !keepOperation {
 			unstructured.RemoveNestedField(app.Object, "operation")
 		}
 		writeApp(t, client, app)
 	}
-	handled := func(t *testing.T) bool {
+	progress := func(t *testing.T) Progress {
 		t.Helper()
-		ok, err := argo.Handled(context.Background(), platformApp, stamped)
+		got, err := argo.Progress(context.Background(), platformApp, stamped)
 		require.NoError(t, err)
-		return ok
+		return got
 	}
 
-	assert.False(t, handled(t), "set, not started")
+	assert.Equal(t, git.ApplyRequested, progress(t).Outcome, "set, not started")
 	setState(t, theirOperation(), "Succeeded", true)
-	assert.False(t, handled(t), "another operation's state is not ours, and ours is still set")
+	assert.Equal(t, git.ApplyRequested, progress(t).Outcome,
+		"another operation's state is not ours, and ours is still set")
 	setState(t, ours, "Running", true)
-	assert.False(t, handled(t), "running, or a failed sync waiting for its retry (Running with a finishedAt)")
-	setState(t, ours, "Failed", false)
-	assert.True(t, handled(t), "a failed sync closes the window")
+	assert.Equal(t, git.ApplyRunning, progress(t).Outcome,
+		"running, or a failed sync waiting for its retry (Running with a finishedAt)")
+	setState(t, ours, "Terminating", true)
+	assert.Equal(t, git.ApplyRunning, progress(t).Outcome)
+	for _, phase := range []string{"Failed", "Error"} {
+		setState(t, ours, phase, false)
+		failed := progress(t)
+		assert.Equal(t, git.ApplyFailed, failed.Outcome, phase)
+		assert.Equal(t, "the sync ended "+phase+": one or more objects failed to apply", failed.Message)
+	}
 	setState(t, ours, "Succeeded", false)
-	assert.True(t, handled(t))
+	assert.Equal(t, Progress{Outcome: git.ApplySucceeded}, progress(t))
 	setState(t, theirOperation(), "Succeeded", false)
-	assert.True(t, handled(t), "ours was cleared before it ran: nothing of it will apply")
+	assert.Equal(t, git.ApplyFailed, progress(t).Outcome, "ours was cleared before it recorded an outcome")
 
-	assert.True(t, func() bool {
-		ok, err := argo.Handled(context.Background(), platformApp, Stamped{Outcome: OutcomeCurrent})
-		require.NoError(t, err)
-		return ok
-	}(), "nothing asked is nothing to wait for")
+	current, err := argo.Progress(context.Background(), platformApp, Stamped{Outcome: OutcomeCurrent})
+	require.NoError(t, err)
+	assert.Equal(t, git.ApplySucceeded, current.Outcome, "nothing asked is nothing to wait for")
 }
 
 // TestNewClient_PicksTheClientByKind: the dispatcher and the ApplierConfigured check use the kind

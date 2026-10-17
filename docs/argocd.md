@@ -279,22 +279,25 @@ decides again at the next quiet moment.
 applier on the branch, whether or not the push touched its folder.
 
 **An edit made while Argo CD syncs keeps its value.** Until the sync's operation completes
-(`Succeeded`, `Failed` or `Error`, at most 5 minutes), GitOps Reverser treats it as running. An API
+(`Succeeded`, `Failed` or `Error`, however long that takes), GitOps Reverser treats it as running. An API
 edit made in those seconds, to a field the `Application` sets, is reverted on the cluster by the
 sync, because the commit it applies does not hold the edit yet. GitOps Reverser recognizes that
 write by Argo CD's field manager (`argocd-controller`, for a client-side and a server-side apply
 alike, or `argocd-application-controller` for a `Replace=true` sync) and does not mirror it: the
 API's value stays in Git. Each such write is logged and counted in
-`apply_window_collisions_total{outcome="withheld"}`. Unlike Flux, nothing applies the edit back by
-itself, since there is no catch-up: the cluster runs the reverted value until the next sync.
+`apply_window_collisions_total{outcome="withheld"}`. The withheld write owes a repair: once the
+branch is quiet, GitOps Reverser asks for a second sync, with reason `Repair`, pinned to the tip that
+holds the edit. The cluster runs the reverted value until that sync.
 
 Only a write proven to be Argo CD's is withheld. When Argo CD and another manager wrote the object
 in the same second, the write could be the edit itself, so it is mirrored as before and counted as
 `ambiguous`. A delete is never withheld.
 
 The request runs off the branch worker, so a slow Argo CD never holds a publication. A request that
-fails is decided again from scratch, after that `Application`'s own backoff, exactly as for
-[Flux](flux.md#what-gitops-reverser-asks-and-when).
+fails, and a sync that ends `Failed` or `Error`, is decided again from scratch, after that
+`Application`'s own backoff, exactly as for [Flux](flux.md#what-gitops-reverser-asks-and-when). A
+sync still running after 5 minutes is `Unresolved`: GitOps Reverser keeps following it, records an
+`ApplyUnresolved` Event, and asks the `Application` nothing more until it completes.
 
 ## What not to do
 
@@ -413,6 +416,8 @@ it.
 | `ApplierConfigured=False`, `SourceMismatch` | The message names the broken [`Application` rule](#the-application) | Fix the `Application`; a request it was holding is delivered afterward |
 | `ApplierConfigured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.argocd: true` |
 | A Warning `ApplyRequestFailed` Event | A request could not be delivered; the message says why, such as a sync somebody else started that did not end within 5 minutes | GitOps Reverser keeps asking on a quiet branch, at most every five minutes |
+| A Warning `ApplyFailed` Event | The sync GitOps Reverser started ended `Failed` or `Error`; the message carries Argo CD's | Fix what the message names; GitOps Reverser asks again on a quiet branch, at most every five minutes |
+| A Warning `ApplyUnresolved` Event | The sync has not completed in 5 minutes: hooks, waves, or Argo CD's own retries | Nothing is asked of the `Application` until it completes; look at its operation state |
 | A file deleted in Git leaves its object running | The `Application` has no `automated.prune: true` | Add `automated: {enabled: false, prune: true}` |
 | The last sync stays `Running`: `Sync operation blocked by sync window` | A sync window blocks automated syncs, GitOps Reverser's included | Remove the window from the `AppProject`; see [sync windows](#sync-windows-that-block-automated-syncs) |
 | A commit appears on every sync, adding or removing a `Job` | A `WatchRule` covers the objects a hook creates | Keep hook kinds out of the `WatchRule`s; see [hooks](#watching-the-objects-your-hooks-create) |

@@ -495,7 +495,7 @@ func (r *recordingRequester) RequestApply(req ApplyRequest) {
 		return
 	}
 	if outcome == "" {
-		outcome = ApplyDelivered
+		outcome = ApplySucceeded
 	}
 	req.Report(ApplyResult{ID: req.ID, Outcome: outcome})
 }

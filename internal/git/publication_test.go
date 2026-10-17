@@ -108,6 +108,11 @@ func TestPublication_MetricsDescribeTheBacklog(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, loop.retry.due.Unix(), nextRetry)
 
+	f.worker.unresolvedOperations.Store(1)
+	unresolved, ok := gauge(telemetry.GaugeApplyOperationsUnresolved)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), unresolved, "an operation past its budget is still followed, and seen")
+
 	f.worker.branchBufferMaxBytes = 1
 	loop.publishLoopState(0)
 	paused, _ = gauge(telemetry.GaugeGitIntakePaused)

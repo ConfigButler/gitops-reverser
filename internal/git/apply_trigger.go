@@ -34,15 +34,22 @@ import (
 //     Git. Asked only once the branch has stayed quiet for the applier's quiet period, and never of
 //     an Argo CD Application: with automated sync off it applies nothing on its own, so it holds no
 //     stale state to correct (ApplierRef.CatchesUp).
+//   - Repair: the apply window withheld a late apply over a newer API edit (apply_window.go), so
+//     the cluster runs an older value than Git. Asked like a Refusal: on a quiet branch, with no
+//     quiet period, and of either kind of applier, because nothing else would put the edit back on
+//     an Argo CD Application.
 //
 // The three relations are kept apart on purpose. The BRANCH is the unit of quietness, because a
 // Kustomization applies the tip whichever GitTarget's folder an edit is in. The APPLIER is the unit
 // of obligation: one attempt in flight at a time, its own retry clock, and one attempt for all the
 // GitTargets that name it. The GITTARGET, by uid, is the unit of configuration and consent.
 //
-// The worker owns every obligation until it is delivered. The requester carries out one attempt and
-// reports back; it never retries, so a retry is decided here like any first attempt, on a quiet
-// branch, against what the targets are now.
+// The worker owns every obligation until an operation completes it. The requester carries out one
+// attempt and reports its operation as it moves; it never retries, so a retry is decided here like
+// any first attempt, on a quiet branch, against what the targets are now. An operation is followed
+// for as long as it takes: one past the requester's budget is Unresolved, and keeps its window open
+// and its applier's next attempt back, because a timer that closes the window does not stop the
+// apply.
 
 // applyDebt is what the branch's appliers are owed because of what was OBSERVED about the remote,
 // and the reports of attempts that came back. It is written from other goroutines (the first clone
@@ -177,14 +184,15 @@ type applierState struct {
 	ref ApplierRef
 	// targets are the GitTargets that name it, as listed on the last pass.
 	targets []branchTarget
-	// foreign and catchUp are owed until an attempt carries them.
+	// foreign, catchUp and repair are owed until an attempt carries them.
 	foreign bool
 	catchUp bool
-	// inflight is the attempt the requester has not reported yet. While it is out, nothing else is
-	// sent to this applier: what is owed meanwhile waits for the report.
+	repair  bool
+	// inflight is the attempt whose report has not ended it yet. While it is out, nothing else is
+	// sent to this applier: what is owed meanwhile waits for it.
 	inflight *inflightAttempt
-	// failures counts attempts that did not deliver since the last that did, and retryAt is when the
-	// next attempt may go.
+	// failures counts attempts that did not succeed since the last that did, and retryAt is when
+	// the next attempt may go.
 	failures int
 	retryAt  time.Time
 	// window is the applier's apply window: open from sending an attempt until the applier
@@ -192,13 +200,18 @@ type applierState struct {
 	window *applyWindow
 }
 
-// inflightAttempt is what an attempt carries away from its applier's obligations. A failed attempt
-// gives it back (restoreAttempt); a delivered one keeps it.
+// inflightAttempt is what an attempt carries away from its applier's obligations. One that did not
+// succeed gives it back (restoreAttempt); one that succeeded keeps it.
 type inflightAttempt struct {
 	id       uint64
 	foreign  bool
 	catchUp  bool
+	repair   bool
 	refusals map[refusalKey]owedRefusal
+	// phase is the last report of its operation, empty before the first.
+	phase ApplyOutcome
+	// abandon closes the request's Abandoned channel.
+	abandon context.CancelFunc
 }
 
 // quietPeriod is how long the branch must be quiet before a CatchUp: the longest among the
@@ -293,7 +306,7 @@ func (l *branchWorkerEventLoop) branchQuiet(now time.Time) bool {
 // appliersOwe reports whether any applier is owed something or has an attempt out.
 func (l *branchWorkerEventLoop) appliersOwe() bool {
 	for _, state := range l.appliers {
-		if state.foreign || state.catchUp || state.inflight != nil {
+		if state.foreign || state.catchUp || state.repair || state.inflight != nil {
 			return true
 		}
 	}
@@ -301,8 +314,9 @@ func (l *branchWorkerEventLoop) appliersOwe() bool {
 }
 
 // syncAppliers makes the applier states match the GitTargets listed now. An applier no GitTarget
-// names any more is forgotten, with whatever it was owed: nobody asks for it. A refusal owed for a
-// GitTarget that is gone, or is now another incarnation, is dropped the same way.
+// names any more is forgotten, with whatever it was owed: nobody asks for it, and its operation, if
+// one is out, is abandoned. A refusal owed for a GitTarget that is gone, or is now another
+// incarnation, is dropped the same way.
 func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	if l.appliers == nil {
 		l.appliers = map[ApplierRef]*applierState{}
@@ -313,11 +327,15 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 		named[target.applier] = append(named[target.applier], target)
 		uids[target.ref] = target.uid
 	}
-	for ref := range l.appliers {
+	for ref, state := range l.appliers {
 		if _, ok := named[ref]; !ok {
+			if state.inflight != nil {
+				state.inflight.abandon()
+			}
 			delete(l.appliers, ref)
 		}
 	}
+	l.publishUnresolved()
 	for ref, named := range named {
 		state := l.appliers[ref]
 		if state == nil {
@@ -348,11 +366,11 @@ func (l *branchWorkerEventLoop) sendDue(tip string, now time.Time) time.Time {
 			continue
 		}
 		refusals := l.refusalsOwed(state)
-		if !state.foreign && len(refusals) == 0 && !state.catchUp {
+		if !state.foreign && !state.repair && len(refusals) == 0 && !state.catchUp {
 			continue
 		}
 		due := state.retryAt
-		if !state.foreign && len(refusals) == 0 {
+		if !state.foreign && !state.repair && len(refusals) == 0 {
 			due = latest(due, l.quietSince.Add(state.quietPeriod()))
 		}
 		if now.Before(due) {
@@ -388,8 +406,9 @@ func (l *branchWorkerEventLoop) refusalsOwed(state *applierState) map[refusalKey
 
 // sendAttempt hands one attempt for an applier to the requester and moves what it carries out of
 // the applier's obligations, into the attempt. Each target is asked for its own reason: every one
-// for a ForeignCommit; otherwise a Refusal for a target with a refusal owed, and a CatchUp for the
-// rest when one is owed. Any delivered attempt applies the tip, so it answers an owed CatchUp too.
+// for a ForeignCommit, then for a Repair; otherwise a Refusal for a target with a refusal owed, and
+// a CatchUp for the rest when one is owed. Any operation that succeeds applies the tip, so it
+// answers an owed CatchUp or Repair too.
 func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, refusals map[refusalKey]owedRefusal) {
 	refused := map[itypes.ResourceReference]bool{}
 	for key := range refusals {
@@ -402,6 +421,8 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		switch {
 		case state.foreign:
 			own = v1alpha3.ApplyReasonForeignCommit
+		case state.repair:
+			own = v1alpha3.ApplyReasonRepair
 		case refused[target.ref]:
 			own = v1alpha3.ApplyReasonRefusal
 		case state.catchUp:
@@ -414,10 +435,12 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	}
 
 	l.nextApplyID++
+	abandoned, abandon := context.WithCancel(l.w.ctx)
 	attempt := &inflightAttempt{
-		id: l.nextApplyID, foreign: state.foreign, catchUp: state.catchUp, refusals: refusals,
+		id: l.nextApplyID, foreign: state.foreign, catchUp: state.catchUp, repair: state.repair,
+		refusals: refusals, abandon: abandon,
 	}
-	state.foreign, state.catchUp, state.inflight = false, false, attempt
+	state.foreign, state.catchUp, state.repair, state.inflight = false, false, false, attempt
 	state.openApplyWindow(attempt.id, tip, time.Now())
 	for key := range refusals {
 		delete(l.reapplyOwed, key)
@@ -437,24 +460,36 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		PriorFailures: state.failures,
 		Current:       func() bool { return w.decisionHolds(tip) },
 		Report:        w.reportApplyResult,
+		Abandoned:     abandoned.Done(),
 	})
 }
 
-// settleApplyResults reads the reports that came back. A delivered attempt is done. One that did
-// not deliver gives back what it carried and waits out its applier's backoff, so its retry is
-// decided again on a quiet branch at whatever the tip is then, never replayed blind. A report for an
-// applier no GitTarget names any more is dropped with it.
+// settleApplyResults reads the reports that came back. A report of an operation still out records
+// where it stands, and holds the attempt. An operation that succeeded is done. Any other ending
+// gives back what the attempt carried and, unless it was only stale, waits out its applier's
+// backoff, so its retry is decided again on a quiet branch at whatever the tip is then, never
+// replayed blind. A report for an applier no GitTarget names any more is dropped with it.
 func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
+	defer l.publishUnresolved()
 	for _, res := range l.w.debt.takeResults() {
 		state := l.applierAwaiting(res.ID)
 		if state == nil {
 			continue
 		}
 		attempt := state.inflight
+		if !res.Outcome.Ends() {
+			l.advanceOperation(state, attempt, res.Outcome)
+			continue
+		}
 		state.inflight = nil
-		state.settleApplyWindow(attempt.id, res.Outcome == ApplyDelivered, now)
+		attempt.abandon()
+		state.settleApplyWindow(attempt.id, res.Outcome.Operated(), now)
+		if attempt.phase == ApplyUnresolved {
+			l.w.Log.Info("An unresolved apply completed; its apply window closes after the grace",
+				"branch", l.w.Branch, "applier", state.ref.String(), "outcome", string(res.Outcome))
+		}
 		switch res.Outcome {
-		case ApplyDelivered, ApplyCurrent:
+		case ApplySucceeded, ApplyCurrent:
 			state.failures, state.retryAt = 0, time.Time{}
 			continue
 		case ApplyStale:
@@ -462,23 +497,57 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 			// decides again, at the tip as it is then.
 			l.restoreAttempt(state, attempt)
 			continue
-		case ApplyFailed, ApplyRejected, ApplyDropped:
+		case ApplyFailed, ApplyRequestFailed, ApplyRejected, ApplyDropped:
+		case ApplyRequested, ApplyRunning, ApplySettling, ApplyUnresolved:
 		}
 		state.failures++
 		state.retryAt = now.Add(applierRetryDelay(state.failures, res.Outcome == ApplyRejected))
 		l.restoreAttempt(state, attempt)
-		l.w.Log.Info("An apply attempt did not deliver; deciding it again on a quiet branch",
+		message := "An apply attempt did not deliver; deciding it again on a quiet branch"
+		if res.Outcome == ApplyFailed {
+			message = "The applier did not complete the apply; deciding it again on a quiet branch"
+		}
+		l.w.Log.Info(message,
 			"branch", l.w.Branch, "applier", state.ref.String(), "outcome", string(res.Outcome),
 			"failures", state.failures, "retryIn", state.retryAt.Sub(now), "error", errString(res.Err))
 	}
 }
 
-// restoreAttempt gives an applier back what an attempt that did not deliver carried. A refusal comes
+// advanceOperation records where an attempt's operation stands. Unresolved is said once, and stays
+// until the operation ends: it is the requester's verdict that the operation is overdue, which a
+// later sight of it running does not take back.
+func (l *branchWorkerEventLoop) advanceOperation(state *applierState, attempt *inflightAttempt, phase ApplyOutcome) {
+	if attempt.phase == ApplyUnresolved {
+		return
+	}
+	attempt.phase = phase
+	if phase != ApplyUnresolved {
+		return
+	}
+	l.w.Log.Info("The applier has not completed the apply in time; its apply window stays open, and "+
+		"nothing more is asked of it until the apply completes", "branch", l.w.Branch,
+		"applier", state.ref.String(), "attempt", attempt.id)
+}
+
+// publishUnresolved publishes how many of this branch's operations are Unresolved, for the
+// apply_operations_unresolved gauge.
+func (l *branchWorkerEventLoop) publishUnresolved() {
+	var unresolved int64
+	for _, state := range l.appliers {
+		if state.inflight != nil && state.inflight.phase == ApplyUnresolved {
+			unresolved++
+		}
+	}
+	l.w.unresolvedOperations.Store(unresolved)
+}
+
+// restoreAttempt gives an applier back what an attempt that did not succeed carried. A refusal comes
 // back only while it still stands: one that recovered while the attempt was out has nothing left to
 // revert.
 func (l *branchWorkerEventLoop) restoreAttempt(state *applierState, attempt *inflightAttempt) {
 	state.foreign = state.foreign || attempt.foreign
 	state.catchUp = state.catchUp || attempt.catchUp
+	state.repair = state.repair || attempt.repair
 	for key, refusal := range attempt.refusals {
 		if !l.w.refusalStands(key) {
 			continue

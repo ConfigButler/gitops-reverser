@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 )
 
@@ -77,6 +78,9 @@ const maxArgoUpdateConflicts = 5
 const (
 	argoPhaseRunning     = "Running"
 	argoPhaseTerminating = "Terminating"
+	argoPhaseSucceeded   = "Succeeded"
+	argoPhaseFailed      = "Failed"
+	argoPhaseError       = "Error"
 )
 
 // ArgoCD asks an Argo CD Application to sync, in one cluster.
@@ -101,7 +105,7 @@ func NewArgoCD(client dynamic.Interface) *ArgoCD {
 		client:       client,
 		Now:          time.Now,
 		CanI:         SelfSubjectAccessCheck(client),
-		PollInterval: DefaultHandledPollInterval,
+		PollInterval: DefaultPollInterval,
 	}
 }
 
@@ -226,26 +230,45 @@ func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, w
 	}
 }
 
-// Handled reports whether Argo CD has finished the sync s asked for, which is when the apply
-// window closes. The operation state is this request's when its info carries the request's token;
-// it has finished once its phase is Succeeded, Failed or Error. A failed sync closes the window
-// too: Argo CD's own retries of it are part of the operation, which stays Running until they end.
-// An operation that is gone before it ever ran (somebody cleared it) runs nothing, and is handled.
-func (a *ArgoCD) Handled(ctx context.Context, ref types.NamespacedName, s Stamped) (bool, error) {
+// Progress reports how far Argo CD is with the sync s asked for; the apply window closes once it
+// completed. The operation state is this request's when its info carries the request's token. It
+// is Running while its phase is Running (a failed sync waiting for Argo CD's own retry included,
+// which is Running with a finishedAt) or Terminating, Succeeded once Succeeded, and Failed once
+// Failed or Error. Until the controller starts it, the operation is still set with the token, and
+// Requested. An operation that is gone with no state of its own (somebody cleared it, or a later
+// sync replaced its record) is Failed: nothing of it will run, and the worker decides again.
+func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s Stamped) (Progress, error) {
 	if s.Outcome != OutcomeSyncRequested {
-		return true, nil
+		return Progress{Outcome: git.ApplySucceeded}, nil
 	}
 	app, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
-		return false, fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
+		return Progress{Outcome: git.ApplyRequested}, fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
 	}
 	if state, found, _ := unstructured.NestedMap(app.Object, "status", "operationState"); found &&
 		operationToken(state["operation"]) == s.Token {
 		phase, _, _ := unstructured.NestedString(state, "phase")
-		return phase != "" && phase != argoPhaseRunning && phase != argoPhaseTerminating, nil
+		message, _, _ := unstructured.NestedString(state, "message")
+		switch phase {
+		case argoPhaseSucceeded:
+			return Progress{Outcome: git.ApplySucceeded}, nil
+		case argoPhaseFailed, argoPhaseError:
+			return Progress{
+				Outcome: git.ApplyFailed,
+				Message: fmt.Sprintf("the sync ended %s: %s", phase, message),
+			}, nil
+		default:
+			return Progress{Outcome: git.ApplyRunning}, nil
+		}
 	}
-	operation, found, _ := unstructured.NestedMap(app.Object, "operation")
-	return !found || operationToken(operation) != s.Token, nil
+	if operation, found, _ := unstructured.NestedMap(app.Object, "operation"); found &&
+		operationToken(operation) == s.Token {
+		return Progress{Outcome: git.ApplyRequested}, nil
+	}
+	return Progress{
+		Outcome: git.ApplyFailed,
+		Message: "the sync operation is gone from the Application before it recorded an outcome",
+	}, nil
 }
 
 // Validate answers ApplierConfigured for an Application: that it exists in the cluster and its

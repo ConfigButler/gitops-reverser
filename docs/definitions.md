@@ -196,7 +196,8 @@ it. Not "reconciler", which also names this operator's own controllers, and not 
 which says nothing about what it does to the cluster.
 
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
-(`ForeignCommit`, `Refusal`, `CatchUp`). It asks; it never reports that the apply happened.
+(`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`). It asks; the operation it starts is followed
+until the applier's status shows the apply completed.
 
 **Quiet branch.** A branch whose worker holds no open commit window and no pending writes. Apply
 requests go out only on a quiet branch, because only then is nothing live missing from the tip.

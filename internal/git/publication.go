@@ -151,6 +151,9 @@ func (m *WorkerManager) setPublicationGaugeSources() {
 	telemetry.SetGaugeSource(telemetry.GaugeGitNextRetry, source(func(w *BranchWorker) (int64, bool) {
 		return dated(w.backlog.nextRetry.Load())
 	}))
+	telemetry.SetGaugeSource(telemetry.GaugeApplyOperationsUnresolved, source(func(w *BranchWorker) (int64, bool) {
+		return always(w.unresolvedOperations.Load())
+	}))
 }
 
 // publicationGauges are the gauges setPublicationGaugeSources installs.
@@ -162,6 +165,7 @@ var publicationGauges = []string{
 	telemetry.GaugeGitIntakePaused,
 	telemetry.GaugeGitOldestRetainedWrite,
 	telemetry.GaugeGitNextRetry,
+	telemetry.GaugeApplyOperationsUnresolved,
 }
 
 // publicationEventBuffer bounds the GitTarget events a burst of report changes can queue. A full

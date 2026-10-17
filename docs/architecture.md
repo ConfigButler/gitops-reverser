@@ -1663,7 +1663,7 @@ as one funnel and its loss paths as one selector:
 
 **Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
 attempt the worker decided to send (`applier_kind` is `kustomization`; `reason` is
-`ForeignCommit`, `Refusal` or `CatchUp`), with `outcome` separating
+`ForeignCommit`, `Refusal`, `Repair` or `CatchUp`), with `outcome` separating
 `sent` from `failed` (the worker decides the retry), `dropped` (no target may still ask for that
 reason) and `stale` (the decision no longer held at the patch). It counts attempts, not
 obligations.
