@@ -63,12 +63,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 	})
 
 	AfterAll(func() {
-		if receiverHookID != 0 {
-			gitea := giteaTestInstance()
-			ctx, cancel := gitea.Context()
-			_ = gitea.Client().DeleteRepoHook(ctx, gitea.Org, repo.RepoName, receiverHookID)
-			cancel()
-		}
+		deleteRepoHook(repo.RepoName, receiverHookID)
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
 		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
@@ -173,29 +168,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 	// API edit surfaces the push, and the refresher's tick is minutes away.
 	It("applies a Git-side push the Git host reports, with nothing else to surface it", func() {
 		By("configuring the GitProvider's receiver, and registering it as a Gitea webhook")
-		token := randomToken()
-		_, err := kubectlRunInNamespace(testNs, "create", "secret", "generic", receiverSecretName,
-			"--from-literal=token="+token)
-		Expect(err).NotTo(HaveOccurred(), "failed to create the receiver Secret")
-		_, err = kubectlRunInNamespace(testNs, "patch", "gitprovider", providerName, "--type=merge", "-p",
-			fmt.Sprintf(`{"spec":{"receiver":{"type":"gitea","secretRef":{"name":%q}}}}`, receiverSecretName))
-		Expect(err).NotTo(HaveOccurred(), "failed to set spec.receiver")
-		var webhookPath string
-		Eventually(func(g Gomega) {
-			out, err := kubectlRunInNamespace(testNs, "get", "gitprovider", providerName,
-				"-o", "jsonpath={.status.webhookPath}")
-			g.Expect(err).NotTo(HaveOccurred())
-			webhookPath = strings.TrimSpace(out)
-			g.Expect(webhookPath).NotTo(BeEmpty())
-		}, time.Minute, 2*time.Second).Should(Succeed())
-		gitea := giteaTestInstance()
-		ctx, cancel := gitea.Context()
-		hook, err := gitea.Client().CreateGiteaWebhook(ctx, gitea.Org, repo.RepoName,
-			fmt.Sprintf("http://gitops-reverser-receiver.%s.svc.cluster.local%s", resolveE2ENamespace(), webhookPath),
-			token, []string{"push"})
-		cancel()
-		Expect(err).NotTo(HaveOccurred(), "failed to register the receiver as a Gitea webhook")
-		receiverHookID = hook.ID
+		receiverHookID = registerOperatorReceiver(testNs, providerName, receiverSecretName, repo.RepoName)
 
 		Eventually(func(g Gomega) {
 			g.Expect(appliedColor(g, appliedNs)).To(Equal("orange"))
@@ -321,6 +294,46 @@ func gitTargetEventMessages(g Gomega, testNs, gitTarget, reason string) string {
 		"-o", "jsonpath={.items[*].message}")
 	g.Expect(err).NotTo(HaveOccurred())
 	return out
+}
+
+// registerOperatorReceiver gives a GitProvider a gitea receiver whose token is a new Secret, and
+// registers the path it serves as a push webhook on the Gitea repository, pointed at the operator's
+// receiver Service. It returns the hook's id, for deleteRepoHook.
+func registerOperatorReceiver(testNs, providerName, secretName, repoName string) int64 {
+	GinkgoHelper()
+	token := randomToken()
+	_, err := kubectlRunInNamespace(testNs, "create", "secret", "generic", secretName, "--from-literal=token="+token)
+	Expect(err).NotTo(HaveOccurred(), "failed to create the receiver Secret")
+	_, err = kubectlRunInNamespace(testNs, "patch", "gitprovider", providerName, "--type=merge", "-p",
+		fmt.Sprintf(`{"spec":{"receiver":{"type":"gitea","secretRef":{"name":%q}}}}`, secretName))
+	Expect(err).NotTo(HaveOccurred(), "failed to set spec.receiver")
+	var webhookPath string
+	Eventually(func(g Gomega) {
+		out, err := kubectlRunInNamespace(testNs, "get", "gitprovider", providerName,
+			"-o", "jsonpath={.status.webhookPath}")
+		g.Expect(err).NotTo(HaveOccurred())
+		webhookPath = strings.TrimSpace(out)
+		g.Expect(webhookPath).NotTo(BeEmpty())
+	}, time.Minute, 2*time.Second).Should(Succeed())
+	gitea := giteaTestInstance()
+	ctx, cancel := gitea.Context()
+	defer cancel()
+	hook, err := gitea.Client().CreateGiteaWebhook(ctx, gitea.Org, repoName,
+		fmt.Sprintf("http://gitops-reverser-receiver.%s.svc.cluster.local%s", resolveE2ENamespace(), webhookPath),
+		token, []string{"push"})
+	Expect(err).NotTo(HaveOccurred(), "failed to register the receiver as a Gitea webhook")
+	return hook.ID
+}
+
+// deleteRepoHook deletes a Gitea webhook registerOperatorReceiver made; zero is none.
+func deleteRepoHook(repoName string, hookID int64) {
+	if hookID == 0 {
+		return
+	}
+	gitea := giteaTestInstance()
+	ctx, cancel := gitea.Context()
+	defer cancel()
+	_ = gitea.Client().DeleteRepoHook(ctx, gitea.Org, repoName, hookID)
 }
 
 // randomToken is a receiver secret for one spec.

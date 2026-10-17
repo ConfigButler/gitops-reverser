@@ -9,33 +9,22 @@ spec:
     repoURL: {{ .RepoURL }}
     targetRevision: {{ .Branch }}
     path: {{ .Path }}
+{{- if not .Kustomize }}
     directory:
       # gitops-reverser mirrors into <path>/<namespace>/<group>/<plural>/<name>.yaml,
       # so Argo must walk subdirectories to see anything at all.
       recurse: true
+{{- end }}
   destination:
     server: https://kubernetes.default.svc
     namespace: {{ .DestinationNamespace }}
-{{- if or .Automated .SyncOptions }}
   syncPolicy:
-{{- if .Automated }}
     automated:
-      prune: {{ .Prune }}
-      selfHeal: {{ .SelfHeal }}
-{{- end }}
-{{- if .SyncOptions }}
-    syncOptions:
-{{- range .SyncOptions }}
-      - {{ . }}
-{{- end }}
-{{- end }}
-{{- end }}
-{{- if .IgnoreJSONPointers }}
-  ignoreDifferences:
-    - group: {{ .IgnoreGroup }}
-      kind: {{ .IgnoreKind }}
-      jsonPointers:
-{{- range .IgnoreJSONPointers }}
-        - {{ . }}
-{{- end }}
+{{- if .Automated }}
+      # Automated sync ON: no `enabled`, which Argo CD reads as on.
+      prune: true
+{{- else }}
+      # The standard: automated sync off, prune kept for the syncs GitOps Reverser starts.
+      enabled: false
+      prune: true
 {{- end }}

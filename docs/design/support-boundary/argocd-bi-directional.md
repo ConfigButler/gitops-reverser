@@ -32,7 +32,8 @@ is not folklore.
 
 All citations are against the Argo CD tree vendored at
 `external-sources/argo-cd` (`VERSION` = 3.5.0 dev; the e2e installs the v3.4.x
-line, which is materially identical for these paths). Exercised end-to-end in
+line, which is materially identical for these paths). The configuration it leads
+to is exercised end-to-end in
 [`../../../test/e2e/argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go);
 corner design in
 [`../e2e-bi-directional-corner.md`](../../spec/e2e-bi-directional-corner.md).

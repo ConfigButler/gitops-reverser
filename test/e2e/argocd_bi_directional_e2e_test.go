@@ -21,9 +21,15 @@ import (
 // Argo CD is only installed for this corner, by the `_argocd-installed` Taskfile
 // node. `task test-e2e` skips these specs; `task test-e2e-bi-directional` runs them.
 //
-// Everything here is driven through kubectl — refresh via the
-// `argocd.argoproj.io/refresh` annotation, sync via the Application's `.operation`
-// field — so the devcontainer needs no `argocd` binary.
+// Every spec runs the standard (docs/argocd.md): the Application has automated sync
+// off and is named by the GitTarget's spec.applier.applicationRef, so every sync it
+// runs is one GitOps Reverser started, pinned to a commit it checked. Argo CD's own
+// Gitea webhook stays wired, and is shown to be harmless: with automated sync off it
+// only refreshes. The last spec turns automated sync on and proves GitOps Reverser
+// then refuses to drive the Application.
+//
+// Everything is driven through kubectl, so the devcontainer needs no `argocd`
+// binary.
 const (
 	// Argo CD stamps this onto every non-CRD object it applies. Its default
 	// resource-tracking method is `annotation` (NOT `label`), so this annotation —
@@ -40,19 +46,19 @@ const (
 	// argocd-secret; the Gitea hook is created with the same value.
 	argoWebhookSecret = "e2e-argocd-webhook-secret"
 
-	// Self-heal reacts to live drift on a ~2s backoff, so 90s is generous. The
-	// spec never waits on Argo's 180s timed refresh (see setup/argocd/values.yaml).
-	argoSelfHealTimeout = 90 * time.Second
-	argoSyncTimeout     = 120 * time.Second
-	// Bounded so it can only pass via the webhook: comfortably longer than webhook
-	// delivery + refresh + auto-sync, but well under Argo's 180s timed
-	// reconciliation. If the webhook path is broken, this times out.
-	argoWebhookSyncTimeout = 20 * time.Second // measured ~4s end-to-end in the corner runs
-	// Long enough that a self-heal would certainly have fired if the field were not ignored.
-	argoNoSelfHealWindow = 10 * time.Second // measured: self-heal reverts a non-ignored field in ~1s
+	// The initiator GitOps Reverser's syncs carry (applier.ArgoCDInitiator).
+	argoReverserInitiator = "gitops-reverser"
+
+	argoSyncTimeout = 120 * time.Second
+	// A Git-side push reaches GitOps Reverser's receiver, which decides a
+	// ForeignCommit on a quiet branch, and Argo CD then syncs: seconds, far below the
+	// 10m refresher, so this can only pass through the receiver.
+	argoRequestedSyncTimeout = 90 * time.Second
+	// Long enough for a sync GitOps Reverser should not have asked for to show up.
+	argoNoSyncWindow = 20 * time.Second
 )
 
-// argoBiDirectionalRepo holds the file-local repo fixtures for this describe block.
+// argoBiDirectionalRepo holds the file-local repo fixtures for the main describe block.
 var argoBiDirectionalRepo *RepoArtifacts
 
 type argoBiDirectionalRun struct {
@@ -67,20 +73,20 @@ type argoBiDirectionalRun struct {
 	appName        string
 	repoSecretName string
 
-	gitProviderName string
-	gitTargetName   string
-	watchRuleName   string
-	livePath        string
+	gitProviderName    string
+	gitTargetName      string
+	watchRuleName      string
+	receiverSecretName string
+	livePath           string
 
-	// One order per phase, so the phases never contend for the same object.
-	syncedOrderName      string
-	selfHealOrderName    string
-	ignoredOrderName     string
-	recommendedOrderName string
+	// One order per spec, so the specs never contend for the same object.
+	syncedOrderName    string
+	editedOrderName    string
+	automatedOrderName string
 }
 
-// argoAppConfig is the knob set the spec turns between phases. The Application is
-// re-applied (not patched) each time, so dropping a field really removes it.
+// argoAppConfig is the knob set the specs turn. The Application is re-applied (not
+// patched) each time, so dropping a field really removes it.
 type argoAppConfig struct {
 	Name                 string
 	ArgoNamespace        string
@@ -89,19 +95,16 @@ type argoAppConfig struct {
 	Path                 string
 	DestinationNamespace string
 
+	// Kustomize renders the path as a kustomization instead of a recursive directory.
+	Kustomize bool
+	// Automated turns automated sync ON, which the standard forbids.
 	Automated bool
-	Prune     bool
-	SelfHeal  bool
-
-	SyncOptions        []string
-	IgnoreGroup        string
-	IgnoreKind         string
-	IgnoreJSONPointers []string
 }
 
 var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), Ordered, func() {
 	var run argoBiDirectionalRun
 	var testNs string
+	var receiverHookID int64
 
 	BeforeAll(func() {
 		skipUnlessBiDirectionalEnabled()
@@ -123,7 +126,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
 		applySOPSAgeKeyToNamespace(testNs)
 
-		run = newArgoBiDirectionalRun(testNs)
+		run = newArgoBiDirectionalRun(testNs, argoBiDirectionalRepo, "argo-bi")
 		run.assertCheckoutReady()
 
 		By("installing the IceCreamOrder CRD directly")
@@ -136,7 +139,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		By("registering the Gitea repository with Argo CD")
 		run.applyArgoRepoSecret()
 
-		By("wiring a Gitea -> Argo CD webhook so pushes reconcile without waiting for the poll")
+		By("wiring a Gitea -> Argo CD webhook, which with automated sync off only refreshes")
 		run.configureArgoWebhookSecret()
 		run.ensureArgoWebhook()
 	})
@@ -150,59 +153,37 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		// so the IceCreamOrders die with the namespace.
 		cleanupNamespacedResource(run.argoNs, "application.argoproj.io", run.appName)
 		cleanupNamespacedResource(run.argoNs, "secret", run.repoSecretName)
+		deleteRepoHook(run.repoName, receiverHookID)
 		cleanupWatchRule(run.watchRuleName, testNs)
 		cleanupGitTarget(run.gitTargetName, testNs)
 		cleanupNamespacedResource(testNs, "gitprovider", run.gitProviderName)
+		cleanupNamespacedResource(testNs, "secret", run.receiverSecretName)
 		cleanupClusterResource("crd", iceCreamCRDName(crdGroupArgoBiDirectional))
 		cleanupNamespace(testNs)
 	})
 
-	It("should keep Argo CD's bookkeeping out of Git, and prove selfHeal on vs off is the difference "+
-		"between losing and keeping a shared-field edit", func() {
-		// Ordering is load-bearing, and both halves of it are.
-		//
-		// 1. SetupRepo leaves the Gitea repo EMPTY. There is no `main` on the
-		//    remote until something pushes one, and `git pull` cannot fetch a ref
-		//    that does not exist. So seed the branch first.
-		//
-		// 2. The reverser's first reconcile makes its managed path match LIVE
-		//    state: it writes its bootstrap files and DELETES anything it does not
-		//    own. An IceCreamOrder committed before that reconcile is pruned before
-		//    Argo CD ever sees it — Argo then syncs an empty path and truthfully
-		//    reports Succeeded, having applied nothing.
-		//
-		// So: seed the branch, let the reverser settle, and only then write orders.
-		// The Flux spec depends on exactly the same sequence.
-		By("seeding the branch so the GitTarget has a main to bootstrap")
+	// A Git-side push reaches the cluster only through GitOps Reverser: its receiver
+	// hears of the push, the worker decides a ForeignCommit on a quiet branch, and the
+	// sync it starts is pinned to that commit. Nothing GitOps Reverser pushes itself
+	// is synced. And what Argo CD stamps on the objects it applies stays out of Git.
+	It("syncs a Git-side push through a pinned ForeignCommit, and keeps Argo CD's bookkeeping out of Git", func() {
+		// SetupRepo leaves the Gitea repo EMPTY, so seed the branch first: the
+		// GitTarget needs a main to bootstrap. Argo CD has nothing to sync until the
+		// Git-side push below, and with automated sync off it would not sync it anyway.
+		By("seeding the branch, and creating the Application with automated sync off")
 		Expect(run.commitAllAndPush("argo bi-directional: seed main")).To(Succeed())
+		run.applyArgoApp(run.baseAppConfig())
 
-		By("enabling gitops-reverser on the shared live path")
-		run.startReverserPipeline()
+		By("enabling gitops-reverser on the shared live path, naming the Application as the applier")
+		receiverHookID = run.startReverserPipeline()
 
-		// Absorbs the reverser's bootstrap/prune commit, so the zero-churn
-		// assertions below measure Argo CD's effect and nothing else.
+		// Absorbs the reverser's bootstrap commit, so the counts below measure the
+		// Git-side push and Argo CD's sync, and nothing else.
 		baselineCommitCount := run.waitForStableRemoteCommitCount(biStableCountShortWait)
+		Expect(run.operationFinishedAt()).To(BeEmpty(),
+			"GitOps Reverser's own pushes and its start ask Argo CD for nothing")
 
-		// ---------------------------------------------------------------------
-		// Phase 1 — Argo CD's stamps must not reach Git.
-		//
-		// Argo's repo-server stamps `argocd.argoproj.io/tracking-id` onto every
-		// non-CRD manifest it renders, and its default client-side apply writes
-		// `last-applied-configuration`. Both land on the LIVE object, which is
-		// exactly what gitops-reverser mirrors back to Git.
-		//
-		// Neither is user intent, so neither may be committed. Regression guard for
-		// internal/sanitize: before that fix, the tracking-id was committed, which
-		// (a) polluted Git with a provenance string naming one Application, and
-		// (b) armed a real failure — Argo's GetAppName never validates the id
-		// against the object, so a manifest carrying a foreign tracking-id makes a
-		// second Application fail to sync with "Shared resource found".
-		//
-		// The strongest form of the assertion is a commit COUNT: if sanitization is
-		// complete, the sanitized live object equals the file already in Git, so
-		// Argo syncing a reverser-watched path produces ZERO commits.
-		// ---------------------------------------------------------------------
-		By("committing a clean IceCreamOrder through normal GitOps")
+		By("pushing a clean IceCreamOrder from the Git side, and nothing else")
 		run.writeLiveOrder(iceCreamOrderFile{
 			Name:         run.syncedOrderName,
 			Namespace:    testNs,
@@ -212,13 +193,16 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 			Toppings:     []string{"Sprinkles"},
 		})
 		Expect(run.commitAllAndPush("argo bi-directional: add icecream order")).To(Succeed())
-		syncedHead := run.gitHEAD()
-		run.expectRemoteCommitCount(baselineCommitCount + 1)
+		head := run.gitHEAD()
 
-		By("creating a manually-synced Argo CD Application for the shared live path")
-		run.applyArgoApp(run.baseAppConfig())
-		run.syncToRevision(syncedHead)
+		By("GitOps Reverser asks Argo CD to sync exactly that commit, as a ForeignCommit")
+		run.waitForReverserSync(head, "ForeignCommit")
 		run.waitForOrderContainer(run.syncedOrderName, "Cone")
+		Eventually(func(g Gomega) {
+			reason, commit := run.gitTargetApplierStatus(g)
+			g.Expect(reason).To(Equal("ForeignCommit"))
+			g.Expect(commit).To(Equal(head))
+		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 
 		By("verifying Argo CD stamped its bookkeeping onto the live object")
 		liveAnnotations := run.liveOrderAnnotations(run.syncedOrderName)
@@ -228,270 +212,210 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		Expect(liveAnnotations).To(HaveKey(kubectlLastAppliedAnnotation),
 			"Argo CD's default apply is client-side, which writes last-applied-configuration")
 
-		By("verifying none of that bookkeeping is committed, and no commit happens at all")
+		By("verifying none of that bookkeeping is committed, and the sync made no commit at all")
 		// If any of it leaked, the sanitized live object would differ from the file
 		// already in Git and the reverser would commit — so the count would grow.
 		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, biStableCountLongWait)
-
 		committed := run.readCommittedOrder(run.syncedOrderName)
 		Expect(committed).NotTo(ContainSubstring(argoTrackingIDAnnotation),
 			"Argo CD's tracking-id is controller bookkeeping and must never reach Git")
 		Expect(committed).NotTo(ContainSubstring(kubectlLastAppliedAnnotation))
 		Expect(committed).NotTo(ContainSubstring("managedFields"))
 		Expect(committed).NotTo(ContainSubstring("resourceVersion"))
+	})
 
-		By("re-syncing Argo CD with no Git change and expecting no churn")
-		run.syncToRevision(syncedHead)
-		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, biStableCountMediumWait)
-
-		// ---------------------------------------------------------------------
-		// Phase 2 — selfHeal destroys the API-side change, and Git history flaps.
-		//
-		// Two clocks: self-heal reverts live drift essentially immediately —
-		// sub-second on the FIRST drift, because the backoff is zero on attempt 0
-		// (docs/design/support-boundary/argocd-bi-directional.md) — while a new Git revision is
-		// only noticed on the 180s timed refresh. So Argo replays its stale cached
-		// revision long before it ever looks at what the reverser committed. The
-		// user's change is lost.
-		//
-		// The flap is TWO commits in quick succession: the reverser captures the API
-		// edit (WaffleBowl), then self-heal reverts to the Git-side value and the
-		// reverser captures THAT too (Cone). This is deterministic, not a race: the
-		// Kubernetes API watch the reverser runs delivers every edit in order and
-		// never collapses them, and with commitWindow=0 each edit is its own commit.
-		// So even though self-heal is sub-second, both edits are observed and both
-		// are committed — asserted as an exact +2 delta at the end of the phase.
-		// ---------------------------------------------------------------------
-		By("switching Argo CD to automated sync with selfHeal enabled")
-		selfHealApp := run.baseAppConfig()
-		selfHealApp.Automated = true
-		selfHealApp.Prune = true
-		selfHealApp.SelfHeal = true
-		run.applyArgoApp(selfHealApp)
-
-		By("committing a second IceCreamOrder through normal GitOps")
+	// The race the apply trigger exists for (docs/design/apply-trigger.md): two API
+	// edits to one field a few seconds apart. With automated sync, Argo CD synced the
+	// first edit's commit over the second edit. Under the standard nothing syncs
+	// GitOps Reverser's own commits at all, so the later value survives, Git ends on
+	// it with no further commit, and Argo CD, refreshed by its webhook on each push,
+	// only reports the Application Synced.
+	It("keeps the later of two quick API edits, with no further commit and no sync", func() {
+		By("committing a third IceCreamOrder from the Git side, synced by a ForeignCommit")
 		run.writeLiveOrder(iceCreamOrderFile{
-			Name:         run.selfHealOrderName,
-			Namespace:    testNs,
-			CustomerName: "Bob",
-			Container:    "Cone",
-			Scoops:       []iceCreamScoop{{Flavor: "Strawberry", Quantity: 1}},
-			Toppings:     []string{"WhippedCream"},
-		})
-		Expect(run.commitAllAndPush("argo bi-directional: add self-heal icecream order")).To(Succeed())
-
-		By("letting the Gitea -> Argo CD webhook drive the sync — no manual refresh, no manual sync")
-		// The push notifies argocd-server, which refreshes the automated app and
-		// auto-syncs the new commit. This lands well inside argoWebhookSyncTimeout,
-		// far below Argo's 180s poll — so it can only pass via the webhook.
-		Eventually(func(g Gomega) {
-			value, err := run.orderContainer(run.selfHealOrderName)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(value).To(Equal("Cone"))
-		}, argoWebhookSyncTimeout, biPollInterval).Should(Succeed(),
-			"the webhook should drive Argo CD to auto-sync the new commit")
-
-		By("recording the commit count just before the API edit, to observe the self-heal flap")
-		Expect(run.gitPull()).To(Succeed())
-		preFlapCount, err := run.gitMainCommitCount()
-		Expect(err).NotTo(HaveOccurred())
-
-		By("changing that IceCreamOrder through the Kubernetes API")
-		run.patchOrderContainer(run.selfHealOrderName, "WaffleBowl")
-
-		By("verifying Argo CD self-heals the change away — the API-side edit is LOST")
-		Eventually(func(g Gomega) {
-			g.Expect(run.orderContainer(run.selfHealOrderName)).To(Equal("Cone"))
-		}, argoSelfHealTimeout, biPollInterval).Should(Succeed(),
-			"selfHeal should replay the stale cached revision over the API-side change")
-		Consistently(func(g Gomega) {
-			g.Expect(run.orderContainer(run.selfHealOrderName)).To(Equal("Cone"))
-		}, biStableCountMediumWait, biPollInterval).Should(Succeed())
-
-		By("verifying Git converges back to the Git-side value and then stops moving")
-		Eventually(func(g Gomega) {
-			g.Expect(run.gitPull()).To(Succeed())
-			g.Expect(run.readCommittedOrder(run.selfHealOrderName)).To(ContainSubstring("container: Cone"))
-		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
-
-		settled, err := run.gitMainCommitCount()
-		Expect(err).NotTo(HaveOccurred())
-		run.consistentlyExpectRemoteCommitCount(settled, biStableCountMediumWait)
-
-		// The flap is exactly two commits, and this is deterministic — not a race.
-		// gitops-reverser watches the IceCreamOrder through the Kubernetes API watch,
-		// which delivers EVERY edit in order and never collapses them: it sees the
-		// API edit (WaffleBowl), then self-heal's revert to the Git-side value (Cone).
-		// With commitWindow=0 each observed edit finalizes as its own commit, so the
-		// self-heal round trip always writes precisely two commits.
-		By(fmt.Sprintf("verifying the self-heal flap wrote exactly two commits (%d -> %d)", preFlapCount, settled))
-		Expect(settled-preFlapCount).To(Equal(2),
-			"the watch delivers both the API edit and self-heal's revert, and each is one commit")
-
-		// ---------------------------------------------------------------------
-		// Phase 3 — the safe recipe: ignoreDifferences gives a field to the API.
-		//
-		// Identical to phase 2 except for `ignoreDifferences` on /spec/scoops. That
-		// one stanza is the difference between losing the change and keeping it:
-		// the field never registers as drift, so selfHeal never fires, and the
-		// reverser publishes the API-side value to Git.
-		//
-		// `RespectIgnoreDifferences=true` is belt-and-braces here rather than
-		// load-bearing: because the reverser keeps Git current, target and live
-		// agree anyway. It closes the window where an unrelated Git change triggers
-		// a sync between the API patch and the reverser's commit, which would
-		// otherwise reset the ignored field.
-		// ---------------------------------------------------------------------
-		By("giving /spec/scoops to the API via ignoreDifferences, keeping selfHeal on")
-		ignoredApp := run.baseAppConfig()
-		ignoredApp.Automated = true
-		ignoredApp.Prune = true
-		ignoredApp.SelfHeal = true
-		ignoredApp.SyncOptions = []string{"RespectIgnoreDifferences=true"}
-		ignoredApp.IgnoreGroup = crdGroupArgoBiDirectional
-		ignoredApp.IgnoreKind = "IceCreamOrder"
-		ignoredApp.IgnoreJSONPointers = []string{"/spec/scoops"}
-		run.applyArgoApp(ignoredApp)
-
-		By("committing a third IceCreamOrder through normal GitOps")
-		run.writeLiveOrder(iceCreamOrderFile{
-			Name:         run.ignoredOrderName,
-			Namespace:    testNs,
-			CustomerName: "Charlie",
-			Container:    "Cup",
-			Scoops:       []iceCreamScoop{{Flavor: "Vanilla", Quantity: 2}},
-			Toppings:     []string{"HotFudge"},
-		})
-		Expect(run.commitAllAndPush("argo bi-directional: add split-ownership icecream order")).To(Succeed())
-
-		By("letting the webhook drive the sync of the third order")
-		Eventually(func(g Gomega) {
-			value, err := run.orderScoopFlavor(run.ignoredOrderName)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(value).To(Equal("Vanilla"))
-		}, argoWebhookSyncTimeout, biPollInterval).Should(Succeed(),
-			"the webhook should drive Argo CD to auto-sync the third commit")
-
-		By("changing the ignored field through the Kubernetes API")
-		run.patchOrderScoop(run.ignoredOrderName, "MintChip", 4)
-
-		By("verifying selfHeal does NOT revert an ignored field")
-		Consistently(func(g Gomega) {
-			g.Expect(run.orderScoopFlavor(run.ignoredOrderName)).To(Equal("MintChip"))
-		}, argoNoSelfHealWindow, biPollInterval).Should(Succeed(),
-			"ignoreDifferences should keep /spec/scoops out of the drift comparison")
-
-		By("verifying Argo CD still reports the Application as Synced")
-		Expect(run.syncStatus()).To(Equal("Synced"),
-			"an ignored field must not put the Application OutOfSync")
-
-		By("verifying gitops-reverser publishes the API-side value to Git")
-		Eventually(func(g Gomega) {
-			g.Expect(run.gitPull()).To(Succeed())
-			g.Expect(run.readCommittedOrder(run.ignoredOrderName)).To(ContainSubstring("flavor: MintChip"))
-		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
-
-		By("verifying the system is at rest")
-		finalCount, err := run.gitMainCommitCount()
-		Expect(err).NotTo(HaveOccurred())
-		run.consistentlyExpectRemoteCommitCount(finalCount, biStableCountMediumWait)
-		Expect(run.orderScoopFlavor(run.ignoredOrderName)).To(Equal("MintChip"))
-
-		// ---------------------------------------------------------------------
-		// Phase 4 — the recommended shared-field loop: selfHeal:false + webhook.
-		//
-		// This is the ONE Argo CD configuration docs/bi-directional.md recommends
-		// for a genuinely shared field (docs/design/support-boundary/argocd-bi-directional.md).
-		// It is the deterministic counterpart to phase 2: phase 2 proved selfHeal
-		// LOSES the API edit; this proves selfHeal:false KEEPS it, and — unlike the
-		// ignoreDifferences of phase 3 — the field stays fully GitOps-driven, so a
-		// Git-side change to the SAME field still reaches the cluster.
-		//
-		// One field, both directions:
-		//   - API side: an edit to spec.container is captured to Git and, because
-		//     selfHeal is off, never reverted;
-		//   - Git side: a later commit to the SAME spec.container is applied back
-		//     to the cluster through the webhook.
-		//
-		// No race here: nothing reverts live drift, so every step is deterministic
-		// and can be asserted directly.
-		// ---------------------------------------------------------------------
-		By("switching Argo CD to automated sync with selfHeal DISABLED (the recommended shared-field mode)")
-		recommendedApp := run.baseAppConfig()
-		recommendedApp.Automated = true
-		recommendedApp.Prune = true
-		recommendedApp.SelfHeal = false
-		run.applyArgoApp(recommendedApp)
-
-		By("committing a fourth IceCreamOrder through normal GitOps")
-		run.writeLiveOrder(iceCreamOrderFile{
-			Name:         run.recommendedOrderName,
+			Name:         run.editedOrderName,
 			Namespace:    testNs,
 			CustomerName: "Dana",
 			Container:    "Cone",
 			Scoops:       []iceCreamScoop{{Flavor: "Vanilla", Quantity: 2}},
 			Toppings:     []string{"Sprinkles"},
 		})
-		Expect(run.commitAllAndPush("argo bi-directional: add shared-field selfHeal-off order")).To(Succeed())
+		Expect(run.commitAllAndPush("argo bi-directional: add the order two edits will race on")).To(Succeed())
+		run.waitForReverserSync(run.gitHEAD(), "ForeignCommit")
+		run.waitForOrderContainer(run.editedOrderName, "Cone")
+		baseline := run.waitForStableRemoteCommitCount(biStableCountMediumWait)
+		lastSync := run.operationFinishedAt()
 
-		By("letting the webhook drive the sync of the fourth order")
-		Eventually(func(g Gomega) {
-			value, containerErr := run.orderContainer(run.recommendedOrderName)
-			g.Expect(containerErr).NotTo(HaveOccurred())
-			g.Expect(value).To(Equal("Cone"))
-		}, argoWebhookSyncTimeout, biPollInterval).Should(Succeed(),
-			"the webhook should drive Argo CD to auto-sync the fourth commit")
+		By("editing the order through the API, and again seconds after that edit is pushed")
+		run.patchOrderContainer(run.editedOrderName, "Cup")
+		run.waitForCommittedOrderContainer(run.editedOrderName, "Cup")
+		run.patchOrderContainer(run.editedOrderName, "WaffleBowl")
+		run.waitForCommittedOrderContainer(run.editedOrderName, "WaffleBowl")
 
-		// --- API side of the shared field: captured, not reverted ---
-		By("changing the shared field spec.container through the Kubernetes API")
-		run.patchOrderContainer(run.recommendedOrderName, "WaffleBowl")
-
-		By("verifying selfHeal:false leaves the API edit in place (the contrast with phase 2)")
-		// Long enough that a self-heal would certainly have fired had it been on;
-		// the reverser committing WaffleBowl (which fires the webhook) only ever
-		// converges Argo TO WaffleBowl, never reverts it.
+		By("the later value survives, with no commit after it, and Argo CD is never asked to sync")
 		Consistently(func(g Gomega) {
-			g.Expect(run.orderContainer(run.recommendedOrderName)).To(Equal("WaffleBowl"))
-		}, argoNoSelfHealWindow, biPollInterval).Should(Succeed(),
-			"with selfHeal off, Argo must not revert the live edit before the reverser captures it")
-
-		By("verifying gitops-reverser captures the API edit to Git")
-		Eventually(func(g Gomega) {
+			g.Expect(run.orderContainer(run.editedOrderName)).To(Equal("WaffleBowl"))
 			g.Expect(run.gitPull()).To(Succeed())
-			g.Expect(run.readCommittedOrder(run.recommendedOrderName)).To(ContainSubstring("container: WaffleBowl"))
-		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
+			count, err := run.gitMainCommitCount()
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(count).To(Equal(baseline+2),
+				"a sync of the first edit's commit over the second edit would show as more commits")
+			g.Expect(run.operationFinishedAt()).To(Equal(lastSync),
+				"GitOps Reverser's own commits owe Argo CD no sync: there is no catch-up")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-		// --- Git side of the SAME shared field: applied back through the webhook ---
-		By("changing the SAME field spec.container from the Git side and pushing")
+		By("and Argo CD, which only compared, finds Git and the cluster in agreement")
+		Eventually(func(g Gomega) {
+			g.Expect(run.syncStatus(g)).To(Equal("Synced"))
+		}, argoSyncTimeout, biPollInterval).Should(Succeed())
+	})
+
+	// The standard is full control, so an Application with automated sync on is a
+	// configuration error, not a mode: the GitTarget reports it and stalls, and GitOps
+	// Reverser refuses every request to it. Argo CD's automated sync still applies the
+	// push on its own; what must never appear is a sync GitOps Reverser started.
+	It("never syncs an Application with automated sync on", func() {
+		By("turning automated sync on")
+		automated := run.baseAppConfig()
+		automated.Automated = true
+		run.applyArgoApp(automated)
+		// The applier is read on the GitTarget's reconcile, not watched; a converged
+		// target reconciles every few minutes, so ask for one now.
+		_, err := kubectlRunInNamespace(testNs, "annotate", "gittarget", run.gitTargetName, "--overwrite",
+			"reconcile.configbutler.ai/requestedAt="+strconv.FormatInt(time.Now().UnixNano(), 10))
+		Expect(err).NotTo(HaveOccurred(), "failed to request a GitTarget reconcile")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierConfigured", "False",
+			"AutomatedSyncEnabled", "has automated sync on")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "Stalled", "True",
+			"AutomatedSyncEnabled", "")
+
+		_, requestedBefore := run.gitTargetApplierStatus(Default)
+
+		By("pushing a Git-side change, which GitOps Reverser hears of and refuses to sync")
 		run.writeLiveOrder(iceCreamOrderFile{
-			Name:         run.recommendedOrderName,
+			Name:         run.automatedOrderName,
 			Namespace:    testNs,
-			CustomerName: "Dana",
-			// A different valid enum value from the API-side WaffleBowl and the
-			// initial Cone; spec.container is constrained to {Cup, Cone, WaffleBowl}.
-			Container: "Cup",
-			Scoops:    []iceCreamScoop{{Flavor: "Vanilla", Quantity: 2}},
-			Toppings:  []string{"Sprinkles"},
+			CustomerName: "Bob",
+			Container:    "Cone",
+			Scoops:       []iceCreamScoop{{Flavor: "Strawberry", Quantity: 1}},
+			Toppings:     []string{"WhippedCream"},
 		})
-		Expect(run.commitAllAndPush("argo bi-directional: git-side change to the shared field")).To(Succeed())
-
-		By("verifying the webhook applies the Git-side change to the cluster — the field is still GitOps-driven")
+		Expect(run.commitAllAndPush("argo bi-directional: a push under automated sync")).To(Succeed())
+		head := run.gitHEAD()
 		Eventually(func(g Gomega) {
-			value, containerErr := run.orderContainer(run.recommendedOrderName)
-			g.Expect(containerErr).NotTo(HaveOccurred())
-			g.Expect(value).To(Equal("Cup"))
-		}, argoWebhookSyncTimeout, biPollInterval).Should(Succeed(),
-			"a Git-side change to the shared field must reach the cluster (ignoreDifferences would have blocked it)")
+			failed := gitTargetEventMessages(g, testNs, run.gitTargetName, "ApplyRequestFailed")
+			g.Expect(failed).To(ContainSubstring("(ForeignCommit)"))
+			g.Expect(failed).To(ContainSubstring("has automated sync on"))
+		}, argoRequestedSyncTimeout, biPollInterval).Should(Succeed(),
+			"the ForeignCommit is decided, and refused at the Application")
 
-		By("verifying both loops settle in agreement on the shared field")
+		By("no sync GitOps Reverser started ever names that commit")
+		Consistently(func(g Gomega) {
+			initiator, revision := run.lastOperation(g)
+			if initiator == argoReverserInitiator {
+				g.Expect(revision).NotTo(Equal(head),
+					"GitOps Reverser must not sync an Application that syncs on its own")
+			}
+			_, requested := run.gitTargetApplierStatus(g)
+			g.Expect(requested).To(Equal(requestedBefore), "no request was delivered")
+		}, argoNoSyncWindow, biPollInterval).Should(Succeed())
+	})
+})
+
+// A refused edit on a target with onRefusal: Reapply is reverted by an Argo CD sync,
+// as it is by a Flux Kustomization in refusal_reapply_e2e_test.go, and with the same
+// refusal: corpus shape 8, a live edit to an env var a kustomize base owns, which no
+// declaration in the overlay can express. Its own repository, Application and
+// namespace, because a second Application on the first spec's path would fight it
+// over the tracking-id.
+var _ = Describe("Bi Directional (Argo CD) refusal", Label("bi-directional", "argocd"), Ordered, func() {
+	const overlayPath = "apps/checkout/overlays/prod"
+	var (
+		run    argoBiDirectionalRun
+		testNs string
+		repo   *RepoArtifacts
+	)
+
+	BeforeAll(func() {
+		skipUnlessBiDirectionalEnabled()
+		requireArgoCDInstalled()
+
+		testNs = testNamespaceFor("argo-refusal")
+		_, _ = kubectlRun("create", "namespace", testNs)
+		repo = SetupRepo(resolveE2EContext(), testNs, fmt.Sprintf("e2e-argo-refusal-%d", GinkgoRandomSeed()))
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+		applySOPSAgeKeyToNamespace(testNs)
+
+		run = newArgoBiDirectionalRun(testNs, repo, "argo-refusal")
+		run.livePath = overlayPath
+		run.applyArgoRepoSecret()
+		createGitProviderWithURLInNamespace(run.gitProviderName, testNs, repo.GitSecretHTTP, run.repoURL)
+		verifyResourceStatus("gitprovider", run.gitProviderName, testNs, "True", "Succeeded", "")
+	})
+
+	AfterAll(func() {
+		if !biDirectionalEnabled() {
+			return
+		}
+		cleanupNamespacedResource(run.argoNs, "application.argoproj.io", run.appName)
+		cleanupNamespacedResource(run.argoNs, "secret", run.repoSecretName)
+		cleanupWatchRule(run.watchRuleName, testNs)
+		cleanupGitTarget(run.gitTargetName, testNs)
+		cleanupNamespacedResource(testNs, "gitprovider", run.gitProviderName)
+		cleanupNamespace(testNs)
+	})
+
+	It("reverts a refused edit with an Argo CD sync", func() {
+		By("seeding a base-and-overlay folder that renders into this test's namespace")
+		seedFolder := writeBaseOwnedFieldFolder(testNs)
+		DeferCleanup(func() { _ = os.RemoveAll(seedFolder) })
+		seedRenderedFolderIntoRepo(repo, testNs, seedFolder, "apps/checkout")
+		Expect(run.gitPull()).To(Succeed())
+
+		// Before any GitTarget names it, the Application is deployed the way a human
+		// would: one manual sync. Every sync after this one is GitOps Reverser's.
+		By("deploying the overlay once with a manual sync, automated sync off")
+		app := run.baseAppConfig()
+		app.Kustomize = true
+		run.applyArgoApp(app)
+		run.syncToRevision(remoteHeadSHA(Default, repo.CheckoutDir))
 		Eventually(func(g Gomega) {
-			g.Expect(run.gitPull()).To(Succeed())
-			g.Expect(run.readCommittedOrder(run.recommendedOrderName)).To(ContainSubstring("container: Cup"))
-		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
-		recommendedSettled, err := run.gitMainCommitCount()
-		Expect(err).NotTo(HaveOccurred())
-		run.consistentlyExpectRemoteCommitCount(recommendedSettled, biStableCountMediumWait)
-		Expect(run.orderContainer(run.recommendedOrderName)).To(Equal("Cup"))
+			g.Expect(checkoutLogLevel(g, testNs)).To(Equal("info"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("drifting the base-owned env var away from what Git says")
+		_, err := kubectlRunInNamespace(testNs, "set", "env", "deployment/checkout", "LOG_LEVEL=debug")
+		Expect(err).NotTo(HaveOccurred(), "failed to drift the base-owned env var")
+		emptyBefore := emptyCommitCount(repo.CheckoutDir)
+
+		By("creating the GitTarget on the overlay, naming the Application and asking it to reapply")
+		createGitTarget(run.gitTargetName, testNs, run.gitProviderName, overlayPath, "main")
+		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName, "--type=merge", "-p",
+			fmt.Sprintf(`{"spec":{"applier":{"applicationRef":{"namespace":%q,"name":%q}},"onRefusal":"Reapply"}}`,
+				run.argoNs, run.appName))
+		Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier and spec.onRefusal")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierConfigured", "True", "Succeeded", "")
+		Expect(applyFromTemplate("test/e2e/templates/manager/watchrule-resources.tmpl", struct {
+			Name            string
+			Namespace       string
+			DestinationName string
+			Resources       string
+		}{Name: run.watchRuleName, Namespace: testNs, DestinationName: run.gitTargetName,
+			Resources: `"deployments"`},
+			testNs)).To(Succeed(), "failed to apply the WatchRule")
+
+		By("the write is refused at the boundary, and Argo CD is asked to sync the tip")
+		waitForGitTargetGitPathRefused(run.gitTargetName, testNs, "WriteBoundaryRefused")
+		run.waitForReverserSync("", "Refusal")
+		_, pinned := run.lastOperation(Default)
+		Expect(pinned).To(Equal(remoteHeadSHA(Default, repo.CheckoutDir)), "the sync applies the tip")
+		Eventually(func(g Gomega) {
+			g.Expect(checkoutLogLevel(g, testNs)).To(Equal("info"),
+				"a refused edit on a Reapply target must be reverted by its Application")
+		}, 3*time.Minute, 2*time.Second).Should(Succeed())
+		Expect(emptyCommitCount(repo.CheckoutDir)).To(Equal(emptyBefore),
+			"the request goes to the applier; nothing moves the branch for it")
 	})
 })
 
@@ -513,25 +437,25 @@ func argoNamespace() string {
 	return "argocd"
 }
 
-func newArgoBiDirectionalRun(testNs string) argoBiDirectionalRun {
+func newArgoBiDirectionalRun(testNs string, repo *RepoArtifacts, prefix string) argoBiDirectionalRun {
 	testID := strconv.FormatInt(time.Now().UnixNano(), 10)
 	return argoBiDirectionalRun{
-		gitCheckout:          newGitCheckout(argoBiDirectionalRepo, testNs),
-		testID:               testID,
-		testNs:               testNs,
-		argoNs:               argoNamespace(),
-		repoName:             argoBiDirectionalRepo.RepoName,
-		repoURL:              argoBiDirectionalRepo.RepoURLHTTP,
-		appName:              fmt.Sprintf("argo-bi-app-%s", testID),
-		repoSecretName:       fmt.Sprintf("argo-bi-repo-%s", testID),
-		gitProviderName:      fmt.Sprintf("argo-bi-provider-%s", testID),
-		gitTargetName:        fmt.Sprintf("argo-bi-target-%s", testID),
-		watchRuleName:        fmt.Sprintf("argo-bi-watchrule-%s", testID),
-		livePath:             fmt.Sprintf("argo-bi-directional/%s/live", testID),
-		syncedOrderName:      fmt.Sprintf("argo-alice-order-%s", testID),
-		selfHealOrderName:    fmt.Sprintf("argo-bob-order-%s", testID),
-		ignoredOrderName:     fmt.Sprintf("argo-charlie-order-%s", testID),
-		recommendedOrderName: fmt.Sprintf("argo-dana-order-%s", testID),
+		gitCheckout:        newGitCheckout(repo, testNs),
+		testID:             testID,
+		testNs:             testNs,
+		argoNs:             argoNamespace(),
+		repoName:           repo.RepoName,
+		repoURL:            repo.RepoURLHTTP,
+		appName:            fmt.Sprintf("%s-app-%s", prefix, testID),
+		repoSecretName:     fmt.Sprintf("%s-repo-%s", prefix, testID),
+		gitProviderName:    fmt.Sprintf("%s-provider-%s", prefix, testID),
+		gitTargetName:      fmt.Sprintf("%s-target-%s", prefix, testID),
+		watchRuleName:      fmt.Sprintf("%s-watchrule-%s", prefix, testID),
+		receiverSecretName: fmt.Sprintf("%s-receiver-%s", prefix, testID),
+		livePath:           fmt.Sprintf("argo-bi-directional/%s/live", testID),
+		syncedOrderName:    fmt.Sprintf("argo-alice-order-%s", testID),
+		editedOrderName:    fmt.Sprintf("argo-dana-order-%s", testID),
+		automatedOrderName: fmt.Sprintf("argo-bob-order-%s", testID),
 	}
 }
 
@@ -564,15 +488,22 @@ func (r argoBiDirectionalRun) waitForCRDEstablished() {
 	}, 20*time.Second, biPollInterval).Should(Succeed())
 }
 
-// startReverserPipeline brings up GitProvider -> GitTarget -> WatchRule on the
-// shared live path. Called after the branch exists, not in BeforeAll.
-func (r argoBiDirectionalRun) startReverserPipeline() {
+// startReverserPipeline brings up GitProvider (with a receiver Gitea pushes to) ->
+// GitTarget (naming the Application as its applier) -> WatchRule on the shared live
+// path. Called after the branch and the Application exist. It returns the receiver
+// hook's id.
+func (r argoBiDirectionalRun) startReverserPipeline() int64 {
 	GinkgoHelper()
 	createGitProviderWithURLInNamespace(
 		r.gitProviderName, r.testNs, argoBiDirectionalRepo.GitSecretHTTP, r.repoURL)
 	verifyResourceStatus("gitprovider", r.gitProviderName, r.testNs, "True", "Succeeded", "")
+	hookID := registerOperatorReceiver(r.testNs, r.gitProviderName, r.receiverSecretName, r.repoName)
 
 	createGitTarget(r.gitTargetName, r.testNs, r.gitProviderName, r.livePath, "main")
+	_, err := kubectlRunInNamespace(r.testNs, "patch", "gittarget", r.gitTargetName, "--type=merge", "-p",
+		fmt.Sprintf(`{"spec":{"applier":{"applicationRef":{"namespace":%q,"name":%q}}}}`, r.argoNs, r.appName))
+	Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier")
+	verifyResourceCondition("gittarget", r.gitTargetName, r.testNs, "ApplierConfigured", "True", "Succeeded", "")
 
 	Expect(applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", struct {
 		Name            string
@@ -593,6 +524,7 @@ func (r argoBiDirectionalRun) startReverserPipeline() {
 	// applies anything; otherwise the first live object could be folded into an
 	// unattributed baseline reconcile instead of arriving as its own event.
 	waitForStreamsRunning(r.gitTargetName, r.testNs)
+	return hookID
 }
 
 func (r argoBiDirectionalRun) applyArgoRepoSecret() {
@@ -633,8 +565,7 @@ func (r argoBiDirectionalRun) configureArgoWebhookSecret() {
 
 // ensureArgoWebhook registers a Gitea webhook that notifies argocd-server on push,
 // so Argo refreshes immediately instead of waiting for its timed reconciliation.
-// This mirrors the Flux receiver webhook wiring (ensureRepoWebhook), but Argo has
-// a single /api/webhook endpoint rather than a per-repo Receiver CR.
+// With automated sync off, a refresh only compares: the specs show it never syncs.
 //
 // The match is exact host+path: Argo compiles a regex from the payload's
 // repository HTMLURL (derived from Gitea's ROOT_URL) and tests it against the
@@ -664,12 +595,13 @@ func (r argoBiDirectionalRun) ensureArgoWebhook() {
 	Expect(err).NotTo(HaveOccurred(), "failed to create the Gitea -> Argo CD webhook")
 }
 
-// syncToRevision drives a sync through the Application's `.operation` field —
-// the kubectl-only equivalent of `argocd app sync --revision <sha>`. Passing the
-// revision explicitly means the sync does not depend on a refresh having landed.
+// syncToRevision is a human pressing Sync: it sets the Application's `.operation`
+// to a sync of revision, initiated by "e2e", the kubectl-only equivalent of
+// `argocd app sync --revision <sha>`. Only the refusal spec's setup uses it, before
+// any GitTarget names the Application.
 func (r argoBiDirectionalRun) syncToRevision(revision string) {
 	GinkgoHelper()
-	By(fmt.Sprintf("syncing Argo CD Application %q to revision %s", r.appName, revision[:8]))
+	By(fmt.Sprintf("syncing Argo CD Application %q to revision %s by hand", r.appName, revision[:8]))
 
 	// Argo clears `.operation` when it finishes and leaves the result in
 	// `.status.operationState`. Without pinning the previous finishedAt, a
@@ -689,33 +621,85 @@ func (r argoBiDirectionalRun) syncToRevision(revision string) {
 	Eventually(func(g Gomega) {
 		app, err := r.appObject()
 		g.Expect(err).NotTo(HaveOccurred())
-
-		finishedAt, _, err := unstructured.NestedString(app.Object, "status", "operationState", "finishedAt")
-		g.Expect(err).NotTo(HaveOccurred())
+		finishedAt, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "finishedAt")
 		g.Expect(finishedAt).NotTo(Equal(previousFinishedAt), "Argo CD has not finished a NEW sync operation yet")
-
-		phase, _, err := unstructured.NestedString(app.Object, "status", "operationState", "phase")
-		g.Expect(err).NotTo(HaveOccurred())
+		phase, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "phase")
 		g.Expect(phase).To(Equal("Succeeded"), "Argo CD sync operation did not succeed")
-
-		synced, _, err := unstructured.NestedString(app.Object, "status", "operationState", "syncResult", "revision")
-		g.Expect(err).NotTo(HaveOccurred())
+		synced, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "syncResult", "revision")
 		g.Expect(synced).To(Equal(revision), "Argo CD synced a different revision")
-
-		// A sync that applies nothing still reports Succeeded. Guard against the
-		// empty-path failure mode: if the reverser pruned the manifest before Argo
-		// read it, `resources` is empty and the spec would otherwise sail past.
-		resources, found, err := unstructured.NestedSlice(
-			app.Object, "status", "operationState", "syncResult", "resources")
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(found).To(BeTrue(), "Argo CD sync produced no syncResult.resources")
-		g.Expect(resources).NotTo(BeEmpty(), "Argo CD synced zero resources — is the source path empty?")
 	}, argoSyncTimeout, biPollInterval).Should(Succeed())
+}
+
+// waitForReverserSync waits for a sync GitOps Reverser started, for reason, to
+// succeed: initiated by gitops-reverser with automated: true, carrying the reason in
+// its info, and pinned to revision (an empty revision accepts any commit), which is
+// also the revision Argo CD synced.
+func (r argoBiDirectionalRun) waitForReverserSync(revision, reason string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		app, err := r.appObject()
+		g.Expect(err).NotTo(HaveOccurred())
+		state, found, _ := unstructured.NestedMap(app.Object, "status", "operationState")
+		g.Expect(found).To(BeTrue(), "Argo CD has run no operation yet")
+
+		username, _, _ := unstructured.NestedString(state, "operation", "initiatedBy", "username")
+		automated, _, _ := unstructured.NestedBool(state, "operation", "initiatedBy", "automated")
+		g.Expect(username).To(Equal(argoReverserInitiator), "the last sync was not GitOps Reverser's")
+		g.Expect(automated).To(BeTrue(), "GitOps Reverser's syncs stand in for automated sync")
+		g.Expect(operationInfo(state, "gitops-reverser reason")).To(Equal(reason))
+
+		pinned, _, _ := unstructured.NestedString(state, "operation", "sync", "revision")
+		synced, _, _ := unstructured.NestedString(state, "syncResult", "revision")
+		g.Expect(pinned).NotTo(BeEmpty(), "a sync GitOps Reverser starts is always pinned")
+		if revision != "" {
+			g.Expect(pinned).To(Equal(revision), "the sync must be pinned to the commit GitOps Reverser checked")
+		}
+		g.Expect(synced).To(Equal(pinned), "Argo CD synced a revision other than the pinned one")
+
+		phase, _, _ := unstructured.NestedString(state, "phase")
+		g.Expect(phase).To(Equal("Succeeded"), "the sync GitOps Reverser asked for did not succeed")
+		resources, _, _ := unstructured.NestedSlice(state, "syncResult", "resources")
+		g.Expect(resources).NotTo(BeEmpty(), "Argo CD synced zero resources — is the source path empty?")
+	}, argoRequestedSyncTimeout, biPollInterval).Should(Succeed())
+}
+
+// operationInfo is the value of the named entry in an operation state's info.
+func operationInfo(state map[string]any, name string) string {
+	info, _, _ := unstructured.NestedSlice(state, "operation", "info")
+	for _, item := range info {
+		entry, ok := item.(map[string]any)
+		if ok && entry["name"] == name {
+			value, _ := entry["value"].(string)
+			return value
+		}
+	}
+	return ""
+}
+
+// lastOperation is who started the Application's last operation, and the revision
+// it was pinned to; both empty when it has run none.
+func (r argoBiDirectionalRun) lastOperation(g Gomega) (string, string) {
+	app, err := r.appObject()
+	g.Expect(err).NotTo(HaveOccurred())
+	username, _, _ := unstructured.NestedString(app.Object,
+		"status", "operationState", "operation", "initiatedBy", "username")
+	revision, _, _ := unstructured.NestedString(app.Object,
+		"status", "operationState", "operation", "sync", "revision")
+	return username, revision
+}
+
+// gitTargetApplierStatus is the GitTarget's status.applier: the reason and the
+// commit of the last request delivered.
+func (r argoBiDirectionalRun) gitTargetApplierStatus(g Gomega) (string, string) {
+	out, err := kubectlRunInNamespace(r.testNs, "get", "gittarget", r.gitTargetName,
+		"-o", "jsonpath={.status.applier.reason}|{.status.applier.requestedCommit}")
+	g.Expect(err).NotTo(HaveOccurred())
+	reason, commit, _ := strings.Cut(strings.TrimSpace(out), "|")
+	return reason, commit
 }
 
 // operationFinishedAt returns "" when the Application has never run an operation.
 func (r argoBiDirectionalRun) operationFinishedAt() string {
-	GinkgoHelper()
 	output, err := kubectlRunInNamespace(r.argoNs, "get", "application.argoproj.io", r.appName,
 		"-o", "jsonpath={.status.operationState.finishedAt}")
 	if err != nil {
@@ -742,13 +726,10 @@ func (r argoBiDirectionalRun) appObject() (*unstructured.Unstructured, error) {
 	return &obj, nil
 }
 
-func (r argoBiDirectionalRun) syncStatus() string {
-	GinkgoHelper()
+func (r argoBiDirectionalRun) syncStatus(g Gomega) string {
 	app, err := r.appObject()
-	Expect(err).NotTo(HaveOccurred())
-
-	status, _, err := unstructured.NestedString(app.Object, "status", "sync", "status")
-	Expect(err).NotTo(HaveOccurred())
+	g.Expect(err).NotTo(HaveOccurred())
+	status, _, _ := unstructured.NestedString(app.Object, "status", "sync", "status")
 	return status
 }
 
@@ -791,35 +772,21 @@ func (r argoBiDirectionalRun) orderContainer(name string) (string, error) {
 	return value, nil
 }
 
-func (r argoBiDirectionalRun) orderScoopFlavor(name string) (string, error) {
-	order, err := r.liveOrder(name)
-	if err != nil {
-		return "", err
-	}
-	scoops, found, err := unstructured.NestedSlice(order.Object, "spec", "scoops")
-	if err != nil {
-		return "", err
-	}
-	if !found || len(scoops) == 0 {
-		return "", fmt.Errorf("IceCreamOrder %q has no scoops", name)
-	}
-	first, ok := scoops[0].(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("IceCreamOrder %q has a malformed scoop", name)
-	}
-	flavor, ok := first["flavor"].(string)
-	if !ok {
-		return "", fmt.Errorf("IceCreamOrder %q scoop has no flavor", name)
-	}
-	return flavor, nil
-}
-
 func (r argoBiDirectionalRun) waitForOrderContainer(name, container string) {
 	GinkgoHelper()
 	Eventually(func(g Gomega) {
 		value, err := r.orderContainer(name)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(value).To(Equal(container))
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
+}
+
+// waitForCommittedOrderContainer waits for the order's committed file to hold container.
+func (r argoBiDirectionalRun) waitForCommittedOrderContainer(name, container string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		g.Expect(r.gitPull()).To(Succeed())
+		g.Expect(r.readCommittedOrder(name)).To(ContainSubstring("container: " + container))
 	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
@@ -830,20 +797,13 @@ func (r argoBiDirectionalRun) patchOrderContainer(name, container string) {
 	Expect(err).NotTo(HaveOccurred(), "failed to patch IceCreamOrder through the API")
 }
 
-func (r argoBiDirectionalRun) patchOrderScoop(name, flavor string, quantity int) {
-	GinkgoHelper()
-	_, err := kubectlRunInNamespace(r.testNs, "patch", iceCreamCRDName(crdGroupArgoBiDirectional), name,
-		"--type=merge", "--patch",
-		fmt.Sprintf(`{"spec":{"scoops":[{"flavor":%q,"quantity":%d}]}}`, flavor, quantity))
-	Expect(err).NotTo(HaveOccurred(), "failed to patch IceCreamOrder scoops through the API")
-}
-
 func (r argoBiDirectionalRun) liveOrderPath(name string) string {
 	return r.repoPath(r.livePath, iceCreamInstancePath(crdGroupArgoBiDirectional, r.testNs, name))
 }
 
 func (r argoBiDirectionalRun) writeLiveOrder(order iceCreamOrderFile) {
 	GinkgoHelper()
+	Expect(r.gitPull()).To(Succeed(), "the Git-side change is made on the current tip")
 	content, err := renderTemplate("test/e2e/templates/icecreamorder-instance.tmpl", struct {
 		Name         string
 		Namespace    string
