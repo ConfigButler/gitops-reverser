@@ -105,3 +105,37 @@ func readTriggerOperation(g Gomega, namespace, resource, name string) triggerOpe
 	}
 	return triggerOperation{Reason: parts[0], Commit: parts[1], Phase: parts[2], Token: parts[3]}
 }
+
+// fluxSourceStamp is the reconcile.fluxcd.io/requestedAt of a GitRepository in flux-system: set
+// only when something asked it to fetch.
+func fluxSourceStamp(name string) string {
+	GinkgoHelper()
+	out, err := kubectlRunInNamespace("flux-system", "get", "gitrepository", name, "-o",
+		`jsonpath={.metadata.annotations.reconcile\.fluxcd\.io/requestedAt}`)
+	Expect(err).NotTo(HaveOccurred())
+	return strings.TrimSpace(out)
+}
+
+// kustomizationSuspended reads a flux-system Kustomization's spec.suspend.
+func kustomizationSuspended(g Gomega, name string) bool {
+	out, err := kubectlRunInNamespace("flux-system", "get", "kustomization", name, "-o", "jsonpath={.spec.suspend}")
+	g.Expect(err).NotTo(HaveOccurred())
+	return strings.TrimSpace(out) == "true"
+}
+
+// kustomizationManagers lists the field managers of a flux-system Kustomization's managedFields.
+func kustomizationManagers(g Gomega, name string) string {
+	out, err := kubectlRunInNamespace("flux-system", "get", "kustomization", name, "-o",
+		"jsonpath={.metadata.managedFields[*].manager}", "--show-managed-fields")
+	g.Expect(err).NotTo(HaveOccurred())
+	return strings.TrimSpace(out)
+}
+
+// eventMessages is every message of the Events with reason recorded on the object kind/name.
+func eventMessages(g Gomega, namespace, kind, name, reason string) string {
+	out, err := kubectlRunInNamespace(namespace, "get", "events", "--field-selector",
+		"involvedObject.kind="+kind+",involvedObject.name="+name+",reason="+reason,
+		"-o", "jsonpath={.items[*].message}")
+	g.Expect(err).NotTo(HaveOccurred())
+	return out
+}

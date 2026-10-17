@@ -4,6 +4,7 @@ package applier
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -22,11 +23,13 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/applier/fluxsim"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -200,6 +203,7 @@ type dispatcherFixture struct {
 	dispatcher *Dispatcher
 	control    client.Client
 	source     *sourceStub
+	sim        *fluxsim.Sim
 	recorder   *record.FakeRecorder
 	reader     *sdkmetric.ManualReader
 }
@@ -216,11 +220,19 @@ func newDispatcherFixture(t *testing.T, targets []client.Object, sourceObjs ...r
 		WithObjects(append(append(controlPlane(), targets...), triggersFor(targets)...)...).Build()
 
 	source := &sourceStub{client: newSourceClient(sourceObjs...)}
+	sim := fluxsim.New(t, source.client)
+	for _, obj := range sourceObjs {
+		if u, ok := obj.(*unstructured.Unstructured); ok && u.GetKind() == kindGitRepository {
+			sim.Fetches(types.NamespacedName{Namespace: u.GetNamespace(), Name: u.GetName()}, "main@sha1:"+testCommit)
+		}
+	}
 	recorder := record.NewFakeRecorder(64)
 	d := NewDispatcher(controlClient, source.get, recorder, logr.Discard())
-	d.Now = func() time.Time { return stampTime }
+	d.Now = fluxsim.TickingClock(stampTime)
 	d.PollInterval, d.UnresolvedPollMax = time.Millisecond, 5*time.Millisecond
-	return &dispatcherFixture{dispatcher: d, control: controlClient, source: source, recorder: recorder, reader: reader}
+	return &dispatcherFixture{
+		dispatcher: d, control: controlClient, source: source, sim: sim, recorder: recorder, reader: reader,
+	}
 }
 
 // attempt carries out one request synchronously, as the dispatcher's goroutine does, up to the
@@ -291,23 +303,40 @@ func (f *dispatcherFixture) events() []string {
 	}
 }
 
+// patches lists the writes to the source cluster, as "resource namespace", with "(suspend=...)"
+// for a server-side apply of a Kustomization's spec.suspend.
 func (f *dispatcherFixture) patches() []string {
 	var out []string
 	for _, action := range f.source.client.Actions() {
-		if action.GetVerb() == "patch" {
-			out = append(out, action.GetResource().Resource+" "+action.GetNamespace())
+		if action.GetVerb() != "patch" {
+			continue
 		}
+		write := action.GetResource().Resource + " " + action.GetNamespace()
+		if patch := action.(k8stesting.PatchActionImpl); patch.PatchType == types.ApplyPatchType {
+			var body map[string]any
+			_ = json.Unmarshal(patch.Patch, &body)
+			suspend, _, _ := unstructured.NestedBool(body, "spec", "suspend")
+			write += fmt.Sprintf(" (suspend=%t)", suspend)
+		}
+		out = append(out, write)
 	}
 	return out
 }
 
-// behindSource is a Kustomization flux-system/checkout whose GitRepository on testBranch holds an
-// older commit than testCommit, so any request that is sent stamps the GitRepository.
+// behindSource is a suspended Kustomization flux-system/checkout whose GitRepository on testBranch
+// holds an older commit than testCommit, so a request fetches before it resumes.
 func behindSource() []runtime.Object {
+	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
+	_ = unstructured.SetNestedField(ks.Object, true, "spec", "suspend")
 	return []runtime.Object{
-		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+		ks,
 		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+olderCommit),
 	}
+}
+
+// fetchedAndResumed is the writes of a request that fetched and resumed flux-system/checkout.
+var fetchedAndResumed = []string{
+	"gitrepositories " + fluxSystemNS, "kustomizations " + fluxSystemNS + " (suspend=false)",
 }
 
 // TestDispatcher_AsksOnceForEveryTarget: one attempt asks its applier once for all its targets,
@@ -328,9 +357,8 @@ func TestDispatcher_AsksOnceForEveryTarget(t *testing.T) {
 
 	res := f.attempt(req)
 
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested, Token: requestToken(stampTime)}, res,
-		"the report carries the request's token, for the trigger's status.operation")
-	assert.Equal(t, []string{"gitrepositories " + fluxSystemNS}, f.patches(), "one stamp for the applier")
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, res)
+	assert.Equal(t, fetchedAndResumed, f.patches(), "one fetch and one resume for the applier")
 	assert.Equal(t, []string{v1alpha3.DefaultClusterProviderName}, f.source.clusters)
 	assert.ElementsMatch(t, []string{
 		"Normal ApplyRequested asked Kustomization flux-system/checkout to apply 4f2c1ab9 (Refusal)",
@@ -352,7 +380,8 @@ func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
 
 	assert.Equal(t, git.ApplyRequested, f.attempt(request(own, v1alpha3.ApplyReasonForeignCommit, "c")).Outcome)
 	assert.Equal(t, []string{"prod-eu-1"}, f.source.clusters)
-	assert.Equal(t, []string{"gitrepositories " + targetNS}, f.patches())
+	assert.Equal(t, []string{"gitrepositories " + targetNS, "kustomizations " + targetNS + " (suspend=false)"},
+		f.patches())
 }
 
 // appliedFrom puts the applier of a GitTarget's trigger in the cluster another ClusterProvider names.
@@ -514,7 +543,7 @@ func TestDispatcher_ATargetThatChangedAsksNothing(t *testing.T) {
 }
 
 // TestDispatcher_AStaleDecisionAsksNothing: the worker's decision is checked again just before the
-// patch, and an attempt whose branch moved on or became busy reports Stale and stamps nothing.
+// patch, and an attempt whose branch moved on or became busy reports Stale and resumes nothing.
 func TestDispatcher_AStaleDecisionAsksNothing(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{reapplying(gitTarget("a", checkoutRef(), ""))},
 		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
@@ -529,13 +558,16 @@ func TestDispatcher_AStaleDecisionAsksNothing(t *testing.T) {
 	assert.Equal(t, int64(1), f.count(v1alpha3.ApplyReasonRefusal, outcomeStale))
 }
 
-// TestDispatcher_CatchUpAlreadyCurrent: a CatchUp the applier already satisfies counts as sent and
-// records nothing, since nothing was asked of it.
+// TestDispatcher_CatchUpAlreadyCurrent: a CatchUp the applier already satisfies (suspended, with
+// the commit in its artifact and applied) counts as sent and records nothing, since nothing was
+// asked of it.
 func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {
+	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
+	_ = unstructured.SetNestedField(ks.Object, true, "spec", "suspend")
+	_ = unstructured.SetNestedField(ks.Object, "main@sha1:"+testCommit, "status", "lastAppliedRevision")
 	f := newDispatcherFixture(t,
 		[]client.Object{gitTarget("a", checkoutRef(), "")},
-		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
-		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit),
+		ks, gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit),
 	)
 
 	res := f.attempt(request(checkout, v1alpha3.ApplyReasonCatchUp, "a"))
@@ -543,7 +575,6 @@ func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {
 	assert.Equal(t, git.ApplyCurrent, res.Outcome)
 	assert.Empty(t, f.patches())
 	assert.Empty(t, f.events())
-	assert.Empty(t, res.Token, "nothing was asked")
 }
 
 // TestDispatcher_RequestApplyReportsFromItsOwnGoroutine: RequestApply returns at once and the
@@ -605,55 +636,116 @@ func TestDescribeCommit(t *testing.T) {
 }
 
 // TestDispatcher_ARequestedApplyIsFollowedUntilFluxFinished: the worker's attempt is the apply
-// window, so a requested apply reports Requested, then nothing, until Flux has finished it.
+// window, so a requested apply reports each step of the suspended lifecycle: Requested once the
+// Kustomization is resumed, Running until the reconcile that read the resume's token ended, Settling
+// once it is suspended again, and Succeeded only once that suspend's token is handled.
 func TestDispatcher_ARequestedApplyIsFollowedUntilFluxFinished(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	held := f.sim.HoldNextApply()
 
 	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested, Token: requestToken(stampTime)},
-		next(t, reports))
-	quiet(t, reports, "before Flux finished the apply")
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, next(t, reports))
+	<-held
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRunning}, next(t, reports))
+	quiet(t, reports, "while Flux is still applying")
 
-	setStatus(t, f.source.client, kustomizationGVR(), types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"},
-		"main@sha1:"+testCommit, "lastAttemptedRevision")
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplySucceeded}, next(t, reports))
+	f.sim.Release()
+	settling := next(t, reports)
+	assert.Equal(t, git.ApplySettling, settling.Outcome)
+	require.NotEmpty(t, settling.FenceToken)
+	done := next(t, reports)
+	assert.Equal(t, git.ApplyResult{
+		ID: 1, Outcome: git.ApplySucceeded, FenceToken: settling.FenceToken, AppliedRevision: "main@sha1:" + testCommit,
+	}, done)
 	_, open := <-reports
 	assert.False(t, open, "and that ends the attempt")
+	assert.Equal(t, []string{"flux-system/checkout main@sha1:" + testCommit}, f.sim.Applied())
+	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)), "the Kustomization is left suspended")
 }
 
 // TestDispatcher_AnApplyPastItsBudgetIsUnresolvedAndStillFollowed is the third review's fourth
 // finding: when the wait ran out, the attempt was reported delivered, and the window closed while
-// the apply could still run. Now the operation is reported Unresolved, once, and followed on until
-// its token is handled.
+// the apply could still run. Now the operation is reported Unresolved, once, the Kustomization is
+// suspended at once (which stops what would follow, not the apply running), and the operation is
+// followed on until that suspend's token is handled.
 func TestDispatcher_AnApplyPastItsBudgetIsUnresolvedAndStillFollowed(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
-	f.dispatcher.Now = time.Now
 	f.dispatcher.UnresolvedAfter = 20 * time.Millisecond
+	f.dispatcher.Now = time.Now
+	held := f.sim.HoldNextApply()
 
 	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
 	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	<-held
+	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
 	assert.Equal(t, git.ApplyUnresolved, next(t, reports).Outcome)
+	fenced := next(t, reports)
+	assert.Equal(t, git.ApplyUnresolved, fenced.Outcome, "Unresolved holds")
+	require.NotEmpty(t, fenced.FenceToken, "suspended at once")
+	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)))
 	quiet(t, reports, "an unresolved operation is not closed by time")
 	events := f.events()
 	require.Len(t, events, 2)
 	assert.True(t, strings.HasPrefix(events[1], "Warning ApplyUnresolved Kustomization flux-system/checkout "+
 		"has not completed the apply of 4f2c1ab9 (ForeignCommit) within 20ms"), events[1])
 
-	setStatus(t, f.source.client, kustomizationGVR(), types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"},
-		"main@sha1:"+testCommit, "lastAttemptedRevision")
-	assert.Equal(t, git.ApplySucceeded, next(t, reports).Outcome, "it resolves when the apply finishes")
+	f.sim.Release()
+	done := next(t, reports)
+	assert.Equal(t, git.ApplySucceeded, done.Outcome, "it resolves when the suspend's token is handled")
+	assert.Equal(t, fenced.FenceToken, done.FenceToken)
+}
+
+// TestDispatcher_AFailedApplyIsSuspendedAgain: a failed apply is suspended like any other, which is
+// what stops Flux's own retryInterval retry; the worker decides the retry, on a quiet branch.
+func TestDispatcher_AFailedApplyIsSuspendedAgain(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	f.sim.FailApplies("ConfigMap/apps/x dry-run failed")
+
+	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+	res := next(t, reports)
+	for !res.Outcome.Ends() {
+		res = next(t, reports)
+	}
+	assert.Equal(t, git.ApplyFailed, res.Outcome)
+	require.ErrorContains(t, res.Err, "ConfigMap/apps/x dry-run failed")
+	assert.NotEmpty(t, res.FenceToken)
+	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)), "no retryInterval retry can fire")
+}
+
+// TestDispatcher_ADeletedTriggerEndsItsOperation: a trigger being deleted hands its Kustomization
+// back itself, so its operation completes as Failed, and nothing more is written to the
+// Kustomization from here.
+func TestDispatcher_ADeletedTriggerEndsItsOperation(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	held := f.sim.HoldNextApply()
+	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	<-held
+	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
+
+	trigger := &v1alpha3.FluxTrigger{}
+	require.NoError(t, f.control.Get(context.Background(),
+		client.ObjectKey{Namespace: targetNS, Name: "checkout"}, trigger))
+	require.NoError(t, f.control.Delete(context.Background(), trigger))
+	res := next(t, reports)
+	assert.Equal(t, git.ApplyFailed, res.Outcome)
+	require.ErrorContains(t, res.Err, "the trigger is being deleted")
+	assert.Equal(t, fetchedAndResumed, f.patches(), "never suspended from here")
 }
 
 // TestDispatcher_AnAbandonedOperationIsNoLongerFollowed: once the worker stops following an
 // attempt (its applier is no longer named), the dispatcher stops reading it and reports nothing.
 func TestDispatcher_AnAbandonedOperationIsNoLongerFollowed(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	held := f.sim.HoldNextApply()
 	abandoned := make(chan struct{})
 	req := request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")
 	req.Abandoned = abandoned
 
 	reports := f.carryOut(context.Background(), req)
 	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	<-held
+	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
 	close(abandoned)
 	_, open := <-reports
 	assert.False(t, open, "nothing more is reported")
@@ -663,8 +755,11 @@ func TestDispatcher_AnAbandonedOperationIsNoLongerFollowed(t *testing.T) {
 // so its operation completes as Failed and the worker decides again.
 func TestDispatcher_AnApplierThatIsGoneFailsItsOperation(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	held := f.sim.HoldNextApply()
 	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
 	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	<-held
+	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
 
 	require.NoError(t, f.source.client.Resource(kustomizationGVR()).Namespace(fluxSystemNS).
 		Delete(context.Background(), "checkout", metav1.DeleteOptions{}))
@@ -707,10 +802,18 @@ func (f *dispatcherFixture) updates() []string {
 func TestDispatcher_AsksAnApplicationToSync(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{reapplying(argoTarget())}, manualApp())
 
-	res := f.attempt(request(argoPlatform, v1alpha3.ApplyReasonRefusal, "a"))
+	req := request(argoPlatform, v1alpha3.ApplyReasonRefusal, "a")
+	req.Token = "T1"
+	recorded := false
+	req.Record = func(context.Context) error {
+		assert.Empty(t, f.updates(), "recorded before the sync is set")
+		recorded = true
+		return nil
+	}
+	res := f.attempt(req)
 
-	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested, Token: requestToken(stampTime)}, res,
-		"the token is the operation's info entry")
+	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, res)
+	assert.True(t, recorded)
 	assert.Equal(t, []string{"applications " + argoNS}, f.updates())
 	assert.Empty(t, f.patches(), "no Flux object is stamped")
 	app, err := f.source.client.Resource(applicationGVR()).Namespace(argoNS).
@@ -718,6 +821,8 @@ func TestDispatcher_AsksAnApplicationToSync(t *testing.T) {
 	require.NoError(t, err)
 	revision, _, _ := unstructured.NestedString(app.Object, "operation", "sync", "revision")
 	assert.Equal(t, testCommit, revision)
+	operation, _, _ := unstructured.NestedMap(app.Object, "operation")
+	assert.Equal(t, "T1", operationToken(operation), "the operation carries the request's token")
 	assert.Equal(t, []string{
 		"Normal ApplyRequested asked Application argocd/platform to apply 4f2c1ab9 (Refusal)",
 	}, f.events())
@@ -812,4 +917,48 @@ func TestDispatcher_AnApplicationsSyncIsFollowedToItsOutcome(t *testing.T) {
 	argoOperationState(t, f, "Error")
 	assert.Equal(t, git.ApplyFailed, next(t, reports).Outcome)
 	assert.Len(t, f.events(), 1, "only the ApplyRequested: a failure already reported is not reported again")
+}
+
+// TestDispatcher_AnApplyOfAnotherRevisionIsCounted is the residual race: somebody fetched the
+// source between the recheck and the reconcile, so Flux applied another revision. It is still an
+// operation that succeeded, and it is logged and counted.
+func TestDispatcher_AnApplyOfAnotherRevisionIsCounted(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")})
+	req := request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")
+	op := &operation{log: logr.Discard()}
+
+	res := f.dispatcher.completed(context.Background(), req, op, Progress{
+		Outcome: git.ApplySucceeded, AppliedRevision: "main@sha1:" + olderCommit,
+		Message: "Flux applied main@sha1:" + olderCommit + ", not commit " + testCommit,
+	}, time.Second)
+
+	assert.Equal(t, git.ApplySucceeded, res.Outcome)
+	assert.Contains(t, res.Message, "not commit")
+	mismatches, _ := telemetry.CollectInt64Sum(f.reader, "gitopsreverser_apply_revision_mismatches_total",
+		map[string]string{"applier_kind": applierKindKustomization})
+	assert.Equal(t, int64(1), mismatches)
+}
+
+// TestApplyVerdict_ReadsTheReconcileThatHandledTheToken pins the outcome table.
+func TestApplyVerdict_ReadsTheReconcileThatHandledTheToken(t *testing.T) {
+	ks := func(status metav1.ConditionStatus, reason, applied string) *unstructured.Unstructured {
+		obj := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
+		fluxsim.SetReady(obj, status, reason, "message")
+		_ = unstructured.SetNestedField(obj.Object, applied, "status", "lastAppliedRevision")
+		return obj
+	}
+	commit := "main@sha1:" + testCommit
+	assert.Equal(t, Progress{Outcome: git.ApplySucceeded, AppliedRevision: commit},
+		applyVerdict(ks(metav1.ConditionTrue, "ReconciliationSucceeded", commit), testCommit))
+	other := applyVerdict(ks(metav1.ConditionTrue, "ReconciliationSucceeded", "main@sha1:"+olderCommit), testCommit)
+	assert.Equal(t, git.ApplySucceeded, other.Outcome)
+	assert.Contains(t, other.Message, "not commit "+testCommit)
+	dependency := applyVerdict(ks(metav1.ConditionFalse, fluxmeta.DependencyNotReadyReason, commit), testCommit)
+	assert.Equal(t, git.ApplyFailed, dependency.Outcome)
+	assert.Contains(t, dependency.Message, "a dependency is not ready")
+	failed := applyVerdict(ks(metav1.ConditionFalse, "ReconciliationFailed", commit), testCommit)
+	assert.Equal(t, git.ApplyFailed, failed.Outcome)
+	assert.Contains(t, failed.Message, "ReconciliationFailed")
+	none := applyVerdict(kustomizationObj(fluxSystemNS, "checkout", nil), testCommit)
+	assert.Equal(t, git.ApplyFailed, none.Outcome)
 }

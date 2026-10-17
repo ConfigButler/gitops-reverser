@@ -254,7 +254,13 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 			report(git.ApplyRequestFailed, fmt.Errorf("source cluster %q: %w", req.Applier.Cluster, err)), log), nil
 	}
 	applier := d.client(req.Applier.Kind, sourceClient)
-	stamped, err := applier.Request(ctx, applierName(req.Applier), want, req.Commit, req.Reason, req.Current)
+	token := req.Token
+	if token == "" {
+		token = requestToken(d.Now())
+	}
+	stamped, err := applier.Request(ctx, applierName(req.Applier), Ask{
+		Want: want, Commit: req.Commit, Reason: req.Reason, Token: token, Current: req.Current, Record: req.Record,
+	})
 	switch {
 	case errors.Is(err, errStale):
 		d.count(ctx, req, outcomeStale)
@@ -273,9 +279,15 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	}
 	log.Info("apply requested", "outcome", stamped.Outcome)
 	d.delivered(req, eligible)
-	requested := report(git.ApplyRequested, nil)
-	requested.Token = stamped.Token
-	return requested, &operation{applier: applier, ref: applierName(req.Applier), stamped: stamped, log: log}
+	return report(
+		git.ApplyRequested,
+		nil,
+	), &operation{
+		applier: applier,
+		ref:     applierName(req.Applier),
+		stamped: stamped,
+		log:     log,
+	}
 }
 
 // client is the Client for an applier of kind, over its cluster's client and this dispatcher's
@@ -290,27 +302,27 @@ func (d *Dispatcher) client(kind string, sourceClient dynamic.Interface) Client 
 	}
 	flux := NewFlux(sourceClient)
 	flux.Now = d.Now
+	flux.PollInterval = min(flux.PollInterval, d.PollInterval)
 	return flux
 }
 
 // follow reads the operation's progress until it completes, reporting each move on req.Report, and
-// returns the report that ends the attempt. It decides nothing: it reports what the applier shows.
+// returns the report that ends the attempt. It decides nothing: it reports what the applier shows,
+// and lets the client take the steps that are its own (suspending a Flux Kustomization again).
 //
 // An operation that has not completed within UnresolvedAfter is reported Unresolved, once, and is
 // read on at a doubling interval: the apply can still run, and only its completion closes the
-// window. The applier object being gone completes it as Failed. It returns false, and reports
-// nothing more, when the worker abandons the attempt or the dispatcher stops.
+// window. The client is told it is overdue, so a Flux Kustomization is suspended at once. The
+// applier object being gone completes it as Failed, and so does its trigger being deleted: the
+// trigger's own finalizer suspends the Kustomization and hands it back, and a suspend from here
+// would undo that. It returns false, and reports nothing more, when the worker abandons the
+// attempt or the dispatcher stops.
 func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *operation) (git.ApplyResult, bool) {
 	started := d.Now()
-	phase := git.ApplyRequested
+	phase, fence := git.ApplyRequested, ""
 	interval := d.PollInterval
 	for {
-		read, cancel := context.WithTimeout(ctx, d.PollTimeout)
-		progress, err := op.applier.Progress(read, op.ref, op.stamped)
-		cancel()
-		if apierrors.IsNotFound(err) {
-			progress, err = Progress{Outcome: git.ApplyFailed, Message: "the applier is gone: " + err.Error()}, nil
-		}
+		progress, err := d.progress(ctx, req, op)
 		switch {
 		case err != nil:
 			if ctx.Err() == nil {
@@ -318,14 +330,18 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 			}
 		case progress.Outcome.Ends():
 			return d.completed(ctx, req, op, progress, d.Now().Sub(started)), true
-		case phase != git.ApplyUnresolved && progress.Outcome != phase:
-			phase = progress.Outcome
-			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase})
+		case progress.Outcome != phase && phase != git.ApplyUnresolved, progress.FenceToken != fence:
+			if phase != git.ApplyUnresolved {
+				phase = progress.Outcome
+			}
+			fence = progress.FenceToken
+			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase, FenceToken: fence})
 		}
 		if phase != git.ApplyUnresolved && d.Now().Sub(started) >= d.UnresolvedAfter {
 			phase = git.ApplyUnresolved
+			op.stamped.Overdue = true
 			d.unresolved(ctx, req, op)
-			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase})
+			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase, FenceToken: fence})
 		}
 		if phase == git.ApplyUnresolved {
 			interval = min(unresolvedBackoff*interval, max(d.UnresolvedPollMax, d.PollInterval))
@@ -335,6 +351,44 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 			return git.ApplyResult{}, false
 		}
 	}
+}
+
+// progress reads an operation's progress once, within PollTimeout. An applier that is gone, or a
+// trigger that is being deleted, completes it as Failed.
+func (d *Dispatcher) progress(ctx context.Context, req git.ApplyRequest, op *operation) (Progress, error) {
+	read, cancel := context.WithTimeout(ctx, d.PollTimeout)
+	defer cancel()
+	released, err := d.triggerReleased(read, req.Applier.Trigger)
+	if err != nil {
+		return Progress{}, err
+	}
+	if released {
+		return Progress{
+			Outcome: git.ApplyFailed,
+			Message: "the trigger is being deleted, and hands its applier back",
+		}, nil
+	}
+	progress, err := op.applier.Progress(read, op.ref, &op.stamped)
+	if apierrors.IsNotFound(err) {
+		return Progress{Outcome: git.ApplyFailed, Message: "the applier is gone: " + err.Error()}, nil
+	}
+	return progress, err
+}
+
+// triggerReleased reports whether a trigger is gone or being deleted.
+func (d *Dispatcher) triggerReleased(ctx context.Context, ref git.TriggerRef) (bool, error) {
+	trigger := v1alpha3.NewApplyTrigger(ref.Kind)
+	if trigger == nil {
+		return false, nil
+	}
+	err := d.reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger)
+	switch {
+	case apierrors.IsNotFound(err):
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("read %s: %w", ref, err)
+	}
+	return !trigger.GetDeletionTimestamp().IsZero(), nil
 }
 
 // unresolvedBackoff is the factor an Unresolved operation's poll interval grows by on each read.
@@ -359,9 +413,25 @@ func wait(ctx context.Context, abandoned <-chan struct{}, interval time.Duration
 func (d *Dispatcher) completed(
 	ctx context.Context, req git.ApplyRequest, op *operation, progress Progress, took time.Duration,
 ) git.ApplyResult {
+	result := git.ApplyResult{
+		ID: req.ID, Outcome: progress.Outcome, FenceToken: progress.FenceToken,
+		AppliedRevision: progress.AppliedRevision,
+	}
 	if progress.Outcome != git.ApplyFailed {
-		op.log.V(1).Info("the applier finished the requested apply", "after", took.String())
-		return git.ApplyResult{ID: req.ID, Outcome: progress.Outcome}
+		if progress.Message != "" {
+			// The residual race: the source moved between the recheck and the apply. The apply
+			// window withholds a late write over a newer edit; nothing more is owed here.
+			op.log.Info("the applier applied another revision than the commit it was asked for",
+				"after", took.String(), "message", progress.Message)
+			result.Message = progress.Message
+			if telemetry.ApplyRevisionMismatchesTotal != nil {
+				telemetry.ApplyRevisionMismatchesTotal.Add(context.WithoutCancel(ctx), 1,
+					metric.WithAttributes(attribute.String("applier_kind", applierKindOf(req))))
+			}
+		} else {
+			op.log.V(1).Info("the applier finished the requested apply", "after", took.String())
+		}
+		return result
 	}
 	err := errors.New(progress.Message)
 	op.log.Info("the applier did not complete the requested apply; the branch worker decides when to ask again",
@@ -371,7 +441,8 @@ func (d *Dispatcher) completed(
 			"%s did not complete the apply of %s (%s), and will be asked again once the branch is quiet: %v",
 			describeApplier(req.Applier), describeCommit(req.Commit), req.Reason, err)
 	}
-	return git.ApplyResult{ID: req.ID, Outcome: git.ApplyFailed, Err: err}
+	result.Err = err
+	return result
 }
 
 // unresolved logs an operation that did not complete within UnresolvedAfter and records
@@ -560,13 +631,17 @@ func (d *Dispatcher) count(ctx context.Context, req git.ApplyRequest, outcome st
 	if telemetry.ApplyRequestsTotal == nil {
 		return
 	}
-	kind := applierKindKustomization
-	if req.Applier.Kind == v1alpha3.ApplierKindApplication {
-		kind = applierKindApplication
-	}
 	telemetry.ApplyRequestsTotal.Add(context.WithoutCancel(ctx), 1, metric.WithAttributes(
-		attribute.String("applier_kind", kind),
+		attribute.String("applier_kind", applierKindOf(req)),
 		attribute.String("reason", string(req.Reason)),
 		attribute.String("outcome", outcome),
 	))
+}
+
+// applierKindOf is the applier_kind label of a request's applier.
+func applierKindOf(req git.ApplyRequest) string {
+	if req.Applier.Kind == v1alpha3.ApplierKindApplication {
+		return applierKindApplication
+	}
+	return applierKindKustomization
 }

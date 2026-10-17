@@ -10,6 +10,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// FluxTriggerFinalizer is the finalizer a FluxTrigger carries while it may hold its Kustomization
+// suspended. Deleting the trigger suspends the Kustomization once more, waits until nothing started
+// before that suspend is running, and then hands it back to Flux: spec.suspend is released, so the
+// Kustomization is resumed.
+const FluxTriggerFinalizer = "configbutler.ai/flux-trigger"
+
 // FluxTriggerSpec names the Flux Kustomization the trigger holds, and the cluster it is in.
 type FluxTriggerSpec struct {
 	// Why immutable: the trigger holds the Kustomization it names (it suspends it while idle and

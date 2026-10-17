@@ -9,6 +9,7 @@ package git
 // an older value than Git, and owes a Repair. See docs/design/suspended-appliers-plan.md.
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -187,10 +188,19 @@ func onlyApplier(t *testing.T, loop *branchWorkerEventLoop) *applierState {
 	return nil
 }
 
-// recordingStatusWriter records what a worker publishes on its triggers' status, in order.
+// recordingStatusWriter records what a worker publishes on its triggers' status, in order, and
+// which triggers were written through.
 type recordingStatusWriter struct {
 	mu        sync.Mutex
 	published map[TriggerRef][]ApplyTriggerStatus
+	persisted []TriggerRef
+}
+
+func (r *recordingStatusWriter) PersistApplyTriggerStatus(_ context.Context, trigger TriggerRef) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.persisted = append(r.persisted, trigger)
+	return nil
 }
 
 func (r *recordingStatusWriter) PublishApplyTriggerStatus(trigger TriggerRef, status ApplyTriggerStatus) {
@@ -213,10 +223,11 @@ func (r *recordingStatusWriter) last(trigger TriggerRef) (ApplyTriggerStatus, in
 	return all[len(all)-1], len(all)
 }
 
-// TestApplier_TheTriggerStatusFollowsEveryTransition: the operation is on the trigger's status from
-// the moment the applier was asked, and moves with every report, so `kubectl get fluxtriggers`
-// shows where an apply stands without anything having to reconcile. A worker that has started
-// nothing says nothing, and Unresolved holds until the operation completes.
+// TestApplier_TheTriggerStatusFollowsEveryTransition: the operation is on the trigger's status
+// before the applier is asked (the request writes it through first, so a restart finds every apply
+// that may have started), and moves with every report, so `kubectl get fluxtriggers` shows where
+// an apply stands without anything having to reconcile. Unresolved holds until the operation
+// completes.
 func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	writer := &recordingStatusWriter{}
@@ -227,40 +238,84 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	loop.serviceAppliers()
 	sent := requester.taken()
 	require.Len(t, sent, 1)
-	_, n := writer.last(trigger)
-	assert.Zero(t, n, "nothing is published before the applier was asked")
+	recorded, n := writer.last(trigger)
+	require.Equal(t, 1, n, "the operation is published as the attempt is sent")
+	requested := recorded.Operation
+	require.NotNil(t, requested)
+	assert.Equal(t, configv1alpha3.ApplyOperationRequested, requested.Phase)
+	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requested.Reason)
+	assert.Equal(t, "bbb", requested.Commit)
+	assert.NotEmpty(t, requested.Token)
+	assert.Equal(t, requested.Token, sent[0].Token, "the request carries the token it is recorded with")
+	assert.False(t, requested.RequestedAt.IsZero())
+	assert.Nil(t, requested.FinishedAt)
+	require.NotNil(t, sent[0].Record)
+	require.NoError(t, sent[0].Record(context.Background()))
+	assert.Equal(t, []TriggerRef{trigger}, writer.persisted, "the request writes it through before it applies")
 
-	phase := func(outcome ApplyOutcome) *configv1alpha3.ApplyOperation {
+	phase := func(res ApplyResult) *configv1alpha3.ApplyOperation {
 		t.Helper()
-		sent[0].Report(ApplyResult{ID: sent[0].ID, Outcome: outcome, Token: "T1"})
+		res.ID = sent[0].ID
+		sent[0].Report(res)
 		loop.serviceAppliers()
 		status, _ := writer.last(trigger)
 		require.NotNil(t, status.Operation)
 		return status.Operation
 	}
 
-	requested := phase(ApplyRequested)
-	assert.Equal(t, configv1alpha3.ApplyOperationRequested, requested.Phase)
-	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requested.Reason)
-	assert.Equal(t, "bbb", requested.Commit)
-	assert.Equal(t, "T1", requested.Token)
-	assert.False(t, requested.RequestedAt.IsZero())
-	assert.Nil(t, requested.FinishedAt)
-
-	assert.Equal(t, configv1alpha3.ApplyOperationRunning, phase(ApplyRunning).Phase)
-	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, phase(ApplyUnresolved).Phase)
-	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, phase(ApplyRunning).Phase,
+	assert.Equal(t, requested, phase(ApplyResult{Outcome: ApplyRequested}))
+	assert.Equal(t, configv1alpha3.ApplyOperationRunning, phase(ApplyResult{Outcome: ApplyRunning}).Phase)
+	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, phase(ApplyResult{Outcome: ApplyUnresolved}).Phase)
+	settling := phase(ApplyResult{Outcome: ApplySettling, FenceToken: "T2"})
+	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, settling.Phase,
 		"Unresolved holds until the operation completes")
+	assert.Equal(t, "T2", settling.FenceToken)
 
-	done := phase(ApplySucceeded)
+	done := phase(ApplyResult{Outcome: ApplySucceeded, FenceToken: "T2", AppliedRevision: "main@sha1:bbb"})
 	assert.Equal(t, configv1alpha3.ApplyOperationSucceeded, done.Phase)
 	require.NotNil(t, done.FinishedAt)
+	assert.Equal(t, "main@sha1:bbb", done.AppliedRevision)
 	assert.Equal(t, requested.RequestedAt, done.RequestedAt, "one operation, one record")
+	assert.Equal(t, requested.Token, done.Token)
 
 	_, before := writer.last(trigger)
 	loop.serviceAppliers()
 	_, after := writer.last(trigger)
 	assert.Equal(t, before, after, "an unchanged status is not published again")
+}
+
+// TestApplier_AnAttemptThatAskedNothingPutsTheLastOperationBack: the operation is recorded before
+// the attempt is sent, so an attempt that ends without asking for an apply (here Dropped, which
+// backs off, so nothing is sent in its place at once) must not leave a Requested operation behind
+// that never ran: the one before it is published again.
+func TestApplier_AnAttemptThatAskedNothingPutsTheLastOperationBack(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+	writer := &recordingStatusWriter{}
+	loop.w.triggerStatus = writer
+	trigger := applierRef("alpha").Trigger
+
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	first := requester.taken()
+	require.Len(t, first, 1)
+	report(first[0], ApplyRequested)
+	report(first[0], ApplySucceeded)
+	loop.serviceAppliers()
+	completed, _ := writer.last(trigger)
+	require.Equal(t, configv1alpha3.ApplyOperationSucceeded, completed.Operation.Phase)
+
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	second := requester.taken()
+	require.Len(t, second, 1)
+	recorded, _ := writer.last(trigger)
+	require.Equal(t, configv1alpha3.ApplyOperationRequested, recorded.Operation.Phase)
+
+	report(second[0], ApplyDropped)
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken())
+	restored, _ := writer.last(trigger)
+	assert.Equal(t, completed.Operation, restored.Operation)
 }
 
 // TestApplier_TheTriggerStatusSaysARepairIsOwed: repairOwed is published from the withheld write

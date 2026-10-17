@@ -23,6 +23,7 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/applier/fluxsim"
 )
 
 // fluxGuide is the Flux user guide. Its "A complete example" section is the configuration this
@@ -32,7 +33,8 @@ const fluxGuide = "../../docs/flux.md"
 // TestFluxGuide_TheCompleteExampleIsAccepted reads the guide's complete example and checks it
 // against the code that validates and drives a Flux applier: the GitOps Reverser objects decode
 // into the API types with no unknown field, Configured comes out True for the Flux objects as
-// written, the trigger's source binds the GitTarget, and a request stamps the GitRepository. It also holds the example to the guide's own
+// written, the trigger's source binds the GitTarget, and a request fetches and resumes the
+// Kustomization. It also holds the example to the guide's own
 // advice, so the page cannot recommend one thing and show another.
 func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	objects := guideExampleObjects(t, fluxGuide)
@@ -76,8 +78,8 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 			obj.GetKind(),
 		)
 	}
-	suspended, _, _ := unstructured.NestedBool(kustomization.Object, "spec", "suspend")
-	assert.False(t, suspended, "a suspended Kustomization ignores the requests")
+	_, setsSuspend, _ := unstructured.NestedFieldNoCopy(kustomization.Object, "spec", "suspend")
+	assert.False(t, setsSuspend, "the manifest omits spec.suspend, which GitOps Reverser holds")
 
 	// The applier, as written, is accepted, binds the GitTarget, and is driven.
 	ref := trigger.Applier()
@@ -93,9 +95,15 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	trigger.Status.Source = &v1alpha3.FluxTriggerSource{URL: verdict.Source.URL, Branch: verdict.Source.Revision}
 	assert.Empty(t, BindingMismatch(&trigger, want), "the trigger's Kustomization applies what the GitTarget writes")
 
-	stamped, err := flux.Request(context.Background(), ref, want, testCommit, v1alpha3.ApplyReasonForeignCommit, nil)
+	sim := fluxsim.New(t, client)
+	sim.Fetches(types.NamespacedName{Namespace: repository.GetNamespace(), Name: repository.GetName()},
+		target.Spec.Branch+"@sha1:"+testCommit)
+	flux.Now = fluxsim.TickingClock(stampTime)
+	stamped, err := flux.Request(context.Background(), ref, Ask{
+		Want: want, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit, Token: "T1",
+	})
 	require.NoError(t, err)
-	assert.Equal(t, OutcomeStampedSource, stamped.Outcome, "a source with no artifact yet is asked to fetch")
+	assert.Equal(t, OutcomeResumed, stamped.Outcome, "a source with no artifact yet fetches, then applies")
 	assert.NotEmpty(t, requestedAt(t, client, gitRepositoryGVR(), repository.GetNamespace(), repository.GetName()))
 }
 

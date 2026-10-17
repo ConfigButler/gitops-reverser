@@ -145,11 +145,16 @@ func TestArgoCDRequest_TheOperationIsWhatAutomatedSyncWouldBuild(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newArgoSource(applicationObj(testRepoURL, testBranch, tt.syncPolicy))
 
-			stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-				v1alpha3.ApplyReasonForeignCommit, nil)
+			stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+				Want:   testBinding,
+				Commit: testCommit,
+				Reason: v1alpha3.ApplyReasonForeignCommit,
+				Token:  requestToken(stampTime),
+			})
 
 			require.NoError(t, err)
-			assert.Equal(t, Stamped{Outcome: OutcomeSyncRequested, Token: requestToken(stampTime)}, stamped)
+			assert.Equal(t, Stamped{Outcome: OutcomeSyncRequested, Token: requestToken(stampTime), Commit: testCommit},
+				stamped)
 			operation, found, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
 			require.True(t, found)
 			assert.Equal(t, map[string]any{
@@ -175,8 +180,9 @@ func TestArgoCDRequest_ClearsTheLastOperationState(t *testing.T) {
 	_ = unstructured.SetNestedField(app.Object, "Synced", "status", "sync", "status")
 	client := newArgoSource(app)
 
-	_, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-		v1alpha3.ApplyReasonRefusal, nil)
+	_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+		Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonRefusal, Token: requestToken(stampTime),
+	})
 
 	require.NoError(t, err)
 	written := readApp(t, client)
@@ -199,8 +205,12 @@ func TestArgoCDRequest_ARunningOperationIsNeverReplaced(t *testing.T) {
 	t.Run("with no time to wait, the attempt fails and writes nothing", func(t *testing.T) {
 		client := newArgoSource(running())
 
-		_, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-			v1alpha3.ApplyReasonForeignCommit, nil)
+		_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+			Want:   testBinding,
+			Commit: testCommit,
+			Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token:  requestToken(stampTime),
+		})
 
 		require.ErrorContains(t, err, "has an operation in progress")
 		assert.False(t, isPermanent(err), "the operation ends; asking again later can succeed")
@@ -222,8 +232,12 @@ func TestArgoCDRequest_ARunningOperationIsNeverReplaced(t *testing.T) {
 		argo := NewArgoCD(client)
 		argo.OperationWait, argo.PollInterval = 5*time.Second, time.Millisecond
 
-		stamped, err := argo.Request(context.Background(), platformApp, testBinding, testCommit,
-			v1alpha3.ApplyReasonForeignCommit, nil)
+		stamped, err := argo.Request(context.Background(), platformApp, Ask{
+			Want:   testBinding,
+			Commit: testCommit,
+			Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token:  requestToken(stampTime),
+		})
 
 		require.NoError(t, err)
 		assert.Equal(t, OutcomeSyncRequested, stamped.Outcome)
@@ -243,8 +257,12 @@ func TestArgoCDRequest_ARunningOperationIsNeverReplaced(t *testing.T) {
 					errors.New("the object has been modified"))
 			})
 
-			_, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-				v1alpha3.ApplyReasonForeignCommit, nil)
+			_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+				Want:   testBinding,
+				Commit: testCommit,
+				Reason: v1alpha3.ApplyReasonForeignCommit,
+				Token:  requestToken(stampTime),
+			})
 
 			require.ErrorContains(t, err, "has an operation in progress")
 			assert.Equal(t, theirOperation(), readApp(t, client).Object["operation"], "theirs is untouched")
@@ -257,8 +275,12 @@ func TestArgoCDRequest_ARunningOperationIsNeverReplaced(t *testing.T) {
 		}, "status", "operationState")
 		client := newArgoSource(app)
 
-		_, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-			v1alpha3.ApplyReasonForeignCommit, nil)
+		_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+			Want:   testBinding,
+			Commit: testCommit,
+			Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token:  requestToken(stampTime),
+		})
 
 		require.ErrorContains(t, err, "has an operation in progress")
 		assert.Zero(t, updates(client))
@@ -279,8 +301,12 @@ func TestArgoCDRequest_AConflictWithAStatusWriteIsReadAgain(t *testing.T) {
 		return false, nil, nil
 	})
 
-	stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-		v1alpha3.ApplyReasonForeignCommit, nil)
+	stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+		Want:   testBinding,
+		Commit: testCommit,
+		Reason: v1alpha3.ApplyReasonForeignCommit,
+		Token:  requestToken(stampTime),
+	})
 
 	require.NoError(t, err)
 	assert.Equal(t, OutcomeSyncRequested, stamped.Outcome)
@@ -314,8 +340,13 @@ func TestArgoCDRequest_RefusesWhatIsNotUnderControl(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newArgoSource(tt.app)
 
-			stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, tt.commit,
-				v1alpha3.ApplyReasonForeignCommit, tt.current)
+			stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+				Want:    testBinding,
+				Commit:  tt.commit,
+				Reason:  v1alpha3.ApplyReasonForeignCommit,
+				Token:   requestToken(stampTime),
+				Current: tt.current,
+			})
 
 			switch {
 			case tt.wantErr != "":
@@ -461,8 +492,12 @@ func TestArgoCDValidate_AsksForUpdate(t *testing.T) {
 func TestArgoCD_Progress(t *testing.T) {
 	client := newArgoSource(manualApp())
 	argo := pinnedArgo(client)
-	stamped, err := argo.Request(context.Background(), platformApp, testBinding, testCommit,
-		v1alpha3.ApplyReasonForeignCommit, nil)
+	stamped, err := argo.Request(context.Background(), platformApp, Ask{
+		Want:   testBinding,
+		Commit: testCommit,
+		Reason: v1alpha3.ApplyReasonForeignCommit,
+		Token:  requestToken(stampTime),
+	})
 	require.NoError(t, err)
 	ours, _, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
 
@@ -480,7 +515,7 @@ func TestArgoCD_Progress(t *testing.T) {
 	}
 	progress := func(t *testing.T) Progress {
 		t.Helper()
-		got, err := argo.Progress(context.Background(), platformApp, stamped)
+		got, err := argo.Progress(context.Background(), platformApp, &stamped)
 		require.NoError(t, err)
 		return got
 	}
@@ -505,7 +540,7 @@ func TestArgoCD_Progress(t *testing.T) {
 	setState(t, theirOperation(), "Succeeded", false)
 	assert.Equal(t, git.ApplyFailed, progress(t).Outcome, "ours was cleared before it recorded an outcome")
 
-	current, err := argo.Progress(context.Background(), platformApp, Stamped{Outcome: OutcomeCurrent})
+	current, err := argo.Progress(context.Background(), platformApp, &Stamped{Outcome: OutcomeCurrent})
 	require.NoError(t, err)
 	assert.Equal(t, git.ApplySucceeded, current.Outcome, "nothing asked is nothing to wait for")
 }

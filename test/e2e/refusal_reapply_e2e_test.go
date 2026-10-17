@@ -29,8 +29,9 @@ import (
 // var, which no kustomize declaration in the overlay can express. Read scope reaches the base;
 // write scope never does.
 //
-// Flux applies the overlay when its Kustomization is created and then waits out a 24h interval, so
-// a revert of the drifted env var inside this spec is GitOps Reverser's request and nothing else.
+// Flux applies the overlay when its Kustomization is created, and the trigger then holds it
+// suspended, so a revert of the drifted env var inside this spec is an apply GitOps Reverser started,
+// and nothing else: a resume of the unchanged commit, which is all a Refusal needs.
 var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"), Ordered, func() {
 	var (
 		testNs         string
@@ -78,7 +79,7 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 		DeferCleanup(func() { _ = os.RemoveAll(seedFolder) })
 		seedRenderedFolderIntoRepo(repo, testNs, seedFolder, "apps/checkout")
 
-		By("letting Flux apply the overlay once, then leaving it on a 24h interval")
+		By("letting Flux apply the overlay once, before any trigger holds it")
 		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "main", "./"+gitPath)
 		Eventually(func(g Gomega) {
 			g.Expect(checkoutLogLevel(g, testNs)).To(Equal("info"))
@@ -132,12 +133,13 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 		// (the env var changed back), so one more request may follow it. What must never grow is
 		// the count after that: a forced recheck re-observes the standing refusal every minute.
 		By("and it settles instead of asking on every recheck")
-		seen := map[string]struct{}{fluxRequestStamps(fluxName): {}}
+		seen := map[string]struct{}{readTriggerOperation(Default, testNs, fluxTriggerResource, fluxName).Token: {}}
 		Consistently(func(g Gomega) {
-			seen[fluxRequestStamps(fluxName)] = struct{}{}
+			seen[readTriggerOperation(g, testNs, fluxTriggerResource, fluxName).Token] = struct{}{}
 			g.Expect(len(seen)).To(BeNumerically("<=", 2),
 				"a standing refusal must not be requested once per recheck")
 		}, 150*time.Second, 10*time.Second).Should(Succeed())
+		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "every operation suspends it again")
 
 		By("a ConfigMap on the same target is mirrored normally")
 		Expect(applyFromTemplate("test/e2e/templates/manager/configmap.tmpl", struct {
@@ -179,20 +181,6 @@ func checkoutLogLevel(g Gomega, testNs string) string {
 		`jsonpath={.spec.template.spec.containers[0].env[?(@.name=="LOG_LEVEL")].value}`)
 	g.Expect(err).NotTo(HaveOccurred())
 	return strings.TrimSpace(out)
-}
-
-// fluxRequestStamps is the reconcile.fluxcd.io/requestedAt annotation of the GitRepository and the
-// Kustomization together: one apply request changes one of them.
-func fluxRequestStamps(name string) string {
-	GinkgoHelper()
-	stamps := make([]string, 0, 2)
-	for _, kind := range []string{"gitrepository", "kustomization"} {
-		out, err := kubectlRunInNamespace("flux-system", "get", kind, name, "-o",
-			`jsonpath={.metadata.annotations.reconcile\.fluxcd\.io/requestedAt}`)
-		Expect(err).NotTo(HaveOccurred())
-		stamps = append(stamps, strings.TrimSpace(out))
-	}
-	return strings.Join(stamps, "|")
 }
 
 // writeBaseOwnedFieldFolder builds corpus shape 8 with the overlay pointed at the caller's

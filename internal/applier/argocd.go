@@ -120,41 +120,37 @@ func NewArgoCD(client dynamic.Interface) *ArgoCD {
 // overwritten; it then reads again and waits for that one too.
 //
 // current is asked just before the update. When it reports false the decision no longer holds and
-// nothing is set: errStale.
+// nothing is set: errStale. record is called once before the first update, so a restart finds
+// every sync that may have started; the update carries ask.Token whichever read it is made from.
 //
 // An empty commit (the remote does not carry the branch) has nothing to pin, and asks nothing
 // (OutcomeCurrent): Argo CD reports the missing branch itself on its next refresh, and the branch
 // coming back is an observation that owes a new request.
-func (a *ArgoCD) Request(
-	ctx context.Context,
-	ref types.NamespacedName,
-	want Binding,
-	commit string,
-	reason v1alpha3.ApplyReason,
-	current func() bool,
-) (Stamped, error) {
+func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Stamped, error) {
 	var waitUntil time.Time
+	record := ask.recordOnce()
 	for conflicts := 0; ; {
-		app, err := a.readControlled(ctx, ref, want)
+		app, err := a.readControlled(ctx, ref, ask.Want)
 		if err != nil {
 			return Stamped{}, err
 		}
-		if commit == "" {
+		if ask.Commit == "" {
 			return Stamped{Outcome: OutcomeCurrent}, nil
 		}
 		if operationInProgress(app) {
-			if waitUntil.IsZero() {
-				waitUntil = a.Now().Add(a.OperationWait)
-			}
-			if err := a.awaitOperation(ctx, ref, waitUntil); err != nil {
+			if err := a.awaitOperation(ctx, ref, &waitUntil); err != nil {
 				return Stamped{}, err
 			}
 			continue
 		}
-		if current != nil && !current() {
+		if ask.Current != nil && !ask.Current() {
 			return Stamped{}, errStale
 		}
-		stamped, err := a.setOperation(ctx, ref, app, commit, reason)
+		if err := record(ctx); err != nil {
+			return Stamped{}, fmt.Errorf("record the operation on its trigger before syncing %s %s: %w",
+				kindApplication, ref, err)
+		}
+		stamped, err := a.setOperation(ctx, ref, app, ask)
 		if apierrors.IsConflict(err) && conflicts < maxArgoUpdateConflicts {
 			// Somebody wrote the Application since it was read: the controller's status, or an
 			// operation of its own. Read it again, and decide again from what it is now.
@@ -187,12 +183,11 @@ func (a *ArgoCD) readControlled(
 // carries the resourceVersion read, so it fails with a conflict when anything wrote the
 // Application since.
 func (a *ArgoCD) setOperation(
-	ctx context.Context, ref types.NamespacedName, app *unstructured.Unstructured, commit string,
-	reason v1alpha3.ApplyReason,
+	ctx context.Context, ref types.NamespacedName, app *unstructured.Unstructured, ask Ask,
 ) (Stamped, error) {
-	token := requestToken(a.Now())
+	token := ask.Token
 	update := app.DeepCopy()
-	if err := unstructured.SetNestedField(update.Object, syncOperation(app, commit, reason, token),
+	if err := unstructured.SetNestedField(update.Object, syncOperation(app, ask.Commit, ask.Reason, token),
 		"operation"); err != nil {
 		return Stamped{}, fmt.Errorf("build the sync operation for %s %s: %w", kindApplication, ref, err)
 	}
@@ -202,12 +197,17 @@ func (a *ArgoCD) setOperation(
 	if err != nil {
 		return Stamped{}, fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
 	}
-	return Stamped{Outcome: OutcomeSyncRequested, Token: token}, nil
+	return Stamped{Outcome: OutcomeSyncRequested, Token: token, Commit: ask.Commit}, nil
 }
 
 // awaitOperation waits until the Application has no operation in progress, or fails once
-// waitUntil passes. It decides nothing: Request reads the Application again after it.
-func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, waitUntil time.Time) error {
+// waitUntil passes, which it sets OperationWait from now when it is zero, so a request that waits
+// twice waits once in all. It decides nothing: Request reads the Application again after it.
+func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, until *time.Time) error {
+	if until.IsZero() {
+		*until = a.Now().Add(a.OperationWait)
+	}
+	waitUntil := *until
 	for {
 		if !a.Now().Before(waitUntil) {
 			return fmt.Errorf("%s %s has an operation in progress; asking again once the branch worker decides to",
@@ -237,25 +237,27 @@ func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, w
 // Failed or Error. Until the controller starts it, the operation is still set with the token, and
 // Requested. An operation that is gone with no state of its own (somebody cleared it, or a later
 // sync replaced its record) is Failed: nothing of it will run, and the worker decides again.
-func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s Stamped) (Progress, error) {
+func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s *Stamped) (Progress, error) {
 	if s.Outcome != OutcomeSyncRequested {
 		return Progress{Outcome: git.ApplySucceeded}, nil
 	}
 	app, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
-		return Progress{Outcome: git.ApplyRequested}, fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
+		return Progress{}, fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
 	}
 	if state, found, _ := unstructured.NestedMap(app.Object, "status", "operationState"); found &&
 		operationToken(state["operation"]) == s.Token {
 		phase, _, _ := unstructured.NestedString(state, "phase")
 		message, _, _ := unstructured.NestedString(state, "message")
+		applied, _, _ := unstructured.NestedString(state, "syncResult", "revision")
 		switch phase {
 		case argoPhaseSucceeded:
-			return Progress{Outcome: git.ApplySucceeded}, nil
+			return Progress{Outcome: git.ApplySucceeded, AppliedRevision: applied}, nil
 		case argoPhaseFailed, argoPhaseError:
 			return Progress{
-				Outcome: git.ApplyFailed,
-				Message: fmt.Sprintf("the sync ended %s: %s", phase, message),
+				Outcome:         git.ApplyFailed,
+				Message:         fmt.Sprintf("the sync ended %s: %s", phase, message),
+				AppliedRevision: applied,
 			}, nil
 		default:
 			return Progress{Outcome: git.ApplyRunning}, nil

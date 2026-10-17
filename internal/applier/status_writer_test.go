@@ -188,3 +188,48 @@ func TestStatusWriter_StartWritesWhatIsPublished(t *testing.T) {
 	require.NoError(t, <-done)
 	assert.True(t, writer.NeedLeaderElection())
 }
+
+// TestStatusWriter_PersistWritesThroughBeforeItReturns: the dispatcher writes the operation through
+// before it starts the apply. Persist writes the latest publication at once, and a later batch does
+// not write it again; a trigger that is being deleted is an error, so nothing is started for it.
+func TestStatusWriter_PersistWritesThroughBeforeItReturns(t *testing.T) {
+	writer, c := statusWriterFixture(t, interceptor.Funcs{})
+	writer.PublishApplyTriggerStatus(appsTrigger,
+		git.ApplyTriggerStatus{Operation: operationAt(v1alpha3.ApplyOperationRequested), RepairOwed: true})
+
+	require.NoError(t, writer.PersistApplyTriggerStatus(context.Background(), appsTrigger))
+	persisted := readTrigger(t, c)
+	require.NotNil(t, persisted.Status.Operation)
+	assert.Equal(t, v1alpha3.ApplyOperationRequested, persisted.Status.Operation.Phase)
+	assert.True(t, persisted.Status.RepairOwed)
+	assert.False(t, writer.writePending(context.Background()))
+	assert.Equal(t, persisted.ResourceVersion, readTrigger(t, c).ResourceVersion, "nothing left to write")
+	require.NoError(t, writer.PersistApplyTriggerStatus(context.Background(), appsTrigger),
+		"a publication written already is persisted")
+
+	persisted.Finalizers = []string{v1alpha3.FluxTriggerFinalizer}
+	require.NoError(t, c.Update(context.Background(), persisted))
+	require.NoError(t, c.Delete(context.Background(), persisted))
+	writer.PublishApplyTriggerStatus(appsTrigger,
+		git.ApplyTriggerStatus{Operation: operationAt(v1alpha3.ApplyOperationRunning)})
+	require.ErrorIs(t, writer.PersistApplyTriggerStatus(context.Background(), appsTrigger), errTriggerReleased)
+}
+
+// TestStatusWriter_NeverWritesAnOlderOperation: the reconciler records an external resume as an
+// operation of its own; a publication that still carries an operation requested before it does not
+// replace it.
+func TestStatusWriter_NeverWritesAnOlderOperation(t *testing.T) {
+	writer, c := statusWriterFixture(t, interceptor.Funcs{})
+	newer := operationAt(v1alpha3.ApplyOperationUnresolved)
+	newer.RequestedAt = metav1.NewTime(stampTime.Add(time.Minute))
+	trigger := readTrigger(t, c)
+	trigger.Status.Operation = newer
+	require.NoError(t, c.Status().Update(context.Background(), trigger))
+
+	writer.PublishApplyTriggerStatus(appsTrigger,
+		git.ApplyTriggerStatus{Operation: operationAt(v1alpha3.ApplyOperationSucceeded), RepairOwed: true})
+	assert.False(t, writer.writePending(context.Background()))
+	written := readTrigger(t, c)
+	assert.Equal(t, v1alpha3.ApplyOperationUnresolved, written.Status.Operation.Phase)
+	assert.True(t, written.Status.RepairOwed, "the rest of the publication still lands")
+}

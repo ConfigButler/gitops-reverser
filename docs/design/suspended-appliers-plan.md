@@ -1,6 +1,6 @@
 # Suspended appliers: the plan
 
-> **design, being built.** Steps 1 to 3 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
+> **design, being built.** Steps 1 to 4 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
 > as a stack on top of it (branch `feat/suspended-appliers`); the two release together. Inputs: the
 > third review of #419 (five findings, summarized in the table below) and
 > [`flux-suspend-lifecycle.md`](flux-suspend-lifecycle.md) (the measurement). It settles the
@@ -409,6 +409,41 @@ that leaves an artifact ready while nothing applies.
 - [`../INDEX.md`](../INDEX.md).
 - `UPGRADING.md`: only the `PushEmptyCommit` removal, which is still the breaking change users see,
   since `spec.applier` was never released.
+
+As built, step 4 settled these, where the plan above was silent or measured otherwise:
+
+- **Every write of `spec.suspend` is a forced server-side apply** under the field manager
+  `gitops-reverser`, with the token in the same apply: the resume, the fence, the adoption and the
+  hand-back (an empty apply, which releases both fields). `SuspendOwnedElsewhere` is an entry of
+  another manager with operation `Apply` owning `f:spec.f:suspend`: a manifest applied again and
+  again. An `Update` entry (`flux resume`, `flux suspend`, `kubectl edit`) wrote the field once, and
+  the next apply takes it back.
+- **The worker records before it sends.** It takes the token (`ApplyRequest.Token`) and publishes
+  the `Requested` operation as it sends the attempt; the requester writes it through
+  (`ApplyRequest.Record`, `StatusWriter.PersistApplyTriggerStatus`) after the recheck and before the
+  resume, and resumes nothing when that write fails. An attempt that ends without asking for an
+  apply puts the operation before it back. The writer never replaces an operation with one requested
+  earlier.
+- **`observedGeneration` is not used, so there is no `resumedGeneration`.** `finalizeStatus` copies
+  the generation whenever `Ready` is True at the end, which includes a suspended return with `Ready`
+  left over from the last apply. The outcome is read from `Ready` and `lastAppliedRevision` once the
+  resume's token is handled. A token somebody stamped over ours stands in for it.
+- **`Current` also needs `spec.suspend: true`.** A Kustomization the trigger has not adopted yet
+  can still apply on its own, so the operation runs, and its fence suspends it.
+- **A fetch that ends on another commit is a failure,** retried with backoff, unless the decision no
+  longer holds, which is `Stale`. The source cannot fetch the commit the worker checked.
+- **An external resume is recorded by the reconciler** as an `Unresolved` operation with a fence
+  token and no request token, completed once the fence is handled. The worker opening its apply
+  window for it reads `status.operation`, which is step 5's restart recovery. A Kustomization found
+  resumed after the fence of a worker's own operation is fenced again by that operation. A
+  `FluxTrigger` that is Ready reads its Kustomization every minute, which bounds how long a
+  `flux resume` runs before it is suspended again.
+- **Hand-back:** an operation whose trigger is being deleted completes as `Failed` and writes
+  nothing more; the finalizer suspends with a token if the Kustomization is resumed, waits until it
+  is handled, then releases. A Kustomization or `ClusterProvider` that is gone, or a release the
+  identity may not make (a `Warning` Event), lets the trigger go.
+- **"Logged and counted"** is `apply_revision_mismatches_total{applier_kind}`.
+- The fake is `internal/applier/fluxsim`, tested against the source facts on its own.
 
 Steps 1 and 2 do not depend on the API. Steps 4 to 6 need step 3's status. Step 4 is the large one,
 and the step to run a local e2e on before pushing (AGENTS.md, "When to push").

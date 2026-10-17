@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -23,10 +24,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
+	"github.com/ConfigButler/gitops-reverser/internal/applier/fluxsim"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
 )
 
@@ -74,13 +77,22 @@ func applierArgoApplication(syncPolicy map[string]any) runtime.Object {
 	return app
 }
 
-func applierFakeSource(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
-	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+// applierFakeSource is an applier cluster holding objs, with Flux's controllers simulated in it.
+func applierFakeSource(t *testing.T, objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
+	t.Helper()
+	return applierSim(t, objs...).Client
+}
+
+// applierSim is an applier cluster holding objs, with Flux's controllers simulated in it.
+func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
+	t.Helper()
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{
-			{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Resource: "kustomizations"}: "KustomizationList",
-			{Group: "source.toolkit.fluxcd.io", Version: "v1", Resource: "gitrepositories"}:   "GitRepositoryList",
-			{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}:             "ApplicationList",
+			fluxsim.KustomizationGVR(): "KustomizationList",
+			fluxsim.GitRepositoryGVR(): "GitRepositoryList",
+			{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}: "ApplicationList",
 		}, objs...)
+	return fluxsim.New(t, client)
 }
 
 // admitting is a ClusterProvider whose accessFrom admits namespaces.
@@ -160,20 +172,43 @@ func triggerReconciler(
 	}
 }
 
-// reconcileTrigger runs one reconcile of team-a/checkout and returns the trigger as it is then.
+// triggerKey is the trigger every test reconciles.
+var triggerKey = k8stypes.NamespacedName{Namespace: "team-a", Name: "checkout"}
+
+// reconcileTrigger reconciles team-a/checkout until it settles and returns the trigger as it is
+// then. While its Kustomization's suspend is being handled, a FluxTrigger is read again at the fence
+// interval. Every pass publishes its conditions: the first one too, which also adds the finalizer,
+// since nothing re-enqueues a trigger for a metadata-only update.
 func reconcileTrigger(t *testing.T, r *ApplyTriggerReconciler) configbutleraiv1alpha3.ApplyTrigger {
 	t.Helper()
-	key := k8stypes.NamespacedName{Namespace: "team-a", Name: "checkout"}
-	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
-	require.NoError(t, err)
-	trigger := configbutleraiv1alpha3.NewApplyTrigger(r.Kind)
-	require.NoError(t, r.Get(context.Background(), key, trigger))
-	want := RequeueSteadyInterval
-	if !conditionIsTrue(*trigger.StatusConditions(), ConditionTypeReady) &&
-		!conditionIsTrue(*trigger.StatusConditions(), ConditionTypeStalled) {
-		want = applyTriggerSettleInterval
-	}
-	assert.Equal(t, want, result.RequeueAfter, "a trigger that may clear on its own is read again soon")
+	var trigger configbutleraiv1alpha3.ApplyTrigger
+	require.Eventually(t, func() bool {
+		result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+		require.NoError(t, err)
+		trigger = configbutleraiv1alpha3.NewApplyTrigger(r.Kind)
+		require.NoError(t, r.Get(context.Background(), triggerKey, trigger))
+		require.NotNil(t, findCondition(*trigger.StatusConditions(), ConditionTypeReady),
+			"every pass publishes Ready")
+		flux, holds := trigger.(*configbutleraiv1alpha3.FluxTrigger)
+		if holds {
+			require.True(t, controllerutil.ContainsFinalizer(flux, configbutleraiv1alpha3.FluxTriggerFinalizer))
+		}
+		if held := findCondition(*trigger.StatusConditions(), ApplyTriggerConditionSuspended); held != nil &&
+			held.Reason == ReasonFencing {
+			assert.Equal(t, applyTriggerFenceInterval, result.RequeueAfter, "a suspend is waited for closely")
+			return false
+		}
+		want := RequeueSteadyInterval
+		if holds {
+			want = fluxTriggerSteadyInterval
+		}
+		if !conditionIsTrue(*trigger.StatusConditions(), ConditionTypeReady) &&
+			!conditionIsTrue(*trigger.StatusConditions(), ConditionTypeStalled) {
+			want = applyTriggerSettleInterval
+		}
+		assert.Equal(t, want, result.RequeueAfter, "a trigger that may clear on its own is read again soon")
+		return true
+	}, 5*time.Second, 5*time.Millisecond)
 	return trigger
 }
 
@@ -206,7 +241,7 @@ func TestApplyTriggerReconcile_FluxVerdicts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := triggerTestClient(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
 			r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux,
-				applierFakeSource(tc.objects...), nil, tc.allowed)
+				applierFakeSource(t, tc.objects...), nil, tc.allowed)
 
 			trigger := reconcileTrigger(t, r).(*configbutleraiv1alpha3.FluxTrigger)
 
@@ -256,7 +291,7 @@ func TestApplyTriggerReconcile_ArgoCDVerdicts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := triggerTestClient(t, testArgoCDTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
 			r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindArgoCD,
-				applierFakeSource(tc.objects...), nil, tc.allowed)
+				applierFakeSource(t, tc.objects...), nil, tc.allowed)
 
 			trigger := reconcileTrigger(t, r).(*configbutleraiv1alpha3.ArgoCDTrigger)
 
@@ -309,6 +344,7 @@ func TestApplyTriggerReconcile_AnUnreachableClusterKeepsThePublishedVerdict(t *t
 // it liked. The check gives up, and a check that could not be made keeps the published verdict.
 func TestApplyTriggerReconcile_AHangingClusterIsBounded(t *testing.T) {
 	var sawDeadline bool
+	source := applierFakeSource(t, applierFluxObjects()...)
 	published := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 	published.Status.Conditions = []metav1.Condition{{
 		Type: ApplyTriggerConditionConfigured, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
@@ -319,7 +355,7 @@ func TestApplyTriggerReconcile_AHangingClusterIsBounded(t *testing.T) {
 		Kind:   configbutleraiv1alpha3.ApplyTriggerKindFlux,
 		ApplierClients: func(ctx context.Context, _ string) (dynamic.Interface, error) {
 			_, sawDeadline = ctx.Deadline()
-			return applierFakeSource(applierFluxObjects()...), nil
+			return source, nil
 		},
 		newApplier: func(_ string, client dynamic.Interface) applier.Client {
 			flux := applier.NewFlux(client)
@@ -369,7 +405,7 @@ func TestApplyTriggerReconcile_TheTriggersClusterProviderAdmitsIt(t *testing.T) 
 			}
 			var asked []string
 			r := triggerReconciler(triggerTestClient(t, objects...), configbutleraiv1alpha3.ApplyTriggerKindFlux,
-				applierFakeSource(applierFluxObjects()...), nil, true)
+				applierFakeSource(t, applierFluxObjects()...), nil, true)
 			source := r.ApplierClients
 			r.ApplierClients = func(ctx context.Context, cluster string) (dynamic.Interface, error) {
 				asked = append(asked, cluster)
@@ -383,7 +419,7 @@ func TestApplyTriggerReconcile_TheTriggersClusterProviderAdmitsIt(t *testing.T) 
 			assert.Equal(t, tc.wantStatus, configured.Status, configured.Message)
 			assert.Equal(t, tc.wantReason, configured.Reason)
 			assert.Equal(t, tc.wantStalled, conditionIsTrue(*got.StatusConditions(), ConditionTypeStalled))
-			assert.Equal(t, tc.wantClients, asked)
+			assert.Equal(t, tc.wantClients, slices.Compact(asked), "only the trigger's own cluster is asked")
 		})
 	}
 }
@@ -395,11 +431,11 @@ func TestApplyTriggerReconcile_AnUnresolvedOperationIsNotReady(t *testing.T) {
 	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 	trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
 		Phase: configbutleraiv1alpha3.ApplyOperationUnresolved, Reason: configbutleraiv1alpha3.ApplyReasonCatchUp,
-		Commit: "4f2c1ab9d00d", RequestedAt: metav1.Now(), Message: "still applying",
+		Commit: "4f2c1ab9d00d", Token: "T1", RequestedAt: metav1.Now(), Message: "still applying",
 	}
 	c := triggerTestClient(t, trigger)
 	r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux,
-		applierFakeSource(applierFluxObjects()...), nil, true)
+		applierFakeSource(t, applierFluxObjects()...), nil, true)
 
 	got := reconcileTrigger(t, r)
 

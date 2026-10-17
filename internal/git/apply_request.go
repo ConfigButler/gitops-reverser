@@ -99,6 +99,9 @@ type ApplyRequest struct {
 	// Commit is the commit to apply: the branch tip when the worker decided, which the worker has
 	// pushed or proved by a fetch. Empty when the remote does not carry the branch.
 	Commit string
+	// Token identifies the operation the attempt starts, in the applier's own status and in the
+	// trigger's status.operation, which the worker records with it before the attempt is sent.
+	Token string
 	// Targets are the GitTargets the request is for, each the incarnation the worker decided for
 	// and with its own reason. The requester asks nothing for a target that has changed since.
 	Targets []ApplyTarget
@@ -112,6 +115,11 @@ type ApplyRequest struct {
 	// over an edit not yet pushed, is exactly what the quiet-branch rule exists to prevent. Nil is
 	// always current. It does not block.
 	Current func() bool
+	// Record writes the operation the worker recorded for this attempt on its trigger's status, and
+	// returns once it is written. The requester calls it just before the write that starts the
+	// apply, and asks nothing when it fails: a restart reads status.operation to find every apply
+	// that may have started. Nil records nothing.
+	Record func(ctx context.Context) error
 	// Report receives the attempt's reports, in order, and does not block. An attempt that asked the
 	// applier for an apply reports its operation as it moves (ApplyRequested first) until a report
 	// that ends it (ApplyOutcome.Ends); one that asked nothing reports once, with an outcome that
@@ -145,7 +153,8 @@ func (r ApplyRequest) TargetRefs() []itypes.ResourceReference {
 type ApplyOutcome string
 
 const (
-	// ApplyRequested asked the applier to apply: the stamp was patched or the sync operation set.
+	// ApplyRequested asked the applier to apply: the Kustomization was resumed or the sync
+	// operation set.
 	ApplyRequested ApplyOutcome = "Requested"
 	// ApplyRunning is an operation the applier is seen working on.
 	ApplyRunning ApplyOutcome = "Running"
@@ -162,7 +171,8 @@ const (
 	// ApplyFailed is an operation that completed without applying the commit: the applier reported
 	// a failure, or the operation is gone. It may have applied part of it.
 	ApplyFailed ApplyOutcome = "Failed"
-	// ApplyCurrent asked nothing: a CatchUp found the applier already at the commit.
+	// ApplyCurrent asked nothing: a CatchUp or ForeignCommit found the applier already at the
+	// commit (a suspended Kustomization that applied it), or the remote does not carry the branch.
 	ApplyCurrent ApplyOutcome = "Current"
 	// ApplyRequestFailed could not ask; a later attempt may.
 	ApplyRequestFailed ApplyOutcome = "RequestFailed"
@@ -196,9 +206,14 @@ func (o ApplyOutcome) Operated() bool { return o == ApplySucceeded || o == Apply
 type ApplyResult struct {
 	ID      uint64
 	Outcome ApplyOutcome
-	// Token identifies the request in the applier's own status, once one was made (ApplyRequested
-	// carries it).
-	Token string
+	// FenceToken is the requestedAt a Flux Kustomization was suspended again with after the apply
+	// (Settling carries it, and so do the reports after it).
+	FenceToken string
+	// AppliedRevision is the revision the applier reports it applied (Succeeded and Failed carry
+	// it, when the applier reports one).
+	AppliedRevision string
+	// Message says what a Succeeded operation applied instead of the commit.
+	Message string
 	// Err is the cause of a RequestFailed, Rejected or Failed attempt.
 	Err error
 }
@@ -218,6 +233,10 @@ type ApplyTriggerStatus struct {
 // later publication for the same trigger supersedes one not yet written.
 type ApplyTriggerStatusWriter interface {
 	PublishApplyTriggerStatus(trigger TriggerRef, status ApplyTriggerStatus)
+	// PersistApplyTriggerStatus writes the trigger's latest publication now, unless it is written
+	// already, and returns once it is. It blocks, so it is never called on a worker's loop: the
+	// requester calls it (ApplyRequest.Record) before it starts an apply.
+	PersistApplyTriggerStatus(ctx context.Context, trigger TriggerRef) error
 }
 
 // ApplyRequester carries out apply requests. RequestApply must not block: it is called on the
@@ -227,10 +246,10 @@ type ApplyRequester interface {
 }
 
 // StrongerApplyReason is the reason a target owed two requests is owed. A CatchUp asks for the
-// least: it stamps nothing when the artifact already holds the commit, where the others stamp the
-// Kustomization, so it never replaces any of them. A Repair and a ForeignCommit outrank a Refusal
-// because they need no consent, and a ForeignCommit outranks a Repair because the commit it
-// applies is news to the applier. The empty reason ranks below all four.
+// least: it asks nothing of a Kustomization that is suspended with the commit applied, where the
+// others always run the operation, so it never replaces any of them. A Repair and a ForeignCommit
+// outrank a Refusal because they need no consent, and a ForeignCommit outranks a Repair because the
+// commit it applies is news to the applier. The empty reason ranks below all four.
 func StrongerApplyReason(a, b v1alpha3.ApplyReason) v1alpha3.ApplyReason {
 	weakestFirst := []v1alpha3.ApplyReason{
 		"", v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonRepair,

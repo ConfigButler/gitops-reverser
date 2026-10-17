@@ -9,6 +9,7 @@ import (
 	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -77,28 +78,46 @@ var _ = Describe("Apply trigger schema", func() {
 		Expect(create(noKustomization)).To(MatchError(ContainSubstring("spec.kustomizationRef.name must not be empty")))
 	})
 
+	// A regression guard from the first local e2e of the suspend lifecycle: the first reconcile adds
+	// the finalizer, and a metadata-only update does not pass the trigger's predicate, so a reconcile
+	// that stopped there left the trigger with no status for good.
+	It("publishes a new FluxTrigger's conditions in the pass that adds its finalizer", func() {
+		trigger := flux("flux-first-pass")
+		Expect(create(trigger)).To(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trigger), trigger)).To(Succeed())
+			g.Expect(trigger.Finalizers).To(ContainElement(configbutleraiv1alpha3.FluxTriggerFinalizer))
+			g.Expect(findCondition(trigger.Status.Conditions, ConditionTypeReady)).NotTo(BeNil())
+		}, 20*time.Second, 100*time.Millisecond).Should(Succeed())
+	})
+
 	It("never points a trigger at another applier or cluster", func() {
+		// The suite's FluxTrigger reconciler writes the trigger too (its finalizer), so each update
+		// is made from a fresh read, and one that loses that race is made again.
+		update := func(obj client.Object, mutate func()) error {
+			var err error
+			Eventually(func() bool {
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj)).To(Succeed())
+				mutate()
+				err = k8sClient.Update(ctx, obj)
+				return !apierrors.IsConflict(err)
+			}).Should(BeTrue())
+			return err
+		}
 		fluxTrigger := flux("flux-immutable")
 		Expect(create(fluxTrigger)).To(Succeed())
-		fluxTrigger.Spec.KustomizationRef.Name = "other"
-		Expect(
-			k8sClient.Update(ctx, fluxTrigger),
-		).To(MatchError(ContainSubstring("spec.kustomizationRef is immutable")))
-
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(fluxTrigger), fluxTrigger)).To(Succeed())
-		fluxTrigger.Spec.ClusterProviderRef.Name = "other"
-		Expect(
-			k8sClient.Update(ctx, fluxTrigger),
-		).To(MatchError(ContainSubstring("spec.clusterProviderRef is immutable")))
-
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(fluxTrigger), fluxTrigger)).To(Succeed())
-		fluxTrigger.Spec.QuietPeriod = &metav1.Duration{Duration: time.Minute}
-		Expect(k8sClient.Update(ctx, fluxTrigger)).To(Succeed(), "the quiet period is not what it holds")
+		Expect(update(fluxTrigger, func() { fluxTrigger.Spec.KustomizationRef.Name = "other" })).
+			To(MatchError(ContainSubstring("spec.kustomizationRef is immutable")))
+		Expect(update(fluxTrigger, func() { fluxTrigger.Spec.ClusterProviderRef.Name = "other" })).
+			To(MatchError(ContainSubstring("spec.clusterProviderRef is immutable")))
+		Expect(update(fluxTrigger, func() {
+			fluxTrigger.Spec.QuietPeriod = &metav1.Duration{Duration: time.Minute}
+		})).To(Succeed(), "the quiet period is not what it holds")
 
 		argoTrigger := argo("argo-immutable")
 		Expect(create(argoTrigger)).To(Succeed())
-		argoTrigger.Spec.ApplicationRef.Namespace = "elsewhere"
-		Expect(k8sClient.Update(ctx, argoTrigger)).To(MatchError(ContainSubstring("spec.applicationRef is immutable")))
+		Expect(update(argoTrigger, func() { argoTrigger.Spec.ApplicationRef.Namespace = "elsewhere" })).
+			To(MatchError(ContainSubstring("spec.applicationRef is immutable")))
 	})
 
 	It("lets a GitTarget name a trigger of a kind it serves, and requires one for Reapply", func() {

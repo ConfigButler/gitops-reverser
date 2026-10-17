@@ -17,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -37,6 +38,38 @@ const ApplyTriggerConditionConfigured = "Configured"
 // ReasonOperationUnresolved is Ready=False on a trigger whose operation has not completed in the
 // time it was given. It clears when the operation completes.
 const ReasonOperationUnresolved = "OperationUnresolved"
+
+// ApplyTriggerConditionSuspended reports whether a FluxTrigger holds its Kustomization: suspended
+// under GitOps Reverser's field manager, with the last suspend's token handled, so nothing that
+// started before the suspend is still running. A FluxTrigger is Ready only once it is.
+const ApplyTriggerConditionSuspended = "Suspended"
+
+// Suspended reasons, and the Events of the suspend lifecycle on a FluxTrigger.
+const (
+	// ReasonHeld is Suspended=True.
+	ReasonHeld = "Held"
+	// ReasonFencing is Suspended=False while the token of the suspend is not handled yet.
+	ReasonFencing = "Fencing"
+	// ReasonNotHeld is Suspended=Unknown on a trigger that is not Configured: nothing is suspended.
+	ReasonNotHeld = "NotHeld"
+	// EventReasonAdopted is a Kustomization suspended for the first time.
+	EventReasonAdopted = "Adopted"
+	// EventReasonResumedElsewhere is a held Kustomization found resumed by somebody else, such as
+	// `flux resume`, and suspended again.
+	EventReasonResumedElsewhere = "ResumedElsewhere"
+	// EventReasonReleased is a Kustomization handed back to Flux when its trigger was deleted.
+	EventReasonReleased = "Released"
+	// EventReasonReleaseFailed is a deleted trigger that could not hand its Kustomization back.
+	EventReasonReleaseFailed = "ReleaseFailed"
+)
+
+// fluxTriggerSteadyInterval is how often a FluxTrigger that is Ready reads its Kustomization again:
+// that read is what finds a `flux resume`, so it is more often than other kinds settle.
+const fluxTriggerSteadyInterval = time.Minute
+
+// applyTriggerFenceInterval is how soon a trigger waiting on its Kustomization's suspend is read
+// again: a suspended reconcile handles the token in tens of milliseconds.
+const applyTriggerFenceInterval = 2 * time.Second
 
 // applierCheckTimeout bounds the Configured check: at most two GETs and two access reviews
 // against the applier's cluster. Its client has no request timeout, because it also carries the
@@ -67,12 +100,21 @@ type ApplyTriggerReconciler struct {
 	// ApplierClients resolves the dynamic client of a trigger's cluster. Nil leaves Configured
 	// Unknown (tests, and the CLI).
 	ApplierClients applier.SourceClients
+	// APIReader reads a trigger uncached before its Kustomization is suspended, so an operation a
+	// branch worker recorded a moment ago is never taken for an external resume. Nil reads through
+	// Client.
+	APIReader client.Reader
 	// newApplier builds the client that checks an applier of a kind; nil is applier.NewClient. A
 	// test sets it to answer the access review without a real API server.
 	newApplier func(kind string, client dynamic.Interface) applier.Client
+	// newFlux builds the Flux client that suspends and releases a Kustomization; nil is
+	// applier.NewFlux.
+	newFlux fluxClientFactory
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers;argocdtriggers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers,verbs=update;patch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers/status;argocdtriggers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
@@ -92,28 +134,67 @@ func (r *ApplyTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	flux, holds := trigger.(*configbutleraiv1alpha3.FluxTrigger)
+	if holds {
+		if done, result, err := r.finalizeFluxTrigger(ctx, flux); done {
+			return result, err
+		}
+	}
+
 	st := beginStatus(r.Client, r.Recorder, trigger)
 	configured, source, checked := r.configuredVerdict(ctx, trigger)
 	st.setValue(ApplyTriggerConditionConfigured, configured)
 	if checked {
 		setTriggerSource(trigger, source)
 	}
+	var held *conditionValue
+	if holds {
+		value := r.holdKustomization(ctx, flux, configured)
+		st.setValue(ApplyTriggerConditionSuspended, value)
+		held = &value
+	}
 
 	applierRef := trigger.Applier()
 	rd := newReadiness(
 		fmt.Sprintf("%s %s %s can be asked to apply", trigger.ApplierKind(), applierRef, triggerSourceSummary(source)),
 		trigger.TriggerKind()+" is not stalled")
-	applyTriggerReadinessGates(rd, configured, trigger.Operation())
+	applyTriggerReadinessGates(rd, configured, held, trigger.Operation())
 	st.applyReadiness(rd)
 
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
 	requeue := RequeueSteadyInterval
-	if rd.converging() {
+	if holds {
+		requeue = fluxTriggerSteadyInterval
+	}
+	switch {
+	case held != nil && held.Reason == ReasonFencing:
+		requeue = applyTriggerFenceInterval
+	case rd.converging():
 		requeue = applyTriggerSettleInterval
 	}
 	return ctrl.Result{RequeueAfter: st.requeueAfter(requeue)}, nil
+}
+
+// finalizeFluxTrigger hands a deleted FluxTrigger's Kustomization back, or puts the finalizer on a
+// live one before anything else: the finalizer is what hands the Kustomization back, so nothing is
+// suspended before it is in place. The reconcile then goes on with the object the update returned:
+// a metadata-only update does not pass the predicate, so nothing else would reconcile it again.
+// done reports that the reconcile ends here, with result and err.
+func (r *ApplyTriggerReconciler) finalizeFluxTrigger(
+	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
+) (bool, ctrl.Result, error) {
+	if !trigger.DeletionTimestamp.IsZero() {
+		result, err := r.release(ctx, trigger)
+		return true, result, err
+	}
+	if controllerutil.AddFinalizer(trigger, configbutleraiv1alpha3.FluxTriggerFinalizer) {
+		if err := r.Update(ctx, trigger); err != nil {
+			return true, ctrl.Result{}, err
+		}
+	}
+	return false, ctrl.Result{}, nil
 }
 
 // configuredVerdict checks the trigger's applier in its cluster, and returns the source it read, and
@@ -204,12 +285,13 @@ func triggerSourceSummary(source *applier.Source) string {
 	return fmt.Sprintf("(revision %q of %s)", source.Revision, source.URL)
 }
 
-// applyTriggerReadinessGates contributes Configured and the operation to the trio, in that order.
+// applyTriggerReadinessGates contributes Configured, the operation, and a FluxTrigger's Suspended
+// to the trio, in that order.
 // An applier that is missing, or a ClusterProvider that is, may be on its way (Flux and Argo CD
 // objects are often created after the trigger); anything else Configured=False needs a human. An
 // operation that has not completed in time clears on its own once it does.
 func applyTriggerReadinessGates(
-	rd *readiness, configured conditionValue, operation *configbutleraiv1alpha3.ApplyOperation,
+	rd *readiness, configured conditionValue, held *conditionValue, operation *configbutleraiv1alpha3.ApplyOperation,
 ) {
 	waits := configured.Reason == applier.ReasonApplierNotFound ||
 		configured.Reason == authz.ReasonClusterProviderNotFound
@@ -219,9 +301,15 @@ func applyTriggerReadinessGates(
 	rd.progressingIf(configured.Status == metav1.ConditionUnknown, metav1.ConditionUnknown,
 		configured.Reason, configured.Message)
 	if operation != nil && operation.Phase == configbutleraiv1alpha3.ApplyOperationUnresolved {
+		what := fmt.Sprintf("the %s apply of %s, asked for at", operation.Reason, describeCommit(operation.Commit))
+		if operation.Reason == "" {
+			what = "an apply GitOps Reverser did not start, seen at"
+		}
 		rd.progressing(metav1.ConditionFalse, ReasonOperationUnresolved, fmt.Sprintf(
-			"the %s apply of %s, asked for at %s, has not completed: %s", operation.Reason,
-			describeCommit(operation.Commit), operation.RequestedAt.UTC().Format(time.RFC3339), operation.Message))
+			"%s %s, has not completed: %s", what, operation.RequestedAt.UTC().Format(time.RFC3339), operation.Message))
+	}
+	if held != nil {
+		rd.progressingIf(held.Status != metav1.ConditionTrue, held.Status, held.Reason, held.Message)
 	}
 }
 

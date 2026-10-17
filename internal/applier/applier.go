@@ -7,12 +7,14 @@ commit is safe to apply. The worker decides WHEN; this package decides HOW, off 
 so a slow or unreachable applier never holds a branch.
 
 Two kinds are served, behind one Client: a Flux Kustomization whose sourceRef is a GitRepository
-(a FluxTrigger's spec.kustomizationRef, flux.go), and an Argo CD Application with automated sync
-off (an ArgoCDTrigger's spec.applicationRef, argocd.go). See docs/design/apply-trigger.md.
+(a FluxTrigger's spec.kustomizationRef, flux.go), held suspended while idle and resumed for each
+apply, and an Argo CD Application with automated sync off (an ArgoCDTrigger's
+spec.applicationRef, argocd.go). Either way the applier applies only when GitOps Reverser asks.
+See docs/design/apply-trigger.md and docs/design/suspended-appliers-plan.md.
 
-A request asks and never reports. Nothing here claims an apply happened; the applier's own status
-(lastAppliedRevision on a Kustomization, status.operationState on an Application) is the record of
-that.
+Each request starts one operation, which the dispatcher follows until the applier's own status
+(the handled tokens and Ready of a Kustomization, status.operationState of an Application) says it
+completed.
 */
 package applier
 
@@ -44,28 +46,63 @@ type Client interface {
 	// Validate answers a trigger's Configured condition: the applier exists, applies a source GitOps
 	// Reverser can drive, and may be asked. It reports the source it read, whatever the verdict.
 	Validate(ctx context.Context, ref types.NamespacedName) Verdict
-	// Request asks the applier to apply commit, after checking it still applies want and asking
-	// current just before it writes. A permanent error is a configuration no retry can fix;
-	// errStale is a decision that no longer held.
-	Request(
-		ctx context.Context,
-		ref types.NamespacedName,
-		want Binding,
-		commit string,
-		reason v1alpha3.ApplyReason,
-		current func() bool,
-	) (Stamped, error)
-	// Progress reports how far the applier is with the apply a Request asked for. A read that
-	// fails is an error, and its Progress says nothing.
-	Progress(ctx context.Context, ref types.NamespacedName, s Stamped) (Progress, error)
+	// Request starts one apply of ask.Commit, after checking the applier still applies ask.Want and
+	// asking ask.Current just before it writes. A permanent error is a configuration no retry can
+	// fix; errStale is a decision that no longer held.
+	Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Stamped, error)
+	// Progress reports how far the applier is with the apply a Request started, and takes the
+	// operation's next step when it is the client's to take (a Flux Kustomization is suspended again
+	// after its apply). A read or write that fails is an error, and its Progress says nothing.
+	Progress(ctx context.Context, ref types.NamespacedName, s *Stamped) (Progress, error)
+}
+
+// Ask is what one Request asks of an applier.
+type Ask struct {
+	// Want is the repository and branch the applier must apply.
+	Want Binding
+	// Commit is the commit to apply; empty when the remote does not carry the branch.
+	Commit string
+	// Reason is why.
+	Reason v1alpha3.ApplyReason
+	// Token identifies the request in the applier's own status: the requestedAt a Flux
+	// Kustomization is resumed with, or the request entry in an Argo CD operation's info.
+	Token string
+	// Current reports whether the decision still holds; nil always does.
+	Current func() bool
+	// Record writes the operation on its trigger, and returns once it is written. It is called just
+	// before the write that starts the apply, so a restart finds every apply that may have started.
+	// Nil records nothing.
+	Record func(ctx context.Context) error
+}
+
+// recordOnce is Record, called the first time only: a request that writes more than once (an Argo
+// CD update that lost a race) records its operation once.
+func (a Ask) recordOnce() func(ctx context.Context) error {
+	recorded := a.Record == nil
+	return func(ctx context.Context) error {
+		if recorded {
+			return nil
+		}
+		if err := a.Record(ctx); err != nil {
+			return err
+		}
+		recorded = true
+		return nil
+	}
 }
 
 // Progress is where the operation a Request started stands, as the applier's status shows it.
 type Progress struct {
-	// Outcome is git.ApplyRequested, git.ApplyRunning, git.ApplySucceeded or git.ApplyFailed.
+	// Outcome is git.ApplyRequested, git.ApplyRunning, git.ApplySettling, git.ApplySucceeded or
+	// git.ApplyFailed.
 	Outcome git.ApplyOutcome
-	// Message is why a Failed operation failed.
+	// Message is why a Failed operation failed, or what a Succeeded one applied instead of the
+	// commit.
 	Message string
+	// FenceToken is the requestedAt the suspend after a Flux apply carried, once written.
+	FenceToken string
+	// AppliedRevision is the revision the applier reports it applied, once the operation completed.
+	AppliedRevision string
 }
 
 var (
@@ -149,22 +186,23 @@ type Source struct {
 	Revision string
 }
 
-// Stamped is what one Request did, with what the applier reported before it, so Progress can tell
-// when it has finished the apply it was asked for.
+// Stamped is what one Request did, for Progress to follow the operation it started.
 type Stamped struct {
 	// Outcome is what was asked, if anything.
 	Outcome Outcome
-	// Token identifies the request: the reconcile.fluxcd.io/requestedAt value stamped on a Flux
-	// object, or the request entry in an Argo CD operation's info. Empty when nothing was asked.
+	// Token identifies the request: the requestedAt a Flux Kustomization was resumed with, or the
+	// request entry in an Argo CD operation's info. Empty when nothing was asked.
 	Token string
-	// Source is the GitRepository the Kustomization applies from (Flux only).
-	Source types.NamespacedName
-	// PriorAttemptedRevision is the Kustomization's status.lastAttemptedRevision before the stamp
-	// (Flux only).
-	PriorAttemptedRevision string
-	// PriorArtifactRevision is the GitRepository's status.artifact.revision before the stamp
-	// (Flux only).
-	PriorArtifactRevision string
+	// Commit is the commit asked for.
+	Commit string
+	// FenceToken is the requestedAt a Flux Kustomization was suspended again with, once it was.
+	FenceToken string
+	// Overdue is set by the dispatcher once the operation is Unresolved. A Flux Kustomization is
+	// then suspended at once, rather than once its apply was seen to end.
+	Overdue bool
+	// verdict is the outcome of a Flux apply, read once the resume's token was handled and kept
+	// until the fence is.
+	verdict *Progress
 }
 
 // Binding is the repository and branch an applier must apply from: the GitProvider's spec.url and

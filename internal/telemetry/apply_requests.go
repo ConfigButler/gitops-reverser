@@ -34,3 +34,11 @@ import "go.opentelemetry.io/otel/metric"
 // target label would have to invent an owner. The ApplyRequested and ApplyRequestFailed Events on
 // each GitTarget carry that identity instead.
 var ApplyRequestsTotal metric.Int64Counter
+
+// ApplyRevisionMismatchesTotal counts apply operations that succeeded on another revision than the
+// commit GitOps Reverser checked, labelled by {applier_kind}. A Flux Kustomization applies whatever
+// its GitRepository's artifact holds when it reconciles; the artifact is read again just before the
+// resume, so this is somebody stamping the GitRepository between that read and the reconcile (a
+// person, or the source's own interval). The apply window still withholds a late write over a
+// newer API edit; a steady rate means something else keeps fetching the source.
+var ApplyRevisionMismatchesTotal metric.Int64Counter

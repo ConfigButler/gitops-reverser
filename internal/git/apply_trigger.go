@@ -31,11 +31,11 @@ import (
 //     window is closed rather than waited out, because a user who keeps editing would otherwise
 //     hold a Git-side change back for as long as they type.
 //   - Refusal: a refused edit on a target with spec.onRefusal: Reapply (refusal_reapply.go).
-//   - CatchUp: this worker's own pushes. Flux applies on its own timers and on a restart from
-//     whatever artifact it holds, and an artifact behind these pushes would revert edits already in
-//     Git. Asked only once the branch has stayed quiet for the trigger's quiet period, and never of
-//     an Argo CD Application: with automated sync off it applies nothing on its own, so it holds no
-//     stale state to correct (ApplierRef.CatchesUp).
+//   - CatchUp: this worker's own pushes. A suspended Kustomization applies nothing on its own, so
+//     this is convergence, not safety: Flux's inventory learns of an object only from an apply of a
+//     commit that holds it, and an object created through the API and never applied is not pruned
+//     when Git deletes it. Asked only once the branch has stayed quiet for the trigger's quiet
+//     period, and never of an Argo CD Application (decided without it; ApplierRef.CatchesUp).
 //   - Repair: the apply window withheld a late apply over a newer API edit (apply_window.go), so
 //     the cluster runs an older value than Git. Asked like a Refusal: on a quiet branch, with no
 //     quiet period, and of either kind of applier, because nothing else would put the edit back on
@@ -236,6 +236,10 @@ type inflightAttempt struct {
 	refusals map[refusalKey]owedRefusal
 	// phase is the last report of its operation, empty before the first.
 	phase ApplyOutcome
+	// previous is the operation recorded before this attempt's, with the attempt it belonged to,
+	// put back should this attempt ask for no apply.
+	previous   *v1alpha3.ApplyOperation
+	previousID uint64
 	// abandon closes the request's Abandoned channel.
 	abandon context.CancelFunc
 }
@@ -463,16 +467,25 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 
 	l.nextApplyID++
 	abandoned, abandon := context.WithCancel(l.w.ctx)
+	sentAt := time.Now()
 	attempt := &inflightAttempt{
-		id: l.nextApplyID, reason: reason, commit: tip, sentAt: time.Now(),
+		id: l.nextApplyID, reason: reason, commit: tip, sentAt: sentAt,
 		foreign: state.foreign, catchUp: state.catchUp, repair: state.repair,
 		refusals: refusals, abandon: abandon,
+		previous: state.operation, previousID: state.operationID,
 	}
 	state.foreign, state.catchUp, state.repair, state.inflight = false, false, false, attempt
-	state.openApplyWindow(attempt.id, tip, time.Now())
+	state.openApplyWindow(attempt.id, tip, sentAt)
 	for key := range refusals {
 		delete(l.reapplyOwed, key)
 	}
+	token := operationToken(sentAt)
+	state.operation = &v1alpha3.ApplyOperation{
+		Phase: v1alpha3.ApplyOperationRequested, Reason: reason, Commit: tip, Token: token,
+		RequestedAt: metav1.NewTime(sentAt),
+	}
+	state.operationID = attempt.id
+	record := l.publishOperation(state)
 
 	w := l.w
 	w.Log.Info("Asking the applier to apply",
@@ -484,6 +497,8 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		Applier:       state.ref,
 		Reason:        reason,
 		Commit:        tip,
+		Token:         token,
+		Record:        record,
 		Targets:       targets,
 		PriorFailures: state.failures,
 		Current:       func() bool { return w.decisionHolds(tip) },
@@ -579,24 +594,25 @@ func operationPhase(outcome ApplyOutcome) (v1alpha3.ApplyOperationPhase, bool) {
 	return "", false
 }
 
-// recordOperation records an attempt's report in the operation its trigger's status shows. The
-// first report of an attempt that asked for an apply starts a new record; the later ones move it.
-// Unresolved stays until the operation completes, as advanceOperation keeps it.
+// recordOperation records an attempt's report in the operation its trigger's status shows, which
+// sendAttempt started as Requested before the attempt was sent. A report that ends an attempt that
+// asked for no apply puts back the operation recorded before it. Unresolved stays until the
+// operation completes, as advanceOperation keeps it.
 func (s *applierState) recordOperation(attempt *inflightAttempt, res ApplyResult, now time.Time) {
-	phase, operated := operationPhase(res.Outcome)
-	if !operated {
+	if s.operationID != attempt.id {
 		return
 	}
-	var operation *v1alpha3.ApplyOperation
-	if s.operation != nil && s.operationID == attempt.id {
-		operation = s.operation.DeepCopy()
-	} else {
-		operation = &v1alpha3.ApplyOperation{
-			Reason: attempt.reason, Commit: attempt.commit, RequestedAt: metav1.NewTime(attempt.sentAt),
+	phase, operated := operationPhase(res.Outcome)
+	if !operated {
+		if res.Outcome.Ends() {
+			// It asked for no apply: the record made before it was sent stands for nothing.
+			s.operation, s.operationID = attempt.previous, attempt.previousID
 		}
+		return
 	}
-	if res.Token != "" {
-		operation.Token = res.Token
+	operation := s.operation.DeepCopy()
+	if res.FenceToken != "" {
+		operation.FenceToken = res.FenceToken
 	}
 	if operation.Phase != v1alpha3.ApplyOperationUnresolved || phase.Completed() {
 		operation.Phase = phase
@@ -604,12 +620,37 @@ func (s *applierState) recordOperation(attempt *inflightAttempt, res ApplyResult
 	switch {
 	case phase.Completed():
 		finished := metav1.NewTime(now)
-		operation.FinishedAt, operation.Message = &finished, errString(res.Err)
+		operation.FinishedAt, operation.AppliedRevision = &finished, res.AppliedRevision
+		operation.Message = errString(res.Err)
+		if res.Err == nil {
+			operation.Message = res.Message
+		}
 	case phase == v1alpha3.ApplyOperationUnresolved:
 		operation.Message = "the applier has not completed the apply in the time it was given; it is still " +
 			"followed, and nothing more is asked of it until it completes"
 	}
 	s.operation, s.operationID = operation, attempt.id
+}
+
+// operationToken is the token an operation started at sentAt carries: the time, to the nanosecond,
+// as `flux reconcile` stamps a requestedAt.
+func operationToken(sentAt time.Time) string {
+	return sentAt.UTC().Format(time.RFC3339Nano)
+}
+
+// publishOperation hands the trigger the operation an attempt is about to start, before the
+// attempt is sent, and returns the attempt's ApplyRequest.Record: the requester writes it through
+// before it starts the apply. Nil without a trigger status writer.
+func (l *branchWorkerEventLoop) publishOperation(state *applierState) func(context.Context) error {
+	writer := l.w.triggerStatus
+	if writer == nil {
+		return nil
+	}
+	next := ApplyTriggerStatus{Operation: state.operation, RepairOwed: state.repairOwed()}
+	writer.PublishApplyTriggerStatus(state.ref.Trigger, next)
+	state.published = &next
+	trigger := state.ref.Trigger
+	return func(ctx context.Context) error { return writer.PersistApplyTriggerStatus(ctx, trigger) }
 }
 
 // publishTriggerStatus hands each applier's trigger what its status should show, when that changed

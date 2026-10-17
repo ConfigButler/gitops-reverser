@@ -369,6 +369,7 @@ func main() {
 			Kind:           kind,
 			Recorder:       mgr.GetEventRecorderFor(strings.ToLower(kind)),
 			ApplierClients: watchMgr.ApplierDynamicClient,
+			APIReader:      mgr.GetAPIReader(),
 		}).SetupWithManager(mgr), "unable to create controller", "controller", kind)
 	}
 	// Command authorship is captured at admission by the validate-operator-types webhook and
