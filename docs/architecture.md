@@ -132,8 +132,8 @@ that repository and branch:
 
 The worker owns each request until it is delivered, and decides every retry the same way. A request
 asks and never reports; it runs off the publication path and cannot fail a publication. **Built:**
-the Flux `Kustomization` applier. **The aim:** an Argo CD `Application` and a webhook for any other
-tool. See [the apply trigger design](design/apply-trigger.md).
+the Flux `Kustomization` applier and the Argo CD `Application` applier, with automated sync off.
+**The aim:** a webhook for any other tool. See [the apply trigger design](design/apply-trigger.md).
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches initialize from current state on startup. When an endpoint
@@ -272,7 +272,7 @@ graph LR
 
     subgraph SOURCE["Source cluster selected by ClusterProvider"]
         API["Kubernetes API\ndiscovery · Namespace policy · watches"]
-        APPLIER["Applier\nFlux Kustomization"]
+        APPLIER["Applier\nFlux Kustomization\nor Argo CD Application"]
     end
 
     HOST[("Git host")]
@@ -298,8 +298,9 @@ source context: client, discovery catalog, followability registry, source-namesp
 reachability state. Its `GitTarget`s open their source watches through that context. The contexts are keyed
 by provider name and are released when no `GitTarget` references them.
 
-The applier is not one of the six kinds. It belongs to Flux, lives in the source cluster it applies
-to, and is reached through the same source context and identity the watches use.
+The applier is not one of the six kinds. It belongs to Flux or Argo CD, lives in the source cluster
+it applies to or in the cluster `spec.applier.clusterProviderRef` names, and is reached through that
+`ClusterProvider`'s identity.
 
 | CRD | Scope | One line role |
 |---|---|---|
@@ -399,8 +400,10 @@ Key fields:
 - `spec.commit.window`: when this target's commit windows close: `idleTimeout` (default `5s`) of
   silence, or `maxDuration` (default `1m`) after the window opened.
 - `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
-- `spec.applier`: optional; `kustomizationRef` (the Flux `Kustomization` that applies this folder,
-  and that GitOps Reverser asks to apply) and `quietPeriod` (default `30s`).
+- `spec.applier`: optional; exactly one of `kustomizationRef` (the Flux `Kustomization` that applies
+  this folder, and that GitOps Reverser asks to apply) and `applicationRef` (the Argo CD
+  `Application`, automated sync off, whose syncs GitOps Reverser starts), with `quietPeriod`
+  (default `30s`) for a `Kustomization` only.
 - `spec.onRefusal`: `Ignore` (default) or `Reapply`, which asks the applier to reapply the tip when
   an edit to an existing document is refused. `Reapply` requires `spec.applier`.
 
@@ -426,8 +429,9 @@ Status has a kstatus-compatible summary layer plus domain conditions:
   source API the data plane can currently reach.
 - `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
-- `ApplierConfigured`, present only with `spec.applier`, says the applier exists in the source
-  cluster, applies this repository and branch, and can be patched. It is a gate.
+- `ApplierConfigured`, present only with `spec.applier`, says the applier exists in its cluster,
+  applies this repository and branch, can be written, and (an `Application`) has automated sync off.
+  It is a gate.
 - `status.streams` is a bounded count summary, not a per-type list.
 - `status.applier` is an observation: the last apply request's commit, time and reason.
 
@@ -1740,9 +1744,9 @@ Current limitations:
 - **GitOps Reverser is the fast path to a deployment.** With `spec.applier` set, the applier's own
   triggers are off, so while the operator is down a Git-side push reaches the cluster only through a
   manual sync, `flux reconcile`, or Flux's long backstop interval.
-- **Only Flux can be an applier yet.** An Argo CD `Application` keeps its own triggers until
-  `applicationRef` lands. The `Kustomization` may live in any cluster a `ClusterProvider` reaches
-  (`spec.applier.clusterProviderRef`), such as a management cluster.
+- **Only Flux and Argo CD can be appliers yet,** and an Argo CD `Application` only with automated
+  sync off: one that syncs on its own is refused, not driven. The applier may live in any cluster a
+  `ClusterProvider` reaches (`spec.applier.clusterProviderRef`), such as a management cluster.
 - **An apply request cannot reserve time.** An edit made while the requested apply runs, to a field
   the applier sets, is reverted on the cluster. Its value stays in Git, because the applier's write
   over it is not mirrored, and the next apply restores it; until then the cluster runs the older
