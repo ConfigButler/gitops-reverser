@@ -1,6 +1,7 @@
 # The Argo CD applier: implementation plan
 
-> **plan**: written 2026-10-17, to be built in a fresh session after (or stacked on) #419. Delete it
+> **plan**: written 2026-10-17, to be built in a fresh session on #419's branch
+> (`docs-bi-directional-right`), before it merges. Delete it
 > once the PR lands; the lasting design goes into [`apply-trigger.md`](apply-trigger.md).
 > Index: [`../INDEX.md`](../INDEX.md).
 
@@ -38,7 +39,7 @@ so Argo CD gets no `CatchUp` (already decided; do not re-raise).
 | Autosync builds `Operation{Sync{Revision, Prune: automated.GetPrune(), SyncOptions, Source(s), Revisions}, InitiatedBy{Automated: true}, Retry: spec.syncPolicy.retry or {Limit: 5}}` | `controller/appcontroller.go:2628` | Build ours the same way, with `Revision` pinned to the checked commit |
 | Setting an operation refuses while one is set (`ErrAnotherOperationInProgress`) | `util/argo/argo.go` `SetAppOperation` | Never replace a running operation; wait for it |
 | Automated sync is on when `syncPolicy.automated` is present and `enabled` is unset or true | `pkg/apis/application/v1alpha1/types.go` `IsAutomatedSyncEnabled` | `AutomatedSyncEnabled` is exactly this rule; `automated: {enabled: false, prune: …}` is the off switch that keeps prune |
-| Sync windows are checked for every operation, manual or not, by `InitiatedBy.Automated` | `controller/sync.go` `syncWindowPreventsSync` | A sync we set obeys the project's windows. Which rules apply depends on the `Automated` flag we set (open question 2) |
+| Sync windows are checked for every operation, manual or not, by `InitiatedBy.Automated` | `controller/sync.go` `syncWindowPreventsSync` | A sync we set obeys the project's windows; with `Automated: true` (decision 2) the automated rules hold |
 
 To verify while building: the `Replace=true` and create paths (`UpdateResource`, `CreateResource`,
 `ReplaceResource` in `sync_context.go`) may write under a different manager; hooks create objects
@@ -77,7 +78,8 @@ To verify while building: the `Replace=true` and create paths (`UpdateResource`,
     `targetRevision` is not this branch (a branch name or `refs/heads/<branch>`; `HEAD` and tags
     mismatch). A multi-source `Application` is refused here in v1, with a message that says so.
   - **`AutomatedSyncEnabled`** (new, stalled): `spec.syncPolicy.automated` is present and not
-    `enabled: false`. The standard is full control, so this is a misconfiguration, not a warning.
+    `enabled: false` (`IsAutomatedSyncEnabled`). The standard is full control, so this is a
+    misconfiguration, not a warning.
   - `Forbidden`: a SelfSubjectAccessReview for `patch` on `applications.argoproj.io` fails.
 - **Request**:
   1. Read the `Application`. Check the source and the automated-sync rule again (a published
@@ -86,7 +88,8 @@ To verify while building: the `Replace=true` and create paths (`UpdateResource`,
      bounded by the apply-window timeout, then read again. Never replace it.
   3. Ask `Current()`. False is `Stale`, as for Flux.
   4. Update the `Application` with `operation` set as autosync builds it (see the facts table),
-     `Revision` = the commit, `InitiatedBy.Username = "gitops-reverser"`. Use an update guarded by
+     `Revision` = the commit, `InitiatedBy{Username: "gitops-reverser", Automated: true}`,
+     `Prune` per decision 1. Use an update guarded by
      `resourceVersion`, so a sync somebody else started in between makes it fail instead of
      replacing theirs.
 - **Handled**: `status.operationState` is for our operation (`initiatedBy.username` and the revision
@@ -120,20 +123,15 @@ To verify while building: the `Replace=true` and create paths (`UpdateResource`,
   - a refused edit with `Reapply` is reverted by an Argo CD sync;
   - an `Application` with automated sync on is `AutomatedSyncEnabled` and is never synced.
 
-## Open questions for the user
+## Decided (2026-10-17, do not re-raise)
 
-1. **Where prune comes from.** Autosync reads `syncPolicy.automated.prune`, which does not exist
-   once `automated` is gone. A foreign commit that deletes a manifest needs prune to take effect.
-   Recommendation: read `automated.prune` when `automated` is present with `enabled: false` (Argo CD
-   3.1 and later keeps the block for exactly this), and otherwise sync without prune, documented as
-   such. Alternative: a `spec.applier.prune` field of our own.
-2. **Manual or automated initiator.** `InitiatedBy.Automated` decides which sync-window rules hold
-   us. Recommendation: `Automated: true` with `Username: "gitops-reverser"`, because we replace
-   autosync, so a window that blocks automated syncs should block ours too.
-3. **Hooks on every foreign commit.** `ForeignCommit` asks every applier on the branch, whatever
-   folder the push touched. For Flux that is harmless; for Argo CD every sync runs the
-   `Application`'s hooks. Narrowing it needs the paths a push changed and each `Application`'s
-   `spec.source.path`. Recommendation: ship without, measure, narrow if it hurts.
+1. **Prune** comes from `syncPolicy.automated.prune` when `automated` is present with
+   `enabled: false` (the off switch that keeps the block). Without the block, the sync does not
+   prune, and the guide says so. No `spec.applier.prune` field.
+2. **The initiator** is `InitiatedBy{Username: "gitops-reverser", Automated: true}`: we replace
+   autosync, so a sync window that blocks automated syncs blocks ours too.
+3. **Hooks on every foreign commit** ship as they are. `ForeignCommit` keeps asking every applier on
+   the branch; narrowing by changed paths waits for a measured complaint.
 
 ## Out of scope
 
