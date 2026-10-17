@@ -57,3 +57,37 @@ func TestSourceDynamicClient_ServesADeclaredCluster(t *testing.T) {
 	require.NotNil(t, cc)
 	assert.Same(t, first, cc.dynamicClient, "it is the client the cluster's watches run on")
 }
+
+// TestApplierDynamicClient_ServesAnUndeclaredClusterWithoutKeepingIt: an applier may live in a
+// cluster no GitTarget mirrors from. It is served, from the provider as it resolves now, and no
+// cluster context is created, so nothing outlives the call.
+func TestApplierDynamicClient_ServesAnUndeclaredClusterWithoutKeepingIt(t *testing.T) {
+	m := &Manager{
+		Log:            logr.Discard(),
+		SourceClusters: stubSourceClusterResolver{cfg: &rest.Config{Host: "https://hub.example"}, version: "v1"},
+	}
+
+	dc, err := m.ApplierDynamicClient(context.Background(), "hub")
+	require.NoError(t, err)
+	require.NotNil(t, dc)
+	assert.Nil(t, m.clusterContextByID("hub"), "an applier-only cluster creates no cluster context")
+}
+
+// TestApplierDynamicClient_ReusesADeclaredClustersClient: a cluster some GitTarget mirrors from
+// already has a client, with the same identity; the applier is asked through that one.
+func TestApplierDynamicClient_ReusesADeclaredClustersClient(t *testing.T) {
+	m := &Manager{
+		Log:            logr.Discard(),
+		SourceClusters: stubSourceClusterResolver{cfg: &rest.Config{Host: "https://prod.example"}, version: "v1"},
+	}
+	m.rememberGitTargetCluster(gd("checkout"), "prod-eu-1")
+
+	source, err := m.SourceDynamicClient(context.Background(), "prod-eu-1")
+	require.NoError(t, err)
+	applier, err := m.ApplierDynamicClient(context.Background(), "prod-eu-1")
+	require.NoError(t, err)
+	assert.Same(t, source, applier)
+
+	_, err = m.ApplierDynamicClient(context.Background(), configPlaneClusterID)
+	require.Error(t, err, "the config plane is not a ClusterProvider")
+}

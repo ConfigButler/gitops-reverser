@@ -432,3 +432,21 @@ func TestApplyTrigger_ARejectedPushOwesTheReplayedTip(t *testing.T) {
 	assert.Equal(t, head, requests[0].Commit, "the replayed tip, not the foreign commit under it")
 	assert.Equal(t, "from-another-writer", gitOut(t, f.repoDir, "show", head+":OUTSIDE.md"))
 }
+
+// TestApplierOf_KeysTheApplierByItsOwnCluster: one Kustomization name in two clusters is two
+// appliers, and spec.applier.clusterProviderRef, not the source, decides which cluster.
+func TestApplierOf_KeysTheApplierByItsOwnCluster(t *testing.T) {
+	target := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
+		Spec: configv1alpha3.GitTargetSpec{
+			ClusterProviderRef: &meta.LocalObjectReference{Name: "prod-eu-1"},
+			Applier: &configv1alpha3.GitTargetApplier{
+				KustomizationRef: meta.NamespacedObjectReference{Name: "apps"},
+			},
+		},
+	}
+	assert.Equal(t, ApplierRef{Cluster: "prod-eu-1", Namespace: "team-a", Name: "apps"}, applierOf(target))
+
+	target.Spec.Applier.ClusterProviderRef = &meta.LocalObjectReference{Name: "hub"}
+	assert.Equal(t, ApplierRef{Cluster: "hub", Namespace: "team-a", Name: "apps"}, applierOf(target))
+}

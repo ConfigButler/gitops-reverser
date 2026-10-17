@@ -53,8 +53,8 @@ const shortCommitLength = 8
 // errNotRunning fails an attempt made before the dispatcher started or after it stopped.
 var errNotRunning = errors.New("the apply request dispatcher is not running")
 
-// SourceClients resolves a source cluster's dynamic client by ClusterProvider name
-// (GitTarget.SourceCluster()). In production it is (*watch.Manager).SourceDynamicClient.
+// SourceClients resolves the dynamic client of the cluster an applier lives in, by ClusterProvider
+// name (GitTarget.ApplierCluster()). In production it is (*watch.Manager).ApplierDynamicClient.
 type SourceClients func(ctx context.Context, clusterID string) (dynamic.Interface, error)
 
 // DefaultAttemptTimeout bounds one attempt: a source cluster that does not answer fails it, and the
@@ -305,9 +305,10 @@ func (d *Dispatcher) recheck(ctx context.Context, req git.ApplyRequest) ([]eligi
 // recheckTarget reads one GitTarget again and returns it when it may still ask the applier for its
 // reason, or nil when it may not.
 //
-// A ClusterProvider's source client is shared by every GitTarget that declared the cluster, so a
-// client being available is no permission to use it: a GitTarget its ClusterProvider does not admit
-// would otherwise drive the applier on the strength of another GitTarget's admission.
+// A ClusterProvider's client is shared by every GitTarget that uses the cluster, so a client being
+// available is no permission to use it: a GitTarget its ClusterProviders do not admit (its own, and
+// the applier's when that is another) would otherwise drive the applier on the strength of another
+// GitTarget's admission.
 func (d *Dispatcher) recheckTarget(
 	ctx context.Context, req git.ApplyRequest, candidate git.ApplyTarget,
 ) (*v1alpha3.GitTarget, error) {
@@ -324,13 +325,13 @@ func (d *Dispatcher) recheckTarget(
 		log.V(1).Info("GitTarget is no longer the one that named this applier on this branch; not asking for it")
 		return nil, nil //nolint:nilnil // as above
 	}
-	decision, err := authz.GitTargetAdmitted(ctx, d.reader, target)
+	decision, err := authz.ApplierAdmitted(ctx, d.reader, target)
 	if err != nil {
-		return nil, fmt.Errorf("check GitTarget %s against its ClusterProvider: %w", candidate.Ref, err)
+		return nil, fmt.Errorf("check GitTarget %s against its ClusterProviders: %w", candidate.Ref, err)
 	}
 	if !decision.Allowed {
-		log.Info("GitTarget is not admitted by its ClusterProvider; not asking its applier",
-			"reason", decision.Reason)
+		log.Info("GitTarget is not admitted by its ClusterProviders; not asking its applier",
+			"reason", decision.Reason, "message", decision.Message)
 		return nil, nil //nolint:nilnil // as above
 	}
 	if candidate.Reason == v1alpha3.ApplyReasonRefusal && !git.ConsentsToReapply(target) {
@@ -351,7 +352,7 @@ func namesApplier(target *v1alpha3.GitTarget, req git.ApplyRequest) bool {
 	if namespace == "" {
 		namespace = target.Namespace
 	}
-	return target.SourceCluster() == req.Applier.Cluster && namespace == req.Applier.Namespace &&
+	return target.ApplierCluster() == req.Applier.Cluster && namespace == req.Applier.Namespace &&
 		ref.Name == req.Applier.Name
 }
 

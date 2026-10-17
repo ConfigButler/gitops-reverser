@@ -15,7 +15,7 @@ import (
 // ApplierRef is one applier, as the GitTargets on a branch name it: a Flux Kustomization in a
 // source cluster. Several GitTargets may name one applier, and it is asked once for all of them.
 type ApplierRef struct {
-	// Cluster is the source cluster the applier lives in (GitTarget.SourceCluster()).
+	// Cluster is the ClusterProvider whose cluster the applier lives in (GitTarget.ApplierCluster()).
 	Cluster string
 	// Namespace and Name are the Kustomization's, the namespace defaulted to the GitTarget's own.
 	Namespace string
@@ -31,7 +31,7 @@ func applierOf(target *v1alpha3.GitTarget) ApplierRef {
 	if namespace == "" {
 		namespace = target.Namespace
 	}
-	return ApplierRef{Cluster: target.SourceCluster(), Namespace: namespace, Name: ref.Name}
+	return ApplierRef{Cluster: target.ApplierCluster(), Namespace: namespace, Name: ref.Name}
 }
 
 // ApplyRequest is one attempt, decided by a branch worker on a quiet branch, to have one applier

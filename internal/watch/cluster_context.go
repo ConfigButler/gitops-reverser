@@ -494,7 +494,7 @@ func (m *Manager) clusterRESTConfigLocked(ctx context.Context, cc *clusterContex
 		cc.configVersion = inClusterConfigVersion
 		return cfg, nil
 	}
-	cfg, version, inCluster, err := m.resolveSourceConfig(ctx, cc)
+	cfg, version, inCluster, err := m.resolveSourceConfig(ctx, cc.id)
 	if err != nil {
 		return nil, err
 	}
@@ -524,15 +524,15 @@ func inClusterRESTConfig() (*rest.Config, error) {
 // opaque version token, whether the provider resolved in-cluster, and the error.
 func (m *Manager) resolveSourceConfig(
 	ctx context.Context,
-	cc *clusterContext,
+	clusterID string,
 ) (*rest.Config, string, bool, error) {
 	if m.SourceClusters == nil {
 		return nil, "", false, fmt.Errorf(
-			"cannot reach source cluster %q: no source-cluster resolver configured", cc.id)
+			"cannot reach source cluster %q: no source-cluster resolver configured", clusterID)
 	}
-	resolved, version, err := m.SourceClusters.ResolveSourceCluster(ctx, cc.id)
+	resolved, version, err := m.SourceClusters.ResolveSourceCluster(ctx, clusterID)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("resolve source cluster %q: %w", cc.id, err)
+		return nil, "", false, fmt.Errorf("resolve source cluster %q: %w", clusterID, err)
 	}
 	if resolved == nil {
 		// The provider omits kubeConfig: it names the operator's own cluster.
@@ -558,7 +558,7 @@ func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterCont
 	if cc.isLocal() {
 		return
 	}
-	cfg, version, inCluster, err := m.resolveSourceConfig(ctx, cc)
+	cfg, version, inCluster, err := m.resolveSourceConfig(ctx, cc.id)
 	if err != nil {
 		if isDefinitiveCredentialFailure(err) && m.dropClusterClients(cc) {
 			m.invalidateClusterWatches(cc.id)
@@ -718,6 +718,33 @@ func (m *Manager) SourceDynamicClient(ctx context.Context, clusterID string) (dy
 		return nil, fmt.Errorf("source cluster %q is not declared by any GitTarget yet", clusterID)
 	}
 	return m.clusterDynamicClient(ctx, clusterID)
+}
+
+// ApplierDynamicClient returns the client an applier in clusterID is asked through, with that
+// ClusterProvider's identity, as SourceDynamicClient's is. An applier may live in a cluster no
+// GitTarget mirrors from, such as a management cluster that runs Flux for remote ones. No context
+// is created for such a cluster, because nothing would release it (see SourceDynamicClient): the
+// client is built for this call from the provider as it resolves now, and dropped with it.
+func (m *Manager) ApplierDynamicClient(ctx context.Context, clusterID string) (dynamic.Interface, error) {
+	if clusterID == configPlaneClusterID {
+		return nil, errors.New("no cluster named: the config plane is not a ClusterProvider")
+	}
+	if m.sourceClusterDeclared(clusterID) {
+		return m.clusterDynamicClient(ctx, clusterID)
+	}
+	cfg, _, inCluster, err := m.resolveSourceConfig(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	// Tests inject a fake client for the local cluster without a REST config at all.
+	if inCluster && m.dynamicClient != nil {
+		return m.dynamicClient, nil
+	}
+	dc, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build dynamic client for cluster %q: %w", describeCluster(clusterID), err)
+	}
+	return dc, nil
 }
 
 // sourceClusterDeclared reports whether any GitTarget's Declare captured this cluster id.

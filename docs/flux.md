@@ -178,7 +178,13 @@ spec:
       namespace: flux-system   # default: this GitTarget's namespace
       name: checkout
     quietPeriod: 30s           # default 30s, at most 1h
+    clusterProviderRef:        # default: this GitTarget's spec.clusterProviderRef
+      name: management
 ```
+
+`clusterProviderRef` is for Flux running in another cluster than the one it applies to, such as a
+management cluster with a `Kustomization` per workload cluster. Leave it out when Flux runs in the
+source cluster.
 
 `quietPeriod` is how long the branch must stay quiet after GitOps Reverser's own pushes before Flux
 is asked to catch up with them. Every new write restarts it. A short one keeps Flux's artifact
@@ -189,14 +195,15 @@ The target reports `ApplierConfigured`, and `Ready` includes it:
 | Reason | Means | Readiness |
 | --- | --- | --- |
 | `Succeeded` | The `Kustomization` exists, applies this repository and branch, and may be patched | ready |
-| `ApplierNotFound` | No such `Kustomization` in the source cluster, or Flux is not installed there | progressing: Flux objects are often created after the `GitTarget` |
+| `ApplierNotFound` | No such `Kustomization` in the applier's cluster, or Flux is not installed there | progressing: Flux objects are often created after the `GitTarget` |
 | `SourceMismatch` | One of the [`GitRepository` rules](#the-gitrepository) is broken, or the source is not a `GitRepository` | stalled: needs a human |
-| `Forbidden` | The source-cluster identity may not patch the `Kustomization` or its `GitRepository` | stalled: needs a human |
+| `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository` | stalled: needs a human |
+| `NamespaceNotAuthorized`, `ClusterProviderNotFound` | `spec.applier.clusterProviderRef` names a provider that does not admit this namespace, or does not exist | stalled: needs a human |
 
 ## Permissions
 
-GitOps Reverser looks the `Kustomization` up in the **source cluster** (the cluster it applies to)
-with the identity of the target's `ClusterProvider`. That identity needs:
+GitOps Reverser looks the `Kustomization` up in the cluster of `spec.applier.clusterProviderRef`,
+by default the **source cluster**, with the identity of that `ClusterProvider`. That identity needs:
 
 | API group | Resource | Verbs |
 | --- | --- | --- |
@@ -206,7 +213,7 @@ with the identity of the target's `ClusterProvider`. That identity needs:
 
 For the operator's own cluster, install the chart with `applierAccess.flux: true`, or apply
 [`config/rbac/flux-applier-role.yaml`](../config/rbac/flux-applier-role.yaml) and its binding. For
-a remote source cluster, grant the same to the identity in the `ClusterProvider`'s kubeconfig.
+a remote cluster, grant the same to the identity in the `ClusterProvider`'s kubeconfig.
 
 The chart's grant is cluster-wide for convenience. Requests only ever read and patch the
 `Kustomization` and `GitRepository` a `GitTarget` names, so a `Role` in each namespace that holds

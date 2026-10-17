@@ -184,7 +184,7 @@ func main() {
 	// The branch workers decide when a GitTarget's applier may apply; the dispatcher delivers it,
 	// off their queues, to the Flux objects in each target's source cluster.
 	applyDispatcher := applier.NewDispatcher(
-		mgr.GetClient(), watchMgr.SourceDynamicClient, mgr.GetEventRecorderFor("gittarget"),
+		mgr.GetClient(), watchMgr.ApplierDynamicClient, mgr.GetEventRecorderFor("gittarget"),
 		ctrl.Log.WithName("applier"))
 	fatalIfErr(mgr.Add(applyDispatcher), "unable to add apply request dispatcher to manager")
 	workerManager.SetApplyRequester(applyDispatcher)
@@ -354,7 +354,7 @@ func main() {
 		Recorder:      mgr.GetEventRecorderFor("gittarget"),
 
 		GitRefreshInterval: cfg.gitRefreshInterval,
-		ApplierClients:     watchMgr.SourceDynamicClient,
+		ApplierClients:     watchMgr.ApplierDynamicClient,
 		ApplyRequests:      applyDispatcher,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")

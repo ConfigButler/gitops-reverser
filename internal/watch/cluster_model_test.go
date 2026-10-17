@@ -68,7 +68,7 @@ func TestResolveSourceConfig_InClusterIsResolvedFromTheProvider(t *testing.T) {
 			m := &Manager{Log: logr.Discard(), SourceClusters: tt.resolver}
 			cc := m.cluster(tt.providerName)
 
-			cfg, version, inCluster, err := m.resolveSourceConfig(context.Background(), cc)
+			cfg, version, inCluster, err := m.resolveSourceConfig(context.Background(), cc.id)
 			if tt.wantInCluster {
 				// There is no cluster under a unit test, so the in-cluster branch surfaces
 				// ctrl.GetConfig's failure. Either way it must have taken the in-cluster path
@@ -95,7 +95,7 @@ func TestResolveSourceConfig_InClusterIsResolvedFromTheProvider(t *testing.T) {
 func TestResolveSourceConfig_Failures(t *testing.T) {
 	t.Run("no resolver configured", func(t *testing.T) {
 		m := &Manager{Log: logr.Discard()}
-		_, _, inCluster, err := m.resolveSourceConfig(context.Background(), m.cluster("prod-eu-1"))
+		_, _, inCluster, err := m.resolveSourceConfig(context.Background(), "prod-eu-1")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no source-cluster resolver configured")
 		assert.False(t, inCluster)
@@ -103,7 +103,7 @@ func TestResolveSourceConfig_Failures(t *testing.T) {
 
 	t.Run("resolver error is propagated, not defaulted to in-cluster", func(t *testing.T) {
 		m := &Manager{Log: logr.Discard(), SourceClusters: stubResolver{err: errors.New("boom")}}
-		_, _, inCluster, err := m.resolveSourceConfig(context.Background(), m.cluster("prod-eu-1"))
+		_, _, inCluster, err := m.resolveSourceConfig(context.Background(), "prod-eu-1")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "resolve source cluster")
 		assert.False(t, inCluster)

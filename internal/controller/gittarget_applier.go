@@ -12,11 +12,12 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // GitTargetConditionApplierConfigured reports whether spec.applier names an object GitOps Reverser
-// can ask to apply: it exists in the source cluster, applies this target's repository and branch,
+// can ask to apply: it exists in the applier's cluster, applies this target's repository and branch,
 // and may be patched. Present only while spec.applier is set.
 const GitTargetConditionApplierConfigured = "ApplierConfigured"
 
@@ -65,9 +66,9 @@ func (r *GitTargetReconciler) observeApplier(
 	return value, true
 }
 
-// applierVerdict checks the applier in the source cluster. A check that could not be made keeps the
-// verdict already published, since a blip reading the source cluster says nothing about the
-// applier; with nothing published it is Unknown.
+// applierVerdict checks the applier in its cluster (spec.applier.clusterProviderRef, by default the
+// source cluster). A check that could not be made keeps the verdict already published, since a blip
+// reading that cluster says nothing about the applier; with nothing published it is Unknown.
 func (r *GitTargetReconciler) applierVerdict(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
@@ -80,13 +81,23 @@ func (r *GitTargetReconciler) applierVerdict(
 		return conditionValue{
 			Status:  metav1.ConditionUnknown,
 			Reason:  GitTargetReasonNotChecked,
-			Message: fmt.Sprintf("Kustomization %s has not been checked: no source-cluster client is wired", ref),
+			Message: fmt.Sprintf("Kustomization %s has not been checked: no cluster client is wired", ref),
 		}
 	}
-	client, err := r.ApplierClients(ctx, target.SourceCluster())
+	cluster := target.ApplierCluster()
+	if cluster != target.SourceCluster() {
+		decision, err := authz.ApplierAdmitted(ctx, r.Client, target)
+		if err != nil {
+			return keptOrUnknown(target, fmt.Sprintf("Cannot check ClusterProvider %q: %v", cluster, err))
+		}
+		if !decision.Allowed {
+			return conditionValue{Status: metav1.ConditionFalse, Reason: decision.Reason, Message: decision.Message}
+		}
+	}
+	client, err := r.ApplierClients(ctx, cluster)
 	if err != nil {
 		return keptOrUnknown(target,
-			fmt.Sprintf("Cannot reach the source cluster to check Kustomization %s: %v", ref, err))
+			fmt.Sprintf("Cannot reach cluster %q to check Kustomization %s: %v", cluster, ref, err))
 	}
 	newFlux := r.newFlux
 	if newFlux == nil {

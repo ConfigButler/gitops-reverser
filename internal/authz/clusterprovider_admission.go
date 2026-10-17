@@ -68,33 +68,61 @@ func GitTargetAdmitted(
 	target *configv1alpha3.GitTarget,
 ) (Decision, error) {
 	providerName := target.SourceCluster()
+	return namespaceAdmitted(ctx, reader, target.Namespace, providerName, fmt.Sprintf(
+		"referenced ClusterProvider %q was not found; a GitTarget may mirror a source cluster "+
+			"only through an existing ClusterProvider. The operator never creates one: declare it "+
+			"yourself, or let the chart render %q via clusterProvider.createDefault",
+		providerName, configv1alpha3.DefaultClusterProviderName))
+}
 
+// ApplierAdmitted reports whether target may ask its applier to apply: its namespace is admitted
+// by its own ClusterProvider (GitTargetAdmitted) and, when spec.applier.clusterProviderRef names
+// another one, by that one too. The applier is reached with that provider's credential, so the
+// provider's accessFrom decides who may wield it, exactly as for mirroring. Call it only with
+// spec.applier set.
+func ApplierAdmitted(
+	ctx context.Context,
+	reader client.Reader,
+	target *configv1alpha3.GitTarget,
+) (Decision, error) {
+	decision, err := GitTargetAdmitted(ctx, reader, target)
+	if err != nil || !decision.Allowed {
+		return decision, err
+	}
+	providerName := target.ApplierCluster()
+	if providerName == target.SourceCluster() {
+		return decision, nil
+	}
+	return namespaceAdmitted(ctx, reader, target.Namespace, providerName, fmt.Sprintf(
+		"ClusterProvider %q named by spec.applier.clusterProviderRef was not found", providerName))
+}
+
+// namespaceAdmitted is the check both admissions share: the provider exists, and its accessFrom
+// admits namespace. notFound is the denial message for a provider that does not exist.
+func namespaceAdmitted(
+	ctx context.Context,
+	reader client.Reader,
+	namespace, providerName, notFound string,
+) (Decision, error) {
 	var provider configv1alpha3.ClusterProvider
 	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: providerName}, &provider); err != nil {
 		if apierrors.IsNotFound(err) {
-			return Decision{
-				Reason: ReasonClusterProviderNotFound,
-				Message: fmt.Sprintf(
-					"referenced ClusterProvider %q was not found; a GitTarget may mirror a source cluster "+
-						"only through an existing ClusterProvider. The operator never creates one: declare it "+
-						"yourself, or let the chart render %q via clusterProvider.createDefault",
-					providerName, configv1alpha3.DefaultClusterProviderName),
-			}, nil
+			return Decision{Reason: ReasonClusterProviderNotFound, Message: notFound}, nil
 		}
 		return Decision{}, fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
 	}
 
 	nsLabels := map[string]string{}
 	var ns corev1.Namespace
-	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: target.Namespace}, &ns); err != nil {
+	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: namespace}, &ns); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return Decision{}, fmt.Errorf("read namespace %q: %w", target.Namespace, err)
+			return Decision{}, fmt.Errorf("read namespace %q: %w", namespace, err)
 		}
 	} else {
 		nsLabels = ns.Labels
 	}
 
-	allowed, selErr := provider.AllowsNamespace(target.Namespace, nsLabels)
+	allowed, selErr := provider.AllowsNamespace(namespace, nsLabels)
 	if selErr != nil {
 		return Decision{
 			Reason: ReasonNamespaceNotAuthorized,
@@ -107,7 +135,7 @@ func GitTargetAdmitted(
 			Reason: ReasonNamespaceNotAuthorized,
 			Message: fmt.Sprintf(
 				"namespace %q is not permitted to reference ClusterProvider %q (spec.accessFrom)",
-				target.Namespace, providerName),
+				namespace, providerName),
 		}, nil
 	}
 

@@ -98,7 +98,8 @@ type GitTargetSpec struct {
 	// refused edit (spec.onRefusal: Reapply), and, once the branch has been quiet for quietPeriod,
 	// to keep the applier current with its own pushes. Switch off the applier's own triggers (short
 	// intervals, Git-host webhooks into it), or they go on applying without that check. The
-	// reference is looked up in the source cluster, with the identity the ClusterProvider uses.
+	// reference is looked up in the cluster spec.applier.clusterProviderRef names, by default the
+	// source cluster, with the identity that ClusterProvider uses.
 	// +optional
 	Applier *GitTargetApplier `json:"applier,omitempty"`
 
@@ -674,6 +675,15 @@ func (g *GitTarget) SourceCluster() string {
 	return g.Spec.ClusterProviderRef.Name
 }
 
+// ApplierCluster is the ClusterProvider whose cluster holds spec.applier: its clusterProviderRef,
+// or the source cluster (SourceCluster) when that is omitted. Call it only with spec.applier set.
+func (g *GitTarget) ApplierCluster() string {
+	if ref := g.Spec.Applier.ClusterProviderRef; ref != nil && ref.Name != "" {
+		return ref.Name
+	}
+	return g.SourceCluster()
+}
+
 // IsLocalSource reports whether this GitTarget references the "default" ClusterProvider, which the
 // watch data plane maps to its local cluster context. It is a NAME test, not a claim about the
 // physical cluster: a "default" provider may carry a kubeConfig. It only supplies the pre-discovery
@@ -709,6 +719,21 @@ const (
 
 // GitTargetApplier names the object that applies a GitTarget's folder to its source cluster.
 type GitTargetApplier struct {
+	// The same reference spec.clusterProviderRef is, for the same reason: a ClusterProvider is how
+	// GitOps Reverser reaches any cluster, with its credential and its accessFrom gate. Flux run
+	// from a management cluster is the usual way to deploy to a remote one, so the applier's
+	// cluster cannot be assumed to be the source cluster. Unlike the source, it may change: moving
+	// an applier does not change what the folder means.
+
+	// ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as
+	// a management cluster running Flux for the source cluster. Omitted, it is the GitTarget's
+	// own spec.clusterProviderRef. The provider must admit this GitTarget's namespace
+	// (spec.accessFrom), and its identity needs get on the Kustomization and the GitRepository and
+	// patch on both. A provider without spec.kubeConfig is the operator's own cluster.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.applier.clusterProviderRef.name must not be empty"
+	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
+
 	// KustomizationRef is a Flux Kustomization whose spec.sourceRef is a GitRepository on this
 	// target's repository and branch. Its namespace defaults to the GitTarget's namespace. GitOps
 	// Reverser asks it to apply the way `flux reconcile kustomization --with-source` does: it

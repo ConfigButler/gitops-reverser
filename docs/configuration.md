@@ -1132,13 +1132,30 @@ the API does not accept them yet:
 - **A webhook (`webhook`)** for any other tool: a POST of `{"repository", "branch", "commit",
   "reason"}`, signed the way Flux's `generic-hmac` `Receiver` checks.
 
-**Where the reference is looked up.** In the source cluster, the cluster the `Kustomization` applies
-to, with the identity the [`ClusterProvider`](#clusterprovider) already uses. That identity needs `get`
-and `patch` on `kustomizations` (`kustomize.toolkit.fluxcd.io`) and `gitrepositories`
-(`source.toolkit.fluxcd.io`), and `create` on `selfsubjectaccessreviews` to check it. For the
-operator's own cluster the chart grants them with `applierAccess.flux: true`; for a remote source
-cluster, grant the same to the kubeconfig's identity. A `Kustomization` that lives in a cluster other
-than the one it applies to is not supported.
+**Where the reference is looked up.** In the cluster `spec.applier.clusterProviderRef` names, with
+the identity that [`ClusterProvider`](#clusterprovider) uses. Omitted, it is the `GitTarget`'s own
+`spec.clusterProviderRef`, the source cluster. Name another provider when Flux runs in a management
+cluster and applies to the source cluster from there; a provider without `spec.kubeConfig` is the
+operator's own cluster. That provider's `spec.accessFrom` must admit the `GitTarget`'s namespace,
+as for mirroring, or `ApplierConfigured` is `False` with `NamespaceNotAuthorized` (or
+`ClusterProviderNotFound`) and nothing is asked.
+
+```yaml
+spec:
+  clusterProviderRef:
+    name: prod-eu-1            # mirrored from here
+  applier:
+    clusterProviderRef:
+      name: management         # Flux runs here
+    kustomizationRef:
+      namespace: flux-system
+      name: prod-eu-1-apps
+```
+
+The identity needs `get` and `patch` on `kustomizations` (`kustomize.toolkit.fluxcd.io`) and
+`gitrepositories` (`source.toolkit.fluxcd.io`), and `create` on `selfsubjectaccessreviews` to check
+it. For the operator's own cluster the chart grants them with `applierAccess.flux: true`; for a
+remote cluster, grant the same to the kubeconfig's identity.
 
 **When a request is made.** Only on a quiet branch: no open commit window and no pending writes on
 the branch worker, or on any other worker writing the same repository and branch through another
@@ -1202,9 +1219,11 @@ status:
 
 | Reason | Means |
 | --- | --- |
-| `ApplierNotFound` | No such `Kustomization` in the source cluster, or Flux is not installed there |
+| `ApplierNotFound` | No such `Kustomization` in the applier's cluster, or Flux is not installed there |
 | `SourceMismatch` | The `Kustomization` applies a different repository or branch, or a source that is not a `GitRepository` |
-| `Forbidden` | The source-cluster identity may not patch the `Kustomization` or its `GitRepository` |
+| `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository` |
+| `NamespaceNotAuthorized` | `spec.applier.clusterProviderRef` names a provider whose `accessFrom` does not admit this namespace |
+| `ClusterProviderNotFound` | `spec.applier.clusterProviderRef` names a provider that does not exist |
 
 It is checked on the target's reconcile tick rather than watched, so a cluster without the Flux CRDs
 installed costs nothing. Each delivered request also records an `ApplyRequested` Event on the

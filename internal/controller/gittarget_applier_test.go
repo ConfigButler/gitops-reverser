@@ -22,6 +22,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -237,6 +238,59 @@ func TestApplierReadiness_StallsOnlyWhatNeedsAHuman(t *testing.T) {
 			applierReadiness(rd, tc.value, tc.present)
 			assert.Equal(t, tc.wantConverged, rd.converged())
 			assert.Equal(t, tc.wantStalled, !rd.converged() && !rd.converging())
+		})
+	}
+}
+
+// TestObserveApplier_AnApplierInAnotherCluster: spec.applier.clusterProviderRef moves the check to
+// that cluster, behind that provider's accessFrom, exactly as the dispatcher asks.
+func TestObserveApplier_AnApplierInAnotherCluster(t *testing.T) {
+	admitting := func(name string, namespaces ...string) *configbutleraiv1alpha3.ClusterProvider {
+		return &configbutleraiv1alpha3.ClusterProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: configbutleraiv1alpha3.ClusterProviderSpec{
+				AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Names: namespaces},
+			},
+		}
+	}
+	cases := []struct {
+		name        string
+		hub         *configbutleraiv1alpha3.ClusterProvider
+		wantStatus  metav1.ConditionStatus
+		wantReason  string
+		wantClients []string
+	}{
+		{name: "a provider that admits the namespace is asked", hub: admitting("hub", "team-a"),
+			wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded, wantClients: []string{"hub"}},
+		{name: "a provider that does not admit it is never asked", hub: admitting("hub", "team-b"),
+			wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonNamespaceNotAuthorized},
+		{name: "a provider that does not exist is never asked",
+			wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonClusterProviderNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := []runtime.Object{admitting(configbutleraiv1alpha3.DefaultClusterProviderName, "team-a")}
+			if tc.hub != nil {
+				objects = append(objects, tc.hub)
+			}
+			target := applierTarget(true)
+			target.Spec.Applier.ClusterProviderRef = &meta.LocalObjectReference{Name: "hub"}
+			r := applierReconciler(applierFakeSource(applierFluxObjects("main")...), nil, true)
+			r.Client = newGitProviderTestClient(t, objects...)
+			var asked []string
+			source := r.ApplierClients
+			r.ApplierClients = func(ctx context.Context, cluster string) (dynamic.Interface, error) {
+				asked = append(asked, cluster)
+				return source(ctx, cluster)
+			}
+
+			value, present := r.observeApplier(context.Background(), beginStatus(nil, nil, target), target,
+				applierProvider())
+
+			require.True(t, present)
+			assert.Equal(t, tc.wantStatus, value.Status, value.Message)
+			assert.Equal(t, tc.wantReason, value.Reason)
+			assert.Equal(t, tc.wantClients, asked)
 		})
 	}
 }

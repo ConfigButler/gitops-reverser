@@ -120,8 +120,26 @@ spec:
                   refused edit (spec.onRefusal: Reapply), and, once the branch has been quiet for quietPeriod,
                   to keep the applier current with its own pushes. Switch off the applier's own triggers (short
                   intervals, Git-host webhooks into it), or they go on applying without that check. The
-                  reference is looked up in the source cluster, with the identity the ClusterProvider uses.
+                  reference is looked up in the cluster spec.applier.clusterProviderRef names, by default the
+                  source cluster, with the identity that ClusterProvider uses.
                 properties:
+                  clusterProviderRef:
+                    description: |-
+                      ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as
+                      a management cluster running Flux for the source cluster. Omitted, it is the GitTarget's
+                      own spec.clusterProviderRef. The provider must admit this GitTarget's namespace
+                      (spec.accessFrom), and its identity needs get on the Kustomization and the GitRepository and
+                      patch on both. A provider without spec.kubeConfig is the operator's own cluster.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                    x-kubernetes-validations:
+                    - message: spec.applier.clusterProviderRef.name must not be empty
+                      rule: self.name != ''
                   kustomizationRef:
                     description: |-
                       KustomizationRef is a Flux Kustomization whose spec.sourceRef is a GitRepository on this

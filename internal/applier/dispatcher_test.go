@@ -249,6 +249,48 @@ func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
 	assert.Equal(t, []string{"gitrepositories " + targetNS}, f.patches())
 }
 
+// appliedFrom puts a GitTarget's applier in the cluster another ClusterProvider names.
+func appliedFrom(target *v1alpha3.GitTarget, cluster string) *v1alpha3.GitTarget {
+	target.Spec.Applier.ClusterProviderRef = &fluxmeta.LocalObjectReference{Name: cluster}
+	return target
+}
+
+// TestDispatcher_AsksAnApplierInItsOwnCluster: a GitTarget mirroring prod-eu-1 whose Kustomization
+// lives in a management cluster is asked through that cluster's client, never the source's.
+func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
+	hub := git.ApplierRef{Cluster: "hub", Namespace: fluxSystemNS, Name: "checkout"}
+	f := newDispatcherFixture(t,
+		[]client.Object{appliedFrom(gitTarget("a", checkoutRef(), "prod-eu-1"), "hub"), clusterProvider("hub", targetNS)},
+		behindSource()...,
+	)
+
+	assert.Equal(t, git.ApplyDelivered, f.attempt(request(hub, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
+	assert.Equal(t, []string{"hub"}, f.source.clusters)
+
+	// The same Kustomization asked as if it lived in the source cluster is not this target's applier.
+	f.source.clusters = nil
+	sourceSide := git.ApplierRef{Cluster: "prod-eu-1", Namespace: fluxSystemNS, Name: "checkout"}
+	assert.Equal(t, git.ApplyDropped, f.attempt(request(sourceSide, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
+	assert.Empty(t, f.source.clusters)
+}
+
+// TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing: the applier's ClusterProvider gates who
+// may wield its credential exactly as a source's does, so a GitTarget its accessFrom does not admit
+// asks nothing, though its own source admits it.
+func TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing(t *testing.T) {
+	hub := git.ApplierRef{Cluster: "hub", Namespace: fluxSystemNS, Name: "checkout"}
+	f := newDispatcherFixture(t,
+		[]client.Object{
+			appliedFrom(gitTarget("a", checkoutRef(), "prod-eu-1"), "hub"),
+			clusterProvider("hub", "some-other-namespace"),
+		},
+		behindSource()...,
+	)
+
+	assert.Equal(t, git.ApplyDropped, f.attempt(request(hub, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
+	assert.Empty(t, f.source.clusters, "the hub's client is never even asked for")
+}
+
 // TestDispatcher_AFailureIsReportedAndNeverRetried: retrying is the branch worker's decision, on a
 // quiet branch. The dispatcher reports the failure, and records ApplyRequestFailed only for the
 // first failure of a run.

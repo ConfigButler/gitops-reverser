@@ -1706,7 +1706,8 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 	return requests
 }
 
-// clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it,
+// clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it, as
+// its source or as its applier's cluster,
 // across ALL namespaces (the provider is cluster-scoped). It re-enqueues dependents when the
 // provider's Ready flips or its accessFrom policy changes, so the projected
 // ClusterProviderReady and the namespace-authorization refusal converge without waiting for the
@@ -1724,7 +1725,8 @@ func (r *GitTargetReconciler) clusterProviderToGitTargets(
 	var requests []ctrlreconcile.Request
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.SourceCluster() != obj.GetName() {
+		usesApplier := t.Spec.Applier != nil && t.ApplierCluster() == obj.GetName()
+		if t.SourceCluster() != obj.GetName() && !usesApplier {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{
