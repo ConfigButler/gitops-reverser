@@ -49,7 +49,7 @@ func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference
 		},
 	}
 	if kustomizationRef != nil {
-		target.Spec.Applier = &v1alpha3.GitTargetApplier{KustomizationRef: *kustomizationRef}
+		target.Spec.Applier = &v1alpha3.GitTargetApplier{KustomizationRef: kustomizationRef}
 	}
 	if cluster != "" {
 		target.Spec.ClusterProviderRef = &fluxmeta.LocalObjectReference{Name: cluster}
@@ -94,8 +94,13 @@ func ref(name string) itypes.ResourceReference { return itypes.NewResourceRefere
 // uid is the uid gitTarget gives the GitTarget of that name.
 func uid(name string) types.UID { return types.UID("uid-" + name) }
 
+// kustomizationApplier is a Kustomization applier in a cluster.
+func kustomizationApplier(cluster, namespace, name string) git.ApplierRef {
+	return git.ApplierRef{Cluster: cluster, Kind: v1alpha3.ApplierKindKustomization, Namespace: namespace, Name: name}
+}
+
 // checkout is the applier most tests ask: flux-system/checkout in the default cluster.
-var checkout = git.ApplierRef{Cluster: v1alpha3.DefaultClusterProviderName, Namespace: fluxSystemNS, Name: "checkout"}
+var checkout = kustomizationApplier(v1alpha3.DefaultClusterProviderName, fluxSystemNS, "checkout")
 
 // request is one attempt for an applier to apply testCommit, for the named targets, all asking for
 // reason.
@@ -238,7 +243,7 @@ func TestDispatcher_AsksOnceForEveryTarget(t *testing.T) {
 // it names, under its own namespace and name; here a GitTarget whose kustomizationRef omits the
 // namespace and so names one in its own.
 func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
-	own := git.ApplierRef{Cluster: "prod-eu-1", Namespace: targetNS, Name: "own"}
+	own := kustomizationApplier("prod-eu-1", targetNS, "own")
 	f := newDispatcherFixture(t,
 		[]client.Object{gitTarget("c", &fluxmeta.NamespacedObjectReference{Name: "own"}, "prod-eu-1")},
 		kustomizationObj(targetNS, "own", gitRepoSourceRef("own-source")),
@@ -259,7 +264,7 @@ func appliedFrom(target *v1alpha3.GitTarget, cluster string) *v1alpha3.GitTarget
 // TestDispatcher_AsksAnApplierInItsOwnCluster: a GitTarget mirroring prod-eu-1 whose Kustomization
 // lives in a management cluster is asked through that cluster's client, never the source's.
 func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
-	hub := git.ApplierRef{Cluster: "hub", Namespace: fluxSystemNS, Name: "checkout"}
+	hub := kustomizationApplier("hub", fluxSystemNS, "checkout")
 	f := newDispatcherFixture(
 		t,
 		[]client.Object{
@@ -274,7 +279,7 @@ func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
 
 	// The same Kustomization asked as if it lived in the source cluster is not this target's applier.
 	f.source.clusters = nil
-	sourceSide := git.ApplierRef{Cluster: "prod-eu-1", Namespace: fluxSystemNS, Name: "checkout"}
+	sourceSide := kustomizationApplier("prod-eu-1", fluxSystemNS, "checkout")
 	assert.Equal(t, git.ApplyDropped, f.attempt(request(sourceSide, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
 	assert.Empty(t, f.source.clusters)
 }
@@ -283,7 +288,7 @@ func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
 // may wield its credential exactly as a source's does, so a GitTarget its accessFrom does not admit
 // asks nothing, though its own source admits it.
 func TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing(t *testing.T) {
-	hub := git.ApplierRef{Cluster: "hub", Namespace: fluxSystemNS, Name: "checkout"}
+	hub := kustomizationApplier("hub", fluxSystemNS, "checkout")
 	f := newDispatcherFixture(t,
 		[]client.Object{
 			appliedFrom(gitTarget("a", checkoutRef(), "prod-eu-1"), "hub"),
@@ -340,7 +345,7 @@ func TestDispatcher_ASourceMismatchIsRejectedAndNeverStamped(t *testing.T) {
 // source client is shared by every GitTarget that declared the cluster, so a GitTarget its
 // ClusterProvider does not admit drove the applier on another GitTarget's admission.
 func TestDispatcher_ATargetItsClusterProviderDeniesAsksNothing(t *testing.T) {
-	restricted := git.ApplierRef{Cluster: "restricted", Namespace: fluxSystemNS, Name: "checkout"}
+	restricted := kustomizationApplier("restricted", fluxSystemNS, "checkout")
 	f := newDispatcherFixture(t,
 		[]client.Object{
 			gitTarget("denied", checkoutRef(), "restricted"),

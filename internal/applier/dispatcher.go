@@ -402,13 +402,7 @@ func namesApplier(target *v1alpha3.GitTarget, req git.ApplyRequest) bool {
 		target.Spec.GitProviderRef.Name != req.Branch.RepoName || target.Spec.Branch != req.Branch.Branch {
 		return false
 	}
-	ref := target.Spec.Applier.KustomizationRef
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = target.Namespace
-	}
-	return target.ApplierCluster() == req.Applier.Cluster && namespace == req.Applier.Namespace &&
-		ref.Name == req.Applier.Name
+	return git.ApplierOf(target) == req.Applier
 }
 
 // delivered records a delivered request in the ledger and as an ApplyRequested Event on every

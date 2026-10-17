@@ -10,14 +10,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // The apply window is the time an apply GitOps Reverser asked for is running. An API edit that
-// lands in it, to a field the applier applies, is reverted by that apply: Flux applies the commit
-// it was asked for, which does not hold the edit yet. Mirroring that write would commit the revert
-// as Flux's, and the edit would survive only in history.
+// lands in it, to a field the applier applies, is reverted by that apply: Flux or Argo CD applies
+// the commit it was asked for, which does not hold the edit yet. Mirroring that write would commit
+// the revert as the applier's, and the edit would survive only in history.
 //
 // The repository's rule for an object both sides changed is that the API value wins. Applied to
 // the window: a write by the applier's own field manager, during an attempt, to an object the API
@@ -25,8 +26,8 @@ import (
 // is withheld. Git keeps the edit, and the CatchUp that edit's push owes applies it back.
 //
 // What the rule must never do is withhold an API edit, which would lose it outright. So it acts
-// only on proof: the object's latest managedFields entry is the applier's manager alone. When the
-// second-resolution times tie with another manager the write could be either, and it is mirrored
+// only on proof: the object's latest managedFields entries are the applier's managers alone. When
+// the second-resolution times tie with another manager the write could be either, and it is mirrored
 // as before; the collision is logged and counted as ambiguous so it is still seen. A DELETE carries
 // no managedFields of its deleter and is never withheld.
 
@@ -35,8 +36,42 @@ import (
 // cmd/cli/migrate_owner.go, and docs/facts/expansion-provenance-markers.md).
 const FluxFieldManager = "kustomize-controller"
 
-// applyWindowGrace keeps a window open after Flux reported the apply finished. Flux's writes reach
-// the worker through the watch, which can trail the status the dispatcher read.
+// ArgoCDFieldManager is the field manager Argo CD's application controller applies with, for a
+// client-side and a server-side apply alike (ArgoCDSSAManager in external-sources/argo-cd
+// common/common.go, passed to every ApplyResource by gitops-engine's sync_context.go).
+const ArgoCDFieldManager = "argocd-controller"
+
+// ArgoCDDefaultFieldManager is the manager of Argo CD's writes that name none: a sync with
+// Replace=true creates and replaces through kubectl's create and replace options without a field
+// manager (gitops-engine resource_ops.go), so the API server takes it from the user agent, which
+// client-go defaults to the binary's name, /usr/local/bin/argocd-application-controller.
+const ArgoCDDefaultFieldManager = "argocd-application-controller"
+
+// fieldManagers are the managers an applier of this kind writes with: a write by one of them alone
+// is the applier's apply.
+func (a ApplierRef) fieldManagers() []string {
+	if a.Kind == v1alpha3.ApplierKindApplication {
+		return []string{ArgoCDFieldManager, ArgoCDDefaultFieldManager}
+	}
+	return []string{FluxFieldManager}
+}
+
+// writtenBy reports whether any of the managers is one of the applier's, and whether all are.
+func (a ApplierRef) writtenBy(managers []string) (bool, bool) {
+	own := a.fieldManagers()
+	some, all := false, len(managers) > 0
+	for _, manager := range managers {
+		if slices.Contains(own, manager) {
+			some = true
+		} else {
+			all = false
+		}
+	}
+	return some, all
+}
+
+// applyWindowGrace keeps a window open after the applier reported the apply finished. Its writes
+// reach the worker through the watch, which can trail the status the dispatcher read.
 const applyWindowGrace = 10 * time.Second
 
 // Apply-window collision outcomes, the outcome label of apply_window_collisions_total.
@@ -45,8 +80,8 @@ const (
 	collisionAmbiguous = "ambiguous"
 )
 
-// applyWindow is one applier's open apply window: from sending an attempt until Flux finished it,
-// plus applyWindowGrace.
+// applyWindow is one applier's open apply window: from sending an attempt until the applier
+// finished it, plus applyWindowGrace.
 type applyWindow struct {
 	attempt uint64
 	commit  string
@@ -103,13 +138,13 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 	}
 	now := time.Now()
 	key := objectKey(event.Identifier)
-	byApplier := slices.Contains(event.LastFieldManagers, FluxFieldManager)
 	for _, ref := range l.sortedAppliers() {
 		applier := l.appliers[ref]
 		window := applier.window
 		if !window.open(now) || !applier.covers(event) {
 			continue
 		}
+		byApplier, byApplierAlone := ref.writtenBy(event.LastFieldManagers)
 		_, editedSince := window.edited[key]
 		switch {
 		case !byApplier || event.Operation == string(itypes.OperationDelete):
@@ -117,7 +152,7 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 		case !editedSince:
 			// The applier applying an object nobody edited since the attempt: its content is the
 			// commit's, which Git already holds. Mirrored as ever.
-		case len(event.LastFieldManagers) > 1:
+		case !byApplierAlone:
 			l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
 			// It may be the API edit itself, written in the same second: mirroring it is the
 			// choice that cannot lose an edit. It counts as one, too.

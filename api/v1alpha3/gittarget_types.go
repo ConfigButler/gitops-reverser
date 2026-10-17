@@ -95,11 +95,12 @@ type GitTargetSpec struct {
 	// Applier names the object that applies this folder back to its source cluster. With it set,
 	// GitOps Reverser decides when that object applies: it asks for an apply only when the branch
 	// holds no open commit window and no pending writes, after a commit it did not push, after a
-	// refused edit (spec.onRefusal: Reapply), and, once the branch has been quiet for quietPeriod,
-	// to keep the applier current with its own pushes. Switch off the applier's own triggers (short
-	// intervals, Git-host webhooks into it), or they go on applying without that check. The
-	// reference is looked up in the cluster spec.applier.clusterProviderRef names, by default the
-	// source cluster, with the identity that ClusterProvider uses.
+	// refused edit (spec.onRefusal: Reapply), and, for a Kustomization, once the branch has been
+	// quiet for quietPeriod, to keep it current with its own pushes. Switch off the applier's own
+	// triggers (short Flux intervals, Git-host webhooks into Flux, Argo CD automated sync), or they
+	// go on applying without that check. The reference is looked up in the cluster
+	// spec.applier.clusterProviderRef names, by default the source cluster, with the identity that
+	// ClusterProvider uses.
 	// +optional
 	Applier *GitTargetApplier `json:"applier,omitempty"`
 
@@ -717,7 +718,15 @@ const (
 	RefusalActionReapply RefusalAction = "Reapply"
 )
 
+// Why quietPeriod is refused rather than ignored with an applicationRef: it times the CatchUp, and
+// Argo CD is never asked to catch up (with automated sync off it applies nothing on its own, so it
+// holds no stale state to correct). Accepting it would be a knob that does nothing. That is also
+// why the field carries no schema default: a default would be present on every object and fail the
+// rule for every Application.
+
 // GitTargetApplier names the object that applies a GitTarget's folder to its source cluster.
+// +kubebuilder:validation:XValidation:rule="has(self.kustomizationRef) != has(self.applicationRef)",message="spec.applier names exactly one of kustomizationRef and applicationRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.applicationRef) || !has(self.quietPeriod)",message="spec.applier.quietPeriod applies only to a kustomizationRef: Argo CD is never asked to catch up"
 type GitTargetApplier struct {
 	// The same reference spec.clusterProviderRef is, for the same reason: a ClusterProvider is how
 	// GitOps Reverser reaches any cluster, with its credential and its accessFrom gate. Flux run
@@ -725,11 +734,12 @@ type GitTargetApplier struct {
 	// cluster cannot be assumed to be the source cluster. Unlike the source, it may change: moving
 	// an applier does not change what the folder means.
 
-	// ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as
-	// a management cluster running Flux for the source cluster. Omitted, it is the GitTarget's
-	// own spec.clusterProviderRef. The provider must admit this GitTarget's namespace
-	// (spec.accessFrom), and its identity needs get on the Kustomization and the GitRepository and
-	// patch on both. A provider without spec.kubeConfig is the operator's own cluster.
+	// ClusterProviderRef names the ClusterProvider whose cluster holds the applier, such as a
+	// management cluster running Flux or Argo CD for the source cluster. Omitted, it is the
+	// GitTarget's own spec.clusterProviderRef. The provider must admit this GitTarget's namespace
+	// (spec.accessFrom). Its identity needs get and patch on a Kustomization and its GitRepository,
+	// or get and update on an Application. A provider without spec.kubeConfig is the operator's own
+	// cluster.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.applier.clusterProviderRef.name must not be empty"
 	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
@@ -738,21 +748,71 @@ type GitTargetApplier struct {
 	// target's repository and branch. Its namespace defaults to the GitTarget's namespace. GitOps
 	// Reverser asks it to apply the way `flux reconcile kustomization --with-source` does: it
 	// stamps reconcile.fluxcd.io/requestedAt on the GitRepository, and on the Kustomization too
-	// when the GitRepository's artifact already holds the commit.
-	// +required
-	KustomizationRef meta.NamespacedObjectReference `json:"kustomizationRef"`
+	// when the GitRepository's artifact already holds the commit. Exactly one of kustomizationRef
+	// and applicationRef is set.
+	// +optional
+	KustomizationRef *meta.NamespacedObjectReference `json:"kustomizationRef,omitempty"`
+
+	// ApplicationRef is an Argo CD Application whose spec.source is this target's repository, with
+	// targetRevision this target's branch (the branch name, or refs/heads/ and the name). Its
+	// namespace defaults to the GitTarget's namespace. Automated sync must be off: the Application
+	// either has no spec.syncPolicy.automated, or sets automated.enabled: false, which keeps
+	// automated.prune for the syncs GitOps Reverser starts. One with automated sync on is
+	// ApplierConfigured=False (AutomatedSyncEnabled) and is never synced. GitOps Reverser starts
+	// each sync by setting the Application's operation, as Argo CD's automated sync does, pinned to
+	// the commit it checked, and never replaces an operation that is running. A multi-source
+	// Application is not supported. Exactly one of kustomizationRef and applicationRef is set.
+	// +optional
+	ApplicationRef *meta.NamespacedObjectReference `json:"applicationRef,omitempty"`
 
 	// QuietPeriod is how long the branch must hold no open commit window and no pending writes,
-	// after GitOps Reverser's own pushes, before the applier is asked to catch up with them. Flux
-	// applies on its own timers and on a controller restart from whatever artifact it holds, so
-	// an artifact left behind those pushes would revert edits that are already in Git. Every new
-	// write restarts the wait. A Go duration of at most "1h". Defaults to "30s".
+	// after GitOps Reverser's own pushes, before a Kustomization is asked to catch up with them.
+	// Flux applies on its own timers and on a controller restart from whatever artifact it holds,
+	// so an artifact left behind those pushes would revert edits that are already in Git. Every new
+	// write restarts the wait. A Go duration of at most "1h". Omitted, it is "30s". Only for a
+	// kustomizationRef: it is rejected with an applicationRef.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
-	// +kubebuilder:default="30s"
 	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('1h')",message="spec.applier.quietPeriod must be a Go duration of at most 1h"
 	QuietPeriod *metav1.Duration `json:"quietPeriod,omitempty"`
+}
+
+// The kinds of applier spec.applier can name.
+const (
+	// ApplierKindKustomization is a Flux Kustomization (spec.applier.kustomizationRef).
+	ApplierKindKustomization = "Kustomization"
+	// ApplierKindApplication is an Argo CD Application (spec.applier.applicationRef).
+	ApplierKindApplication = "Application"
+)
+
+// Kind is the kind of object the applier names: ApplierKindApplication for an applicationRef,
+// otherwise ApplierKindKustomization.
+func (a *GitTargetApplier) Kind() string {
+	if a.ApplicationRef != nil {
+		return ApplierKindApplication
+	}
+	return ApplierKindKustomization
+}
+
+// Reference is the object the applier names, whichever kind it is. The zero reference when it
+// names none, which the schema rejects.
+func (a *GitTargetApplier) Reference() meta.NamespacedObjectReference {
+	switch {
+	case a.ApplicationRef != nil:
+		return *a.ApplicationRef
+	case a.KustomizationRef != nil:
+		return *a.KustomizationRef
+	default:
+		return meta.NamespacedObjectReference{}
+	}
+}
+
+// CatchesUp reports whether the applier is asked to catch up with GitOps Reverser's own pushes.
+// Only a Kustomization is: an Argo CD Application with automated sync off applies nothing on its
+// own, so it never holds a stale state to correct.
+func (a *GitTargetApplier) CatchesUp() bool {
+	return a.Kind() == ApplierKindKustomization
 }
 
 // DefaultApplierQuietPeriod is spec.applier.quietPeriod when it is omitted.

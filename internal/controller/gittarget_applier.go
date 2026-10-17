@@ -131,7 +131,7 @@ func keptOrUnknown(target *configbutleraiv1alpha3.GitTarget, message string) con
 
 // applierReference is spec.applier.kustomizationRef, its namespace defaulting to the GitTarget's.
 func applierReference(target *configbutleraiv1alpha3.GitTarget) k8stypes.NamespacedName {
-	ref := target.Spec.Applier.KustomizationRef
+	ref := target.Spec.Applier.Reference()
 	namespace := ref.Namespace
 	if namespace == "" {
 		namespace = target.Namespace

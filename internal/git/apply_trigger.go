@@ -31,7 +31,9 @@ import (
 //   - Refusal: a refused edit on a target with spec.onRefusal: Reapply (refusal_reapply.go).
 //   - CatchUp: this worker's own pushes. Flux applies on its own timers and on a restart from
 //     whatever artifact it holds, and an artifact behind these pushes would revert edits already in
-//     Git. Asked only once the branch has stayed quiet for the applier's quiet period.
+//     Git. Asked only once the branch has stayed quiet for the applier's quiet period, and never of
+//     an Argo CD Application: with automated sync off it applies nothing on its own, so it holds no
+//     stale state to correct (ApplierRef.CatchesUp).
 //
 // The three relations are kept apart on purpose. The BRANCH is the unit of quietness, because a
 // Kustomization applies the tip whichever GitTarget's folder an edit is in. The APPLIER is the unit
@@ -161,7 +163,7 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 		listed = append(listed, branchTarget{
 			ref:         itypes.NewResourceReference(target.Name, target.Namespace),
 			uid:         target.UID,
-			applier:     applierOf(target),
+			applier:     ApplierOf(target),
 			quietPeriod: target.Spec.Applier.EffectiveQuietPeriod(),
 			consents:    ConsentsToReapply(target),
 		})
@@ -185,8 +187,8 @@ type applierState struct {
 	// next attempt may go.
 	failures int
 	retryAt  time.Time
-	// window is the applier's apply window: open from sending an attempt until Flux finished it
-	// (apply_window.go). Nil when no attempt was sent, or the last asked for no apply.
+	// window is the applier's apply window: open from sending an attempt until the applier
+	// finished it (apply_window.go). Nil when no attempt was sent, or the last asked for no apply.
 	window *applyWindow
 }
 
@@ -266,7 +268,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	l.syncAppliers(targets)
 	for _, state := range l.appliers {
 		state.foreign = state.foreign || foreign
-		state.catchUp = state.catchUp || catchUp
+		state.catchUp = state.catchUp || (catchUp && state.ref.CatchesUp())
 	}
 	l.armApplierTimer(now, l.sendDue(tip, now))
 }

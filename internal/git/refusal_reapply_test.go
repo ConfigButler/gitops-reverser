@@ -471,7 +471,7 @@ func TestRefusalReapply_TheTimerTracksTheEarliestDeadline(t *testing.T) {
 
 // testApplier is a GitTarget applier naming a Kustomization of the given name.
 func testApplier(name string) *configv1alpha3.GitTargetApplier {
-	return &configv1alpha3.GitTargetApplier{KustomizationRef: meta.NamespacedObjectReference{Name: name}}
+	return &configv1alpha3.GitTargetApplier{KustomizationRef: &meta.NamespacedObjectReference{Name: name}}
 }
 
 // recordingRequester records every apply request a worker sends, and reports each one at once with

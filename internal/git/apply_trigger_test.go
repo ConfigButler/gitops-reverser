@@ -78,7 +78,10 @@ func TestApplyDebt_RestorePutsBackWhatWasTaken(t *testing.T) {
 
 // applierRef is the applier testApplier(name) names for a GitTarget in team-a.
 func applierRef(name string) ApplierRef {
-	return ApplierRef{Cluster: configv1alpha3.DefaultClusterProviderName, Namespace: "team-a", Name: name}
+	return ApplierRef{
+		Cluster: configv1alpha3.DefaultClusterProviderName, Kind: configv1alpha3.ApplierKindKustomization,
+		Namespace: "team-a", Name: name,
+	}
 }
 
 // applierTestTarget is a GitTarget on the trigger worker's provider and branch unless overridden.
@@ -148,8 +151,7 @@ func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) 
 		assert.Equal(t, "bbb", requests[i].Commit)
 		assert.Equal(t, BranchKey{RepoNamespace: "team-a", RepoName: "test-provider", Branch: "main"},
 			requests[i].Branch)
-		assert.Equal(t, ApplierRef{Cluster: configv1alpha3.DefaultClusterProviderName, Namespace: "team-a", Name: name},
-			requests[i].Applier)
+		assert.Equal(t, applierRef(name), requests[i].Applier)
 		assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(name, "team-a")},
 			requests[i].TargetRefs(), "a suspended target stops writing, not deployments")
 	}
@@ -209,6 +211,74 @@ func TestServiceAppliers_CatchUpWaitsForTheQuietPeriod(t *testing.T) {
 		requests[0].TargetRefs())
 	assert.True(t, loop.appliers[applierRef("late")].catchUp, "the one-hour applier still waits")
 	assert.NotNil(t, loop.applierTimer)
+}
+
+// argoApplier makes a GitTarget's applier an Argo CD Application of its own name.
+func argoApplier(g *configv1alpha3.GitTarget) {
+	g.Spec.Applier = &configv1alpha3.GitTargetApplier{
+		ApplicationRef: &meta.NamespacedObjectReference{Namespace: "argocd", Name: g.Name},
+	}
+}
+
+// TestServiceAppliers_AnApplicationIsNeverOwedACatchUp: with automated sync off Argo CD applies
+// nothing on its own, so GitOps Reverser's own pushes (and the baseline after a start) owe an
+// Application nothing, however long the branch stays quiet; a Kustomization beside it on the same
+// branch is still caught up.
+func TestServiceAppliers_AnApplicationIsNeverOwedACatchUp(t *testing.T) {
+	loop, requester := applyTriggerLoop(t,
+		applierTestTarget("argo", true, argoApplier),
+		applierTestTarget("flux", true),
+	)
+	loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // the baseline
+	loop.serviceAppliers()
+	loop.w.debt.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
+	loop.serviceAppliers()
+	loop.quietSince = time.Now().Add(-time.Hour)
+	loop.serviceAppliers()
+
+	requests := requester.taken()
+	require.Len(t, requests, 1, "only the Kustomization catches up")
+	assert.Equal(t, applierRef("flux"), requests[0].Applier)
+	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
+	argo := ApplierRef{
+		Cluster: configv1alpha3.DefaultClusterProviderName, Kind: configv1alpha3.ApplierKindApplication,
+		Namespace: "argocd", Name: "argo",
+	}
+	require.Contains(t, loop.appliers, argo)
+	assert.False(t, loop.appliers[argo].catchUp)
+}
+
+// TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal: the two reasons that are
+// not catching up reach an Application as they reach a Kustomization.
+func TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal(t *testing.T) {
+	argo := ApplierRef{
+		Cluster: configv1alpha3.DefaultClusterProviderName, Kind: configv1alpha3.ApplierKindApplication,
+		Namespace: "argocd", Name: "argo",
+	}
+
+	t.Run("a foreign commit", func(t *testing.T) {
+		loop, requester := applyTriggerLoop(t, applierTestTarget("argo", true, argoApplier))
+		owesForeign(loop.w)
+		loop.serviceAppliers()
+		requests := requester.taken()
+		require.Len(t, requests, 1)
+		assert.Equal(t, argo, requests[0].Applier)
+		assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requests[0].Reason)
+		assert.Equal(t, "bbb", requests[0].Commit)
+	})
+
+	t.Run("a refusal", func(t *testing.T) {
+		loop, requester := applyTriggerLoop(t, applierTestTarget("argo", true, argoApplier,
+			func(g *configv1alpha3.GitTarget) { g.Spec.OnRefusal = configv1alpha3.RefusalActionReapply }))
+		loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
+		loop.oweReapply(refusalKeyFor(itypes.NewResourceReference("argo", "team-a"), "deployments"),
+			owedRefusal{detail: "refused", uid: "uid-argo"}, "obs")
+		loop.serviceAppliers()
+		requests := requester.taken()
+		require.Len(t, requests, 1, "a refusal is asked at once, with no quiet period")
+		assert.Equal(t, argo, requests[0].Applier)
+		assert.Equal(t, configv1alpha3.ApplyReasonRefusal, requests[0].Reason)
+	})
 }
 
 func TestServiceAppliers_AWriteRestartsTheQuietPeriod(t *testing.T) {
@@ -433,20 +503,32 @@ func TestApplyTrigger_ARejectedPushOwesTheReplayedTip(t *testing.T) {
 	assert.Equal(t, "from-another-writer", gitOut(t, f.repoDir, "show", head+":OUTSIDE.md"))
 }
 
-// TestApplierOf_KeysTheApplierByItsOwnCluster: one Kustomization name in two clusters is two
-// appliers, and spec.applier.clusterProviderRef, not the source, decides which cluster.
-func TestApplierOf_KeysTheApplierByItsOwnCluster(t *testing.T) {
+// TestApplierOf_KeysTheApplierByItsOwnClusterAndKind: one name in two clusters is two appliers, and
+// spec.applier.clusterProviderRef, not the source, decides which cluster. A Kustomization and an
+// Application of one name are two appliers too.
+func TestApplierOf_KeysTheApplierByItsOwnClusterAndKind(t *testing.T) {
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: configv1alpha3.GitTargetSpec{
 			ClusterProviderRef: &meta.LocalObjectReference{Name: "prod-eu-1"},
 			Applier: &configv1alpha3.GitTargetApplier{
-				KustomizationRef: meta.NamespacedObjectReference{Name: "apps"},
+				KustomizationRef: &meta.NamespacedObjectReference{Name: "apps"},
 			},
 		},
 	}
-	assert.Equal(t, ApplierRef{Cluster: "prod-eu-1", Namespace: "team-a", Name: "apps"}, applierOf(target))
+	kustomization := configv1alpha3.ApplierKindKustomization
+	assert.Equal(t, ApplierRef{Cluster: "prod-eu-1", Kind: kustomization, Namespace: "team-a", Name: "apps"},
+		ApplierOf(target))
 
 	target.Spec.Applier.ClusterProviderRef = &meta.LocalObjectReference{Name: "hub"}
-	assert.Equal(t, ApplierRef{Cluster: "hub", Namespace: "team-a", Name: "apps"}, applierOf(target))
+	assert.Equal(t, ApplierRef{Cluster: "hub", Kind: kustomization, Namespace: "team-a", Name: "apps"},
+		ApplierOf(target))
+
+	target.Spec.Applier.KustomizationRef = nil
+	target.Spec.Applier.ApplicationRef = &meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"}
+	app := ApplierOf(target)
+	assert.Equal(t, ApplierRef{
+		Cluster: "hub", Kind: configv1alpha3.ApplierKindApplication, Namespace: "argocd", Name: "apps",
+	}, app)
+	assert.False(t, app.CatchesUp(), "an Application is never asked to catch up")
 }

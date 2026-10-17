@@ -803,7 +803,16 @@ func (in *GitTargetApplier) DeepCopyInto(out *GitTargetApplier) {
 		*out = new(meta.LocalObjectReference)
 		**out = **in
 	}
-	out.KustomizationRef = in.KustomizationRef
+	if in.KustomizationRef != nil {
+		in, out := &in.KustomizationRef, &out.KustomizationRef
+		*out = new(meta.NamespacedObjectReference)
+		**out = **in
+	}
+	if in.ApplicationRef != nil {
+		in, out := &in.ApplicationRef, &out.ApplicationRef
+		*out = new(meta.NamespacedObjectReference)
+		**out = **in
+	}
 	if in.QuietPeriod != nil {
 		in, out := &in.QuietPeriod, &out.QuietPeriod
 		*out = new(v1.Duration)

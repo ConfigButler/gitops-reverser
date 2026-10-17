@@ -117,19 +117,43 @@ spec:
                   Applier names the object that applies this folder back to its source cluster. With it set,
                   GitOps Reverser decides when that object applies: it asks for an apply only when the branch
                   holds no open commit window and no pending writes, after a commit it did not push, after a
-                  refused edit (spec.onRefusal: Reapply), and, once the branch has been quiet for quietPeriod,
-                  to keep the applier current with its own pushes. Switch off the applier's own triggers (short
-                  intervals, Git-host webhooks into it), or they go on applying without that check. The
-                  reference is looked up in the cluster spec.applier.clusterProviderRef names, by default the
-                  source cluster, with the identity that ClusterProvider uses.
+                  refused edit (spec.onRefusal: Reapply), and, for a Kustomization, once the branch has been
+                  quiet for quietPeriod, to keep it current with its own pushes. Switch off the applier's own
+                  triggers (short Flux intervals, Git-host webhooks into Flux, Argo CD automated sync), or they
+                  go on applying without that check. The reference is looked up in the cluster
+                  spec.applier.clusterProviderRef names, by default the source cluster, with the identity that
+                  ClusterProvider uses.
                 properties:
+                  applicationRef:
+                    description: |-
+                      ApplicationRef is an Argo CD Application whose spec.source is this target's repository, with
+                      targetRevision this target's branch (the branch name, or refs/heads/ and the name). Its
+                      namespace defaults to the GitTarget's namespace. Automated sync must be off: the Application
+                      either has no spec.syncPolicy.automated, or sets automated.enabled: false, which keeps
+                      automated.prune for the syncs GitOps Reverser starts. One with automated sync on is
+                      ApplierConfigured=False (AutomatedSyncEnabled) and is never synced. GitOps Reverser starts
+                      each sync by setting the Application's operation, as Argo CD's automated sync does, pinned to
+                      the commit it checked, and never replaces an operation that is running. A multi-source
+                      Application is not supported. Exactly one of kustomizationRef and applicationRef is set.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        type: string
+                      namespace:
+                        description: Namespace of the referent, when not specified
+                          it acts as LocalObjectReference.
+                        type: string
+                    required:
+                    - name
+                    type: object
                   clusterProviderRef:
                     description: |-
-                      ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as
-                      a management cluster running Flux for the source cluster. Omitted, it is the GitTarget's
-                      own spec.clusterProviderRef. The provider must admit this GitTarget's namespace
-                      (spec.accessFrom), and its identity needs get on the Kustomization and the GitRepository and
-                      patch on both. A provider without spec.kubeConfig is the operator's own cluster.
+                      ClusterProviderRef names the ClusterProvider whose cluster holds the applier, such as a
+                      management cluster running Flux or Argo CD for the source cluster. Omitted, it is the
+                      GitTarget's own spec.clusterProviderRef. The provider must admit this GitTarget's namespace
+                      (spec.accessFrom). Its identity needs get and patch on a Kustomization and its GitRepository,
+                      or get and update on an Application. A provider without spec.kubeConfig is the operator's own
+                      cluster.
                     properties:
                       name:
                         description: Name of the referent.
@@ -146,7 +170,8 @@ spec:
                       target's repository and branch. Its namespace defaults to the GitTarget's namespace. GitOps
                       Reverser asks it to apply the way `flux reconcile kustomization --with-source` does: it
                       stamps reconcile.fluxcd.io/requestedAt on the GitRepository, and on the Kustomization too
-                      when the GitRepository's artifact already holds the commit.
+                      when the GitRepository's artifact already holds the commit. Exactly one of kustomizationRef
+                      and applicationRef is set.
                     properties:
                       name:
                         description: Name of the referent.
@@ -159,22 +184,27 @@ spec:
                     - name
                     type: object
                   quietPeriod:
-                    default: 30s
                     description: |-
                       QuietPeriod is how long the branch must hold no open commit window and no pending writes,
-                      after GitOps Reverser's own pushes, before the applier is asked to catch up with them. Flux
-                      applies on its own timers and on a controller restart from whatever artifact it holds, so
-                      an artifact left behind those pushes would revert edits that are already in Git. Every new
-                      write restarts the wait. A Go duration of at most "1h". Defaults to "30s".
+                      after GitOps Reverser's own pushes, before a Kustomization is asked to catch up with them.
+                      Flux applies on its own timers and on a controller restart from whatever artifact it holds,
+                      so an artifact left behind those pushes would revert edits that are already in Git. Every new
+                      write restarts the wait. A Go duration of at most "1h". Omitted, it is "30s". Only for a
+                      kustomizationRef: it is rejected with an applicationRef.
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                     type: string
                     x-kubernetes-validations:
                     - message: spec.applier.quietPeriod must be a Go duration of at
                         most 1h
                       rule: duration(self) <= duration('1h')
-                required:
-                - kustomizationRef
                 type: object
+                x-kubernetes-validations:
+                - message: spec.applier names exactly one of kustomizationRef and
+                    applicationRef
+                  rule: has(self.kustomizationRef) != has(self.applicationRef)
+                - message: 'spec.applier.quietPeriod applies only to a kustomizationRef:
+                    Argo CD is never asked to catch up'
+                  rule: '!has(self.applicationRef) || !has(self.quietPeriod)'
               branch:
                 description: |-
                   Branch to use for this target.

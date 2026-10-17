@@ -12,26 +12,38 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// ApplierRef is one applier, as the GitTargets on a branch name it: a Flux Kustomization in a
-// source cluster. Several GitTargets may name one applier, and it is asked once for all of them.
+// ApplierRef is one applier, as the GitTargets on a branch name it: a Flux Kustomization or an
+// Argo CD Application in a cluster. Several GitTargets may name one applier, and it is asked once
+// for all of them.
 type ApplierRef struct {
 	// Cluster is the ClusterProvider whose cluster the applier lives in (GitTarget.ApplierCluster()).
 	Cluster string
-	// Namespace and Name are the Kustomization's, the namespace defaulted to the GitTarget's own.
+	// Kind is v1alpha3.ApplierKindKustomization or v1alpha3.ApplierKindApplication.
+	Kind string
+	// Namespace and Name are the object's, the namespace defaulted to the GitTarget's own.
 	Namespace string
 	Name      string
 }
 
-func (a ApplierRef) String() string { return a.Cluster + "/" + a.Namespace + "/" + a.Name }
+func (a ApplierRef) String() string {
+	return a.Cluster + "/" + a.Kind + "/" + a.Namespace + "/" + a.Name
+}
 
-// applierOf is the applier a GitTarget names. Call it only for a target with spec.applier.
-func applierOf(target *v1alpha3.GitTarget) ApplierRef {
-	ref := target.Spec.Applier.KustomizationRef
+// CatchesUp reports whether the applier is owed a CatchUp after GitOps Reverser's own pushes. An
+// Argo CD Application is not: with automated sync off it applies nothing on its own, so it holds no
+// stale state for a catch-up to correct.
+func (a ApplierRef) CatchesUp() bool { return a.Kind != v1alpha3.ApplierKindApplication }
+
+// ApplierOf is the applier a GitTarget names. Call it only for a target with spec.applier.
+func ApplierOf(target *v1alpha3.GitTarget) ApplierRef {
+	ref := target.Spec.Applier.Reference()
 	namespace := ref.Namespace
 	if namespace == "" {
 		namespace = target.Namespace
 	}
-	return ApplierRef{Cluster: target.ApplierCluster(), Namespace: namespace, Name: ref.Name}
+	return ApplierRef{
+		Cluster: target.ApplierCluster(), Kind: target.Spec.Applier.Kind(), Namespace: namespace, Name: ref.Name,
+	}
 }
 
 // ApplyRequest is one attempt, decided by a branch worker on a quiet branch, to have one applier

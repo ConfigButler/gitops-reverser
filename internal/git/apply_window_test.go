@@ -152,3 +152,30 @@ func TestApplyWindow_AnAttemptThatAppliedNothingHasNoWindow(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyWindow_ArgoCDsLateWriteIsWithheldByItsOwnManagers: an Argo CD Application's window
+// knows Argo CD's managers, its apply (argocd-controller) and its Replace=true create and replace
+// (argocd-application-controller), and not Flux's.
+func TestApplyWindow_ArgoCDsLateWriteIsWithheldByItsOwnManagers(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	require.Len(t, requester.taken(), 1)
+
+	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")), "an API edit is mirrored")
+	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
+		"Flux is not this applier: its write is an edit like any other")
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "3", ArgoCDFieldManager)),
+		"Argo CD's apply over the newer edit is withheld")
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "3", ArgoCDDefaultFieldManager)),
+		"so is its replace")
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "3", ArgoCDFieldManager, ArgoCDDefaultFieldManager)),
+		"both of its own managers in one second are still only Argo CD")
+	assert.Equal(t, int64(3), collisions(t, reader, collisionWithheld))
+
+	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", ArgoCDFieldManager, "kubectl-edit")),
+		"a tie with another manager may be the edit itself")
+	assert.Equal(t, int64(1), collisions(t, reader, collisionAmbiguous))
+}

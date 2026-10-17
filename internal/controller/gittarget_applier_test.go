@@ -77,7 +77,7 @@ func applierTarget(applierSet bool) *configbutleraiv1alpha3.GitTarget {
 	}
 	if applierSet {
 		target.Spec.Applier = &configbutleraiv1alpha3.GitTargetApplier{
-			KustomizationRef: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "checkout"},
+			KustomizationRef: &meta.NamespacedObjectReference{Namespace: "flux-system", Name: "checkout"},
 		}
 	}
 	return target
