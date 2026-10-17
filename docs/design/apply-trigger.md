@@ -167,8 +167,9 @@ whose artifact is behind. Inside it, **the API wins**, as it does for any object
   reverted value until then.
 - **Only proof withholds.** `managedFields` times resolve to the second. When the applier ties
   with another manager, the write could be the edit itself, and withholding an edit loses it
-  outright; it is mirrored as before. A DELETE carries nothing about its deleter and is never
-  withheld. Both are logged.
+  outright; it is mirrored as before. It is also remembered as an edit, even as the first write in
+  the window, so the applier's write alone a second later is still withheld. A DELETE carries
+  nothing about its deleter and is never withheld. Both are logged.
 
 Every collision is logged with the object, the applier and the requested commit, and counted in
 `apply_window_collisions_total` (`withheld` or `ambiguous`). What remains: an edit reverted on the

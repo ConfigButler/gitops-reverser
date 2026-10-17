@@ -179,3 +179,21 @@ func TestApplyWindow_ArgoCDsLateWriteIsWithheldByItsOwnManagers(t *testing.T) {
 		"a tie with another manager may be the edit itself")
 	assert.Equal(t, int64(1), collisions(t, reader, collisionAmbiguous))
 }
+
+// TestApplyWindow_AFirstTieIsRememberedAsAnEdit: a write by the applier and another manager in the
+// same second may be the API edit, so it is mirrored. It must also be remembered as one: when the
+// applier then writes the object alone a second later, that is its apply reverting the edit, and is
+// withheld. A tie on an object nobody edited before is not a collision, so it is not counted.
+func TestApplyWindow_AFirstTieIsRememberedAsAnEdit(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	loop, _ := sentAttempt(t)
+
+	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", FluxFieldManager, "kubectl-edit")),
+		"a tie may be the API edit itself")
+	assert.Equal(t, int64(0), collisions(t, reader, collisionAmbiguous),
+		"nothing was edited before it, so it collides with nothing")
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
+		"the applier's write a second later is its apply over the tie's edit")
+	assert.Equal(t, int64(1), collisions(t, reader, collisionWithheld))
+}

@@ -149,14 +149,18 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 		switch {
 		case !byApplier || event.Operation == string(itypes.OperationDelete):
 			window.edited[key] = struct{}{}
+		case !byApplierAlone:
+			// It may be the API edit itself, written in the same second: mirroring it is the
+			// choice that cannot lose an edit. It counts as one, too, even as the first write in the
+			// window, so the applier's write alone after it is still seen as late. It collides only
+			// with an edit made before it.
+			if editedSince {
+				l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
+			}
+			window.edited[key] = struct{}{}
 		case !editedSince:
 			// The applier applying an object nobody edited since the attempt: its content is the
 			// commit's, which Git already holds. Mirrored as ever.
-		case !byApplierAlone:
-			l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
-			// It may be the API edit itself, written in the same second: mirroring it is the
-			// choice that cannot lose an edit. It counts as one, too.
-			window.edited[key] = struct{}{}
 		default:
 			l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
 			return true
