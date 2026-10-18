@@ -141,13 +141,19 @@ flowchart LR
   something, has no operation out, shares no source with one that has, and is past its backoff
   (and, for a `CatchUp`, its quiet period) gets one attempt. The attempt carries away what it
   covers; each target in it carries its uid and its own reason. The worker takes the operation's
-  token and publishes it on the trigger's `status.operation` as `Requested`.
+  token; nothing is on the trigger yet.
 - **Attempting.** The dispatcher re-reads each target. It asks only for those that are still the
   same incarnation, still name a trigger that holds this applier on this branch, are still admitted
   by their `ClusterProvider`s (their own, and their trigger's), and for a `Refusal` still consent.
   If no target still holds the request's reason, it asks nothing (`Dropped`). Then the applier's
-  kind decides, and both kinds write the operation through to the trigger
-  (`StatusWriter.PersistApplyTriggerStatus`) just before the write that starts the apply. A source
+  kind decides, and both kinds write the operation through to the trigger as `Requested`
+  (`StatusWriter.RecordApplyOperation`) just before the write that starts the apply. The record is
+  refused, and nothing is started, while the trigger is being deleted or its status holds another
+  operation in flight (an external resume the reconciler recorded, or one an earlier process is
+  still owed). A recorded attempt that then asks for nothing withdraws its record, which puts back
+  what the status held: the trigger never shows an operation nothing could have applied. The
+  writer matches operations by their token, never by time. A `FluxTrigger` that is not
+  `Suspended=True` (still adopting, or being deleted) is not resumed (`RequestFailed`). A source
   on another repository or branch, a `Kustomization` whose `spec.suspend` another manager applies,
   or an `Application` with automated sync on, is `Rejected`. A decision that no longer holds when
   the write is due (the commit is no longer the tip, or something is waiting to be published) asks
@@ -158,7 +164,8 @@ flowchart LR
   request's token ([below](#the-argo-cd-applier)). One not completed after 5 minutes is
   `Unresolved`: a Flux `Kustomization` is suspended at once, and the operation is followed on, at an
   interval doubling to a minute. The applier object being deleted, or its trigger being deleted,
-  completes it as `Failed`; no `GitTarget` naming the trigger any more abandons it.
+  completes it as `Failed`; no `GitTarget` naming the trigger any more abandons it, and a Flux
+  `Kustomization` is suspended with a fence before it is let go.
 - **Settling.** An operation that succeeded is done. A stale attempt gives back what it carried and
   is decided again at the next quiet moment. Any other outcome, a failed operation included, gives
   back what the attempt carried, a refusal only if it still stands, and starts that applier's
@@ -202,14 +209,22 @@ drifted object with no new commit):
    (`ApplyRequest.Current`). This closes the race of measurement point 6 as far as it can be closed.
 3. **Record the operation** on the trigger, written through, as `Requested` with its token.
 4. **Resume with a token.** One server-side apply under the field manager `gitops-reverser` sets
-   `spec.suspend: false` and `requestedAt: <T1>`.
+   `spec.suspend: false` and `requestedAt: <T1>`. A resume whose answer is lost (a timeout, an
+   internal error) may have landed, so it is followed and fenced as if it had.
 5. **Wait for T1 handled.** A token somebody stamped over T1 (`flux reconcile`) stands in for it:
-   the reconcile that handles it started after the resume. Then read the outcome:
+   the reconcile that handles it started after the resume. A handled token does not prove a
+   reconcile ran resumed, though: a suspend landing between the resume and the reconcile (a
+   `flux suspend`) has the suspended return handle it, leaving the last apply's `Ready`. So the
+   outcome also needs proof that a reconcile ran since the resume: `Ready`'s `lastTransitionTime`
+   (a real reconcile marks it `Unknown` first) or the top `status.history` entry moved past what the
+   resume's apply returned. Then read the outcome:
 
    | Read after T1 is handled | Outcome |
    | --- | --- |
+   | No reconcile ran since the resume | `Failed`, so the worker asks again |
    | `Ready=True`, `lastAppliedRevision` holds the commit | `Succeeded` |
-   | `Ready=True`, another revision | `Succeeded`, logged and counted in `apply_revision_mismatches_total` (the residual race) |
+   | `Ready=True`, the revision the `GitRepository` holds now, which is not the commit | `Succeeded`, logged and counted in `apply_revision_mismatches_total` (the residual race: the source moved on) |
+   | `Ready=True`, any other revision (kustomize-controller's cached source lagged the artifact checked) | `Failed`, so the worker asks again |
    | `Ready=False`, `DependencyNotReady` | `Failed`, with a reason of its own |
    | `Ready=False`, anything else, or no `Ready` | `Failed` |
 
@@ -251,14 +266,26 @@ later deletes it.
   the apply as an `Unresolved` operation with that fence token and no request token, which it
   completes once the fence is handled. It does this every time, with an Event each time: there is no
   step-back state. A `FluxTrigger` that is `Ready` reads its `Kustomization` every minute, which
-  bounds how long such a resume runs unsuspended.
+  bounds how long such a resume runs unsuspended. The reconciler reads the operation before and
+  after the `Kustomization`, so an operation that completes between the two reads is no external
+  resume.
+- **An operation nobody follows.** The reconciler leaves a branch worker's operation in flight
+  alone only while this process's dispatcher follows it (`Following`), or for a minute after it
+  first saw it unfollowed, so restart recovery gets its chance. After that it suspends the
+  `Kustomization` with a token, sends a `Warning` `OperationUnfollowed` Event, and completes the
+  operation `Failed` once the fence is handled. A resumed `Kustomization` is never left with
+  nothing watching it.
 - **Hand-back.** The trigger carries the finalizer `configbutler.ai/flux-trigger`. Deleting it
   suspends the `Kustomization` with a token if an apply has it resumed, waits until that is handled,
-  then releases `spec.suspend` with an empty apply, so Flux owns it again (`Released`). An operation
-  whose trigger is being deleted completes as `Failed` and writes nothing more to the
-  `Kustomization`. A `Kustomization` or `ClusterProvider` that is gone, or a release the identity
-  may not make (a `Warning` Event), lets the trigger go. A `GitTarget` that stops naming the trigger
-  releases nothing.
+  then releases `spec.suspend` with an empty apply, so Flux owns it again (`Released`). On a real
+  API server our forced apply over a `flux suspend` *shares* `spec.suspend` with that `Update`
+  entry, so an empty apply alone would leave it `true`: the release first takes the field with a
+  forced `suspend: false`. A manager that *applies* the field keeps it, and `Released` names it. An
+  operation whose trigger is being deleted completes as `Failed` and writes nothing more to the
+  `Kustomization`; the dispatcher reads the trigger uncached before every step that may suspend. A
+  `Kustomization` or `ClusterProvider` that is gone, a suspend or release the identity may not make,
+  or a hand-back still unfinished 10 minutes after the deletion (each a `Warning` `ReleaseFailed`
+  Event) lets the trigger go. A `GitTarget` that stops naming the trigger releases nothing.
 
 ### Restart recovery
 
@@ -267,7 +294,10 @@ live event is mirrored before the windows of what it finds are open:
 
 - **An operation not completed** is followed to its end by its recorded tokens, asking the applier
   for nothing (`ApplyRequest.Recovered`), with its apply window open from the recovery. For Flux,
-  the follow suspends the `Kustomization` again. A recorded token that is nowhere on the
+  the follow suspends the `Kustomization` again. A recorded token that was stamped over (by our own
+  fence before the crash, or a `flux reconcile`) is judged on whether a reconcile ran since the
+  operation's `requestedAt`. A recorded request arriving before the dispatcher starts waits for it.
+  A recorded token that is nowhere on the
   `Kustomization` (neither its `requestedAt` nor the last handled) means the process stopped
   between the record and the resume, or a suspend it never reported followed: the `Kustomization`
   is suspended, and the operation ends `Failed`.
@@ -283,16 +313,22 @@ nothing about what is owed.
 ### Shared sources and prefetch
 
 - The trigger lists the consumers of its `GitRepository` in the applier's cluster:
-  `Kustomization`s with that `sourceRef`, and `HelmRelease`s whose chart comes from it. Those no
-  `FluxTrigger` on the same `ClusterProvider` holds are `status.source.otherConsumers`, information
+  `Kustomization`s with that `sourceRef`, and `HelmRelease`s whose chart comes from it, directly or
+  through a `HelmChart` their `chartRef` names (at whichever `HelmRelease` version the cluster
+  serves; consumers that cannot be determined are an error, so no prefetch). Those no `FluxTrigger`
+  on the same `ClusterProvider` holds, that is reports `Suspended=True`, are
+  `status.source.otherConsumers`, information
   only: it never affects `Ready`, and no `Warning` is sent, because one `GitRepository` for `apps`
   and `infra` is a normal setup.
-- `status.source.prefetch` is true only when that list was read and is empty. Then a push somebody
+- `status.source.prefetch` is true only when that list was read and is empty, and the trigger holds
+  its own `Kustomization`. The dispatcher checks once more, on the cluster, that every consumer is
+  held just before it stamps the source. Then a push somebody
   else made, observed while the branch is busy, has the source fetch at once, so the artifact is
   ready when the apply is due. On a quiet branch the attempt sent at once fetches for itself. No
   prefetch while any `FluxTrigger` on that source has an operation in flight, because a resumed
   consumer applies whatever the artifact becomes. A listing that is forbidden counts as not holding.
-- Appliers of one worker that share a source have one operation at a time.
+- Appliers of one worker that share a source have one operation at a time, and take turns: the
+  one whose last turn is oldest goes first, so a busy sibling cannot starve another.
 
 ### What the measurement found
 

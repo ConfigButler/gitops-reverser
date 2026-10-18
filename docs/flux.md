@@ -160,18 +160,23 @@ A suspended `Kustomization` ignores a new artifact, so the source's own `interva
 fetches, never when anything applies. Keep it longer than an apply takes, `1h` in the example: an
 apply reads the artifact again just before it resumes the `Kustomization`, and a fetch of the
 source's own between that read and the reconcile makes Flux apply another commit than the one
-GitOps Reverser checked. That is logged, counted in `apply_revision_mismatches_total`, and still
-protected by the apply window, but it is avoidable.
+GitOps Reverser checked. When the source moved on, that is logged, counted in
+`apply_revision_mismatches_total`, and still protected by the apply window, but it is avoidable. An
+apply of an *older* revision than the one checked (kustomize-controller's cached source lagging the
+fetch) counts as failed, and GitOps Reverser asks again.
 
 **Shared sources.** Several `Kustomization`s may read one `GitRepository`. The trigger lists its
 source's other consumers in `status.source.otherConsumers`: the `Kustomization`s no `FluxTrigger`
-holds and the `HelmRelease`s whose chart comes from it. That list is information only: one source
+holds and the `HelmRelease`s whose chart comes from it, directly or through a `HelmChart` that
+their `chartRef` names. That list is information only: one source
 for `apps` and `infra` is a normal setup, and it never affects `Ready`. Each consumer in it applies
 a new artifact the moment it arrives, so:
 
-- While the list is empty, `status.source.prefetch` is `true`: when GitOps Reverser learns of a push
-  while the branch is busy, it has the source fetch at once, so the artifact is ready when the apply
-  is due. While it is not empty, nothing is fetched ahead.
+- While the list is empty and the trigger's own `Kustomization` is held, `status.source.prefetch` is
+  `true`: when GitOps Reverser learns of a push while the branch is busy, it has the source fetch at
+  once, so the artifact is ready when the apply is due. A consumer counts as held only while its
+  `FluxTrigger` reports `Suspended` `True`, and that is checked again on the cluster just before the
+  fetch. While the list is not empty, nothing is fetched ahead.
 - Appliers on one branch that share a source apply one at a time.
 
 ## The `Kustomization`
@@ -248,8 +253,13 @@ before the suspend still is.
 **Deleting the trigger hands the `Kustomization` back.** The trigger carries the finalizer
 `configbutler.ai/flux-trigger`. Deleting it suspends the `Kustomization` once more if an apply has
 it resumed, waits until that is handled, and releases `spec.suspend`, so the `Kustomization` is
-resumed and applies on its own again (a `Normal` `Released` Event). A `GitTarget` that stops naming
-the trigger releases nothing: the trigger is what holds the `Kustomization`.
+resumed and applies on its own again (a `Normal` `Released` Event). That includes a `Kustomization`
+somebody had `flux suspend`ed before the trigger adopted it. One whose `spec.suspend` another
+manager also applies stays suspended, and the `Released` Event names that manager. A hand-back that
+has not finished 10 minutes after the deletion, because kustomize-controller is down for instance,
+lets the trigger go anyway with a `Warning` `ReleaseFailed` Event that says where the
+`Kustomization` was left. A `GitTarget` that stops naming the trigger releases nothing: the trigger
+is what holds the `Kustomization`.
 
 The trigger reports `Configured` and `Suspended`, and its `Ready` includes both:
 
@@ -281,6 +291,7 @@ with the identity of that `ClusterProvider`. That identity needs:
 | `kustomize.toolkit.fluxcd.io` | `kustomizations` | `get`, `list`, `patch` |
 | `helm.toolkit.fluxcd.io` | `helmreleases` | `list`, to find the `GitRepository`'s consumers; without it the source is never prefetched |
 | `source.toolkit.fluxcd.io` | `gitrepositories` | `get`, `patch` |
+| `source.toolkit.fluxcd.io` | `helmcharts` | `list`, to find the `HelmRelease`s whose `chartRef` names a `HelmChart` built from the `GitRepository`; without it the source is never prefetched |
 | `authorization.k8s.io` | `selfsubjectaccessreviews` | `create`, to check the two above |
 
 For the operator's own cluster, install the chart with `applierAccess.flux: true`, or apply
@@ -361,12 +372,21 @@ own backoff (2 seconds doubling to 5 minutes), on a quiet branch, at the tip as 
 request the `Kustomization`'s configuration rejects waits at least 15 seconds, since only a change
 to that configuration clears it: a `GitRepository` that fetches another repository or branch, a
 source that is not a `GitRepository`, or `spec.suspend` applied by another field manager. An
-`ApplyFailed` Event marks the first failure of a run.
+`ApplyFailed` Event marks the first failure of a run. A resume that no reconcile ran on (somebody
+ran `flux suspend` between the resume and Flux's reconcile) counts as failed too, and is asked
+again: a handled token alone does not prove Flux applied anything. A request that arrives while the
+trigger is still adopting its `Kustomization` (`Suspended=False`, `Fencing`) is not resumed, and is
+retried on the same backoff.
 
 **An apply that takes long is followed, not timed out.** After 5 minutes the operation is
 `Unresolved`: the `Kustomization` is suspended at once (that stops whatever would follow, not the
 apply already running), an `ApplyUnresolved` Event is recorded, and GitOps Reverser keeps following
-it until the suspend is handled. Nothing more is asked of that `Kustomization` until then.
+it until the suspend is handled. Nothing more is asked of that `Kustomization` until then. If an
+operation stops being followed (its `GitTarget` was deleted mid-apply, or the process lost track of
+it), the `Kustomization` is suspended with a fence before it is let go. The trigger is the backstop:
+an operation in flight that nobody follows for a minute is suspended, a `Warning`
+`OperationUnfollowed` Event is recorded, and it completes as failed. A resumed `Kustomization` is
+never left with nothing watching it.
 
 **An edit made while Flux applies keeps its value.** From the moment an operation is asked for until
 10 seconds after it completes, an API edit to a field the `Kustomization` sets can be reverted on the
@@ -442,6 +462,8 @@ flux get ks checkout -n flux-system
 | A Warning `ApplyRequestFailed` Event | An apply could not be asked for; the message says why | GitOps Reverser keeps asking on a quiet branch, at most every five minutes. It is recorded for the first failure of a run |
 | A Warning `ApplyFailed` Event | Flux ran the apply and reported it failed | Read the `Kustomization`'s status; GitOps Reverser retries on its backoff |
 | A Warning `ApplyUnresolved` Event, trigger `Ready=False`, `OperationUnresolved` | The apply has not completed in 5 minutes | It is suspended and still followed; look at the `Kustomization`'s status and health checks |
+| A Warning `OperationUnfollowed` Event | An apply was left in flight with nothing following it | It was suspended again and its operation completed as failed. Once is harmless; a recurring one is a bug worth reporting with the operator's logs |
+| A Warning `ReleaseFailed` Event | A deleted trigger could not hand its `Kustomization` back (forbidden, or not done within 10 minutes) | The message says where the `Kustomization` was left; `flux resume` it if it should apply on its own |
 | `flux get ks` shows `Suspended` | That is how the trigger holds it | Nothing to fix; see [overriding by hand](#overriding-by-hand) |
 | A dependent `Kustomization` waits | Its dependency's last apply failed, and it is suspended with that generation unapplied | Fix the dependency's failure; GitOps Reverser's retry unblocks it |
 | A Git-side push takes minutes to reach the cluster | No receiver, so the refresh finds it | Configure [the webhook](#the-git-hosts-webhook) |

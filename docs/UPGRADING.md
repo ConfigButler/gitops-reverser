@@ -39,7 +39,7 @@ operator is down nothing applies it. Remove `spec.suspend` from whatever applies
 `Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
 webhook into a Flux `Receiver` for the repository, as [the Flux guide](flux.md) describes. Deleting
 the trigger hands the `Kustomization` back to Flux. The operator needs `get`, `list` and `patch` on
-`kustomizations`, `list` on `helmreleases`, `get` and `patch` on `gitrepositories`, and `create` on
+`kustomizations`, `list` on `helmreleases` and `helmcharts`, `get` and `patch` on `gitrepositories`, and `create` on
 `selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true` grants them for
 the operator's own cluster.
 

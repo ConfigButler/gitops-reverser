@@ -1217,8 +1217,8 @@ spec:
 ```
 
 For a `Kustomization`, the identity needs `get`, `list` and `patch` on `kustomizations`
-(`kustomize.toolkit.fluxcd.io`), `list` on `helmreleases` (`helm.toolkit.fluxcd.io`), and `get`
-and `patch` on `gitrepositories` (`source.toolkit.fluxcd.io`). The two `list` grants find the
+(`kustomize.toolkit.fluxcd.io`), `list` on `helmreleases` (`helm.toolkit.fluxcd.io`), `get` and
+`patch` on `gitrepositories` and `list` on `helmcharts` (`source.toolkit.fluxcd.io`). The `list` grants find the
 `GitRepository`'s other consumers; without them the source is never prefetched. For an
 `Application`, it needs `get` and `update` on `applications` (`argoproj.io`); and for either,
 `create` on `selfsubjectaccessreviews` to check it. For the operator's own cluster the chart grants them with
@@ -1333,13 +1333,16 @@ suspended again and recorded straight away as an `Unresolved` operation with no 
 `commit`, which completes once the suspend's `fenceToken` is handled.
 
 `status.source.otherConsumers` lists the other `Kustomization`s and `HelmRelease`s that apply the
-`GitRepository` and that no `FluxTrigger` on the same `ClusterProvider` holds: each applies a new
+`GitRepository` (a `HelmRelease` directly, or through a `HelmChart` its `chartRef` names) and that
+no `FluxTrigger` on the same `ClusterProvider` holds, that is, reports `Suspended` `True`: each applies a new
 artifact the moment it arrives. It is information only and never affects `Ready`.
 `status.source.prefetch` is `true` while every consumer was listed and is held by a `FluxTrigger`,
-so a new artifact applies nothing on its own: GitOps Reverser then fetches the `GitRepository` as
-soon as it learns of a push, before the apply. It is `false` when `otherConsumers` is not empty, or
-when the consumers could not be listed (the identity needs `list` on `kustomizations` and
-`helmreleases`).
+the trigger's own `Kustomization` included, so a new artifact applies nothing on its own: GitOps
+Reverser then fetches the `GitRepository` as soon as it learns of a push, before the apply, after
+checking on the cluster once more that every consumer is still held. It is `false` when
+`otherConsumers` is not empty, before the trigger holds its own `Kustomization`, or when the
+consumers could not be listed (the identity needs `list` on `kustomizations`, `helmreleases` and
+`helmcharts`).
 
 `Configured` is a gate, so the trigger's `Ready` aggregates it. Its `False` reasons:
 
@@ -1364,10 +1367,14 @@ A `FluxTrigger` also reports `Suspended`, and is `Ready` only once it is `True`:
 **Deleting a `FluxTrigger` hands the `Kustomization` back to Flux.** The trigger carries the
 finalizer `configbutler.ai/flux-trigger`. On deletion it suspends the `Kustomization` once more if
 an apply has it resumed, waits until that suspend is handled, and releases `spec.suspend`, so Flux
-applies it on its own again (a `Normal` `Released` Event). A `Kustomization`, cluster or
-`ClusterProvider` that is gone has nothing to hand back, and an identity that may not write the
-`Kustomization` lets the trigger go with a `Warning` `ReleaseFailed` Event, so neither holds the
-trigger forever.
+applies it on its own again (a `Normal` `Released` Event), even one somebody had `flux suspend`ed
+before the trigger adopted it. If another field manager also applies `spec.suspend`, the
+`Kustomization` stays suspended and the `Released` Event names that manager. A `Kustomization`,
+cluster or `ClusterProvider` that is gone has nothing to hand back, and an identity that may not
+write the `Kustomization` lets the trigger go with a `Warning` `ReleaseFailed` Event. A hand-back
+that has not finished 10 minutes after the deletion (kustomize-controller down, say) also lets the
+trigger go with a `ReleaseFailed` Event saying where the `Kustomization` was left, so nothing holds
+the trigger forever.
 
 The applier is read on the trigger's own reconcile tick rather than watched, so a cluster without
 the Flux or Argo CD CRDs installed costs nothing: every 15 seconds while it is expected to clear on
