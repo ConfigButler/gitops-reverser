@@ -167,9 +167,11 @@ func TestFluxTrigger_DeletingTheTriggerInLineHandsNothingBack(t *testing.T) {
 	assert.True(t, conditionIsTrue(holder.Status.Conditions, ApplyTriggerConditionSuspended))
 }
 
-// TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine: the holder hands the Kustomization back
-// as it goes; its going enqueues the trigger in line (a deletion maps to the others naming the
-// applier), which then holds it, starting with an adoption.
+// TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine: the holder fences the Kustomization as
+// it goes, and leaves it suspended for the trigger in line instead of releasing it: released, Flux
+// would apply it at once, unchecked against the branch, before the next trigger could suspend it
+// again (review 6). Its going enqueues the trigger in line (a deletion maps to the others naming the
+// applier), which then holds the Kustomization as it was left, with nothing to adopt.
 func TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine(t *testing.T) {
 	f := duplicateFixture(t)
 	f.reconcileKey(t, triggerKey)
@@ -177,8 +179,13 @@ func TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine(t *testing.T) {
 	f.events()
 	gone := &configbutleraiv1alpha3.FluxTrigger{}
 	require.NoError(t, f.r.Get(context.Background(), triggerKey, gone))
+	applied := len(f.sim.Applied())
 
 	f.deleteUntilGone(t, triggerKey)
+	ks := f.sim.Kustomization(checkoutKustomization)
+	assert.True(t, suspendedSpec(ks), "never released between the two")
+	assert.Contains(t, kustomizationManagers(ks), applier.SuspendFieldManager)
+	assert.Len(t, f.sim.Applied(), applied, "so Flux applied nothing on its own")
 	requests := f.r.triggersInLine(context.Background(), gone)
 	require.Len(t, requests, 1)
 	assert.Equal(t, inLineKey, requests[0].NamespacedName)
@@ -190,15 +197,77 @@ func TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine(t *testing.T) {
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ApplyTriggerConditionConfigured))
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ApplyTriggerConditionSuspended))
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ConditionTypeReady))
-	ks := f.sim.Kustomization(checkoutKustomization)
-	assert.True(t, suspendedSpec(ks))
-	assert.Contains(t, kustomizationManagers(ks), applier.SuspendFieldManager)
-	events := f.events()
-	require.Len(t, events, 2, "%v", events)
-	assert.True(t, strings.HasPrefix(events[0], "Normal Released handed Kustomization flux-system/checkout back"),
-		events[0])
-	assert.True(t, strings.HasPrefix(events[1], "Normal Adopted suspended Kustomization flux-system/checkout"),
-		events[1])
+	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
+	assert.Equal(t, []string{"Normal Released left Kustomization flux-system/checkout suspended for FluxTrigger " +
+		"team-b/checkout, which holds it next"}, f.events())
+}
+
+// TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt is review 5's second finding (P2): a trigger
+// created in the same second as the holder, which comes before it by name, appears while the
+// holder's apply is in flight. It waits: it is Configured=False, leaves the resumed Kustomization to
+// the holder's worker, and records nothing. Once that apply ends, it takes the Kustomization over,
+// as it was left.
+func TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt(t *testing.T) {
+	holderTrigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	holderTrigger.Namespace = inLineKey.Namespace // team-b: after team-a by name
+	holderTrigger.CreationTimestamp = metav1.NewTime(time.Unix(1_000_000, 0))
+	holderKey := k8stypes.NamespacedName{Namespace: holderTrigger.Namespace, Name: holderTrigger.Name}
+	sim := applierSim(t, applierFluxObjects()...)
+	c := triggerTestClient(t, holderTrigger, admitting(configbutleraiv1alpha3.DefaultClusterProviderName,
+		"team-a", "team-b"))
+	r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux, sim.Client, nil, true)
+	recorder := record.NewFakeRecorder(64)
+	r.Recorder = recorder
+	f := &holdFixture{r: r, sim: sim, recorder: recorder}
+	f.reconcileKey(t, holderKey)
+	f.events()
+
+	// The holder's worker records its operation, and resumes the Kustomization.
+	held := &configbutleraiv1alpha3.FluxTrigger{}
+	require.NoError(t, f.r.Get(context.Background(), holderKey, held))
+	held.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
+		Phase: configbutleraiv1alpha3.ApplyOperationRunning, Reason: configbutleraiv1alpha3.ApplyReasonRefusal,
+		Token: "T1", RequestedAt: metav1.Now(),
+	}
+	require.NoError(t, f.r.Status().Update(context.Background(), held))
+	_, err := f.sim.Client.Resource(fluxsim.KustomizationGVR()).Namespace("flux-system").Patch(context.Background(),
+		"checkout", k8stypes.MergePatchType, []byte(`{"spec":{"suspend":false}}`),
+		metav1.PatchOptions{FieldManager: applier.SuspendFieldManager})
+	require.NoError(t, err)
+	// The newcomer: same second, team-a.
+	newcomer := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	newcomer.CreationTimestamp = holderTrigger.CreationTimestamp
+	require.NoError(t, f.r.Create(context.Background(), newcomer))
+
+	waiting := f.reconcileKey(t, triggerKey)
+
+	configured := findCondition(waiting.Status.Conditions, ApplyTriggerConditionConfigured)
+	require.NotNil(t, configured)
+	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, configured.Reason)
+	assert.Contains(t, configured.Message, "whose apply is in flight; this trigger takes it over once that apply ends")
+	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "left running for the holder")
+	assert.Nil(t, waiting.Status.Operation, "no external resume recorded")
+	assert.Empty(t, f.events())
+	assert.True(t, conditionIsTrue(f.reconcileKey(t, holderKey).Status.Conditions, ApplyTriggerConditionConfigured),
+		"the holder keeps it")
+
+	// The worker suspends the Kustomization again and completes its operation.
+	_, err = f.sim.Client.Resource(fluxsim.KustomizationGVR()).Namespace("flux-system").Patch(context.Background(),
+		"checkout", k8stypes.MergePatchType, []byte(`{"spec":{"suspend":true}}`),
+		metav1.PatchOptions{FieldManager: applier.SuspendFieldManager})
+	require.NoError(t, err)
+	require.NoError(t, f.r.Get(context.Background(), holderKey, held))
+	finished := metav1.Now()
+	held.Status.Operation.Phase, held.Status.Operation.FinishedAt = configbutleraiv1alpha3.ApplyOperationSucceeded,
+		&finished
+	require.NoError(t, f.r.Status().Update(context.Background(), held))
+
+	taken := f.reconcileKey(t, triggerKey)
+	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplyTriggerConditionConfigured), "first in line now")
+	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplyTriggerConditionSuspended))
+	behind := findCondition(f.reconcileKey(t, holderKey).Status.Conditions, ApplyTriggerConditionConfigured)
+	require.NotNil(t, behind)
+	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, behind.Reason)
 }
 
 // TestArgoCDTrigger_OneTriggerHoldsAnApplication: two ArgoCDTriggers on one Application would both

@@ -37,7 +37,7 @@ import (
 //   - Hand-back: the finalizer suspends once more, waits until that token is handled, and releases
 //     spec.suspend, so Flux owns the Kustomization's applies again.
 //
-// All of it is the holder's alone (applier.Holder): another trigger naming the same Kustomization
+// All of it is the holder's alone (applier.HeldByAnother): another trigger naming the same Kustomization
 // is Configured=False (HeldByAnotherTrigger), so it never suspends, fences or records an external
 // resume, and its deletion hands nothing back. It takes the Kustomization over, with an adoption,
 // once the holder is gone.
@@ -252,6 +252,16 @@ func (r *ApplyTriggerReconciler) hold(
 	}
 	switch {
 	case !held.suspension.Suspended:
+		// Read resumed: the resume can be another trigger's, one that came first in line since the
+		// cached read this reconcile decided on. That trigger recorded its operation before it
+		// resumed, so a read made now sees it.
+		if other, err := applier.HeldByAnother(ctx, r.uncachedReader(), trigger); err != nil || other != nil {
+			message := fmt.Sprintf("cannot check which trigger holds Kustomization %s: %v", ref, err)
+			if other != nil {
+				message = applier.HeldByAnotherMessage(trigger, other)
+			}
+			return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotHeld, Message: message}
+		}
 		token, err := held.flux.Suspend(ctx, ref)
 		if err != nil {
 			return keptSuspended(trigger, err.Error())
@@ -337,15 +347,19 @@ func heldBefore(trigger *configbutleraiv1alpha3.FluxTrigger) bool {
 func (r *ApplyTriggerReconciler) liveOperation(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) (*configbutleraiv1alpha3.ApplyOperation, error) {
-	reader := r.APIReader
-	if reader == nil {
-		reader = r.Client
-	}
 	live := &configbutleraiv1alpha3.FluxTrigger{}
-	if err := reader.Get(ctx, client.ObjectKeyFromObject(trigger), live); err != nil {
+	if err := r.uncachedReader().Get(ctx, client.ObjectKeyFromObject(trigger), live); err != nil {
 		return nil, err
 	}
 	return live.Status.Operation, nil
+}
+
+// uncachedReader is APIReader, or the client when none is set.
+func (r *ApplyTriggerReconciler) uncachedReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // fluxClient is the Flux client of the trigger's cluster.
@@ -372,7 +386,8 @@ const releaseDeadline = 10 * time.Minute
 
 // release hands a deleted FluxTrigger's Kustomization back to Flux, and then lets the trigger go:
 // it suspends it once more if it is resumed (a branch worker's apply may still be running), waits
-// until that suspend's token is handled, and releases spec.suspend. A Kustomization or a cluster
+// until that suspend's token is handled, and releases spec.suspend, unless a trigger in line takes
+// the Kustomization over (releaseStep). A Kustomization or a cluster
 // that is gone has nothing to hand back, and one the identity may not write is let go with a
 // Warning Event: neither should hold the trigger forever. Nor does anything else past
 // releaseDeadline. A trigger behind another in line for the Kustomization hands nothing back: the
@@ -394,8 +409,12 @@ func (r *ApplyTriggerReconciler) release(
 		logf.FromContext(ctx).Info("the Kustomization is held by another trigger; handing nothing back",
 			"kustomization", trigger.Applier().String(), "holder", holder.GetNamespace()+"/"+holder.GetName())
 	} else {
+		successor, err := r.nextInLine(ctx, trigger)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 		step, cancel := context.WithTimeout(ctx, applierCheckTimeout)
-		pending = r.releaseStep(step, trigger)
+		pending = r.releaseStep(step, trigger, successor)
 		cancel()
 	}
 	if pending != nil {
@@ -410,6 +429,31 @@ func (r *ApplyTriggerReconciler) release(
 	return ctrl.Result{}, client.IgnoreNotFound(r.Update(ctx, trigger))
 }
 
+// nextInLine is the trigger that takes the Kustomization over once trigger is gone, or nil when no
+// trigger will: one in line that is not being deleted, and whose Configured is True or False only
+// because trigger holds the Kustomization (HeldByAnotherTrigger is checked last, so such a trigger
+// passed every other check).
+func (r *ApplyTriggerReconciler) nextInLine(
+	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
+) (configbutleraiv1alpha3.ApplyTrigger, error) {
+	others, err := applier.TriggersOfApplier(ctx, r.Client, trigger)
+	if err != nil {
+		return nil, err
+	}
+	var next configbutleraiv1alpha3.ApplyTrigger
+	var nextCreated metav1.Time
+	for _, other := range others {
+		configured := findCondition(*other.StatusConditions(), ApplyTriggerConditionConfigured)
+		takesOver := configured != nil && (configured.Status == metav1.ConditionTrue ||
+			configured.Reason == applier.ReasonHeldByAnotherTrigger)
+		created := other.GetCreationTimestamp()
+		if takesOver && other.GetDeletionTimestamp().IsZero() && (next == nil || created.Before(&nextCreated)) {
+			next, nextCreated = other, created
+		}
+	}
+	return next, nil
+}
+
 // pendingRelease is a hand-back that is not done: what to retry it on, and what the Kustomization is
 // left as should the trigger go now.
 type pendingRelease struct {
@@ -418,9 +462,12 @@ type pendingRelease struct {
 	left   string
 }
 
-// releaseStep takes the hand-back one step, and returns nil once the trigger may go.
+// releaseStep takes the hand-back one step, and returns nil once the trigger may go. With a
+// successor (nextInLine), the Kustomization is not released but left suspended and fenced for it:
+// released, Flux would apply it at once, unchecked against the branch, before the successor's
+// adoption could suspend it again.
 func (r *ApplyTriggerReconciler) releaseStep(
-	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
+	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, successor configbutleraiv1alpha3.ApplyTrigger,
 ) *pendingRelease {
 	flux, err := r.releaseClient(ctx, trigger)
 	if err != nil {
@@ -453,6 +500,12 @@ func (r *ApplyTriggerReconciler) releaseStep(
 		return fencing
 	case !suspension.Fenced:
 		return fencing
+	}
+	if successor != nil {
+		r.event(trigger, corev1.EventTypeNormal, EventReasonReleased,
+			"left Kustomization %s suspended for %s %s/%s, which holds it next", ref, successor.TriggerKind(),
+			successor.GetNamespace(), successor.GetName())
+		return nil
 	}
 	keeper, err := flux.Release(ctx, ref)
 	if err != nil {

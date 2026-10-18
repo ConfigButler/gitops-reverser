@@ -119,7 +119,7 @@ func TestHolder_FirstInLine(t *testing.T) {
 		require.NoError(t, f.control.Create(context.Background(), obj))
 	}
 
-	holder, err := Holder(context.Background(), f.control, self)
+	holder, err := firstInLine(context.Background(), f.control, self)
 	require.NoError(t, err)
 	assert.Equal(t, "team-b/same-second", holder.GetNamespace()+"/"+holder.GetName(),
 		"created in the same second: the namespace decides")
@@ -133,4 +133,36 @@ func TestHolder_FirstInLine(t *testing.T) {
 	others, err := TriggersOfApplier(context.Background(), f.control, self)
 	require.NoError(t, err)
 	assert.Len(t, others, 2, "the same Kustomization in another cluster, or another one, is not in line")
+}
+
+// TestHolder_AnApplyInFlightComesFirst is review 5's P2: a FluxTrigger with an operation in flight
+// comes first in line, so a trigger that comes before it by creation and name waits for that apply
+// to end. An ArgoCDTrigger's operation does not count: a sync somebody else started is never
+// replaced, so the Application can change hands mid-sync.
+func TestHolder_AnApplyInFlightComesFirst(t *testing.T) {
+	created := metav1.NewTime(time.Unix(1_000_000, 0))
+	applying := &v1alpha3.ApplyOperation{Phase: v1alpha3.ApplyOperationRunning, Token: "T1"}
+	flux := func(namespace string, operation *v1alpha3.ApplyOperation) *v1alpha3.FluxTrigger {
+		return &v1alpha3.FluxTrigger{
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "checkout", CreationTimestamp: created},
+			Status:     v1alpha3.FluxTriggerStatus{Operation: operation},
+		}
+	}
+	argo := func(namespace string, operation *v1alpha3.ApplyOperation) *v1alpha3.ArgoCDTrigger {
+		return &v1alpha3.ArgoCDTrigger{
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "platform", CreationTimestamp: created},
+			Status:     v1alpha3.ArgoCDTriggerStatus{Operation: operation},
+		}
+	}
+
+	assert.True(t, precedes(flux("team-a", nil), flux("team-b", nil)), "by namespace, with nothing in flight")
+	assert.True(t, precedes(flux("team-b", applying), flux("team-a", nil)), "the apply in flight first")
+	assert.False(t, precedes(flux("team-a", nil), flux("team-b", applying)))
+	done := applying.DeepCopy()
+	done.Phase = v1alpha3.ApplyOperationSucceeded
+	assert.True(t, precedes(flux("team-a", nil), flux("team-b", done)), "a completed one does not count")
+	assert.True(t, precedes(argo("team-a", nil), argo("team-b", applying)), "nor an Argo CD sync")
+	assert.Contains(t, HeldByAnotherMessage(flux("team-a", nil), flux("team-b", applying)),
+		"is held by FluxTrigger team-b/checkout, whose apply is in flight; this trigger takes it over once that "+
+			"apply ends")
 }

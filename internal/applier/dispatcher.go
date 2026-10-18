@@ -542,7 +542,9 @@ const TriggerConditionSuspended = "Suspended"
 // Suspended=True and not being deleted. Its reconciler is otherwise suspending the Kustomization,
 // or about to (an adoption, an external resume it fences, a hand-back), and that suspend would land
 // on the resume: Flux would then handle the resume's token on a suspended return, and apply
-// nothing. The attempt fails, and the worker asks again after its backoff.
+// nothing. It also errs when another trigger comes first in line for the Kustomization, read
+// uncached as well: the recheck's cached read can still miss one. The attempt fails, and the worker
+// asks again after its backoff.
 func (d *Dispatcher) triggerHolds(ctx context.Context, ref git.TriggerRef) error {
 	if ref.Kind != v1alpha3.ApplyTriggerKindFlux {
 		return nil
@@ -556,7 +558,13 @@ func (d *Dispatcher) triggerHolds(ctx context.Context, ref git.TriggerRef) error
 		return fmt.Errorf("read %s: %w", ref, err)
 	}
 	held := apimeta.FindStatusCondition(trigger.Status.Conditions, TriggerConditionSuspended)
+	holder, err := HeldByAnother(ctx, reader, trigger)
 	switch {
+	case err != nil:
+		return fmt.Errorf("check which trigger holds the Kustomization of %s: %w", ref, err)
+	case holder != nil:
+		return fmt.Errorf("FluxTrigger %s/%s no longer holds its Kustomization: %s", ref.Namespace, ref.Name,
+			HeldByAnotherMessage(trigger, holder))
 	case !trigger.DeletionTimestamp.IsZero():
 		return fmt.Errorf("FluxTrigger %s/%s is being deleted, and hands its Kustomization back",
 			ref.Namespace, ref.Name)

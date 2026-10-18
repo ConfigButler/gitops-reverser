@@ -789,6 +789,33 @@ func TestDispatcher_AnUnheldTriggerIsNotResumed(t *testing.T) {
 	}
 }
 
+// TestDispatcher_ATriggerAnotherCameBeforeIsNotResumed is review 5's P2, the dispatcher's half: the
+// recheck reads the triggers cached, and can miss one that came first in line since (created in the
+// same second, after it by name, but with an apply of its own in flight). The hold check before the resume reads them
+// uncached, and fails the attempt.
+func TestDispatcher_ATriggerAnotherCameBeforeIsNotResumed(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	own := &v1alpha3.FluxTrigger{}
+	require.NoError(t, f.control.Get(context.Background(), client.ObjectKey{Namespace: targetNS, Name: "checkout"},
+		own))
+	other := own.DeepCopy()
+	other.Namespace, other.ResourceVersion = "team-z", ""
+	other.Spec.KustomizationRef.Namespace = own.Applier().Namespace
+	other.Status.Operation = &v1alpha3.ApplyOperation{Phase: v1alpha3.ApplyOperationRunning, Token: "T0"}
+	scheme := runtime.NewScheme()
+	require.NoError(t, v1alpha3.AddToScheme(scheme))
+	f.dispatcher.APIReader = fake.NewClientBuilder().WithScheme(scheme).WithObjects(own.DeepCopy(), other).Build()
+
+	res := f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+
+	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
+	require.ErrorContains(t, res.Err, "no longer holds its Kustomization")
+	require.ErrorContains(t, res.Err, "held by FluxTrigger team-z/checkout, whose apply is in flight")
+	for _, write := range f.patches() {
+		assert.NotContains(t, write, "suspend=false", "nothing is resumed")
+	}
+}
+
 // TestDispatcher_ARecoveredAttemptBeforeStartWaitsForIt is review 4's B at startup: a worker
 // recovers its trigger's operation once, and one that failed because the dispatcher had not started
 // yet left the Kustomization resumed with nobody following it. Now it is followed once Start runs.
