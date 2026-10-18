@@ -444,6 +444,12 @@ func (f *Flux) verdict(ctx context.Context, ks *unstructured.Unstructured, s *St
 // suspended return, which marks the token handled and leaves the Ready of an earlier apply.
 func (s *Started) judge(ks *unstructured.Unstructured) (Progress, bool) {
 	read := applyVerdict(ks, s.Commit)
+	if s.Token == "" {
+		// An external resume the trigger's reconciler recorded and fenced: no resume of ours to
+		// have run since. It is judged as the reconciler judges it, on the Kustomization's last
+		// apply, so the two agree whichever completes the record.
+		return read, true
+	}
 	if s.ranResumed(ks) || (read.Outcome != git.ApplySucceeded && !s.unseen) {
 		return read, true
 	}

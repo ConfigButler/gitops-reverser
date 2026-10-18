@@ -381,3 +381,26 @@ func TestStatusWriter_NeverWritesOverAnotherOperation(t *testing.T) {
 		})
 	}
 }
+
+// TestStatusWriter_NeverReopensACompletedOperation is review 6: a worker that recovers the
+// reconciler's record of an external resume publishes it as it was listed, Unresolved; the
+// reconciler can have completed it since. The same operation is never written back in flight.
+func TestStatusWriter_NeverReopensACompletedOperation(t *testing.T) {
+	writer, c := statusWriterFixture(t, interceptor.Funcs{})
+	listed := &v1alpha3.ApplyOperation{
+		Phase: v1alpha3.ApplyOperationUnresolved, FenceToken: "F1", RequestedAt: metav1.NewTime(stampTime),
+	}
+	completed := listed.DeepCopy()
+	completed.Phase = v1alpha3.ApplyOperationSucceeded
+	setOperation(t, c, completed)
+
+	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{Operation: listed})
+	assert.False(t, writer.writePending(context.Background()))
+	assertOperation(t, completed, readTrigger(t, c).Status.Operation)
+
+	failed := listed.DeepCopy()
+	failed.Phase = v1alpha3.ApplyOperationFailed
+	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{Operation: failed})
+	assert.False(t, writer.writePending(context.Background()))
+	assertOperation(t, failed, readTrigger(t, c).Status.Operation) // a completion still replaces a completion
+}

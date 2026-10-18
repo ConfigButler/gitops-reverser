@@ -326,7 +326,9 @@ func (w *StatusWriter) read(ctx context.Context, ref git.TriggerRef) (v1alpha3.A
 // operationToWrite is the operation a write of held leaves on a trigger whose status holds current.
 // An operation held withdraws is replaced by what the status held before this writer recorded it,
 // or by none. Then the published operation is written over none, or over the same operation at an
-// earlier point; never over another, which somebody else recorded.
+// earlier point; never over another, which somebody else recorded, and never in flight over the
+// same one completed: a worker that recovered an external resume publishes it as it was listed,
+// and the trigger's reconciler can have completed it since.
 func (w *StatusWriter) operationToWrite(
 	ref git.TriggerRef, held publication, current *v1alpha3.ApplyOperation,
 ) *v1alpha3.ApplyOperation {
@@ -337,8 +339,12 @@ func (w *StatusWriter) operationToWrite(
 			operation = recorded.displaced
 		}
 	}
-	if published := held.status.Operation; published != nil &&
-		(operation == nil || sameOperation(operation, published)) {
+	published := held.status.Operation
+	switch {
+	case published == nil:
+	case operation == nil:
+		operation = published
+	case sameOperation(operation, published) && (!operation.Phase.Completed() || published.Phase.Completed()):
 		operation = published
 	}
 	return operation

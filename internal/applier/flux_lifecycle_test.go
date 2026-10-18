@@ -905,3 +905,31 @@ func eventually(t *testing.T, cond func() bool, why string) {
 	t.Helper()
 	require.Eventually(t, cond, 5*time.Second, time.Millisecond, why)
 }
+
+// TestFluxProgress_AnExternalResumeIsJudgedAsItsReconcilerJudgesIt is review 6: the trigger's
+// reconciler records an external resume when it notices it, which can be after Flux applied it, and
+// completes it on the Kustomization's last apply. A worker that recovered the record judged it on a
+// reconcile run since the record's requestedAt, found none, and its Failed won over the
+// reconciler's Succeeded. Now both read the last apply.
+func TestFluxProgress_AnExternalResumeIsJudgedAsItsReconcilerJudgesIt(t *testing.T) {
+	noticed := stampTime.Truncate(time.Second)
+	appliedAt := noticed.Add(-40 * time.Second).UTC().Format(time.RFC3339)
+	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
+	ks = fluxsim.OwnSuspend(t, ks, true, SuspendFieldManager, metav1.ManagedFieldsOperationApply)
+	ks.SetAnnotations(map[string]string{fluxmeta.ReconcileRequestAnnotation: "F1"})
+	_ = unstructured.SetNestedField(ks.Object, "F1", "status", "lastHandledReconcileAt")
+	_ = unstructured.SetNestedField(ks.Object, "main@sha1:"+testCommit, "status", "lastAppliedRevision")
+	_ = unstructured.SetNestedSlice(ks.Object, []any{map[string]any{
+		"type": "Ready", "status": "True", "reason": fluxmeta.ReconciliationSucceededReason, "message": "Applied",
+		"lastTransitionTime": appliedAt,
+	}}, "status", "conditions")
+	client := newSourceClient(ks, gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch),
+		"main@sha1:"+testCommit))
+
+	recovered := &Started{Outcome: OutcomeResumed, FenceToken: "F1", Recovered: true, RequestedAt: noticed}
+	got, err := NewFlux(client).Progress(context.Background(), checkoutKey, recovered)
+
+	require.NoError(t, err)
+	assert.Equal(t, applyVerdict(ks, "").Outcome, got.Outcome, "the reconciler's verdict")
+	assert.Equal(t, git.ApplySucceeded, got.Outcome)
+}
