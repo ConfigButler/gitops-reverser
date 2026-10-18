@@ -209,7 +209,7 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 			recorded:    trigger.Operation(),
 			repairOwed:  trigger.RepairOwed(),
 			group:       sourceGroup(trigger),
-			prefetch:    prefetchesSource(trigger),
+			prefetch:    trigger.Prefetches(),
 		})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ref.String() < listed[j].ref.String() })

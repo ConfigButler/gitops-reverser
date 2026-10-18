@@ -202,6 +202,18 @@ func (t *FluxTrigger) SourceBinding() (string, string, bool) {
 	return t.Status.Source.URL, t.Status.Source.Branch, true
 }
 
+// SharedSource is the GitRepository in status.source.
+func (t *FluxTrigger) SharedSource() (types.NamespacedName, bool) {
+	if t.Status.Source == nil {
+		return types.NamespacedName{}, false
+	}
+	source := t.Status.Source.GitRepository
+	return types.NamespacedName{Namespace: source.Namespace, Name: source.Name}, true
+}
+
+// Prefetches is status.source.prefetch.
+func (t *FluxTrigger) Prefetches() bool { return t.Status.Source != nil && t.Status.Source.Prefetch }
+
 // Operation is status.operation.
 func (t *FluxTrigger) Operation() *ApplyOperation { return t.Status.Operation }
 

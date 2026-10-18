@@ -364,6 +364,29 @@ func TestArgoCDTrigger_SourceBindingNamesTheBranch(t *testing.T) {
 }
 
 // TestNewApplyTrigger_KnowsBothKinds: a kind this release does not know is nil, never a guess.
+// TestApplyTrigger_SharedSource: a FluxTrigger shares the GitRepository it last read, and prefetches
+// only when its status says so; an ArgoCDTrigger shares nothing and never prefetches.
+func TestApplyTrigger_SharedSource(t *testing.T) {
+	flux := &FluxTrigger{}
+	_, known := flux.SharedSource()
+	assert.False(t, known, "a trigger that has not read its source shares none yet")
+	assert.False(t, flux.Prefetches())
+
+	flux.Status.Source = &FluxTriggerSource{
+		GitRepository: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "platform"},
+		Prefetch:      true,
+	}
+	source, known := flux.SharedSource()
+	assert.True(t, known)
+	assert.Equal(t, "flux-system/platform", source.String())
+	assert.True(t, flux.Prefetches())
+
+	argo := &ArgoCDTrigger{}
+	_, known = argo.SharedSource()
+	assert.False(t, known, "every sync pins its own revision")
+	assert.False(t, argo.Prefetches())
+}
+
 func TestNewApplyTrigger_KnowsBothKinds(t *testing.T) {
 	assert.IsType(t, &FluxTrigger{}, NewApplyTrigger(ApplyTriggerKindFlux))
 	assert.IsType(t, &ArgoCDTrigger{}, NewApplyTrigger(ApplyTriggerKindArgoCD))

@@ -172,6 +172,15 @@ func (t *ArgoCDTrigger) SourceBinding() (string, string, bool) {
 	return t.Status.Source.RepoURL, revision, true
 }
 
+// SharedSource is none: every sync pins its own revision, so Applications reading one repository
+// do not disturb each other's operations.
+func (t *ArgoCDTrigger) SharedSource() (types.NamespacedName, bool) {
+	return types.NamespacedName{}, false
+}
+
+// Prefetches is false: an Application has no source object to fetch ahead.
+func (t *ArgoCDTrigger) Prefetches() bool { return false }
+
 // Operation is status.operation.
 func (t *ArgoCDTrigger) Operation() *ApplyOperation { return t.Status.Operation }
 

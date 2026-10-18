@@ -27,18 +27,11 @@ import (
 // sourceGroup is the group a trigger's applier belongs to: its cluster and GitRepository, or "" for
 // an applier that shares nothing this way.
 func sourceGroup(trigger v1alpha3.ApplyTrigger) string {
-	flux, ok := trigger.(*v1alpha3.FluxTrigger)
-	if !ok || flux.Status.Source == nil {
+	source, ok := trigger.SharedSource()
+	if !ok {
 		return ""
 	}
-	source := flux.Status.Source.GitRepository
-	return flux.ClusterProvider() + "/" + source.Namespace + "/" + source.Name
-}
-
-// prefetchesSource is a trigger's status.source.prefetch.
-func prefetchesSource(trigger v1alpha3.ApplyTrigger) bool {
-	flux, ok := trigger.(*v1alpha3.FluxTrigger)
-	return ok && flux.Status.Source != nil && flux.Status.Source.Prefetch
+	return trigger.ClusterProvider() + "/" + source.Namespace + "/" + source.Name
 }
 
 // group is the applier's group, as listed with any GitTarget naming it.

@@ -165,6 +165,13 @@ type ApplyTrigger interface {
 	// SourceBinding is the repository and branch the applier applies, as the trigger last read
 	// them, and false when it has not read them.
 	SourceBinding() (repositoryURL, branch string, known bool)
+	// SharedSource is the source object the applier reads, which other appliers may read too, and
+	// false when the applier has none it shares this way or the trigger has not read it. Appliers
+	// sharing one have one operation at a time.
+	SharedSource() (source types.NamespacedName, known bool)
+	// Prefetches reports whether a push may be fetched into the shared source ahead of the apply:
+	// every other reader of it is held, so a new artifact applies nothing on its own.
+	Prefetches() bool
 	// Operation is status.operation, and SetOperation replaces it and status.repairOwed.
 	Operation() *ApplyOperation
 	RepairOwed() bool
