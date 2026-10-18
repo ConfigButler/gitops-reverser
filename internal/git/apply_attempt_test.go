@@ -313,7 +313,40 @@ func TestSiblings_ABusyWorkerOnTheSameBranchHoldsTheOther(t *testing.T) {
 	assert.Len(t, requester.taken(), 1, "a worker on another repository never held it")
 
 	siblings.remove(sibling)
-	assert.False(t, loop.w.siblingWriteBusy())
+	writing, working := loop.w.siblingBusy()
+	assert.False(t, writing)
+	assert.False(t, working)
+}
+
+// TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod: a sibling's queued or
+// in-hand item holds the attempt back the way this worker's own queued work does. It keeps
+// quietSince, because the branch is busy only once that work opens a window, and the sibling's
+// loop wakes this one as it releases its last item.
+func TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod(t *testing.T) {
+	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	sibling := newMetricsTestWorker()
+	siblings := newBranchSiblings()
+	for _, w := range []*BranchWorker{loop.w, sibling} {
+		w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
+		w.applyWake = make(chan struct{}, 1)
+		siblings.add(w)
+	}
+
+	require.True(t, sibling.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken(), "the sibling's item is a live edit not yet decided")
+	assert.False(t, loop.quietSince.IsZero(), "the quiet period runs on")
+
+	<-sibling.eventQueue // its loop takes the item, and then releases it, as run does
+	sibling.releaseInflightItem()
+	select {
+	case <-loop.w.applyWake:
+	default:
+		t.Fatal("a sibling releasing its last item must wake the worker it held back")
+	}
+	loop.serviceAppliers()
+	assert.Len(t, requester.taken(), 1)
 }
 
 func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
@@ -361,8 +394,51 @@ func TestDecisionHolds_OnlyAtTheTipOnAQuietBranch(t *testing.T) {
 	assert.False(t, w.decisionHolds("aaa"), "a window open since")
 	w.publishWriteBusy(false)
 
-	w.eventQueue <- WorkItem{}
+	require.True(t, w.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
 	assert.False(t, w.decisionHolds("aaa"), "a queued event is a live edit not yet decided")
+}
+
+// TestDecisionHolds_NotWhileTheLoopHandlesAnItem is the fifth review's second finding. The check
+// read the queue's length, and busyWriting, which a wake publishes only as it ends: once the loop
+// had taken its last item both said quiet, for as long as that item took to commit and push. The
+// item counts until its wake has published what it left behind, for this worker's attempts and for
+// a sibling's. The loop runs for real here, held inside the item by the render fidelity gate.
+func TestDecisionHolds_NotWhileTheLoopHandlesAnItem(t *testing.T) {
+	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
+	w := loop.w
+	sibling := newMetricsTestWorker()
+	siblings := newBranchSiblings()
+	for _, worker := range []*BranchWorker{w, sibling} {
+		worker.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
+		worker.applyWake = make(chan struct{}, 1)
+		worker.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
+		siblings.add(worker)
+	}
+	gate := NewRenderFidelityGate()
+	w.renderFidelityGate = gate
+	ctx, cancel := context.WithCancel(context.Background())
+	w.ctx = ctx
+	done := make(chan struct{})
+
+	gate.mu.Lock() // the loop's write check waits here
+	go func() {
+		defer close(done)
+		loop.run()
+	}()
+	require.True(t, w.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
+	require.Eventually(t, func() bool { return len(w.eventQueue) == 0 }, 5*time.Second, time.Millisecond)
+	assert.False(t, w.busyWriting.Load(), "the wake has published nothing yet")
+	assert.False(t, w.decisionHolds("aaa"), "the item the loop is handling is a live edit")
+	assert.False(t, sibling.decisionHolds("aaa"), "for a sibling too")
+	gate.mu.Unlock()
+
+	require.Eventually(t, func() bool { return w.inflightItems.Load() == 0 }, 5*time.Second, time.Millisecond)
+	assert.True(t, w.busyWriting.Load(), "the window it opened is published before the item is released")
+	assert.False(t, sibling.decisionHolds("aaa"))
+
+	restartAll(gate, itypes.NewResourceReference("alpha", "team-a"), fidelityScope("apps", "deployments"))
+	cancel()
+	<-done
 }
 
 // TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow is the customer review's third blocker: the

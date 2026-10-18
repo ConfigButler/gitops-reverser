@@ -64,20 +64,25 @@ func (s *branchSiblings) remove(w *BranchWorker) {
 	s.wakeOthers(w)
 }
 
-// othersBusy reports whether another worker on w's repository and branch is busy writing.
-func (s *branchSiblings) othersBusy(w *BranchWorker) bool {
+// othersBusy reports whether another worker on w's repository and branch is busy writing, and
+// whether one has work items queued or in hand: a queued watch event is an edit that is live and
+// not yet decided, and the item a loop is handling may be committing and pushing before the wake
+// that publishes it ends.
+func (s *branchSiblings) othersBusy(w *BranchWorker) (bool, bool) {
 	key, ok := siblingKey(w)
 	if !ok {
-		return false
+		return false, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	writing, working := false, false
 	for sibling := range s.byKey[key] {
-		if sibling != w && sibling.busyWriting.Load() {
-			return true
+		if sibling != w {
+			writing = writing || sibling.busyWriting.Load()
+			working = working || sibling.inflightItems.Load() > 0
 		}
 	}
-	return false
+	return writing, working
 }
 
 // wakeOthers wakes every other worker on w's repository and branch, so one that held back an
@@ -108,7 +113,19 @@ func (w *BranchWorker) publishWriteBusy(busy bool) {
 	}
 }
 
-// siblingWriteBusy reports whether another worker on this repository and branch is busy writing.
-func (w *BranchWorker) siblingWriteBusy() bool {
-	return w.siblings != nil && w.siblings.othersBusy(w)
+// releaseInflightItem takes one item off the in-flight count, and wakes the siblings when it was
+// the last: they may have held an attempt back for it.
+func (w *BranchWorker) releaseInflightItem() {
+	if w.inflightItems.Add(-1) == 0 && w.siblings != nil {
+		w.siblings.wakeOthers(w)
+	}
+}
+
+// siblingBusy reports whether another worker on this repository and branch is busy writing, and
+// whether one has work items queued or in hand (othersBusy).
+func (w *BranchWorker) siblingBusy() (bool, bool) {
+	if w.siblings == nil {
+		return false, false
+	}
+	return w.siblings.othersBusy(w)
 }

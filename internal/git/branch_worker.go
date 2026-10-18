@@ -147,9 +147,10 @@ type BranchWorker struct {
 	// reported back, or another worker writing this repository and branch went quiet.
 	applyWake chan struct{}
 	// siblings are the workers writing the same repository and branch as this one, under another
-	// GitProvider; their open windows and pending writes make the branch busy too. busyWriting is
-	// this worker's own, published for them at the end of every wake. Nil siblings (the CLI, tests)
-	// means this worker is alone. See apply_siblings.go.
+	// GitProvider; their open windows, pending writes and work items make the branch busy too.
+	// busyWriting is this worker's own, published for them at the end of every wake; inflightItems
+	// below covers the wake in between. Nil siblings (the CLI, tests) means this worker is alone.
+	// See apply_siblings.go.
 	siblings    *branchSiblings
 	busyWriting atomic.Bool
 	// unresolvedOperations is how many of this branch's apply operations are Unresolved, as the
@@ -610,7 +611,7 @@ func (w *BranchWorker) EnqueueWithdraw(req *AttachCommitRequest) {
 	select {
 	case w.eventQueue <- WorkItem{Withdraw: req}:
 	default:
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.Log.V(1).Info("Queue full, CommitRequest withdraw dropped (the controller re-sends)",
 			"request", req.Namespace+"/"+req.Name)
 	}
@@ -637,14 +638,14 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	w.pendingResyncsMu.Lock()
 	if w.stoppingLocked() {
 		w.pendingResyncsMu.Unlock()
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalAttach)
 		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
 		return
 	}
 	if !w.admitPayload(charge) {
 		w.pendingResyncsMu.Unlock()
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalAttach)
 		w.Log.V(1).Info("CommitRequest attach refused while the branch has paused intake "+
 			"(the controller re-sends)", "request", req.Namespace+"/"+req.Name)
@@ -656,7 +657,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		// gets here. The owner answers for it; registering it twice could commit it twice.
 		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.Log.Info("CommitRequest attach refused: another branch worker holds the request",
 			"request", req.Namespace+"/"+req.Name)
 		return
@@ -679,7 +680,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		w.uncountQueuedAttach(id)
 		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalAttach)
 		w.Log.Error(nil, "Event queue full, CommitRequest attach refused (controller will re-send)")
 	}
@@ -770,7 +771,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 			"sourceCollection", sourceCollectionForLog(request.SourceCollection))
 		return true
 	default:
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		delete(w.pendingResyncs, key)
 		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
@@ -901,7 +902,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	w.pendingResyncsMu.Lock()
 	if w.stoppingLocked() {
 		w.pendingResyncsMu.Unlock()
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalWrite)
 		w.Log.V(1).Info("Worker is stopping, request refused; the producer keeps it to redeliver",
 			"events", len(request.Events),
@@ -910,7 +911,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	}
 	if !w.admitPayload(item.charge) {
 		w.pendingResyncsMu.Unlock()
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalWrite)
 		w.Log.V(1).Info("Write refused while the branch has paused intake; "+
 			"the producer keeps it to redeliver", "events", len(request.Events), "gitTarget", request.GitTargetName)
@@ -932,7 +933,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	default:
 		w.intake.release(item.charge)
 		w.pendingResyncsMu.Unlock()
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalWrite)
 		// Name the producing collection on a refusal. A saturated queue is diagnosed from what was
 		// refused and by whom: the 595-in-16-seconds storm was one GitTarget, and the next
@@ -1232,8 +1233,9 @@ func (l *branchWorkerEventLoop) run() {
 			return
 		case item := <-l.w.eventQueue:
 			l.handleQueueItem(item)
-			// Released after the wake has published what the item left behind: see queueDepth.
-			l.w.inflightItems.Add(-1)
+			// Released after the wake has published what the item left behind: see queueDepth, and
+			// decisionHolds, which reads busyWriting and this count the same way.
+			l.w.releaseInflightItem()
 			continue
 		case <-commitC:
 			l.commitTimer = nil
@@ -1532,7 +1534,7 @@ func (w *BranchWorker) drainQueue() {
 				_, charge = w.takePendingResync(item.Resync)
 			}
 			w.intake.release(charge)
-			w.inflightItems.Add(-1)
+			w.releaseInflightItem()
 		default:
 			return
 		}

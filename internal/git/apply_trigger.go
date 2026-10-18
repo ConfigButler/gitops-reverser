@@ -336,9 +336,11 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
-	if !l.branchQuiet(now) || len(w.eventQueue) > 0 {
-		// Queued work: the next wake looks again. The branch is still quiet until that work opens
-		// a window, so quietSince is kept. A push observed meanwhile is fetched ahead of the apply.
+	if !l.branchQuiet(now) || l.workWaiting() {
+		// Queued work, here or on a sibling: the next wake looks again, and a sibling's loop wakes
+		// this one once it has handled its last item. The branch is still quiet until that work
+		// opens a window, so quietSince is kept. A push observed meanwhile is fetched ahead of the
+		// apply.
 		l.prefetchSources()
 		return
 	}
@@ -371,7 +373,8 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 func (l *branchWorkerEventLoop) branchQuiet(now time.Time) bool {
 	busy := l.writeBusy()
 	l.w.publishWriteBusy(busy)
-	if busy || l.w.siblingWriteBusy() {
+	siblingWriting, _ := l.w.siblingBusy()
+	if busy || siblingWriting {
 		l.quietSince = time.Time{}
 		l.stopApplierTimer()
 		return false
@@ -801,12 +804,28 @@ func (l *branchWorkerEventLoop) applierAwaiting(id uint64) *applierState {
 	return nil
 }
 
+// workWaiting reports whether work items are queued on this worker, or queued or in hand on another
+// writing this repository and branch.
+func (l *branchWorkerEventLoop) workWaiting() bool {
+	_, siblingWorking := l.w.siblingBusy()
+	return len(l.w.eventQueue) > 0 || siblingWorking
+}
+
 // decisionHolds is ApplyRequest.Current for an attempt decided at tip: the branch is still at that
-// commit, and nothing live is waiting to be published on this worker or a sibling. Work still in the
-// queue counts, because a queued watch event is an edit that is live and not yet decided. It is
-// called from the requester's goroutine, so it reads only what is safe to read there.
+// commit, and nothing live is waiting to be published on this worker or a sibling. A work item
+// counts from its enqueue until its wake has published what it left behind (inflightItems), not
+// only while it waits in the queue: a queued watch event is an edit that is live and not yet
+// decided, and the item the loop is handling may be committing and pushing while busyWriting still
+// says what the last wake left. It is called from the requester's goroutine, so it reads only what
+// is safe to read there.
+//
+// An attempt sent from the wake of a queue item can find that item still counted, should the
+// requester ask within moments. It is then Stale, which costs no backoff, and the report wakes the
+// loop without an item, so the next attempt is not held by one of its own.
 func (w *BranchWorker) decisionHolds(tip string) bool {
-	return w.debt.tipIs(tip) && !w.busyWriting.Load() && len(w.eventQueue) == 0 && !w.siblingWriteBusy()
+	siblingWriting, siblingWorking := w.siblingBusy()
+	return w.debt.tipIs(tip) && !w.busyWriting.Load() && w.inflightItems.Load() == 0 &&
+		!siblingWriting && !siblingWorking
 }
 
 // reportApplyResult is ApplyRequest.Report: it records the report and wakes the loop to settle it.
