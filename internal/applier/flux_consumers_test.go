@@ -24,10 +24,10 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// helmReleaseObj is a HelmRelease whose chart comes from the GitRepository sourceName, in its
-// namespace unless sourceNamespace is set.
-func helmReleaseObj(namespace, name, sourceName, sourceNamespace string) *unstructured.Unstructured {
-	sourceRef := map[string]any{"kind": kindGitRepository, "name": sourceName}
+// helmReleaseObj is a HelmRelease whose chart comes from the GitRepository "platform", in its namespace
+// unless sourceNamespace is set.
+func helmReleaseObj(namespace, name, sourceNamespace string) *unstructured.Unstructured {
+	sourceRef := map[string]any{"kind": kindGitRepository, "name": "platform"}
 	if sourceNamespace != "" {
 		sourceRef["namespace"] = sourceNamespace
 	}
@@ -50,8 +50,8 @@ func TestFluxConsumers_ListsEveryObjectApplyingTheSource(t *testing.T) {
 			"kind": kindGitRepository, "name": "platform", "namespace": fluxSystemNS,
 		}),
 		kustomizationObj(fluxSystemNS, "other", gitRepoSourceRef("another")),
-		helmReleaseObj("apps", "podinfo", "platform", fluxSystemNS),
-		helmReleaseObj(fluxSystemNS, "local", "platform", ""),
+		helmReleaseObj("apps", "podinfo", fluxSystemNS),
+		helmReleaseObj(fluxSystemNS, "local", ""),
 	)
 	consumers, err := pinnedFlux(client).Consumers(context.Background(), platformKey)
 	require.NoError(t, err)
@@ -142,7 +142,7 @@ func TestFluxConsumers_AHelmReleaseThroughAHelmChart(t *testing.T) {
 // TestFluxConsumers_AClusterServingOnlyAnOlderHelmRelease: a Flux that serves HelmReleases only at
 // v2beta2 has them listed there, not read as having none.
 func TestFluxConsumers_AClusterServingOnlyAnOlderHelmRelease(t *testing.T) {
-	release := helmReleaseObj("apps", "podinfo", "platform", fluxSystemNS)
+	release := helmReleaseObj("apps", "podinfo", fluxSystemNS)
 	release.SetAPIVersion("helm.toolkit.fluxcd.io/v2beta2")
 	client := helmClient([]schema.GroupVersionResource{helmReleaseGVR()}, release)
 
@@ -304,7 +304,7 @@ func TestDispatcher_PrefetchChecksTheConsumersAsTheyAreNow(t *testing.T) {
 		"a Kustomization Flux applies on its own": prefetchFixtureOver(t, true, heldSource(t, infra(false)),
 			infraTrigger()),
 		"a HelmRelease": prefetchFixtureOver(t, true,
-			heldSource(t, helmReleaseObj("apps", "podinfo", "platform", fluxSystemNS))),
+			heldSource(t, helmReleaseObj("apps", "podinfo", fluxSystemNS))),
 		"its own Kustomization, resumed": prefetchFixtureOver(t, true, resumed),
 	} {
 		t.Run(name, func(t *testing.T) {
