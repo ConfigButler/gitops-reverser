@@ -36,6 +36,11 @@ import (
 //     token is handled. There is no step-back.
 //   - Hand-back: the finalizer suspends once more, waits until that token is handled, and releases
 //     spec.suspend, so Flux owns the Kustomization's applies again.
+//
+// All of it is the holder's alone (applier.Holder): another trigger naming the same Kustomization
+// is Configured=False (HeldByAnotherTrigger), so it never suspends, fences or records an external
+// resume, and its deletion hands nothing back. It takes the Kustomization over, with an adoption,
+// once the holder is gone.
 
 // holdKustomization holds a Configured FluxTrigger's Kustomization suspended, and returns the
 // trigger's Suspended condition. It writes nothing while a branch worker's operation is in flight
@@ -370,16 +375,29 @@ const releaseDeadline = 10 * time.Minute
 // until that suspend's token is handled, and releases spec.suspend. A Kustomization or a cluster
 // that is gone has nothing to hand back, and one the identity may not write is let go with a
 // Warning Event: neither should hold the trigger forever. Nor does anything else past
-// releaseDeadline.
+// releaseDeadline. A trigger behind another in line for the Kustomization hands nothing back: the
+// Kustomization is that one's.
 func (r *ApplyTriggerReconciler) release(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(trigger, configbutleraiv1alpha3.FluxTriggerFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	step, cancel := context.WithTimeout(ctx, applierCheckTimeout)
-	pending := r.releaseStep(step, trigger)
-	cancel()
+	holder, err := applier.HeldByAnother(ctx, r.Client, trigger)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	var pending *pendingRelease
+	if holder != nil {
+		// A trigger in line never held the Kustomization: its spec.suspend is the holder's, under the
+		// same field manager, so there is nothing of this trigger's to hand back.
+		logf.FromContext(ctx).Info("the Kustomization is held by another trigger; handing nothing back",
+			"kustomization", trigger.Applier().String(), "holder", holder.GetNamespace()+"/"+holder.GetName())
+	} else {
+		step, cancel := context.WithTimeout(ctx, applierCheckTimeout)
+		pending = r.releaseStep(step, trigger)
+		cancel()
+	}
 	if pending != nil {
 		if time.Since(trigger.DeletionTimestamp.Time) < releaseDeadline {
 			return pending.result, pending.err

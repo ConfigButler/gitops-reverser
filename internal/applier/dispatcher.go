@@ -782,6 +782,7 @@ func (d *Dispatcher) recheckTarget(
 }
 
 // holdingTrigger is the trigger a GitTarget names when it still holds the request's applier, or nil.
+// A trigger in line behind another naming the same applier (Holder) holds none of it.
 func holdingTrigger(
 	ctx context.Context, reader client.Reader, target *v1alpha3.GitTarget, req git.ApplyRequest,
 ) (v1alpha3.ApplyTrigger, error) {
@@ -791,6 +792,10 @@ func holdingTrigger(
 	}
 	if !trigger.GetDeletionTimestamp().IsZero() || git.ApplierOf(trigger) != req.Applier {
 		return nil, nil //nolint:nilnil // a trigger that holds another applier holds none of this one
+	}
+	holder, err := HeldByAnother(ctx, reader, trigger)
+	if err != nil || holder != nil {
+		return nil, err
 	}
 	return trigger, nil
 }

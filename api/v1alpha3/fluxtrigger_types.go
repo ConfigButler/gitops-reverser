@@ -60,7 +60,10 @@ type FluxTriggerStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions are Configured (the Kustomization exists, applies a GitRepository that follows a
-	// branch, and may be patched) and the kstatus Ready/Reconciling/Stalled trio.
+	// branch, may be patched, and no other FluxTrigger holds it) and the kstatus
+	// Ready/Reconciling/Stalled trio. Of the FluxTriggers naming one Kustomization in one cluster, the
+	// one created first holds it; the others are Configured=False (HeldByAnotherTrigger) until it is
+	// deleted, and the next in line takes it over.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

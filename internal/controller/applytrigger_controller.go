@@ -32,7 +32,8 @@ import (
 // ApplyTriggerConditionConfigured reports whether a trigger's applier is one GitOps Reverser can
 // drive: it exists in its cluster, applies a source that follows a branch, may be written, and (an
 // Argo CD Application) has automated sync off. The trigger's ClusterProvider must admit its
-// namespace first.
+// namespace first, and no trigger in line before it may name the same applier
+// (applier.ReasonHeldByAnotherTrigger).
 const ApplyTriggerConditionConfigured = "Configured"
 
 // ReasonOperationUnresolved is Ready=False on a trigger whose operation has not completed in the
@@ -255,14 +256,34 @@ func (r *ApplyTriggerReconciler) configuredVerdict(
 	verdict := newApplier(kind, dynamicClient).Validate(ctx, ref)
 	switch {
 	case verdict.OK:
-		return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonSucceeded, Message: verdict.Message},
-			verdict.Source, true
+		return r.heldVerdict(ctx, trigger, verdict)
 	case verdict.Err != nil:
 		return keptConfigured(trigger, verdict.Message), nil, false
 	default:
 		return conditionValue{Status: metav1.ConditionFalse, Reason: verdict.Reason, Message: verdict.Message},
 			verdict.Source, true
 	}
+}
+
+// heldVerdict is Configured for a trigger whose applier passed every other check: True when this
+// trigger holds it, False (HeldByAnotherTrigger) when another trigger naming it was there first.
+// Checked last, so a trigger in line for an applier is one that can take it over as it is.
+func (r *ApplyTriggerReconciler) heldVerdict(
+	ctx context.Context, trigger configbutleraiv1alpha3.ApplyTrigger, verdict applier.Verdict,
+) (conditionValue, *applier.Source, bool) {
+	holder, err := applier.HeldByAnother(ctx, r.Client, trigger)
+	switch {
+	case err != nil:
+		return keptConfigured(trigger, fmt.Sprintf("Cannot check which trigger holds %s %s: %v",
+			trigger.ApplierKind(), trigger.Applier(), err)), nil, false
+	case holder != nil:
+		return conditionValue{
+			Status: metav1.ConditionFalse, Reason: applier.ReasonHeldByAnotherTrigger,
+			Message: applier.HeldByAnotherMessage(trigger, holder),
+		}, verdict.Source, true
+	}
+	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonSucceeded, Message: verdict.Message},
+		verdict.Source, true
 }
 
 // keptConfigured is the Configured value a check that could not be made publishes.
@@ -374,6 +395,13 @@ func (r *ApplyTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToTriggers),
 			builder.WithPredicates(predicate.LabelChangedPredicate{}),
 		).
+		// One trigger holds an applier; the others naming it wait in line. A holder that is gone lets
+		// the next take it over at once: nothing else changes on that one to reconcile it.
+		Watches(
+			object,
+			handler.EnqueueRequestsFromMapFunc(r.triggersInLine),
+			builder.WithPredicates(triggerGone()),
+		).
 		Named(r.Kind).
 		Complete(r)
 }
@@ -413,26 +441,36 @@ func (r *ApplyTriggerReconciler) listTriggers(
 	if namespace != "" {
 		opts = append(opts, client.InNamespace(namespace))
 	}
-	var triggers []configbutleraiv1alpha3.ApplyTrigger
-	switch r.Kind {
-	case configbutleraiv1alpha3.ApplyTriggerKindFlux:
-		var list configbutleraiv1alpha3.FluxTriggerList
-		if err := r.List(ctx, &list, opts...); err != nil {
-			return nil, err
-		}
-		for i := range list.Items {
-			triggers = append(triggers, &list.Items[i])
-		}
-	case configbutleraiv1alpha3.ApplyTriggerKindArgoCD:
-		var list configbutleraiv1alpha3.ArgoCDTriggerList
-		if err := r.List(ctx, &list, opts...); err != nil {
-			return nil, err
-		}
-		for i := range list.Items {
-			triggers = append(triggers, &list.Items[i])
-		}
+	return applier.ListApplyTriggers(ctx, r.Client, r.Kind, opts...)
+}
+
+// triggerGone passes only the event of a trigger that is gone.
+func triggerGone() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		UpdateFunc:  func(event.UpdateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
 	}
-	return triggers, nil
+}
+
+// triggersInLine maps a trigger that is gone to the other triggers of this kind naming its applier,
+// so the next in line takes it over.
+func (r *ApplyTriggerReconciler) triggersInLine(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
+	gone, ok := obj.(configbutleraiv1alpha3.ApplyTrigger)
+	if !ok || gone.TriggerKind() != r.Kind {
+		return nil
+	}
+	others, err := applier.TriggersOfApplier(ctx, r.Client, gone)
+	if err != nil {
+		logDependencyListError(ctx, err, r.Kind+"s", obj)
+		return nil
+	}
+	requests := make([]ctrlreconcile.Request, 0, len(others))
+	for _, other := range others {
+		requests = append(requests, triggerRequest(other))
+	}
+	return requests
 }
 
 // clusterProviderToTriggers maps a ClusterProvider event to every trigger of this kind that names it.

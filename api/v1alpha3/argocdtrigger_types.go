@@ -49,7 +49,10 @@ type ArgoCDTriggerStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions are Configured (the Application exists, syncs a single source, has automated sync
-	// off, and may be updated) and the kstatus Ready/Reconciling/Stalled trio.
+	// off, may be updated, and no other ArgoCDTrigger holds it) and the kstatus
+	// Ready/Reconciling/Stalled trio. Of the ArgoCDTriggers naming one Application in one cluster,
+	// the one created first holds it; the others are Configured=False (HeldByAnotherTrigger) until
+	// it is deleted, and the next in line takes it over.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
