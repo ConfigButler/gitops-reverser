@@ -68,7 +68,7 @@ func ask(reason v1alpha3.ApplyReason) Ask {
 
 // follow reads the operation's progress until it ends, and returns every step it read, the last
 // being the end.
-func follow(t *testing.T, flux *Flux, s *Stamped) []Progress {
+func follow(t *testing.T, flux *Flux, s *Started) []Progress {
 	t.Helper()
 	var steps []Progress
 	deadline := time.Now().Add(5 * time.Second)
@@ -104,22 +104,22 @@ func TestFluxProbe_AnApplyIsNotFinishedWhenItWasAttempted(t *testing.T) {
 	held := sim.HoldNextApply()
 	flux := simFlux(sim)
 
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
 	require.NoError(t, err)
-	require.Equal(t, OutcomeResumed, stamped.Outcome)
+	require.Equal(t, OutcomeResumed, started.Outcome)
 	<-held
 	assert.Equal(t, "main@sha1:"+testCommit, statusString(sim.Kustomization(checkoutKey), "lastAttemptedRevision"))
-	progress, err := flux.Progress(context.Background(), checkoutKey, &stamped)
+	progress, err := flux.Progress(context.Background(), checkoutKey, &started)
 	require.NoError(t, err)
 	assert.Equal(t, Progress{Outcome: git.ApplyRunning}, progress, "the apply is still running")
 
 	sim.Release()
-	steps := follow(t, flux, &stamped)
+	steps := follow(t, flux, &started)
 	require.GreaterOrEqual(t, len(steps), 2)
 	tail := steps[len(steps)-2:]
 	assert.Equal(t, []git.ApplyOutcome{git.ApplySettling, git.ApplySucceeded}, outcomes(tail))
 	assert.Equal(t, "main@sha1:"+testCommit, tail[1].AppliedRevision)
-	assert.Equal(t, stamped.FenceToken, tail[1].FenceToken)
+	assert.Equal(t, started.FenceToken, tail[1].FenceToken)
 	assert.Equal(t, []string{"flux-system/checkout main@sha1:" + testCommit}, sim.Applied())
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)), "suspended again")
 }
@@ -132,9 +132,9 @@ func TestFluxProbe_ATokenHandledWhileSuspendedIsNoApply(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+testCommit, true)
 	flux := simFlux(sim)
 
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 	require.NoError(t, err)
-	steps := follow(t, flux, &stamped)
+	steps := follow(t, flux, &started)
 	assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
 	assert.Equal(t, []string{"flux-system/checkout main@sha1:" + testCommit}, sim.Applied(),
 		"the refusal is reverted by an apply of the unchanged commit")
@@ -147,9 +147,9 @@ func TestFluxProbe_AnArtifactNotAppliedIsNotCurrent(t *testing.T) {
 	sim.WriteStatus(context.Background(), kustomizationGVR(), checkoutKey, func(obj *unstructured.Unstructured) {
 		_ = unstructured.SetNestedField(obj.Object, "main@sha1:"+olderCommit, "status", "lastAppliedRevision")
 	})
-	stamped, err := simFlux(sim).Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonCatchUp))
+	started, err := simFlux(sim).Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonCatchUp))
 	require.NoError(t, err)
-	assert.Equal(t, OutcomeResumed, stamped.Outcome, "the Kustomization never applied the commit")
+	assert.Equal(t, OutcomeResumed, started.Outcome, "the Kustomization never applied the commit")
 }
 
 // TestFluxRequest_Outcomes pins what a request does, by where the artifact and the last apply are,
@@ -419,7 +419,7 @@ func TestFluxRequest_TheResumeIsGuardedByTheKustomizationAsRead(t *testing.T) {
 				return nil
 			}
 
-			stamped, err := simFlux(sim).Request(context.Background(), checkoutKey, a)
+			started, err := simFlux(sim).Request(context.Background(), checkoutKey, a)
 
 			require.NotEmpty(t, resumes)
 			assert.Contains(t, resumes[0], `"resourceVersion"`, "the resume carries the resourceVersion read")
@@ -429,7 +429,7 @@ func TestFluxRequest_TheResumeIsGuardedByTheKustomizationAsRead(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.NoError(t, stamped.Unconfirmed)
+			require.NoError(t, started.Unconfirmed)
 			assert.Len(t, resumes, 2, "the first resume conflicted, and the second was made over a fresh read")
 			assert.True(t, resumedWithT1(sim.Kustomization(checkoutKey)))
 		})
@@ -480,9 +480,9 @@ func TestFluxRequest_TakesSuspendBackFromAnUpdate(t *testing.T) {
 	sim := fluxsim.New(t, newSourceClient(ks,
 		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit)))
 	flux := simFlux(sim)
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 	require.NoError(t, err)
-	follow(t, flux, &stamped)
+	follow(t, flux, &started)
 	assert.True(t, heldByUs(sim.Kustomization(checkoutKey)))
 	assert.Empty(t, suspendOwner(sim.Kustomization(checkoutKey)))
 }
@@ -495,10 +495,10 @@ func TestFluxProgress_AFailedApplyIsSuspendedAgain(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+olderCommit, true)
 	sim.FailApplies("ConfigMap/apps/x dry-run failed")
 	flux := simFlux(sim)
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
 	require.NoError(t, err)
 
-	steps := follow(t, flux, &stamped)
+	steps := follow(t, flux, &started)
 	done := steps[len(steps)-1]
 	assert.Equal(t, git.ApplyFailed, done.Outcome)
 	assert.Contains(t, done.Message, "ConfigMap/apps/x dry-run failed")
@@ -517,9 +517,9 @@ func TestFluxProgress_ADependencyNotReadyFails(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+testCommit, true)
 	sim.BlockDependencies(true)
 	flux := simFlux(sim)
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 	require.NoError(t, err)
-	done := follow(t, flux, &stamped)
+	done := follow(t, flux, &started)
 	assert.Equal(t, git.ApplyFailed, done[len(done)-1].Outcome)
 	assert.Contains(t, done[len(done)-1].Message, "a dependency is not ready")
 }
@@ -532,22 +532,22 @@ func TestFluxProgress_ASuspendDoesNotStopARunningApply(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+olderCommit, true)
 	held := sim.HoldNextApply()
 	flux := simFlux(sim)
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
 	require.NoError(t, err)
 	<-held
 
-	stamped.Overdue = true
-	progress, err := flux.Progress(context.Background(), checkoutKey, &stamped)
+	started.Overdue = true
+	progress, err := flux.Progress(context.Background(), checkoutKey, &started)
 	require.NoError(t, err)
 	assert.Equal(t, git.ApplySettling, progress.Outcome, "suspended at once")
 	require.NotEmpty(t, progress.FenceToken)
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
-	progress, err = flux.Progress(context.Background(), checkoutKey, &stamped)
+	progress, err = flux.Progress(context.Background(), checkoutKey, &started)
 	require.NoError(t, err)
 	assert.Equal(t, git.ApplySettling, progress.Outcome, "the apply still runs, so the suspend is not handled")
 
 	sim.Release()
-	steps := follow(t, flux, &stamped)
+	steps := follow(t, flux, &started)
 	assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
 	assert.Equal(t, []string{"flux-system/checkout main@sha1:" + testCommit}, sim.Applied(),
 		"the suspend did not stop the apply")
@@ -560,7 +560,7 @@ func TestFluxProgress_ATokenStampedOverOursStandsInForIt(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+testCommit, true)
 	held := sim.HoldNextApply()
 	flux := simFlux(sim)
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 	require.NoError(t, err)
 	<-held
 	patch := []byte(`{"metadata":{"annotations":{"reconcile.fluxcd.io/requestedAt":"by-hand"}}}`)
@@ -569,7 +569,7 @@ func TestFluxProgress_ATokenStampedOverOursStandsInForIt(t *testing.T) {
 	require.NoError(t, err)
 
 	sim.Release()
-	steps := follow(t, flux, &stamped)
+	steps := follow(t, flux, &started)
 	assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
 }
@@ -579,22 +579,22 @@ func TestFluxProgress_ATokenStampedOverOursStandsInForIt(t *testing.T) {
 func TestFluxProgress_AResumeAfterTheFenceIsFencedAgain(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+testCommit, true)
 	flux := simFlux(sim)
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 	require.NoError(t, err)
 	var progress Progress
 	for progress.Outcome != git.ApplySettling {
-		progress, err = flux.Progress(context.Background(), checkoutKey, &stamped)
+		progress, err = flux.Progress(context.Background(), checkoutKey, &started)
 		require.NoError(t, err)
 	}
-	first := stamped.FenceToken
+	first := started.FenceToken
 	patch := []byte(`{"spec":{"suspend":false}}`)
 	_, err = sim.Client.Resource(kustomizationGVR()).Namespace(fluxSystemNS).
 		Patch(context.Background(), "checkout", types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "flux"})
 	require.NoError(t, err)
 
-	steps := follow(t, flux, &stamped)
+	steps := follow(t, flux, &started)
 	assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
-	assert.NotEqual(t, first, stamped.FenceToken, "fenced again")
+	assert.NotEqual(t, first, started.FenceToken, "fenced again")
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
 }
 
@@ -620,12 +620,12 @@ func TestFluxProgress_ASuspendBeforeTheReconcileIsNoApply(t *testing.T) {
 			sim := simCluster(t, "main@sha1:"+testCommit, true)
 			flux := simFlux(sim)
 			resume := sim.PauseKustomizations()
-			stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+			started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 			require.NoError(t, err)
 			suspend(t, sim, flux)
 			resume()
 
-			steps := follow(t, flux, &stamped)
+			steps := follow(t, flux, &started)
 			done := steps[len(steps)-1]
 			assert.Equal(t, git.ApplyFailed, done.Outcome, "nothing was applied")
 			assert.Contains(t, done.Message, "no reconcile applied anything after the resume")
@@ -645,9 +645,9 @@ func TestFluxProgress_AnApplyOfAnOlderArtifactIsAskedAgain(t *testing.T) {
 	sim.LagSourceCache(platformKey, "main@sha1:"+olderCommit)
 	flux := simFlux(sim)
 
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
 	require.NoError(t, err)
-	steps := follow(t, flux, &stamped)
+	steps := follow(t, flux, &started)
 	done := steps[len(steps)-1]
 	assert.Equal(t, git.ApplyFailed, done.Outcome)
 	assert.Contains(t, done.Message, "an artifact older than the one the Kustomization was resumed for")
@@ -656,10 +656,10 @@ func TestFluxProgress_AnApplyOfAnOlderArtifactIsAskedAgain(t *testing.T) {
 	sim.LagSourceCache(platformKey, "")
 	again := ask(v1alpha3.ApplyReasonForeignCommit)
 	again.Token = "T2"
-	stamped, err = flux.Request(context.Background(), checkoutKey, again)
+	started, err = flux.Request(context.Background(), checkoutKey, again)
 	require.NoError(t, err)
-	require.Equal(t, OutcomeResumed, stamped.Outcome, "the commit is not applied, so it is not current")
-	steps = follow(t, flux, &stamped)
+	require.Equal(t, OutcomeResumed, started.Outcome, "the commit is not applied, so it is not current")
+	steps = follow(t, flux, &started)
 	assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
 	assert.Equal(t, "main@sha1:"+testCommit, steps[len(steps)-1].AppliedRevision)
 }
@@ -671,14 +671,14 @@ func TestFluxProgress_AnApplyOfANewerArtifactSucceeds(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+testCommit, true)
 	flux := simFlux(sim)
 	resume := sim.PauseKustomizations()
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 	require.NoError(t, err)
 	sim.WriteStatus(context.Background(), gitRepositoryGVR(), platformKey, func(obj *unstructured.Unstructured) {
 		_ = unstructured.SetNestedField(obj.Object, newer, "status", "artifact", "revision")
 	})
 	resume()
 
-	steps := follow(t, flux, &stamped)
+	steps := follow(t, flux, &started)
 	done := steps[len(steps)-1]
 	assert.Equal(t, git.ApplySucceeded, done.Outcome)
 	assert.Equal(t, newer, done.AppliedRevision)
@@ -693,17 +693,17 @@ func TestFluxProgress_ARecoveredTokenStampedOverIsJudgedOnWhatRan(t *testing.T) 
 	sim := simCluster(t, "main@sha1:"+olderCommit, true)
 	flux := simFlux(sim)
 	asked := time.Now()
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
 	require.NoError(t, err)
 	var progress Progress
 	for progress.Outcome != git.ApplySettling {
-		progress, err = flux.Progress(context.Background(), checkoutKey, &stamped)
+		progress, err = flux.Progress(context.Background(), checkoutKey, &started)
 		require.NoError(t, err)
 	}
-	eventually(t, func() bool { return tokenHandled(sim.Kustomization(checkoutKey), stamped.FenceToken) },
+	eventually(t, func() bool { return tokenHandled(sim.Kustomization(checkoutKey), started.FenceToken) },
 		"the fence is handled; then the process stops")
 
-	recovered := Stamped{Outcome: OutcomeResumed, Token: "T1", Commit: testCommit, Recovered: true, RequestedAt: asked}
+	recovered := Started{Outcome: OutcomeResumed, Token: "T1", Commit: testCommit, Recovered: true, RequestedAt: asked}
 	steps := follow(t, flux, &recovered)
 	done := steps[len(steps)-1]
 	assert.Equal(t, git.ApplySucceeded, done.Outcome, done.Message)
@@ -755,14 +755,14 @@ func TestFluxRequest_AnUnansweredResumeIsFollowed(t *testing.T) {
 				},
 			)
 
-			stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+			started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 			if tt.want == "" {
 				require.ErrorContains(t, err, "resume")
 				return
 			}
 			require.NoError(t, err)
-			require.Error(t, stamped.Unconfirmed)
-			steps := follow(t, flux, &stamped)
+			require.Error(t, started.Unconfirmed)
+			steps := follow(t, flux, &started)
 			done := steps[len(steps)-1]
 			assert.Equal(t, tt.want, done.Outcome, done.Message)
 			assert.Len(t, sim.Applied(), tt.applied)

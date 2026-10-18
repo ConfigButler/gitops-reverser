@@ -92,11 +92,11 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	sim.Fetches(types.NamespacedName{Namespace: repository.GetNamespace(), Name: repository.GetName()},
 		target.Spec.Branch+"@sha1:"+testCommit)
 	flux.Now = fluxsim.TickingClock(stampTime)
-	stamped, err := flux.Request(context.Background(), ref, Ask{
+	started, err := flux.Request(context.Background(), ref, Ask{
 		Want: want, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit, Token: "T1",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, OutcomeResumed, stamped.Outcome, "a source with no artifact yet fetches, then applies")
+	assert.Equal(t, OutcomeResumed, started.Outcome, "a source with no artifact yet fetches, then applies")
 	assert.NotEmpty(t, requestedAt(t, client, gitRepositoryGVR(), repository.GetNamespace(), repository.GetName()))
 }
 

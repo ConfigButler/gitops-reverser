@@ -139,43 +139,43 @@ func NewArgoCD(client dynamic.Interface) *ArgoCD {
 // An empty commit (the remote does not carry the branch) has nothing to pin, and asks nothing
 // (OutcomeCurrent): Argo CD reports the missing branch itself on its next refresh, and the branch
 // coming back is an observation that owes a new request.
-func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Stamped, error) {
+func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Started, error) {
 	var waitUntil time.Time
 	record := ask.recordOnce()
 	for conflicts := 0; ; {
 		app, err := a.readControlled(ctx, ref, ask.Want)
 		if err != nil {
-			return Stamped{}, err
+			return Started{}, err
 		}
 		if ask.Commit == "" {
-			return Stamped{Outcome: OutcomeCurrent}, nil
+			return Started{Outcome: OutcomeCurrent}, nil
 		}
 		if operationInProgress(app) {
 			if err := a.awaitOperation(ctx, ref, &waitUntil); err != nil {
-				return Stamped{}, err
+				return Started{}, err
 			}
 			continue
 		}
 		if !ask.holds() {
-			return Stamped{}, errStale
+			return Started{}, errStale
 		}
 		if err := record(ctx); err != nil {
-			return Stamped{}, fmt.Errorf("record the operation on its trigger before syncing %s %s: %w",
+			return Started{}, fmt.Errorf("record the operation on its trigger before syncing %s %s: %w",
 				kindApplication, ref, err)
 		}
 		// Recording can wait on the status writer and the API server, and the branch can move on
 		// meanwhile: the decision is asked again just before the update.
 		if !ask.holds() {
-			return Stamped{}, errStale
+			return Started{}, errStale
 		}
-		stamped, err := a.setOperation(ctx, ref, app, ask)
+		started, err := a.setOperation(ctx, ref, app, ask)
 		if apierrors.IsConflict(err) && conflicts < maxArgoUpdateConflicts {
 			// Somebody wrote the Application since it was read: the controller's status, or an
 			// operation of its own. Read it again, and decide again from what it is now.
 			conflicts++
 			continue
 		}
-		return stamped, err
+		return started, err
 	}
 }
 
@@ -202,27 +202,27 @@ func (a *ArgoCD) readControlled(
 // Application since. One that failed without an answer is Unconfirmed (Request).
 func (a *ArgoCD) setOperation(
 	ctx context.Context, ref types.NamespacedName, app *unstructured.Unstructured, ask Ask,
-) (Stamped, error) {
+) (Started, error) {
 	token := ask.Token
 	update := app.DeepCopy()
 	if err := unstructured.SetNestedField(update.Object, syncOperation(app, ask.Commit, ask.Reason, token),
 		"operation"); err != nil {
-		return Stamped{}, fmt.Errorf("build the sync operation for %s %s: %w", kindApplication, ref, err)
+		return Started{}, fmt.Errorf("build the sync operation for %s %s: %w", kindApplication, ref, err)
 	}
 	unstructured.RemoveNestedField(update.Object, "status", "operationState")
-	stamped := Stamped{Outcome: OutcomeSyncRequested, Token: token, Commit: ask.Commit}
+	started := Started{Outcome: OutcomeSyncRequested, Token: token, Commit: ask.Commit}
 	sentAt := a.Now()
 	_, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).
 		Update(ctx, update, metav1.UpdateOptions{})
 	switch {
 	case err == nil:
-		return stamped, nil
+		return started, nil
 	case mayHaveLanded(err):
-		stamped.Unconfirmed = fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
-		stamped.guardedBy, stamped.sentAt = app.GetResourceVersion(), sentAt
-		return stamped, nil
+		started.Unconfirmed = fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
+		started.guardedBy, started.sentAt = app.GetResourceVersion(), sentAt
+		return started, nil
 	}
-	return Stamped{}, fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
+	return Started{}, fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
 }
 
 // awaitOperation waits until the Application has no operation in progress, or fails once
@@ -270,7 +270,7 @@ func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, u
 // land: while the Application is still at the resourceVersion the update was guarded by, and
 // argoUnansweredLanding has not passed since it was sent. Failed after that, so the worker asks
 // again.
-func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s *Stamped) (Progress, error) {
+func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
 	if s.Outcome != OutcomeSyncRequested {
 		return Progress{Outcome: git.ApplySucceeded}, nil
 	}

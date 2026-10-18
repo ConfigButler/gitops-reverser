@@ -254,7 +254,7 @@ func (d *Dispatcher) followRecovered(ctx context.Context, req git.ApplyRequest) 
 		sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
 		if err == nil {
 			applier := d.client(req.Applier.Kind, sourceClient)
-			op := &operation{applier: applier, ref: applierName(req.Applier), stamped: recoveredStamped(req), log: log}
+			op := &operation{applier: applier, ref: applierName(req.Applier), started: recoveredStarted(req), log: log}
 			if res, followed := d.follow(ctx, req, op); followed {
 				req.Report(res)
 			}
@@ -268,14 +268,14 @@ func (d *Dispatcher) followRecovered(ctx context.Context, req git.ApplyRequest) 
 	}
 }
 
-// recoveredStamped is what a Request would have returned for the operation a recovered attempt
+// recoveredStarted is what a Request would have returned for the operation a recovered attempt
 // follows, from its record.
-func recoveredStamped(req git.ApplyRequest) Stamped {
+func recoveredStarted(req git.ApplyRequest) Started {
 	outcome := OutcomeResumed
 	if req.Applier.Kind == v1alpha3.ApplierKindApplication {
 		outcome = OutcomeSyncRequested
 	}
-	return Stamped{
+	return Started{
 		Outcome: outcome, Token: req.Recovered.Token, FenceToken: req.Recovered.FenceToken,
 		Commit: req.Recovered.Commit, Recovered: true, RequestedAt: req.Recovered.RequestedAt.Time,
 	}
@@ -339,7 +339,7 @@ type eligibleTarget struct {
 type operation struct {
 	applier Client
 	ref     types.NamespacedName
-	stamped Stamped
+	started Started
 	log     logr.Logger
 }
 
@@ -378,7 +378,7 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	if token == "" {
 		token = requestToken(d.Now())
 	}
-	stamped, err := applier.Request(ctx, applierName(req.Applier), Ask{
+	started, err := applier.Request(ctx, applierName(req.Applier), Ask{
 		Want: want, Commit: req.Commit, Reason: req.Reason, Token: token, Current: req.Current, Record: req.Record,
 		Held: func(ctx context.Context) error { return d.triggerHolds(ctx, req.Applier.Trigger) },
 	})
@@ -394,14 +394,14 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	}
 
 	d.count(ctx, req, outcomeSent)
-	if stamped.Outcome == OutcomeCurrent {
+	if started.Outcome == OutcomeCurrent {
 		log.V(1).Info("the applier needs no request for this commit; asking nothing")
 		return report(git.ApplyCurrent, nil), nil
 	}
-	log.Info("apply requested", "outcome", stamped.Outcome)
-	if stamped.Unconfirmed != nil {
+	log.Info("apply requested", "outcome", started.Outcome)
+	if started.Unconfirmed != nil {
 		log.Info("the request may not have reached the applier; following it by its token",
-			"error", stamped.Unconfirmed.Error())
+			"error", started.Unconfirmed.Error())
 	}
 	d.delivered(req, eligible)
 	return report(
@@ -410,7 +410,7 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	), &operation{
 		applier: applier,
 		ref:     applierName(req.Applier),
-		stamped: stamped,
+		started: started,
 		log:     log,
 	}
 }
@@ -464,7 +464,7 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 		}
 		if phase != git.ApplyUnresolved && d.Now().Sub(started) >= d.UnresolvedAfter {
 			phase = git.ApplyUnresolved
-			op.stamped.Overdue = true
+			op.started.Overdue = true
 			d.unresolved(ctx, req, op)
 			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase, FenceToken: fence})
 		}
@@ -490,12 +490,12 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 // A trigger being deleted completes it without a suspend, since the trigger hands its Kustomization
 // back itself.
 func (d *Dispatcher) fenceAbandoned(ctx context.Context, req git.ApplyRequest, op *operation) {
-	if op.stamped.Outcome != OutcomeResumed {
+	if op.started.Outcome != OutcomeResumed {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.AttemptTimeout)
 	defer cancel()
-	op.stamped.Overdue = true
+	op.started.Overdue = true
 	for {
 		progress, err := d.progress(ctx, req, op)
 		if err == nil && progress.Outcome.Ends() {
@@ -505,7 +505,7 @@ func (d *Dispatcher) fenceAbandoned(ctx context.Context, req git.ApplyRequest, o
 		}
 		if !wait(ctx, nil, d.PollInterval) {
 			op.log.Info("the worker abandoned the operation, and its Kustomization was not seen suspended again "+
-				"in time; the trigger's reconciler suspends it", "fenceToken", op.stamped.FenceToken)
+				"in time; the trigger's reconciler suspends it", "fenceToken", op.started.FenceToken)
 			return
 		}
 	}
@@ -526,7 +526,7 @@ func (d *Dispatcher) progress(ctx context.Context, req git.ApplyRequest, op *ope
 			Message: "the trigger is being deleted, and hands its applier back",
 		}, nil
 	}
-	progress, err := op.applier.Progress(read, op.ref, &op.stamped)
+	progress, err := op.applier.Progress(read, op.ref, &op.started)
 	if apierrors.IsNotFound(err) {
 		return Progress{Outcome: git.ApplyFailed, Message: "the applier is gone: " + err.Error()}, nil
 	}

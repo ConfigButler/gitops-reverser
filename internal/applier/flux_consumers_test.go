@@ -184,9 +184,9 @@ func TestFluxProbe_ASharedSourceAppliesOnlyTheConsumerAsked(t *testing.T) {
 	sim.Fetches(platformKey, "main@sha1:"+testCommit)
 	flux := simFlux(sim)
 
-	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 	require.NoError(t, err)
-	follow(t, flux, &stamped)
+	follow(t, flux, &started)
 
 	assert.Equal(t, []string{"flux-system/checkout main@sha1:" + testCommit}, sim.Applied(),
 		"B ignored the artifact A's request fetched")

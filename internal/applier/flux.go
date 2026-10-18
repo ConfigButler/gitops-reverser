@@ -108,34 +108,34 @@ const fetchPollInterval = 100 * time.Millisecond
 //
 // An empty commit (the remote does not carry the branch) has nothing to apply: the GitRepository
 // is stamped, so Flux reports the missing branch itself, and nothing is resumed.
-func (f *Flux) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Stamped, error) {
+func (f *Flux) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Started, error) {
 	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
-		return Stamped{}, fmt.Errorf("get %s %s: %w", kindKustomization, ref, err)
+		return Started{}, fmt.Errorf("get %s %s: %w", kindKustomization, ref, err)
 	}
 	sourceRef, err := gitRepositoryRef(ks)
 	if err != nil {
-		return Stamped{}, permanentError{err}
+		return Started{}, permanentError{err}
 	}
 	if owner := suspendOwner(ks); owner != "" {
-		return Stamped{}, permanentError{errors.New(suspendOwnedMessage(ref, owner))}
+		return Started{}, permanentError{errors.New(suspendOwnedMessage(ref, owner))}
 	}
 	source, err := f.readSource(ctx, sourceRef, ref, ask.Want)
 	if err != nil {
-		return Stamped{}, err
+		return Started{}, err
 	}
 	if ask.Commit == "" {
 		if _, err := f.stampSource(ctx, sourceRef); err != nil {
-			return Stamped{}, err
+			return Started{}, err
 		}
-		return Stamped{Outcome: OutcomeCurrent}, nil
+		return Started{Outcome: OutcomeCurrent}, nil
 	}
 	if err := f.fetchCommit(ctx, sourceRef, source, ask); err != nil {
-		return Stamped{}, err
+		return Started{}, err
 	}
 	if (ask.Reason == v1alpha3.ApplyReasonForeignCommit || ask.Reason == v1alpha3.ApplyReasonCatchUp) &&
 		suspended(ks) && revisionHolds(statusString(ks, "lastAppliedRevision"), ask.Commit) {
-		return Stamped{Outcome: OutcomeCurrent}, nil
+		return Started{Outcome: OutcomeCurrent}, nil
 	}
 	return f.resume(ctx, ref, ks, sourceRef, ask)
 }
@@ -186,35 +186,35 @@ const maxResumeConflicts = 5
 func (f *Flux) resume(
 	ctx context.Context, ref types.NamespacedName, read *unstructured.Unstructured, sourceRef types.NamespacedName,
 	ask Ask,
-) (Stamped, error) {
+) (Started, error) {
 	record := ask.recordOnce()
 	for conflicts := 0; ; conflicts++ {
 		ks, err := f.readAgain(ctx, ref, read, sourceRef)
 		if err != nil {
-			return Stamped{}, err
+			return Started{}, err
 		}
 		if err := f.mayResume(ctx, ref, sourceRef, ask, record); err != nil {
-			return Stamped{}, err
+			return Started{}, err
 		}
 		// The mark the resume is applied over: its preconditions fail on any other.
 		before := markOf(ks)
-		stamped := Stamped{Outcome: OutcomeResumed, Token: ask.Token, Commit: ask.Commit, resumedFrom: &before}
+		started := Started{Outcome: OutcomeResumed, Token: ask.Token, Commit: ask.Commit, resumedFrom: &before}
 		resumed, err := f.hold(ctx, ref, false, ask.Token, ks)
 		switch {
 		case err == nil:
 			if resumed != nil {
 				// The answer is the object as the resume left it: no reconcile can have run since.
 				mark := markOf(resumed)
-				stamped.resumedFrom = &mark
+				started.resumedFrom = &mark
 			}
-			return stamped, nil
+			return started, nil
 		case apierrors.IsConflict(err) && conflicts < maxResumeConflicts:
 			continue
 		case mayHaveLanded(err):
-			stamped.Unconfirmed = fmt.Errorf("resume %s %s: %w", kindKustomization, ref, err)
-			return stamped, nil
+			started.Unconfirmed = fmt.Errorf("resume %s %s: %w", kindKustomization, ref, err)
+			return started, nil
 		}
-		return Stamped{}, fmt.Errorf("resume %s %s: %w", kindKustomization, ref, err)
+		return Started{}, fmt.Errorf("resume %s %s: %w", kindKustomization, ref, err)
 	}
 }
 
@@ -339,7 +339,7 @@ func (f *Flux) fetch(ctx context.Context, sourceRef types.NamespacedName) (*unst
 // stopped before reporting, `flux reconcile`): it is suspended, and judged once the fence is
 // handled on what ran since it was asked for. Nothing else is asked: an OutcomeCurrent request is
 // finished.
-func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Stamped) (Progress, error) {
+func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
 	if s.Outcome != OutcomeResumed {
 		return Progress{Outcome: git.ApplySucceeded}, nil
 	}
@@ -372,7 +372,7 @@ func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Stampe
 // settled is Progress once the Kustomization was suspended again: fenced again when it was found
 // resumed, Settling until the fence is handled, and then the outcome.
 func (f *Flux) settled(
-	ctx context.Context, ref types.NamespacedName, ks *unstructured.Unstructured, s *Stamped,
+	ctx context.Context, ref types.NamespacedName, ks *unstructured.Unstructured, s *Started,
 ) (Progress, error) {
 	if !suspended(ks) {
 		return f.fence(ctx, ref, s)
@@ -397,7 +397,7 @@ func (f *Flux) settled(
 }
 
 // fence suspends the Kustomization with a new token, and reports the operation Settling.
-func (f *Flux) fence(ctx context.Context, ref types.NamespacedName, s *Stamped) (Progress, error) {
+func (f *Flux) fence(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
 	token := requestToken(f.Now())
 	if _, err := f.hold(ctx, ref, true, token, nil); err != nil {
 		return Progress{}, fmt.Errorf("suspend %s %s: %w", kindKustomization, ref, err)
@@ -413,7 +413,7 @@ func (f *Flux) fence(ctx context.Context, ref types.NamespacedName, s *Stamped) 
 // artifact before it. Only an applied revision the artifact holds now is the source having moved
 // on (the residual race): Succeeded, with the message. Any other is Failed, so the worker asks
 // again: the commit would otherwise land on a Kustomization suspended again, and never be applied.
-func (f *Flux) verdict(ctx context.Context, ks *unstructured.Unstructured, s *Stamped) (Progress, error) {
+func (f *Flux) verdict(ctx context.Context, ks *unstructured.Unstructured, s *Started) (Progress, error) {
 	read, _ := s.judge(ks)
 	if read.Outcome != git.ApplySucceeded || s.Commit == "" || revisionHolds(read.AppliedRevision, s.Commit) {
 		return read, nil
@@ -442,7 +442,7 @@ func (f *Flux) verdict(ctx context.Context, ks *unstructured.Unstructured, s *St
 // outcome. A token handled is no proof of that: a suspend that lands between the resume and the
 // reconcile that reads it (`flux suspend`, the trigger's own suspend) makes that reconcile a
 // suspended return, which marks the token handled and leaves the Ready of an earlier apply.
-func (s *Stamped) judge(ks *unstructured.Unstructured) (Progress, bool) {
+func (s *Started) judge(ks *unstructured.Unstructured) (Progress, bool) {
 	read := applyVerdict(ks, s.Commit)
 	if s.ranResumed(ks) || (read.Outcome != git.ApplySucceeded && !s.unseen) {
 		return read, true
@@ -462,7 +462,7 @@ func (s *Stamped) judge(ks *unstructured.Unstructured) (Progress, bool) {
 // ranResumed reports whether a reconcile that builds ran since the operation's resume: the
 // Kustomization's reconcile mark moved from the one the resume left, or, for an operation recorded
 // by an earlier process, moved at or after the second it was asked for.
-func (s *Stamped) ranResumed(ks *unstructured.Unstructured) bool {
+func (s *Started) ranResumed(ks *unstructured.Unstructured) bool {
 	if s.resumedFrom != nil {
 		return markOf(ks) != *s.resumedFrom
 	}

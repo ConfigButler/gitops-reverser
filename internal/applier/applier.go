@@ -49,11 +49,11 @@ type Client interface {
 	// Request starts one apply of ask.Commit, after checking the applier still applies ask.Want and
 	// asking ask.Current just before it writes. A permanent error is a configuration no retry can
 	// fix; errStale is a decision that no longer held.
-	Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Stamped, error)
+	Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Started, error)
 	// Progress reports how far the applier is with the apply a Request started, and takes the
 	// operation's next step when it is the client's to take (a Flux Kustomization is suspended again
 	// after its apply). A read or write that fails is an error, and its Progress says nothing.
-	Progress(ctx context.Context, ref types.NamespacedName, s *Stamped) (Progress, error)
+	Progress(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error)
 }
 
 // Ask is what one Request asks of an applier.
@@ -197,8 +197,9 @@ type Source struct {
 	Revision string
 }
 
-// Stamped is what one Request did, for Progress to follow the operation it started.
-type Stamped struct {
+// Started is the operation one Request started, may have started (Unconfirmed), or read back from
+// the trigger's record (Recovered), for Progress to follow; with Outcome Current, nothing was asked.
+type Started struct {
 	// Outcome is what was asked, if anything.
 	Outcome Outcome
 	// Token identifies the request: the requestedAt a Flux Kustomization was resumed with, or the

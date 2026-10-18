@@ -70,11 +70,11 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	}
 	assert.Empty(t, BindingMismatch(&trigger, want), "the trigger's Application syncs what the GitTarget writes")
 
-	stamped, err := argo.Request(context.Background(), ref, Ask{
+	started, err := argo.Request(context.Background(), ref, Ask{
 		Want: want, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit, Token: requestToken(stampTime),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, OutcomeSyncRequested, stamped.Outcome)
+	assert.Equal(t, OutcomeSyncRequested, started.Outcome)
 	written, err := client.Resource(applicationGVR()).Namespace(ref.Namespace).
 		Get(context.Background(), ref.Name, metav1.GetOptions{})
 	require.NoError(t, err)
