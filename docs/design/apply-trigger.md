@@ -262,8 +262,13 @@ later deletes it.
   hold. Of the triggers of one kind naming one applier in one cluster, the oldest by
   `creationTimestamp` (then namespace and name) holds it; the others are `Configured=False`,
   `HeldByAnotherTrigger`, do nothing, and release nothing when deleted, and the dispatcher drops a
-  request through them. Deleting the holder hands the applier back and enqueues the next in line,
-  which adopts it. The same rule holds for `ArgoCDTrigger`s, which would otherwise both start syncs.
+  request through them. A `FluxTrigger` with an operation in flight comes first, whatever its age,
+  so a `Kustomization` changes hands only between operations: a trigger created in the same second
+  as the holder, and ahead of it by name, waits for the holder's apply to end. The dispatcher's
+  check before a resume, and the reconciler's suspend of a resumed `Kustomization`, read the
+  triggers uncached. Deleting the holder leaves the `Kustomization` suspended and fenced for the
+  next in line, and enqueues it. The same rule holds for `ArgoCDTrigger`s, which would otherwise
+  both start syncs, without the in-flight rule: a sync somebody else started is never replaced.
 - **Adoption.** A `Configured` `FluxTrigger` suspends its `Kustomization` with a server-side apply
   under `gitops-reverser`, and a token. It is `Suspended=True`, and `Ready`, once that token is
   handled. A `Normal` `Adopted` Event records it.
@@ -290,7 +295,10 @@ later deletes it.
   nothing watching it.
 - **Hand-back.** The trigger carries the finalizer `configbutler.ai/flux-trigger`. Deleting it
   suspends the `Kustomization` with a token if an apply has it resumed, waits until that is handled,
-  then releases `spec.suspend` with an empty apply, so Flux owns it again (`Released`). On a real
+  then releases `spec.suspend` with an empty apply, so Flux owns it again (`Released`). With another
+  trigger in line that can take it over (`Configured=True`, or `False` only for
+  `HeldByAnotherTrigger`), it is not released but left suspended for that one: released, Flux would
+  apply it at once, unchecked against the branch, before the next trigger suspended it. On a real
   API server our forced apply over a `flux suspend` *shares* `spec.suspend` with that `Update`
   entry, so an empty apply alone would leave it `true`: the release first takes the field with a
   forced `suspend: false`. A manager that *applies* the field keeps it, and `Released` names it. An

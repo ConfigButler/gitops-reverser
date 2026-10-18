@@ -259,7 +259,8 @@ manager also applies stays suspended, and the `Released` Event names that manage
 has not finished 10 minutes after the deletion, because kustomize-controller is down for instance,
 lets the trigger go anyway with a `Warning` `ReleaseFailed` Event that says where the
 `Kustomization` was left. A `GitTarget` that stops naming the trigger releases nothing: the trigger
-is what holds the `Kustomization`.
+is what holds the `Kustomization`. With a second `FluxTrigger` in line for the same `Kustomization`,
+deleting the holder leaves it suspended for that one rather than releasing it.
 
 The trigger reports `Configured` and `Suspended`, and its `Ready` includes both:
 

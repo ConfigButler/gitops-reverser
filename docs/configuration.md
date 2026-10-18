@@ -1355,7 +1355,7 @@ consumers could not be listed (the identity needs `list` on `kustomizations`, `h
 | `NamespaceNotAuthorized` | The trigger's `clusterProviderRef` names a provider whose `accessFrom` does not admit its namespace |
 | `ClusterProviderNotFound` | The trigger's `clusterProviderRef` names a provider that does not exist |
 | `SuspendOwnedElsewhere` | Another field manager applies the `Kustomization`'s `spec.suspend` (a parent `Kustomization`, Helm, flux-operator), and would resume it on its next apply. Remove the field from the manifest it applies |
-| `HeldByAnotherTrigger` | Another trigger of the same kind names the same applier in the same cluster and holds it: the oldest by `creationTimestamp` (then namespace and name) does. This one does nothing, a `GitTarget` naming it applies nothing, and deleting it releases nothing; it takes the applier over once the holder is deleted |
+| `HeldByAnotherTrigger` | Another trigger of the same kind names the same applier in the same cluster and holds it: the oldest by `creationTimestamp` (then namespace and name) does, except that a `FluxTrigger` with an apply in flight keeps it until that apply ends. This one does nothing, a `GitTarget` naming it applies nothing, and deleting it releases nothing; it takes the applier over once the holder is deleted |
 
 A `FluxTrigger` also reports `Suspended`, and is `Ready` only once it is `True`:
 
@@ -1372,7 +1372,9 @@ applies it on its own again (a `Normal` `Released` Event), even one somebody had
 before the trigger adopted it. If another field manager also applies `spec.suspend`, the
 `Kustomization` stays suspended and the `Released` Event names that manager. A `Kustomization`,
 cluster or `ClusterProvider` that is gone has nothing to hand back, and an identity that may not
-write the `Kustomization` lets the trigger go with a `Warning` `ReleaseFailed` Event. A hand-back
+write the `Kustomization` lets the trigger go with a `Warning` `ReleaseFailed` Event. With another
+`FluxTrigger` in line for the same `Kustomization`, it is not released but left suspended for that
+one, which holds it next. A hand-back
 that has not finished 10 minutes after the deletion (kustomize-controller down, say) also lets the
 trigger go with a `ReleaseFailed` Event saying where the `Kustomization` was left, so nothing holds
 the trigger forever.
