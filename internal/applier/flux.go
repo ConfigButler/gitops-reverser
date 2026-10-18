@@ -100,11 +100,11 @@ const fetchPollInterval = 100 * time.Millisecond
 // that was replaced, applies another source now, or has its spec.suspend applied by another
 // manager now is not resumed. It reads the artifact again and asks current: when either has moved,
 // the decision no longer holds and nothing is resumed (errStale). Then record writes the operation
-// on the trigger, so a restart finds it, and only then is the Kustomization resumed: one
-// server-side apply sets spec.suspend: false and reconcile.fluxcd.io/requestedAt to the token. That
-// write is a new generation and a new requestedAt, so it enqueues a reconcile that reads both,
-// which applies. It is made over the Kustomization as last read, and fails rather than land on one
-// that changed since.
+// on the trigger, so a restart finds it, current is asked again, since recording can wait, and
+// only then is the Kustomization resumed: one server-side apply sets spec.suspend: false and
+// reconcile.fluxcd.io/requestedAt to the token. That write is a new generation and a new
+// requestedAt, so it enqueues a reconcile that reads both, which applies. It is made over the
+// Kustomization as last read, and fails rather than land on one that changed since.
 //
 // An empty commit (the remote does not carry the branch) has nothing to apply: the GitRepository
 // is stamped, so Flux reports the missing branch itself, and nothing is resumed.
@@ -246,8 +246,8 @@ func (f *Flux) readAgain(
 	return ks, nil
 }
 
-// mayResume rechecks the artifact, the decision and the trigger's hold, and records the operation,
-// the first time only.
+// mayResume rechecks the artifact, the decision and the trigger's hold, records the operation (the
+// first time only), and asks the decision again once it is recorded.
 func (f *Flux) mayResume(
 	ctx context.Context, ref, sourceRef types.NamespacedName, ask Ask, record func(context.Context) error,
 ) error {
@@ -255,7 +255,7 @@ func (f *Flux) mayResume(
 	if err != nil {
 		return err
 	}
-	if !artifactHolds(source, ask.Commit) || (ask.Current != nil && !ask.Current()) {
+	if !artifactHolds(source, ask.Commit) || !ask.holds() {
 		return errStale
 	}
 	if ask.Held != nil {
@@ -266,6 +266,11 @@ func (f *Flux) mayResume(
 	if err := record(ctx); err != nil {
 		return fmt.Errorf("record the operation on its trigger before resuming %s %s: %w",
 			kindKustomization, ref, err)
+	}
+	// Recording can wait on the status writer and the API server, and the branch can move on
+	// meanwhile: the decision is asked again just before the resume.
+	if !ask.holds() {
+		return errStale
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("resume %s %s: %w", kindKustomization, ref, err)

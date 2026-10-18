@@ -302,9 +302,9 @@ func TestFluxRequest_AnArtifactThatMovesBeforeTheResumeIsStale(t *testing.T) {
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
 }
 
-// resumedBy reports whether the Kustomization was resumed with token.
-func resumedBy(ks *unstructured.Unstructured, token string) bool {
-	return !suspended(ks) || ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation] == token
+// resumedWithT1 reports whether the Kustomization was resumed with the token ask gives, T1.
+func resumedWithT1(ks *unstructured.Unstructured) bool {
+	return !suspended(ks) || ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation] == "T1"
 }
 
 // TestFluxRequest_AKustomizationThatChangesDuringTheFetchIsNotResumed is review 5's fourth
@@ -378,7 +378,7 @@ func TestFluxRequest_AKustomizationThatChangesDuringTheFetchIsNotResumed(t *test
 			require.NotErrorIs(t, err, errStale)
 			assert.True(t, changed)
 			assert.False(t, recorded, "found before anything is recorded")
-			assert.False(t, resumedBy(sim.Kustomization(checkoutKey), "T1"), "nothing resumed")
+			assert.False(t, resumedWithT1(sim.Kustomization(checkoutKey)), "nothing resumed")
 		})
 	}
 }
@@ -425,15 +425,34 @@ func TestFluxRequest_TheResumeIsGuardedByTheKustomizationAsRead(t *testing.T) {
 			assert.Contains(t, resumes[0], `"resourceVersion"`, "the resume carries the resourceVersion read")
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
-				assert.False(t, resumedBy(sim.Kustomization(checkoutKey), "T1"), "nothing resumed")
+				assert.False(t, resumedWithT1(sim.Kustomization(checkoutKey)), "nothing resumed")
 				return
 			}
 			require.NoError(t, err)
 			require.NoError(t, stamped.Unconfirmed)
 			assert.Len(t, resumes, 2, "the first resume conflicted, and the second was made over a fresh read")
-			assert.True(t, resumedBy(sim.Kustomization(checkoutKey), "T1"))
+			assert.True(t, resumedWithT1(sim.Kustomization(checkoutKey)))
 		})
 	}
+}
+
+// TestFluxRequest_ADecisionThatGoesStaleWhileRecordedResumesNothing is review 5's sixth finding:
+// recording the operation can wait on the status writer and the API server, and the branch can
+// move on meanwhile. The decision is asked again after the record, just before the resume.
+func TestFluxRequest_ADecisionThatGoesStaleWhileRecordedResumesNothing(t *testing.T) {
+	sim := simCluster(t, "main@sha1:"+testCommit, true)
+	holds := true
+	a := ask(v1alpha3.ApplyReasonRefusal)
+	a.Current = func() bool { return holds }
+	a.Record = func(context.Context) error {
+		holds = false
+		return nil
+	}
+
+	_, err := simFlux(sim).Request(context.Background(), checkoutKey, a)
+
+	require.ErrorIs(t, err, errStale)
+	assert.False(t, resumedWithT1(sim.Kustomization(checkoutKey)), "nothing resumed")
 }
 
 // TestFluxRequest_AFetchThatEndsElsewhere: a fetch that does not bring the commit is the decision

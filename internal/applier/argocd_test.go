@@ -428,6 +428,28 @@ func TestArgoCDRequest_AnUnansweredUpdateIsFollowed(t *testing.T) {
 	})
 }
 
+// TestArgoCDRequest_ADecisionThatGoesStaleWhileRecordedSyncsNothing is review 5's sixth finding:
+// recording the operation can wait on the status writer and the API server, and the branch can
+// move on meanwhile. The decision is asked again after the record, just before the update.
+func TestArgoCDRequest_ADecisionThatGoesStaleWhileRecordedSyncsNothing(t *testing.T) {
+	client := newArgoSource(manualApp())
+	holds, recorded := true, false
+
+	_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+		Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+		Token:   requestToken(stampTime),
+		Current: func() bool { return holds },
+		Record: func(context.Context) error {
+			holds, recorded = false, true
+			return nil
+		},
+	})
+
+	require.ErrorIs(t, err, errStale)
+	assert.True(t, recorded, "the worker withdraws what was recorded")
+	assert.Zero(t, updates(client), "nothing is set")
+}
+
 // TestArgoCDRequest_RefusesWhatIsNotUnderControl: a published verdict can be older than the
 // Application, so a request checks the source and automated sync again, and writes nothing on
 // either. A stale decision writes nothing either, and an empty commit has nothing to pin.

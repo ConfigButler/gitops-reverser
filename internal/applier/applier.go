@@ -71,6 +71,7 @@ type Ask struct {
 	Current func() bool
 	// Record writes the operation on its trigger, and returns once it is written. It is called just
 	// before the write that starts the apply, so a restart finds every apply that may have started.
+	// Current is asked again after it, since it can wait on the status writer and the API server.
 	// Nil records nothing.
 	Record func(ctx context.Context) error
 	// Held reports, from a fresh read, whether the trigger holds its Flux Kustomization suspended
@@ -94,6 +95,11 @@ func (a Ask) recordOnce() func(ctx context.Context) error {
 		recorded = true
 		return nil
 	}
+}
+
+// holds asks Current whether the decision still holds; a nil Current always does.
+func (a Ask) holds() bool {
+	return a.Current == nil || a.Current()
 }
 
 // Progress is where the operation a Request started stands, as the applier's status shows it.

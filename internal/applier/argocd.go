@@ -126,9 +126,10 @@ func NewArgoCD(client dynamic.Interface) *ArgoCD {
 // resourceVersion it read, so an operation set in between makes the update fail rather than be
 // overwritten; it then reads again and waits for that one too.
 //
-// current is asked just before the update. When it reports false the decision no longer holds and
-// nothing is set: errStale. record is called once before the first update, so a restart finds
-// every sync that may have started; the update carries ask.Token whichever read it is made from.
+// current is asked before record and again after it, just before the update. When it reports
+// false the decision no longer holds and nothing is set: errStale. record is called once before
+// the first update, so a restart finds every sync that may have started; the update carries
+// ask.Token whichever read it is made from.
 //
 // An update that failed without saying whether it was made (a timeout, a lost connection, a server
 // timeout or internal error) may have set the operation all the same, and Argo CD may be syncing:
@@ -155,12 +156,17 @@ func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask)
 			}
 			continue
 		}
-		if ask.Current != nil && !ask.Current() {
+		if !ask.holds() {
 			return Stamped{}, errStale
 		}
 		if err := record(ctx); err != nil {
 			return Stamped{}, fmt.Errorf("record the operation on its trigger before syncing %s %s: %w",
 				kindApplication, ref, err)
+		}
+		// Recording can wait on the status writer and the API server, and the branch can move on
+		// meanwhile: the decision is asked again just before the update.
+		if !ask.holds() {
+			return Stamped{}, errStale
 		}
 		stamped, err := a.setOperation(ctx, ref, app, ask)
 		if apierrors.IsConflict(err) && conflicts < maxArgoUpdateConflicts {
