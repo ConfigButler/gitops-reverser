@@ -10,12 +10,14 @@ package applier
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -233,7 +235,8 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 			ks := sim.Kustomization(checkoutKey)
 			if tt.want == OutcomeResumed {
 				assert.Equal(t, "T1", ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation])
-				assert.Equal(t, Stamped{Outcome: OutcomeResumed, Token: "T1", Commit: testCommit}, got)
+				assert.Equal(t, []any{OutcomeResumed, "T1", testCommit, nil},
+					[]any{got.Outcome, got.Token, got.Commit, got.Unconfirmed})
 				return
 			}
 			assert.Empty(t, ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation])
@@ -439,6 +442,207 @@ func TestFluxProgress_AResumeAfterTheFenceIsFencedAgain(t *testing.T) {
 	assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
 	assert.NotEqual(t, first, stamped.FenceToken, "fenced again")
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
+}
+
+// TestFluxProgress_ASuspendBeforeTheReconcileIsNoApply is review 4's E: a suspend that lands
+// between the resume and the reconcile that reads it makes that reconcile a suspended return, which
+// marks the token handled and leaves the Ready of the last apply. A Refusal of the applied commit
+// read that Ready as a clean Succeeded, with nothing reverted. Now no reconcile that built since
+// the resume is no apply: Failed, and the worker asks again.
+func TestFluxProgress_ASuspendBeforeTheReconcileIsNoApply(t *testing.T) {
+	for name, suspend := range map[string]func(t *testing.T, sim *fluxsim.Sim, flux *Flux){
+		"flux suspend": func(t *testing.T, sim *fluxsim.Sim, _ *Flux) {
+			_, err := sim.Client.Resource(kustomizationGVR()).Namespace(fluxSystemNS).Patch(context.Background(),
+				"checkout", types.MergePatchType, []byte(`{"spec":{"suspend":true}}`),
+				metav1.PatchOptions{FieldManager: "flux"})
+			require.NoError(t, err)
+		},
+		"the trigger's own suspend": func(t *testing.T, _ *fluxsim.Sim, flux *Flux) {
+			_, err := flux.Suspend(context.Background(), checkoutKey)
+			require.NoError(t, err)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sim := simCluster(t, "main@sha1:"+testCommit, true)
+			flux := simFlux(sim)
+			resume := sim.PauseKustomizations()
+			stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+			require.NoError(t, err)
+			suspend(t, sim, flux)
+			resume()
+
+			steps := follow(t, flux, &stamped)
+			done := steps[len(steps)-1]
+			assert.Equal(t, git.ApplyFailed, done.Outcome, "nothing was applied")
+			assert.Contains(t, done.Message, "no reconcile applied anything after the resume")
+			assert.Empty(t, sim.Applied())
+		})
+	}
+}
+
+// TestFluxProgress_AnApplyOfAnOlderArtifactIsAskedAgain is review 4's G: kustomize-controller reads
+// the GitRepository from its informer cache, so the reconcile the resume started can apply the
+// artifact before the one the resume was checked against. That was Succeeded ("another revision"),
+// and the commit then sat in a Kustomization suspended again, never applied. Now only an applied
+// revision the source holds now is the source having moved on; an older one is Failed, and the next
+// request applies the commit.
+func TestFluxProgress_AnApplyOfAnOlderArtifactIsAskedAgain(t *testing.T) {
+	sim := simCluster(t, "main@sha1:"+olderCommit, true)
+	sim.LagSourceCache(platformKey, "main@sha1:"+olderCommit)
+	flux := simFlux(sim)
+
+	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+	require.NoError(t, err)
+	steps := follow(t, flux, &stamped)
+	done := steps[len(steps)-1]
+	assert.Equal(t, git.ApplyFailed, done.Outcome)
+	assert.Contains(t, done.Message, "an artifact older than the one the Kustomization was resumed for")
+	assert.Equal(t, "main@sha1:"+olderCommit, done.AppliedRevision)
+
+	sim.LagSourceCache(platformKey, "")
+	again := ask(v1alpha3.ApplyReasonForeignCommit)
+	again.Token = "T2"
+	stamped, err = flux.Request(context.Background(), checkoutKey, again)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeResumed, stamped.Outcome, "the commit is not applied, so it is not current")
+	steps = follow(t, flux, &stamped)
+	assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
+	assert.Equal(t, "main@sha1:"+testCommit, steps[len(steps)-1].AppliedRevision)
+}
+
+// TestFluxProgress_AnApplyOfANewerArtifactSucceeds is the residual race the design accepts: the
+// source moved on between the recheck and the reconcile, which applied what the source holds now.
+func TestFluxProgress_AnApplyOfANewerArtifactSucceeds(t *testing.T) {
+	const newer = "main@sha1:9999999999999999999999999999999999999999"
+	sim := simCluster(t, "main@sha1:"+testCommit, true)
+	flux := simFlux(sim)
+	resume := sim.PauseKustomizations()
+	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+	require.NoError(t, err)
+	sim.WriteStatus(context.Background(), gitRepositoryGVR(), platformKey, func(obj *unstructured.Unstructured) {
+		_ = unstructured.SetNestedField(obj.Object, newer, "status", "artifact", "revision")
+	})
+	resume()
+
+	steps := follow(t, flux, &stamped)
+	done := steps[len(steps)-1]
+	assert.Equal(t, git.ApplySucceeded, done.Outcome)
+	assert.Equal(t, newer, done.AppliedRevision)
+	assert.Contains(t, done.Message, "not commit "+testCommit)
+}
+
+// TestFluxProgress_ARecoveredTokenStampedOverIsJudgedOnWhatRan is review 4's I: a process that
+// resumed with T1, saw the apply end and suspended with its fence, then stopped before reporting,
+// leaves T1 nowhere on the Kustomization. That ended Failed, though the apply ran. Now a recovered
+// token handled by a later one is judged on what ran since the operation was asked for.
+func TestFluxProgress_ARecoveredTokenStampedOverIsJudgedOnWhatRan(t *testing.T) {
+	sim := simCluster(t, "main@sha1:"+olderCommit, true)
+	flux := simFlux(sim)
+	asked := time.Now()
+	stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+	require.NoError(t, err)
+	var progress Progress
+	for progress.Outcome != git.ApplySettling {
+		progress, err = flux.Progress(context.Background(), checkoutKey, &stamped)
+		require.NoError(t, err)
+	}
+	eventually(t, func() bool { return tokenHandled(sim.Kustomization(checkoutKey), stamped.FenceToken) },
+		"the fence is handled; then the process stops")
+
+	recovered := Stamped{Outcome: OutcomeResumed, Token: "T1", Commit: testCommit, Recovered: true, RequestedAt: asked}
+	steps := follow(t, flux, &recovered)
+	done := steps[len(steps)-1]
+	assert.Equal(t, git.ApplySucceeded, done.Outcome, done.Message)
+	assert.Equal(t, "main@sha1:"+testCommit, done.AppliedRevision)
+	assert.Len(t, sim.Applied(), 1)
+}
+
+// TestFluxRequest_AnUnansweredResumeIsFollowed is review 4's B, the undelivered half: a resume
+// whose write timed out may still have been made, and a RequestFailed left the Kustomization
+// resumed with nothing following it. Now it is an Unconfirmed operation, followed like a recovered
+// one: a resume that was made applies and is suspended again; one that was not is Failed, and
+// nothing ran. A write the API server refused is still an error.
+func TestFluxRequest_AnUnansweredResumeIsFollowed(t *testing.T) {
+	for name, tt := range map[string]struct {
+		landed  bool
+		answer  error
+		want    git.ApplyOutcome
+		applied int
+	}{
+		"made, then timed out":     {landed: true, answer: context.DeadlineExceeded, want: git.ApplySucceeded, applied: 1},
+		"not made, and timed out":  {answer: context.DeadlineExceeded, want: git.ApplyFailed},
+		"made, then a 504 answers": {landed: true, answer: apierrors.NewTimeoutError("slow", 1), want: git.ApplySucceeded, applied: 1},
+		"refused":                  {answer: apierrors.NewConflict(kustomizationGVR().GroupResource(), "checkout", errors.New("no"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sim := simCluster(t, "main@sha1:"+testCommit, true)
+			flux := simFlux(sim)
+			answered := false
+			resumeTheResume := func(obj *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(obj.Object, false, "spec", "suspend")
+				obj.SetAnnotations(map[string]string{fluxmeta.ReconcileRequestAnnotation: "T1"})
+				obj.SetGeneration(obj.GetGeneration() + 1)
+			}
+			sim.Client.PrependReactor(
+				"patch",
+				"kustomizations",
+				func(action k8stesting.Action) (bool, runtime.Object, error) {
+					patch, _ := action.(k8stesting.PatchActionImpl)
+					resume := patch.PatchType == types.ApplyPatchType &&
+						strings.Contains(string(patch.Patch), `"suspend":false`)
+					if answered || !resume {
+						return false, nil, nil
+					}
+					answered = true
+					if tt.landed {
+						sim.WriteStatus(context.Background(), kustomizationGVR(), checkoutKey, resumeTheResume)
+					}
+					return true, nil, tt.answer
+				},
+			)
+
+			stamped, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
+			if tt.want == "" {
+				require.ErrorContains(t, err, "resume")
+				return
+			}
+			require.NoError(t, err)
+			require.Error(t, stamped.Unconfirmed)
+			steps := follow(t, flux, &stamped)
+			done := steps[len(steps)-1]
+			assert.Equal(t, tt.want, done.Outcome, done.Message)
+			assert.Len(t, sim.Applied(), tt.applied)
+			assert.True(t, suspended(sim.Kustomization(checkoutKey)), "suspended again either way")
+		})
+	}
+}
+
+// TestReconcileMark_MovesOnAReconcileThatBuilt pins the evidence a verdict reads: Ready's
+// lastTransitionTime, and the latest status.history snapshot (kustomize-controller v1.7 and later),
+// either of which moving is a reconcile that got past the suspend check.
+func TestReconcileMark_MovesOnAReconcileThatBuilt(t *testing.T) {
+	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
+	fluxsim.SetReady(ks, metav1.ConditionTrue, fluxmeta.ReconciliationSucceededReason, "applied")
+	before := markOf(ks)
+
+	moved := ks.DeepCopy()
+	conditions, _, _ := unstructured.NestedSlice(moved.Object, "status", "conditions")
+	conditions[0].(map[string]any)["lastTransitionTime"] = "2026-10-18T10:00:05Z"
+	require.NoError(t, unstructured.SetNestedSlice(moved.Object, conditions, "status", "conditions"))
+	assert.NotEqual(t, before, markOf(moved), "Ready moved")
+	assert.True(t, markOf(moved).since(time.Date(2026, 10, 18, 10, 0, 5, 900, time.UTC)), "within the second")
+	assert.False(t, markOf(moved).since(time.Date(2026, 10, 18, 10, 0, 6, 0, time.UTC)))
+
+	counted := ks.DeepCopy()
+	require.NoError(t, unstructured.SetNestedSlice(counted.Object, []any{map[string]any{
+		"digest": "sha256:abc", "totalReconciliations": int64(2), "lastReconciled": "2026-10-18T10:00:05Z",
+	}}, "status", "history"))
+	again := counted.DeepCopy()
+	history, _, _ := unstructured.NestedSlice(again.Object, "status", "history")
+	history[0].(map[string]any)["totalReconciliations"] = int64(3)
+	require.NoError(t, unstructured.SetNestedSlice(again.Object, history, "status", "history"))
+	assert.NotEqual(t, markOf(counted), markOf(again), "one more reconcile of the same digest, in the same second")
+	assert.False(t, before.since(time.Time{}), "no mark at all is no evidence")
 }
 
 // TestFlux_SuspendAndRelease: the trigger reconciler's half. Suspend fences, Suspension reports

@@ -73,6 +73,11 @@ type Ask struct {
 	// before the write that starts the apply, so a restart finds every apply that may have started.
 	// Nil records nothing.
 	Record func(ctx context.Context) error
+	// Held reports, from a fresh read, whether the trigger holds its Flux Kustomization suspended
+	// (Suspended=True), and errs when it does not: a resume while the trigger's reconciler is still
+	// suspending it (an adoption, an external resume) would race that suspend. It is asked just
+	// before Record. Nil always holds; the Argo CD client never asks it.
+	Held func(ctx context.Context) error
 }
 
 // recordOnce is Record, called the first time only: a request that writes more than once (an Argo
@@ -203,9 +208,23 @@ type Stamped struct {
 	// Recovered is an operation read back from the trigger's record rather than started by this
 	// process: its resume may never have been made, and the record says nothing of that.
 	Recovered bool
+	// Unconfirmed is the error of a Flux resume whose write failed without saying whether it
+	// reached the API server (a timeout, a lost connection); nil for one that was answered. Such an
+	// operation is followed like a Recovered one, because the Kustomization may be resumed, and
+	// only the follow suspends it again.
+	Unconfirmed error
+	// unseen is a Recovered or Unconfirmed operation whose token the Kustomization did not carry
+	// when it was first read: never written, or stamped over before it was handled.
+	unseen bool
+	// RequestedAt is when a Recovered operation was asked for, as its record says. A reconcile
+	// that ran since is the only evidence of its apply this process can read.
+	RequestedAt time.Time
 	// verdict is the outcome of a Flux apply, read once the resume's token was handled and kept
 	// until the fence is.
 	verdict *Progress
+	// resumedFrom is what a reconcile that builds moves on the Kustomization, as it stood when this
+	// process resumed it: a verdict that reads it unmoved reads an apply from before the resume.
+	resumedFrom *reconcileMark
 }
 
 // Binding is the repository and branch an applier must apply from: the GitProvider's spec.url and

@@ -9,6 +9,7 @@ package fluxsim
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -43,6 +44,14 @@ import (
 //   - observedGeneration is set from the generation read whenever Ready is True at the end (:1345).
 //   - A reconcile is enqueued by a new generation, a new requestedAt, or a new artifact of its
 //     source (kustomization_manager.go:139-173), and reconciles of one object never overlap.
+//   - A reconcile that gets past the suspend check marks Ready Unknown before it fetches, so the
+//     Ready it ends with has a new lastTransitionTime (:331); one that builds upserts its digest
+//     in status.history, counting the reconciles of it (:492-563, meta.History.Upsert). A
+//     suspended return touches neither.
+//
+// Two of kustomize-controller's circumstances are a test's to set: its source informer lagging
+// behind the GitRepository (LagSourceCache), and its queue holding a reconcile back while the
+// object changes under it (PauseKustomizations).
 //
 // Writes go through the fake dynamic client the client under test uses. spec.suspend and the
 // requestedAt annotation keep managedFields, by manager and operation, as the API server does for a
@@ -71,6 +80,10 @@ type Sim struct {
 	armed   bool
 	// started counts reconciles started, by object.
 	started map[string]int
+	// paused holds every Kustomization reconcile back while set; lagged is the artifact revision
+	// kustomize-controller's cache still holds for a GitRepository, while it lags.
+	paused bool
+	lagged map[types.NamespacedName]string
 }
 
 // seenState is what one reconcile of an object started from.
@@ -95,6 +108,7 @@ func New(t testing.TB, client *dynamicfake.FakeDynamicClient) *Sim {
 		remote:  map[types.NamespacedName]string{},
 		seen:    map[string]seenState{},
 		started: map[string]int{},
+		lagged:  map[types.NamespacedName]string{},
 	}
 	client.PrependReactor("patch", "kustomizations", sim.patchKustomization)
 	// What the objects hold now is what their last reconcile started from: a test starts from a
@@ -154,6 +168,32 @@ func (s *Sim) Release() {
 		close(s.hold)
 		s.hold = nil
 	}
+}
+
+// PauseKustomizations holds every Kustomization reconcile back until the returned func is called,
+// as a busy queue does: a reconcile due meanwhile starts after it, from the object as it is then.
+func (s *Sim) PauseKustomizations() func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = true
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.paused = false
+	}
+}
+
+// LagSourceCache makes kustomize-controller read revision as the artifact of the GitRepository
+// source, as its informer does before it catches up with a fetch, until it is called with "".
+// Whether a reconcile is due is still decided by the artifact the GitRepository holds.
+func (s *Sim) LagSourceCache(source types.NamespacedName, revision string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if revision == "" {
+		delete(s.lagged, source)
+		return
+	}
+	s.lagged[source] = revision
 }
 
 // Applied is every apply so far, as "namespace/name revision".
@@ -253,22 +293,37 @@ func (s *Sim) Reconciles(key types.NamespacedName) int {
 	return s.started[key.String()]
 }
 
-// reconcileKustomization runs one reconcile of a Kustomization when one is due.
-func (s *Sim) reconcileKustomization(ctx context.Context, ks *unstructured.Unstructured) {
-	key := types.NamespacedName{Namespace: ks.GetNamespace(), Name: ks.GetName()}
-	if _, err := gitRepositoryRef(ks); err != nil {
-		return
+// start starts a reconcile of ks when one is due and the controller is not paused: it returns what
+// the reconcile starts from, and the artifact revision it reads, its source's or the one the
+// controller's cache still holds.
+func (s *Sim) start(key types.NamespacedName, ks *unstructured.Unstructured) (seenState, string, bool) {
+	sourceRef, err := gitRepositoryRef(ks)
+	if err != nil {
+		return seenState{}, "", false
 	}
 	now := s.seenNow(ks)
-	artifact := now.artifact
 	s.mu.Lock()
-	last, known := s.seen[key.String()]
-	if known && last == now {
-		s.mu.Unlock()
-		return
+	defer s.mu.Unlock()
+	if last, known := s.seen[key.String()]; s.paused || (known && last == now) {
+		return seenState{}, "", false
 	}
 	s.seen[key.String()] = now
 	s.started[key.String()]++
+	artifact := now.artifact
+	if lagged, ok := s.lagged[sourceRef]; ok {
+		artifact = lagged
+	}
+	return now, artifact, true
+}
+
+// reconcileKustomization runs one reconcile of a Kustomization when one is due.
+func (s *Sim) reconcileKustomization(ctx context.Context, ks *unstructured.Unstructured) {
+	key := types.NamespacedName{Namespace: ks.GetNamespace(), Name: ks.GetName()}
+	now, artifact, due := s.start(key, ks)
+	if !due {
+		return
+	}
+	s.mu.Lock()
 	failing, blocked := s.failing, s.dependencyNotReady
 	s.mu.Unlock()
 
@@ -320,6 +375,7 @@ func (s *Sim) reconcileKustomization(ctx context.Context, ks *unstructured.Unstr
 	if failing != "" {
 		finalize(func(obj *unstructured.Unstructured) {
 			SetReady(obj, metav1.ConditionFalse, "ReconciliationFailed", failing)
+			reconciled(obj, artifact, "ReconciliationFailed")
 		})
 		return
 	}
@@ -329,7 +385,42 @@ func (s *Sim) reconcileKustomization(ctx context.Context, ks *unstructured.Unstr
 	finalize(func(obj *unstructured.Unstructured) {
 		_ = unstructured.SetNestedField(obj.Object, artifact, "status", "lastAppliedRevision")
 		SetReady(obj, metav1.ConditionTrue, fluxmeta.ReconciliationSucceededReason, "Applied revision: "+artifact)
+		reconciled(obj, artifact, fluxmeta.ReconciliationSucceededReason)
 	})
+}
+
+// reconciled records what a reconcile that built leaves besides its outcome: Ready's
+// lastTransitionTime is now, since the reconcile marked it Unknown first, and status.history counts
+// one more reconcile of the digest built (meta.History.Upsert: the snapshot of the same digest and
+// status is moved to the front and counted, or a new one is put there). The digest stands for the
+// build of revision.
+func reconciled(obj *unstructured.Unstructured, revision, status string) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	for _, c := range conditions {
+		if cond, ok := c.(map[string]any); ok && cond["type"] == fluxmeta.ReadyCondition {
+			cond["lastTransitionTime"] = now
+		}
+	}
+	_ = unstructured.SetNestedSlice(obj.Object, conditions, "status", "conditions")
+
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(revision)))
+	history, _, _ := unstructured.NestedSlice(obj.Object, "status", "history")
+	snapshot := map[string]any{
+		"digest": digest, "firstReconciled": now, "lastReconciledStatus": status,
+		"totalReconciliations": int64(0), "metadata": map[string]any{"revision": revision},
+	}
+	rest := make([]any, 0, len(history)+1)
+	for _, h := range history {
+		if old, ok := h.(map[string]any); ok && old["digest"] == digest && old["lastReconciledStatus"] == status {
+			snapshot = old
+			continue
+		}
+		rest = append(rest, h)
+	}
+	total, _ := snapshot["totalReconciliations"].(int64)
+	snapshot["totalReconciliations"], snapshot["lastReconciled"] = total+1, now
+	_ = unstructured.SetNestedSlice(obj.Object, append([]any{snapshot}, rest...), "status", "history")
 }
 
 // WriteStatus changes an object's status as the controller's patcher does: on the object as it is
