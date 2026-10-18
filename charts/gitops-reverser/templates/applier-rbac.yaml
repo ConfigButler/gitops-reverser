@@ -68,7 +68,7 @@ subjects:
 # Application and update it with a sync operation (how Argo CD's own automated sync starts one), and
 # create SelfSubjectAccessReviews so the operator can check it holds that access before relying on
 # it. Separate from the manager role because it is optional and names another project's API: an
-# install without Argo CD grants nothing on it. See docs/argocd.md.
+# install without Argo CD grants nothing on it. See docs/bi-directional-argocd.md.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

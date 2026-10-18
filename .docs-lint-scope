@@ -25,11 +25,12 @@
 README.md
 docs/architecture.md
 docs/configuration.md
-docs/flux.md
-docs/argocd.md
+docs/bi-directional-flux.md
+docs/bi-directional-argocd.md
 docs/spec/attribution.md
 docs/components.md
 docs/quickstart.md
 docs/demo/commit-window.md
 docs/facts/kubernetes-watch-options.md
 docs/spec/watch-event-ordering-and-attribution-grace.md
+docs/bi-directional.md

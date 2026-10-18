@@ -4,8 +4,9 @@
 > `Kustomization` held suspended), the Argo CD applier (automated sync off), the trigger kinds that
 > hold them, the push receiver, `onRefusal: Reapply` and the apply window. The webhook applier is
 > the aim. Index: [`../INDEX.md`](../INDEX.md).
-> How to use it: [`../flux.md`](../flux.md), [`../argocd.md`](../argocd.md) and
-> [`../bi-directional.md`](../bi-directional.md).
+> How to use it: [`../bi-directional.md`](../bi-directional.md),
+> [`../bi-directional-flux.md`](../bi-directional-flux.md) and
+> [`../bi-directional-argocd.md`](../bi-directional-argocd.md).
 > Fields: [`../configuration.md`](../configuration.md#who-applies-this-folder-specapplytriggerref).
 
 **GitOps Reverser decides when Git is applied to the cluster, and the applier never applies on its
@@ -440,7 +441,7 @@ holds has automated sync off (`syncPolicy.automated.enabled: false`, or no
 one GitOps Reverser asked for, pinned to a commit the branch worker checked. This is the supported
 setup for bi-directional editing with Argo CD, not an option next to automated sync: an
 `Application` with automated sync on makes its trigger `Configured=False` (`AutomatedSyncEnabled`)
-and is never synced. The user guide is [`../argocd.md`](../argocd.md).
+and is never synced. The user guide is [`../bi-directional-argocd.md`](../bi-directional-argocd.md).
 
 Automated sync off is Argo CD's equivalent of a suspended `Kustomization`, and it needs no fence: an
 Argo CD operation that has completed is not followed by another one nobody started. **It gets no

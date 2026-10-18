@@ -28,7 +28,7 @@ import (
 
 // fluxGuide is the Flux user guide. Its "A complete example" section is the configuration this
 // file holds to the code: a reader copies it, so it must be accepted as written.
-const fluxGuide = "../../docs/flux.md"
+const fluxGuide = "../../docs/bi-directional-flux.md"
 
 // TestFluxGuide_TheCompleteExampleIsAccepted reads the guide's complete example and checks it
 // against the code that validates and drives a Flux applier: the GitOps Reverser objects decode

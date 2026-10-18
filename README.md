@@ -162,10 +162,11 @@ containing your existing manifests, with no reconciler deploying that branch. Se
 scope and one destination folder. Inspect the initial commits before making a live edit, then check
 which source files changed.
 
-The operator pushes directly to the configured branch. If you later write to a branch that Flux or
-Argo CD deploys, read the [bidirectional guide](docs/bi-directional.md) first. Live edits can be
-reverted by the reconciler, and [replaying captured state](docs/api-first-publication.md) can overwrite
-concurrent Git edits to the same object. Decide per folder which side is authoritative.
+The operator pushes directly to the configured branch. Flux or Argo CD deploying other folders is
+unaffected. If one of them deploys the folder you write, read the
+[bi-directional guide](docs/bi-directional.md) first. Live edits can be reverted by the reconciler,
+and [replaying captured state](docs/api-first-publication.md) can overwrite concurrent Git edits to
+the same object. Decide per folder which side is authoritative.
 
 ## Before you adopt it
 

@@ -1,6 +1,6 @@
 # A FluxTrigger holds the Flux Kustomization that applies example-target's folder. Name it from the
 # GitTarget with spec.applyTriggerRef: {kind: FluxTrigger, name: example-trigger}. See
-# docs/flux.md.
+# docs/bi-directional-flux.md.
 apiVersion: configbutler.ai/v1alpha3
 kind: FluxTrigger
 metadata:

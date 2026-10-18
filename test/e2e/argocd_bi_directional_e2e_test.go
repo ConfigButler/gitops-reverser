@@ -21,7 +21,7 @@ import (
 // Argo CD is only installed for this corner, by the `_argocd-installed` Taskfile
 // node. `task test-e2e` skips these specs; `task test-e2e-bi-directional` runs them.
 //
-// Every spec runs the standard (docs/argocd.md): the Application has automated sync
+// Every spec runs the standard (docs/bi-directional-argocd.md): the Application has automated sync
 // off and is held by the ArgoCDTrigger the GitTarget names, so every sync it
 // runs is one GitOps Reverser started, pinned to a commit it checked. Argo CD's own
 // Gitea webhook stays wired, and is shown to be harmless: with automated sync off it

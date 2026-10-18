@@ -18,7 +18,7 @@ import (
 
 // argoCDGuide is the Argo CD user guide. Its "A complete example" section is the configuration
 // this file holds to the code: a reader copies it, so it must be accepted as written.
-const argoCDGuide = "../../docs/argocd.md"
+const argoCDGuide = "../../docs/bi-directional-argocd.md"
 
 // TestArgoCDGuide_TheCompleteExampleIsAccepted reads the guide's complete example and checks it
 // against the code that validates and drives an Argo CD applier: the GitOps Reverser objects decode

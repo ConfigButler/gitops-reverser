@@ -360,7 +360,7 @@ turns automated sync on, and there the webhook's refresh does auto-sync.
 
 ## Test design: `argocd_bi_directional_e2e_test.go`
 
-Every spec runs the standard of [`docs/argocd.md`](../argocd.md): the `Application`
+Every spec runs the standard of [`docs/bi-directional-argocd.md`](../bi-directional-argocd.md): the `Application`
 has automated sync off (`automated: {enabled: false, prune: true}`) and is held by
 the `ArgoCDTrigger` the `GitTarget` names, so every sync it runs is one GitOps
 Reverser started, pinned to a commit it checked. The earlier phases that ran

@@ -37,7 +37,7 @@ branch, after a refusal or a reverted edit, and to catch up with its own pushes 
 been quiet for the trigger's `quietPeriod`. `flux get ks` shows it `Suspended`, and while the
 operator is down nothing applies it. Remove `spec.suspend` from whatever applies the
 `Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
-webhook into a Flux `Receiver` for the repository, as [the Flux guide](flux.md) describes. Deleting
+webhook into a Flux `Receiver` for the repository, as [the Flux guide](bi-directional-flux.md) describes. Deleting
 the trigger hands the `Kustomization` back to Flux. The operator needs `get`, `list` and `patch` on
 `kustomizations`, `list` on `helmreleases` and `helmcharts`, `get` and `patch` on `gitrepositories`, and `create` on
 `selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true` grants them for
@@ -47,7 +47,7 @@ For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its a
 (`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before its trigger holds it; one with
 automated sync on reports `Configured=False` (`AutomatedSyncEnabled`) on the trigger and is never
 synced. The operator needs `get` and `update` on `applications`: Helm `applierAccess.argocd: true`.
-See [Using GitOps Reverser with Argo CD](argocd.md).
+See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
 
 ## `git_queue_drops_total` is now `git_queue_refusals_total`
 

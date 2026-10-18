@@ -1,6 +1,6 @@
 # An ArgoCDTrigger holds the Argo CD Application, with automated sync off, that syncs
 # example-target's folder. Name it from the GitTarget with
-# spec.applyTriggerRef: {kind: ArgoCDTrigger, name: example-trigger}. See docs/argocd.md.
+# spec.applyTriggerRef: {kind: ArgoCDTrigger, name: example-trigger}. See docs/bi-directional-argocd.md.
 apiVersion: configbutler.ai/v1alpha3
 kind: ArgoCDTrigger
 metadata:

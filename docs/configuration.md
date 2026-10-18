@@ -32,10 +32,11 @@ The usual flow is:
 3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
 4. Create a `CommitRequest` only when you want a save: your writes in one commit, on the request's
    timers rather than the target's, and optionally with your message.
-5. When Flux or Argo CD also applies the folder back to the cluster, name its `Kustomization` or
-   `Application` on the `GitTarget` and give the `GitProvider` a push receiver, so GitOps Reverser
-   decides when Git is applied. See [who applies this folder](#who-applies-this-folder-specapplytriggerref) and the
-   [bi-directional guide](bi-directional.md).
+5. Only when Flux or Argo CD also applies that same folder back to the cluster: hold its
+   `Kustomization` or `Application` with an apply trigger, name the trigger on the `GitTarget`, and
+   give the `GitProvider` a push receiver, so GitOps Reverser decides when Git is applied. See
+   [who applies this folder](#who-applies-this-folder-specapplytriggerref) and
+   [bi-directional GitOps](bi-directional.md). Flux and Argo CD applying other folders need nothing.
 
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
@@ -1121,13 +1122,18 @@ Git-host configuration. Seconds-fresh is the job of the
 
 ### Who applies this folder (`spec.applyTriggerRef`)
 
-When a GitOps tool applies this folder back to the cluster, an **apply trigger** holds the object
-that does it (its applier), and GitOps Reverser becomes the one that decides when it applies. The
-tool keeps doing the fetching, rendering, applying and pruning. The `GitTarget` names the trigger,
-in its own namespace, with `spec.applyTriggerRef`. The reason it has to be this way is the
-[apply trigger design](design/apply-trigger.md); the [bi-directional guide](bi-directional.md) is
-the model, [Using GitOps Reverser with Flux](flux.md) the whole Flux setup, and
-[Using GitOps Reverser with Argo CD](argocd.md) the whole Argo CD setup.
+Set this only when Flux or Argo CD applies the folder this `GitTarget` writes. A folder nothing
+applies, and every folder Flux or Argo CD applies that GitOps Reverser does not write, needs no
+trigger: leave the field out, and GitOps Reverser never touches Flux or Argo CD.
+
+When the folder is shared, an **apply trigger** holds the object that applies it (its applier), and
+GitOps Reverser decides when it applies: a `FluxTrigger` holds a Flux `Kustomization`, an
+`ArgoCDTrigger` an Argo CD `Application`. The `GitTarget` names the trigger, in its own namespace.
+[Bi-directional GitOps](bi-directional.md) is the model, and the complete setups, with the
+lifecycle of an apply, every condition reason and the permissions, are
+[bi-directional GitOps with Flux](bi-directional-flux.md) and
+[bi-directional GitOps with Argo CD](bi-directional-argocd.md). The reason it has to be this way is
+the [apply trigger design](design/apply-trigger.md).
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -1155,20 +1161,6 @@ spec:
     name: checkout
 ```
 
-```yaml
-apiVersion: configbutler.ai/v1alpha3
-kind: ArgoCDTrigger
-metadata:
-  name: checkout
-  namespace: team-a
-spec:
-  clusterProviderRef:
-    name: default
-  applicationRef:
-    namespace: argocd          # default: the trigger's namespace
-    name: checkout
-```
-
 | Field | Default | What it does |
 | --- | --- | --- |
 | `FluxTrigger.spec.clusterProviderRef`, `ArgoCDTrigger.spec.clusterProviderRef` | `{name: default}` | The `ClusterProvider` whose cluster holds the applier, defaulted as a `GitTarget`'s is. Immutable |
@@ -1177,30 +1169,19 @@ spec:
 | `ArgoCDTrigger.spec.applicationRef` | required | An Argo CD `Application` on a single source whose `targetRevision` names a branch, with automated sync off. Immutable |
 | `GitTarget.spec.applyTriggerRef` | none | The trigger, by `kind` and `name`, in the `GitTarget`'s namespace |
 
-**The appliers.** A Flux `Kustomization` (held by a `FluxTrigger`) and an Argo CD `Application`
-(held by an `ArgoCDTrigger`). The `Application` runs with automated sync off
-(`syncPolicy.automated.enabled: false`, or no `automated` block), and every sync it runs is one
-GitOps Reverser starts, pinned to the commit it checked. It is never asked to catch up with GitOps
-Reverser's own commits, since with automated sync off it applies nothing by itself, which is why an
-`ArgoCDTrigger` has no `quietPeriod`. One with automated sync on is `Configured=False` with
-`AutomatedSyncEnabled`, and is never synced.
-
-A third is the aim, and the API does not serve it yet: **a webhook trigger** for any other tool, a
-POST of `{"repository", "branch", "commit", "reason"}`, signed the way Flux's `generic-hmac`
-`Receiver` checks.
-
 **One trigger, several folders.** Several `GitTarget`s may name one trigger: their folders are
 applied by the same applier, and it is asked once for all of them. Each one's repository and branch
 must be the ones the applier applies, or that `GitTarget`'s `ApplyTriggerReady` is `False` with
-`SourceMismatch`.
+`SourceMismatch`. One applier is held by one trigger: a second trigger of the same kind naming the
+same applier in the same cluster reports `HeldByAnotherTrigger` and does nothing.
 
 **Where the applier is looked up.** In the cluster the trigger's `spec.clusterProviderRef` names,
-with the identity that [`ClusterProvider`](#clusterprovider) uses. Name a provider for a
-management cluster when Flux or Argo CD runs there and applies to the source cluster from there; a
-provider without `spec.kubeConfig` is the operator's own cluster. That provider's
-`spec.accessFrom` must admit the trigger's namespace, as for mirroring, or the trigger is
-`Configured=False` with `NamespaceNotAuthorized` (or `ClusterProviderNotFound`) and nothing is
-asked. A `GitTarget` names a trigger in its own namespace only, so that admission is its own.
+with the identity that [`ClusterProvider`](#clusterprovider) uses. Name a provider for a management
+cluster when Flux or Argo CD runs there; a provider without `spec.kubeConfig` is the operator's own
+cluster. That provider's `spec.accessFrom` must admit the trigger's namespace, as for mirroring, or
+the trigger is `Configured=False` with `NamespaceNotAuthorized` (or `ClusterProviderNotFound`). For
+the operator's own cluster, the chart grants the applier permissions with `applierAccess.flux: true`
+and `applierAccess.argocd: true`.
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -1216,18 +1197,9 @@ spec:
     name: prod-eu-1-apps
 ```
 
-For a `Kustomization`, the identity needs `get`, `list` and `patch` on `kustomizations`
-(`kustomize.toolkit.fluxcd.io`), `list` on `helmreleases` (`helm.toolkit.fluxcd.io`), `get` and
-`patch` on `gitrepositories` and `list` on `helmcharts` (`source.toolkit.fluxcd.io`). The `list` grants find the
-`GitRepository`'s other consumers; without them the source is never prefetched. For an
-`Application`, it needs `get` and `update` on `applications` (`argoproj.io`); and for either,
-`create` on `selfsubjectaccessreviews` to check it. For the operator's own cluster the chart grants them with
-`applierAccess.flux: true` and `applierAccess.argocd: true`; for a remote cluster, grant the same to
-the kubeconfig's identity.
-
 **When a request is made.** Only on a quiet branch: no open commit window and no pending writes on
 the branch worker, or on any other worker writing the same repository and branch through another
-`GitProvider`. That is the moment nothing live is missing from the tip.
+`GitProvider`.
 
 | `reason` | When | Sent to |
 | --- | --- | --- |
@@ -1236,51 +1208,9 @@ the branch worker, or on any other worker writing the same repository and branch
 | `Repair` | An apply reverted an API edit made after it was asked for; Git kept the edit | That applier |
 | `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes, or since the operator started | Every `Kustomization` declared on the branch; never an `Application` |
 
-A held `Kustomization` is suspended, so it never applies a stale artifact on its own. `CatchUp`
-keeps it converged: Flux's inventory learns of an object only from an apply of a commit that holds
-it, so an object created through the API is pruned when Git later deletes it only once Flux has
-applied it. `quietPeriod` keeps the catch-up out of an editing session: every new write restarts
-it. It is the trigger's, so every `GitTarget` naming the trigger waits for the same one.
-
-**What a request does to a `Kustomization`.** The `FluxTrigger` holds it suspended. A request
-makes the `GitRepository`'s artifact hold the commit (stamping `reconcile.fluxcd.io/requestedAt` on
-it and waiting for the fetch when it does not), reads the artifact again, records the operation on
-the trigger's `status.operation`, and then resumes the `Kustomization` with one server-side apply
-of `spec.suspend: false` and a new `requestedAt`. Once the `Kustomization` reports that token
-handled, its `Ready` is the outcome, and the `Kustomization` is suspended again with another token;
-the operation completes when that one is handled. A `ForeignCommit` or `CatchUp` asks nothing when
-the `Kustomization` is suspended and has applied the commit already. Nothing is asked when, by the
-time of the resume, the commit is no longer the branch tip or an edit is waiting to be published:
-the request is decided again at the next quiet moment. The full lifecycle is in [the Flux
-guide](flux.md#what-gitops-reverser-asks-and-when).
-
-**What a request does to an `Application`.** It sets the `Application`'s `operation` to the sync
-Argo CD's automated sync would start (`prune` from `syncPolicy.automated`, `syncOptions` and `retry`
-from `syncPolicy`), with `revision` pinned to the requested commit and `initiatedBy`
-`{username: gitops-reverser, automated: true}`. It never replaces an operation already running: it
-waits for it to end, at most 5 minutes. The details are in [the Argo CD guide](argocd.md#what-gitops-reverser-asks-and-when).
-
-A request starts an operation, which GitOps Reverser follows until the applier's own status proves
-it ended, and records on the trigger's `status.operation` (`appliedRevision` is what the applier
-reports it applied). It runs off the publication path, and a failed request never fails a
-publication that succeeded.
-
-**Every attempt checks again.** Just before it patches, GitOps Reverser reads each `GitTarget` again
-and asks nothing for one that has been deleted or recreated, no longer names this applier on this
-branch, no longer names a trigger that holds this applier, is no longer admitted by its
-`ClusterProvider` and its trigger's, or, for a `Refusal`, no longer consents (`onRefusal: Reapply`,
-not suspended). It never asks for something weaker in place of what it was told; when no target
-still holds the request's reason it asks nothing. And nothing is asked unless the `Kustomization`'s
-`GitRepository` fetches this repository and branch, or the `Application` syncs it with automated sync
-off, whatever the trigger last reported.
-
-**A request that fails is decided again from scratch.** The branch worker keeps what the
-applier is owed until a request delivers it. After a failure it waits out that applier's own backoff
-(2 seconds doubling to 5 minutes, at least 15 seconds when the applier cannot take a
-request), then waits for a quiet branch like any first request, and asks for the tip as it is then.
-A refusal that recovered in the meantime is not asked for again.
-
-**What it reports.** The trigger reports its applier, and the operation it is running:
+**What it reports.** The trigger reports its applier and the operation it is running. The branch
+worker writes `status.operation` and `status.repairOwed` at every move of the operation, so they are
+current without anything reconciling:
 
 ```yaml
 kind: FluxTrigger
@@ -1290,22 +1220,21 @@ status:
       status: "True"
       reason: Succeeded
       message: Kustomization flux-system/checkout applies GitRepository flux-system/platform, ...
-    - type: Suspended
+    - type: Suspended          # FluxTrigger only
       status: "True"
-      reason: Held            # Held | Fencing | NotHeld
-      message: Kustomization flux-system/checkout is suspended; GitOps Reverser starts every apply it makes
+      reason: Held             # Held | Fencing | NotHeld
     - type: Ready
       status: "True"
   source:
     gitRepository: {namespace: flux-system, name: platform}
     url: https://github.com/acme/platform
     branch: main
-    otherConsumers:           # what else applies this GitRepository, held by no FluxTrigger
+    otherConsumers:            # what else applies this GitRepository, held by no FluxTrigger
       - {kind: HelmRelease, namespace: platform, name: ingress}
     prefetch: false
   operation:
-    phase: Succeeded          # Requested | Running | Settling | Unresolved | Succeeded | Failed
-    reason: ForeignCommit     # ForeignCommit | Refusal | Repair | CatchUp
+    phase: Succeeded           # Requested | Running | Settling | Unresolved | Succeeded | Failed
+    reason: ForeignCommit      # ForeignCommit | Refusal | Repair | CatchUp
     commit: 4f2c1ab9...
     token: "2026-10-20T10:14:03.123456789Z"
     fenceToken: "2026-10-20T10:14:20.987654321Z"
@@ -1315,84 +1244,42 @@ status:
   repairOwed: false
 ```
 
-The branch worker writes `status.operation` and `status.repairOwed` at every move of the operation,
-so they are current without anything reconciling. `repairOwed` is `true` while an apply reverted an
-API edit made after the apply was asked for: Git kept the edit, and the cluster runs the older value
-until the `Repair` apply. An operation that has not completed in the time it was given is
-`Unresolved`, and the trigger is `Ready=False` with `OperationUnresolved` until it completes; it is
-still followed, and nothing more is asked of the applier until then.
-
-In `status.operation`, `token` identifies the request in the applier's own status (the
-`reconcile.fluxcd.io/requestedAt` value of the resume, or the `gitops-reverser request` entry in an
-Argo CD operation's `info`), and `appliedRevision` is the revision the applier reports
-it applied once the operation completed. It can differ from `commit` when the branch moved between
-the check and the apply. `fenceToken` (Flux only) is the token of the suspend after the apply: once
-the `Kustomization` reports it handled, nothing that started before the suspend is still running,
-and the operation completes. A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is
-suspended again and recorded straight away as an `Unresolved` operation with no `reason` and no
-`commit`, which completes once the suspend's `fenceToken` is handled.
-
-`status.source.otherConsumers` lists the other `Kustomization`s and `HelmRelease`s that apply the
-`GitRepository` (a `HelmRelease` directly, or through a `HelmChart` its `chartRef` names) and that
-no `FluxTrigger` on the same `ClusterProvider` holds, that is, reports `Suspended` `True`: each applies a new
-artifact the moment it arrives. It is information only and never affects `Ready`.
-`status.source.prefetch` is `true` while every consumer was listed and is held by a `FluxTrigger`,
-the trigger's own `Kustomization` included, so a new artifact applies nothing on its own: GitOps
-Reverser then fetches the `GitRepository` as soon as it learns of a push, before the apply, after
-checking on the cluster once more that every consumer is still held. It is `false` when
-`otherConsumers` is not empty, before the trigger holds its own `Kustomization`, or when the
-consumers could not be listed (the identity needs `list` on `kustomizations`, `helmreleases` and
-`helmcharts`).
-
-`Configured` is a gate, so the trigger's `Ready` aggregates it. Its `False` reasons:
-
-| Reason | Means |
+| Field | Means |
 | --- | --- |
-| `ApplierNotFound` | No such `Kustomization` or `Application` in the applier's cluster, or Flux or Argo CD is not installed there |
-| `UnsupportedSource` | The `Kustomization` applies a source that is not a `GitRepository`, or a `GitRepository` pinned to a tag, commit or semver range, or following no branch; or the `Application` has more than one source |
-| `AutomatedSyncEnabled` | The `Application` has automated sync on |
-| `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository`, or update the `Application` |
-| `NamespaceNotAuthorized` | The trigger's `clusterProviderRef` names a provider whose `accessFrom` does not admit its namespace |
-| `ClusterProviderNotFound` | The trigger's `clusterProviderRef` names a provider that does not exist |
-| `SuspendOwnedElsewhere` | Another field manager applies the `Kustomization`'s `spec.suspend` (a parent `Kustomization`, Helm, flux-operator), and would resume it on its next apply. Remove the field from the manifest it applies |
-| `HeldByAnotherTrigger` | Another trigger of the same kind names the same applier in the same cluster and holds it: the oldest by `creationTimestamp` (then namespace and name) does, except that a `FluxTrigger` with an apply in flight keeps it until that apply ends. This one does nothing, a `GitTarget` naming it applies nothing, and deleting it releases nothing; it takes the applier over once the holder is deleted |
+| `operation.phase` | `Requested`, `Running`, `Settling` (Flux only: applied, not yet seen suspended again) and `Unresolved` (not completed in 5 minutes, still followed) are in flight; `Succeeded` and `Failed` have completed. [The life of an apply](bi-directional.md#the-life-of-an-apply) draws the transitions |
+| `operation.token` | Identifies the request in the applier's own status: the `reconcile.fluxcd.io/requestedAt` value of the resume, or the `gitops-reverser request` entry in an Argo CD operation's `info` |
+| `operation.fenceToken` | Flux only: the token of the suspend after the apply. Once it is handled, nothing that started before the suspend is still running |
+| `operation.appliedRevision` | The revision the applier reports it applied. It can differ from `commit` when the branch moved between the check and the apply |
+| `repairOwed` | `true` while an apply reverted an API edit made after it was asked for: Git kept the edit, and the cluster runs the older value until the `Repair` |
+| `source.otherConsumers` | Flux only: the `Kustomization`s and `HelmRelease`s that apply the same `GitRepository` and that no `FluxTrigger` holds. Information only; it never affects `Ready` |
+| `source.prefetch` | Flux only: `true` while every consumer of the source is held, so GitOps Reverser may fetch the `GitRepository` ahead of the apply |
 
-A `FluxTrigger` also reports `Suspended`, and is `Ready` only once it is `True`:
+A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is suspended again and recorded as
+an `Unresolved` operation with no `reason` and no `commit`, which completes once the suspend is
+handled.
 
-| Status, reason | Means |
-| --- | --- |
-| `True`, `Held` | The `Kustomization` is suspended under GitOps Reverser's field manager, and the last suspend's token is handled, so nothing that started before the suspend is still running |
-| `False`, `Fencing` | The `Kustomization` was just suspended (adopted, taken back from a `flux suspend`, or suspended again after a `flux resume`), and has not handled that suspend's token yet |
-| `Unknown`, `NotHeld` | The trigger is not `Configured`, so nothing is suspended |
-
-**Deleting a `FluxTrigger` hands the `Kustomization` back to Flux.** The trigger carries the
-finalizer `configbutler.ai/flux-trigger`. On deletion it suspends the `Kustomization` once more if
-an apply has it resumed, waits until that suspend is handled, and releases `spec.suspend`, so Flux
-applies it on its own again (a `Normal` `Released` Event), even one somebody had `flux suspend`ed
-before the trigger adopted it. If another field manager also applies `spec.suspend`, the
-`Kustomization` stays suspended and the `Released` Event names that manager. A `Kustomization`,
-cluster or `ClusterProvider` that is gone has nothing to hand back, and an identity that may not
-write the `Kustomization` lets the trigger go with a `Warning` `ReleaseFailed` Event. With another
-`FluxTrigger` in line for the same `Kustomization`, it is not released but left suspended for that
-one, which holds it next. A hand-back
-that has not finished 10 minutes after the deletion (kustomize-controller down, say) also lets the
-trigger go with a `ReleaseFailed` Event saying where the `Kustomization` was left, so nothing holds
-the trigger forever.
+**Conditions.** `Configured` is a gate, and the trigger's `Ready` aggregates it; a `FluxTrigger` is
+also `Ready` only once `Suspended` is `True`. The `False` reasons are `ApplierNotFound`,
+`UnsupportedSource`, `AutomatedSyncEnabled` (Argo CD), `SuspendOwnedElsewhere` (Flux), `Forbidden`,
+`NamespaceNotAuthorized`, `ClusterProviderNotFound` and `HeldByAnotherTrigger`; each guide's table
+says what they mean for its applier and how to fix them
+([Flux](bi-directional-flux.md#the-fluxtrigger), [Argo CD](bi-directional-argocd.md#the-argocdtrigger)).
+The `GitTarget` reports `ApplyTriggerReady`, and its `Ready` aggregates it: `True` when the trigger
+is `Ready` and its applier applies this target's repository and branch, otherwise the trigger's own
+`Ready` reason, `ApplyTriggerNotFound`, or `SourceMismatch`. Each delivered request records an
+`ApplyRequested` Event on the `GitTarget`, and one that could not be delivered records
+`ApplyRequestFailed` once.
 
 The applier is read on the trigger's own reconcile tick rather than watched, so a cluster without
-the Flux or Argo CD CRDs installed costs nothing: every 15 seconds while it is expected to clear on
-its own, such as an applier created after its trigger, and otherwise every 5 minutes for an
-`ArgoCDTrigger` and every minute for a `FluxTrigger`, since that read is what finds a `flux resume`.
-A `FluxTrigger` that is `Fencing` is read every 2 seconds. Annotate the trigger with
+the Flux or Argo CD CRDs costs nothing: every 15 seconds while it is expected to clear on its own,
+such as an applier created after its trigger, and otherwise every minute for a `FluxTrigger` (that
+read is what finds a `flux resume`) and every 5 minutes for an `ArgoCDTrigger`. A `FluxTrigger` that
+is `Fencing` is read every 2 seconds. Annotate the trigger with
 `reconcile.configbutler.ai/requestedAt` to have it read now.
 
-The `GitTarget` reports `ApplyTriggerReady`, and its `Ready` aggregates it. It is `True` when the
-trigger is `Ready` and its applier applies this target's repository and branch. Otherwise it carries
-the trigger's own `Ready` reason, `ApplyTriggerNotFound` for a trigger that does not exist, or
-`SourceMismatch` when the applier applies another repository or branch (for an `Application`,
-another `targetRevision`). Each delivered request also records an `ApplyRequested` Event on the
-`GitTarget`, and a request that could not be delivered records `ApplyRequestFailed` once, not again
-each time the worker asks again.
+**Deleting a `FluxTrigger` hands the `Kustomization` back to Flux,** through the finalizer
+`configbutler.ai/flux-trigger`, unless another `FluxTrigger` is in line for it. The
+[Flux guide](bi-directional-flux.md#how-the-trigger-holds-the-kustomization) has the details.
 
 ### Reverting a refused edit (`spec.onRefusal`)
 
