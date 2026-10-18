@@ -183,9 +183,6 @@ func (t *FluxTrigger) Applier() types.NamespacedName {
 	}
 }
 
-// CatchesUp is true: a Kustomization is kept current with GitOps Reverser's own pushes.
-func (t *FluxTrigger) CatchesUp() bool { return true }
-
 // EffectiveQuietPeriod is spec.quietPeriod, resolving an omitted field to the default.
 func (t *FluxTrigger) EffectiveQuietPeriod() time.Duration {
 	if t.Spec.QuietPeriod == nil {

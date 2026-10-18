@@ -336,7 +336,6 @@ func TestApplyTrigger_AppliersDefaultToTheTriggersNamespace(t *testing.T) {
 	}
 	assert.Equal(t, "team-a/apps", flux.Applier().String())
 	assert.Equal(t, "hub", flux.ClusterProvider())
-	assert.True(t, flux.CatchesUp())
 	assert.Equal(t, DefaultApplierQuietPeriod, flux.EffectiveQuietPeriod())
 
 	argo := &ArgoCDTrigger{
@@ -346,7 +345,6 @@ func TestApplyTrigger_AppliersDefaultToTheTriggersNamespace(t *testing.T) {
 		},
 	}
 	assert.Equal(t, "argocd/apps", argo.Applier().String())
-	assert.False(t, argo.CatchesUp(), "an Application with automated sync off is never asked to catch up")
 }
 
 // TestArgoCDTrigger_SourceBindingNamesTheBranch: targetRevision may spell a branch as refs/heads/,

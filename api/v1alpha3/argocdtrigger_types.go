@@ -153,10 +153,6 @@ func (t *ArgoCDTrigger) Applier() types.NamespacedName {
 	}
 }
 
-// CatchesUp is false: an Application with automated sync off applies nothing on its own, so it
-// never holds a stale state to correct.
-func (t *ArgoCDTrigger) CatchesUp() bool { return false }
-
 // EffectiveQuietPeriod is the default: it only times a CatchUp, which an Application is never asked.
 func (t *ArgoCDTrigger) EffectiveQuietPeriod() time.Duration { return DefaultApplierQuietPeriod }
 

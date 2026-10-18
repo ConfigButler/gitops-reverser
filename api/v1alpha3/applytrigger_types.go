@@ -160,8 +160,6 @@ type ApplyTrigger interface {
 	ApplierKind() string
 	// Applier is the object the trigger holds, its namespace defaulted to the trigger's own.
 	Applier() types.NamespacedName
-	// CatchesUp reports whether the applier is owed a CatchUp after GitOps Reverser's own pushes.
-	CatchesUp() bool
 	// EffectiveQuietPeriod is how long the branch must be quiet before a CatchUp.
 	EffectiveQuietPeriod() time.Duration
 	// SourceBinding is the repository and branch the applier applies, as the trigger last read
