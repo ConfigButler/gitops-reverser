@@ -1355,6 +1355,7 @@ consumers could not be listed (the identity needs `list` on `kustomizations`, `h
 | `NamespaceNotAuthorized` | The trigger's `clusterProviderRef` names a provider whose `accessFrom` does not admit its namespace |
 | `ClusterProviderNotFound` | The trigger's `clusterProviderRef` names a provider that does not exist |
 | `SuspendOwnedElsewhere` | Another field manager applies the `Kustomization`'s `spec.suspend` (a parent `Kustomization`, Helm, flux-operator), and would resume it on its next apply. Remove the field from the manifest it applies |
+| `HeldByAnotherTrigger` | Another trigger of the same kind names the same applier in the same cluster and holds it: the oldest by `creationTimestamp` (then namespace and name) does. This one does nothing, a `GitTarget` naming it applies nothing, and deleting it releases nothing; it takes the applier over once the holder is deleted |
 
 A `FluxTrigger` also reports `Suspended`, and is `Ready` only once it is `True`:
 

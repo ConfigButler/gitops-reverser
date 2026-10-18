@@ -272,6 +272,7 @@ The trigger reports `Configured` and `Suspended`, and its `Ready` includes both:
 | `Configured`: `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository` | stalled: needs a human |
 | `Configured`: `NamespaceNotAuthorized` | The trigger's `clusterProviderRef` names a provider that does not admit its namespace | stalled: needs a human |
 | `Configured`: `ClusterProviderNotFound` | The trigger's `clusterProviderRef` names a provider that does not exist | progressing |
+| `Configured`: `HeldByAnotherTrigger` | An older `FluxTrigger` names the same `Kustomization` in the same cluster and holds it; this one does nothing, and deleting it releases nothing. It takes over when that one is deleted | stalled: delete one of the two |
 | `Suspended`: `Held` | Suspended under GitOps Reverser, and the last suspend is handled | ready |
 | `Suspended`: `Fencing` | Just suspended; waiting for the `Kustomization` to handle the suspend | progressing |
 | `Ready`: `OperationUnresolved` | An apply has not completed within 5 minutes, or the `Kustomization` was [resumed by hand](#overriding-by-hand), which is recorded `Unresolved` at once | progressing; it clears when the apply does |

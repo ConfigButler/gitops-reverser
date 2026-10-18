@@ -205,12 +205,18 @@ drifted object with no new commit):
 1. **Make the artifact hold the commit.** When it does not, stamp the `GitRepository` and wait for
    it to handle that token. An artifact that ends on another commit is `Stale` when the decision no
    longer holds, and a failure otherwise: the source cannot fetch what the worker checked.
-2. **Recheck just before resuming:** read the artifact again and ask the decision
-   (`ApplyRequest.Current`). This closes the race of measurement point 6 as far as it can be closed.
-3. **Record the operation** on the trigger, written through, as `Requested` with its token.
+2. **Recheck just before resuming:** read the `Kustomization` again (the same uid, the same
+   `sourceRef`, no other manager applying `spec.suspend`: one replaced or re-pointed during the
+   fetch is not resumed), read the artifact again, and ask the decision (`ApplyRequest.Current`).
+   This closes the race of measurement point 6 as far as it can be closed.
+3. **Record the operation** on the trigger, written through, as `Requested` with its token, and
+   ask the decision once more: the record can wait on the API server, and a decision that went
+   stale meanwhile withdraws the record and resumes nothing.
 4. **Resume with a token.** One server-side apply under the field manager `gitops-reverser` sets
-   `spec.suspend: false` and `requestedAt: <T1>`. A resume whose answer is lost (a timeout, an
-   internal error) may have landed, so it is followed and fenced as if it had.
+   `spec.suspend: false` and `requestedAt: <T1>`, carrying the uid and `resourceVersion` of that
+   last read as preconditions, so anything that changed the object since is a conflict (read again,
+   up to five times) and a deleted one is not re-created. A resume whose answer is lost (a timeout,
+   an internal error) may have landed, so it is followed and fenced as if it had.
 5. **Wait for T1 handled.** A token somebody stamped over T1 (`flux reconcile`) stands in for it:
    the reconcile that handles it started after the resume. A handled token does not prove a
    reconcile ran resumed, though: a suspend landing between the resume and the reconcile (a
@@ -251,6 +257,13 @@ later deletes it.
 
 ### Who owns `spec.suspend`
 
+- **One trigger per applier.** Every trigger suspends under the same field manager, so two holding
+  one `Kustomization` would take each other's resume for an external one and release each other's
+  hold. Of the triggers of one kind naming one applier in one cluster, the oldest by
+  `creationTimestamp` (then namespace and name) holds it; the others are `Configured=False`,
+  `HeldByAnotherTrigger`, do nothing, and release nothing when deleted, and the dispatcher drops a
+  request through them. Deleting the holder hands the applier back and enqueues the next in line,
+  which adopts it. The same rule holds for `ArgoCDTrigger`s, which would otherwise both start syncs.
 - **Adoption.** A `Configured` `FluxTrigger` suspends its `Kustomization` with a server-side apply
   under `gitops-reverser`, and a token. It is `Suspended=True`, and `Ready`, once that token is
   handled. A `Normal` `Adopted` Event records it.
@@ -327,8 +340,11 @@ nothing about what is owed.
   ready when the apply is due. On a quiet branch the attempt sent at once fetches for itself. No
   prefetch while any `FluxTrigger` on that source has an operation in flight, because a resumed
   consumer applies whatever the artifact becomes. A listing that is forbidden counts as not holding.
-- Appliers of one worker that share a source have one operation at a time, and take turns: the
-  one whose last turn is oldest goes first, so a busy sibling cannot starve another.
+- Appliers that share a source have one operation at a time, and take turns: the one whose last
+  turn is oldest goes first, so a busy sibling cannot starve another. This holds across the
+  workers of GitProviders that name the same repository and branch: a worker claims the source's
+  group before it sends, under the siblings' lock, and a sibling's operation of that source holds
+  a prefetch back too.
 
 ### What the measurement found
 
@@ -385,7 +401,11 @@ changed:
   completed: for Flux, the resume's token and the fence after it handled; for Argo CD, the operation
   state carrying the request's token completed. An `Unresolved` operation keeps it open until it
   completes. Then the worker keeps it open 10 seconds more, because the applier's writes reach it
-  through the watch.
+  through the watch. An attempt sent within those 10 seconds carries the edits seen in the window
+  before it, and that window's end, so a late write of the earlier apply is still withheld, and an
+  attempt that asked for nothing does not end the earlier grace. A write of the new apply to an
+  object edited during the earlier one is then withheld too, since the managers cannot tell the two
+  applies apart: that costs one redundant `Repair`, never an edit.
 - **The late apply is withheld.** A write whose latest `managedFields` entries are the applier's
   own managers alone (`kustomize-controller`; `argocd-controller` or
   `argocd-application-controller`), inside the window, to an object in the applier's folders that
@@ -426,6 +446,7 @@ Every rule the client relies on is Argo CD's own, read from its source (3.5.0):
 | Automated sync is on when `syncPolicy.automated` is present and its `enabled` is unset or true (`IsAutomatedSyncEnabled`) | `AutomatedSyncEnabled` is exactly this rule; `automated: {enabled: false, prune: …}` is the off switch that keeps prune |
 | Automated sync builds `Operation{Sync{Revision, Prune: automated.prune, SyncOptions, Source}, InitiatedBy{Automated: true}, Retry: syncPolicy.retry or {Limit: 5}}` (`autoSync`) | A request builds the same, with `Revision` pinned to the checked commit |
 | A sync starts by setting `operation`, never while one is set, in an update that also clears `status.operationState` (`SetAppOperation`; the CRD has no status subresource) | A request updates the whole `Application`, guarded by the `resourceVersion` it read, and waits out a running operation instead of replacing it |
+| `NewOperationState` copies the operation, its `info` included, into `status.operationState`, and `operation` is cleared only once the operation completed | An update whose answer was lost is followed by its token: in `operation` or `status.operationState` it landed. Neither while the `Application` is still at the guarding `resourceVersion` and less than 2 minutes passed (past the API server's 60 s request deadline) means it may still land; after that, it never did, and the operation is `Failed` and asked again |
 | The controller clears `operation` when the operation completes and leaves the result in `status.operationState`; a failed operation that will be retried is `Running` again, with a `finishedAt` | An operation completes when the operation state carrying its token has completed (`Succeeded`, `Failed`, `Error`); a pending retry is still running |
 | A retry with `retry.refresh: true` drops the operation's revision and syncs the newest one | That one field is dropped from the copied retry: a retry stays pinned |
 | Every apply writes as field manager `argocd-controller`, client-side and server-side alike; a `Replace=true` sync creates and replaces with no field manager, so the API server takes it from the user agent, `argocd-application-controller` | The apply window knows both as Argo CD's managers |

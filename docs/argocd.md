@@ -230,6 +230,7 @@ The trigger reports `Configured`, and its `Ready` includes it:
 | `Forbidden` | The applier cluster's identity may not update the `Application` | stalled: needs a human |
 | `NamespaceNotAuthorized` | The trigger's `clusterProviderRef` names a provider that does not admit its namespace | stalled: needs a human |
 | `ClusterProviderNotFound` | The trigger's `clusterProviderRef` names a provider that does not exist | progressing |
+| `HeldByAnotherTrigger` | An older `ArgoCDTrigger` names the same `Application` in the same cluster and holds it; this one starts no sync. It takes over when that one is deleted | stalled: delete one of the two |
 
 The `GitTarget` reports `ApplyTriggerReady`, and its `Ready` includes it: `True` when the trigger is
 `Ready` and its `Application` syncs this repository and branch, `SourceMismatch` when it syncs
