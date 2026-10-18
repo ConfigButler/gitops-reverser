@@ -16,6 +16,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -196,4 +197,107 @@ func TestApplyWindow_AFirstTieIsRememberedAsAnEdit(t *testing.T) {
 	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
 		"the applier's write a second later is its apply over the tie's edit")
 	assert.Equal(t, int64(1), collisions(t, reader, collisionWithheld))
+}
+
+// completedThenNext is a loop whose applier, alpha's, completed attempt A over an API edit made
+// while it ran, and was sent attempt B within A's grace: a push somebody else made owes it again.
+func completedThenNext(t *testing.T) (*branchWorkerEventLoop, *recordingRequester, ApplyRequest) {
+	t.Helper()
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", false))
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	first := requester.taken()
+	require.Len(t, first, 1)
+	require.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")), "the edit is mirrored")
+
+	report(first[0], ApplySucceeded)
+	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	loop.serviceAppliers()
+	next := requester.taken()
+	require.Len(t, next, 1, "B goes out within A's grace")
+	require.NotEqual(t, first[0].ID, next[0].ID)
+	return loop, requester, next[0]
+}
+
+// TestApplyWindow_ANewAttemptKeepsTheGraceOfTheOneBefore is the fifth review's third finding. A new
+// attempt replaced its applier's window, and the edits the one before had seen went with it, while
+// that earlier apply's writes could still arrive within its grace. Its late write over the edit was
+// then mirrored, and the revert reached Git as the applier's commit.
+func TestApplyWindow_ANewAttemptKeepsTheGraceOfTheOneBefore(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	loop, _, _ := completedThenNext(t)
+
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
+		"A's late write over the edit is withheld while B is out")
+	assert.Equal(t, int64(1), collisions(t, reader, collisionWithheld))
+	assert.True(t, onlyApplier(t, loop).repair, "and owes a Repair")
+}
+
+// TestApplyWindow_AnAttemptThatAppliedNothingKeepsTheGraceBeforeIt: B ending without an apply has no
+// window of its own, but A's grace still runs, so A's late write is withheld until it ends, and
+// mirrored after.
+func TestApplyWindow_AnAttemptThatAppliedNothingKeepsTheGraceBeforeIt(t *testing.T) {
+	for _, outcome := range []ApplyOutcome{ApplyCurrent, ApplyStale} {
+		t.Run(string(outcome), func(t *testing.T) {
+			loop, _, next := completedThenNext(t)
+			report(next, outcome)
+			loop.openWindow = &openWindow{} // a busy branch: a stale B is not sent again yet
+			loop.serviceAppliers()
+			state := onlyApplier(t, loop)
+			require.Nil(t, state.inflight)
+
+			assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
+				"A's late write is withheld within A's grace")
+			assert.True(t, state.repair)
+
+			state.window.closesAt = time.Now().Add(-time.Millisecond)
+			assert.False(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)), "after it")
+		})
+	}
+}
+
+// TestApplyWindow_TheCarriedGraceEndsWhenTheEarlierWindowWouldHave: the edits a new attempt carries
+// from the window before it count only until that window would have closed. After that, the
+// applier's write is B's apply of a commit that holds the edit, and is mirrored; an edit made since
+// B was sent still counts.
+func TestApplyWindow_TheCarriedGraceEndsWhenTheEarlierWindowWouldHave(t *testing.T) {
+	loop, _, _ := completedThenNext(t)
+	window := onlyApplier(t, loop).window
+	require.False(t, window.carriedUntil.IsZero())
+	window.carriedUntil = time.Now().Add(-time.Millisecond)
+
+	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", FluxFieldManager)),
+		"A's grace is over: the applier's write is B's apply")
+	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "4", "kubectl-edit")))
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "3", FluxFieldManager)),
+		"an edit made while B runs is B's own")
+}
+
+// TestApplyWindow_ConsecutiveOperationsOnOneApplier composes the steps: A completes, B is sent within
+// A's grace, A's late write over the edit is withheld, B completes, and the Repair that write owes
+// goes out once, on the quiet branch, at the tip. Each window closes a grace after its own attempt.
+func TestApplyWindow_ConsecutiveOperationsOnOneApplier(t *testing.T) {
+	loop, requester, second := completedThenNext(t)
+	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, second.Reason)
+
+	require.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)))
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken(), "the Repair waits for B")
+
+	report(second, ApplySucceeded)
+	loop.serviceAppliers()
+	state := onlyApplier(t, loop)
+	repair := requester.taken()
+	require.Len(t, repair, 1)
+	assert.Equal(t, configv1alpha3.ApplyReasonRepair, repair[0].Reason)
+	assert.Equal(t, "ccc", repair[0].Commit)
+	assert.WithinDuration(t, time.Now().Add(applyWindowGrace), state.window.carriedUntil, time.Second,
+		"the Repair carries B's grace, which ends a grace after B completed")
+
+	report(repair[0], ApplySucceeded)
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken(), "the Repair is owed once")
+	assert.False(t, state.repairOwed())
+	assert.WithinDuration(t, time.Now().Add(applyWindowGrace), state.window.closesAt, time.Second)
 }

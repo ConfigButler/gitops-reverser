@@ -4,6 +4,7 @@ package git
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"time"
 
@@ -82,7 +83,8 @@ const (
 )
 
 // applyWindow is one applier's open apply window: from sending an attempt until its operation
-// completed, plus applyWindowGrace. An Unresolved operation holds it open.
+// completed, plus applyWindowGrace, and never before the window it replaced would have closed. An
+// Unresolved operation holds it open.
 type applyWindow struct {
 	attempt uint64
 	commit  string
@@ -91,6 +93,11 @@ type applyWindow struct {
 	closesAt time.Time
 	// edited holds the objects the API side wrote since the attempt was sent, by objectKey.
 	edited map[string]struct{}
+	// carried holds the objects the window before this one had seen edited, when that window was
+	// still open as this attempt was sent, and carriedUntil is when it would have closed: the
+	// earlier apply's writes can arrive until then (openApplyWindow).
+	carried      map[string]struct{}
+	carriedUntil time.Time
 }
 
 // open reports whether the window is open at now.
@@ -104,23 +111,49 @@ func objectKey(id itypes.ResourceIdentifier) string {
 	return id.Group + "/" + id.Resource + "/" + id.Namespace + "/" + id.Name
 }
 
-// openApplyWindow starts an applier's window as its attempt is sent.
+// editedSince reports whether the API side wrote an object since the attempt was sent, or, until
+// the window before it would have closed, since that one was.
+func (a *applyWindow) editedSince(key string, now time.Time) bool {
+	if _, edited := a.edited[key]; edited {
+		return true
+	}
+	_, carried := a.carried[key]
+	return carried && now.Before(a.carriedUntil)
+}
+
+// openApplyWindow starts an applier's window as its attempt is sent. The window before it can still
+// be open: an attempt may follow one that completed within its grace, and that apply's writes are
+// still arriving. Its edits are carried until it would have closed, so a late write of the earlier
+// apply over one of them is still withheld. Replacing the window lost them, and the revert was
+// mirrored.
 func (state *applierState) openApplyWindow(attempt uint64, commit string, now time.Time) {
-	state.window = &applyWindow{attempt: attempt, commit: commit, sentAt: now, edited: map[string]struct{}{}}
+	next := &applyWindow{attempt: attempt, commit: commit, sentAt: now, edited: map[string]struct{}{}}
+	if before := state.window; before.open(now) {
+		next.carried = maps.Clone(before.edited)
+		if now.Before(before.carriedUntil) {
+			maps.Copy(next.carried, before.carried)
+		}
+		next.carriedUntil = before.closesAt
+	}
+	state.window = next
 }
 
 // settleApplyWindow ends an attempt's part in its applier's window: once an operation completed,
 // succeeded or not, its window stays open for applyWindowGrace; any other attempt asked for no
-// apply, so there is no window.
+// apply, so its window stays open only while the one before it would have.
 func (state *applierState) settleApplyWindow(attempt uint64, operated bool, now time.Time) {
-	if state.window == nil || state.window.attempt != attempt {
+	window := state.window
+	if window == nil || window.attempt != attempt {
 		return
 	}
-	if !operated {
+	switch {
+	case operated:
+		window.closesAt = latest(now.Add(applyWindowGrace), window.carriedUntil)
+	case now.Before(window.carriedUntil):
+		window.closesAt = window.carriedUntil
+	default:
 		state.window = nil
-		return
 	}
-	state.window.closesAt = now.Add(applyWindowGrace)
 }
 
 // covers reports whether the applier applies the GitTarget an event is for.
@@ -147,7 +180,7 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 			continue
 		}
 		byApplier, byApplierAlone := ref.writtenBy(event.LastFieldManagers)
-		_, editedSince := window.edited[key]
+		editedSince := window.editedSince(key, now)
 		switch {
 		case !byApplier || event.Operation == string(itypes.OperationDelete):
 			window.edited[key] = struct{}{}

@@ -236,7 +236,8 @@ type applierState struct {
 	// attempt goes to the applier whose turn is longest ago (turnOrder).
 	lastTurn uint64
 	// window is the applier's apply window: open from sending an attempt until the applier
-	// finished it (apply_window.go). Nil when no attempt was sent, or the last asked for no apply.
+	// finished it (apply_window.go). Nil when no attempt was sent, or the last asked for no apply
+	// after the window before it had closed.
 	window *applyWindow
 	// operation is the last operation an attempt started, as its trigger's status.operation shows
 	// it, and operationID the attempt it belongs to. Nil until this worker started one.
