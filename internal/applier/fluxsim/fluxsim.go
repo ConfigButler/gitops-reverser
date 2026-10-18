@@ -11,19 +11,25 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -55,11 +61,15 @@ import (
 //
 // Writes go through the fake dynamic client the client under test uses. spec.suspend and the
 // requestedAt annotation keep managedFields, by manager and operation, as the API server does for a
-// server-side apply (forced) and for a merge patch.
+// server-side apply (forced) and for a merge patch. A Kustomization's resourceVersion moves on every
+// write that changes it, and a server-side apply that carries a resourceVersion or a uid has them
+// checked as preconditions, as the API server checks them.
 type Sim struct {
 	t testing.TB
 	// Client is the fake source cluster's client, which the code under test writes through.
 	Client *dynamicfake.FakeDynamicClient
+	// version is the last resourceVersion given out.
+	version atomic.Int64
 
 	mu sync.Mutex
 	// remote is the revision a GitRepository's fetch finds, by GitRepository.
@@ -111,9 +121,15 @@ func New(t testing.TB, client *dynamicfake.FakeDynamicClient) *Sim {
 		lagged:  map[types.NamespacedName]string{},
 	}
 	client.PrependReactor("patch", "kustomizations", sim.patchKustomization)
+	client.PrependReactor("create", "kustomizations", sim.newVersion)
+	client.PrependReactor("update", "kustomizations", sim.newVersion)
 	// What the objects hold now is what their last reconcile started from: a test starts from a
 	// cluster at rest, not from the controllers' first pass over it.
 	for _, ks := range sim.list(KustomizationGVR()) {
+		if ks.GetResourceVersion() == "" {
+			ks.SetResourceVersion(sim.nextVersion())
+			require.NoError(t, client.Tracker().Update(KustomizationGVR(), ks, ks.GetNamespace()))
+		}
 		sim.seen[types.NamespacedName{Namespace: ks.GetNamespace(), Name: ks.GetName()}.String()] = sim.seenNow(ks)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -424,7 +440,8 @@ func reconciled(obj *unstructured.Unstructured, revision, status string) {
 }
 
 // WriteStatus changes an object's status as the controller's patcher does: on the object as it is
-// now, leaving its spec and metadata alone.
+// now, leaving its spec and metadata alone. A write that changes the object moves its
+// resourceVersion.
 func (s *Sim) WriteStatus(_ context.Context, gvr schema.GroupVersionResource, key types.NamespacedName,
 	change func(*unstructured.Unstructured)) {
 	current, err := s.Client.Tracker().Get(gvr, key.Namespace, key.Name)
@@ -437,7 +454,62 @@ func (s *Sim) WriteStatus(_ context.Context, gvr schema.GroupVersionResource, ke
 	}
 	obj := held.DeepCopy()
 	change(obj)
+	if !equality.Semantic.DeepEqual(held.Object, obj.Object) {
+		obj.SetResourceVersion(s.nextVersion())
+	}
 	_ = s.Client.Tracker().Update(gvr, obj, key.Namespace)
+}
+
+// Edit changes a Kustomization as another writer's update does, on the object as it is now. It
+// writes through the tracker rather than the client, so a test's reactor, which runs while the
+// client is locked, can call it.
+func (s *Sim) Edit(key types.NamespacedName, change func(*unstructured.Unstructured)) {
+	s.WriteStatus(context.Background(), KustomizationGVR(), key, change)
+}
+
+// nextVersion gives out a new resourceVersion.
+func (s *Sim) nextVersion() string {
+	return strconv.FormatInt(s.version.Add(1), 10)
+}
+
+// newVersion gives the Kustomization a create or an update writes a new resourceVersion, and lets
+// the tracker write it.
+func (s *Sim) newVersion(action k8stesting.Action) (bool, runtime.Object, error) {
+	var obj runtime.Object
+	switch action := action.(type) {
+	case k8stesting.CreateActionImpl:
+		obj = action.GetObject()
+	case k8stesting.UpdateActionImpl:
+		obj = action.GetObject()
+	}
+	if ks, ok := obj.(*unstructured.Unstructured); ok {
+		ks.SetResourceVersion(s.nextVersion())
+	}
+	return false, nil, nil
+}
+
+// applyPreconditions is the API server's answer to a server-side apply that carries a
+// resourceVersion or a uid (measured in envtest): a resourceVersion other than the object's is a
+// Conflict, another object's uid is Invalid, and a uid with no object is a Conflict rather than a
+// create. current is nil when there is no object.
+func applyPreconditions(current *unstructured.Unstructured, body map[string]any, name string) error {
+	resourceVersion, _, _ := unstructured.NestedString(body, "metadata", "resourceVersion")
+	uid, _, _ := unstructured.NestedString(body, "metadata", "uid")
+	resource := KustomizationGVR().GroupResource()
+	switch {
+	case current == nil && uid != "":
+		return apierrors.NewConflict(resource, name, fmt.Errorf("uid mismatch: the provided object specified "+
+			"uid %s, and no existing object was found", uid))
+	case current == nil:
+		return nil
+	case resourceVersion != "" && resourceVersion != current.GetResourceVersion():
+		return apierrors.NewConflict(resource, name, errors.New(
+			"the object has been modified; please apply your changes to the latest version and try again"))
+	case uid != "" && uid != string(current.GetUID()):
+		return apierrors.NewInvalid(schema.GroupKind{Group: KustomizationGVR().Group, Kind: kindKustomization}, name,
+			field.ErrorList{field.Invalid(field.NewPath("metadata", "uid"), uid, "field is immutable")})
+	}
+	return nil
 }
 
 // readyStatus is a Kustomization's Ready status, or "".
@@ -471,25 +543,22 @@ func (s *Sim) patchKustomization(action k8stesting.Action) (bool, runtime.Object
 	if !ok {
 		return false, nil, nil
 	}
-	current, err := s.Client.Tracker().Get(KustomizationGVR(), patch.GetNamespace(), patch.GetName())
-	if err != nil {
-		return true, nil, err
-	}
-	obj, ok := current.(*unstructured.Unstructured)
-	if !ok {
-		return true, nil, fmt.Errorf("a Kustomization the tracker holds as %T", current)
-	}
-	obj = obj.DeepCopy()
 	var body map[string]any
 	if err := json.Unmarshal(patch.Patch, &body); err != nil {
 		return true, nil, err
 	}
+	apply := patch.PatchType == types.ApplyPatchType
+	held, err := s.patched(patch, body, apply)
+	if err != nil {
+		return true, nil, err
+	}
+	obj := held.DeepCopy()
 	manager := patch.PatchOptions.FieldManager
 	if manager == "" {
 		manager = "unnamed"
 	}
 	writer := owner{manager: manager, operation: metav1.ManagedFieldsOperationUpdate}
-	if patch.PatchType == types.ApplyPatchType {
+	if apply {
 		writer.operation = metav1.ManagedFieldsOperationApply
 	}
 	byField := owners(obj)
@@ -501,10 +570,38 @@ func (s *Sim) patchKustomization(action k8stesting.Action) (bool, runtime.Object
 		obj.SetGeneration(obj.GetGeneration() + 1)
 	}
 	setOwners(obj, byField)
+	if !equality.Semantic.DeepEqual(held.Object, obj.Object) {
+		obj.SetResourceVersion(s.nextVersion())
+	}
 	if err := s.Client.Tracker().Update(KustomizationGVR(), obj, obj.GetNamespace()); err != nil {
 		return true, nil, err
 	}
 	return true, obj, nil
+}
+
+// patched reads the Kustomization a patch writes, and checks an apply's preconditions against it.
+func (s *Sim) patched(
+	patch k8stesting.PatchActionImpl, body map[string]any, apply bool,
+) (*unstructured.Unstructured, error) {
+	current, err := s.Client.Tracker().Get(KustomizationGVR(), patch.GetNamespace(), patch.GetName())
+	if err != nil {
+		if apply && apierrors.IsNotFound(err) {
+			if err := applyPreconditions(nil, body, patch.GetName()); err != nil {
+				return nil, err
+			}
+		}
+		return nil, err
+	}
+	held, ok := current.(*unstructured.Unstructured)
+	if !ok {
+		return nil, fmt.Errorf("a Kustomization the tracker holds as %T", current)
+	}
+	if apply {
+		if err := applyPreconditions(held, body, patch.GetName()); err != nil {
+			return nil, err
+		}
+	}
+	return held, nil
 }
 
 // writeField applies one kept field of a patch body by writer to obj and its owners, byField.

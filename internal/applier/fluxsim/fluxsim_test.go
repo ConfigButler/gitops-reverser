@@ -10,6 +10,7 @@ import (
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -207,6 +208,47 @@ func TestSim_ManagedFields(t *testing.T) {
 	_, found, _ := unstructured.NestedFieldNoCopy(ks.Object, "spec", "suspend")
 	assert.False(t, found, "released")
 	assert.Empty(t, owners(ks))
+}
+
+// A write that changes the object moves its resourceVersion, and one that changes nothing does
+// not. A server-side apply that carries a resourceVersion or a uid has them checked as the API
+// server checks them (measured in envtest): a resourceVersion that moved is a Conflict, another
+// object's uid is Invalid, and a uid with no object is a Conflict rather than a create.
+func TestSim_ApplyPreconditions(t *testing.T) {
+	sim := newSim(t, true)
+	sim.Edit(ksKey, func(ks *unstructured.Unstructured) { ks.SetUID("apps-1") })
+	read := sim.Kustomization(ksKey)
+	require.NotEmpty(t, read.GetResourceVersion())
+	sim.Edit(ksKey, func(*unstructured.Unstructured) {})
+	assert.Equal(t, read.GetResourceVersion(), sim.Kustomization(ksKey).GetResourceVersion(),
+		"a write that changes nothing")
+
+	resources := sim.Client.Resource(KustomizationGVR()).Namespace(ksKey.Namespace)
+	applyOver := func(resourceVersion, uid string) error {
+		obj := &unstructured.Unstructured{}
+		obj.SetAPIVersion("kustomize.toolkit.fluxcd.io/v1")
+		obj.SetKind(kindKustomization)
+		obj.SetNamespace(ksKey.Namespace)
+		obj.SetName(ksKey.Name)
+		obj.SetResourceVersion(resourceVersion)
+		obj.SetUID(types.UID(uid))
+		require.NoError(t, unstructured.SetNestedField(obj.Object, false, "spec", "suspend"))
+		_, err := resources.Apply(context.Background(), ksKey.Name, obj,
+			metav1.ApplyOptions{FieldManager: manager, Force: true})
+		return err
+	}
+
+	sim.Edit(ksKey, func(ks *unstructured.Unstructured) { ks.SetLabels(map[string]string{"team": "a"}) })
+	require.True(t, apierrors.IsConflict(applyOver(read.GetResourceVersion(), "apps-1")))
+	assert.True(t, suspended(sim.Kustomization(ksKey)), "not applied")
+	read = sim.Kustomization(ksKey)
+	require.True(t, apierrors.IsInvalid(applyOver(read.GetResourceVersion(), "apps-2")))
+	require.NoError(t, applyOver(read.GetResourceVersion(), "apps-1"))
+	assert.False(t, suspended(sim.Kustomization(ksKey)))
+	assert.NotEqual(t, read.GetResourceVersion(), sim.Kustomization(ksKey).GetResourceVersion())
+
+	require.NoError(t, resources.Delete(context.Background(), ksKey.Name, metav1.DeleteOptions{}))
+	require.True(t, apierrors.IsConflict(applyOver("", "apps-1")), "no create")
 }
 
 func suspended(ks *unstructured.Unstructured) bool {

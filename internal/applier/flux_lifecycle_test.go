@@ -41,6 +41,7 @@ func simCluster(t *testing.T, revision string, suspend bool) *fluxsim.Sim {
 	t.Helper()
 	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
 	ks.SetGeneration(1)
+	ks.SetUID("checkout-1")
 	if suspend {
 		ks = fluxsim.OwnSuspend(t, ks, true, SuspendFieldManager, metav1.ManagedFieldsOperationApply)
 	}
@@ -299,6 +300,140 @@ func TestFluxRequest_AnArtifactThatMovesBeforeTheResumeIsStale(t *testing.T) {
 	_, err := simFlux(sim).Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
 	require.ErrorIs(t, err, errStale)
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
+}
+
+// resumedBy reports whether the Kustomization was resumed with token.
+func resumedBy(ks *unstructured.Unstructured, token string) bool {
+	return !suspended(ks) || ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation] == token
+}
+
+// TestFluxRequest_AKustomizationThatChangesDuringTheFetchIsNotResumed is review 5's fourth
+// finding: a request read the Kustomization once, waited for the fetch, and resumed whatever the
+// Kustomization was by then. One that applies another source now, one that was replaced, and one
+// whose spec.suspend another manager applies now are all read again before the resume, and none is
+// resumed.
+func TestFluxRequest_AKustomizationThatChangesDuringTheFetchIsNotResumed(t *testing.T) {
+	for name, tt := range map[string]struct {
+		change   func(t *testing.T, sim *fluxsim.Sim)
+		wantErr  string
+		wantPerm bool
+	}{
+		"it applies another GitRepository now": {
+			change: func(_ *testing.T, sim *fluxsim.Sim) {
+				sim.Edit(checkoutKey, func(ks *unstructured.Unstructured) {
+					_ = unstructured.SetNestedMap(ks.Object, gitRepoSourceRef("other"), "spec", "sourceRef")
+				})
+			},
+			wantErr: "applies GitRepository flux-system/other now",
+		},
+		"it was replaced": {
+			change: func(t *testing.T, sim *fluxsim.Sim) {
+				// Through the tracker: a reactor runs while the client is locked.
+				tracker := sim.Client.Tracker()
+				held, err := tracker.Get(kustomizationGVR(), fluxSystemNS, checkoutKey.Name)
+				require.NoError(t, err)
+				replacement, _ := held.(*unstructured.Unstructured)
+				replacement = replacement.DeepCopy()
+				require.NoError(t, tracker.Delete(kustomizationGVR(), fluxSystemNS, checkoutKey.Name))
+				replacement.SetUID("checkout-2")
+				replacement.SetResourceVersion("replaced")
+				require.NoError(t, tracker.Create(kustomizationGVR(), replacement, fluxSystemNS))
+			},
+			wantErr: "was replaced",
+		},
+		"another manager applies its spec.suspend now": {
+			change: func(t *testing.T, sim *fluxsim.Sim) {
+				sim.Edit(checkoutKey, func(ks *unstructured.Unstructured) {
+					fluxsim.OwnSuspend(t, ks, true, "kustomize-controller", metav1.ManagedFieldsOperationApply)
+				})
+			},
+			wantErr: `applied by field manager "kustomize-controller"`, wantPerm: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sim := simCluster(t, "main@sha1:"+olderCommit, true)
+			require.NoError(t, sim.Client.Tracker().Add(
+				gitRepositoryObj(fluxSystemNS, "other", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit)))
+			changed := false
+			stamped := func(k8stesting.Action) (bool, runtime.Object, error) {
+				if !changed {
+					// The GitRepository is stamped: the request waits for the fetch now.
+					changed = true
+					tt.change(t, sim)
+				}
+				return false, nil, nil
+			}
+			sim.Client.PrependReactor("patch", "gitrepositories", stamped)
+			recorded := false
+			a := ask(v1alpha3.ApplyReasonForeignCommit)
+			a.Record = func(context.Context) error {
+				recorded = true
+				return nil
+			}
+
+			_, err := simFlux(sim).Request(context.Background(), checkoutKey, a)
+
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantPerm, isPermanent(err))
+			require.NotErrorIs(t, err, errStale)
+			assert.True(t, changed)
+			assert.False(t, recorded, "found before anything is recorded")
+			assert.False(t, resumedBy(sim.Kustomization(checkoutKey), "T1"), "nothing resumed")
+		})
+	}
+}
+
+// TestFluxRequest_TheResumeIsGuardedByTheKustomizationAsRead: what changes between the last read
+// and the resume (here, while the operation is recorded) makes the resume's preconditions fail,
+// so it never lands on an object other than the one checked. A change that leaves the binding as
+// it was is read again and resumed; one that does not is not resumed.
+func TestFluxRequest_TheResumeIsGuardedByTheKustomizationAsRead(t *testing.T) {
+	for name, tt := range map[string]struct {
+		change  func(ks *unstructured.Unstructured)
+		wantErr string
+	}{
+		"a label, which changes nothing it was checked for": {
+			change: func(ks *unstructured.Unstructured) { ks.SetLabels(map[string]string{"team": "platform"}) },
+		},
+		"another GitRepository": {
+			change: func(ks *unstructured.Unstructured) {
+				_ = unstructured.SetNestedMap(ks.Object, gitRepoSourceRef("other"), "spec", "sourceRef")
+			},
+			wantErr: "applies GitRepository flux-system/other now",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sim := simCluster(t, "main@sha1:"+testCommit, true)
+			var resumes []string
+			counted := func(action k8stesting.Action) (bool, runtime.Object, error) {
+				patch, _ := action.(k8stesting.PatchActionImpl)
+				if patch.PatchType == types.ApplyPatchType && strings.Contains(string(patch.Patch), `"suspend":false`) {
+					resumes = append(resumes, string(patch.Patch))
+				}
+				return false, nil, nil
+			}
+			sim.Client.PrependReactor("patch", "kustomizations", counted)
+			a := ask(v1alpha3.ApplyReasonRefusal)
+			a.Record = func(context.Context) error {
+				sim.Edit(checkoutKey, tt.change)
+				return nil
+			}
+
+			stamped, err := simFlux(sim).Request(context.Background(), checkoutKey, a)
+
+			require.NotEmpty(t, resumes)
+			assert.Contains(t, resumes[0], `"resourceVersion"`, "the resume carries the resourceVersion read")
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.False(t, resumedBy(sim.Kustomization(checkoutKey), "T1"), "nothing resumed")
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, stamped.Unconfirmed)
+			assert.Len(t, resumes, 2, "the first resume conflicted, and the second was made over a fresh read")
+			assert.True(t, resumedBy(sim.Kustomization(checkoutKey), "T1"))
+		})
+	}
 }
 
 // TestFluxRequest_AFetchThatEndsElsewhere: a fetch that does not bring the commit is the decision
@@ -572,7 +707,7 @@ func TestFluxRequest_AnUnansweredResumeIsFollowed(t *testing.T) {
 		"made, then timed out":     {landed: true, answer: context.DeadlineExceeded, want: git.ApplySucceeded, applied: 1},
 		"not made, and timed out":  {answer: context.DeadlineExceeded, want: git.ApplyFailed},
 		"made, then a 504 answers": {landed: true, answer: apierrors.NewTimeoutError("slow", 1), want: git.ApplySucceeded, applied: 1},
-		"refused":                  {answer: apierrors.NewConflict(kustomizationGVR().GroupResource(), "checkout", errors.New("no"))},
+		"refused":                  {answer: apierrors.NewForbidden(kustomizationGVR().GroupResource(), "checkout", errors.New("no"))},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sim := simCluster(t, "main@sha1:"+testCommit, true)
