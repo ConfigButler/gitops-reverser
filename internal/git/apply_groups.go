@@ -13,7 +13,7 @@ import (
 // Flux appliers on one branch that apply one GitRepository form a group, and a group has one
 // operation at a time: the artifact is shared, and an operation reads it again just before it
 // resumes its Kustomization, so a sibling's fetch landing in between would make it apply another
-// commit than the one it checked.
+// commit than the one it checked. The appliers of a group take turns (turnOrder).
 //
 // When every consumer of the GitRepository is held suspended by a FluxTrigger, a new artifact
 // applies nothing, so a push somebody else made is fetched as soon as it is observed (prefetch)
@@ -63,6 +63,19 @@ func (l *branchWorkerEventLoop) groupBusy(state *applierState) bool {
 		}
 	}
 	return false
+}
+
+// turnOrder is the appliers with the one whose last turn is oldest first, those never sent an
+// attempt first of all, and by name between equals. Name order alone would starve a group: a push
+// somebody else made while an operation is out is owed to every applier of the group, so the first
+// by name would go again after each of its own operations, and pushes arriving faster than one
+// operation lasts would never let its siblings apply.
+func (l *branchWorkerEventLoop) turnOrder() []ApplierRef {
+	refs := l.sortedAppliers()
+	sort.SliceStable(refs, func(i, j int) bool {
+		return l.appliers[refs[i]].lastTurn < l.appliers[refs[j]].lastTurn
+	})
+	return refs
 }
 
 // prefetchSources asks each group whose trigger may prefetch, and that has no attempt out, to fetch

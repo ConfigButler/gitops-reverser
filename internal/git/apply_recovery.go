@@ -87,7 +87,7 @@ func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1
 		abandon: abandon, recovered: true,
 		previous: state.operation, previousID: state.operationID,
 	}
-	state.inflight = attempt
+	state.inflight, state.lastTurn = attempt, attempt.id
 	state.followedFence = recorded.FenceToken
 	state.openApplyWindow(attempt.id, recorded.Commit, now)
 	state.operation, state.operationID = recorded.DeepCopy(), attempt.id

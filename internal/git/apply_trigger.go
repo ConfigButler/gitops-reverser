@@ -231,6 +231,9 @@ type applierState struct {
 	// the next attempt may go.
 	failures int
 	retryAt  time.Time
+	// lastTurn is the id of the last attempt sent to it, zero before the first: a group's next
+	// attempt goes to the applier whose turn is longest ago (turnOrder).
+	lastTurn uint64
 	// window is the applier's apply window: open from sending an attempt until the applier
 	// finished it (apply_window.go). Nil when no attempt was sent, or the last asked for no apply.
 	window *applyWindow
@@ -420,7 +423,9 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 }
 
 // sendDue sends an attempt to every applier that is owed one, is not waiting on one, and whose
-// retry and quiet periods have run out. It returns the earliest time one still waiting comes due.
+// retry and quiet periods have run out. The appliers are taken in turn order, so in a group, which
+// has one attempt out at a time, the attempt goes to the applier whose turn is longest ago. It
+// returns the earliest time one still waiting comes due.
 func (l *branchWorkerEventLoop) sendDue(tip string, now time.Time) time.Time {
 	var earliest time.Time
 	wait := func(at time.Time) {
@@ -428,7 +433,7 @@ func (l *branchWorkerEventLoop) sendDue(tip string, now time.Time) time.Time {
 			earliest = at
 		}
 	}
-	for _, ref := range l.sortedAppliers() {
+	for _, ref := range l.turnOrder() {
 		state := l.appliers[ref]
 		if l.attemptOut(state) {
 			continue
@@ -512,6 +517,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		previous: state.operation, previousID: state.operationID,
 	}
 	state.foreign, state.catchUp, state.repair, state.inflight = false, false, false, attempt
+	state.lastTurn = attempt.id
 	state.openApplyWindow(attempt.id, tip, sentAt)
 	for key := range refusals {
 		delete(l.reapplyOwed, key)

@@ -7,6 +7,7 @@ package git
 // apply while the branch is busy, when every consumer of the source is held.
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/fluxcd/pkg/apis/meta"
@@ -50,6 +51,29 @@ func TestGroups_OneOperationAtATimePerSource(t *testing.T) {
 	second := requester.taken()
 	require.Len(t, second, 1)
 	assert.Equal(t, applierRef("bravo"), second[0].Applier)
+}
+
+// TestGroups_TheSourceIsSharedInTurn: a push somebody else made while an operation of the group is
+// out is owed to every applier of the group, so if pushes keep coming, the applier that just had its
+// turn waits for its siblings instead of going again.
+func TestGroups_TheSourceIsSharedInTurn(t *testing.T) {
+	loop, requester := manualLoop(t,
+		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", false)),
+		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform", false)),
+	)
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	for i, want := range []string{"alpha", "bravo", "alpha", "bravo"} {
+		sent := requester.taken()
+		require.Len(t, sent, 1, "turn %d", i)
+		assert.Equal(t, applierRef(want), sent[0].Applier, "turn %d", i)
+
+		loop.w.debt.observe(RemoteObservation{Commit: fmt.Sprintf("push-%d", i), By: ObservedByFetch})
+		loop.serviceAppliers()
+		assert.Empty(t, requester.taken(), "one operation at a time on the shared source")
+		report(sent[0], ApplySucceeded)
+		loop.serviceAppliers()
+	}
 }
 
 // TestPrefetch_APushIsFetchedAheadWhileTheBranchIsBusy: a push somebody else made, observed while the
