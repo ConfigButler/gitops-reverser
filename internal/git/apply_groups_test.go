@@ -119,3 +119,87 @@ func TestPrefetch_NotWhileAnOperationOfTheSourceIsInFlight(t *testing.T) {
 	loop.serviceAppliers()
 	assert.Empty(t, requester.prefetches)
 }
+
+// siblingLoops is two workers on one repository and branch, under two GitProviders, whose
+// FluxTriggers alpha and bravo apply the GitRepository platform, each owed a ForeignCommit.
+func siblingLoops(t *testing.T) (
+	*branchWorkerEventLoop, *recordingRequester, *branchWorkerEventLoop, *recordingRequester,
+) {
+	t.Helper()
+	first, firstRequests := manualLoop(t,
+		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", true)))
+	second, secondRequests := manualLoop(t,
+		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform", true)))
+	siblings := newBranchSiblings()
+	for _, loop := range []*branchWorkerEventLoop{first, second} {
+		loop.w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
+		loop.w.applyWake = make(chan struct{}, 1)
+		siblings.add(loop.w)
+		owesForeign(loop.w)
+	}
+	return first, firstRequests, second, secondRequests
+}
+
+// TestGroups_OneOperationAtATimePerSourceAcrossWorkers: two GitProviders on one repository and
+// branch are two workers, and their FluxTriggers can apply one GitRepository. The group spans them:
+// one operation at a time, and the worker that held back is woken when the other's ends.
+func TestGroups_OneOperationAtATimePerSourceAcrossWorkers(t *testing.T) {
+	first, firstRequests, second, secondRequests := siblingLoops(t)
+
+	first.serviceAppliers()
+	sent := firstRequests.taken()
+	require.Len(t, sent, 1)
+	second.serviceAppliers()
+	assert.Empty(t, secondRequests.taken(), "the other worker's operation on the shared source is out")
+
+	report(sent[0], ApplySucceeded)
+	first.serviceAppliers()
+	select {
+	case <-second.w.applyWake:
+	default:
+		t.Fatal("the group going idle must wake the worker it held back")
+	}
+	second.serviceAppliers()
+	next := secondRequests.taken()
+	require.Len(t, next, 1)
+	assert.Equal(t, applierRef("bravo"), next[0].Applier)
+
+	first.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	first.serviceAppliers()
+	assert.Empty(t, firstRequests.taken(), "and now the first waits for the second")
+}
+
+// TestGroups_AClaimIsCheckedAndRecordedAtOnce: two workers that both found the group idle cannot
+// both send for it. The claim that loses records nothing, and the winner releasing the group wakes
+// the loser.
+func TestGroups_AClaimIsCheckedAndRecordedAtOnce(t *testing.T) {
+	first, _, second, _ := siblingLoops(t)
+	const group = "default/flux-system/platform"
+
+	require.True(t, first.w.claimGroup(group))
+	assert.False(t, second.w.claimGroup(group), "the other worker holds it")
+	assert.True(t, first.w.claimGroup(group), "a worker's own claim is no obstacle to it")
+	assert.True(t, second.w.claimGroup("default/flux-system/other"), "another source is its own group")
+	assert.True(t, first.w.groupOutOnSibling("default/flux-system/other"))
+
+	first.publishGroupsOut() // its attempt is no longer out
+	select {
+	case <-second.w.applyWake:
+	default:
+		t.Fatal("releasing a group must wake the sibling")
+	}
+	assert.True(t, second.w.claimGroup(group))
+}
+
+// TestPrefetch_NotWhileASiblingsOperationOfTheSourceIsInFlight: a resumed Kustomization applies
+// whatever the artifact becomes, whichever worker resumed it.
+func TestPrefetch_NotWhileASiblingsOperationOfTheSourceIsInFlight(t *testing.T) {
+	first, firstRequests, second, secondRequests := siblingLoops(t)
+	first.serviceAppliers()
+	require.Len(t, firstRequests.taken(), 1)
+
+	second.openWindow = &openWindow{}
+	second.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	second.serviceAppliers()
+	assert.Empty(t, secondRequests.prefetches)
+}

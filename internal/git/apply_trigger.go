@@ -334,6 +334,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 		return
 	}
 	defer l.publishTriggerStatus()
+	defer l.publishGroupsOut()
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
@@ -457,17 +458,27 @@ func (l *branchWorkerEventLoop) sendDue(tip string, now time.Time) time.Time {
 		if !state.foreign && !state.repair && len(refusals) == 0 && !state.catchUp {
 			continue
 		}
-		due := state.retryAt
-		if !state.foreign && !state.repair && len(refusals) == 0 {
-			due = latest(due, l.quietSince.Add(state.quietPeriod()))
-		}
+		due := l.dueAt(state, refusals)
 		if now.Before(due) {
 			wait(due)
+			continue
+		}
+		if !l.w.claimGroup(state.group()) {
+			// A sibling sent one for the group since attemptOut looked; its end wakes this worker.
 			continue
 		}
 		l.sendAttempt(state, tip, refusals)
 	}
 	return earliest
+}
+
+// dueAt is when an applier's next attempt may go: once its backoff has run out, and, when only a
+// CatchUp is owed, once the branch has been quiet for the trigger's quiet period.
+func (l *branchWorkerEventLoop) dueAt(state *applierState, refusals map[refusalKey]owedRefusal) time.Time {
+	if state.foreign || state.repair || len(refusals) > 0 {
+		return state.retryAt
+	}
+	return latest(state.retryAt, l.quietSince.Add(state.quietPeriod()))
 }
 
 // refusalsOwed is the refusals owed for the GitTargets naming this applier that still consent. A

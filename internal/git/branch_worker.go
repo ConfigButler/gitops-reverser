@@ -153,6 +153,9 @@ type BranchWorker struct {
 	// See apply_siblings.go.
 	siblings    *branchSiblings
 	busyWriting atomic.Bool
+	// groupsOut are the source groups this worker has an attempt out for, so a sibling sends none
+	// for the same GitRepository meanwhile; guarded by the siblings' lock (apply_groups.go).
+	groupsOut map[string]struct{}
 	// unresolvedOperations is how many of this branch's apply operations are Unresolved, as the
 	// loop last published it, for the apply_operations_unresolved gauge.
 	unresolvedOperations atomic.Int64
@@ -1223,6 +1226,7 @@ func (l *branchWorkerEventLoop) run() {
 	// is followed again, with its apply window open.
 	l.followRecordedOperations(time.Now())
 	l.publishTriggerStatus()
+	l.publishGroupsOut()
 	l.publishLoopState(0)
 	for {
 		commitC, pushC, attachC, refusalC := l.timerChannels()
