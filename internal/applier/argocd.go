@@ -74,12 +74,14 @@ const defaultArgoRetryLimit = 5
 // subresource each of those writes conflicts with an update made from an older read.
 const maxArgoUpdateConflicts = 5
 
-// argoUnansweredLanding is how long an update whose answer was lost can still land, while the
-// Application stays at the resourceVersion the update was guarded by. The API server gives each
-// request a deadline of its --request-timeout (60s by default) and ends the request's storage write
-// with it (WithRequestDeadline in k8s.io/apiserver's endpoints/filters), so an update not made by
-// then never will be.
-const argoUnansweredLanding = 2 * time.Minute
+// Argo CD's refresh request (AnnotationKeyRefresh, pkg/apis/application/v1alpha1): the controller
+// compares the Application again and removes the annotation in the write that records what it
+// found (persistReconciliationStatus, controller/appcontroller.go). A refresh only compares: with
+// automated sync off, it starts nothing.
+const (
+	argoRefreshAnnotation = "argocd.argoproj.io/refresh"
+	argoRefreshNormal     = "normal"
+)
 
 // Operation phases, from gitops-engine's pkg/sync/common.
 const (
@@ -134,7 +136,7 @@ func NewArgoCD(client dynamic.Interface) *ArgoCD {
 // An update that failed without saying whether it was made (a timeout, a lost connection, a server
 // timeout or internal error) may have set the operation all the same, and Argo CD may be syncing:
 // it returns an Unconfirmed operation rather than an error, which Progress follows by its token,
-// so the apply window stays open until it is known to have run or never to run.
+// so the apply window stays open until it is known to have run or never to run (settleUnseen).
 //
 // An empty commit (the remote does not carry the branch) has nothing to pin, and asks nothing
 // (OutcomeCurrent): Argo CD reports the missing branch itself on its next refresh, and the branch
@@ -211,7 +213,6 @@ func (a *ArgoCD) setOperation(
 	}
 	unstructured.RemoveNestedField(update.Object, "status", "operationState")
 	started := Started{Outcome: OutcomeSyncRequested, Token: token, Commit: ask.Commit}
-	sentAt := a.Now()
 	_, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).
 		Update(ctx, update, metav1.UpdateOptions{})
 	switch {
@@ -219,7 +220,6 @@ func (a *ArgoCD) setOperation(
 		return started, nil
 	case mayHaveLanded(err):
 		started.Unconfirmed = fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
-		started.guardedBy, started.sentAt = app.GetResourceVersion(), sentAt
 		return started, nil
 	}
 	return Started{}, fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
@@ -263,13 +263,11 @@ func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, u
 // Requested. An operation that is gone with no state of its own (somebody cleared it, or a later
 // sync replaced its record) is Failed: nothing of it will run, and the worker decides again.
 //
-// An Unconfirmed operation whose token is nowhere was never set, or was set and cleared: the
-// controller moves an operation it starts into status.operationState whole, its info included
-// (NewOperationState, controller/sync.go), and clears operation only once the state completed
-// (setOperationState, controller/appcontroller.go). It is Requested while the update can still
-// land: while the Application is still at the resourceVersion the update was guarded by, and
-// argoUnansweredLanding has not passed since it was sent. Failed after that, so the worker asks
-// again.
+// The token is nowhere on an Unconfirmed or Recovered operation whose update was never made, and
+// on one whose update is still on its way. The controller moves an operation it starts into
+// status.operationState whole, its info included (NewOperationState, controller/sync.go), and
+// clears operation only once the state completed (setOperationState, controller/appcontroller.go),
+// so the token is not lost on the way. Such an operation is settled (settleUnseen).
 func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
 	if s.Outcome != OutcomeSyncRequested {
 		return Progress{Outcome: git.ApplySucceeded}, nil
@@ -278,42 +276,82 @@ func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s *Star
 	if err != nil {
 		return Progress{}, fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
 	}
-	if state, found, _ := unstructured.NestedMap(app.Object, "status", "operationState"); found &&
-		operationToken(state["operation"]) == s.Token {
-		phase, _, _ := unstructured.NestedString(state, "phase")
-		message, _, _ := unstructured.NestedString(state, "message")
-		applied, _, _ := unstructured.NestedString(state, "syncResult", "revision")
-		switch phase {
-		case argoPhaseSucceeded:
-			return Progress{Outcome: git.ApplySucceeded, AppliedRevision: applied}, nil
-		case argoPhaseFailed, argoPhaseError:
-			return Progress{
-				Outcome:         git.ApplyFailed,
-				Message:         fmt.Sprintf("the sync ended %s: %s", phase, message),
-				AppliedRevision: applied,
-			}, nil
-		default:
-			return Progress{Outcome: git.ApplyRunning}, nil
-		}
+	if progress, found := syncProgress(app, s.Token); found {
+		return progress, nil
 	}
-	if operation, found, _ := unstructured.NestedMap(app.Object, "operation"); found &&
-		operationToken(operation) == s.Token {
-		return Progress{Outcome: git.ApplyRequested}, nil
-	}
-	if s.Unconfirmed != nil {
-		if app.GetResourceVersion() == s.guardedBy && a.Now().Before(s.sentAt.Add(argoUnansweredLanding)) {
-			return Progress{Outcome: git.ApplyRequested}, nil
-		}
-		return Progress{
-			Outcome: git.ApplyFailed,
-			Message: fmt.Sprintf("the sync operation is not on the Application: the update that set it may "+
-				"never have been made (%v)", s.Unconfirmed),
-		}, nil
+	if s.Recovered || s.Unconfirmed != nil {
+		return a.settleUnseen(ctx, ref, app, s)
 	}
 	return Progress{
 		Outcome: git.ApplyFailed,
 		Message: "the sync operation is gone from the Application before it recorded an outcome",
 	}, nil
+}
+
+// syncProgress reads the progress of the sync with token from the Application, and reports false
+// when neither its operation nor its operation state carries the token.
+func syncProgress(app *unstructured.Unstructured, token string) (Progress, bool) {
+	if state, found, _ := unstructured.NestedMap(app.Object, "status", "operationState"); found &&
+		operationToken(state["operation"]) == token {
+		phase, _, _ := unstructured.NestedString(state, "phase")
+		message, _, _ := unstructured.NestedString(state, "message")
+		applied, _, _ := unstructured.NestedString(state, "syncResult", "revision")
+		switch phase {
+		case argoPhaseSucceeded:
+			return Progress{Outcome: git.ApplySucceeded, AppliedRevision: applied}, true
+		case argoPhaseFailed, argoPhaseError:
+			return Progress{
+				Outcome:         git.ApplyFailed,
+				Message:         fmt.Sprintf("the sync ended %s: %s", phase, message),
+				AppliedRevision: applied,
+			}, true
+		default:
+			return Progress{Outcome: git.ApplyRunning}, true
+		}
+	}
+	if operation, found, _ := unstructured.NestedMap(app.Object, "operation"); found &&
+		operationToken(operation) == token {
+		return Progress{Outcome: git.ApplyRequested}, true
+	}
+	return Progress{}, false
+}
+
+// settleUnseen decides an operation whose update may have been sent without an answer (Unconfirmed,
+// or Recovered from a record written before the update), as app, read without its token, shows it.
+// The update carried the resourceVersion it was made from, so it can land only while the
+// Application is still at that version. settleUnseen moves the Application on from the version it
+// read, with a write guarded by it that asks Argo CD for a refresh. Once that write is made, the
+// update was not made before it and can never be made after it: Failed, and the worker asks again.
+// No deadline of the API server's is assumed. A write that conflicts read a version the update may
+// have landed after, and the next Progress reads again. A refresh already pending is left to the
+// controller, whose write that consumes it moves the Application on as well.
+func (a *ArgoCD) settleUnseen(
+	ctx context.Context, ref types.NamespacedName, app *unstructured.Unstructured, s *Started,
+) (Progress, error) {
+	annotations := app.GetAnnotations()
+	if _, pending := annotations[argoRefreshAnnotation]; pending {
+		return Progress{Outcome: git.ApplyRequested}, nil
+	}
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[argoRefreshAnnotation] = argoRefreshNormal
+	update := app.DeepCopy()
+	update.SetAnnotations(annotations)
+	_, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Update(ctx, update, metav1.UpdateOptions{})
+	switch {
+	case apierrors.IsConflict(err):
+		return Progress{Outcome: git.ApplyRequested}, nil
+	case err != nil:
+		return Progress{}, fmt.Errorf("move %s %s on from the version an unanswered update was made from: %w",
+			kindApplication, ref, err)
+	}
+	message := fmt.Sprintf("the sync operation is not on the Application, and the update that would have set it "+
+		"was never made (%v)", s.Unconfirmed)
+	if s.Unconfirmed == nil {
+		message = "recovered after a restart, and the update that would have set the sync operation was never made"
+	}
+	return Progress{Outcome: git.ApplyFailed, Message: message}, nil
 }
 
 // Validate answers Configured for an ArgoCDTrigger's Application: that it exists in its cluster and

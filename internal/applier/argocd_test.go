@@ -5,6 +5,7 @@ package applier
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -313,14 +314,46 @@ func TestArgoCDRequest_AConflictWithAStatusWriteIsReadAgain(t *testing.T) {
 	assert.Equal(t, 2, updates(client))
 }
 
+// guardResourceVersions makes the fake's Application updates what the API server's are
+// (guardedUpdate). The fake tracker checks no resourceVersion.
+func guardResourceVersions(t *testing.T, client *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+	client.PrependReactor("update", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		update, _ := action.(k8stesting.UpdateActionImpl)
+		obj, err := guardedUpdate(client, update.GetObject().(*unstructured.Unstructured))
+		return true, obj, err
+	})
+}
+
+// guardedUpdate stores an Application update as the API server would: one whose resourceVersion is
+// not the stored one is a Conflict, and one that is made moves the version on. It writes the
+// tracker directly, so a reactor can call it.
+func guardedUpdate(client *dynamicfake.FakeDynamicClient, obj *unstructured.Unstructured) (runtime.Object, error) {
+	stored, err := client.Tracker().Get(applicationGVR(), obj.GetNamespace(), obj.GetName())
+	if err != nil {
+		return nil, err
+	}
+	was := stored.(*unstructured.Unstructured).GetResourceVersion()
+	if obj.GetResourceVersion() != was {
+		return nil, apierrors.NewConflict(applicationGVR().GroupResource(), obj.GetName(),
+			errors.New("the object has been modified"))
+	}
+	version, _ := strconv.Atoi(was)
+	obj = obj.DeepCopy()
+	obj.SetResourceVersion(strconv.Itoa(version + 1))
+	if err := client.Tracker().Update(applicationGVR(), obj, obj.GetNamespace()); err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
 // TestArgoCDRequest_AnUnansweredUpdateIsFollowed is review 5's first finding: an update whose
 // answer was lost (a timeout, a reset connection, a 504) may have set the operation all the same,
 // and a RequestFailed withdrew its record and closed the apply window while Argo CD synced. Now it
 // is an Unconfirmed operation, followed by its token: one that was set is followed until the sync
-// completes. One that was not is Requested while it can still land, and Failed once it cannot (the
-// Application moved on from the resourceVersion the update was guarded by, or the API server's
-// request deadline passed), so the worker asks again. An update the API server refused is still an
-// error.
+// completes. One whose token is not seen is settled with a write guarded by the version read: once
+// it is made, the update can never land, and the operation is Failed, so the worker asks again. No
+// deadline of the API server's is assumed. An update the API server refused is still an error.
 func TestArgoCDRequest_AnUnansweredUpdateIsFollowed(t *testing.T) {
 	request := func(t *testing.T, argo *ArgoCD) Started {
 		t.Helper()
@@ -340,18 +373,28 @@ func TestArgoCDRequest_AnUnansweredUpdateIsFollowed(t *testing.T) {
 		require.NoError(t, err)
 		return got
 	}
-	unanswered := func(client *dynamicfake.FakeDynamicClient, landed bool, answer error) {
+	// unanswered answers the request's update with answer, having made it when landed, and keeps it
+	// back otherwise: the returned func makes it then, as the API server would, at the version it was
+	// made from.
+	unanswered := func(client *dynamicfake.FakeDynamicClient, landed bool, answer error) func() error {
 		var answered atomic.Bool
+		var held *unstructured.Unstructured
 		client.PrependReactor("update", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			if answered.Swap(true) {
 				return false, nil, nil
 			}
+			update, _ := action.(k8stesting.UpdateActionImpl)
+			held = update.GetObject().(*unstructured.Unstructured).DeepCopy()
 			if landed {
-				update, _ := action.(k8stesting.UpdateActionImpl)
-				require.NoError(t, client.Tracker().Update(applicationGVR(), update.GetObject(), argoNS))
+				_, err := guardedUpdate(client, held)
+				require.NoError(t, err)
 			}
 			return true, nil, answer
 		})
+		return func() error {
+			_, err := guardedUpdate(client, held)
+			return err
+		}
 	}
 
 	t.Run("set, then the answer was lost: followed until the sync completes", func(t *testing.T) {
@@ -363,6 +406,7 @@ func TestArgoCDRequest_AnUnansweredUpdateIsFollowed(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				client := newArgoSource(manualApp())
+				guardResourceVersions(t, client)
 				unanswered(client, true, answer)
 				argo := pinnedArgo(client)
 				started := request(t, argo)
@@ -371,45 +415,73 @@ func TestArgoCDRequest_AnUnansweredUpdateIsFollowed(t *testing.T) {
 
 				assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome, "set, not started")
 				app := readApp(t, client)
-				app.SetResourceVersion("2")
 				_ = unstructured.SetNestedMap(app.Object, map[string]any{"operation": ours, "phase": "Running"},
 					"status", "operationState")
 				writeApp(t, client, app)
 				assert.Equal(t, git.ApplyRunning, progress(t, argo, &started).Outcome)
 				app = readApp(t, client)
-				app.SetResourceVersion("3")
 				unstructured.RemoveNestedField(app.Object, "operation")
 				_ = unstructured.SetNestedField(app.Object, "Succeeded", "status", "operationState", "phase")
 				writeApp(t, client, app)
 				assert.Equal(t, git.ApplySucceeded, progress(t, argo, &started).Outcome)
+				assert.NotContains(t, readApp(t, client).GetAnnotations(), argoRefreshAnnotation,
+					"an update seen to land is never settled")
 			})
 		}
 	})
 
-	t.Run("not set: Failed once the Application moved on from the version it was guarded by", func(t *testing.T) {
+	t.Run("not set: Failed once a write guarded by the version read lands, and it never can", func(t *testing.T) {
 		client := newArgoSource(manualApp())
-		unanswered(client, false, apierrors.NewTimeoutError("slow", 1))
+		guardResourceVersions(t, client)
+		land := unanswered(client, false, apierrors.NewTimeoutError("slow", 1))
 		argo := pinnedArgo(client)
 		started := request(t, argo)
 
-		assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome, "it may still land")
-		app := readApp(t, client)
-		app.SetResourceVersion("2")
-		_ = unstructured.SetNestedField(app.Object, "Synced", "status", "sync", "status")
-		writeApp(t, client, app)
 		failed := progress(t, argo, &started)
+
 		assert.Equal(t, git.ApplyFailed, failed.Outcome)
-		assert.Contains(t, failed.Message, "may never have been made")
+		assert.Contains(t, failed.Message, "was never made")
+		assert.Equal(t, argoRefreshNormal, readApp(t, client).GetAnnotations()[argoRefreshAnnotation],
+			"the write asks Argo CD for a refresh, which only compares")
+		require.True(t, apierrors.IsConflict(land()), "the update can no longer land")
+		assert.NotContains(t, readApp(t, client).Object, "operation")
 	})
 
-	t.Run("not set: Failed once the request deadline passed, with nothing written since", func(t *testing.T) {
+	t.Run("not set when read, landed before the settling write: read again, and followed", func(t *testing.T) {
 		client := newArgoSource(manualApp())
+		guardResourceVersions(t, client)
+		land := unanswered(client, false, context.DeadlineExceeded)
+		argo := pinnedArgo(client)
+		started := request(t, argo)
+		client.PrependReactor("get", "applications", func(k8stesting.Action) (bool, runtime.Object, error) {
+			stored, err := client.Tracker().Get(applicationGVR(), argoNS, "platform")
+			require.NoError(t, err)
+			require.NoError(t, land(), "the update lands right after Progress read the Application")
+			return true, stored, nil
+		})
+
+		assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome,
+			"the settling write conflicts: the update may have landed")
+		client.ReactionChain = client.ReactionChain[1:]
+		assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome, "set, not started")
+		assert.NotContains(t, readApp(t, client).GetAnnotations(), argoRefreshAnnotation)
+	})
+
+	t.Run("not set, with a refresh pending: left to the controller's write, which moves it on", func(t *testing.T) {
+		app := manualApp()
+		app.SetAnnotations(map[string]string{argoRefreshAnnotation: "hard"})
+		client := newArgoSource(app)
+		guardResourceVersions(t, client)
 		unanswered(client, false, context.DeadlineExceeded)
 		argo := pinnedArgo(client)
 		started := request(t, argo)
+		before := updates(client)
 
-		assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome, "it may still land")
-		argo.Now = func() time.Time { return stampTime.Add(argoUnansweredLanding) }
+		assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome)
+		assert.Equal(t, before, updates(client), "a pending refresh is not overwritten")
+		app = readApp(t, client)
+		app.SetAnnotations(nil)
+		writeApp(t, client, app) // the controller consumed it
 		assert.Equal(t, git.ApplyFailed, progress(t, argo, &started).Outcome)
 	})
 
@@ -426,6 +498,36 @@ func TestArgoCDRequest_AnUnansweredUpdateIsFollowed(t *testing.T) {
 		require.ErrorContains(t, err, "set the sync operation")
 		assert.False(t, isPermanent(err))
 	})
+}
+
+// TestArgoCD_ARecoveredSyncIsSettledFromItsRecordAlone is review 5's P1 after the fix above: a
+// process that recorded the operation, sent the update, lost the answer and stopped leaves nothing
+// but the record. The next one rebuilds the operation from that record alone, reads the Application
+// without the token, and settles it as an Unconfirmed one is: the update it may have sent can no
+// longer land, so the window it would have needed is never needed.
+func TestArgoCD_ARecoveredSyncIsSettledFromItsRecordAlone(t *testing.T) {
+	client := newArgoSource(manualApp())
+	guardResourceVersions(t, client)
+	app := readApp(t, client)
+	_ = unstructured.SetNestedField(app.Object, syncOperation(app, testCommit, v1alpha3.ApplyReasonForeignCommit,
+		requestToken(stampTime)), "operation")
+	sentBeforeTheRestart := app // made from version 1, its answer lost, still on its way
+
+	started := recoveredStarted(git.ApplyRequest{
+		Applier: git.ApplierRef{Kind: v1alpha3.ApplierKindApplication},
+		Recovered: &v1alpha3.ApplyOperation{
+			Phase: v1alpha3.ApplyOperationRequested, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Commit: testCommit, Token: requestToken(stampTime), RequestedAt: metav1.NewTime(stampTime),
+		},
+	})
+	failed, err := pinnedArgo(client).Progress(context.Background(), platformApp, &started)
+
+	require.NoError(t, err)
+	assert.Equal(t, git.ApplyFailed, failed.Outcome)
+	assert.Contains(t, failed.Message, "recovered after a restart")
+	_, err = guardedUpdate(client, sentBeforeTheRestart)
+	require.True(t, apierrors.IsConflict(err), "the update sent before the restart can no longer land")
+	assert.NotContains(t, readApp(t, client).Object, "operation")
 }
 
 // TestArgoCDRequest_ADecisionThatGoesStaleWhileRecordedSyncsNothing is review 5's sixth finding:

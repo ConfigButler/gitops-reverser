@@ -1006,8 +1006,8 @@ func TestDispatcher_AnApplicationsSyncIsFollowedToItsOutcome(t *testing.T) {
 // TestDispatcher_AnUnansweredApplicationUpdateIsFollowed is review 5's first finding, end to end:
 // an update the API server made but whose answer timed out is no RequestFailed (which would have
 // the worker withdraw its record and close the apply window while Argo CD syncs). It is reported
-// Requested, and followed until the sync completes. One that was never made is Failed once the
-// Application moved on, so the worker asks again.
+// Requested, and followed until the sync completes. One that was never made is Failed once a write
+// moved the Application on from the version it was made from, so the worker asks again.
 func TestDispatcher_AnUnansweredApplicationUpdateIsFollowed(t *testing.T) {
 	for name, landed := range map[string]bool{"made": true, "never made": false} {
 		t.Run(name, func(t *testing.T) {
@@ -1029,12 +1029,11 @@ func TestDispatcher_AnUnansweredApplicationUpdateIsFollowed(t *testing.T) {
 			reports := f.carryOut(context.Background(), request(argoPlatform, v1alpha3.ApplyReasonForeignCommit, "a"))
 			assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, next(t, reports))
 			if !landed {
-				app := readApp(t, f.source.client)
-				app.SetResourceVersion("2")
-				writeApp(t, f.source.client, app)
 				res := next(t, reports)
 				assert.Equal(t, git.ApplyFailed, res.Outcome)
-				require.ErrorContains(t, res.Err, "may never have been made")
+				require.ErrorContains(t, res.Err, "was never made")
+				assert.Contains(t, readApp(t, f.source.client).GetAnnotations(), argoRefreshAnnotation,
+					"settled by a write that moved the Application on")
 				return
 			}
 			argoOperationState(t, f, "Running")

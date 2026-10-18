@@ -213,19 +213,15 @@ type Started struct {
 	// then suspended at once, rather than once its apply was seen to end.
 	Overdue bool
 	// Recovered is an operation read back from the trigger's record rather than started by this
-	// process: its resume may never have been made, and the record says nothing of that.
+	// process: the write that would start it (a Flux resume, an Argo CD update) may never have been
+	// made, and the record says nothing of that.
 	Recovered bool
 	// Unconfirmed is the error of the write that started the operation (a Flux resume, an Argo CD
 	// update), when it failed without saying whether it reached the API server (a timeout, a lost
 	// connection); nil for one that was answered. Such an operation is followed, because the apply
-	// may be running: a Flux one like a Recovered one, since only the follow suspends the
-	// Kustomization again, and an Argo CD one by its token, until it completed or can no longer
-	// have been set.
+	// may be running, as a Recovered one is: a Flux one is suspended again, and an Argo CD one is
+	// followed by its token until it completed or can no longer be set.
 	Unconfirmed error
-	// guardedBy is the resourceVersion an Unconfirmed Argo CD update was guarded by, and sentAt
-	// when it was sent: it can land only while the Application is still at guardedBy.
-	guardedBy string
-	sentAt    time.Time
 	// unseen is a Recovered or Unconfirmed operation whose token the Kustomization did not carry
 	// when it was first read: never written, or stamped over before it was handled.
 	unseen bool
