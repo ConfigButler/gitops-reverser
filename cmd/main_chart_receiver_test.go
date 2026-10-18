@@ -189,6 +189,11 @@ func TestChartApplierAccess_Flux(t *testing.T) {
 			Verbs:     []string{"get", "patch"},
 		},
 		{
+			APIGroups: []string{"source.toolkit.fluxcd.io"},
+			Resources: []string{"helmcharts"},
+			Verbs:     []string{"list"},
+		},
+		{
 			APIGroups: []string{"authorization.k8s.io"},
 			Resources: []string{"selfsubjectaccessreviews"},
 			Verbs:     []string{"create"},

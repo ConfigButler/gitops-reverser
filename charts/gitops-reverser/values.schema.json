@@ -152,7 +152,7 @@
       "properties": {
         "flux": {
           "type": "boolean",
-          "description": "Grant get/patch on Flux Kustomizations and GitRepositories, plus create on SelfSubjectAccessReviews."
+          "description": "Grant get/patch on Flux Kustomizations and GitRepositories, list on Kustomizations, HelmReleases and HelmCharts, plus create on SelfSubjectAccessReviews."
         },
         "argocd": {
           "type": "boolean",

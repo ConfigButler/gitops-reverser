@@ -130,9 +130,9 @@ receiver:
 # one applier or none.
 applierAccess:
   # Grant get/patch on kustomize.toolkit.fluxcd.io Kustomizations and source.toolkit.fluxcd.io
-  # GitRepositories, plus create on SelfSubjectAccessReviews (to check that access before relying
-  # on it). Cluster-wide, because a GitTarget's applier can live in any
-  # namespace.
+  # GitRepositories, list on Kustomizations, HelmReleases and HelmCharts (to find a
+  # GitRepository's other consumers), plus create on SelfSubjectAccessReviews (to check that access
+  # before relying on it). Cluster-wide, because a GitTarget's applier can live in any namespace.
   flux: false
   # Grant get/update on argoproj.io Applications (a sync is started by updating the Application's
   # operation, as Argo CD's own automated sync does), plus create on SelfSubjectAccessReviews.

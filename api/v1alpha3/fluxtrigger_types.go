@@ -112,7 +112,7 @@ type FluxTriggerSource struct {
 	// Prefetch is true while GitOps Reverser fetches the GitRepository as soon as it learns of a push,
 	// before the apply: every consumer of it was listed and is held by a FluxTrigger, so a new
 	// artifact applies nothing on its own. False when otherConsumers is not empty, or the consumers
-	// could not be listed (the identity needs list on kustomizations and helmreleases).
+	// could not be listed (the identity needs list on kustomizations, helmreleases and helmcharts).
 	// +optional
 	Prefetch bool `json:"prefetch,omitempty"`
 }
