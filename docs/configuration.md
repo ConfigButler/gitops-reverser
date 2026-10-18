@@ -1216,10 +1216,12 @@ spec:
     name: prod-eu-1-apps
 ```
 
-For a `Kustomization`, the identity needs `get` and `patch` on `kustomizations`
-(`kustomize.toolkit.fluxcd.io`) and `gitrepositories` (`source.toolkit.fluxcd.io`); for an
-`Application`, `get` and `update` on `applications` (`argoproj.io`); and `create` on
-`selfsubjectaccessreviews` to check it. For the operator's own cluster the chart grants them with
+For a `Kustomization`, the identity needs `get`, `list` and `patch` on `kustomizations`
+(`kustomize.toolkit.fluxcd.io`), `list` on `helmreleases` (`helm.toolkit.fluxcd.io`), and `get`
+and `patch` on `gitrepositories` (`source.toolkit.fluxcd.io`). The two `list` grants find the
+`GitRepository`'s other consumers; without them the source is never prefetched. For an
+`Application`, it needs `get` and `update` on `applications` (`argoproj.io`); and for either,
+`create` on `selfsubjectaccessreviews` to check it. For the operator's own cluster the chart grants them with
 `applierAccess.flux: true` and `applierAccess.argocd: true`; for a remote cluster, grant the same to
 the kubeconfig's identity.
 
@@ -1288,17 +1290,26 @@ status:
       status: "True"
       reason: Succeeded
       message: Kustomization flux-system/checkout applies GitRepository flux-system/platform, ...
+    - type: Suspended
+      status: "True"
+      reason: Held            # Held | Fencing | NotHeld
+      message: Kustomization flux-system/checkout is suspended; GitOps Reverser starts every apply it makes
     - type: Ready
       status: "True"
   source:
     gitRepository: {namespace: flux-system, name: platform}
     url: https://github.com/acme/platform
     branch: main
+    otherConsumers:           # what else applies this GitRepository, held by no FluxTrigger
+      - {kind: HelmRelease, namespace: platform, name: ingress}
+    prefetch: false
   operation:
     phase: Succeeded          # Requested | Running | Settling | Unresolved | Succeeded | Failed
     reason: ForeignCommit     # ForeignCommit | Refusal | Repair | CatchUp
     commit: 4f2c1ab9...
     token: "2026-10-20T10:14:03.123456789Z"
+    fenceToken: "2026-10-20T10:14:20.987654321Z"
+    appliedRevision: main@sha1:4f2c1ab9...
     requestedAt: "2026-10-20T10:14:03Z"
     finishedAt: "2026-10-20T10:14:21Z"
   repairOwed: false
@@ -1311,6 +1322,25 @@ until the `Repair` apply. An operation that has not completed in the time it was
 `Unresolved`, and the trigger is `Ready=False` with `OperationUnresolved` until it completes; it is
 still followed, and nothing more is asked of the applier until then.
 
+In `status.operation`, `token` identifies the request in the applier's own status (the
+`reconcile.fluxcd.io/requestedAt` value of the resume, or the `gitops-reverser request` entry in an
+Argo CD operation's `info`), and `appliedRevision` is the revision the applier reports
+it applied once the operation completed. It can differ from `commit` when the branch moved between
+the check and the apply. `fenceToken` (Flux only) is the token of the suspend after the apply: once
+the `Kustomization` reports it handled, nothing that started before the suspend is still running,
+and the operation completes. A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is
+suspended again and recorded straight away as an `Unresolved` operation with no `reason` and no
+`commit`, which completes once the suspend's `fenceToken` is handled.
+
+`status.source.otherConsumers` lists the other `Kustomization`s and `HelmRelease`s that apply the
+`GitRepository` and that no `FluxTrigger` on the same `ClusterProvider` holds: each applies a new
+artifact the moment it arrives. It is information only and never affects `Ready`.
+`status.source.prefetch` is `true` while every consumer was listed and is held by a `FluxTrigger`,
+so a new artifact applies nothing on its own: GitOps Reverser then fetches the `GitRepository` as
+soon as it learns of a push, before the apply. It is `false` when `otherConsumers` is not empty, or
+when the consumers could not be listed (the identity needs `list` on `kustomizations` and
+`helmreleases`).
+
 `Configured` is a gate, so the trigger's `Ready` aggregates it. Its `False` reasons:
 
 | Reason | Means |
@@ -1321,11 +1351,30 @@ still followed, and nothing more is asked of the applier until then.
 | `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository`, or update the `Application` |
 | `NamespaceNotAuthorized` | The trigger's `clusterProviderRef` names a provider whose `accessFrom` does not admit its namespace |
 | `ClusterProviderNotFound` | The trigger's `clusterProviderRef` names a provider that does not exist |
+| `SuspendOwnedElsewhere` | Another field manager applies the `Kustomization`'s `spec.suspend` (a parent `Kustomization`, Helm, flux-operator), and would resume it on its next apply. Remove the field from the manifest it applies |
+
+A `FluxTrigger` also reports `Suspended`, and is `Ready` only once it is `True`:
+
+| Status, reason | Means |
+| --- | --- |
+| `True`, `Held` | The `Kustomization` is suspended under GitOps Reverser's field manager, and the last suspend's token is handled, so nothing that started before the suspend is still running |
+| `False`, `Fencing` | The `Kustomization` was just suspended (adopted, taken back from a `flux suspend`, or suspended again after a `flux resume`), and has not handled that suspend's token yet |
+| `Unknown`, `NotHeld` | The trigger is not `Configured`, so nothing is suspended |
+
+**Deleting a `FluxTrigger` hands the `Kustomization` back to Flux.** The trigger carries the
+finalizer `configbutler.ai/flux-trigger`. On deletion it suspends the `Kustomization` once more if
+an apply has it resumed, waits until that suspend is handled, and releases `spec.suspend`, so Flux
+applies it on its own again (a `Normal` `Released` Event). A `Kustomization`, cluster or
+`ClusterProvider` that is gone has nothing to hand back, and an identity that may not write the
+`Kustomization` lets the trigger go with a `Warning` `ReleaseFailed` Event, so neither holds the
+trigger forever.
 
 The applier is read on the trigger's own reconcile tick rather than watched, so a cluster without
 the Flux or Argo CD CRDs installed costs nothing: every 15 seconds while it is expected to clear on
-its own, such as an applier created after its trigger, and every 5 minutes once `Ready`. Annotate the
-trigger with `reconcile.configbutler.ai/requestedAt` to have it read now.
+its own, such as an applier created after its trigger, and otherwise every 5 minutes for an
+`ArgoCDTrigger` and every minute for a `FluxTrigger`, since that read is what finds a `flux resume`.
+A `FluxTrigger` that is `Fencing` is read every 2 seconds. Annotate the trigger with
+`reconcile.configbutler.ai/requestedAt` to have it read now.
 
 The `GitTarget` reports `ApplyTriggerReady`, and its `Ready` aggregates it. It is `True` when the
 trigger is `Ready` and its applier applies this target's repository and branch. Otherwise it carries

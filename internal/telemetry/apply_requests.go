@@ -11,9 +11,10 @@ import "go.opentelemetry.io/otel/metric"
 // CD Application). reason is the attempt's ApplyReason (ForeignCommit, Refusal, Repair, CatchUp;
 // never CatchUp for an application). outcome is a frozen enum:
 //
-//	sent     — the applier was asked and the ask landed: a requestedAt stamp was patched or a sync
-//	           operation set, or, for a CatchUp, the applier's source already held the commit and
-//	           nothing was owed.
+//	sent     — the applier was asked and the ask landed: a Kustomization was resumed with a
+//	           requestedAt token or a sync operation set. Or it needed no request: a ForeignCommit or
+//	           a CatchUp found the Kustomization suspended with the commit applied already, or the
+//	           remote no longer carries the branch, so there is no commit to apply.
 //	failed   — the attempt could not ask, including an applier that applies another repository or
 //	           branch. The branch worker owns the obligation and decides a retry on a quiet branch,
 //	           with a backoff of its own, so a failure that persists keeps counting. An

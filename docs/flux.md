@@ -264,7 +264,7 @@ The trigger reports `Configured` and `Suspended`, and its `Ready` includes both:
 | `Configured`: `ClusterProviderNotFound` | The trigger's `clusterProviderRef` names a provider that does not exist | progressing |
 | `Suspended`: `Held` | Suspended under GitOps Reverser, and the last suspend is handled | ready |
 | `Suspended`: `Fencing` | Just suspended; waiting for the `Kustomization` to handle the suspend | progressing |
-| `Ready`: `OperationUnresolved` | An apply has not completed within 5 minutes | progressing; it clears when the apply does |
+| `Ready`: `OperationUnresolved` | An apply has not completed within 5 minutes, or the `Kustomization` was [resumed by hand](#overriding-by-hand), which is recorded `Unresolved` at once | progressing; it clears when the apply does |
 
 The `GitTarget` reports `ApplyTriggerReady`, and its `Ready` includes it: `True` when the trigger is
 `Ready` and its `GitRepository` fetches this repository and branch, `SourceMismatch` when it fetches
@@ -357,8 +357,11 @@ apply of an unchanged commit.
 
 **A failed apply is suspended again,** like any other, which is what stops Flux's own
 `retryInterval` retry. GitOps Reverser keeps what the `Kustomization` is owed and retries it on its
-own backoff (2 seconds doubling to 5 minutes, at least 15 seconds after a `SourceMismatch`), on a
-quiet branch, at the tip as it is then. An `ApplyFailed` Event marks the first failure of a run.
+own backoff (2 seconds doubling to 5 minutes), on a quiet branch, at the tip as it is then. A
+request the `Kustomization`'s configuration rejects waits at least 15 seconds, since only a change
+to that configuration clears it: a `GitRepository` that fetches another repository or branch, a
+source that is not a `GitRepository`, or `spec.suspend` applied by another field manager. An
+`ApplyFailed` Event marks the first failure of a run.
 
 **An apply that takes long is followed, not timed out.** After 5 minutes the operation is
 `Unresolved`: the `Kustomization` is suspended at once (that stops whatever would follow, not the

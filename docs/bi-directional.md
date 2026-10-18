@@ -48,7 +48,7 @@ flowchart LR
 | GitOps Reverser | Mirrors every edit into Git, and decides when the applier may apply | Apply anything to the cluster itself |
 | Git host | Stores the branch, and tells GitOps Reverser when somebody else pushed | Notify the applier |
 | Applier (a Flux `Kustomization` or an Argo CD `Application`) | Fetches, renders, applies and prunes, when asked | Apply on a short timer, a webhook or an automated sync of its own |
-| A human | Can still run `flux reconcile` or press Sync | |
+| A human | Can still force an apply: `flux resume` (GitOps Reverser suspends the `Kustomization` again within about a minute), or Sync in Argo CD | Apply with `flux reconcile`, which a suspended `Kustomization` marks handled without applying |
 
 ## Why GitOps Reverser owns the trigger
 
