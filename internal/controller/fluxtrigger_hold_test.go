@@ -345,3 +345,31 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	assert.Empty(t, got.OtherConsumers)
 	assert.True(t, got.Prefetch, "every consumer is held: the source is prefetched")
 }
+
+// TestFluxTrigger_CompletesTheLiveExternalOperation is the fourth review's finding K: the operation
+// an external resume was recorded as is completed from the uncached read, which is what the hold
+// decided on. The cached trigger may not show it yet, and completing that one dereferenced nil.
+func TestFluxTrigger_CompletesTheLiveExternalOperation(t *testing.T) {
+	objs := applierFluxObjects()
+	ks := fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), true, applier.SuspendFieldManager,
+		metav1.ManagedFieldsOperationApply)
+	ks.SetAnnotations(map[string]string{meta.ReconcileRequestAnnotation: "T2"})
+	require.NoError(t, unstructured.SetNestedField(ks.Object, "T2", "status", "lastHandledReconcileAt"))
+	cached := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	cached.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
+	f := newHoldFixture(t, cached, ks, objs[1])
+	live := cached.DeepCopy()
+	live.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
+		Phase: configbutleraiv1alpha3.ApplyOperationUnresolved, FenceToken: "T2", RequestedAt: metav1.Now(),
+	}
+	f.r.APIReader = triggerTestClient(t, live)
+
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, err)
+
+	got := f.trigger(t)
+	require.NotNil(t, got.Status.Operation, "the live operation is completed")
+	assert.True(t, got.Status.Operation.Phase.Completed(), got.Status.Operation.Phase)
+	assert.Equal(t, "T2", got.Status.Operation.FenceToken)
+	assert.NotNil(t, got.Status.Operation.FinishedAt)
+}

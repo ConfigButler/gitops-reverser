@@ -116,7 +116,7 @@ func (r *ApplyTriggerReconciler) hold(
 		return fencing(fmt.Sprintf("Kustomization %s is suspended; waiting for it to handle the suspend", ref))
 	}
 	if held.inFlight() {
-		completeExternalOperation(trigger, held.suspension)
+		completeExternalOperation(trigger, held.operation, held.suspension)
 	}
 	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonHeld,
 		Message: fmt.Sprintf("Kustomization %s is suspended; GitOps Reverser starts every apply it makes", ref)}
@@ -151,10 +151,18 @@ func keptSuspended(trigger *configbutleraiv1alpha3.FluxTrigger, message string) 
 	return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonProgressing, Message: message}
 }
 
-// completeExternalOperation completes the operation an external resume was recorded as, once the
-// suspend after it was handled, with what the Kustomization's last apply reported.
-func completeExternalOperation(trigger *configbutleraiv1alpha3.FluxTrigger, suspension applier.Suspension) {
-	operation := trigger.Status.Operation.DeepCopy()
+// completeExternalOperation completes recorded, the operation an external resume was recorded as,
+// once the suspend after it was handled, with what the Kustomization's last apply reported.
+// recorded is the operation read uncached, which the hold decided on: the cached trigger can still
+// lack it.
+func completeExternalOperation(
+	trigger *configbutleraiv1alpha3.FluxTrigger, recorded *configbutleraiv1alpha3.ApplyOperation,
+	suspension applier.Suspension,
+) {
+	if recorded == nil {
+		return
+	}
+	operation := recorded.DeepCopy()
 	finished := metav1.NewTime(time.Now())
 	operation.FinishedAt, operation.AppliedRevision = &finished, suspension.Applied.AppliedRevision
 	operation.Phase = configbutleraiv1alpha3.ApplyOperationSucceeded
