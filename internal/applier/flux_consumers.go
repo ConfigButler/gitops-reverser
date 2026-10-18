@@ -209,10 +209,12 @@ func consumes(obj *unstructured.Unstructured, path []string, source types.Namesp
 // errNotPrefetched is a prefetch that was not made, because the artifact already holds the commit.
 var errNotPrefetched = errors.New("the artifact already holds the commit")
 
-// Prefetch stamps the GitRepository of the Kustomization ref so it fetches now, unless its artifact
-// already holds commit (errNotPrefetched). It waits for nothing: the operation that applies the
-// commit reads the artifact again before it resumes.
-func (f *Flux) Prefetch(ctx context.Context, ref types.NamespacedName, commit string) error {
+// Prefetch stamps checked, the GitRepository of the Kustomization ref whose consumers were checked,
+// so it fetches now, unless its artifact already holds commit (errNotPrefetched). A Kustomization
+// that applies another GitRepository now was repointed since its trigger published checked: that
+// source's consumers were never checked, so nothing is stamped (errPrefetchHeld). It waits for
+// nothing: the operation that applies the commit reads the artifact again before it resumes.
+func (f *Flux) Prefetch(ctx context.Context, ref, checked types.NamespacedName, commit string) error {
 	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get %s %s: %w", kindKustomization, ref, err)
@@ -220,6 +222,10 @@ func (f *Flux) Prefetch(ctx context.Context, ref types.NamespacedName, commit st
 	sourceRef, err := gitRepositoryRef(ks)
 	if err != nil {
 		return err
+	}
+	if sourceRef != checked {
+		return fmt.Errorf("%w: %s %s applies %s %s now, not %s", errPrefetchHeld, kindKustomization, ref,
+			kindGitRepository, sourceRef, checked)
 	}
 	source, err := f.client.Resource(gitRepositoryGVR()).Namespace(sourceRef.Namespace).
 		Get(ctx, sourceRef.Name, metav1.GetOptions{})

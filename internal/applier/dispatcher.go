@@ -884,7 +884,8 @@ func (d *Dispatcher) PrefetchSource(req git.PrefetchRequest) {
 var errPrefetchHeld = errors.New("the source may not be prefetched now")
 
 // prefetch checks the trigger and its source's other triggers, then the source's consumers as they
-// are now (heldNow), and stamps the source.
+// are now (heldNow), and stamps the source, which every check was of: status.source's GitRepository,
+// only while the Kustomization still applies it.
 func (d *Dispatcher) prefetch(ctx context.Context, req git.PrefetchRequest) error {
 	trigger := &v1alpha3.FluxTrigger{}
 	key := client.ObjectKey{Namespace: req.Applier.Trigger.Namespace, Name: req.Applier.Trigger.Name}
@@ -912,7 +913,8 @@ func (d *Dispatcher) prefetch(ctx context.Context, req git.PrefetchRequest) erro
 	if err != nil {
 		return err
 	}
-	return flux.Prefetch(ctx, applierName(req.Applier), req.Commit)
+	checked, _ := trigger.SharedSource()
+	return flux.Prefetch(ctx, applierName(req.Applier), checked, req.Commit)
 }
 
 // heldNow checks again, in the applier's cluster, what the trigger's status.source.prefetch said when

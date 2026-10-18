@@ -319,4 +319,21 @@ func TestDispatcher_PrefetchChecksTheConsumersAsTheyAreNow(t *testing.T) {
 	assert.Equal(t, []string{"gitrepositories " + fluxSystemNS}, f.patches(), "every consumer is held")
 }
 
+// TestDispatcher_PrefetchStampsOnlyTheSourceItChecked: the trigger's status.source is up to a minute
+// old, and the Kustomization was repointed since, to a second GitRepository over the same repository
+// and branch, which a Kustomization Flux applies on its own consumes too. The checks pass for the old
+// source, which nothing consumes now, so stamping the Kustomization's new one would have that consumer
+// apply the commit at once, over live edits not pushed yet.
+func TestDispatcher_PrefetchStampsOnlyTheSourceItChecked(t *testing.T) {
+	source := heldSource(t,
+		gitRepositoryObj(fluxSystemNS, "platform-next", testRepoURL, branchRef(testBranch), "main@sha1:"+olderCommit),
+		kustomizationObj(fluxSystemNS, "billing", gitRepoSourceRef("platform-next")))
+	require.NoError(t, unstructured.SetNestedStringMap(source[0].(*unstructured.Unstructured).Object,
+		map[string]string{"kind": kindGitRepository, "name": "platform-next"}, "spec", "sourceRef"))
+	f := prefetchFixtureOver(t, true, source)
+
+	require.ErrorIs(t, f.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)), errPrefetchHeld)
+	assert.Empty(t, f.patches(), "neither source is fetched")
+}
+
 var _ runtime.Object = (*unstructured.Unstructured)(nil)
