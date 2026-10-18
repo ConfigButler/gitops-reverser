@@ -723,7 +723,8 @@ func (d *Dispatcher) PrefetchSource(req git.ApplyRequest) {
 // errPrefetchHeld is a prefetch held back by the trigger's source.
 var errPrefetchHeld = errors.New("the source may not be prefetched now")
 
-// prefetch checks the trigger and its source's other triggers, and stamps the source.
+// prefetch checks the trigger and its source's other triggers, then the source's consumers as they
+// are now (heldNow), and stamps the source.
 func (d *Dispatcher) prefetch(ctx context.Context, req git.ApplyRequest) error {
 	trigger := &v1alpha3.FluxTrigger{}
 	key := client.ObjectKey{Namespace: req.Applier.Trigger.Namespace, Name: req.Applier.Trigger.Name}
@@ -747,11 +748,52 @@ func (d *Dispatcher) prefetch(ctx context.Context, req git.ApplyRequest) error {
 			return errPrefetchHeld
 		}
 	}
-	sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
+	flux, err := d.heldNow(ctx, req, trigger, triggers.Items)
 	if err != nil {
 		return err
 	}
+	return flux.Prefetch(ctx, applierName(req.Applier), req.Commit)
+}
+
+// heldNow checks again, in the source cluster, what the trigger's status.source.prefetch said when
+// its reconciler last ran, up to a minute ago: every consumer of its GitRepository is a
+// Kustomization a FluxTrigger on the same cluster names, and is suspended, held by GitOps Reverser
+// and fenced now. A consumer that appeared since, or one Flux applies on its own again, would apply
+// the prefetched artifact at once, over live edits not pushed yet (errPrefetchHeld). It returns the
+// Flux client of the source cluster.
+func (d *Dispatcher) heldNow(
+	ctx context.Context, req git.ApplyRequest, trigger *v1alpha3.FluxTrigger, triggers []v1alpha3.FluxTrigger,
+) (*Flux, error) {
+	sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
+	if err != nil {
+		return nil, err
+	}
 	flux := NewFlux(sourceClient)
 	flux.Now = d.Now
-	return flux.Prefetch(ctx, applierName(req.Applier), req.Commit)
+	named := map[types.NamespacedName]bool{}
+	for i := range triggers {
+		other := &triggers[i]
+		if other.DeletionTimestamp.IsZero() && other.ClusterProvider() == trigger.ClusterProvider() {
+			named[other.Applier()] = true
+		}
+	}
+	source := trigger.Status.Source.GitRepository
+	consumers, err := flux.Consumers(ctx, types.NamespacedName{Namespace: source.Namespace, Name: source.Name})
+	if err != nil {
+		return nil, err
+	}
+	for _, consumer := range consumers {
+		key := types.NamespacedName{Namespace: consumer.Namespace, Name: consumer.Name}
+		if consumer.Kind != v1alpha3.ApplierKindKustomization || !named[key] {
+			return nil, fmt.Errorf("%w: %s %s is not held by a FluxTrigger", errPrefetchHeld, consumer.Kind, key)
+		}
+		suspension, err := flux.Suspension(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("read %s %s: %w", kindKustomization, key, err)
+		}
+		if !suspension.Suspended || !suspension.Held || !suspension.Fenced {
+			return nil, fmt.Errorf("%w: %s %s is not held suspended now", errPrefetchHeld, kindKustomization, key)
+		}
+	}
+	return flux, nil
 }

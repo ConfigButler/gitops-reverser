@@ -22,6 +22,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
@@ -328,9 +329,30 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	assert.False(t, source.Prefetch)
 	assert.True(t, conditionIsTrue(f.trigger(t).Status.Conditions, ConditionTypeReady), "information only")
 
+	// The fourth review's finding C: a trigger holds its Kustomization only once it says so
+	// (Suspended=True). One that is not Configured (SuspendOwnedElsewhere), or still fencing, leaves
+	// a Kustomization Flux applies on its own.
 	infraTrigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 	infraTrigger.Name, infraTrigger.Spec.KustomizationRef.Name = "infra", "infra"
 	require.NoError(t, f.r.Create(context.Background(), infraTrigger))
+	infraOther := []meta.NamespacedObjectKindReference{
+		{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"},
+		{Kind: "Kustomization", Namespace: "flux-system", Name: "infra"},
+	}
+	for _, suspended := range []metav1.Condition{
+		{Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionUnknown, Reason: ReasonNotHeld},
+		{Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionFalse, Reason: ReasonFencing},
+	} {
+		setTriggerCondition(t, f.r, "infra", suspended)
+		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+		require.NoError(t, err)
+		assert.Equal(t, infraOther, f.trigger(t).Status.Source.OtherConsumers,
+			"a trigger that is %s does not hold its Kustomization", suspended.Reason)
+	}
+
+	setTriggerCondition(t, f.r, "infra", metav1.Condition{
+		Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionTrue, Reason: ReasonHeld,
+	})
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
 	require.NoError(t, err)
 	assert.Equal(t, []meta.NamespacedObjectKindReference{{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"}},
@@ -344,6 +366,22 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	got := f.trigger(t).Status.Source
 	assert.Empty(t, got.OtherConsumers)
 	assert.True(t, got.Prefetch, "every consumer is held: the source is prefetched")
+
+	trigger := f.trigger(t)
+	f.r.publishConsumers(context.Background(), trigger,
+		conditionValue{Status: metav1.ConditionFalse, Reason: ReasonFencing})
+	assert.Empty(t, trigger.Status.Source.OtherConsumers)
+	assert.False(t, trigger.Status.Source.Prefetch, "nor while its own Kustomization is not held yet")
+}
+
+// setTriggerCondition publishes a condition on the FluxTrigger team-a/name.
+func setTriggerCondition(t *testing.T, c ctrlclient.Client, name string, condition metav1.Condition) {
+	t.Helper()
+	trigger := &configbutleraiv1alpha3.FluxTrigger{}
+	require.NoError(t, c.Get(context.Background(), k8stypes.NamespacedName{Namespace: "team-a", Name: name}, trigger))
+	condition.LastTransitionTime = metav1.Now()
+	trigger.Status.Conditions = []metav1.Condition{condition}
+	require.NoError(t, c.Status().Update(context.Background(), trigger))
 }
 
 // TestFluxTrigger_CompletesTheLiveExternalOperation is the fourth review's finding K: the operation

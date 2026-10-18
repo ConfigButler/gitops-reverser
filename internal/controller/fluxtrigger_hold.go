@@ -314,10 +314,13 @@ func (r *ApplyTriggerReconciler) event(object client.Object, eventType, reason, 
 type fluxClientFactory func(client dynamic.Interface) *applier.Flux
 
 // publishConsumers sets the trigger's status.source.otherConsumers and status.source.prefetch: the
-// consumers of its GitRepository in the applier's cluster that no FluxTrigger on the same
-// ClusterProvider holds. A listing that fails publishes none and no prefetch, because the
-// precondition cannot be checked. Information only (decision 2): it never affects Ready.
-func (r *ApplyTriggerReconciler) publishConsumers(ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger) {
+// consumers of its GitRepository in the applier's cluster, other than its own Kustomization, that no
+// FluxTrigger on the same ClusterProvider holds. Prefetch also needs its own Kustomization held,
+// which held, this pass's Suspended, says. A listing that fails publishes none and no prefetch,
+// because the precondition cannot be checked. Information only (decision 2): it never affects Ready.
+func (r *ApplyTriggerReconciler) publishConsumers(
+	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, held conditionValue,
+) {
 	source := trigger.Status.Source
 	if source == nil || r.ApplierClients == nil {
 		return
@@ -337,21 +340,24 @@ func (r *ApplyTriggerReconciler) publishConsumers(ctx context.Context, trigger *
 			"gitRepository", source.GitRepository.Namespace+"/"+source.GitRepository.Name, "error", err.Error())
 		return
 	}
-	held, err := r.heldKustomizations(ctx, trigger.ClusterProvider())
+	others, err := r.heldKustomizations(ctx, trigger.ClusterProvider())
 	if err != nil {
 		return
 	}
 	for _, consumer := range consumers {
 		key := k8stypes.NamespacedName{Namespace: consumer.Namespace, Name: consumer.Name}
-		if consumer.Kind == configbutleraiv1alpha3.ApplierKindKustomization && held[key] {
+		itself := key == trigger.Applier()
+		if consumer.Kind == configbutleraiv1alpha3.ApplierKindKustomization && (itself || others[key]) {
 			continue
 		}
 		source.OtherConsumers = append(source.OtherConsumers, consumer)
 	}
-	source.Prefetch = len(source.OtherConsumers) == 0
+	source.Prefetch = len(source.OtherConsumers) == 0 && held.Status == metav1.ConditionTrue
 }
 
-// heldKustomizations is every Kustomization a FluxTrigger on the ClusterProvider holds.
+// heldKustomizations is every Kustomization a FluxTrigger on the ClusterProvider holds: one whose
+// Suspended condition is True. A trigger that is not Configured (SuspendOwnedElsewhere), or has not
+// fenced its Kustomization yet, does not hold it: Flux may still apply a new artifact on its own.
 func (r *ApplyTriggerReconciler) heldKustomizations(
 	ctx context.Context,
 	cluster string,
@@ -363,7 +369,7 @@ func (r *ApplyTriggerReconciler) heldKustomizations(
 	held := map[k8stypes.NamespacedName]bool{}
 	for i := range triggers.Items {
 		trigger := &triggers.Items[i]
-		if trigger.DeletionTimestamp.IsZero() && trigger.ClusterProvider() == cluster {
+		if trigger.DeletionTimestamp.IsZero() && trigger.ClusterProvider() == cluster && heldBefore(trigger) {
 			held[trigger.Applier()] = true
 		}
 	}

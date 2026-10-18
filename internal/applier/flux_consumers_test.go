@@ -194,10 +194,17 @@ func TestFluxProbe_ASharedSourceAppliesOnlyTheConsumerAsked(t *testing.T) {
 }
 
 // prefetchFixture is a dispatcher whose FluxTrigger "checkout" publishes source flux-system/platform
-// with prefetch, over a cluster whose GitRepository is behind.
+// with prefetch, over a cluster whose GitRepository is behind and whose Kustomization it holds.
 func prefetchFixture(t *testing.T, prefetch bool, extra ...client.Object) *dispatcherFixture {
 	t.Helper()
-	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	return prefetchFixtureOver(t, prefetch, heldSource(t), extra...)
+}
+
+// prefetchFixtureOver is prefetchFixture over the source cluster objects source.
+func prefetchFixtureOver(t *testing.T, prefetch bool, source []runtime.Object,
+	extra ...client.Object) *dispatcherFixture {
+	t.Helper()
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, source...)
 	setTriggerSource(t, f, "checkout", prefetch, nil)
 	for _, obj := range extra {
 		require.NoError(t, f.control.Create(context.Background(), obj))
@@ -256,6 +263,60 @@ func TestDispatcher_PrefetchFetchesTheSourceOnlyWhenItMay(t *testing.T) {
 	require.ErrorIs(t, current.dispatcher.prefetch(context.Background(), prefetchRequest(olderCommit)),
 		errNotPrefetched, "the artifact already holds it")
 	assert.Empty(t, current.patches())
+}
+
+// heldSource is behindSource with flux-system/checkout held by GitOps Reverser, and extra.
+func heldSource(t *testing.T, extra ...runtime.Object) []runtime.Object {
+	t.Helper()
+	source := behindSource()
+	source[0] = fluxsim.OwnSuspend(t, source[0].(*unstructured.Unstructured), true, SuspendFieldManager,
+		metav1.ManagedFieldsOperationApply)
+	return append(source, extra...)
+}
+
+// TestDispatcher_PrefetchChecksTheConsumersAsTheyAreNow is the fourth review's finding C: the
+// trigger's status.source.prefetch is up to a minute old, so the consumers are read again before
+// the source is stamped. A consumer that appeared since, or one Flux applies on its own, would apply
+// the prefetched artifact over live edits not pushed yet.
+func TestDispatcher_PrefetchChecksTheConsumersAsTheyAreNow(t *testing.T) {
+	infraTrigger := func() *v1alpha3.FluxTrigger {
+		return &v1alpha3.FluxTrigger{
+			ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: "infra"},
+			Spec: v1alpha3.FluxTriggerSpec{
+				ClusterProviderRef: &fluxmeta.LocalObjectReference{Name: v1alpha3.DefaultClusterProviderName},
+				KustomizationRef:   fluxmeta.NamespacedObjectReference{Namespace: fluxSystemNS, Name: "infra"},
+			},
+		}
+	}
+	infra := func(held bool) *unstructured.Unstructured {
+		ks := kustomizationObj(fluxSystemNS, "infra", gitRepoSourceRef("platform"))
+		if held {
+			return fluxsim.OwnSuspend(t, ks, true, SuspendFieldManager, metav1.ManagedFieldsOperationApply)
+		}
+		return ks
+	}
+	resumed := heldSource(t)
+	require.NoError(t, unstructured.SetNestedField(resumed[0].(*unstructured.Unstructured).Object, false,
+		"spec", "suspend"))
+
+	for name, f := range map[string]*dispatcherFixture{
+		"a Kustomization no trigger names": prefetchFixtureOver(t, true, heldSource(t, infra(true))),
+		"a Kustomization Flux applies on its own": prefetchFixtureOver(t, true, heldSource(t, infra(false)),
+			infraTrigger()),
+		"a HelmRelease": prefetchFixtureOver(t, true,
+			heldSource(t, helmReleaseObj("apps", "podinfo", "platform", fluxSystemNS))),
+		"its own Kustomization, resumed": prefetchFixtureOver(t, true, resumed),
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorIs(t, f.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)),
+				errPrefetchHeld)
+			assert.Empty(t, f.patches(), "nothing is fetched")
+		})
+	}
+
+	f := prefetchFixtureOver(t, true, heldSource(t, infra(true)), infraTrigger())
+	require.NoError(t, f.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)))
+	assert.Equal(t, []string{"gitrepositories " + fluxSystemNS}, f.patches(), "every consumer is held")
 }
 
 var _ runtime.Object = (*unstructured.Unstructured)(nil)
