@@ -411,3 +411,70 @@ func TestFluxTrigger_CompletesTheLiveExternalOperation(t *testing.T) {
 	assert.Equal(t, "T2", got.Status.Operation.FenceToken)
 	assert.NotNil(t, got.Status.Operation.FinishedAt)
 }
+
+// TestFluxTrigger_ASuspendItMayNotMakeLetsGo is the fourth review's finding D: a resumed
+// Kustomization the identity may not suspend again cannot be handed back either, so the trigger goes,
+// with a Warning, as it does for a release it may not make. It used to retry forever.
+func TestFluxTrigger_ASuspendItMayNotMakeLetsGo(t *testing.T) {
+	objs := applierFluxObjects()
+	ks := fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), false, applier.SuspendFieldManager,
+		metav1.ManagedFieldsOperationApply)
+	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
+	f := newHoldFixture(t, trigger, ks, objs[1])
+	f.sim.Client.PrependReactor("patch", "kustomizations", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(fluxsim.KustomizationGVR().GroupResource(), "checkout",
+			errors.New("no patch for you"))
+	})
+	require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
+
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, err)
+	err = f.r.Get(context.Background(), triggerKey, &configbutleraiv1alpha3.FluxTrigger{})
+	assert.True(t, apierrors.IsNotFound(err), "the trigger is let go: %v", err)
+	events := f.events()
+	require.Len(t, events, 1)
+	assert.True(t, strings.HasPrefix(events[0], "Warning ReleaseFailed could not hand Kustomization"), events[0])
+}
+
+// TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline is the fourth review's finding D: with
+// kustomize-controller down, the suspend of a hand-back is never handled. The trigger waits for it
+// until releaseDeadline after its deletion, and then goes, with a Warning that says what the
+// Kustomization is left as.
+func TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
+	for name, deleted := range map[string]time.Duration{
+		"before the deadline": 0,
+		"past the deadline":   releaseDeadline + time.Minute,
+	} {
+		t.Run(name, func(t *testing.T) {
+			objs := applierFluxObjects()
+			ks := fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), true, applier.SuspendFieldManager,
+				metav1.ManagedFieldsOperationApply)
+			// No source: the simulated kustomize-controller never reconciles it, as one that is down.
+			unstructured.RemoveNestedField(ks.Object, "spec", "sourceRef")
+			ks.SetAnnotations(map[string]string{meta.ReconcileRequestAnnotation: "T2"})
+			trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+			trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
+			trigger.DeletionTimestamp = &metav1.Time{Time: time.Now().Add(-deleted)}
+			f := newHoldFixture(t, trigger, ks, objs[1])
+
+			result, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+			require.NoError(t, err)
+			err = f.r.Get(context.Background(), triggerKey, &configbutleraiv1alpha3.FluxTrigger{})
+			events := f.events()
+			if deleted == 0 {
+				require.NoError(t, err, "still waiting for the suspend")
+				assert.Equal(t, applyTriggerFenceInterval, result.RequeueAfter)
+				assert.Empty(t, events)
+				return
+			}
+			assert.True(t, apierrors.IsNotFound(err), "the trigger is let go: %v", err)
+			require.Len(t, events, 1)
+			assert.True(t, strings.HasPrefix(events[0], "Warning ReleaseFailed gave up handing Kustomization "+
+				"flux-system/checkout back to Flux 10m0s after the trigger was deleted: it is suspended, and has "+
+				"not handled the suspend yet"), events[0])
+			assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)),
+				"left suspended, as the Event says")
+		})
+	}
+}

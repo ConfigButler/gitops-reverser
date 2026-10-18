@@ -210,72 +210,104 @@ func (r *ApplyTriggerReconciler) fluxClient(
 	return newFlux(dynamicClient), nil
 }
 
+// releaseDeadline is how long a deleted FluxTrigger tries to hand its Kustomization back, counted
+// from its deletionTimestamp, before it lets go anyway with a Warning Event that says what the
+// Kustomization is left as. The fence it waits for is handled once the apply running then ends, so
+// the deadline is longer than an apply usually takes; a kustomize-controller that is down never
+// handles it, and the deletion must not wait on that forever.
+const releaseDeadline = 10 * time.Minute
+
 // release hands a deleted FluxTrigger's Kustomization back to Flux, and then lets the trigger go:
 // it suspends it once more if it is resumed (a branch worker's apply may still be running), waits
 // until that suspend's token is handled, and releases spec.suspend. A Kustomization or a cluster
 // that is gone has nothing to hand back, and one the identity may not write is let go with a
-// Warning Event: neither should hold the trigger forever.
+// Warning Event: neither should hold the trigger forever. Nor does anything else past
+// releaseDeadline.
 func (r *ApplyTriggerReconciler) release(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(trigger, configbutleraiv1alpha3.FluxTriggerFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	done := func() (ctrl.Result, error) {
-		controllerutil.RemoveFinalizer(trigger, configbutleraiv1alpha3.FluxTriggerFinalizer)
-		return ctrl.Result{}, client.IgnoreNotFound(r.Update(ctx, trigger))
+	step, cancel := context.WithTimeout(ctx, applierCheckTimeout)
+	pending := r.releaseStep(step, trigger)
+	cancel()
+	if pending != nil {
+		if time.Since(trigger.DeletionTimestamp.Time) < releaseDeadline {
+			return pending.result, pending.err
+		}
+		r.event(trigger, corev1.EventTypeWarning, EventReasonReleaseFailed,
+			"gave up handing Kustomization %s back to Flux %s after the trigger was deleted: %s",
+			trigger.Applier(), releaseDeadline, pending.left)
 	}
-	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
-	defer cancel()
+	controllerutil.RemoveFinalizer(trigger, configbutleraiv1alpha3.FluxTriggerFinalizer)
+	return ctrl.Result{}, client.IgnoreNotFound(r.Update(ctx, trigger))
+}
+
+// pendingRelease is a hand-back that is not done: what to retry it on, and what the Kustomization is
+// left as should the trigger go now.
+type pendingRelease struct {
+	result ctrl.Result
+	err    error
+	left   string
+}
+
+// releaseStep takes the hand-back one step, and returns nil once the trigger may go.
+func (r *ApplyTriggerReconciler) releaseStep(
+	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
+) *pendingRelease {
 	flux, err := r.releaseClient(ctx, trigger)
 	if err != nil {
-		return ctrl.Result{}, err
+		return &pendingRelease{
+			err: err, left: fmt.Sprintf("its cluster cannot be reached (%v), so it is left as it was", err),
+		}
 	}
 	if flux == nil {
-		return done()
+		return nil
 	}
 	ref := trigger.Applier()
+	fencing := &pendingRelease{
+		result: ctrl.Result{RequeueAfter: applyTriggerFenceInterval},
+		left: "it is suspended, and has not handled the suspend yet (is kustomize-controller running?); " +
+			"`flux resume` resumes it",
+	}
 	suspension, err := flux.Suspension(ctx, ref)
 	switch {
 	case apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err):
-		return done()
-	case apierrors.IsForbidden(err):
-		r.event(trigger, corev1.EventTypeWarning, EventReasonReleaseFailed,
-			"could not hand Kustomization %s back to Flux: %v", ref, err)
-		return done()
+		return nil
 	case err != nil:
-		return ctrl.Result{}, err
+		return r.releaseFailed(trigger, err, fmt.Sprintf("it cannot be read (%v), so it is left as it was", err))
 	case !suspension.Held:
-		return done()
+		return nil
 	case !suspension.Suspended:
 		if _, err := flux.Suspend(ctx, ref); err != nil {
-			return ctrl.Result{}, err
+			return r.releaseFailed(trigger, err, fmt.Sprintf("it is resumed, and suspending it failed (%v), so "+
+				"GitOps Reverser's field manager still holds spec.suspend", err))
 		}
-		return ctrl.Result{RequeueAfter: applyTriggerFenceInterval}, nil
+		return fencing
 	case !suspension.Fenced:
-		return ctrl.Result{RequeueAfter: applyTriggerFenceInterval}, nil
+		return fencing
 	}
-	if err := r.handBack(trigger, flux.Release(ctx, ref)); err != nil {
-		return ctrl.Result{}, err
-	}
-	return done()
-}
-
-// handBack records how the release of a deleted trigger's Kustomization went, and returns the
-// error to retry on: none for a release that landed, or one the identity may not make.
-func (r *ApplyTriggerReconciler) handBack(trigger *configbutleraiv1alpha3.FluxTrigger, released error) error {
-	ref := trigger.Applier()
-	switch {
-	case apierrors.IsForbidden(released):
-		r.event(trigger, corev1.EventTypeWarning, EventReasonReleaseFailed,
-			"could not hand Kustomization %s back to Flux: %v", ref, released)
-		return nil
-	case released != nil:
-		return released
+	if err := flux.Release(ctx, ref); err != nil {
+		return r.releaseFailed(trigger, err, fmt.Sprintf("it is suspended, and releasing spec.suspend failed (%v); "+
+			"`flux resume` resumes it", err))
 	}
 	r.event(trigger, corev1.EventTypeNormal, EventReasonReleased,
 		"handed Kustomization %s back to Flux: it is resumed, and applies on its own again", ref)
 	return nil
+}
+
+// releaseFailed is a hand-back step that failed with err: one the identity may not make lets the
+// trigger go with a Warning Event, since a retry cannot change it, and any other is retried.
+func (r *ApplyTriggerReconciler) releaseFailed(
+	trigger *configbutleraiv1alpha3.FluxTrigger, err error, left string,
+) *pendingRelease {
+	if apierrors.IsForbidden(err) {
+		r.event(trigger, corev1.EventTypeWarning, EventReasonReleaseFailed,
+			"could not hand Kustomization %s back to Flux: %v", trigger.Applier(), err)
+		return nil
+	}
+	return &pendingRelease{err: err, left: left}
 }
 
 // releaseClient is the Flux client a deleted trigger hands its Kustomization back through, or nil
