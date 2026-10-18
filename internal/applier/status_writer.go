@@ -35,10 +35,17 @@ const maxStatusConflicts = 5
 // rather than replaying each step. A write that fails is tried again after RetryInterval, unless a
 // newer publication replaced it in between.
 //
-// A publication can also be written through at once (PersistApplyTriggerStatus): the dispatcher
-// does so before it starts an apply, so the operation is on the trigger before anything can apply.
-// Writes are made one at a time, each of the latest publication, so a publication is never written
-// over a later one.
+// An operation an attempt starts reaches the trigger first through RecordApplyOperation, which the
+// dispatcher calls just before the write that starts the apply, so the trigger never shows an
+// operation that nothing could have applied. Writes are made one at a time, each of the latest
+// publication, so a publication is never written over a later one.
+//
+// The status may hold an operation somebody else recorded: an earlier process, or the trigger's
+// reconciler for an apply started outside GitOps Reverser. A publication replaces status.operation
+// only on a status that holds none, or holds the same operation (sameOperation) at an earlier
+// point, so it never writes over a record that is not the one it carries. An operation the worker
+// withdraws, because its attempt was recorded and then asked for no apply, is replaced by what the
+// status held before it was recorded.
 //
 // The rest of the status (the conditions, the source) belongs to the trigger's reconciler. Each
 // write reads the trigger, sets these two fields and updates the status with the resourceVersion it
@@ -55,14 +62,45 @@ type StatusWriter struct {
 	// writing is held for every write, and for the whole of a batch, so writes land in the order
 	// their publications were made.
 	writing sync.Mutex
+	// recorded is the operation RecordApplyOperation last wrote on each trigger, with what the
+	// status held before it. It is read and written under writing.
+	recorded map[git.TriggerRef]recordedOperation
 
 	mu      sync.Mutex
-	pending map[git.TriggerRef]git.ApplyTriggerStatus
+	pending map[git.TriggerRef]publication
 	wake    chan struct{}
 }
 
-// errTriggerReleased is a write to a trigger that is gone, or being deleted.
-var errTriggerReleased = errors.New("the trigger is gone or being deleted")
+// publication is what is held for one trigger until it is written: the worker's latest status, and
+// every operation withdrawn since the last write, which a later publication never takes back.
+type publication struct {
+	status    git.ApplyTriggerStatus
+	withdrawn []*v1alpha3.ApplyOperation
+}
+
+// merged is newer, withdrawing what p withdrew as well.
+func (p publication) merged(newer publication) publication {
+	for _, operation := range p.withdrawn {
+		if !holdsOperation(newer.withdrawn, operation) {
+			newer.withdrawn = append(newer.withdrawn, operation)
+		}
+	}
+	return newer
+}
+
+// recordedOperation is an operation RecordApplyOperation wrote, and the operation it replaced.
+type recordedOperation struct {
+	operation *v1alpha3.ApplyOperation
+	displaced *v1alpha3.ApplyOperation
+}
+
+var (
+	// errTriggerReleased is a write to a trigger that is gone, or being deleted.
+	errTriggerReleased = errors.New("the trigger is gone or being deleted")
+	// errOperationInFlight is a record refused because the trigger's status holds another operation
+	// that has not completed.
+	errOperationInFlight = errors.New("the trigger records another operation that has not completed")
+)
 
 var (
 	_ git.ApplyTriggerStatusWriter   = (*StatusWriter)(nil)
@@ -78,7 +116,8 @@ func NewStatusWriter(reader client.Reader, writer client.StatusClient, log logr.
 		writer:        writer,
 		log:           log,
 		RetryInterval: DefaultStatusRetryInterval,
-		pending:       map[git.TriggerRef]git.ApplyTriggerStatus{},
+		recorded:      map[git.TriggerRef]recordedOperation{},
+		pending:       map[git.TriggerRef]publication{},
 		wake:          make(chan struct{}, 1),
 	}
 }
@@ -87,13 +126,18 @@ func NewStatusWriter(reader client.Reader, writer client.StatusClient, log logr.
 func (w *StatusWriter) NeedLeaderElection() bool { return true }
 
 // PublishApplyTriggerStatus holds status for trigger until it is written, replacing any not yet
-// written. It does not block.
+// written, but not what that one withdrew. It does not block.
 func (w *StatusWriter) PublishApplyTriggerStatus(trigger git.TriggerRef, status git.ApplyTriggerStatus) {
-	w.mu.Lock()
+	next := publication{status: status}
 	if status.Operation != nil {
-		status.Operation = stored(status.Operation)
+		next.status.Operation = stored(status.Operation)
 	}
-	w.pending[trigger] = status
+	if status.Withdrawn != nil {
+		next.status.Withdrawn = stored(status.Withdrawn)
+		next.withdrawn = []*v1alpha3.ApplyOperation{next.status.Withdrawn}
+	}
+	w.mu.Lock()
+	w.pending[trigger] = w.pending[trigger].merged(next)
 	w.mu.Unlock()
 	select {
 	case w.wake <- struct{}{}:
@@ -130,26 +174,66 @@ func (w *StatusWriter) Start(ctx context.Context) error {
 	}
 }
 
-// PersistApplyTriggerStatus writes the trigger's latest publication now, unless it was written
-// already, and returns once it is. A trigger that is gone or being deleted is an error: nothing may
-// start an apply for it.
-func (w *StatusWriter) PersistApplyTriggerStatus(ctx context.Context, trigger git.TriggerRef) error {
+// RecordApplyOperation writes operation on the trigger now, and returns once it is written. It
+// first writes what is held for the trigger, so the operation it replaces is the worker's latest
+// view of it. It fails, so that nothing starts the apply, when the trigger is gone or being
+// deleted, and when its status holds another operation that has not completed: an apply started
+// outside GitOps Reverser, which the trigger's reconciler recorded, or one an earlier process
+// recorded, which the worker follows before it asks for anything.
+func (w *StatusWriter) RecordApplyOperation(
+	ctx context.Context, ref git.TriggerRef, operation *v1alpha3.ApplyOperation,
+) error {
 	w.writing.Lock()
 	defer w.writing.Unlock()
+	if err := w.writeHeld(ctx, ref); err != nil {
+		return err
+	}
+
+	operation = stored(operation)
+	for range maxStatusConflicts {
+		trigger, err := w.read(ctx, ref)
+		if err != nil {
+			return err
+		}
+		current := trigger.Operation()
+		switch {
+		case current != nil && sameOperation(current, operation):
+			return nil
+		case current != nil && !current.Phase.Completed():
+			return fmt.Errorf("record the operation on %s: %w (%s, requested %s)", ref, errOperationInFlight,
+				current.Phase, current.RequestedAt.UTC().Format(time.RFC3339))
+		}
+		// Kept before the update: an update that reports an error may still have landed.
+		w.recorded[ref] = recordedOperation{operation: operation, displaced: current.DeepCopy()}
+		trigger.SetOperation(operation, trigger.RepairOwed())
+		err = w.writer.Status().Update(ctx, trigger)
+		switch {
+		case err == nil:
+			return nil
+		case apierrors.IsNotFound(err):
+			return errTriggerReleased
+		case apierrors.IsConflict(err):
+			continue
+		default:
+			return fmt.Errorf("record the operation on %s: %w", ref, err)
+		}
+	}
+	return fmt.Errorf("record the operation on %s: it kept changing under the write", ref)
+}
+
+// writeHeld writes what is held for one trigger, if anything, and holds it again should the write
+// fail. The caller holds writing.
+func (w *StatusWriter) writeHeld(ctx context.Context, ref git.TriggerRef) error {
 	w.mu.Lock()
-	status, held := w.pending[trigger]
-	delete(w.pending, trigger)
+	held, ok := w.pending[ref]
+	delete(w.pending, ref)
 	w.mu.Unlock()
-	if !held {
+	if !ok {
 		return nil
 	}
-	err := w.write(ctx, trigger, status)
+	err := w.write(ctx, ref, held)
 	if err != nil && !errors.Is(err, errTriggerReleased) {
-		w.mu.Lock()
-		if _, newer := w.pending[trigger]; !newer {
-			w.pending[trigger] = status
-		}
-		w.mu.Unlock()
+		w.holdAgain(ref, held)
 	}
 	return err
 }
@@ -160,41 +244,52 @@ func (w *StatusWriter) writePending(ctx context.Context) bool {
 	defer w.writing.Unlock()
 	w.mu.Lock()
 	batch := w.pending
-	w.pending = map[git.TriggerRef]git.ApplyTriggerStatus{}
+	w.pending = map[git.TriggerRef]publication{}
 	w.mu.Unlock()
 
 	failed := false
-	for trigger, status := range batch {
-		err := w.write(ctx, trigger, status)
+	for trigger, held := range batch {
+		err := w.write(ctx, trigger, held)
 		if err == nil || errors.Is(err, errTriggerReleased) {
 			continue
 		}
 		w.log.Info("could not write an apply trigger's status; trying again", "trigger", trigger.String(),
 			"error", err.Error())
-		w.mu.Lock()
-		if _, newer := w.pending[trigger]; !newer {
-			w.pending[trigger] = status
+		if w.holdAgain(trigger, held) {
 			failed = true
 		}
-		w.mu.Unlock()
 	}
 	return failed
 }
 
-// write sets one trigger's status.operation (unless the publication carries none, or an older
-// operation than the status holds) and status.repairOwed. A trigger that is gone, or being deleted,
-// takes the publication with it: errTriggerReleased.
-func (w *StatusWriter) write(ctx context.Context, ref git.TriggerRef, status git.ApplyTriggerStatus) error {
+// holdAgain holds a publication whose write failed, under any made since, and reports whether none
+// was: only then is a retry due, because a newer publication wakes the writer itself.
+func (w *StatusWriter) holdAgain(ref git.TriggerRef, failed publication) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	newer, ok := w.pending[ref]
+	if !ok {
+		w.pending[ref] = failed
+		return true
+	}
+	w.pending[ref] = failed.merged(newer)
+	return false
+}
+
+// write sets one trigger's status.operation, as operationToWrite says, and status.repairOwed. A
+// trigger that is gone, or being deleted, takes the publication with it: errTriggerReleased.
+func (w *StatusWriter) write(ctx context.Context, ref git.TriggerRef, held publication) error {
 	for range maxStatusConflicts {
 		trigger, err := w.read(ctx, ref)
 		if err != nil {
 			return err
 		}
-		operation := operationToWrite(status.Operation, trigger.Operation())
-		if trigger.RepairOwed() == status.RepairOwed && equality.Semantic.DeepEqual(trigger.Operation(), operation) {
+		operation := w.operationToWrite(ref, held, trigger.Operation())
+		repairOwed := held.status.RepairOwed
+		if trigger.RepairOwed() == repairOwed && equality.Semantic.DeepEqual(trigger.Operation(), operation) {
 			return nil
 		}
-		trigger.SetOperation(operation, status.RepairOwed)
+		trigger.SetOperation(operation, repairOwed)
 		err = w.writer.Status().Update(ctx, trigger)
 		switch {
 		case err == nil:
@@ -228,11 +323,40 @@ func (w *StatusWriter) read(ctx context.Context, ref git.TriggerRef) (v1alpha3.A
 	return trigger, nil
 }
 
-// operationToWrite is the operation a write leaves on a trigger whose status holds current: the
-// published one, unless it is none or one requested before current, which it never replaces.
-func operationToWrite(published, current *v1alpha3.ApplyOperation) *v1alpha3.ApplyOperation {
-	if published == nil || (current != nil && published.RequestedAt.Before(&current.RequestedAt)) {
-		return current
+// operationToWrite is the operation a write of held leaves on a trigger whose status holds current.
+// An operation held withdraws is replaced by what the status held before this writer recorded it,
+// or by none. Then the published operation is written over none, or over the same operation at an
+// earlier point; never over another, which somebody else recorded.
+func (w *StatusWriter) operationToWrite(
+	ref git.TriggerRef, held publication, current *v1alpha3.ApplyOperation,
+) *v1alpha3.ApplyOperation {
+	operation := current
+	if current != nil && holdsOperation(held.withdrawn, current) {
+		operation = nil
+		if recorded, ok := w.recorded[ref]; ok && sameOperation(recorded.operation, current) {
+			operation = recorded.displaced
+		}
 	}
-	return published
+	if published := held.status.Operation; published != nil &&
+		(operation == nil || sameOperation(operation, published)) {
+		operation = published
+	}
+	return operation
+}
+
+// sameOperation reports whether a and b are one operation, perhaps at different points: an
+// operation keeps the token and requestedAt it was recorded with. The requestedAt tells apart the
+// operations the trigger's reconciler records, which carry no token.
+func sameOperation(a, b *v1alpha3.ApplyOperation) bool {
+	return a.Token == b.Token && a.RequestedAt.Equal(&b.RequestedAt)
+}
+
+// holdsOperation reports whether operations holds operation, by sameOperation.
+func holdsOperation(operations []*v1alpha3.ApplyOperation, operation *v1alpha3.ApplyOperation) bool {
+	for _, held := range operations {
+		if sameOperation(held, operation) {
+			return true
+		}
+	}
+	return false
 }

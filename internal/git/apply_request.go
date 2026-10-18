@@ -100,7 +100,7 @@ type ApplyRequest struct {
 	// pushed or proved by a fetch. Empty when the remote does not carry the branch.
 	Commit string
 	// Token identifies the operation the attempt starts, in the applier's own status and in the
-	// trigger's status.operation, which the worker records with it before the attempt is sent.
+	// trigger's status.operation, which Record writes with it.
 	Token string
 	// Targets are the GitTargets the request is for, each the incarnation the worker decided for
 	// and with its own reason. The requester asks nothing for a target that has changed since.
@@ -115,10 +115,12 @@ type ApplyRequest struct {
 	// over an edit not yet pushed, is exactly what the quiet-branch rule exists to prevent. Nil is
 	// always current. It does not block.
 	Current func() bool
-	// Record writes the operation the worker recorded for this attempt on its trigger's status, and
-	// returns once it is written. The requester calls it just before the write that starts the
-	// apply, and asks nothing when it fails: a restart reads status.operation to find every apply
-	// that may have started. Nil records nothing.
+	// Record writes the operation this attempt starts on its trigger's status, and returns once it
+	// is written: the only way the operation reaches the trigger before the requester reports it.
+	// The requester calls it just before the write that starts the apply, and asks nothing when it
+	// fails: a restart reads status.operation to find every apply that may have started, and a
+	// trigger that is being deleted, or that records an apply somebody else started, starts none.
+	// Nil records nothing.
 	Record func(ctx context.Context) error
 	// Report receives the attempt's reports, in order, and does not block. An attempt that asked the
 	// applier for an apply reports its operation as it moves (ApplyRequested first) until a report
@@ -225,22 +227,29 @@ type ApplyResult struct {
 // ApplyTriggerStatus is what a branch worker publishes on an apply trigger: the operation it last
 // started on the trigger's applier, and whether a Repair is owed.
 type ApplyTriggerStatus struct {
-	// Operation replaces status.operation. Nil leaves it as it is: a worker that has started no
-	// operation since it began has nothing to say about the last one.
+	// Operation is the operation status.operation shows, once it holds it: the writer moves an
+	// operation on, and writes one on a status that holds none, but never replaces another. Nil
+	// leaves it as it is: a worker that has started no operation since it began has nothing to say
+	// about the last one.
 	Operation *v1alpha3.ApplyOperation
+	// Withdrawn is an operation the worker recorded (ApplyRequest.Record) for an attempt that then
+	// asked for no apply. If status.operation still holds it, it is put back as it was before.
+	Withdrawn *v1alpha3.ApplyOperation
 	// RepairOwed is status.repairOwed.
 	RepairOwed bool
 }
 
 // ApplyTriggerStatusWriter writes what the branch workers publish on their triggers' status.
 // PublishApplyTriggerStatus must not block: it is called on a branch worker's loop goroutine. A
-// later publication for the same trigger supersedes one not yet written.
+// later publication for the same trigger supersedes one not yet written, except for what that one
+// withdrew.
 type ApplyTriggerStatusWriter interface {
 	PublishApplyTriggerStatus(trigger TriggerRef, status ApplyTriggerStatus)
-	// PersistApplyTriggerStatus writes the trigger's latest publication now, unless it is written
-	// already, and returns once it is. It blocks, so it is never called on a worker's loop: the
-	// requester calls it (ApplyRequest.Record) before it starts an apply.
-	PersistApplyTriggerStatus(ctx context.Context, trigger TriggerRef) error
+	// RecordApplyOperation writes the operation an attempt starts on the trigger's status now, and
+	// returns once it is written. It blocks, so it is never called on a worker's loop: the requester
+	// calls it (ApplyRequest.Record) just before it starts the apply. It fails when the trigger is
+	// gone or being deleted, or its status holds another operation that has not completed.
+	RecordApplyOperation(ctx context.Context, trigger TriggerRef, operation *v1alpha3.ApplyOperation) error
 }
 
 // ApplyRequester carries out apply requests. RequestApply and PrefetchSource must not block: they

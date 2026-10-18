@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -243,6 +244,9 @@ type applierState struct {
 	operationID uint64
 	// published is what was last handed to the trigger status writer, nil before the first.
 	published *ApplyTriggerStatus
+	// withdrawn is an operation an attempt recorded on the trigger and then did not start, until
+	// it is published as withdrawn.
+	withdrawn *v1alpha3.ApplyOperation
 	// recovered is whether the trigger's recorded status was read back for this applier, once,
 	// when this process first listed it; followedFence is the fence token of the last operation
 	// the trigger's reconciler recorded that this worker followed (apply_recovery.go).
@@ -276,6 +280,10 @@ type inflightAttempt struct {
 	// recovered is an attempt that asks nothing: it follows an operation recorded on the trigger,
 	// by an earlier process or by the trigger's reconciler, to its end (apply_recovery.go).
 	recovered bool
+	// recorded is set, on the requester's goroutine and before its reports, once the requester
+	// called the attempt's Record: from then on the trigger may hold its operation, so an ending
+	// that asked for no apply withdraws it.
+	recorded atomic.Bool
 	// abandon closes the request's Abandoned channel.
 	abandon context.CancelFunc
 }
@@ -403,6 +411,9 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 			if state.inflight != nil {
 				state.inflight.abandon()
 			}
+			if state.withdrawn != nil {
+				l.publishStatusOf(state)
+			}
 			delete(l.appliers, ref)
 		}
 	}
@@ -522,13 +533,16 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	for key := range refusals {
 		delete(l.reapplyOwed, key)
 	}
+	// What the trigger shows now goes out before the request, so the record replaces the latest of
+	// it: the operation before this one may have completed on this very pass.
+	l.publishStatusOf(state)
 	token := operationToken(sentAt)
 	state.operation = &v1alpha3.ApplyOperation{
 		Phase: v1alpha3.ApplyOperationRequested, Reason: reason, Commit: tip, Token: token,
 		RequestedAt: metav1.NewTime(sentAt),
 	}
 	state.operationID = attempt.id
-	record := l.publishOperation(state)
+	record := l.recorder(state, attempt)
 
 	w := l.w
 	w.Log.Info("Asking the applier to apply",
@@ -638,9 +652,10 @@ func operationPhase(outcome ApplyOutcome) (v1alpha3.ApplyOperationPhase, bool) {
 }
 
 // recordOperation records an attempt's report in the operation its trigger's status shows, which
-// sendAttempt started as Requested before the attempt was sent. A report that ends an attempt that
-// asked for no apply puts back the operation recorded before it. Unresolved stays until the
-// operation completes, as advanceOperation keeps it.
+// sendAttempt started as Requested when it sent the attempt. A report that ends an attempt that
+// asked for no apply puts back the operation before it, and withdraws its own from the trigger if
+// the requester recorded it there. Unresolved stays until the operation completes, as
+// advanceOperation keeps it.
 func (s *applierState) recordOperation(attempt *inflightAttempt, res ApplyResult, now time.Time) {
 	if s.operationID != attempt.id {
 		return
@@ -648,7 +663,10 @@ func (s *applierState) recordOperation(attempt *inflightAttempt, res ApplyResult
 	phase, operated := operationPhase(res.Outcome)
 	if !operated {
 		if res.Outcome.Ends() {
-			// It asked for no apply: the record made before it was sent stands for nothing.
+			// It asked for no apply: its operation stands for nothing.
+			if attempt.recorded.Load() {
+				s.withdrawn = s.operation
+			}
 			s.operation, s.operationID = attempt.previous, attempt.previousID
 		}
 		return
@@ -681,42 +699,64 @@ func operationToken(sentAt time.Time) string {
 	return sentAt.UTC().Format(time.RFC3339Nano)
 }
 
-// publishOperation hands the trigger the operation an attempt is about to start, before the
-// attempt is sent, and returns the attempt's ApplyRequest.Record: the requester writes it through
-// before it starts the apply. Nil without a trigger status writer.
-func (l *branchWorkerEventLoop) publishOperation(state *applierState) func(context.Context) error {
+// recorder is the attempt's ApplyRequest.Record: the requester writes the operation the attempt
+// starts through to the trigger, just before it starts the apply. That is the only way it reaches
+// the trigger before the requester reports it, so an attempt that ends before it leaves the trigger
+// as it was. Nil without a trigger status writer.
+func (l *branchWorkerEventLoop) recorder(state *applierState, attempt *inflightAttempt) func(context.Context) error {
 	writer := l.w.triggerStatus
 	if writer == nil {
 		return nil
 	}
-	next := ApplyTriggerStatus{Operation: state.operation, RepairOwed: state.repairOwed()}
-	writer.PublishApplyTriggerStatus(state.ref.Trigger, next)
-	state.published = &next
-	trigger := state.ref.Trigger
-	return func(ctx context.Context) error { return writer.PersistApplyTriggerStatus(ctx, trigger) }
+	trigger, operation := state.ref.Trigger, state.operation.DeepCopy()
+	return func(ctx context.Context) error {
+		attempt.recorded.Store(true)
+		return writer.RecordApplyOperation(ctx, trigger, operation)
+	}
+}
+
+// shownOperation is the operation the applier's trigger is to show: the last one an attempt
+// started, once the requester reported it, and the one before it until then. An attempt that
+// follows a recorded operation shows it from the start: the trigger holds it already.
+func (s *applierState) shownOperation() *v1alpha3.ApplyOperation {
+	if attempt := s.inflight; attempt != nil && !attempt.recovered && attempt.phase == "" &&
+		s.operationID == attempt.id {
+		return attempt.previous
+	}
+	return s.operation
 }
 
 // publishTriggerStatus hands each applier's trigger what its status should show, when that changed
-// since the last time. A worker that has started no operation and owes no Repair has nothing to
-// say yet, and says nothing: the status may hold what an earlier process recorded.
+// since the last time.
 func (l *branchWorkerEventLoop) publishTriggerStatus() {
+	for _, ref := range l.sortedAppliers() {
+		l.publishStatusOf(l.appliers[ref])
+	}
+}
+
+// publishStatusOf hands one applier's trigger what its status should show, and the operation it
+// withdraws, when that changed since the last time. A worker that has started no operation and
+// owes no Repair has nothing to say yet, and says nothing: the status may hold what an earlier
+// process recorded.
+func (l *branchWorkerEventLoop) publishStatusOf(state *applierState) {
 	writer := l.w.triggerStatus
 	if writer == nil {
 		return
 	}
-	for _, ref := range l.sortedAppliers() {
-		state := l.appliers[ref]
-		next := ApplyTriggerStatus{Operation: state.operation, RepairOwed: state.repairOwed()}
+	next := ApplyTriggerStatus{
+		Operation: state.shownOperation(), Withdrawn: state.withdrawn, RepairOwed: state.repairOwed(),
+	}
+	if next.Withdrawn == nil {
 		if state.published == nil && next.Operation == nil && !next.RepairOwed {
-			continue
+			return
 		}
 		if state.published != nil && state.published.RepairOwed == next.RepairOwed &&
 			equality.Semantic.DeepEqual(state.published.Operation, next.Operation) {
-			continue
+			return
 		}
-		writer.PublishApplyTriggerStatus(ref.Trigger, next)
-		state.published = &next
 	}
+	writer.PublishApplyTriggerStatus(state.ref.Trigger, next)
+	state.published, state.withdrawn = &next, nil
 }
 
 // publishUnresolved publishes how many of this branch's operations are Unresolved, for the

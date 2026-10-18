@@ -188,18 +188,23 @@ func onlyApplier(t *testing.T, loop *branchWorkerEventLoop) *applierState {
 	return nil
 }
 
-// recordingStatusWriter records what a worker publishes on its triggers' status, in order, and
-// which triggers were written through.
+// recordingStatusWriter records what a worker publishes on its triggers' status, in order, and the
+// operations the requester recorded.
 type recordingStatusWriter struct {
 	mu        sync.Mutex
 	published map[TriggerRef][]ApplyTriggerStatus
-	persisted []TriggerRef
+	recorded  map[TriggerRef][]*configv1alpha3.ApplyOperation
 }
 
-func (r *recordingStatusWriter) PersistApplyTriggerStatus(_ context.Context, trigger TriggerRef) error {
+func (r *recordingStatusWriter) RecordApplyOperation(
+	_ context.Context, trigger TriggerRef, operation *configv1alpha3.ApplyOperation,
+) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.persisted = append(r.persisted, trigger)
+	if r.recorded == nil {
+		r.recorded = map[TriggerRef][]*configv1alpha3.ApplyOperation{}
+	}
+	r.recorded[trigger] = append(r.recorded[trigger], operation)
 	return nil
 }
 
@@ -223,11 +228,18 @@ func (r *recordingStatusWriter) last(trigger TriggerRef) (ApplyTriggerStatus, in
 	return all[len(all)-1], len(all)
 }
 
-// TestApplier_TheTriggerStatusFollowsEveryTransition: the operation is on the trigger's status
-// before the applier is asked (the request writes it through first, so a restart finds every apply
-// that may have started), and moves with every report, so `kubectl get fluxtriggers` shows where
-// an apply stands without anything having to reconcile. Unresolved holds until the operation
-// completes.
+// records are the operations recorded on trigger, in order.
+func (r *recordingStatusWriter) records(trigger TriggerRef) []*configv1alpha3.ApplyOperation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recorded[trigger]
+}
+
+// TestApplier_TheTriggerStatusFollowsEveryTransition: the operation reaches the trigger's status
+// first through the request's Record, which the requester writes through before it applies (so a
+// restart finds every apply that may have started), and moves with every report, so `kubectl get
+// fluxtriggers` shows where an apply stands without anything having to reconcile. Unresolved holds
+// until the operation completes.
 func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	writer := &recordingStatusWriter{}
@@ -238,10 +250,13 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	loop.serviceAppliers()
 	sent := requester.taken()
 	require.Len(t, sent, 1)
-	recorded, n := writer.last(trigger)
-	require.Equal(t, 1, n, "the operation is published as the attempt is sent")
-	requested := recorded.Operation
-	require.NotNil(t, requested)
+	_, n := writer.last(trigger)
+	require.Zero(t, n, "nothing is published as the attempt is sent")
+	require.NotNil(t, sent[0].Record)
+	require.NoError(t, sent[0].Record(context.Background()))
+	records := writer.records(trigger)
+	require.Len(t, records, 1, "the request writes it through before it applies")
+	requested := records[0]
 	assert.Equal(t, configv1alpha3.ApplyOperationRequested, requested.Phase)
 	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requested.Reason)
 	assert.Equal(t, "bbb", requested.Commit)
@@ -249,9 +264,6 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	assert.Equal(t, requested.Token, sent[0].Token, "the request carries the token it is recorded with")
 	assert.False(t, requested.RequestedAt.IsZero())
 	assert.Nil(t, requested.FinishedAt)
-	require.NotNil(t, sent[0].Record)
-	require.NoError(t, sent[0].Record(context.Background()))
-	assert.Equal(t, []TriggerRef{trigger}, writer.persisted, "the request writes it through before it applies")
 
 	phase := func(res ApplyResult) *configv1alpha3.ApplyOperation {
 		t.Helper()
@@ -260,10 +272,11 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 		loop.serviceAppliers()
 		status, _ := writer.last(trigger)
 		require.NotNil(t, status.Operation)
+		assert.Nil(t, status.Withdrawn)
 		return status.Operation
 	}
 
-	assert.Equal(t, requested, phase(ApplyResult{Outcome: ApplyRequested}))
+	assert.Equal(t, requested, phase(ApplyResult{Outcome: ApplyRequested}), "published once reported")
 	assert.Equal(t, configv1alpha3.ApplyOperationRunning, phase(ApplyResult{Outcome: ApplyRunning}).Phase)
 	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, phase(ApplyResult{Outcome: ApplyUnresolved}).Phase)
 	settling := phase(ApplyResult{Outcome: ApplySettling, FenceToken: "T2"})
@@ -284,11 +297,51 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	assert.Equal(t, before, after, "an unchanged status is not published again")
 }
 
-// TestApplier_AnAttemptThatAskedNothingPutsTheLastOperationBack: the operation is recorded before
-// the attempt is sent, so an attempt that ends without asking for an apply (here Dropped, which
-// backs off, so nothing is sent in its place at once) must not leave a Requested operation behind
-// that never ran: the one before it is published again.
-func TestApplier_AnAttemptThatAskedNothingPutsTheLastOperationBack(t *testing.T) {
+// TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone is the fourth review's first
+// finding: the Requested operation was published as the attempt was sent, so an attempt the
+// requester refused (an Argo CD Application with automated sync on: Rejected) left a Requested
+// operation on the trigger that nothing would ever complete. Whatever ends an attempt before its
+// Record, the trigger is told nothing about it.
+func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T) {
+	for _, outcome := range []ApplyOutcome{
+		ApplyRejected, ApplyDropped, ApplyStale, ApplyRequestFailed, ApplyCurrent,
+	} {
+		t.Run(string(outcome), func(t *testing.T) {
+			loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))
+			writer := &recordingStatusWriter{}
+			loop.w.triggerStatus = writer
+			trigger := argoApplierRef("alpha").Trigger
+
+			owesForeign(loop.w)
+			loop.serviceAppliers()
+			first := requester.taken()
+			require.Len(t, first, 1)
+			report(first[0], ApplyRequested)
+			report(first[0], ApplySucceeded)
+			loop.serviceAppliers()
+			completed, published := writer.last(trigger)
+			require.Equal(t, configv1alpha3.ApplyOperationSucceeded, completed.Operation.Phase)
+
+			owesForeign(loop.w)
+			loop.serviceAppliers()
+			second := requester.taken()
+			require.Len(t, second, 1)
+			report(second[0], outcome)
+			loop.serviceAppliers()
+
+			_, after := writer.last(trigger)
+			assert.Equal(t, published, after, "nothing is published for an attempt that was never recorded")
+			assert.Empty(t, writer.records(trigger))
+			assert.Equal(t, completed.Operation, onlyApplier(t, loop).shownOperation(),
+				"the last operation stands")
+		})
+	}
+}
+
+// TestApplier_AnAttemptEndedAfterItsRecordWithdrawsIt: the requester recorded the operation, and
+// then could not start the apply (the resume failed). The operation is withdrawn, so the trigger
+// shows the one before it again, and a restart does not follow an apply that never started.
+func TestApplier_AnAttemptEndedAfterItsRecordWithdrawsIt(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	writer := &recordingStatusWriter{}
 	loop.w.triggerStatus = writer
@@ -302,20 +355,24 @@ func TestApplier_AnAttemptThatAskedNothingPutsTheLastOperationBack(t *testing.T)
 	report(first[0], ApplySucceeded)
 	loop.serviceAppliers()
 	completed, _ := writer.last(trigger)
-	require.Equal(t, configv1alpha3.ApplyOperationSucceeded, completed.Operation.Phase)
 
 	owesForeign(loop.w)
 	loop.serviceAppliers()
 	second := requester.taken()
 	require.Len(t, second, 1)
-	recorded, _ := writer.last(trigger)
-	require.Equal(t, configv1alpha3.ApplyOperationRequested, recorded.Operation.Phase)
-
-	report(second[0], ApplyDropped)
+	require.NoError(t, second[0].Record(context.Background()))
+	recorded := writer.records(trigger)
+	require.Len(t, recorded, 1)
+	report(second[0], ApplyRequestFailed)
 	loop.serviceAppliers()
-	assert.Empty(t, requester.taken())
-	restored, _ := writer.last(trigger)
-	assert.Equal(t, completed.Operation, restored.Operation)
+
+	withdrawal, n := writer.last(trigger)
+	assert.Equal(t, recorded[0], withdrawal.Withdrawn, "the recorded operation is withdrawn")
+	assert.Equal(t, completed.Operation, withdrawal.Operation, "and the one before it shown again")
+
+	loop.serviceAppliers()
+	_, again := writer.last(trigger)
+	assert.Equal(t, n, again, "withdrawn once")
 }
 
 // TestApplier_TheTriggerStatusSaysARepairIsOwed: repairOwed is published from the withheld write
