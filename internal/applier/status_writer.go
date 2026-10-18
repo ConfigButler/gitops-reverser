@@ -133,8 +133,7 @@ func (w *StatusWriter) PublishApplyTriggerStatus(trigger git.TriggerRef, status 
 		next.status.Operation = stored(status.Operation)
 	}
 	if status.Withdrawn != nil {
-		next.status.Withdrawn = stored(status.Withdrawn)
-		next.withdrawn = []*v1alpha3.ApplyOperation{next.status.Withdrawn}
+		next.withdrawn = []*v1alpha3.ApplyOperation{stored(status.Withdrawn)}
 	}
 	w.mu.Lock()
 	w.pending[trigger] = w.pending[trigger].merged(next)

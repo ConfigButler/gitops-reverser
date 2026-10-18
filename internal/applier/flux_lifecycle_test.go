@@ -815,7 +815,8 @@ func TestFlux_SuspendAndRelease(t *testing.T) {
 	require.NoError(t, err)
 	eventually(t, func() bool {
 		held, err := flux.Suspension(context.Background(), checkoutKey)
-		return err == nil && held.Suspended && held.Held && held.Fenced && held.Token == token
+		return err == nil && held.Suspended && held.Held && held.Fenced &&
+			sim.Kustomization(checkoutKey).GetAnnotations()[fluxmeta.ReconcileRequestAnnotation] == token
 	}, "held and fenced")
 
 	keeper, err := flux.Release(context.Background(), checkoutKey)

@@ -25,7 +25,7 @@ import (
 // An apply is safe only when nothing live is missing from the commit being applied, and only the
 // workers on this branch can see the edits that are live and not yet pushed: their open commit
 // windows and pending writes. So an attempt goes out only on a QUIET branch, with neither on this
-// worker or on any other worker writing the same repository and branch. Three things owe one:
+// worker or on any other worker writing the same repository and branch. Four things owe one:
 //
 //   - ForeignCommit: an observation of the remote found the branch somewhere this worker did not
 //     push it. Every applier on the branch is asked as soon as the branch is quiet, and an open
@@ -263,11 +263,7 @@ func (s *applierState) repairOwed() bool {
 // inflightAttempt is what an attempt carries away from its applier's obligations. One that did not
 // succeed gives it back (restoreAttempt); one that succeeded keeps it.
 type inflightAttempt struct {
-	id uint64
-	// reason, commit and sentAt are what the attempt asked for, and when, for its operation record.
-	reason   v1alpha3.ApplyReason
-	commit   string
-	sentAt   time.Time
+	id       uint64
 	foreign  bool
 	catchUp  bool
 	repair   bool
@@ -537,8 +533,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	abandoned, abandon := context.WithCancel(l.w.ctx)
 	sentAt := time.Now()
 	attempt := &inflightAttempt{
-		id: l.nextApplyID, reason: reason, commit: tip, sentAt: sentAt,
-		foreign: state.foreign, catchUp: state.catchUp, repair: state.repair,
+		id: l.nextApplyID, foreign: state.foreign, catchUp: state.catchUp, repair: state.repair,
 		refusals: refusals, abandon: abandon,
 		previous: state.operation, previousID: state.operationID,
 	}
@@ -565,7 +560,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		"gitTargets", len(targets), "priorFailures", state.failures)
 	w.applyRequester.RequestApply(ApplyRequest{
 		ID:            attempt.id,
-		Branch:        BranchKey{RepoNamespace: w.GitProviderNamespace, RepoName: w.GitProviderRef, Branch: w.Branch},
+		Branch:        w.branchKey(),
 		Applier:       state.ref,
 		Reason:        reason,
 		Commit:        tip,
@@ -609,7 +604,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 			state.failures, state.retryAt = 0, time.Time{}
 			continue
 		case ApplyStale:
-			// The decision went stale before the patch: nothing failed, and the next quiet moment
+			// The decision went stale before the write: nothing failed, and the next quiet moment
 			// decides again, at the tip as it is then.
 			l.restoreAttempt(state, attempt)
 			continue
@@ -821,6 +816,11 @@ func (l *branchWorkerEventLoop) applierAwaiting(id uint64) *applierState {
 func (l *branchWorkerEventLoop) workWaiting() bool {
 	_, siblingWorking := l.w.siblingBusy()
 	return len(l.w.eventQueue) > 0 || siblingWorking
+}
+
+// branchKey is the repository and branch this worker writes.
+func (w *BranchWorker) branchKey() BranchKey {
+	return BranchKey{RepoNamespace: w.GitProviderNamespace, RepoName: w.GitProviderRef, Branch: w.Branch}
 }
 
 // decisionHolds is ApplyRequest.Current for an attempt decided at tip: the branch is still at that

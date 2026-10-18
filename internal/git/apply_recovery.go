@@ -83,8 +83,7 @@ func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1
 	l.nextApplyID++
 	abandoned, abandon := context.WithCancel(w.ctx)
 	attempt := &inflightAttempt{
-		id: l.nextApplyID, reason: recorded.Reason, commit: recorded.Commit, sentAt: now,
-		abandon: abandon, recovered: true,
+		id: l.nextApplyID, abandon: abandon, recovered: true,
 		previous: state.operation, previousID: state.operationID,
 	}
 	state.inflight, state.lastTurn = attempt, attempt.id
@@ -101,7 +100,7 @@ func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1
 		"reason", string(recorded.Reason), "commit", recorded.Commit, "startedElsewhere", recorded.Token == "")
 	w.applyRequester.RequestApply(ApplyRequest{
 		ID:        attempt.id,
-		Branch:    BranchKey{RepoNamespace: w.GitProviderNamespace, RepoName: w.GitProviderRef, Branch: w.Branch},
+		Branch:    w.branchKey(),
 		Applier:   state.ref,
 		Reason:    recorded.Reason,
 		Commit:    recorded.Commit,

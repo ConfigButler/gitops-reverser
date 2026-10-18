@@ -59,7 +59,8 @@ func (r *GitTargetReconciler) applyTriggerVerdict(
 	trigger, err := git.ResolveApplyTrigger(ctx, r.Client, target)
 	switch {
 	case err != nil:
-		return applyTriggerVerdict{value: keptApplyTriggerReady(target, fmt.Sprintf("Cannot read %s: %v", name, err))}
+		return applyTriggerVerdict{value: keptCondition(target.Status.Conditions, GitTargetConditionApplyTriggerReady,
+			fmt.Sprintf("Cannot read %s: %v", name, err))}
 	case trigger == nil:
 		return applyTriggerVerdict{value: conditionValue{
 			Status:  metav1.ConditionFalse,
@@ -105,14 +106,6 @@ func (r *GitTargetReconciler) applyTriggerVerdict(
 		Message: fmt.Sprintf("%s holds %s %s, which applies this repository and branch",
 			name, trigger.ApplierKind(), trigger.Applier()),
 	}}
-}
-
-// keptApplyTriggerReady is the ApplyTriggerReady value a read that failed publishes.
-func keptApplyTriggerReady(target *configbutleraiv1alpha3.GitTarget, message string) conditionValue {
-	if cond := findCondition(target.Status.Conditions, GitTargetConditionApplyTriggerReady); cond != nil {
-		return conditionValue{Status: cond.Status, Reason: cond.Reason, Message: cond.Message}
-	}
-	return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonProgressing, Message: message}
 }
 
 // applyTriggerReadiness contributes ApplyTriggerReady to the trio. A trigger that applies another

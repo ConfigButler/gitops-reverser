@@ -227,7 +227,7 @@ func setTriggerSource(t *testing.T, f *dispatcherFixture, name string, prefetch 
 }
 
 func prefetchRequest(commit string) git.PrefetchRequest {
-	return git.PrefetchRequest{Branch: testBranchKey, Applier: checkout, Commit: commit}
+	return git.PrefetchRequest{Applier: checkout, Commit: commit}
 }
 
 // TestDispatcher_PrefetchFetchesTheSourceOnlyWhenItMay: the source is stamped when every consumer is

@@ -243,6 +243,9 @@ func newDispatcherFixture(t *testing.T, targets []client.Object, sourceObjs ...r
 // attempt carries out one request synchronously, as the dispatcher's goroutine does, up to the
 // request: it does not follow the operation a delivered request started.
 func (f *dispatcherFixture) attempt(req git.ApplyRequest) git.ApplyResult {
+	if req.Token == "" {
+		req.Token = requestToken(f.dispatcher.Now())
+	}
 	res, _ := f.dispatcher.attempt(context.Background(), req)
 	return res
 }
@@ -635,9 +638,9 @@ func TestStrongerApplyReason(t *testing.T) {
 }
 
 func TestDescribeCommit(t *testing.T) {
-	assert.Equal(t, "4f2c1ab9", describeCommit(testCommit))
-	assert.Equal(t, "abc", describeCommit("abc"))
-	assert.Equal(t, "the branch, which the remote does not carry", describeCommit(""))
+	assert.Equal(t, "4f2c1ab9", DescribeCommit(testCommit))
+	assert.Equal(t, "abc", DescribeCommit("abc"))
+	assert.Equal(t, "the branch, which the remote does not carry", DescribeCommit(""))
 }
 
 // TestDispatcher_ARequestedApplyIsFollowedUntilFluxFinished: the worker's attempt is the apply

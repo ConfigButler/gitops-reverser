@@ -60,12 +60,12 @@ const shortCommitLength = 8
 // errNotRunning fails an attempt made before the dispatcher started or after it stopped.
 var errNotRunning = errors.New("the apply request dispatcher is not running")
 
-// SourceClients resolves the dynamic client of the cluster an applier lives in, by ClusterProvider
+// Clients resolves the dynamic client of the cluster an applier lives in, by ClusterProvider
 // name (a trigger's spec.clusterProviderRef). In production it is
 // (*watch.Manager).ApplierDynamicClient.
-type SourceClients func(ctx context.Context, clusterID string) (dynamic.Interface, error)
+type Clients func(ctx context.Context, clusterID string) (dynamic.Interface, error)
 
-// DefaultAttemptTimeout bounds one attempt up to its request: a source cluster that does not
+// DefaultAttemptTimeout bounds one attempt up to its request: an applier's cluster that does not
 // answer fails it, and the branch worker decides when to try again.
 const DefaultAttemptTimeout = 30 * time.Second
 
@@ -85,8 +85,8 @@ const DefaultPollInterval = 2 * time.Second
 // the poll interval.
 const DefaultUnresolvedPollMax = time.Minute
 
-// DefaultPollTimeout bounds one read of a requested apply's progress.
-const DefaultPollTimeout = 10 * time.Second
+// pollTimeout bounds one read of a requested apply's progress.
+const pollTimeout = 10 * time.Second
 
 // Dispatcher carries out the apply requests the branch workers decide. It implements
 // git.ApplyRequester, and runs as a manager.Runnable beside the branch workers (it asks for leader
@@ -99,18 +99,18 @@ const DefaultPollTimeout = 10 * time.Second
 // branch. So nothing goes out that a worker did not check on a quiet branch, and nothing here can
 // turn a delayed decision into an apply nobody checked.
 //
-// What it does check is what can change between the worker's decision and the patch. It reads each
+// What it does check is what can change between the worker's decision and the write. It reads each
 // GitTarget again and asks only for those that are still the incarnation the worker decided for,
 // still name a trigger that holds this applier on this branch, are still admitted by their
-// ClusterProviders, and, for a Refusal, still consent. When no target still holds the request's reason it asks nothing at all,
-// rather than ask for something weaker: a weaker request is the worker's to decide. Then the
-// applier's client (Flux or Argo CD, by the applier's kind) checks the source binding before it
-// writes.
+// ClusterProviders, and, for a Refusal, still consent. When no target still holds the request's
+// reason it asks nothing at all, rather than ask for something weaker: a weaker request is the
+// worker's to decide. Then the applier's client (Flux or Argo CD, by the applier's kind) checks the
+// source binding before it writes.
 type Dispatcher struct {
-	reader        client.Reader
-	sourceClients SourceClients
-	recorder      record.EventRecorder
-	log           logr.Logger
+	reader         client.Reader
+	applierClients Clients
+	recorder       record.EventRecorder
+	log            logr.Logger
 
 	// AttemptTimeout bounds one attempt up to its request. An Argo CD attempt may wait out an
 	// operation already running for up to OperationWait more. Set before Start, as are the rest.
@@ -120,15 +120,13 @@ type Dispatcher struct {
 	// UnresolvedAfter is how long a requested apply may take before it is reported Unresolved.
 	UnresolvedAfter time.Duration
 	// PollInterval is how often a requested apply's progress is read, and UnresolvedPollMax caps the
-	// interval an Unresolved one is read at. PollTimeout bounds one read.
+	// interval an Unresolved one is read at.
 	PollInterval      time.Duration
 	UnresolvedPollMax time.Duration
-	PollTimeout       time.Duration
 	// Now is the clock request tokens are taken from.
 	Now func() time.Time
 	// APIReader reads a FluxTrigger uncached just before its Kustomization is resumed, so a suspend
-	// its reconciler is making is seen (Ask.Held). Nil reads through the reader NewDispatcher was
-	// given.
+	// its reconciler is making is seen (Ask.Held). NewDispatcher sets it to the reader it was given.
 	APIReader client.Reader
 
 	runMu    sync.RWMutex
@@ -159,16 +157,17 @@ var (
 )
 
 // NewDispatcher returns a Dispatcher that reads GitTargets through reader (the control cluster),
-// reaches appliers through sourceClients, and records Events through recorder (nil records none).
+// reaches appliers through applierClients, and records Events through recorder (nil records none).
 func NewDispatcher(
 	reader client.Reader,
-	sourceClients SourceClients,
+	applierClients Clients,
 	recorder record.EventRecorder,
 	log logr.Logger,
 ) *Dispatcher {
 	return &Dispatcher{
 		reader:            reader,
-		sourceClients:     sourceClients,
+		applierClients:    applierClients,
+		APIReader:         reader,
 		recorder:          recorder,
 		log:               log,
 		AttemptTimeout:    DefaultAttemptTimeout,
@@ -176,7 +175,6 @@ func NewDispatcher(
 		UnresolvedAfter:   DefaultUnresolvedAfter,
 		PollInterval:      DefaultPollInterval,
 		UnresolvedPollMax: DefaultUnresolvedPollMax,
-		PollTimeout:       DefaultPollTimeout,
 		Now:               time.Now,
 	}
 }
@@ -251,9 +249,9 @@ func (d *Dispatcher) followRecovered(ctx context.Context, req git.ApplyRequest) 
 	defer d.follows(req.Applier.Trigger, req.Recovered.Token)()
 	interval := d.PollInterval
 	for {
-		sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
+		applierClient, err := d.applierClients(ctx, req.Applier.Cluster)
 		if err == nil {
-			applier := d.client(req.Applier.Kind, sourceClient)
+			applier := d.client(req.Applier.Kind, applierClient)
 			op := &operation{applier: applier, ref: applierName(req.Applier), started: recoveredStarted(req), log: log}
 			if res, followed := d.follow(ctx, req, op); followed {
 				req.Report(res)
@@ -368,18 +366,14 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 		return report(git.ApplyDropped, nil), nil
 	}
 
-	sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
+	applierClient, err := d.applierClients(ctx, req.Applier.Cluster)
 	if err != nil {
-		return d.failure(ctx, req, eligible,
-			report(git.ApplyRequestFailed, fmt.Errorf("source cluster %q: %w", req.Applier.Cluster, err)), log), nil
+		err = fmt.Errorf("the applier's cluster %q: %w", req.Applier.Cluster, err)
+		return d.failure(ctx, req, eligible, report(git.ApplyRequestFailed, err), log), nil
 	}
-	applier := d.client(req.Applier.Kind, sourceClient)
-	token := req.Token
-	if token == "" {
-		token = requestToken(d.Now())
-	}
+	applier := d.client(req.Applier.Kind, applierClient)
 	started, err := applier.Request(ctx, applierName(req.Applier), Ask{
-		Want: want, Commit: req.Commit, Reason: req.Reason, Token: token, Current: req.Current, Record: req.Record,
+		Want: want, Commit: req.Commit, Reason: req.Reason, Token: req.Token, Current: req.Current, Record: req.Record,
 		Held: func(ctx context.Context) error { return d.triggerHolds(ctx, req.Applier.Trigger) },
 	})
 	switch {
@@ -417,15 +411,15 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 
 // client is the Client for an applier of kind, over its cluster's client and this dispatcher's
 // clock and timings.
-func (d *Dispatcher) client(kind string, sourceClient dynamic.Interface) Client {
+func (d *Dispatcher) client(kind string, applierClient dynamic.Interface) Client {
 	if kind == v1alpha3.ApplierKindApplication {
-		argo := NewArgoCD(sourceClient)
+		argo := NewArgoCD(applierClient)
 		argo.Now = d.Now
 		argo.OperationWait = d.OperationWait
 		argo.PollInterval = d.PollInterval
 		return argo
 	}
-	flux := NewFlux(sourceClient)
+	flux := NewFlux(applierClient)
 	flux.Now = d.Now
 	flux.PollInterval = min(flux.PollInterval, d.PollInterval)
 	return flux
@@ -511,10 +505,10 @@ func (d *Dispatcher) fenceAbandoned(ctx context.Context, req git.ApplyRequest, o
 	}
 }
 
-// progress reads an operation's progress once, within PollTimeout. An applier that is gone, or a
+// progress reads an operation's progress once, within pollTimeout. An applier that is gone, or a
 // trigger that is being deleted, completes it as Failed.
 func (d *Dispatcher) progress(ctx context.Context, req git.ApplyRequest, op *operation) (Progress, error) {
-	read, cancel := context.WithTimeout(ctx, d.PollTimeout)
+	read, cancel := context.WithTimeout(ctx, pollTimeout)
 	defer cancel()
 	released, err := d.triggerReleased(read, req.Applier.Trigger)
 	if err != nil {
@@ -549,16 +543,12 @@ func (d *Dispatcher) triggerHolds(ctx context.Context, ref git.TriggerRef) error
 	if ref.Kind != v1alpha3.ApplyTriggerKindFlux {
 		return nil
 	}
-	reader := d.APIReader
-	if reader == nil {
-		reader = d.reader
-	}
 	trigger := &v1alpha3.FluxTrigger{}
-	if err := reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger); err != nil {
+	if err := d.APIReader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger); err != nil {
 		return fmt.Errorf("read %s: %w", ref, err)
 	}
 	held := apimeta.FindStatusCondition(trigger.Status.Conditions, TriggerConditionSuspended)
-	holder, err := HeldByAnother(ctx, reader, trigger)
+	holder, err := HeldByAnother(ctx, d.APIReader, trigger)
 	switch {
 	case err != nil:
 		return fmt.Errorf("check which trigger holds the Kustomization of %s: %w", ref, err)
@@ -579,20 +569,16 @@ func (d *Dispatcher) triggerHolds(ctx context.Context, ref git.TriggerRef) error
 	return nil
 }
 
-// triggerReleased reports whether a trigger is gone or being deleted. It reads uncached (APIReader)
-// when it can, because the step that follows may suspend the Kustomization: after a hand-back's
-// release, a suspend from a cached read that still showed the trigger would hold a Kustomization no
-// trigger holds any more.
+// triggerReleased reports whether a trigger is gone or being deleted. It reads through APIReader,
+// uncached in production, because the step that follows may suspend the Kustomization: after a
+// hand-back's release, a suspend from a cached read that still showed the trigger would hold a
+// Kustomization no trigger holds any more.
 func (d *Dispatcher) triggerReleased(ctx context.Context, ref git.TriggerRef) (bool, error) {
 	trigger := v1alpha3.NewApplyTrigger(ref.Kind)
 	if trigger == nil {
 		return false, nil
 	}
-	reader := d.APIReader
-	if reader == nil {
-		reader = d.reader
-	}
-	err := reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger)
+	err := d.APIReader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger)
 	switch {
 	case apierrors.IsNotFound(err):
 		return true, nil
@@ -650,7 +636,7 @@ func (d *Dispatcher) completed(
 	if req.PriorFailures == 0 {
 		d.event(ctx, req, corev1.EventTypeWarning, EventReasonApplyFailed,
 			"%s did not complete the apply of %s (%s), and will be asked again once the branch is quiet: %v",
-			describeApplier(req.Applier), describeCommit(req.Commit), req.Reason, err)
+			describeApplier(req.Applier), DescribeCommit(req.Commit), req.Reason, err)
 	}
 	result.Err = err
 	return result
@@ -664,7 +650,7 @@ func (d *Dispatcher) unresolved(ctx context.Context, req git.ApplyRequest, op *o
 	d.event(ctx, req, corev1.EventTypeWarning, EventReasonApplyUnresolved,
 		"%s has not completed the apply of %s (%s) within %s; GitOps Reverser keeps following it, and asks "+
 			"it nothing more until it completes",
-		describeApplier(req.Applier), describeCommit(req.Commit), req.Reason, d.UnresolvedAfter)
+		describeApplier(req.Applier), DescribeCommit(req.Commit), req.Reason, d.UnresolvedAfter)
 }
 
 // event records an Event on each of the request's GitTargets that still exists.
@@ -711,7 +697,7 @@ func (d *Dispatcher) failure(
 		for _, e := range eligible {
 			d.recorder.Eventf(e.target, corev1.EventTypeWarning, EventReasonApplyRequestFailed,
 				"could not ask %s to apply %s (%s), and will ask again once the branch is quiet: %v",
-				describeApplier(req.Applier), describeCommit(req.Commit), e.reason, res.Err)
+				describeApplier(req.Applier), DescribeCommit(req.Commit), e.reason, res.Err)
 		}
 	}
 	return res
@@ -822,7 +808,7 @@ func (d *Dispatcher) delivered(req git.ApplyRequest, eligible []eligibleTarget) 
 	}
 	for _, e := range eligible {
 		d.recorder.Eventf(e.target, corev1.EventTypeNormal, EventReasonApplyRequested,
-			"asked %s to apply %s (%s)", describeApplier(req.Applier), describeCommit(req.Commit), e.reason)
+			"asked %s to apply %s (%s)", describeApplier(req.Applier), DescribeCommit(req.Commit), e.reason)
 	}
 }
 
@@ -831,8 +817,9 @@ func describeApplier(ref git.ApplierRef) string {
 	return ref.Kind + " " + applierName(ref).String()
 }
 
-// describeCommit names a commit in an Event: its short hash, or what an empty one means.
-func describeCommit(commit string) string {
+// DescribeCommit names a commit in an Event or a message: its short hash, or what an empty one
+// means.
+func DescribeCommit(commit string) string {
 	if commit == "" {
 		return "the branch, which the remote does not carry"
 	}
@@ -868,16 +855,16 @@ func applierKindOf(req git.ApplyRequest) string {
 // applies whatever the artifact becomes), or when the artifact already holds the commit. It applies
 // nothing, so it reports nothing.
 func (d *Dispatcher) PrefetchSource(req git.PrefetchRequest) {
+	if req.Applier.Kind != v1alpha3.ApplierKindKustomization {
+		return
+	}
 	d.runMu.RLock()
 	ctx := d.run
 	if ctx != nil {
 		d.attempts.Add(1)
 	}
 	d.runMu.RUnlock()
-	if ctx == nil || req.Applier.Kind != v1alpha3.ApplierKindKustomization {
-		if ctx != nil {
-			d.attempts.Done()
-		}
+	if ctx == nil {
 		return
 	}
 	go func() {
@@ -928,20 +915,20 @@ func (d *Dispatcher) prefetch(ctx context.Context, req git.PrefetchRequest) erro
 	return flux.Prefetch(ctx, applierName(req.Applier), req.Commit)
 }
 
-// heldNow checks again, in the source cluster, what the trigger's status.source.prefetch said when
+// heldNow checks again, in the applier's cluster, what the trigger's status.source.prefetch said when
 // its reconciler last ran, up to a minute ago: every consumer of its GitRepository is a
 // Kustomization a FluxTrigger on the same cluster names, and is suspended, held by GitOps Reverser
 // and fenced now. A consumer that appeared since, or one Flux applies on its own again, would apply
 // the prefetched artifact at once, over live edits not pushed yet (errPrefetchHeld). It returns the
-// Flux client of the source cluster.
+// Flux client of the applier's cluster.
 func (d *Dispatcher) heldNow(
 	ctx context.Context, req git.PrefetchRequest, trigger *v1alpha3.FluxTrigger, triggers []v1alpha3.FluxTrigger,
 ) (*Flux, error) {
-	sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
+	applierClient, err := d.applierClients(ctx, req.Applier.Cluster)
 	if err != nil {
 		return nil, err
 	}
-	flux := NewFlux(sourceClient)
+	flux := NewFlux(applierClient)
 	flux.Now = d.Now
 	named := map[types.NamespacedName]bool{}
 	for i := range triggers {

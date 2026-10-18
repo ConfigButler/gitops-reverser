@@ -111,9 +111,9 @@ type ApplyRequest struct {
 	PriorFailures int
 	// Current reports whether the decision still holds: Commit is still the branch tip, and nothing
 	// live is waiting to be published on this worker or a sibling. The requester asks it just before
-	// it patches, and asks nothing when it is false (ApplyStale): an apply of an older commit, or
-	// over an edit not yet pushed, is exactly what the quiet-branch rule exists to prevent. Nil is
-	// always current. It does not block.
+	// the write that starts the apply, and asks nothing when it is false (ApplyStale): an apply of an
+	// older commit, or over an edit not yet pushed, is exactly what the quiet-branch rule exists to
+	// prevent. Nil is always current. It does not block.
 	Current func() bool
 	// Record writes the operation this attempt starts on its trigger's status, and returns once it
 	// is written: the only way the operation reaches the trigger before the requester reports it.
@@ -180,7 +180,7 @@ const (
 	// request carried: each changed, is no longer admitted by its ClusterProvider, or withdrew its
 	// consent to a Refusal. The worker decides again from what the targets are now.
 	ApplyDropped ApplyOutcome = "Dropped"
-	// ApplyStale asked nothing, because the decision no longer held when the patch was due: the
+	// ApplyStale asked nothing, because the decision no longer held when the write was due: the
 	// branch moved on, or became busy (ApplyRequest.Current). It is no failure; the worker decides
 	// again at the next quiet moment, at the tip as it is then.
 	ApplyStale ApplyOutcome = "Stale"
@@ -255,7 +255,6 @@ type ApplyRequester interface {
 
 // PrefetchRequest asks the source an applier applies to fetch a commit ahead of its apply.
 type PrefetchRequest struct {
-	Branch  BranchKey
 	Applier ApplierRef
 	Commit  string
 }

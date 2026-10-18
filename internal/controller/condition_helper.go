@@ -37,6 +37,15 @@ func findCondition(conditions []metav1.Condition, conditionType string) *metav1.
 	return apimeta.FindStatusCondition(conditions, conditionType)
 }
 
+// keptCondition is the value of conditionType that a check that could not be made publishes: the
+// last one published, or Unknown with message when there is none.
+func keptCondition(conditions []metav1.Condition, conditionType, message string) conditionValue {
+	if cond := findCondition(conditions, conditionType); cond != nil {
+		return conditionValue{Status: cond.Status, Reason: cond.Reason, Message: cond.Message}
+	}
+	return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonProgressing, Message: message}
+}
+
 func conditionIsTrue(conditions []metav1.Condition, conditionType string) bool {
 	return apimeta.IsStatusConditionTrue(conditions, conditionType)
 }

@@ -13,7 +13,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/dynamic"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -58,14 +57,15 @@ func (r *ApplyTriggerReconciler) holdKustomization(
 	defer cancel()
 	held, err := r.readHold(ctx, trigger)
 	if err != nil {
-		return keptSuspended(trigger, err.Error())
+		return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended, err.Error())
 	}
 	if !held.inFlight() || held.operation.Token == "" {
 		r.unfollowed.forget(trigger, "")
 	}
 	if held.inFlight() && held.operation.Token != "" {
 		if r.followed(trigger, held.operation) {
-			return keptSuspended(trigger, fmt.Sprintf("Kustomization %s is resumed for an apply", trigger.Applier()))
+			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended,
+				fmt.Sprintf("Kustomization %s is resumed for an apply", trigger.Applier()))
 		}
 		return r.fenceUnfollowed(ctx, trigger, held)
 	}
@@ -119,11 +119,11 @@ func (r *ApplyTriggerReconciler) fenceUnfollowed(
 	case !held.suspension.Suspended || !held.suspension.Held:
 		token, err := held.flux.Suspend(ctx, ref)
 		if err != nil {
-			return keptSuspended(trigger, err.Error())
+			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended, err.Error())
 		}
 		r.event(trigger, corev1.EventTypeWarning, EventReasonOperationUnfollowed,
 			"the %s apply of %s is followed by nobody; suspended Kustomization %s again", operation.Reason,
-			describeCommit(operation.Commit), ref)
+			applier.DescribeCommit(operation.Commit), ref)
 		operation.FenceToken = token
 		operation.Message = "followed by nobody; suspended again, and complete once nothing it started is running"
 		trigger.Status.Operation = operation
@@ -264,7 +264,7 @@ func (r *ApplyTriggerReconciler) hold(
 		}
 		token, err := held.flux.Suspend(ctx, ref)
 		if err != nil {
-			return keptSuspended(trigger, err.Error())
+			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended, err.Error())
 		}
 		r.suspended(trigger, token, heldBefore(trigger) || held.inFlight())
 		return fencing(fmt.Sprintf("Kustomization %s is being suspended", ref))
@@ -272,7 +272,7 @@ func (r *ApplyTriggerReconciler) hold(
 		// Suspended by somebody else's write (`flux suspend`): take the field over, with a token, so
 		// nothing that write let run is taken for idle.
 		if _, err := held.flux.Suspend(ctx, ref); err != nil {
-			return keptSuspended(trigger, err.Error())
+			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended, err.Error())
 		}
 		return fencing(fmt.Sprintf("Kustomization %s is being suspended under GitOps Reverser", ref))
 	case !held.suspension.Fenced:
@@ -305,15 +305,6 @@ func (r *ApplyTriggerReconciler) suspended(trigger *configbutleraiv1alpha3.FluxT
 	}
 }
 
-// keptSuspended is the Suspended value a check that could not be made publishes: the last one, or
-// Unknown.
-func keptSuspended(trigger *configbutleraiv1alpha3.FluxTrigger, message string) conditionValue {
-	if cond := findCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended); cond != nil {
-		return conditionValue{Status: cond.Status, Reason: cond.Reason, Message: cond.Message}
-	}
-	return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonProgressing, Message: message}
-}
-
 // completeExternalOperation completes recorded, the operation an external resume was recorded as,
 // once the suspend after it was handled, with what the Kustomization's last apply reported.
 // recorded is the operation read uncached, which the hold decided on: the cached trigger can still
@@ -322,9 +313,6 @@ func completeExternalOperation(
 	trigger *configbutleraiv1alpha3.FluxTrigger, recorded *configbutleraiv1alpha3.ApplyOperation,
 	suspension applier.Suspension,
 ) {
-	if recorded == nil {
-		return
-	}
 	operation := recorded.DeepCopy()
 	finished := metav1.NewTime(time.Now())
 	operation.FinishedAt, operation.AppliedRevision = &finished, suspension.Applied.AppliedRevision
@@ -370,11 +358,7 @@ func (r *ApplyTriggerReconciler) fluxClient(
 	if err != nil {
 		return nil, err
 	}
-	newFlux := r.newFlux
-	if newFlux == nil {
-		newFlux = applier.NewFlux
-	}
-	return newFlux(dynamicClient), nil
+	return applier.NewFlux(dynamicClient), nil
 }
 
 // releaseDeadline is how long a deleted FluxTrigger tries to hand its Kustomization back, counted
@@ -567,9 +551,6 @@ func (r *ApplyTriggerReconciler) event(object client.Object, eventType, reason, 
 		r.Recorder.Eventf(object, eventType, reason, messageFmt, args...)
 	}
 }
-
-// fluxClientFactory builds the Flux client of a dynamic client; a test sets one.
-type fluxClientFactory func(client dynamic.Interface) *applier.Flux
 
 // publishConsumers sets the trigger's status.source.otherConsumers and status.source.prefetch: the
 // consumers of its GitRepository in the applier's cluster, other than its own Kustomization, that no

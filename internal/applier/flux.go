@@ -58,7 +58,7 @@ const SuspendFieldManager = "gitops-reverser"
 const ReasonSuspendOwnedElsewhere = "SuspendOwnedElsewhere"
 
 // Flux holds a Flux Kustomization suspended, and resumes it for each apply GitOps Reverser asks of
-// it, in one source cluster. See "The Flux operation, suspended" in
+// it, in the applier's cluster. See "The Flux operation, suspended" in
 // docs/design/apply-trigger.md: every fact about kustomize-controller this relies on is
 // listed there, read in v1.9.6.
 type Flux struct {
@@ -74,7 +74,7 @@ type Flux struct {
 	PollInterval time.Duration
 }
 
-// NewFlux returns a Flux client over a source cluster's dynamic client.
+// NewFlux returns a Flux client over the dynamic client of the applier's cluster.
 func NewFlux(client dynamic.Interface) *Flux {
 	return &Flux{client: client, Now: time.Now, CanI: SelfSubjectAccessCheck(client), PollInterval: fetchPollInterval}
 }
@@ -155,7 +155,7 @@ func (f *Flux) fetchCommit(
 	if artifactHolds(source, ask.Commit) {
 		return nil
 	}
-	if ask.Current != nil && !ask.Current() {
+	if !ask.holds() {
 		return errStale
 	}
 	return fmt.Errorf("%s %s fetched %s, not commit %s", kindGitRepository, sourceRef,
@@ -398,9 +398,9 @@ func (f *Flux) settled(
 
 // fence suspends the Kustomization with a new token, and reports the operation Settling.
 func (f *Flux) fence(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
-	token := requestToken(f.Now())
-	if _, err := f.hold(ctx, ref, true, token, nil); err != nil {
-		return Progress{}, fmt.Errorf("suspend %s %s: %w", kindKustomization, ref, err)
+	token, err := f.Suspend(ctx, ref)
+	if err != nil {
+		return Progress{}, err
 	}
 	s.FenceToken = token
 	return Progress{Outcome: git.ApplySettling, FenceToken: token}, nil
@@ -695,8 +695,6 @@ type Suspension struct {
 	Held bool
 	// Fenced is the last requestedAt handled: no reconcile that read an earlier one is running.
 	Fenced bool
-	// Token is the requestedAt on the Kustomization.
-	Token string
 	// Applied is what the Kustomization's last apply reported, read for an apply GitOps Reverser
 	// did not ask for.
 	Applied Progress
@@ -713,7 +711,6 @@ func (f *Flux) Suspension(ctx context.Context, ref types.NamespacedName) (Suspen
 		Suspended: suspended(ks),
 		Held:      heldByUs(ks),
 		Fenced:    statusString(ks, "lastHandledReconcileAt") == token,
-		Token:     token,
 		Applied:   applyVerdict(ks, ""),
 	}, nil
 }

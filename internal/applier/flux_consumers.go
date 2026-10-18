@@ -226,7 +226,7 @@ func (f *Flux) Prefetch(ctx context.Context, ref types.NamespacedName, commit st
 	if err != nil {
 		return fmt.Errorf("get %s %s: %w", kindGitRepository, sourceRef, err)
 	}
-	if commit != "" && artifactHolds(source, commit) {
+	if artifactHolds(source, commit) {
 		return errNotPrefetched
 	}
 	_, err = f.stampSource(ctx, sourceRef)

@@ -40,8 +40,9 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 )
 
-// Client asks one kind of applier, in one cluster, to apply. The dispatcher and the trigger's
-// Configured check pick one by the applier's kind (NewClient), and use nothing else of it.
+// Client asks one kind of applier, in one cluster, to apply. The dispatcher (Dispatcher.client) and
+// the trigger's Configured check (NewClient) pick one by the applier's kind, and use nothing else of
+// it.
 type Client interface {
 	// Validate answers a trigger's Configured condition: the applier exists, applies a source GitOps
 	// Reverser can drive, and may be asked. It reports the source it read, whatever the verdict.

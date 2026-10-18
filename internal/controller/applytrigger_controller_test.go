@@ -497,12 +497,6 @@ func TestApplyTriggerReconcile_ArgoCDEventsFindTheirTriggers(t *testing.T) {
 	assert.Len(t, requests, 1, "a FluxTrigger of the same name is another kind's")
 }
 
-func TestDescribeCommit_NamesAShortHash(t *testing.T) {
-	assert.Equal(t, "4f2c1ab9", describeCommit("4f2c1ab9d00d"))
-	assert.Equal(t, "4f2c", describeCommit("4f2c"))
-	assert.Contains(t, describeCommit(""), "the remote does not carry")
-}
-
 // TestApplyTriggerReconcile_AGoneTriggerIsForgotten: a trigger that is gone has nothing to publish.
 func TestApplyTriggerReconcile_AGoneTriggerIsForgotten(t *testing.T) {
 	r := &ApplyTriggerReconciler{Client: triggerTestClient(t), Kind: configbutleraiv1alpha3.ApplyTriggerKindFlux}

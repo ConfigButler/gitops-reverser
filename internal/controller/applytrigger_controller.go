@@ -81,16 +81,21 @@ const applierCheckTimeout = 10 * time.Second
 // Why the trigger reconciler reads the applier on every reconcile rather than watching it: Flux or
 // Argo CD may not be installed in the applier's cluster at all, and an informer on a kind that is
 // not served would be a failure to report rather than a check that answers "not found". The
-// cadence is its own: RequeueSteadyInterval, or applyTriggerSettleInterval while something is
-// expected to clear on its own, such as an applier created after its trigger.
+// cadence is its own: RequeueSteadyInterval (fluxTriggerSteadyInterval for a FluxTrigger),
+// applyTriggerFenceInterval while a Kustomization has not handled its suspend yet, or
+// applyTriggerSettleInterval while something is expected to clear on its own, such as an applier
+// created after its trigger.
 
 // applyTriggerSettleInterval is how soon a trigger that is not Ready, and not stalled, is read again.
 const applyTriggerSettleInterval = 15 * time.Second
 
 // ApplyTriggerReconciler reconciles one apply trigger kind: it checks that the applier the trigger
 // holds is one GitOps Reverser can drive, and publishes what it applies (status.source) for the
-// GitTargets naming the trigger. It never starts an apply: the branch workers decide when, and
-// write status.operation and status.repairOwed themselves.
+// GitTargets naming the trigger. For a FluxTrigger it also holds the Kustomization suspended, and
+// hands it back once the trigger is deleted (fluxtrigger_hold.go). It never starts an apply: the
+// branch workers decide when, and write status.operation and status.repairOwed. It writes
+// status.operation only for what no worker follows: an external resume, and an operation nobody
+// follows any more.
 type ApplyTriggerReconciler struct {
 	client.Client
 
@@ -100,7 +105,7 @@ type ApplyTriggerReconciler struct {
 
 	// ApplierClients resolves the dynamic client of a trigger's cluster. Nil leaves Configured
 	// Unknown (tests, and the CLI).
-	ApplierClients applier.SourceClients
+	ApplierClients applier.Clients
 	// APIReader reads a trigger uncached before its Kustomization is suspended, so an operation a
 	// branch worker recorded a moment ago is never taken for an external resume. Nil reads through
 	// Client.
@@ -115,9 +120,6 @@ type ApplyTriggerReconciler struct {
 	// newApplier builds the client that checks an applier of a kind; nil is applier.NewClient. A
 	// test sets it to answer the access review without a real API server.
 	newApplier func(kind string, client dynamic.Interface) applier.Client
-	// newFlux builds the Flux client that suspends and releases a Kustomization; nil is
-	// applier.NewFlux.
-	newFlux fluxClientFactory
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers;argocdtriggers,verbs=get;list;watch
@@ -231,7 +233,8 @@ func (r *ApplyTriggerReconciler) configuredVerdict(
 
 	decision, err := authz.ApplyTriggerAdmitted(ctx, r.Client, trigger)
 	if err != nil {
-		return keptConfigured(trigger, fmt.Sprintf("Cannot check ClusterProvider %q: %v", cluster, err)), nil, false
+		return keptCondition(*trigger.StatusConditions(), ApplyTriggerConditionConfigured,
+			fmt.Sprintf("Cannot check ClusterProvider %q: %v", cluster, err)), nil, false
 	}
 	if !decision.Allowed {
 		return conditionValue{Status: metav1.ConditionFalse, Reason: decision.Reason, Message: decision.Message},
@@ -246,7 +249,7 @@ func (r *ApplyTriggerReconciler) configuredVerdict(
 	}
 	dynamicClient, err := r.ApplierClients(ctx, cluster)
 	if err != nil {
-		return keptConfigured(trigger,
+		return keptCondition(*trigger.StatusConditions(), ApplyTriggerConditionConfigured,
 			fmt.Sprintf("Cannot reach cluster %q to check %s %s: %v", cluster, kind, ref, err)), nil, false
 	}
 	newApplier := r.newApplier
@@ -258,7 +261,7 @@ func (r *ApplyTriggerReconciler) configuredVerdict(
 	case verdict.OK:
 		return r.heldVerdict(ctx, trigger, verdict)
 	case verdict.Err != nil:
-		return keptConfigured(trigger, verdict.Message), nil, false
+		return keptCondition(*trigger.StatusConditions(), ApplyTriggerConditionConfigured, verdict.Message), nil, false
 	default:
 		return conditionValue{Status: metav1.ConditionFalse, Reason: verdict.Reason, Message: verdict.Message},
 			verdict.Source, true
@@ -274,8 +277,8 @@ func (r *ApplyTriggerReconciler) heldVerdict(
 	holder, err := applier.HeldByAnother(ctx, r.Client, trigger)
 	switch {
 	case err != nil:
-		return keptConfigured(trigger, fmt.Sprintf("Cannot check which trigger holds %s %s: %v",
-			trigger.ApplierKind(), trigger.Applier(), err)), nil, false
+		return keptCondition(*trigger.StatusConditions(), ApplyTriggerConditionConfigured, fmt.Sprintf(
+			"Cannot check which trigger holds %s %s: %v", trigger.ApplierKind(), trigger.Applier(), err)), nil, false
 	case holder != nil:
 		return conditionValue{
 			Status: metav1.ConditionFalse, Reason: applier.ReasonHeldByAnotherTrigger,
@@ -284,14 +287,6 @@ func (r *ApplyTriggerReconciler) heldVerdict(
 	}
 	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonSucceeded, Message: verdict.Message},
 		verdict.Source, true
-}
-
-// keptConfigured is the Configured value a check that could not be made publishes.
-func keptConfigured(trigger configbutleraiv1alpha3.ApplyTrigger, message string) conditionValue {
-	if cond := findCondition(*trigger.StatusConditions(), ApplyTriggerConditionConfigured); cond != nil {
-		return conditionValue{Status: cond.Status, Reason: cond.Reason, Message: cond.Message}
-	}
-	return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonProgressing, Message: message}
 }
 
 // setTriggerSource publishes what the applier applies, or clears it when the check read nothing.
@@ -342,7 +337,8 @@ func applyTriggerReadinessGates(
 	rd.progressingIf(configured.Status == metav1.ConditionUnknown, metav1.ConditionUnknown,
 		configured.Reason, configured.Message)
 	if operation != nil && operation.Phase == configbutleraiv1alpha3.ApplyOperationUnresolved {
-		what := fmt.Sprintf("the %s apply of %s, asked for at", operation.Reason, describeCommit(operation.Commit))
+		what := fmt.Sprintf("the %s apply of %s, asked for at", operation.Reason,
+			applier.DescribeCommit(operation.Commit))
 		if operation.Reason == "" {
 			what = "an apply GitOps Reverser did not start, seen at"
 		}
@@ -354,34 +350,17 @@ func applyTriggerReadinessGates(
 	}
 }
 
-// describeCommit names a commit in a message: its short hash, or what an empty one means.
-func describeCommit(commit string) string {
-	const short = 8
-	switch {
-	case commit == "":
-		return "the branch, which the remote does not carry"
-	case len(commit) > short:
-		return commit[:short]
-	default:
-		return commit
-	}
-}
-
 // SetupWithManager sets up the controller for its kind with the Manager.
 func (r *ApplyTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	trigger := configbutleraiv1alpha3.NewApplyTrigger(r.Kind)
 	if trigger == nil {
 		return fmt.Errorf("no apply trigger kind %q", r.Kind)
 	}
-	object, ok := trigger.(client.Object)
-	if !ok {
-		return fmt.Errorf("apply trigger kind %q is not a client.Object", r.Kind)
-	}
 	return ctrl.NewControllerManagedBy(mgr).
 		// The status is written by two parties: this reconciler (conditions, source) and the branch
 		// workers (operation, repairOwed). A status-only update is filtered, as everywhere, except
 		// one that moves the operation's phase, which Ready reads.
-		For(object, builder.WithPredicates(applyTriggerSpecOrOperationChanged())).
+		For(trigger, builder.WithPredicates(applyTriggerSpecOrOperationChanged())).
 		// The trigger's ClusterProvider admits its namespace, so a provider created, deleted, or with
 		// its accessFrom changed re-runs the check.
 		Watches(
@@ -398,7 +377,7 @@ func (r *ApplyTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// One trigger holds an applier; the others naming it wait in line. A holder that is gone lets
 		// the next take it over at once: nothing else changes on that one to reconcile it.
 		Watches(
-			object,
+			trigger,
 			handler.EnqueueRequestsFromMapFunc(r.triggersInLine),
 			builder.WithPredicates(triggerGone()),
 		).
