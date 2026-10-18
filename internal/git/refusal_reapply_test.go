@@ -193,7 +193,7 @@ func TestRefusalReapply_OwedRequestWaitsForAQuietBranch(t *testing.T) {
 	requests := requester.taken()
 	require.Len(t, requests, 1)
 	assert.Equal(t, configv1alpha3.ApplyReasonRefusal, requests[0].Reason)
-	assert.Equal(t, []itypes.ResourceReference{editingRef()}, requests[0].TargetRefs(),
+	assert.Equal(t, []itypes.ResourceReference{editingRef()}, targetRefs(requests[0]),
 		"only the refusing target's applier is asked")
 	assert.True(t, w.refusalAlreadyCovered(editingKey(), "observation-1"),
 		"the observation is covered once the request is owed")

@@ -29,6 +29,15 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
+// targetRefs lists a request's GitTargets.
+func targetRefs(req ApplyRequest) []itypes.ResourceReference {
+	refs := make([]itypes.ResourceReference, 0, len(req.Targets))
+	for _, target := range req.Targets {
+		refs = append(refs, target.Ref)
+	}
+	return refs
+}
+
 func TestApplyDebt_FirstObservationIsABaseline(t *testing.T) {
 	var debt applyDebt
 	debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
@@ -169,7 +178,7 @@ func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) 
 			requests[i].Branch)
 		assert.Equal(t, applierRef(name), requests[i].Applier)
 		assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(name, "team-a")},
-			requests[i].TargetRefs(), "a suspended target stops writing, not deployments")
+			targetRefs(requests[i]), "a suspended target stops writing, not deployments")
 	}
 }
 
@@ -220,7 +229,7 @@ func TestServiceAppliers_CatchUpWaitsForTheQuietPeriod(t *testing.T) {
 	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
 	assert.Equal(t, "aaa", requests[0].Commit)
 	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference("soon", "team-a")},
-		requests[0].TargetRefs())
+		targetRefs(requests[0]))
 	assert.True(t, loop.appliers[applierRef("late")].catchUp, "the one-hour applier still waits")
 	assert.NotNil(t, loop.applierTimer)
 }
@@ -484,7 +493,7 @@ func TestApplyTrigger_APushNoticeFindsAForeignCommit(t *testing.T) {
 	require.Len(t, requests, 1)
 	assert.Equal(t, gitOut(t, f.repoDir, "rev-parse", "main"), requests[0].Commit)
 	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(ledgerTargetName, "default")},
-		requests[0].TargetRefs())
+		targetRefs(requests[0]))
 
 	// A duplicate delivery of the same push is one more advertisement and no second request.
 	loop.handleRefreshRequest(&RefreshRequest{PushNotice: true})

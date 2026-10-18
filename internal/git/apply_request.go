@@ -144,15 +144,6 @@ type ApplyTarget struct {
 	Reason v1alpha3.ApplyReason
 }
 
-// TargetRefs lists the request's GitTargets.
-func (r ApplyRequest) TargetRefs() []itypes.ResourceReference {
-	refs := make([]itypes.ResourceReference, 0, len(r.Targets))
-	for _, target := range r.Targets {
-		refs = append(refs, target.Ref)
-	}
-	return refs
-}
-
 // ApplyOutcome is where one attempt stands. The first four are the operation of an attempt that
 // asked the applier for an apply, before it completed; they hold the attempt out and its applier's
 // apply window open. Every other outcome ends the attempt.
