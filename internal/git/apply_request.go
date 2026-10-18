@@ -249,8 +249,15 @@ type ApplyRequester interface {
 	RequestApply(req ApplyRequest)
 	// PrefetchSource asks the source req.Applier applies to fetch req.Commit now, ahead of an apply,
 	// when its trigger says it may and no operation on that source is in flight. It applies nothing
-	// and reports nothing: only ID, Branch, Applier and Commit are read.
-	PrefetchSource(req ApplyRequest)
+	// and reports nothing.
+	PrefetchSource(req PrefetchRequest)
+}
+
+// PrefetchRequest asks the source an applier applies to fetch a commit ahead of its apply.
+type PrefetchRequest struct {
+	Branch  BranchKey
+	Applier ApplierRef
+	Commit  string
 }
 
 // StrongerApplyReason is the reason a target owed two requests is owed. A CatchUp asks for the

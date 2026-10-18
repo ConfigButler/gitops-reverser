@@ -559,14 +559,14 @@ type recordingRequester struct {
 	mu       sync.Mutex
 	requests []ApplyRequest
 	// prefetches are the PrefetchSource requests, in order.
-	prefetches []ApplyRequest
+	prefetches []PrefetchRequest
 	// counted keeps the reasons of the requests taken, so refusals still sees them.
 	counted map[configv1alpha3.ApplyReason]int
 	outcome ApplyOutcome
 	manual  bool
 }
 
-func (r *recordingRequester) PrefetchSource(req ApplyRequest) {
+func (r *recordingRequester) PrefetchSource(req PrefetchRequest) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.prefetches = append(r.prefetches, req)

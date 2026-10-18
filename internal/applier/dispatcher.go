@@ -859,7 +859,7 @@ func applierKindOf(req git.ApplyRequest) string {
 // true, when a FluxTrigger on the same source has an operation in flight (a resumed Kustomization
 // applies whatever the artifact becomes), or when the artifact already holds the commit. It applies
 // nothing, so it reports nothing.
-func (d *Dispatcher) PrefetchSource(req git.ApplyRequest) {
+func (d *Dispatcher) PrefetchSource(req git.PrefetchRequest) {
 	d.runMu.RLock()
 	ctx := d.run
 	if ctx != nil {
@@ -890,7 +890,7 @@ var errPrefetchHeld = errors.New("the source may not be prefetched now")
 
 // prefetch checks the trigger and its source's other triggers, then the source's consumers as they
 // are now (heldNow), and stamps the source.
-func (d *Dispatcher) prefetch(ctx context.Context, req git.ApplyRequest) error {
+func (d *Dispatcher) prefetch(ctx context.Context, req git.PrefetchRequest) error {
 	trigger := &v1alpha3.FluxTrigger{}
 	key := client.ObjectKey{Namespace: req.Applier.Trigger.Namespace, Name: req.Applier.Trigger.Name}
 	if err := d.reader.Get(ctx, key, trigger); err != nil {
@@ -927,7 +927,7 @@ func (d *Dispatcher) prefetch(ctx context.Context, req git.ApplyRequest) error {
 // the prefetched artifact at once, over live edits not pushed yet (errPrefetchHeld). It returns the
 // Flux client of the source cluster.
 func (d *Dispatcher) heldNow(
-	ctx context.Context, req git.ApplyRequest, trigger *v1alpha3.FluxTrigger, triggers []v1alpha3.FluxTrigger,
+	ctx context.Context, req git.PrefetchRequest, trigger *v1alpha3.FluxTrigger, triggers []v1alpha3.FluxTrigger,
 ) (*Flux, error) {
 	sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
 	if err != nil {

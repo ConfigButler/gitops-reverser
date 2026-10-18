@@ -123,7 +123,7 @@ func (l *branchWorkerEventLoop) prefetchSources() {
 		state := first[group]
 		w.Log.V(1).Info("Fetching a push ahead of its apply", "branch", w.Branch,
 			"applier", state.ref.String(), "commit", tip)
-		w.applyRequester.PrefetchSource(ApplyRequest{
+		w.applyRequester.PrefetchSource(PrefetchRequest{
 			Branch:  BranchKey{RepoNamespace: w.GitProviderNamespace, RepoName: w.GitProviderRef, Branch: w.Branch},
 			Applier: state.ref,
 			Commit:  tip,
