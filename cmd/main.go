@@ -187,6 +187,7 @@ func main() {
 	applyDispatcher := applier.NewDispatcher(
 		mgr.GetClient(), watchMgr.ApplierDynamicClient, mgr.GetEventRecorderFor("gittarget"),
 		ctrl.Log.WithName("applier"))
+	applyDispatcher.APIReader = mgr.GetAPIReader()
 	fatalIfErr(mgr.Add(applyDispatcher), "unable to add apply request dispatcher to manager")
 	workerManager.SetApplyRequester(applyDispatcher)
 	triggerStatusWriter := applier.NewStatusWriter(mgr.GetAPIReader(), mgr.GetClient(),
@@ -370,6 +371,7 @@ func main() {
 			Recorder:       mgr.GetEventRecorderFor(strings.ToLower(kind)),
 			ApplierClients: watchMgr.ApplierDynamicClient,
 			APIReader:      mgr.GetAPIReader(),
+			Follower:       applyDispatcher,
 		}).SetupWithManager(mgr), "unable to create controller", "controller", kind)
 	}
 	// Command authorship is captured at admission by the validate-operator-types webhook and

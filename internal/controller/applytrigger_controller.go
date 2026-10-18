@@ -42,7 +42,7 @@ const ReasonOperationUnresolved = "OperationUnresolved"
 // ApplyTriggerConditionSuspended reports whether a FluxTrigger holds its Kustomization: suspended
 // under GitOps Reverser's field manager, with the last suspend's token handled, so nothing that
 // started before the suspend is still running. A FluxTrigger is Ready only once it is.
-const ApplyTriggerConditionSuspended = "Suspended"
+const ApplyTriggerConditionSuspended = applier.TriggerConditionSuspended
 
 // Suspended reasons, and the Events of the suspend lifecycle on a FluxTrigger.
 const (
@@ -104,6 +104,13 @@ type ApplyTriggerReconciler struct {
 	// branch worker recorded a moment ago is never taken for an external resume. Nil reads through
 	// Client.
 	APIReader client.Reader
+	// Follower says which branch-worker operations this process follows (the apply dispatcher). A
+	// FluxTrigger's Kustomization is left resumed for an operation in flight only while it is
+	// followed, or for UnfollowedGrace (DefaultUnfollowedGrace when zero) after it was first seen
+	// followed by nobody. Nil follows nothing, so only the grace applies.
+	Follower        OperationFollower
+	UnfollowedGrace time.Duration
+	unfollowed      unfollowedOperations
 	// newApplier builds the client that checks an applier of a kind; nil is applier.NewClient. A
 	// test sets it to answer the access review without a real API server.
 	newApplier func(kind string, client dynamic.Interface) applier.Client

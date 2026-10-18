@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -37,8 +38,10 @@ import (
 //     spec.suspend, so Flux owns the Kustomization's applies again.
 
 // holdKustomization holds a Configured FluxTrigger's Kustomization suspended, and returns the
-// trigger's Suspended condition. It writes nothing while a branch worker's operation is in flight:
-// the worker resumes the Kustomization and suspends it again itself.
+// trigger's Suspended condition. It writes nothing while a branch worker's operation is in flight
+// and followed: the worker resumes the Kustomization and suspends it again itself. One nobody
+// follows any more is fenced here (fenceUnfollowed), so the Kustomization is never left resumed
+// with nothing guarding it.
 func (r *ApplyTriggerReconciler) holdKustomization(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, configured conditionValue,
 ) conditionValue {
@@ -52,10 +55,132 @@ func (r *ApplyTriggerReconciler) holdKustomization(
 	if err != nil {
 		return keptSuspended(trigger, err.Error())
 	}
+	if !held.inFlight() || held.operation.Token == "" {
+		r.unfollowed.forget(trigger, "")
+	}
 	if held.inFlight() && held.operation.Token != "" {
-		return keptSuspended(trigger, fmt.Sprintf("Kustomization %s is resumed for an apply", trigger.Applier()))
+		if r.followed(trigger, held.operation) {
+			return keptSuspended(trigger, fmt.Sprintf("Kustomization %s is resumed for an apply", trigger.Applier()))
+		}
+		return r.fenceUnfollowed(ctx, trigger, held)
 	}
 	return r.hold(ctx, trigger, held)
+}
+
+// OperationFollower answers whether this process carries out or follows a branch worker's
+// operation: (*applier.Dispatcher).Following, which runs beside this reconciler on the leader.
+type OperationFollower interface {
+	Following(trigger git.TriggerRef, token string) bool
+}
+
+// DefaultUnfollowedGrace is how long a branch worker's operation in flight may go unfollowed
+// before the reconciler fences it. It covers the moments nobody follows an operation that is fine:
+// a process that just started, whose worker has not recovered the operation yet, and an operation
+// whose completion is not written yet.
+const DefaultUnfollowedGrace = time.Minute
+
+// EventReasonOperationUnfollowed is a branch worker's operation nobody followed any more, whose
+// Kustomization the reconciler suspended and whose operation it completed.
+const EventReasonOperationUnfollowed = "OperationUnfollowed"
+
+// followed reports whether the reconciler leaves the trigger's in-flight operation to its worker:
+// this process follows it, or has seen it unfollowed for less than the grace.
+func (r *ApplyTriggerReconciler) followed(
+	trigger *configbutleraiv1alpha3.FluxTrigger, operation *configbutleraiv1alpha3.ApplyOperation,
+) bool {
+	ref := git.TriggerRef{Kind: trigger.TriggerKind(), Namespace: trigger.Namespace, Name: trigger.Name}
+	if r.Follower != nil && r.Follower.Following(ref, operation.Token) {
+		r.unfollowed.forget(trigger, operation.Token)
+		return true
+	}
+	grace := r.UnfollowedGrace
+	if grace <= 0 {
+		grace = DefaultUnfollowedGrace
+	}
+	return time.Since(r.unfollowed.since(trigger, operation.Token)) < grace
+}
+
+// fenceUnfollowed sees a branch worker's operation that nobody follows through, as the worker's own
+// follow would have: it suspends the Kustomization with a token, waits until that is handled, and
+// completes the operation Failed, since whether its apply ran cannot be told from here. The worker,
+// should it still name the trigger, asks again. The fence token is recorded on the operation, so a
+// worker that recovers it meanwhile follows the same fence.
+func (r *ApplyTriggerReconciler) fenceUnfollowed(
+	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, held heldState,
+) conditionValue {
+	ref := trigger.Applier()
+	operation := held.operation.DeepCopy()
+	switch {
+	case !held.suspension.Suspended || !held.suspension.Held:
+		token, err := held.flux.Suspend(ctx, ref)
+		if err != nil {
+			return keptSuspended(trigger, err.Error())
+		}
+		r.event(trigger, corev1.EventTypeWarning, EventReasonOperationUnfollowed,
+			"the %s apply of %s is followed by nobody; suspended Kustomization %s again", operation.Reason,
+			describeCommit(operation.Commit), ref)
+		operation.FenceToken = token
+		operation.Message = "followed by nobody; suspended again, and complete once nothing it started is running"
+		trigger.Status.Operation = operation
+		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonFencing,
+			Message: fmt.Sprintf("Kustomization %s is being suspended: its apply is followed by nobody", ref)}
+	case !held.suspension.Fenced:
+		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonFencing,
+			Message: fmt.Sprintf("Kustomization %s is suspended; waiting for it to handle the suspend", ref)}
+	}
+	finished := metav1.NewTime(time.Now())
+	operation.FinishedAt, operation.AppliedRevision = &finished, held.suspension.Applied.AppliedRevision
+	operation.Phase = configbutleraiv1alpha3.ApplyOperationFailed
+	operation.Message = "followed by nobody to its end; the Kustomization is suspended again, and whether the apply " +
+		"ran cannot be told"
+	trigger.Status.Operation = operation
+	r.unfollowed.forget(trigger, operation.Token)
+	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonHeld,
+		Message: fmt.Sprintf("Kustomization %s is suspended; GitOps Reverser starts every apply it makes", ref)}
+}
+
+// unfollowedOperations remembers when the reconciler first saw each trigger's in-flight operation
+// followed by nobody, by trigger and token. It is in memory: a process that starts gives every
+// operation the whole grace, which is when restart recovery picks it up.
+type unfollowedOperations struct {
+	mu    sync.Mutex
+	first map[unfollowedKey]time.Time
+}
+
+type unfollowedKey struct {
+	trigger k8stypes.NamespacedName
+	token   string
+}
+
+// since is when the operation was first seen unfollowed, now if this is the first time.
+func (u *unfollowedOperations) since(trigger *configbutleraiv1alpha3.FluxTrigger, token string) time.Time {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	key := unfollowedKey{
+		trigger: k8stypes.NamespacedName{Namespace: trigger.Namespace, Name: trigger.Name}, token: token,
+	}
+	if u.first == nil {
+		u.first = map[unfollowedKey]time.Time{}
+	}
+	first, seen := u.first[key]
+	if !seen {
+		first = time.Now()
+		u.first[key] = first
+	}
+	return first
+}
+
+// forget drops what is remembered of the trigger's operation with token, or of all its operations
+// when token is empty.
+func (u *unfollowedOperations) forget(trigger *configbutleraiv1alpha3.FluxTrigger, token string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	name := k8stypes.NamespacedName{Namespace: trigger.Namespace, Name: trigger.Name}
+	for key := range u.first {
+		if key.trigger == name && (token == "" || key.token == token) {
+			delete(u.first, key)
+		}
+	}
 }
 
 // heldState is what holdKustomization reads before it decides.
@@ -68,7 +193,12 @@ type heldState struct {
 // inFlight reports whether the trigger records an operation that has not completed.
 func (h heldState) inFlight() bool { return h.operation != nil && !h.operation.Phase.Completed() }
 
-// readHold reads the Kustomization's suspension and the trigger's operation, uncached.
+// readHold reads the Kustomization's suspension and the trigger's operation, uncached. The
+// operation is read before and after the Kustomization, and the two must be the same operation in
+// the same phase, or the read is an error and the next reconcile reads again. A worker writes its
+// operation before it resumes and completes it after it suspended again, so with both reads equal,
+// a Kustomization read resumed with no operation in flight was resumed by somebody else. With one
+// read, an operation that completed between the two GETs would be taken for an external resume.
 func (r *ApplyTriggerReconciler) readHold(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) (heldState, error) {
@@ -76,6 +206,10 @@ func (r *ApplyTriggerReconciler) readHold(
 	flux, err := r.fluxClient(ctx, trigger)
 	if err != nil {
 		return heldState{}, fmt.Errorf("cannot reach the cluster of Kustomization %s: %w", ref, err)
+	}
+	before, err := r.liveOperation(ctx, trigger)
+	if err != nil {
+		return heldState{}, fmt.Errorf("cannot read the operation of %s: %w", trigger.Name, err)
 	}
 	suspension, err := flux.Suspension(ctx, ref)
 	if err != nil {
@@ -85,7 +219,21 @@ func (r *ApplyTriggerReconciler) readHold(
 	if err != nil {
 		return heldState{}, fmt.Errorf("cannot read the operation of %s: %w", trigger.Name, err)
 	}
+	if !sameOperationPhase(before, operation) {
+		return heldState{}, fmt.Errorf("the operation of %s moved while Kustomization %s was read; reading again",
+			trigger.Name, ref)
+	}
 	return heldState{flux: flux, suspension: suspension, operation: operation}, nil
+}
+
+// sameOperationPhase reports whether two reads of a trigger's operation show the same operation, by
+// its tokens, in the same phase.
+func sameOperationPhase(a, b *configbutleraiv1alpha3.ApplyOperation) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Token == b.Token && a.FenceToken == b.FenceToken && a.Phase == b.Phase &&
+		a.RequestedAt.Equal(&b.RequestedAt)
 }
 
 // hold suspends the Kustomization when it is not held and fenced, and completes the operation an

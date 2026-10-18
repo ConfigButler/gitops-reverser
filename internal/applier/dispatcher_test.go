@@ -112,10 +112,14 @@ func triggersFor(objects []client.Object) []client.Object {
 		}
 		if ks, ok := target.Annotations[testKustomizationAnnotation]; ok {
 			namespace, name, _ := strings.Cut(ks, "/")
+			// Its reconciler holds the Kustomization (Ask.Held), unless a test says otherwise.
 			triggers = append(triggers, &v1alpha3.FluxTrigger{ObjectMeta: meta, Spec: v1alpha3.FluxTriggerSpec{
 				ClusterProviderRef: provider,
 				KustomizationRef:   fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
-			}})
+			}, Status: v1alpha3.FluxTriggerStatus{Conditions: []metav1.Condition{{
+				Type: TriggerConditionSuspended, Status: metav1.ConditionTrue, Reason: "Held",
+				LastTransitionTime: metav1.Now(),
+			}}}})
 		}
 	}
 	return triggers
@@ -733,19 +737,98 @@ func TestDispatcher_ADeletedTriggerEndsItsOperation(t *testing.T) {
 	assert.Equal(t, fetchedAndResumed, f.patches(), "never suspended from here")
 }
 
-// TestDispatcher_AnAbandonedOperationIsNoLongerFollowed: once the worker stops following an
-// attempt (its applier is no longer named), the dispatcher stops reading it and reports nothing.
-func TestDispatcher_AnAbandonedOperationIsNoLongerFollowed(t *testing.T) {
+// TestDispatcher_AnAbandonedOperationIsSuspendedBeforeItIsLetGo: once the worker stops following an
+// attempt (its applier is no longer named), the dispatcher reports nothing more, but it does not let
+// a resumed Kustomization go unguarded (review 4's B): it suspends it at once, and stops only once
+// that suspend's token is handled.
+func TestDispatcher_AnAbandonedOperationIsSuspendedBeforeItIsLetGo(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
 	held := f.sim.HoldNextApply()
 	abandoned := make(chan struct{})
 	req := request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")
+	req.Token = "T1"
 	req.Abandoned = abandoned
 
 	reports := f.carryOut(context.Background(), req)
 	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
 	<-held
 	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
+	assert.True(t, f.dispatcher.Following(checkout.Trigger, "T1"))
+	close(abandoned)
+	eventually(t, func() bool { return suspended(f.sim.Kustomization(checkoutKey)) }, "suspended at once")
+	quiet(t, reports, "still waiting for the suspend to be handled, behind the running apply")
+	assert.True(t, f.dispatcher.Following(checkout.Trigger, "T1"), "and it is still followed")
+
+	f.sim.Release()
+	_, open := <-reports
+	assert.False(t, open, "nothing more is reported")
+	assert.True(t, tokenHandled(f.sim.Kustomization(checkoutKey), f.sim.Kustomization(checkoutKey).
+		GetAnnotations()[fluxmeta.ReconcileRequestAnnotation]), "let go once the suspend is handled")
+	assert.False(t, f.dispatcher.Following(checkout.Trigger, "T1"))
+}
+
+// TestDispatcher_AnUnheldTriggerIsNotResumed is review 4's F: the trigger's reconciler suspends the
+// Kustomization on its own reads (an adoption, an external resume), and a resume between its read
+// and its suspend would be suspended under the apply. So a request resumes only a Kustomization its
+// trigger reports Suspended=True, read uncached; any other is a failed attempt the worker retries.
+func TestDispatcher_AnUnheldTriggerIsNotResumed(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	trigger := &v1alpha3.FluxTrigger{}
+	require.NoError(t, f.control.Get(context.Background(), client.ObjectKey{Namespace: targetNS, Name: "checkout"},
+		trigger))
+	trigger.Status.Conditions[0].Status, trigger.Status.Conditions[0].Reason = metav1.ConditionFalse, "Fencing"
+	require.NoError(t, f.control.Update(context.Background(), trigger))
+
+	res := f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+
+	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
+	require.ErrorContains(t, res.Err, "does not hold its Kustomization suspended: it is Suspended=False, Fencing")
+	for _, write := range f.patches() {
+		assert.NotContains(t, write, "suspend=false", "nothing is resumed")
+	}
+}
+
+// TestDispatcher_ARecoveredAttemptBeforeStartWaitsForIt is review 4's B at startup: a worker
+// recovers its trigger's operation once, and one that failed because the dispatcher had not started
+// yet left the Kustomization resumed with nobody following it. Now it is followed once Start runs.
+func TestDispatcher_ARecoveredAttemptBeforeStartWaitsForIt(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, resumedSource(t, "T1")...)
+	f.sim.Requeue(checkoutKey)
+	reports := make(chan git.ApplyResult, 64)
+	req := recoveredRequest(&v1alpha3.ApplyOperation{
+		Phase: v1alpha3.ApplyOperationRunning, Reason: v1alpha3.ApplyReasonRefusal, Commit: testCommit, Token: "T1",
+	})
+	req.Report = func(res git.ApplyResult) { reports <- res }
+
+	f.dispatcher.RequestApply(req)
+	quiet(t, reports, "nothing is reported before Start")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = f.dispatcher.Start(ctx)
+	}()
+	res := next(t, reports)
+	for !res.Outcome.Ends() {
+		res = next(t, reports)
+	}
+	assert.Equal(t, git.ApplySucceeded, res.Outcome)
+	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)), "suspended again")
+	cancel()
+	<-done
+}
+
+// TestDispatcher_AnAbandonedOperationIsNoLongerFollowed: once the worker stops following an
+// attempt (its applier is no longer named), the dispatcher stops reading it and reports nothing.
+func TestDispatcher_AnAbandonedOperationIsNoLongerFollowed(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{argoTarget()}, manualApp())
+	abandoned := make(chan struct{})
+	req := request(argoPlatform, v1alpha3.ApplyReasonForeignCommit, "a")
+	req.Abandoned = abandoned
+
+	reports := f.carryOut(context.Background(), req)
+	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
 	close(abandoned)
 	_, open := <-reports
 	assert.False(t, open, "nothing more is reported")

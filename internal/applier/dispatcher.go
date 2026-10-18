@@ -14,6 +14,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
@@ -124,10 +126,30 @@ type Dispatcher struct {
 	PollTimeout       time.Duration
 	// Now is the clock request tokens are taken from.
 	Now func() time.Time
+	// APIReader reads a FluxTrigger uncached just before its Kustomization is resumed, so a suspend
+	// its reconciler is making is seen (Ask.Held). Nil reads through the reader NewDispatcher was
+	// given.
+	APIReader client.Reader
 
 	runMu    sync.RWMutex
 	run      context.Context
 	attempts sync.WaitGroup
+	// stopped is set once Start returned. waiting are the recovered attempts asked for before Start,
+	// which it starts: a recovery runs once per process, so one failed for that reason would leave
+	// its operation followed by nobody.
+	stopped bool
+	waiting []git.ApplyRequest
+
+	// following counts the attempts carrying out or following an operation, by trigger and token
+	// (Following).
+	followMu  sync.Mutex
+	following map[followKey]int
+}
+
+// followKey is one operation of one trigger, by its request token.
+type followKey struct {
+	trigger git.TriggerRef
+	token   string
 }
 
 var (
@@ -162,15 +184,22 @@ func NewDispatcher(
 // NeedLeaderElection is true: the branch workers that decide requests run only on the leader.
 func (d *Dispatcher) NeedLeaderElection() bool { return true }
 
-// Start runs until ctx ends, and then waits for the attempts still running, which end with it.
+// Start runs until ctx ends, and then waits for the attempts still running, which end with it. It
+// first starts the recovered attempts asked for before it.
 func (d *Dispatcher) Start(ctx context.Context) error {
 	d.runMu.Lock()
 	d.run = ctx
+	waiting := d.waiting
+	d.waiting = nil
+	d.attempts.Add(len(waiting))
 	d.runMu.Unlock()
-	d.log.Info("apply request dispatcher started")
+	d.log.Info("apply request dispatcher started", "recoveredWaiting", len(waiting))
+	for _, req := range waiting {
+		go d.launch(ctx, req)
+	}
 	<-ctx.Done()
 	d.runMu.Lock()
-	d.run = nil
+	d.run, d.stopped = nil, true
 	d.runMu.Unlock()
 	d.attempts.Wait()
 	return nil
@@ -179,26 +208,37 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 // RequestApply starts one attempt and returns at once; it is called on a branch worker's loop. The
 // attempt reports on req.Report: once when it asked nothing, or as its operation moves until it
 // completes. An operation the worker abandons, or one still out when the dispatcher stops, reports
-// nothing more.
+// nothing more. Before Start, an attempt fails at once, except a recovered one, which waits for
+// Start: the worker recovers once, and the operation it follows may have the Kustomization resumed.
 func (d *Dispatcher) RequestApply(req git.ApplyRequest) {
-	d.runMu.RLock()
+	d.runMu.Lock()
 	ctx := d.run
-	if ctx != nil {
+	switch {
+	case ctx != nil:
 		d.attempts.Add(1)
+	case req.Recovered != nil && !d.stopped:
+		d.waiting = append(d.waiting, req)
+		d.runMu.Unlock()
+		d.log.V(1).Info("following a recorded operation once the dispatcher starts",
+			"applier", req.Applier.String(), "branch", req.Branch.String())
+		return
 	}
-	d.runMu.RUnlock()
+	d.runMu.Unlock()
 	if ctx == nil {
 		req.Report(git.ApplyResult{ID: req.ID, Outcome: git.ApplyRequestFailed, Err: errNotRunning})
 		return
 	}
-	go func() {
-		defer d.attempts.Done()
-		if req.Recovered != nil {
-			d.followRecovered(ctx, req)
-			return
-		}
-		d.carryOut(ctx, req)
-	}()
+	go d.launch(ctx, req)
+}
+
+// launch runs one attempt counted in d.attempts.
+func (d *Dispatcher) launch(ctx context.Context, req git.ApplyRequest) {
+	defer d.attempts.Done()
+	if req.Recovered != nil {
+		d.followRecovered(ctx, req)
+		return
+	}
+	d.carryOut(ctx, req)
 }
 
 // followRecovered follows an operation recorded on the trigger to its end, asking the applier for
@@ -208,6 +248,7 @@ func (d *Dispatcher) RequestApply(req git.ApplyRequest) {
 func (d *Dispatcher) followRecovered(ctx context.Context, req git.ApplyRequest) {
 	log := d.log.WithValues("applier", req.Applier.String(), "branch", req.Branch.String(),
 		"reason", req.Reason, "commit", req.Commit, "recovered", true)
+	defer d.follows(req.Applier.Trigger, req.Recovered.Token)()
 	interval := d.PollInterval
 	for {
 		sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
@@ -236,12 +277,48 @@ func recoveredStamped(req git.ApplyRequest) Stamped {
 	}
 	return Stamped{
 		Outcome: outcome, Token: req.Recovered.Token, FenceToken: req.Recovered.FenceToken,
-		Commit: req.Recovered.Commit, Recovered: true,
+		Commit: req.Recovered.Commit, Recovered: true, RequestedAt: req.Recovered.RequestedAt.Time,
 	}
 }
 
-// carryOut runs one attempt and follows the operation it started, reporting each step.
+// Following reports whether an attempt of this dispatcher is carrying out or following the
+// operation with token on trigger: from before it records the operation until the operation
+// completed, or, abandoned, the Kustomization was suspended again. The FluxTrigger's reconciler
+// asks it before it leaves a Kustomization resumed for an operation its trigger records: the
+// dispatcher runs in the same process, on the leader, so an operation it does not follow is
+// followed by nobody.
+func (d *Dispatcher) Following(trigger git.TriggerRef, token string) bool {
+	d.followMu.Lock()
+	defer d.followMu.Unlock()
+	return d.following[followKey{trigger: trigger, token: token}] > 0
+}
+
+// follows registers an attempt as following the operation with token on trigger, and returns the
+// func that ends it.
+func (d *Dispatcher) follows(trigger git.TriggerRef, token string) func() {
+	key := followKey{trigger: trigger, token: token}
+	d.followMu.Lock()
+	defer d.followMu.Unlock()
+	if d.following == nil {
+		d.following = map[followKey]int{}
+	}
+	d.following[key]++
+	return func() {
+		d.followMu.Lock()
+		defer d.followMu.Unlock()
+		if d.following[key]--; d.following[key] <= 0 {
+			delete(d.following, key)
+		}
+	}
+}
+
+// carryOut runs one attempt and follows the operation it started, reporting each step. It counts
+// as Following the operation from before the attempt records it.
 func (d *Dispatcher) carryOut(ctx context.Context, req git.ApplyRequest) {
+	if req.Token == "" {
+		req.Token = requestToken(d.Now())
+	}
+	defer d.follows(req.Applier.Trigger, req.Token)()
 	res, op := d.attempt(ctx, req)
 	req.Report(res)
 	if op == nil {
@@ -303,6 +380,7 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	}
 	stamped, err := applier.Request(ctx, applierName(req.Applier), Ask{
 		Want: want, Commit: req.Commit, Reason: req.Reason, Token: token, Current: req.Current, Record: req.Record,
+		Held: func(ctx context.Context) error { return d.triggerHolds(ctx, req.Applier.Trigger) },
 	})
 	switch {
 	case errors.Is(err, errStale):
@@ -321,6 +399,10 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 		return report(git.ApplyCurrent, nil), nil
 	}
 	log.Info("apply requested", "outcome", stamped.Outcome)
+	if stamped.Unconfirmed != nil {
+		log.Info("the resume may not have reached the Kustomization; following it, which suspends it again",
+			"error", stamped.Unconfirmed.Error())
+	}
 	d.delivered(req, eligible)
 	return report(
 		git.ApplyRequested,
@@ -390,8 +472,41 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 			interval = min(unresolvedBackoff*interval, max(d.UnresolvedPollMax, d.PollInterval))
 		}
 		if !wait(ctx, req.Abandoned, interval) {
-			op.log.V(1).Info("stopped following the requested apply", "abandoned", ctx.Err() == nil)
+			abandoned := ctx.Err() == nil
+			if abandoned {
+				d.fenceAbandoned(ctx, req, op)
+			}
+			op.log.V(1).Info("stopped following the requested apply", "abandoned", abandoned)
 			return git.ApplyResult{}, false
+		}
+	}
+}
+
+// fenceAbandoned sees an abandoned Flux operation through to the fence before the attempt lets it
+// go: the worker forgot its applier (no GitTarget names it any more), but the Kustomization may
+// still be resumed, and nothing else follows the operation. It is treated as overdue, so it is
+// suspended at once, and read until that suspend's token is handled, within AttemptTimeout and
+// whether or not the dispatcher stops meanwhile. It reports nothing: nobody waits for the report.
+// A trigger being deleted completes it without a suspend, since the trigger hands its Kustomization
+// back itself.
+func (d *Dispatcher) fenceAbandoned(ctx context.Context, req git.ApplyRequest, op *operation) {
+	if op.stamped.Outcome != OutcomeResumed {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.AttemptTimeout)
+	defer cancel()
+	op.stamped.Overdue = true
+	for {
+		progress, err := d.progress(ctx, req, op)
+		if err == nil && progress.Outcome.Ends() {
+			op.log.Info("the worker abandoned the operation; its Kustomization is suspended again",
+				"outcome", progress.Outcome)
+			return
+		}
+		if !wait(ctx, nil, d.PollInterval) {
+			op.log.Info("the worker abandoned the operation, and its Kustomization was not seen suspended again "+
+				"in time; the trigger's reconciler suspends it", "fenceToken", op.stamped.FenceToken)
+			return
 		}
 	}
 }
@@ -418,13 +533,58 @@ func (d *Dispatcher) progress(ctx context.Context, req git.ApplyRequest, op *ope
 	return progress, err
 }
 
-// triggerReleased reports whether a trigger is gone or being deleted.
+// TriggerConditionSuspended is a FluxTrigger's Suspended condition: True (reason Held) once its
+// Kustomization is suspended under GitOps Reverser's field manager and that suspend's token is
+// handled. The trigger's reconciler sets it.
+const TriggerConditionSuspended = "Suspended"
+
+// triggerHolds is Ask.Held: it reads the FluxTrigger uncached, and errs unless it is
+// Suspended=True and not being deleted. Its reconciler is otherwise suspending the Kustomization,
+// or about to (an adoption, an external resume it fences, a hand-back), and that suspend would land
+// on the resume: Flux would then handle the resume's token on a suspended return, and apply
+// nothing. The attempt fails, and the worker asks again after its backoff.
+func (d *Dispatcher) triggerHolds(ctx context.Context, ref git.TriggerRef) error {
+	if ref.Kind != v1alpha3.ApplyTriggerKindFlux {
+		return nil
+	}
+	reader := d.APIReader
+	if reader == nil {
+		reader = d.reader
+	}
+	trigger := &v1alpha3.FluxTrigger{}
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger); err != nil {
+		return fmt.Errorf("read %s: %w", ref, err)
+	}
+	held := apimeta.FindStatusCondition(trigger.Status.Conditions, TriggerConditionSuspended)
+	switch {
+	case !trigger.DeletionTimestamp.IsZero():
+		return fmt.Errorf("FluxTrigger %s/%s is being deleted, and hands its Kustomization back",
+			ref.Namespace, ref.Name)
+	case held == nil || held.Status != metav1.ConditionTrue:
+		message := "it reports no Suspended condition yet"
+		if held != nil {
+			message = fmt.Sprintf("it is Suspended=%s, %s: %s", held.Status, held.Reason, held.Message)
+		}
+		return fmt.Errorf("FluxTrigger %s/%s does not hold its Kustomization suspended: %s",
+			ref.Namespace, ref.Name, message)
+	}
+	return nil
+}
+
+// triggerReleased reports whether a trigger is gone or being deleted. It reads uncached (APIReader)
+// when it can, because the step that follows may suspend the Kustomization: after a hand-back's
+// release, a suspend from a cached read that still showed the trigger would hold a Kustomization no
+// trigger holds any more.
 func (d *Dispatcher) triggerReleased(ctx context.Context, ref git.TriggerRef) (bool, error) {
 	trigger := v1alpha3.NewApplyTrigger(ref.Kind)
 	if trigger == nil {
 		return false, nil
 	}
-	err := d.reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger)
+	reader := d.APIReader
+	if reader == nil {
+		reader = d.reader
+	}
+	err := reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger)
 	switch {
 	case apierrors.IsNotFound(err):
 		return true, nil

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,6 +63,7 @@ func (f *holdFixture) events() []string {
 		case event := <-f.recorder.Events:
 			for _, reason := range []string{
 				EventReasonAdopted, EventReasonResumedElsewhere, EventReasonReleased, EventReasonReleaseFailed,
+				EventReasonOperationUnfollowed,
 			} {
 				if strings.Contains(event, " "+reason+" ") {
 					out = append(out, event)
@@ -169,6 +171,98 @@ func TestFluxTrigger_LeavesABranchWorkersOperationAlone(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "left resumed for the worker")
 	assert.Empty(t, f.events())
+	assert.Equal(t, "T1", f.trigger(t).Status.Operation.Token)
+}
+
+// followerStub answers Following for the operations it lists, by token.
+type followerStub map[string]bool
+
+func (f followerStub) Following(_ git.TriggerRef, token string) bool { return f[token] }
+
+// workerOperationTrigger is a held trigger whose worker recorded operation T1 in flight, the
+// Kustomization left resumed for it.
+func workerOperationTrigger() *configbutleraiv1alpha3.FluxTrigger {
+	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
+	trigger.Status.Conditions = []metav1.Condition{{
+		Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionTrue, Reason: ReasonHeld,
+		LastTransitionTime: metav1.Now(),
+	}}
+	trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
+		Phase: configbutleraiv1alpha3.ApplyOperationRunning, Reason: configbutleraiv1alpha3.ApplyReasonRefusal,
+		Token: "T1", RequestedAt: metav1.Now(),
+	}
+	return trigger
+}
+
+// TestFluxTrigger_AnOperationNobodyFollowsIsFenced is review 4's B backstop: the reconciler left a
+// Kustomization resumed for any worker operation in flight, for ever, though nothing followed it
+// (abandoned, undelivered, lost at startup). Now it leaves it only while this process follows the
+// operation, or for a grace after it first saw nobody following it; past that it suspends the
+// Kustomization, and completes the operation Failed once the suspend is handled.
+func TestFluxTrigger_AnOperationNobodyFollowsIsFenced(t *testing.T) {
+	f := newHoldFixture(t, workerOperationTrigger())
+	f.r.UnfollowedGrace = time.Nanosecond
+	f.r.Follower = followerStub{"T1": true}
+
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, err)
+	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "followed: left to the worker")
+
+	f.r.Follower = followerStub{}
+	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
+	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "followed by nobody: suspended")
+	require.NotNil(t, got.Status.Operation)
+	assert.Equal(t, configbutleraiv1alpha3.ApplyOperationFailed, got.Status.Operation.Phase)
+	assert.Equal(t, "T1", got.Status.Operation.Token, "the worker's operation, completed")
+	assert.NotEmpty(t, got.Status.Operation.FenceToken)
+	assert.NotNil(t, got.Status.Operation.FinishedAt)
+	assert.Contains(t, got.Status.Operation.Message, "followed by nobody")
+	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplyTriggerConditionSuspended))
+	events := f.events()
+	require.Len(t, events, 1)
+	assert.True(t, strings.HasPrefix(events[0], "Warning OperationUnfollowed the Refusal apply"), events[0])
+}
+
+// operationFlipper is an APIReader whose reads of the trigger show its operation in flight until the
+// Kustomization was read to be held (the second GET of it, after the Configured check), and completed
+// after, as a worker that completes it in between leaves it.
+type operationFlipper struct {
+	ctrlclient.Reader
+
+	kustomizationReads atomic.Int32
+}
+
+func (o *operationFlipper) Get(
+	ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object, opts ...ctrlclient.GetOption,
+) error {
+	if err := o.Reader.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if trigger, ok := obj.(*configbutleraiv1alpha3.FluxTrigger); ok && trigger.Status.Operation != nil &&
+		o.kustomizationReads.Load() >= 2 {
+		trigger.Status.Operation.Phase = configbutleraiv1alpha3.ApplyOperationSucceeded
+	}
+	return nil
+}
+
+// TestFluxTrigger_AnOperationThatCompletesWhileReadIsNoExternalResume is review 4's F, the
+// reconciler's half: the Kustomization read resumed for a worker's operation, which completed before
+// the operation was read, looked like an external resume. Now the operation is read before and
+// after the Kustomization, and a move between the two reads again.
+func TestFluxTrigger_AnOperationThatCompletesWhileReadIsNoExternalResume(t *testing.T) {
+	f := newHoldFixture(t, workerOperationTrigger())
+	flipper := &operationFlipper{Reader: f.r.Client}
+	f.r.APIReader = flipper
+	f.sim.Client.PrependReactor("get", "kustomizations", func(k8stesting.Action) (bool, runtime.Object, error) {
+		flipper.kustomizationReads.Add(1)
+		return false, nil, nil
+	})
+
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, err)
+	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "nothing suspended on a moving read")
+	assert.Empty(t, f.events(), "and no external resume recorded")
 	assert.Equal(t, "T1", f.trigger(t).Status.Operation.Token)
 }
 
