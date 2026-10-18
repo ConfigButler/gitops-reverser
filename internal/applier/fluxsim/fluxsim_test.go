@@ -167,27 +167,51 @@ func TestSim_FailuresAndRequeues(t *testing.T) {
 	assert.Empty(t, sim.Applied())
 }
 
-// A forced apply takes a field from an update manager; an apply that leaves a field out removes the
-// one its manager owned; a merge patch owns what it writes as an update.
+// The ownership a real API server keeps (measured in envtest,
+// internal/controller/fluxtrigger_suspend_apiserver_test.go): a merge patch owns what it changes,
+// as an update; an apply of the value a field holds shares it, even forced; a write that changes
+// the value takes it from every other owner; an apply that leaves a field out gives up its share,
+// and removes the field only when nobody else owns it.
 func TestSim_ManagedFields(t *testing.T) {
 	sim := newSim(t, false)
-	patch := []byte(`{"spec":{"suspend":true}}`)
-	_, err := sim.Client.Resource(KustomizationGVR()).Namespace(ksKey.Namespace).
-		Patch(context.Background(), ksKey.Name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "flux"})
-	require.NoError(t, err)
-	assert.Equal(t, owner{manager: "flux", operation: metav1.ManagedFieldsOperationUpdate},
-		owners(sim.Kustomization(ksKey))[simFieldSuspend])
+	update := owner{manager: "flux", operation: metav1.ManagedFieldsOperationUpdate}
+	apply := owner{manager: manager, operation: metav1.ManagedFieldsOperationApply}
+	mergePatch := func(suspend string) {
+		t.Helper()
+		_, err := sim.Client.Resource(KustomizationGVR()).Namespace(ksKey.Namespace).Patch(context.Background(),
+			ksKey.Name, types.MergePatchType, []byte(`{"spec":{"suspend":`+suspend+`}}`),
+			metav1.PatchOptions{FieldManager: "flux"})
+		require.NoError(t, err)
+	}
+	suspendOwners := func() []owner { return owners(sim.Kustomization(ksKey))[simFieldSuspend] }
+
+	mergePatch("true")
+	assert.Equal(t, []owner{update}, suspendOwners())
 
 	sim.apply(t, ptr(true), "T1")
-	assert.Equal(t, owner{manager: manager, operation: metav1.ManagedFieldsOperationApply},
-		owners(sim.Kustomization(ksKey))[simFieldSuspend], "forced")
+	assert.ElementsMatch(t, []owner{update, apply}, suspendOwners(), "the same value is shared, forced or not")
 
 	sim.apply(t, nil, "")
 	ks := sim.Kustomization(ksKey)
+	assert.True(t, suspended(ks), "the other owner keeps it")
+	assert.Equal(t, []owner{update}, suspendOwners())
+	assert.Empty(t, ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation])
+
+	sim.apply(t, ptr(false), "T2")
+	assert.Equal(t, []owner{apply}, suspendOwners(), "another value is taken from every owner")
+	mergePatch("false")
+	assert.Equal(t, []owner{apply}, suspendOwners(), "an update of the value the field holds takes nothing")
+
+	sim.apply(t, nil, "")
+	ks = sim.Kustomization(ksKey)
 	_, found, _ := unstructured.NestedFieldNoCopy(ks.Object, "spec", "suspend")
 	assert.False(t, found, "released")
-	assert.Empty(t, ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation])
 	assert.Empty(t, owners(ks))
+}
+
+func suspended(ks *unstructured.Unstructured) bool {
+	value, _, _ := unstructured.NestedBool(ks.Object, "spec", "suspend")
+	return value
 }
 
 func TestTickingClock_NeverRepeats(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -370,7 +371,10 @@ func SetReady(obj *unstructured.Unstructured, status metav1.ConditionStatus, rea
 
 // patchKustomization serves a patch of a Kustomization: a server-side apply (always forced, as the
 // client under test applies) or a merge patch, keeping managedFields for spec.suspend and the
-// requestedAt annotation, and the generation for a spec change.
+// requestedAt annotation, and the generation for a spec change. Ownership follows what a real API
+// server did (measured in envtest, internal/controller/fluxtrigger_suspend_apiserver_test.go): a
+// write that changes a field's value takes it from every other owner; an update that writes the
+// value the field holds takes nothing; an apply that does shares the field with its owners.
 func (s *Sim) patchKustomization(action k8stesting.Action) (bool, runtime.Object, error) {
 	patch, ok := action.(k8stesting.PatchActionImpl)
 	if !ok {
@@ -400,16 +404,7 @@ func (s *Sim) patchKustomization(action k8stesting.Action) (bool, runtime.Object
 	byField := owners(obj)
 	wasSuspended, _, _ := unstructured.NestedBool(obj.Object, "spec", "suspend")
 	for _, field := range keptFields() {
-		value, present, _ := unstructured.NestedFieldNoCopy(body, field.path...)
-		switch {
-		case present:
-			setField(obj, field.path, value)
-			byField[field.name] = writer
-		case writer.operation == metav1.ManagedFieldsOperationApply && byField[field.name] == writer:
-			// An apply that leaves out a field its manager owned removes it.
-			setField(obj, field.path, nil)
-			delete(byField, field.name)
-		}
+		writeField(obj, byField, field, body, writer)
 	}
 	if isSuspended, _, _ := unstructured.NestedBool(obj.Object, "spec", "suspend"); isSuspended != wasSuspended {
 		obj.SetGeneration(obj.GetGeneration() + 1)
@@ -419,6 +414,32 @@ func (s *Sim) patchKustomization(action k8stesting.Action) (bool, runtime.Object
 		return true, nil, err
 	}
 	return true, obj, nil
+}
+
+// writeField applies one kept field of a patch body by writer to obj and its owners, byField.
+func writeField(obj *unstructured.Unstructured, byField map[string][]owner, field keptField, body map[string]any,
+	writer owner) {
+	value, present, _ := unstructured.NestedFieldNoCopy(body, field.path...)
+	old, held, _ := unstructured.NestedFieldNoCopy(obj.Object, field.path...)
+	unchanged := held && fmt.Sprint(old) == fmt.Sprint(value)
+	switch {
+	case present && unchanged && writer.operation == metav1.ManagedFieldsOperationUpdate:
+		// An update owns only what it changed.
+	case present && unchanged:
+		// An apply of the value the field holds shares it with its owners, forced or not.
+		byField[field.name] = withOwner(byField[field.name], writer)
+	case present:
+		setField(obj, field.path, value)
+		byField[field.name] = []owner{writer}
+	case writer.operation == metav1.ManagedFieldsOperationApply && slices.Contains(byField[field.name], writer):
+		// An apply that leaves out a field its manager owned gives it up, and removes it when nobody
+		// else owns it.
+		byField[field.name] = slices.DeleteFunc(byField[field.name], func(o owner) bool { return o == writer })
+		if len(byField[field.name]) == 0 {
+			setField(obj, field.path, nil)
+			delete(byField, field.name)
+		}
+	}
 }
 
 // keptField is a field the fake keeps managedFields for.
@@ -433,6 +454,15 @@ func keptFields() []keptField {
 		{name: simFieldSuspend, path: []string{"spec", "suspend"}},
 		{name: simFieldRequestedAt, path: []string{"metadata", "annotations", fluxmeta.ReconcileRequestAnnotation}},
 	}
+}
+
+// managedPath is a kept field's path in a managedFields entry's fieldsV1.
+func managedPath(field keptField) []string {
+	path := make([]string, 0, len(field.path))
+	for _, step := range field.path {
+		path = append(path, "f:"+step)
+	}
+	return path
 }
 
 // setField sets the field at path, or removes it when value is nil.
@@ -453,9 +483,11 @@ type owner struct {
 	operation metav1.ManagedFieldsOperationType
 }
 
-// owners reads which entry owns each of the fields the fake keeps.
-func owners(obj *unstructured.Unstructured) map[string]owner {
-	owners := map[string]owner{}
+// owners reads which entries own each of the fields the fake keeps. A field applied with the value
+// it holds is shared: the API server keeps every owner, as it does for an apply (forced or not) of a
+// value an update set.
+func owners(obj *unstructured.Unstructured) map[string][]owner {
+	owners := map[string][]owner{}
 	for _, entry := range obj.GetManagedFields() {
 		if entry.FieldsV1 == nil {
 			continue
@@ -466,34 +498,42 @@ func owners(obj *unstructured.Unstructured) map[string]owner {
 		}
 		owner := owner{manager: entry.Manager, operation: entry.Operation}
 		if _, ok, _ := unstructured.NestedFieldNoCopy(fields, "f:spec", "f:suspend"); ok {
-			owners[simFieldSuspend] = owner
+			owners[simFieldSuspend] = withOwner(owners[simFieldSuspend], owner)
 		}
 		if _, ok, _ := unstructured.NestedFieldNoCopy(fields, "f:metadata", "f:annotations",
 			"f:"+fluxmeta.ReconcileRequestAnnotation); ok {
-			owners[simFieldRequestedAt] = owner
+			owners[simFieldRequestedAt] = withOwner(owners[simFieldRequestedAt], owner)
 		}
 	}
 	return owners
 }
 
+// withOwner adds owner to a field's owners, once.
+func withOwner(owners []owner, owner owner) []owner {
+	if slices.Contains(owners, owner) {
+		return owners
+	}
+	return append(owners, owner)
+}
+
 // setOwners writes one managedFields entry per owner.
-func setOwners(obj *unstructured.Unstructured, byField map[string]owner) {
+func setOwners(obj *unstructured.Unstructured, byField map[string][]owner) {
 	byOwner := map[owner]map[string]any{}
-	for field, owner := range byField {
-		fields := byOwner[owner]
-		if fields == nil {
-			fields = map[string]any{}
-			byOwner[owner] = fields
-		}
-		if field == simFieldSuspend {
-			_ = unstructured.SetNestedField(fields, map[string]any{}, "f:spec", "f:suspend")
-		} else {
-			_ = unstructured.SetNestedField(fields, map[string]any{}, "f:metadata", "f:annotations",
-				"f:"+fluxmeta.ReconcileRequestAnnotation)
+	var order []owner
+	for _, field := range keptFields() {
+		for _, owner := range byField[field.name] {
+			fields := byOwner[owner]
+			if fields == nil {
+				fields = map[string]any{}
+				byOwner[owner] = fields
+				order = append(order, owner)
+			}
+			_ = unstructured.SetNestedField(fields, map[string]any{}, managedPath(field)...)
 		}
 	}
 	entries := make([]metav1.ManagedFieldsEntry, 0, len(byOwner))
-	for owner, fields := range byOwner {
+	for _, owner := range order {
+		fields := byOwner[owner]
 		raw, _ := json.Marshal(fields)
 		entries = append(entries, metav1.ManagedFieldsEntry{
 			Manager: owner.manager, Operation: owner.operation, APIVersion: "kustomize.toolkit.fluxcd.io/v1",
@@ -510,7 +550,7 @@ func OwnSuspend(t testing.TB, obj *unstructured.Unstructured, suspend bool, mana
 	t.Helper()
 	require.NoError(t, unstructured.SetNestedField(obj.Object, suspend, "spec", "suspend"))
 	owners := owners(obj)
-	owners[simFieldSuspend] = owner{manager: manager, operation: operation}
+	owners[simFieldSuspend] = []owner{{manager: manager, operation: operation}}
 	setOwners(obj, owners)
 	return obj
 }

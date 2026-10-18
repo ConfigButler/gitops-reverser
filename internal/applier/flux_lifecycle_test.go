@@ -460,11 +460,59 @@ func TestFlux_SuspendAndRelease(t *testing.T) {
 		return err == nil && held.Suspended && held.Held && held.Fenced && held.Token == token
 	}, "held and fenced")
 
-	require.NoError(t, flux.Release(context.Background(), checkoutKey))
+	keeper, err := flux.Release(context.Background(), checkoutKey)
+	require.NoError(t, err)
+	assert.Empty(t, keeper)
 	ks := sim.Kustomization(checkoutKey)
 	assert.False(t, suspended(ks))
 	assert.False(t, heldByUs(ks))
 	assert.Empty(t, ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation])
+}
+
+// TestFlux_ReleaseResumesASuspendItSharedWithFlux is the fourth review's co-ownership gap: a suspend
+// that took over a `flux suspend` shares spec.suspend with that update, so the empty apply alone
+// left the Kustomization suspended while the Released Event said it resumed. Release takes the
+// update's share first. A manager that applies spec.suspend keeps it, and Release names it.
+func TestFlux_ReleaseResumesASuspendItSharedWithFlux(t *testing.T) {
+	sim := simCluster(t, "main@sha1:"+testCommit, false)
+	flux := simFlux(sim)
+	patch := []byte(`{"spec":{"suspend":true}}`)
+	_, err := sim.Client.Resource(kustomizationGVR()).Namespace(fluxSystemNS).
+		Patch(context.Background(), "checkout", types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "flux"})
+	require.NoError(t, err)
+	_, err = flux.Suspend(context.Background(), checkoutKey)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"flux", SuspendFieldManager}, suspendManagers(sim.Kustomization(checkoutKey)),
+		"shared, as the API server shares it")
+
+	keeper, err := flux.Release(context.Background(), checkoutKey)
+	require.NoError(t, err)
+	assert.Empty(t, keeper)
+	ks := sim.Kustomization(checkoutKey)
+	assert.False(t, suspended(ks), "resumed, as the Released Event says")
+	assert.Empty(t, suspendManagers(ks))
+
+	applied := fluxsim.OwnSuspend(t, kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")), true,
+		"kustomize-controller", metav1.ManagedFieldsOperationApply)
+	sim = fluxsim.New(t, newSourceClient(applied))
+	flux = simFlux(sim)
+	_, err = flux.Suspend(context.Background(), checkoutKey)
+	require.NoError(t, err)
+	keeper, err = flux.Release(context.Background(), checkoutKey)
+	require.NoError(t, err)
+	assert.Equal(t, "kustomize-controller", keeper, "its manifest sets spec.suspend")
+	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
+}
+
+// suspendManagers lists the field managers owning a Kustomization's spec.suspend.
+func suspendManagers(ks *unstructured.Unstructured) []string {
+	var managers []string
+	for _, entry := range ks.GetManagedFields() {
+		if ownsField(entry, "f:spec", "f:suspend") {
+			managers = append(managers, entry.Manager)
+		}
+	}
+	return managers
 }
 
 // TestFluxValidate_SuspendOwnedElsewhere: a manifest that sets spec.suspend, applied by another

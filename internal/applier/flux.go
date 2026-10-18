@@ -416,8 +416,14 @@ func (f *Flux) stampSource(ctx context.Context, sourceRef types.NamespacedName) 
 // so it would resume the Kustomization whenever it applies. A manager that wrote the field with an
 // update (`flux resume`, `kubectl edit`) wrote it once, and GitOps Reverser takes it back.
 func suspendOwner(ks *unstructured.Unstructured) string {
+	return suspendManager(ks, metav1.ManagedFieldsOperationApply)
+}
+
+// suspendManager is the field manager, other than GitOps Reverser, that owns a Kustomization's
+// spec.suspend through a write of operation, or "".
+func suspendManager(ks *unstructured.Unstructured, operation metav1.ManagedFieldsOperationType) string {
 	for _, entry := range ks.GetManagedFields() {
-		if entry.Manager == SuspendFieldManager || entry.Operation != metav1.ManagedFieldsOperationApply ||
+		if entry.Manager == SuspendFieldManager || entry.Operation != operation ||
 			entry.Subresource != "" || !ownsField(entry, "f:spec", "f:suspend") {
 			continue
 		}
@@ -498,14 +504,44 @@ func (f *Flux) Suspend(ctx context.Context, ref types.NamespacedName) (string, e
 
 // Release hands the Kustomization ref back to Flux: an empty apply under SuspendFieldManager drops
 // spec.suspend and the requestedAt GitOps Reverser held, so the Kustomization is resumed and Flux
-// owns its apply moments again.
-func (f *Flux) Release(ctx context.Context, ref types.NamespacedName) error {
-	_, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).
-		Apply(ctx, ref.Name, kustomizationApply(ref), metav1.ApplyOptions{FieldManager: SuspendFieldManager, Force: true})
+// owns its apply moments again. It returns the field manager that still keeps the Kustomization
+// suspended, or "" once it is resumed.
+//
+// An apply of the value a field holds shares the field with its owner, even forced, so a suspend
+// that took over a `flux suspend` co-owns spec.suspend with that update, and the empty apply alone
+// would leave the field set, suspended (measured in envtest:
+// internal/controller/fluxtrigger_suspend_apiserver_test.go). Such an update entry is taken back
+// first, with a forced spec.suspend: false, which a different value takes from every owner. A
+// manager that applies spec.suspend keeps it: its manifest sets the field.
+func (f *Flux) Release(ctx context.Context, ref types.NamespacedName) (string, error) {
+	kustomizations := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace)
+	ks, err := kustomizations.Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("release %s %s: %w", kindKustomization, ref, err)
+		return "", fmt.Errorf("release %s %s: %w", kindKustomization, ref, err)
 	}
-	return nil
+	options := metav1.ApplyOptions{FieldManager: SuspendFieldManager, Force: true}
+	if suspended(ks) && suspendManager(ks, metav1.ManagedFieldsOperationUpdate) != "" {
+		resume := kustomizationApply(ref)
+		if err := unstructured.SetNestedField(resume.Object, false, "spec", "suspend"); err != nil {
+			return "", err
+		}
+		if _, err := kustomizations.Apply(ctx, ref.Name, resume, options); err != nil {
+			return "", fmt.Errorf("release %s %s: %w", kindKustomization, ref, err)
+		}
+	}
+	released, err := kustomizations.Apply(ctx, ref.Name, kustomizationApply(ref), options)
+	if err != nil {
+		return "", fmt.Errorf("release %s %s: %w", kindKustomization, ref, err)
+	}
+	if !suspended(released) {
+		return "", nil
+	}
+	for _, owner := range []string{suspendOwner(released), suspendManager(released, metav1.ManagedFieldsOperationUpdate)} {
+		if owner != "" {
+			return owner, nil
+		}
+	}
+	return "(unknown)", nil
 }
 
 // gitRepositoryRef reads a Kustomization's spec.sourceRef, which must name a GitRepository. Its

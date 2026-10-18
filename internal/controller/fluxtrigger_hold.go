@@ -288,9 +288,16 @@ func (r *ApplyTriggerReconciler) releaseStep(
 	case !suspension.Fenced:
 		return fencing
 	}
-	if err := flux.Release(ctx, ref); err != nil {
+	keeper, err := flux.Release(ctx, ref)
+	if err != nil {
 		return r.releaseFailed(trigger, err, fmt.Sprintf("it is suspended, and releasing spec.suspend failed (%v); "+
 			"`flux resume` resumes it", err))
+	}
+	if keeper != "" {
+		r.event(trigger, corev1.EventTypeNormal, EventReasonReleased,
+			"handed Kustomization %s back to Flux: it stays suspended, because field manager %q also sets "+
+				"spec.suspend", ref, keeper)
+		return nil
 	}
 	r.event(trigger, corev1.EventTypeNormal, EventReasonReleased,
 		"handed Kustomization %s back to Flux: it is resumed, and applies on its own again", ref)
