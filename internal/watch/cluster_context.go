@@ -696,35 +696,19 @@ func (m *Manager) clusterDynamicClient(ctx context.Context, clusterID string) (d
 	return dc, nil
 }
 
-// SourceDynamicClient returns the dynamic client for a source cluster, named by its
-// ClusterProvider (GitTarget.SourceCluster()). It is the client the cluster's watches already run
-// on, with the ClusterProvider's identity, so anything asked through it (the applier's apply
-// requests) is asked as that identity and against that cluster, never the operator's own.
-//
-// It serves only a cluster some GitTarget has declared. clusterDynamicClient creates a context for
-// any id on first use, and only forgetGitTargetCluster tears one down, when the last GitTarget that
-// declared it goes. A context created for an id no GitTarget declared would therefore live for the
-// process: a resolved credential and a client set nobody ever releases. An undeclared id is also
-// the moment a caller has run ahead of the GitTarget controller (startup, or a target created a
-// moment ago), and the error says so; its caller retries, by which time the Declare has landed.
-//
-// The empty id is the config plane, which is not a source cluster and is refused rather than
-// silently served as one.
-func (m *Manager) SourceDynamicClient(ctx context.Context, clusterID string) (dynamic.Interface, error) {
-	if clusterID == configPlaneClusterID {
-		return nil, errors.New("no source cluster named: the config plane is not a source cluster")
-	}
-	if !m.sourceClusterDeclared(clusterID) {
-		return nil, fmt.Errorf("source cluster %q is not declared by any GitTarget yet", clusterID)
-	}
-	return m.clusterDynamicClient(ctx, clusterID)
-}
-
 // ApplierDynamicClient returns the client an applier in clusterID is asked through, with that
-// ClusterProvider's identity, as SourceDynamicClient's is. An applier may live in a cluster no
-// GitTarget mirrors from, such as a management cluster that runs Flux for remote ones. No context
-// is created for such a cluster, because nothing would release it (see SourceDynamicClient): the
-// client is built for this call from the provider as it resolves now, and dropped with it.
+// ClusterProvider's identity, so anything asked through it is asked as that identity and against
+// that cluster, never the operator's own. A cluster some GitTarget mirrors from is asked through
+// the client its watches already run on.
+//
+// An applier may also live in a cluster no GitTarget mirrors from, such as a management cluster
+// that runs Flux for remote ones. No context is created for such a cluster: clusterDynamicClient
+// creates one for any id on first use, and only forgetGitTargetCluster tears one down, when the last
+// GitTarget that declared it goes, so a context for an id no GitTarget declared would live for the
+// process. The client is built for this call from the provider as it resolves now, and dropped
+// with it.
+//
+// The empty id is the config plane, which is not a ClusterProvider, and is refused.
 func (m *Manager) ApplierDynamicClient(ctx context.Context, clusterID string) (dynamic.Interface, error) {
 	if clusterID == configPlaneClusterID {
 		return nil, errors.New("no cluster named: the config plane is not a ClusterProvider")
