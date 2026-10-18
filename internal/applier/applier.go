@@ -208,11 +208,17 @@ type Stamped struct {
 	// Recovered is an operation read back from the trigger's record rather than started by this
 	// process: its resume may never have been made, and the record says nothing of that.
 	Recovered bool
-	// Unconfirmed is the error of a Flux resume whose write failed without saying whether it
-	// reached the API server (a timeout, a lost connection); nil for one that was answered. Such an
-	// operation is followed like a Recovered one, because the Kustomization may be resumed, and
-	// only the follow suspends it again.
+	// Unconfirmed is the error of the write that started the operation (a Flux resume, an Argo CD
+	// update), when it failed without saying whether it reached the API server (a timeout, a lost
+	// connection); nil for one that was answered. Such an operation is followed, because the apply
+	// may be running: a Flux one like a Recovered one, since only the follow suspends the
+	// Kustomization again, and an Argo CD one by its token, until it completed or can no longer
+	// have been set.
 	Unconfirmed error
+	// guardedBy is the resourceVersion an Unconfirmed Argo CD update was guarded by, and sentAt
+	// when it was sent: it can land only while the Application is still at guardedBy.
+	guardedBy string
+	sentAt    time.Time
 	// unseen is a Recovered or Unconfirmed operation whose token the Kustomization did not carry
 	// when it was first read: never written, or stamped over before it was handled.
 	unseen bool
@@ -267,6 +273,19 @@ func (e permanentError) Unwrap() error { return e.err }
 
 // errStale reports a request whose decision no longer held when the write was due.
 var errStale = errors.New("the decision no longer holds: the branch moved on or became busy")
+
+// mayHaveLanded reports whether a write that failed with err may have been made all the same: the
+// API server did not answer it (a timeout, a lost connection, the context ending while it waited),
+// or answered that it cannot tell (a server timeout, an internal error). Any other answer refused
+// the write.
+func mayHaveLanded(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return true
+	}
+	return apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) || apierrors.IsInternalError(err) ||
+		apierrors.IsUnexpectedServerError(err)
+}
 
 // isPermanent reports whether err is a permanentError.
 func isPermanent(err error) bool {

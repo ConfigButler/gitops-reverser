@@ -313,6 +313,121 @@ func TestArgoCDRequest_AConflictWithAStatusWriteIsReadAgain(t *testing.T) {
 	assert.Equal(t, 2, updates(client))
 }
 
+// TestArgoCDRequest_AnUnansweredUpdateIsFollowed is review 5's first finding: an update whose
+// answer was lost (a timeout, a reset connection, a 504) may have set the operation all the same,
+// and a RequestFailed withdrew its record and closed the apply window while Argo CD synced. Now it
+// is an Unconfirmed operation, followed by its token: one that was set is followed until the sync
+// completes. One that was not is Requested while it can still land, and Failed once it cannot (the
+// Application moved on from the resourceVersion the update was guarded by, or the API server's
+// request deadline passed), so the worker asks again. An update the API server refused is still an
+// error.
+func TestArgoCDRequest_AnUnansweredUpdateIsFollowed(t *testing.T) {
+	request := func(t *testing.T, argo *ArgoCD) Stamped {
+		t.Helper()
+		stamped, err := argo.Request(context.Background(), platformApp, Ask{
+			Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token: requestToken(stampTime),
+		})
+		require.NoError(t, err)
+		require.Error(t, stamped.Unconfirmed)
+		assert.Equal(t, []any{OutcomeSyncRequested, requestToken(stampTime), testCommit},
+			[]any{stamped.Outcome, stamped.Token, stamped.Commit})
+		return stamped
+	}
+	progress := func(t *testing.T, argo *ArgoCD, stamped *Stamped) Progress {
+		t.Helper()
+		got, err := argo.Progress(context.Background(), platformApp, stamped)
+		require.NoError(t, err)
+		return got
+	}
+	unanswered := func(client *dynamicfake.FakeDynamicClient, landed bool, answer error) {
+		var answered atomic.Bool
+		client.PrependReactor("update", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			if answered.Swap(true) {
+				return false, nil, nil
+			}
+			if landed {
+				update, _ := action.(k8stesting.UpdateActionImpl)
+				require.NoError(t, client.Tracker().Update(applicationGVR(), update.GetObject(), argoNS))
+			}
+			return true, nil, answer
+		})
+	}
+
+	t.Run("set, then the answer was lost: followed until the sync completes", func(t *testing.T) {
+		for name, answer := range map[string]error{
+			"timed out":     context.DeadlineExceeded,
+			"a 504":         apierrors.NewTimeoutError("slow", 1),
+			"a 500":         apierrors.NewInternalError(errors.New("etcd leader changed")),
+			"a lost answer": errors.New("connection reset by peer"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				client := newArgoSource(manualApp())
+				unanswered(client, true, answer)
+				argo := pinnedArgo(client)
+				stamped := request(t, argo)
+				ours, _, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
+				require.Equal(t, stamped.Token, operationToken(ours), "the update was made")
+
+				assert.Equal(t, git.ApplyRequested, progress(t, argo, &stamped).Outcome, "set, not started")
+				app := readApp(t, client)
+				app.SetResourceVersion("2")
+				_ = unstructured.SetNestedMap(app.Object, map[string]any{"operation": ours, "phase": "Running"},
+					"status", "operationState")
+				writeApp(t, client, app)
+				assert.Equal(t, git.ApplyRunning, progress(t, argo, &stamped).Outcome)
+				app = readApp(t, client)
+				app.SetResourceVersion("3")
+				unstructured.RemoveNestedField(app.Object, "operation")
+				_ = unstructured.SetNestedField(app.Object, "Succeeded", "status", "operationState", "phase")
+				writeApp(t, client, app)
+				assert.Equal(t, git.ApplySucceeded, progress(t, argo, &stamped).Outcome)
+			})
+		}
+	})
+
+	t.Run("not set: Failed once the Application moved on from the version it was guarded by", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		unanswered(client, false, apierrors.NewTimeoutError("slow", 1))
+		argo := pinnedArgo(client)
+		stamped := request(t, argo)
+
+		assert.Equal(t, git.ApplyRequested, progress(t, argo, &stamped).Outcome, "it may still land")
+		app := readApp(t, client)
+		app.SetResourceVersion("2")
+		_ = unstructured.SetNestedField(app.Object, "Synced", "status", "sync", "status")
+		writeApp(t, client, app)
+		failed := progress(t, argo, &stamped)
+		assert.Equal(t, git.ApplyFailed, failed.Outcome)
+		assert.Contains(t, failed.Message, "may never have been made")
+	})
+
+	t.Run("not set: Failed once the request deadline passed, with nothing written since", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		unanswered(client, false, context.DeadlineExceeded)
+		argo := pinnedArgo(client)
+		stamped := request(t, argo)
+
+		assert.Equal(t, git.ApplyRequested, progress(t, argo, &stamped).Outcome, "it may still land")
+		argo.Now = func() time.Time { return stampTime.Add(argoUnansweredLanding) }
+		assert.Equal(t, git.ApplyFailed, progress(t, argo, &stamped).Outcome)
+	})
+
+	t.Run("refused: an error, and nothing to follow", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		unanswered(client, false, apierrors.NewForbidden(applicationGVR().GroupResource(), "platform",
+			errors.New("no")))
+
+		_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+			Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token: requestToken(stampTime),
+		})
+
+		require.ErrorContains(t, err, "set the sync operation")
+		assert.False(t, isPermanent(err))
+	})
+}
+
 // TestArgoCDRequest_RefusesWhatIsNotUnderControl: a published verdict can be older than the
 // Application, so a request checks the source and automated sync again, and writes nothing on
 // either. A stale decision writes nothing either, and an empty commit has nothing to pin.

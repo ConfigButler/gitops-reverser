@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1000,6 +1001,48 @@ func TestDispatcher_AnApplicationsSyncIsFollowedToItsOutcome(t *testing.T) {
 	argoOperationState(t, f, "Error")
 	assert.Equal(t, git.ApplyFailed, next(t, reports).Outcome)
 	assert.Len(t, f.events(), 1, "only the ApplyRequested: a failure already reported is not reported again")
+}
+
+// TestDispatcher_AnUnansweredApplicationUpdateIsFollowed is review 5's first finding, end to end:
+// an update the API server made but whose answer timed out is no RequestFailed (which would have
+// the worker withdraw its record and close the apply window while Argo CD syncs). It is reported
+// Requested, and followed until the sync completes. One that was never made is Failed once the
+// Application moved on, so the worker asks again.
+func TestDispatcher_AnUnansweredApplicationUpdateIsFollowed(t *testing.T) {
+	for name, landed := range map[string]bool{"made": true, "never made": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newDispatcherFixture(t, []client.Object{argoTarget()}, manualApp())
+			var answered atomic.Bool
+			f.source.client.PrependReactor("update", "applications",
+				func(action k8stesting.Action) (bool, runtime.Object, error) {
+					if answered.Swap(true) {
+						return false, nil, nil
+					}
+					if landed {
+						update, _ := action.(k8stesting.UpdateActionImpl)
+						tracker := f.source.client.Tracker()
+						require.NoError(t, tracker.Update(applicationGVR(), update.GetObject(), argoNS))
+					}
+					return true, nil, context.DeadlineExceeded
+				})
+
+			reports := f.carryOut(context.Background(), request(argoPlatform, v1alpha3.ApplyReasonForeignCommit, "a"))
+			assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, next(t, reports))
+			if !landed {
+				app := readApp(t, f.source.client)
+				app.SetResourceVersion("2")
+				writeApp(t, f.source.client, app)
+				res := next(t, reports)
+				assert.Equal(t, git.ApplyFailed, res.Outcome)
+				require.ErrorContains(t, res.Err, "may never have been made")
+				return
+			}
+			argoOperationState(t, f, "Running")
+			assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
+			argoOperationState(t, f, "Succeeded")
+			assert.Equal(t, git.ApplySucceeded, next(t, reports).Outcome)
+		})
+	}
 }
 
 // TestDispatcher_AnApplyOfAnotherRevisionIsCounted is the residual race: somebody fetched the

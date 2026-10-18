@@ -400,7 +400,7 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	}
 	log.Info("apply requested", "outcome", stamped.Outcome)
 	if stamped.Unconfirmed != nil {
-		log.Info("the resume may not have reached the Kustomization; following it, which suspends it again",
+		log.Info("the request may not have reached the applier; following it by its token",
 			"error", stamped.Unconfirmed.Error())
 	}
 	d.delivered(req, eligible)

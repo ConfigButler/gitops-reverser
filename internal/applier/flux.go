@@ -273,19 +273,6 @@ func (f *Flux) mayResume(
 	return nil
 }
 
-// mayHaveLanded reports whether a write that failed with err may have been made all the same: the
-// API server did not answer it (a timeout, a lost connection, the context ending while it waited),
-// or answered that it cannot tell (a server timeout, an internal error). Any other answer refused
-// the write.
-func mayHaveLanded(err error) bool {
-	var status apierrors.APIStatus
-	if !errors.As(err, &status) {
-		return true
-	}
-	return apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) || apierrors.IsInternalError(err) ||
-		apierrors.IsUnexpectedServerError(err)
-}
-
 // readSource reads a Kustomization's GitRepository and checks it fetches want, refusing with a
 // permanent error when it does not: resuming a Kustomization whose source follows another branch
 // would deploy that branch.
