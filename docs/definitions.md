@@ -201,12 +201,24 @@ nothing about what it does to the cluster.
 condition. The trigger is never called the applier: the applier is the object it triggers. Not
 "Argo trigger", which names a trigger of Argo Events.
 
+**Eligible.** A `GitTarget` is eligible for the trigger it names when it is in the trigger's
+namespace, not being deleted, admitted by its `ClusterProvider`s, and writes the repository and
+branch the applier fetches. A trigger acts only while an eligible `GitTarget` references it; one
+nothing references is `NotReferenced`. Eligibility is judged from those inputs alone, never from
+the `GitTarget`'s `Ready`. "Bound" names a trigger with at least one eligible `GitTarget`.
+
+**In line.** The triggers that may hold one applier: those an eligible `GitTarget` references, and a
+`FluxTrigger` that holds the `Kustomization` or is handing it back. One of them holds it; the
+others report `HeldByAnotherTrigger`.
+
 **Held.** How a `FluxTrigger` reports its `Kustomization`, from the trigger's side: `Suspended`
 (suspended under GitOps Reverser's field manager, the last suspend handled, nothing applies),
 `Applying` (resumed for an apply GitOps Reverser started), `Suspending` (a suspend was sent, and
-Flux has not handled its token yet). A suspend counts as done only once it is handled: by then no
+Flux has not handled its token yet), `Releasing` (being handed back to Flux), `NotReferenced`
+(nothing to hold) and `NotConfigured`. A suspend counts as done only once it is handled: by then no
 reconcile that started before it is still running. Not "fenced", and not "resumed", which says what
-happens to the `Kustomization` rather than what the trigger does.
+happens to the `Kustomization` rather than what the trigger does. **Hand back** is releasing
+`spec.suspend`, so Flux applies on its own again.
 
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
 (`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`). It asks; the operation it starts is followed

@@ -33,9 +33,9 @@ flowchart TD
 Everything bi-directional is opt-in and off by default: the apply triggers, the push receiver,
 `onRefusal: Reapply`, the chart's `applierAccess` grants, and the `ClusterProvider`'s
 `allowCrossNamespace.appliers`, which a trigger needs to hold an applier outside its own namespace,
-such as one in `flux-system` or `argocd`. A `GitTarget` without
-`spec.applyTriggerRef` never reads, patches or syncs anything of Flux's or Argo CD's, so a
-`Kustomization` keeps its interval and an `Application` keeps automated sync.
+such as one in `flux-system` or `argocd`. A `GitTarget` without `spec.applyTriggerRef` never reads,
+patches or syncs anything of Flux's or Argo CD's, and neither does a trigger no `GitTarget` names, so
+a `Kustomization` keeps its interval and an `Application` keeps automated sync.
 
 **A shared folder without a trigger works, and is exposed.** The applier keeps its own schedule,
 and that schedule cannot see the edits GitOps Reverser has not pushed yet
@@ -53,7 +53,9 @@ things set that up:
 
 1. **An apply trigger holds the applier.** A `FluxTrigger` holds a Flux `Kustomization`, an
    `ArgoCDTrigger` an Argo CD `Application`, and the `GitTarget` names the trigger in
-   `spec.applyTriggerRef`.
+   `spec.applyTriggerRef`. A trigger acts only while an eligible `GitTarget` names it: one in its
+   namespace, admitted by its `ClusterProvider`s, that writes the repository and branch the applier
+   fetches.
 2. **The applier's own triggers are off.** The `FluxTrigger` keeps its `Kustomization` suspended;
    the `Application` runs with automated sync off.
 3. **The Git host's push webhook reaches GitOps Reverser**, so a Git-side push is applied in
@@ -90,7 +92,7 @@ The two appliers get the same contract by different means:
 | Catches up with GitOps Reverser's own pushes | Yes, once the branch is quiet for `quietPeriod` | No: nothing it holds goes stale |
 | The tool's own push webhook | Removed: GitOps Reverser's receiver replaces it | May stay: with automated sync off it only compares |
 | A human override | `flux resume` applies once; it is suspended again within a minute | Sync applies; GitOps Reverser waits for it to end |
-| Handing it back | Delete the trigger: the `Kustomization` is resumed | Delete the trigger, then switch automated sync on |
+| Handing it back | Delete the trigger, or stop naming it from every `GitTarget`: the `Kustomization` is resumed | Delete the trigger, or stop naming it, then switch automated sync on |
 | Complete setup | [Bi-directional GitOps with Flux](bi-directional-flux.md) | [Bi-directional GitOps with Argo CD](bi-directional-argocd.md) |
 
 ## Why the applier cannot decide for itself
@@ -128,7 +130,7 @@ stateDiagram-v2
     Busy --> Busy: more edits, commits and pushes
     Busy --> Quiet: every window closed, every write pushed
     note right of Quiet
-        An owed apply starts only here,
+        An apply starts only here,
         after the decision is checked again
     end note
 ```
@@ -162,7 +164,7 @@ sequenceDiagram
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push | Every applier declared on the branch |
 | `Refusal` | An edit was refused and the target has `onRefusal: Reapply` | The refusing target's applier |
 | `Repair` | An apply reverted an API edit made while it ran; Git kept the edit | That applier |
-| `CatchUp` | The branch has been quiet for the `FluxTrigger`'s `quietPeriod` after GitOps Reverser's own pushes, or since the operator started | Every Flux `Kustomization` on the branch |
+| `CatchUp` | The branch has been quiet for the `FluxTrigger`'s `quietPeriod` after GitOps Reverser's own pushes, since the operator started, or since a `GitTarget` first named the trigger | Every Flux `Kustomization` on the branch |
 
 GitOps Reverser's own commits hold values it read from the cluster, so applying them changes
 nothing, and only Flux is asked to catch up with them: its inventory learns of an object only from
@@ -180,9 +182,9 @@ asked, so a restarted operator finds it and follows it to its end:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Owed: ForeignCommit, Refusal, Repair or CatchUp
-    Owed --> Owed: tip moved or an edit is pending, decide again later
-    Owed --> Requested: quiet branch, decision still holds, operation recorded
+    [*] --> Due: ForeignCommit, Refusal, Repair or CatchUp
+    Due --> Due: tip moved or an edit is pending, decide again later
+    Due --> Requested: quiet branch, decision still holds, operation recorded
     Requested --> Running: the applier is seen working on it
     Running --> Settling: Flux only, applied and suspended again
     Running --> Succeeded
@@ -194,24 +196,27 @@ stateDiagram-v2
     Settling --> Unresolved
     Unresolved --> Succeeded
     Unresolved --> Failed
-    Failed --> Owed: after the applier's backoff
-    Succeeded --> Owed: an edit was withheld during the apply (Repair)
+    Failed --> Due: after the applier's backoff
+    Succeeded --> Due: an edit was withheld during the apply (Repair)
     Succeeded --> [*]
 ```
 
-`Owed` lives in the branch worker; every other state is `status.operation.phase`. While an operation
-is in flight (`Requested`, `Running`, `Settling` or `Unresolved`), the applier is asked nothing else.
+`Due` lives only in the branch worker's memory: an apply it means to ask for, and nothing shows it
+until it is asked. Every other state is `status.operation.phase`. While an operation is in flight
+(`Requested`, `Running`, `Settling` or `Unresolved`), the applier is asked nothing else.
 
 - **Just before it asks, GitOps Reverser checks the decision again**: the commit is still the branch
   tip, no edit waits to be published, and each `GitTarget` still names this trigger on this branch,
-  is still admitted by its `ClusterProvider`, and, for a `Refusal`, still consents. When any of that
+  is still admitted by its `ClusterProvider`s, and, for a `Refusal`, still consents; and the trigger
+  still holds the applier. When any of that
   changed, it asks nothing and decides again at the next quiet moment. It never asks for something
   weaker than what it was told.
 - **An edit made while the apply runs keeps its value in Git.** The apply writes the older commit
   over it on the cluster. GitOps Reverser recognizes that write by the applier's field manager,
-  withholds it from Git, and owes a `Repair`, which applies the tip that holds the edit. Only a write
-  proven to be the applier's is withheld, and a delete never is. Each such write is counted in
-  `apply_window_collisions_total`.
+  withholds it from Git, and asks for a `Repair`, which applies the tip that holds the edit. Only a
+  write proven to be the applier's is withheld: its field manager alone, with an entry newer than the
+  edit. One that ties with the edit is mirrored, and a delete never is withheld. Each such write is
+  counted in `apply_window_collisions_total`.
 - **A failed operation is decided again from scratch**, after that applier's own backoff (2 seconds
   doubling to 5 minutes), on a quiet branch, at the tip as it is then.
 - **An operation still in flight after 5 minutes is `Unresolved`.** It is still followed, nothing
@@ -351,8 +356,12 @@ returns to `Ready=True` only after a resync covering the refused scope. The elig
 - **GitOps Reverser becomes the only path to a deployment.** While it is down, the shared folders
   wait: a push reaches the cluster only through a manual sync or `flux resume`. A graceful stop
   suspends a `Kustomization` it had resumed; after a crash, the apply that was running finishes,
-  and the next process suspends it. Monitor the
-  operator the way you monitor the applier.
+  and the next process suspends it. Monitor the operator the way you monitor the applier.
+- **A trigger may hold any applier its `ClusterProvider` reaches.** With
+  `allowCrossNamespace.appliers`, every namespace the provider admits may hold a `Kustomization` or
+  `Application` in another namespace whose source is the repository its `GitProvider` names. That
+  is a delegation by the platform admin: nothing proves the namespace owns the applier, or may
+  write to the repository, since the binding compares URLs.
 - **Pending writes live in worker memory.** They do not survive a restart; recovery is a resync of
   the cluster as it is then.
 - **Round trips to the Git host are the seconds you wait through.** A foreign push costs a fetch, a

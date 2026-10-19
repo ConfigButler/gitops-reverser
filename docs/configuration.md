@@ -1153,6 +1153,13 @@ lifecycle of an apply, every condition reason and the permissions, are
 [bi-directional GitOps with Argo CD](bi-directional-argocd.md). The reason it has to be this way is
 the [apply trigger design](design/apply-trigger.md).
 
+**A trigger acts only while an eligible `GitTarget` references it**: one in its namespace that names
+it, is admitted by its `ClusterProvider`s, and writes the repository and branch the applier fetches.
+Until one does, the trigger reads and writes nothing in the applier's cluster, and reports
+`Configured=Unknown` and `Ready=True`, both `NotReferenced`, so the two may be created in either
+order. A `FluxTrigger` that held its `Kustomization` hands it back once no eligible `GitTarget`
+references it any more.
+
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
 kind: FluxTrigger
@@ -1183,23 +1190,28 @@ spec:
 | --- | --- | --- |
 | `FluxTrigger.spec.clusterProviderRef`, `ArgoCDTrigger.spec.clusterProviderRef` | `{name: default}` | The `ClusterProvider` whose cluster holds the applier, defaulted as a `GitTarget`'s is. Immutable |
 | `FluxTrigger.spec.kustomizationRef` | required | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` that follows a branch. Immutable |
-| `FluxTrigger.spec.quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` request. At most `1h` |
+| `FluxTrigger.spec.quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes, or after a `GitTarget` first names the trigger, before a `CatchUp` request. At most `1h` |
 | `ArgoCDTrigger.spec.applicationRef` | required | An Argo CD `Application` on a single source whose `targetRevision` names a branch, with automated sync off. Immutable |
 | `GitTarget.spec.applyTriggerRef` | none | The trigger, by `kind` and `name`, in the `GitTarget`'s namespace |
 
 **One trigger, several folders.** Several `GitTarget`s may name one trigger: their folders are
 applied by the same applier, and it is asked once for all of them. Each one's repository and branch
 must be the ones the applier applies, or that `GitTarget`'s `ApplyTriggerReady` is `False` with
-`SourceMismatch`. One applier is held by one trigger: a second trigger of the same kind naming the
-same applier in the same cluster reports `HeldByAnotherTrigger` and does nothing.
+`SourceMismatch`; one that matches is enough for the trigger to act. One applier is held by one
+trigger: a second trigger of the same kind in line for the same applier in the same cluster reports
+`HeldByAnotherTrigger` and does nothing. A trigger no eligible `GitTarget` references is not in line,
+so it keeps no other out.
 
 **Where the applier is looked up.** In the cluster the trigger's `spec.clusterProviderRef` names,
 with the identity that [`ClusterProvider`](#clusterprovider) uses. Name a provider for a management
 cluster when Flux or Argo CD runs there; a provider without `spec.kubeConfig` is the operator's own
 cluster. That provider's `spec.accessFrom` must admit the trigger's namespace, as for mirroring, or
-the trigger is `Configured=False` with `NamespaceNotAuthorized` (or `ClusterProviderNotFound`). For
-the operator's own cluster, the chart grants the applier permissions with `applierAccess.flux: true`
-and `applierAccess.argocd: true`.
+the trigger is `Configured=False` with `NamespaceNotAuthorized` (or `ClusterProviderNotFound`). An
+applier in another namespace than the trigger's, such as `flux-system` in the example above, also
+needs the provider's [`allowCrossNamespace.appliers`](#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace),
+or the trigger is `Configured=False` with `ApplierNamespaceNotAllowed`. For the operator's own
+cluster, the chart grants the applier permissions with `applierAccess.flux: true` and
+`applierAccess.argocd: true`.
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -1224,7 +1236,7 @@ the branch worker, or on any other worker writing the same repository and branch
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed and pending writes replayed and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per applier |
 | `Refusal` | An eligible refused edit, with `spec.onRefusal: Reapply` | This target's applier |
 | `Repair` | An apply reverted an API edit made after it was asked for; Git kept the edit | That applier |
-| `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes, or since the operator started | Every `Kustomization` declared on the branch; never an `Application` |
+| `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes, since the operator started, or since a `GitTarget` first named the trigger | Every `Kustomization` declared on the branch; never an `Application` |
 
 **What it reports.** The trigger reports its applier and the operation it is running. The branch
 worker writes `status.operation` and `status.repairOwed` at every move of the operation, so they are
@@ -1240,7 +1252,7 @@ status:
       message: Kustomization flux-system/checkout applies GitRepository flux-system/platform, ...
     - type: Held               # FluxTrigger only
       status: "True"
-      reason: Suspended        # Suspended | Applying | Suspending | NotConfigured
+      reason: Suspended        # Suspended | Applying | Suspending | Releasing | NotReferenced | NotConfigured
     - type: Ready
       status: "True"
   source:
@@ -1276,21 +1288,16 @@ A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is suspended a
 an `Unresolved` operation with no `reason` and no `commit`, which completes once the suspend is
 handled.
 
-**A trigger acts only while an eligible `GitTarget` references it**: one in its namespace that names
-it, is admitted by its `ClusterProvider`s, and writes the repository and branch the applier fetches.
-Until one does, the trigger reads and writes nothing in the applier's cluster, and reports
-`Configured=Unknown` and `Ready=True`, both `NotReferenced`. A `FluxTrigger` that held its
-`Kustomization` hands it back once no eligible `GitTarget` references it any more.
-
 **Conditions.** `Configured` is a gate, and the trigger's `Ready` aggregates it; a `FluxTrigger` is
 also `Ready` only once `Held` is `True` (`Suspended`, or `Applying` while an apply of GitOps
-Reverser's is in flight). `NotBound` (`Unknown` while a naming `GitTarget` cannot be judged yet,
-`False` once each is refused for different reasons), `SourceMismatch` and `NamespaceNotAuthorized`
-report the `GitTarget`s naming the trigger, and `ApplierNamespaceNotAllowed` an applier in another
-namespace without the provider's `allowCrossNamespace.appliers`. The other `False` reasons are `ApplierNotFound`,
-`UnsupportedSource`, `AutomatedSyncEnabled` (Argo CD), `SuspendOwnedElsewhere` (Flux), `Forbidden`,
-`NamespaceNotAuthorized`, `ClusterProviderNotFound` and `HeldByAnotherTrigger`; each guide's table
-says what they mean for its applier and how to fix them
+Reverser's is in flight). An unreferenced trigger is `Ready=True` (`NotReferenced`). The
+`GitTarget`s naming the trigger are reported as `NotBound` (`Unknown` while one cannot be judged
+yet, `False` once each is refused for different reasons), or as the refusal they share,
+`SourceMismatch` or `NamespaceNotAuthorized`, every `GitTarget` and its reason in the message. The
+other `False` reasons are `ApplierNotFound`, `UnsupportedSource`, `AutomatedSyncEnabled` (Argo CD),
+`SuspendOwnedElsewhere` (Flux), `Forbidden`, `NamespaceNotAuthorized` (the trigger's own namespace),
+`ClusterProviderNotFound`, `ApplierNamespaceNotAllowed` and `HeldByAnotherTrigger`; each guide's
+table says what they mean for its applier and how to fix them
 ([Flux](bi-directional-flux.md#the-fluxtrigger), [Argo CD](bi-directional-argocd.md#the-argocdtrigger)).
 The `GitTarget` reports `ApplyTriggerReady`, and its `Ready` aggregates it: `True` when the trigger
 is `Ready` and its applier applies this target's repository and branch, otherwise the trigger's own
@@ -1309,8 +1316,8 @@ is `Suspending` is read every 2 seconds. Annotate the trigger with
 **Deleting a `FluxTrigger` hands the `Kustomization` back to Flux,** through the finalizer
 `configbutler.ai/flux-trigger`, unless another `FluxTrigger` is in line for it, and so does the last
 eligible `GitTarget` that stops naming it. A trigger that never held its `Kustomization` carries no
-finalizer. The
-[Flux guide](bi-directional-flux.md#how-the-trigger-holds-the-kustomization) has the details.
+finalizer. The [Flux guide](bi-directional-flux.md#how-the-trigger-holds-the-kustomization) has the
+details.
 
 ### Reverting a refused edit (`spec.onRefusal`)
 

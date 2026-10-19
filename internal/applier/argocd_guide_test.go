@@ -36,6 +36,7 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	decodeStrict(t, objects, "GitTarget", &target)
 	decodeStrict(t, objects, v1alpha3.ApplyTriggerKindArgoCD, &trigger)
 	decodeStrict(t, objects, "Secret", &secret)
+	exampleReachesItsApplier(t, objects, &trigger)
 	app := one(t, objects, kindApplication)
 
 	// The GitOps Reverser objects are wired to each other.

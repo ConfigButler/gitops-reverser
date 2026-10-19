@@ -377,8 +377,11 @@ path would each stamp their own tracking-id on the same objects and raise
 
 The `Application` lives in the `argocd` namespace, targets
 `spec.destination.namespace = <testNs>`, `spec.source.path = <livePath>`,
-`targetRevision: main`, `directory.recurse: true`. The `GitProvider` has a
-`gitea` receiver, registered as a Gitea webhook next to Argo CD's own.
+`targetRevision: main`, `directory.recurse: true`. The trigger lives in the test
+namespace, so each describe first grants `allowCrossNamespace.appliers` on the
+`default` `ClusterProvider`, as a user must for an `Application` in `argocd`. The
+`GitProvider` has a `gitea` receiver, registered as a Gitea webhook next to Argo
+CD's own.
 
 Ordering matters: `SetupRepo` leaves the Gitea repo **empty**, so the spec seeds
 `main` first, creates the `Application` (nothing to sync yet), and only then stands
@@ -415,7 +418,7 @@ The race the apply trigger exists for.
    `container: WaffleBowl` and wait for that commit.
 3. `Consistently` assert live stays `WaffleBowl`, the commit count is exactly
    baseline + 2, and the `Application`'s last `finishedAt` has not moved: GitOps
-   Reverser's own commits owe Argo CD no sync.
+   Reverser's own commits ask Argo CD for no sync.
 4. Assert Argo CD, refreshed by its webhook, reports the `Application` `Synced`:
    there was nothing to catch up.
 

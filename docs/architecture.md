@@ -679,12 +679,14 @@ A delivery is handled on the worker's own queue, so it is never judged while a p
 the push has recorded its commit before the delivery is read. A rollback onto one of the worker's
 older commits is foreign, because the advertisement names a tip other than the last one observed.
 
-The same quiet-branch rule sends two other requests: `Refusal`, to the refusing target's applier
-when `spec.onRefusal: Reapply` is set, and `CatchUp`, to every applier on the branch once it has
-been quiet for the trigger's `quietPeriod` after the worker's own pushes.
+The same quiet-branch rule sends three other requests: `Refusal`, to the refusing target's applier
+when `spec.onRefusal: Reapply` is set; `Repair`, to an applier whose late write over a newer API
+edit the apply window withheld; and `CatchUp`, to every Flux `Kustomization` on the branch once it
+has been quiet for the trigger's `quietPeriod` after the worker's own pushes, or after a `GitTarget`
+first names the trigger.
 
-What each applier is owed lives on the worker, per applier: one attempt out at a time, and its own
-retry clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
+Which apply is due lives on the worker, per applier: one attempt out at a time, and its own retry
+clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
 reports back. It reads each `GitTarget` again first (the same incarnation by uid, still naming this
 applier through its trigger on this branch, still admitted, still consenting to a `Refusal`), checks that the
 `Kustomization`'s source fetches this repository and branch, has the `GitRepository` fetch the

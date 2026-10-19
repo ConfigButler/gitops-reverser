@@ -21,9 +21,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier/fluxsim"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 )
 
 // fluxGuide is the Flux user guide. Its "A complete example" section is the configuration this
@@ -47,6 +50,7 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	decodeStrict(t, objects, "GitTarget", &target)
 	decodeStrict(t, objects, v1alpha3.ApplyTriggerKindFlux, &trigger)
 	decodeStrict(t, objects, "Secret", &secret)
+	exampleReachesItsApplier(t, objects, &trigger)
 	repository := one(t, objects, "GitRepository")
 	kustomization := one(t, objects, "Kustomization")
 	assert.NotContains(t, objects, "Receiver", "the guide tells the reader to remove the Flux Receiver")
@@ -153,4 +157,23 @@ func decodeStrict(t *testing.T, objects map[string][]*unstructured.Unstructured,
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	require.NoError(t, decoder.Decode(into), "the guide's %s must decode with no unknown field", kind)
+}
+
+// exampleReachesItsApplier checks that the guide's example ClusterProvider admits the trigger's
+// namespace and lets it reach its applier, through the admission the trigger reconciler runs.
+func exampleReachesItsApplier(
+	t *testing.T, objects map[string][]*unstructured.Unstructured, trigger v1alpha3.ApplyTrigger,
+) {
+	t.Helper()
+	var provider v1alpha3.ClusterProvider
+	decodeStrict(t, objects, "ClusterProvider", &provider)
+	assert.Equal(t, trigger.ClusterProvider(), provider.Name, "the example declares the trigger's ClusterProvider")
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, v1alpha3.AddToScheme(scheme))
+	control := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&provider).Build()
+	decision, err := authz.ApplyTriggerAdmitted(context.Background(), control, trigger)
+	require.NoError(t, err)
+	assert.True(t, decision.Allowed, "the example's ClusterProvider lets the trigger reach its applier: %s: %s",
+		decision.Reason, decision.Message)
 }

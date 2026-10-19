@@ -24,8 +24,8 @@ spec:
 ```
 
 For the chart-rendered `default` provider, set `clusterProvider.default.allowCrossNamespace.sources:
-true`. A provider that still stores `allowAnySourceNamespace: true` keeps working as one without it,
-and any change to its `spec` is refused ("allowAnySourceNamespace was removed; set
+true`. A provider that still stores `allowAnySourceNamespace: true` is read as if the line were not
+there, and any change to its `spec` is refused ("allowAnySourceNamespace was removed; set
 allowCrossNamespace.sources") until the line is removed or set to `false`. `false`, which the old
 default stored on every provider, is accepted.
 
@@ -59,8 +59,9 @@ See [who applies this folder](configuration.md#who-applies-this-folder-specapply
 
 A trigger also changes what else applies the folder. A `FluxTrigger` holds its `Kustomization`
 suspended, so Flux applies it only when GitOps Reverser resumes it: when somebody else pushes to the
-branch, after a refusal or a reverted edit, and to catch up with its own pushes once the branch has
-been quiet for the trigger's `quietPeriod`. `flux get ks` shows it `Suspended`, and while the
+branch, after a refusal or a reverted edit, and to catch up with its own pushes, or with the branch
+once a `GitTarget` first names the trigger, after the branch has been quiet for the trigger's
+`quietPeriod`. `flux get ks` shows it `Suspended`, and while the
 operator is down it waits suspended: a graceful stop suspends one it had resumed, and after a crash
 the next process does. Remove `spec.suspend` from whatever applies the
 `Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
