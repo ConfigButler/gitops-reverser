@@ -7,7 +7,7 @@ package git
 // The report is a hint and never a fact: after never decides whether the branch moved. It is queued
 // as a refresh
 // that reaches the remote whatever was proved recently, so the worker reads the advertisement itself
-// and the observation it records decides whether the branch moved (applyDebt.observe). That one
+// and the observation it records decides whether the branch moved (applyInbox.observe). That one
 // rule settles every awkward delivery without bookkeeping: a late delivery for an earlier push of
 // this worker's finds the branch at the worker's latest push, a rollback onto an older one of its
 // commits finds a tip it did not push last, and a duplicate costs one more advertisement.

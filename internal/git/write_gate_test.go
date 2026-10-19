@@ -256,7 +256,7 @@ func TestWriteGate_AGateClosingAfterTheLocalCommitDoesNotRetractIt(t *testing.T)
 				gate.close(t, worker)
 				loop.pushPending()
 				_, resolved := worker.LookupCommitRequestOutcome("default", req.Name, req.UID)
-				require.False(t, resolved, "the gate closing does not resolve a request the push still owes")
+				require.False(t, resolved, "the gate closing does not resolve a request still waiting for its push")
 
 				restore()
 				loop.pushPending()

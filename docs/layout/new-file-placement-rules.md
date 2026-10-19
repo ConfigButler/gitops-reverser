@@ -654,7 +654,7 @@ A document in a directory whose kustomization sets a `namespace:` transformer do
 [contextual-namespace.md](contextual-namespace.md)).
 A new document placed there must follow that convention, or it breaks the folder's own
 style, and this applies to **every** resolved path: a declared template pointing into a
-governed directory is under the same obligation as the kustomize-root fallback.
+governed directory follows the same rule as the kustomize-root fallback.
 
 It is conditional on the two namespaces **matching**. Omitting `metadata.namespace` hands
 the namespace to kustomize, so a transformer naming a *different* namespace would render the
@@ -822,7 +822,7 @@ CRD to know where a resource will go; with C the answer lived in the repo plus a
 ladder, so the scan/dry-run output **must** state, per new resource, the chosen path and the
 cohort and ladder step that produced it. *It was never built, which is a fact worth keeping
 on this page: the feature shipped without the thing that made it defensible.* What exists
-now is the smaller obligation the smaller ladder deserves — `placements_total{source}` per
+now is the smaller signal the smaller ladder deserves — `placements_total{source}` per
 (GitTarget, type), plus the per-resource log line naming the resolved path.
 
 **P9 — Cohort lookup cost at scale.** Each new resource scanned the store, so a large repo
@@ -1453,7 +1453,7 @@ catch-all layout.
    - never let a sensitive resource join a plaintext file, or a plaintext resource an
      encrypted one; refuse instead, with a bounded reason;
    - count every resolution by `{source, disposition}` and every refusal by `{reason}`,
-     labeled with the GitTarget and the type, which is the smaller obligation that
+     labeled with the GitTarget and the type, which is the smaller signal that
      replaces P8's never-built cohort trace.
 5. Parse and validate path templates once per GitTarget reconcile. Sensitive
    resources must resolve to identity-complete paths and must be written through

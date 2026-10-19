@@ -144,7 +144,7 @@ func TestRefusalReapply_ASecondRefusedEditEarnsItsOwnRequest(t *testing.T) {
 		"a genuinely different refused edit must still be requested")
 }
 
-// TestRefusalReapply_AResyncsRefusalIsRequestedByTheLoopItself: a refusal a resync discovers is owed
+// TestRefusalReapply_AResyncsRefusalIsRequestedByTheLoopItself: a refusal a resync discovers is decided
 // while the resync's outcome is being settled, inside the commit pass, and the wake that ends the
 // pass has to send it. The fixture's refuseResync pushes by hand, which is how a pushed-by-hand unit
 // test once missed a trigger that never left the worker.
@@ -212,9 +212,9 @@ func TestRefusalObservation_IsContentAddressedAndOrderIndependent(t *testing.T) 
 		"nothing to digest is not an observation, and must never count as covered")
 }
 
-// TestRefusalObservation_NothingIsCoveredUntilARequestIsOwed. The memory is written where the
-// request is owed, and nowhere else.
-func TestRefusalObservation_NothingIsCoveredUntilARequestIsOwed(t *testing.T) {
+// TestRefusalObservation_NothingIsCoveredUntilARequestIsDecided. The memory is written where the
+// request is decided, and nowhere else.
+func TestRefusalObservation_NothingIsCoveredUntilARequestIsDecided(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
 		OnRefusal: configv1alpha3.RefusalActionReapply,
 	})
@@ -280,7 +280,7 @@ func TestRefusalObservation_RecoveryIsScopedToTheCollectionThatRecovered(t *test
 //
 // Dropping the digest is not enough: a request already queued for that collection finds nothing
 // covering it when its timer fires and asks for a reapply anyway, for a refusal that has since been
-// accepted. The obligation has to go with the memory — and only that collection's obligation.
+// accepted. The queued request has to go with the memory, and only that collection's request.
 func TestRefusalObservation_RecoveryCancelsTheQueuedRequestForThatCollection(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
 		OnRefusal: configv1alpha3.RefusalActionReapply,
@@ -299,7 +299,7 @@ func TestRefusalObservation_RecoveryCancelsTheQueuedRequestForThatCollection(t *
 	assert.NotContains(t, loop.refusalPending, deployments,
 		"a queued request must not survive the acceptance of the object it was queued for")
 	assert.Contains(t, loop.refusalPending, configMaps,
-		"and the collection that is still refused keeps its obligation")
+		"and the collection that is still refused keeps its request")
 
 	// Nothing was requested for the cancelled entry, so it must not have spent the window either.
 	limited, _ := w.refusalRateLimited(editingRef())
@@ -359,11 +359,11 @@ func TestRefusalReapply_ARemovalAnywhereInTheFlushDisqualifiesIt(t *testing.T) {
 }
 
 // TestRefusalReapply_AQueuedRequestIsDroppedOnceSomethingElseCoveredIt closes the gap between arming
-// a trailing request and owing it.
+// a trailing request and deciding it.
 //
-// A minute passes between the two, and another request for the same target can be owed in it. If
+// A minute passes between the two, and another request for the same target can be decided in it. If
 // that request covered the same observation, this entry is asking for a second one that says
-// exactly the same thing to the same applier, so it is dropped rather than owed. Consent is
+// exactly the same thing to the same applier, so it is dropped rather than decided. Consent is
 // re-checked at the same point and for the same reason: a delayed action must act on what is true
 // when it fires.
 func TestRefusalReapply_AQueuedRequestIsDroppedOnceSomethingElseCoveredIt(t *testing.T) {

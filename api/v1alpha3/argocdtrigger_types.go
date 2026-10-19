@@ -75,10 +75,11 @@ type ArgoCDTriggerStatus struct {
 	// +optional
 	Operation *ApplyOperation `json:"operation,omitempty"`
 
-	// RepairOwed is true while the Application owes a Repair: a sync reverted an API edit made
-	// after it was asked for, so the cluster runs an older value than Git until the next sync.
+	// RepairPending is true while a Repair sync is pending for the Application: a sync reverted an
+	// API edit made after it was asked for, so the cluster runs an older value than Git until the
+	// next sync.
 	// +optional
-	RepairOwed bool `json:"repairOwed,omitempty"`
+	RepairPending bool `json:"repairPending,omitempty"`
 }
 
 // ArgoCDTriggerSource is the source an Application syncs.
@@ -101,7 +102,7 @@ type ArgoCDTriggerSource struct {
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.phase`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1
 // +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.clusterProviderRef.name`,priority=1
-// +kubebuilder:printcolumn:name="RepairOwed",type=boolean,JSONPath=`.status.repairOwed`,priority=1
+// +kubebuilder:printcolumn:name="RepairPending",type=boolean,JSONPath=`.status.repairPending`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
@@ -189,10 +190,10 @@ func (t *ArgoCDTrigger) Prefetches() bool { return false }
 // Operation is status.operation.
 func (t *ArgoCDTrigger) Operation() *ApplyOperation { return t.Status.Operation }
 
-// RepairOwed is status.repairOwed.
-func (t *ArgoCDTrigger) RepairOwed() bool { return t.Status.RepairOwed }
+// RepairPending is status.repairPending.
+func (t *ArgoCDTrigger) RepairPending() bool { return t.Status.RepairPending }
 
-// SetOperation replaces status.operation and status.repairOwed.
-func (t *ArgoCDTrigger) SetOperation(operation *ApplyOperation, repairOwed bool) {
-	t.Status.Operation, t.Status.RepairOwed = operation, repairOwed
+// SetOperation replaces status.operation and status.repairPending.
+func (t *ArgoCDTrigger) SetOperation(operation *ApplyOperation, repairPending bool) {
+	t.Status.Operation, t.Status.RepairPending = operation, repairPending
 }

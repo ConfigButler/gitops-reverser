@@ -38,8 +38,8 @@ spec:
       name: Cluster
       priority: 1
       type: string
-    - jsonPath: .status.repairOwed
-      name: RepairOwed
+    - jsonPath: .status.repairPending
+      name: RepairPending
       priority: 1
       type: boolean
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
@@ -282,10 +282,11 @@ spec:
                 - phase
                 - requestedAt
                 type: object
-              repairOwed:
+              repairPending:
                 description: |-
-                  RepairOwed is true while the Kustomization owes a Repair: an apply reverted an API edit made
-                  after it was asked for, so the cluster runs an older value than Git until the next apply.
+                  RepairPending is true while a Repair apply is pending for the Kustomization: an apply reverted
+                  an API edit made after it was asked for, so the cluster runs an older value than Git until the
+                  next apply.
                 type: boolean
               source:
                 description: |-

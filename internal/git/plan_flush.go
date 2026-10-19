@@ -524,7 +524,7 @@ func (wb *writeBatch) rewriteSensitive(ctx context.Context, event Event, filePat
 }
 
 // wroteBytes reports whether an upsert actually changed the worktree, which is the only
-// case that owes the oracle an intent.
+// case that must give the oracle an intent.
 func wroteBytes(o upsertOutcome) bool {
 	return o == upsertCreated || o == upsertUpdated
 }

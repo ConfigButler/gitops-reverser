@@ -222,7 +222,10 @@ happens to the `Kustomization` rather than what the trigger does. **Hand back** 
 
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
 (`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`). It asks; the operation it starts is followed
-until the applier's status shows the apply completed.
+until the applier's status shows the apply completed. A reason is **pending** for an applier from
+the moment the branch worker decides it until an attempt **carries** it; an operation that
+succeeds **answers** it, and one that does not gives it back to pending. A pending `Repair` shows
+on the trigger as `status.repairPending`.
 
 **Quiet branch.** A branch whose worker holds no open commit window and no pending writes. Apply
 requests go out only on a quiet branch, because only then is nothing live missing from the tip.
@@ -436,3 +439,4 @@ outage.
 | sha, revision (for a commit hash) | commit | `revision` is Flux's word for a polymorphic identifier, and is reserved for one |
 | namespace access (bare) | access, or source namespace | two directions, two names |
 | reconciler, orchestrator (for Flux or Argo CD) | applier | "reconciler" also names our own controllers |
+| owed, owes, debt, obligation | pending, decided, sent, waiting for | an accounting word names no state: say what is pending, for whom, and what ends it |

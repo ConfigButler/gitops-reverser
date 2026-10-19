@@ -126,7 +126,7 @@ func TestPublication_MetricsDescribeTheBacklog(t *testing.T) {
 	_, ok = gauge(telemetry.GaugeGitOldestRetainedWrite)
 	assert.False(t, ok, "nothing kept, nothing to date")
 	_, ok = gauge(telemetry.GaugeGitNextRetry)
-	assert.False(t, ok, "nothing owed, no retry due")
+	assert.False(t, ok, "nothing pending, no retry due")
 }
 
 // A change of the report reaches every GitTarget on the branch, and none on another branch: they

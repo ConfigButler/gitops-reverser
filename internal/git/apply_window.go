@@ -25,7 +25,7 @@ import (
 // the window: a write by the applier's own field manager, during an attempt, to an object the API
 // side edited after that attempt was sent, is the apply arriving late with no intent behind it. It
 // is withheld. Git keeps the edit, and the cluster runs the reverted value until an apply puts it
-// back, so the withheld write owes its applier a Repair (apply_trigger.go).
+// back, so the withheld write leaves a Repair pending for its applier (apply_trigger.go).
 //
 // What the rule must never do is withhold an API edit, which would lose it outright. So it acts
 // only on proof: the object's latest managedFields entries are the applier's managers alone, and

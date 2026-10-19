@@ -21,7 +21,7 @@ import (
 //   - decide appends it to the pending writes. The write gates and building the write have passed, so the
 //     decision stands from here on. Deciding does nothing else: no commit, no push, no settlement.
 //   - advance is the one driver, run once at the end of every wake of the loop. It commits what was
-//     decided, schedules the push, and closes the outage once nothing is owed.
+//     decided, schedules the push, and closes the outage once no pending writes remain.
 //   - materialize makes the checkout the projection of the pending writes: the remote tip the writes were
 //     planned on plus one commit for each, in order. It rebuilds the writes committed before when
 //     the checkout is behind them, then commits each decided write not committed yet.
@@ -30,8 +30,9 @@ import (
 //     because the remote could not be reached. A write left pending needs no settling, only its
 //     waiting resync callers an answer (replyToDeferredResyncs).
 //
-// Settling an outcome never decides more work directly: a refused write owes its applier a reapply
-// request (reapplyForRefusal), which is sent once the branch is quiet, outside the pending writes.
+// Settling an outcome never decides more work directly: a refused write leaves a reapply request
+// due to its applier (reapplyForRefusal), which is sent once the branch is quiet, outside the
+// pending writes.
 
 // errWriteFailed marks a failure of the write itself, as opposed to reaching the remote or reading
 // the GitProvider: the plan was refused or could not be applied. It is terminal for the write, while
@@ -104,7 +105,7 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
 }
 
 // advance drives the pending writes once the wake's handlers have decided what they decide: it
-// commits them, schedules their push, and ends the outage once nothing is owed. It is the only
+// commits them, schedules their push, and ends the outage once none remain. It is the only
 // caller of materialize outside a publication, and the only place where having no pending writes
 // closes the retry and parent recovery, so no exit that settles the last one can leave intake
 // paused.

@@ -14,7 +14,7 @@ import (
 const GitTargetReasonRecoveringParentBranch = "RecoveringParentBranch"
 
 // parentRecovering reports whether the branch worker has found the parent branch again and still
-// owes the writes it kept while the parent was missing. It reads memory only, and costs no
+// has to publish the writes it kept while the parent was missing. It reads memory only, and costs no
 // connection.
 func (r *GitTargetReconciler) parentRecovering(
 	target *configbutleraiv1alpha3.GitTarget,

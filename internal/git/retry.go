@@ -4,8 +4,8 @@ package git
 
 import "time"
 
-// This file is the worker's one retry schedule: the deadline at which the work it still owes is
-// attempted again, whatever made the last attempt fail.
+// This file is the worker's one retry schedule: the deadline at which the worker attempts its
+// pending writes again, whatever made the last attempt fail.
 //
 // The cooldown in maybeSchedulePush spaces SUCCESSFUL pushes; it says nothing about failed ones,
 // because lastPushAt advances only on success. Without a schedule of its own a failure had two
@@ -15,7 +15,7 @@ import "time"
 //
 // So a failed attempt schedules the next one: due one backoff later, 10s doubling to 5m, on a timer
 // of its own, whether or not anything else arrives. Until then new commits accumulate instead of
-// pushing. A successful publication, or nothing left owed, clears it.
+// pushing. A successful publication, or no pending writes left, clears it.
 //
 // It used to be two schedules, one for a failed push and one for parent recovery's probe, and the
 // two had to hand the work back and forth: a failure while recovery was open deferred to recovery's
@@ -31,7 +31,7 @@ var (
 
 const retryBackoffFactor = 2
 
-// retrySchedule is the loop's one retry deadline. The zero value is "nothing owed a retry".
+// retrySchedule is the loop's one retry deadline. The zero value is "no retry scheduled".
 // Loop-goroutine only.
 type retrySchedule struct {
 	backoff time.Duration
@@ -71,8 +71,8 @@ func (l *branchWorkerEventLoop) scheduleRetry(cause error) {
 	l.publishRecovery()
 }
 
-// endOutage closes the retry and parent recovery together: a publication landed, or nothing is owed
-// any more. Either ends whatever the last failed attempt was waiting out, and with it the pause on
+// endOutage closes the retry and parent recovery together: a publication landed, or no pending
+// writes remain. Either ends whatever the last failed attempt was waiting out, and with it the pause on
 // intake (intake.go).
 func (l *branchWorkerEventLoop) endOutage() {
 	l.recovery = parentRecovery{}

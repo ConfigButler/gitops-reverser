@@ -24,8 +24,8 @@ import (
 // many items are kept as well as their bytes. The charge is an estimate of the serialized YAML, not
 // of the heap: an object's in-memory form is several times larger.
 //
-// Pausing is a latch, released only when the retry clears: a publication landed, or nothing is owed
-// any more. Room under the budget again, a partial replay, or a remote that can be read but still
+// Pausing is a latch, released only when the retry clears: a publication landed, or no pending
+// writes remain. Room under the budget again, a partial replay, or a remote that can be read but still
 // refuses the push prove nothing about whether the backlog can drain. A refused producer keeps its
 // work: the watch keeps its cursor and delivers again, the controller sends a save again, a refused
 // resync's collection is gathered again. Producers wait on IntakePaused for the reopening instead

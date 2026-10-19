@@ -91,7 +91,7 @@ const (
 	// none.
 	//
 	// It is Dropped rather than Error: nothing failed, and the events are exactly the population
-	// that was previously counted queued (which claimed an append that was never owed), so this
+	// that was previously counted queued (which claimed an append that was never expected), so this
 	// population was invisible. The handler is the only place it can be counted at all — the event
 	// is rejected before publication, so no fact-side counter ever sees it.
 	NoAttributionFact Outcome = "no_attribution_fact"

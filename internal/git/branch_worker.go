@@ -135,14 +135,15 @@ type BranchWorker struct {
 	// simply not shared.
 	remoteReporter RemoteReporter
 
-	// applyRequester delivers the apply requests this worker decides (apply_trigger.go), and debt is
-	// what the branch's appliers are owed from what was observed about the remote. Set by the
+	// applyRequester delivers the apply requests this worker decides (apply_trigger.go), and inbox
+	// holds the reasons pending for the branch's appliers from what was observed about the remote,
+	// and the reports of attempts that came back. Set by the
 	// WorkerManager before Start; a nil requester switches the apply trigger off (the CLI, and tests
 	// that do not exercise it).
 	applyRequester ApplyRequester
 	// triggerStatus writes each applier's operation to its trigger's status; nil writes nothing.
 	triggerStatus ApplyTriggerStatusWriter
-	debt          applyDebt
+	inbox         applyInbox
 	// applyWake wakes the loop to service the appliers without queueing a work item: an attempt
 	// reported back, or another worker writing this repository and branch went quiet.
 	applyWake chan struct{}
@@ -230,14 +231,14 @@ type BranchWorker struct {
 	// See docs/design/gittarget-branch-worker-pending-writes.md.
 	checkoutApplied atomic.Int64
 
-	// lastReapply records when this worker last owed a GitTarget's applier a Refusal request, keyed
+	// lastReapply records when this worker last decided a Refusal request for a GitTarget's applier, keyed
 	// by "namespace/name", so refusalReapplyInterval can floor the rate. It is guarded by its own
 	// mutex rather than repoMu: the decision is taken before any repository work starts, and
 	// borrowing the repository lock for it would order the two for no reason.
 	refusalMu   sync.Mutex
 	lastReapply map[string]time.Time
 	// coveredRefusal records, per GitTarget AND WATCHED COLLECTION, the refusal observation the last
-	// reapply request was owed for: a digest of the objects that were refused together with the
+	// reapply request was decided for: a digest of the objects that were refused together with the
 	// issues raised about them. A recheck that observes exactly the same thing is already covered
 	// by that request, so it is not another trigger. It is dropped when a resync for that collection is
 	// ACCEPTED — see refusalRecovered, which is what makes a live edit re-made after a revert
@@ -1145,7 +1146,7 @@ type branchWorkerEventLoop struct {
 	commitTimer *time.Timer
 	// pushTimer fires the next push when the success cooldown ends.
 	pushTimer *time.Timer
-	// retry is the one schedule of the next attempt at work a failed attempt left owed. See
+	// retry is the one schedule of the next attempt at work a failed attempt left pending. See
 	// retry.go.
 	retry retrySchedule
 
@@ -1172,14 +1173,14 @@ type branchWorkerEventLoop struct {
 	// overwrite another's pending work: A queues, B replaces it, B is then suspended, and A's
 	// authorized request is gone with nothing to report it.
 	refusalPending map[refusalKey]pendingRefusalReapply
-	// reapplyOwed holds the refusals whose target's applier is owed a Refusal request, until an
-	// attempt carries them on a quiet branch. It is keyed like refusalPending, by target AND
-	// collection, so a collection that recovers cancels its own obligation and no other
+	// unsentRefusals holds the refusals the worker decided to send their target's applier a Refusal
+	// request for, until an attempt carries them on a quiet branch. It is keyed like refusalPending,
+	// by target AND collection, so a collection that recovers cancels its own request and no other
 	// (refusalRecovered). See apply_trigger.go.
-	reapplyOwed map[refusalKey]owedRefusal
+	unsentRefusals map[refusalKey]unsentRefusal
 
-	// appliers holds what each applier named on this branch is owed and how its attempts are going,
-	// and nextApplyID numbers the attempts. quietSince is when the branch last became quiet (zero
+	// appliers holds the reasons pending for each applier named on this branch and how its attempts
+	// are going, and nextApplyID numbers the attempts. quietSince is when the branch last became quiet (zero
 	// while it is busy), and applierTimer fires when the earliest waiting attempt comes due. See
 	// apply_trigger.go.
 	appliers     map[ApplierRef]*applierState
@@ -1195,7 +1196,7 @@ type branchWorkerEventLoop struct {
 	// its window's timers close it.
 	attachTimer *time.Timer
 
-	// recovery is the obligation to write what a missing parent branch held back, and the probe
+	// recovery is the open task of writing what a missing parent branch held back, and the probe
 	// that drives it. See parent_recovery.go.
 	recovery parentRecovery
 }
@@ -1280,7 +1281,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 //     nothing is parked.
 //   - Close the open window early if the branch moved under it (closeWindowForForeignCommit).
 //   - Drive the pending writes: commit what the wake decided, schedule its push (advance).
-//   - Send the apply requests owed, if the wake left the branch quiet (serviceAppliers).
+//   - Send the pending apply requests, if the wake left the branch quiet (serviceAppliers).
 //   - Publish the result, moving the handled item's charge to what the loop holds.
 func (l *branchWorkerEventLoop) endWake(released int64) {
 	l.serviceCommitRequests()
@@ -1295,7 +1296,7 @@ func (l *branchWorkerEventLoop) endWake(released int64) {
 // authoritative state; the loop goroutine is the only writer of both. released is the charge of the
 // item the wake handled: see intakeGate.sync.
 //
-// The flag is all the loop owes the depth gauge: queueDepth() reads it and inflightItems at scrape
+// The flag is all the depth gauge needs from the loop: queueDepth() reads it and inflightItems at scrape
 // time, so nothing here publishes a value that could go stale while the loop is busy. The order is
 // the contract: the loop releases a handled item from the in-flight count only after this, because
 // publishing the flag second would let both read empty while a window is open, and a scrape landing
@@ -3117,7 +3118,7 @@ func (w *BranchWorker) publishObservation(observed RemoteObservation) {
 	// Stamped with the repository it is about, so that whoever publishes it can tell whether it
 	// still describes the repository the GitTarget points at. See RemoteObservation.Repo.
 	w.lastObservation.Store(&observed)
-	w.debt.observe(observed)
+	w.inbox.observe(observed)
 	// Delivered here, at the one point where an observation is made, rather than by each caller
 	// against whichever GitTargets it happened to be holding. The fact is about the BRANCH, so it
 	// goes to the branch, and every target on it reads the same answer with the time it was

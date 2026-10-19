@@ -1049,7 +1049,7 @@ func (m *Manager) enqueueReplayResync(
 	// case: EnqueueResync has ALREADY delivered ErrFinalizeQueueFull on the reply channel for the
 	// drain to record, so returning here instead left that reply in a buffered channel nobody ever
 	// read -- and with it went the only calls that mark acceptance, render fidelity and retention
-	// for this collection. The render-fidelity scope then owed a report under a revision no running
+	// for this collection. The render-fidelity scope then waited for a report at a revision no running
 	// stream would ever report again, which pins the GitTarget at Ready=False and, through it,
 	// every WatchRule pointing at it.
 	//

@@ -70,7 +70,7 @@ func operationAt(phase v1alpha3.ApplyOperationPhase) *v1alpha3.ApplyOperation {
 func TestStatusWriter_WritesTheOperationAndKeepsTheRest(t *testing.T) {
 	writer, c := statusWriterFixture(t, interceptor.Funcs{})
 	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{
-		Operation: operationAt(v1alpha3.ApplyOperationRunning), RepairOwed: true,
+		Operation: operationAt(v1alpha3.ApplyOperationRunning), RepairPending: true,
 	})
 	assert.False(t, writer.writePending(context.Background()))
 
@@ -78,15 +78,15 @@ func TestStatusWriter_WritesTheOperationAndKeepsTheRest(t *testing.T) {
 	require.NotNil(t, trigger.Status.Operation)
 	assert.Equal(t, v1alpha3.ApplyOperationRunning, trigger.Status.Operation.Phase)
 	assert.Equal(t, "T1", trigger.Status.Operation.Token)
-	assert.True(t, trigger.Status.RepairOwed)
+	assert.True(t, trigger.Status.RepairPending)
 	require.Len(t, trigger.Status.Conditions, 1, "the reconciler's conditions are kept")
 
 	// No operation in the publication leaves the recorded one.
-	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{RepairOwed: false})
+	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{RepairPending: false})
 	assert.False(t, writer.writePending(context.Background()))
 	trigger = readTrigger(t, c)
 	require.NotNil(t, trigger.Status.Operation, "a worker with nothing to say about it keeps it")
-	assert.False(t, trigger.Status.RepairOwed)
+	assert.False(t, trigger.Status.RepairPending)
 }
 
 // TestStatusWriter_TheLatestPublicationWins: publications not yet written are replaced, not
@@ -164,7 +164,7 @@ func TestStatusWriter_AFailedWriteIsHeldUntilItLands(t *testing.T) {
 	assert.Equal(t, v1alpha3.ApplyOperationRunning, readTrigger(t, c).Status.Operation.Phase)
 
 	gone := git.TriggerRef{Kind: v1alpha3.ApplyTriggerKindFlux, Namespace: targetNS, Name: "gone"}
-	writer.PublishApplyTriggerStatus(gone, git.ApplyTriggerStatus{RepairOwed: true})
+	writer.PublishApplyTriggerStatus(gone, git.ApplyTriggerStatus{RepairPending: true})
 	assert.False(t, writer.writePending(context.Background()), "nothing to hold for a trigger that is gone")
 }
 
@@ -230,12 +230,12 @@ func countingUpdates(updates *int) interceptor.Funcs {
 
 // TestStatusWriter_ARecordIsWrittenThroughBeforeItReturns: the dispatcher records the operation
 // just before it starts the apply. It is on the trigger when RecordApplyOperation returns, over the
-// completed operation before it, and the reconciler's conditions and the recorded repairOwed stay.
+// completed operation before it, and the reconciler's conditions and the recorded repairPending stay.
 func TestStatusWriter_ARecordIsWrittenThroughBeforeItReturns(t *testing.T) {
 	writer, c := statusWriterFixture(t, interceptor.Funcs{})
 	setOperation(t, c, operationAt(v1alpha3.ApplyOperationSucceeded))
 	writer.PublishApplyTriggerStatus(appsTrigger,
-		git.ApplyTriggerStatus{Operation: operationAt(v1alpha3.ApplyOperationSucceeded), RepairOwed: true})
+		git.ApplyTriggerStatus{Operation: operationAt(v1alpha3.ApplyOperationSucceeded), RepairPending: true})
 
 	requested := operationRequested(v1alpha3.ApplyOperationRequested, "T2", time.Minute)
 	require.NoError(t, writer.RecordApplyOperation(context.Background(), appsTrigger, requested))
@@ -243,7 +243,7 @@ func TestStatusWriter_ARecordIsWrittenThroughBeforeItReturns(t *testing.T) {
 	require.NotNil(t, recorded.Status.Operation)
 	assert.Equal(t, "T2", recorded.Status.Operation.Token)
 	assert.Equal(t, v1alpha3.ApplyOperationRequested, recorded.Status.Operation.Phase)
-	assert.True(t, recorded.Status.RepairOwed, "what was held is written first")
+	assert.True(t, recorded.Status.RepairPending, "what was held is written first")
 	require.Len(t, recorded.Status.Conditions, 1, "the reconciler's conditions are kept")
 
 	assert.False(t, writer.writePending(context.Background()))
@@ -300,11 +300,11 @@ func TestStatusWriter_ARecordForAReleasedTriggerFails(t *testing.T) {
 	require.NoError(t, c.Delete(context.Background(), trigger))
 	requested := operationRequested(v1alpha3.ApplyOperationRequested, "T2", time.Minute)
 
-	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{RepairOwed: true})
+	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{RepairPending: true})
 	require.ErrorIs(t, writer.RecordApplyOperation(context.Background(), appsTrigger, requested),
 		errTriggerReleased, "with a publication held")
 
-	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{RepairOwed: true})
+	writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{RepairPending: true})
 	assert.False(t, writer.writePending(context.Background()), "the background writer drops it")
 	require.ErrorIs(t, writer.RecordApplyOperation(context.Background(), appsTrigger, requested),
 		errTriggerReleased, "with nothing held")
@@ -331,12 +331,12 @@ func TestStatusWriter_AWithdrawnRecordIsPutBack(t *testing.T) {
 			// The worker knows nothing older than the record: it withdraws it with no operation.
 			writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{Withdrawn: requested})
 			// A later publication that withdraws nothing does not take the withdrawal back.
-			writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{RepairOwed: true})
+			writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{RepairPending: true})
 			assert.False(t, writer.writePending(context.Background()))
 
 			written := readTrigger(t, c)
 			assertOperation(t, before, written.Status.Operation)
-			assert.True(t, written.Status.RepairOwed)
+			assert.True(t, written.Status.RepairPending)
 		})
 	}
 }
@@ -371,13 +371,13 @@ func TestStatusWriter_NeverWritesOverAnotherOperation(t *testing.T) {
 			setOperation(t, c, external)
 
 			writer.PublishApplyTriggerStatus(appsTrigger, git.ApplyTriggerStatus{
-				Operation:  operationRequested(v1alpha3.ApplyOperationSucceeded, "T2", requested),
-				RepairOwed: true,
+				Operation:     operationRequested(v1alpha3.ApplyOperationSucceeded, "T2", requested),
+				RepairPending: true,
 			})
 			assert.False(t, writer.writePending(context.Background()))
 			written := readTrigger(t, c)
 			assertOperation(t, external, written.Status.Operation)
-			assert.True(t, written.Status.RepairOwed, "the rest of the publication still lands")
+			assert.True(t, written.Status.RepairPending, "the rest of the publication still lands")
 		})
 	}
 }

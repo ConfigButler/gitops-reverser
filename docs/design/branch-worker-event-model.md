@@ -25,7 +25,7 @@ what this section asked for, in the order it set: ordered pending writes, one ma
 checkout, and one retry deadline; then the watch's admission boundary (5a), Git operation deadlines
 (6), intake pause and resume (5b), and the publication status (5c). None of it depends on a storage
 backend or on HA. A saturated branch pauses intake while its recovery loop stays alive; a process
-restart still loses the in-memory obligations.
+restart still loses the pending writes and unanswered saves held in memory.
 
 What comes next is the [transition boundary](#prepare-the-transition-boundary-for-later-durability):
 recording timers, attaches, withdrawals, and refreshes as transitions, then the HA plan's journal.
@@ -41,8 +41,8 @@ recording timers, attaches, withdrawals, and refreshes as transitions, then the 
    ignores the context past the dial. Timed-out work stays pending, and a push whose reply was lost
    is settled as published when the remote is found at the commits it sent.
 3. **Kept.** The worker resolves publication, or establishes that the save cannot publish, before it
-   reports a terminal failure; a controller timeout alone cannot. `WaitingForPush` holds while a
-   recoverable publication obligation remains, and since step 5c its message says why.
+   reports a terminal failure; a controller timeout alone cannot. `WaitingForPush` holds while the
+   save's pending write can still be published, and since step 5c its message says why.
 4. **Built.** The retry schedule takes an injectable clock; the stall tests run HTTP and SSH
    servers that stop answering, and the call returns on the worker goroutine, which stays the only
    owner of the checkout.
@@ -81,7 +81,7 @@ described below. Serialization is useful independently of persistence.
 The proposed ownership rule is:
 
 > The worker decides each transition from explicit inputs and recorded observations. Its state
-> and outstanding obligations are recoverable before the corresponding external work starts.
+> and the work it has still to do are recoverable before the corresponding external work starts.
 
 Git operations can initially remain synchronous on this owner. Separating decision logic from
 effects does not require another goroutine or a workflow service. A later asynchronous executor
@@ -187,11 +187,11 @@ once the cooldown had elapsed every later commit attempted the same unavailable 
 deadline now governs those commits ([push-cooldown design](push-cooldown.md#7-options),
 option C).
 
-The retry follows [parent recovery](../../internal/git/parent_recovery.go), which already kept an
-obligation open and scheduled its next attempt (10 seconds, backing off to five minutes, shared
-across targets on the worker). While the parent is missing, that schedule suppresses early
-attempts. After the parent returns, the recovery obligation stays open until the work publishes,
-but its missing-parent hold is removed. A publication that fails while the obligation is open
+The retry follows [parent recovery](../../internal/git/parent_recovery.go), which already stayed
+open until its held writes were published and scheduled its next attempt (10 seconds, backing off
+to five minutes, shared across targets on the worker). While the parent is missing, that schedule
+suppresses early attempts. After the parent returns, parent recovery stays open until the work
+publishes, but its missing-parent hold is removed. A publication that fails while recovery is open
 therefore defers to recovery's next probe deadline: new commits wait for it, and recovery's timer
 makes the attempt. Review of #412 found the handoff gap (each new commit retried at once);
 `TestPublicationRetry_AFailureAfterTheParentReturnsWaitsForRecovery` pins the fix.
@@ -288,14 +288,15 @@ barrier or per-stream watermark design can establish that stronger claim. A time
 
 ## Proposed recovery contract
 
-Make durable acceptance the point at which the system owes a recoverable answer:
+Make durable acceptance the point from which every caller is guaranteed an answer, even across a
+restart:
 
-> Once work is durably accepted, a restart preserves its ordering and save obligations.
+> Once work is durably accepted, a restart preserves its ordering and the saves still to be answered.
 > Publication resumes when Git becomes available, within configured storage limits and subject
 > to the recorded write-policy decisions. Status can be rebuilt from durable outcomes.
 
 An accepted item may still be refused by policy or resolve without a commit. Record that outcome
-instead of silently losing the item. A transient publication failure keeps the obligation open.
+instead of silently losing the item. A transient publication failure keeps the item pending.
 Define explicit behavior for target deletion, repository replacement, and administrator
 cancellation; never reroute accepted work to a new object merely because its name matches.
 
@@ -315,9 +316,9 @@ Represent intent, decisions, and external work separately so recovery knows what
 |---|---|---|
 | Command | `SaveRequested` | A caller asks to attach a save |
 | Fact | `SaveAttached` | The worker bound that request to a particular window |
-| Effect intent | `PublishBatch` | A recorded obligation to attempt a push |
+| Effect intent | `PublishBatch` | A recorded decision that a push must still be attempted |
 | Effect result | `PublicationConfirmed` | Evidence that a particular attempt published its work |
-| Projection obligation | `ProjectSaveOutcome` | Kubernetes status still needs the recorded result |
+| Pending projection | `ProjectSaveOutcome` | Kubernetes status still needs the recorded result |
 
 These names are illustrative. Use a versioned journal schema when choosing the implementation.
 Facts describe decisions already made; a duplicate command must find its previous decision.
@@ -341,7 +342,7 @@ goroutine. The state machine applies recorded facts without reading the clock, c
 or contacting Git. Decision handling can request those observations as effects, then continue
 when their results have been recorded.
 
-A transition must leave its next obligation recoverable. The HA plan defines the
+A transition must leave the next step it requires recoverable. The HA plan defines the
 [atomic processing and acknowledgment boundary](../future/ha-gittarget-distribution-plan.md#atomic-handoff-and-acknowledgment)
 that preserves this across a crash. Redelivery must find the prior decision or resume unfinished
 work. Recording a push intent alone does not prove remote success.
@@ -386,8 +387,8 @@ PublicationConfirmed(batch ID, attempt ID, per-write commit mapping)
 SaveResolved(request UID, outcome, branch, commit)
 ```
 
-Refusal, withdrawal, and no-window expiry have their own terminal facts. `CommitEmpty` is a
-publication obligation even though its tree matches the parent. A foreign-window mismatch keeps
+Refusal, withdrawal, and no-window expiry have their own terminal facts. `CommitEmpty` must still
+be published even though its tree matches the parent. A foreign-window mismatch keeps
 its existing no-commit meaning. A remote-confirmed no-op and a local plan with no diff remain
 different observations.
 
@@ -418,11 +419,11 @@ The current worker has six timer sources:
 | Push timer | Space successful publication cycles |
 | Retry | Retry a failed publication on its backoff, or probe for a missing parent |
 | Attach timeout | Settle a save still waiting for an eligible window |
-| Refusal action | Recheck consent before a coalesced Refusal request is owed |
+| Refusal action | Recheck consent before a coalesced Refusal request is due |
 | Applier | Send an apply attempt that came due on a quiet branch |
 
 The retry schedule has its own timer; the push timer is only the success cooldown. Parent
-recovery has no timer of its own since #413: while its obligation is open, the retry deadline is
+recovery has no timer of its own since #413: while recovery is open, the retry deadline is
 its probe. A durable design must persist that one deadline and what it is for. This scheduling
 does not limit the fetches other handlers can initiate.
 
@@ -451,8 +452,8 @@ transition was already committed. Missed retries during downtime should produce 
 attempt, followed by the normal backoff, rather than a burst of historical retry attempts.
 
 Not every input advances a phase. Duplicates and stale firings can be no-ops; a failed push records
-an obligation and a next opportunity. The liveness rule is that every unresolved obligation has
-an identified event that can service it, including when the branch receives no more writes.
+the work still pending and when to try it next. The liveness rule is that every piece of pending
+work has an identified event that can service it, including when the branch receives no more writes.
 
 ## Configuration and observations need explicit effective points
 
@@ -520,7 +521,7 @@ Journal crashes, retention, encryption, and HA failure tests belong to the
 | Save's first push fails, then the branch goes quiet | Built (#412): retry publishes and resolves the same request without another edit |
 | Held save outlives the controller's safety window | Built (#412): withdrawal cannot falsely fail it; recovery remains scheduled |
 | Push fails under continuous arrivals | Built (#412): arrivals cannot bypass the retry budget |
-| Parent returns, but publication still fails | Built (#413): new commits respect the one retry deadline while the obligation remains open |
+| Parent returns, but publication still fails | Built (#413): new commits respect the one retry deadline while recovery remains open |
 | Retained-write rebuild fails before a new window commits | Built (#413): decided window and attached save stay pending for retry |
 | Intake fills during publication failure | Built (#413): accepted work stays; producers pause while the retry loop remains active |
 | Rejected UPDATE is redelivered from the same cursor | Built (#413): dedup does not suppress work that never entered the worker |
@@ -528,8 +529,8 @@ Journal crashes, retention, encryption, and HA failure tests belong to the
 | Worker is canceled during a failed attempt | No retry is rearmed and no abandoned task retains checkout access |
 | Timer moves or fires twice | Stale and duplicate firings do not close another window |
 | Recorded decisions are replayed | Identical state returns without external effects |
-| Fresh snapshot follows an accepted save | Coalescing preserves the save's membership and obligation |
-| Parent disappears again during recovery | Earlier publication cannot clear newer retained obligations |
+| Fresh snapshot follows an accepted save | Coalescing preserves the save's membership and its pending answer |
+| Parent disappears again during recovery | Earlier publication cannot clear newer retained writes |
 | Policy changes during a window or push | Its specified effective point remains unchanged |
 | Resource update and save arrive on independent paths | Only the documented attachment ordering is claimed |
 
@@ -560,8 +561,8 @@ a clean checkout can still have lost the commits behind retained work.
 The detailed design records continue to own adjacent policy:
 
 - [Parent contract](gittarget-parent-branch.md) and [hardening](gittarget-parent-hardening.md):
-  parent advertisement checks, empty-repository boundaries, bounded replay, and recovery
-  obligations remain intact. Git compare-and-swap protects the write branch and does not lock
+  parent advertisement checks, empty-repository boundaries, bounded replay, and parent recovery
+  remain intact. Git compare-and-swap protects the write branch and does not lock
   the parent after its advertisement.
 - [Parent observation](gittarget-parent-observation.md): deferred status work that adds no remote
   connections or publication permission. Incomplete ancestry evidence remains `Unknown`.

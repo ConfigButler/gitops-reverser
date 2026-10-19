@@ -394,7 +394,7 @@ func TestNewApplyTrigger_KnowsBothKinds(t *testing.T) {
 }
 
 // TestApplyTrigger_StatusAccessors: both kinds answer the shared interface from their own status,
-// and SetOperation replaces the operation and repairOwed together.
+// and SetOperation replaces the operation and repairPending together.
 func TestApplyTrigger_StatusAccessors(t *testing.T) {
 	operation := &ApplyOperation{Phase: ApplyOperationRunning, Commit: "abc"}
 	quiet := &metav1.Duration{Duration: time.Minute}
@@ -402,10 +402,10 @@ func TestApplyTrigger_StatusAccessors(t *testing.T) {
 	argo := &ArgoCDTrigger{}
 	for _, trigger := range []ApplyTrigger{flux, argo} {
 		assert.Nil(t, trigger.Operation())
-		assert.False(t, trigger.RepairOwed())
+		assert.False(t, trigger.RepairPending())
 		trigger.SetOperation(operation, true)
 		assert.Equal(t, operation, trigger.Operation())
-		assert.True(t, trigger.RepairOwed())
+		assert.True(t, trigger.RepairPending())
 		trigger.SetObservedGeneration(3)
 		assert.NotNil(t, trigger.StatusConditions())
 	}

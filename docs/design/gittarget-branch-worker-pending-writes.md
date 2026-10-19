@@ -44,7 +44,7 @@ This table records the original machinery; the built steps below describe what r
 |---|---|---|
 | Ordered pending writes | `pendingWrites`: each entry keeps its events, message, author, policy snapshot and attached save | A decision becomes a pending write only after its local commit succeeds, so a failed commit discards the decision: `dropFailedWindow`, five drop branches, and parent recovery's dropped `scopes`, which re-derive lost decisions through snapshots |
 | Projection of the pending writes | The checkout: a root commit plus one commit per entry, which replay already rebuilds from the pending writes | Three flags guess whether the projection is still valid (`worktreeDirty`, `replayRequired`, `rootParentStale()`); six `recoverRetainedWrites` call sites consult them, and `TestEveryLoopCommitPathRecoversADirtyWorktree` exists to catch a seventh that forgets; five functions rebuild the projection in slightly different ways |
-| Deadline for an open obligation | Two clocks: `publicationRetry` and parent recovery's probe timer | `deferToRecovery`, the `parentProbeHold` atomic consulted in four places, `awaitingPush` |
+| Deadline for work still pending | Two clocks: `publicationRetry` and parent recovery's probe timer | `deferToRecovery`, the `parentProbeHold` atomic consulted in four places, `awaitingPush` |
 | Outcomes | Saves resolve on push | `pcr.committed`, a flag that mirrors "this save rides a pending write" |
 
 The original window-loss defect followed from the first row: `finalizeOpenWindowWithReason` ran
@@ -57,10 +57,11 @@ Three pieces of loop-owned state:
 
 - **`pendingWrites`**: decided entries, in order, that are not yet published. Entry kinds are the existing
   `PendingWrite` kinds (window, atomic, resync, request record, refusal touch). Accepted entries
-  survive saturation. There is no `owedSnapshot` entry replacing discarded accepted work.
+  survive saturation. There is no `owedSnapshot` entry (a placeholder that would request a snapshot
+  again) replacing discarded accepted work.
 - **`checkout`**: `{root, rootGen, applied}`. The checkout equals `root` plus the commits of
   `pendingWrites[:applied]`; `applied` unknown means the projection must be rebuilt.
-- **`retry`**: the single obligation deadline. Built fields are `backoff`, `due`, and its timer;
+- **`retry`**: the single deadline for the pending writes. Built fields are `backoff`, `due`, and its timer;
   cause, first-failure time, and last error are proposed diagnostic state in step 5.
 
 Three operations:
@@ -91,7 +92,7 @@ Do not add a second authoritative phase field or another retry timer.
 
 `Recovering` is the due attempt while paused. A successful advertisement or fetch alone does not
 reopen admission: read access does not prove that a branch-protected remote accepts pushes. A
-completed publication, or explicit terminal settlement of all accepted obligations, does. Keep
+completed publication, or explicit terminal settlement of all accepted entries, does. Keep
 admission closed across partial replay progress and a transient drop below the high-water mark.
 Include already admitted FIFO payloads, the open window, and deferred work when deciding whether
 that backlog has settled. A healthy FIFO that briefly fills waits for capacity; it must not wait
@@ -159,7 +160,7 @@ These findings gated steps 5a to 5c; the markers above say where each was fixed.
 
 A second review, at `fc02f51d`, reproduced four more. All are fixed in the same branch:
 
-- **Recovery could stay open with nothing owed.** A resync held while the parent was missing could
+- **Recovery could stay open with nothing pending.** A resync held while the parent was missing could
   find nothing to change once it was back. The last pending write settled without a push, so
   neither recovery nor its retry closed, and intake stayed paused. `advance` now ends the outage
   whenever nothing is pending (`TestParentRecovery_EndsWhenTheHeldWorkNeedsNoCommit`).
@@ -227,8 +228,8 @@ handling. This step closes them, in [`pending_writes_loop.go`](../../internal/gi
 - Every commit re-reads its write's prune policy, as a replay does
   (`TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy`, a review finding). The read comes
   from the informer cache.
-- Parent recovery never opens an obligation with nothing owed
-  (`TestParentRecovery_AFailedEmptySaveOwesNothing`, a review finding).
+- Parent recovery never opens with nothing pending
+  (`TestParentRecovery_NothingPendingOpensNoRecovery`, a review finding).
 - `pcr.committed` is gone: `attached` means bound to a write, a window's or a save's own record.
 - `rebuildPendingWrites` folded into `replayOntoRemote`. Two replay functions remain on purpose:
   `replayOntoRemote` is the core the push cycle calls under its lock, and
@@ -269,10 +270,10 @@ the way a live write's is. Two decisions, settled 2026-10-02:
   them and every save boundary are kept. The admission threshold limits payload growth; the FIFO
   still coalesces resyncs that are only queued.
 
-With nothing dropped, nothing is owed a snapshot: parent recovery's `scopes`, `awaitingPush`, the
-snapshot-request sequence and the controller's snapshot-request tracker are gone. The parent
-recovery tests now pin that writes decided across one or two outages are kept and published, and
-that a failure leaving nothing pending opens no obligation.
+With nothing dropped, no snapshot has to be requested again: parent recovery's `scopes`,
+`awaitingPush`, the snapshot-request sequence and the controller's snapshot-request tracker are
+gone. The parent recovery tests now pin that writes decided across one or two outages are kept and
+published, and that a failure leaving nothing pending opens no recovery.
 
 ### Step 4: a refused replay drops only its own entry (built)
 
@@ -383,9 +384,9 @@ producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
   size. The charge is serialized YAML, not heap: a queued object is held as an unstructured map of
   about six times that. Overshoot is limited to work accepted before the outage began.
 - **Pause is a latch.** A payload that would cross the budget is refused and pauses the branch;
-  every later payload is refused until the retry clears, which means a publication landed or
-  nothing is owed. Room under the budget again, a partial replay, or a remote that can be read but
-  refuses the push keep it paused. A healthy branch never pauses.
+  every later payload is refused until the retry clears, which means a publication landed or no
+  pending writes remain. Room under the budget again, a partial replay, or a remote that can be
+  read but refuses the push keep it paused. A healthy branch never pauses.
 - **Oversized items.** A snapshot larger than the whole budget is accepted on a healthy branch,
   whose pending writes drain at the next push, and the window cap finalizes around it as before. During an
   outage it can never fit: it is refused with a diagnostic naming its size and the budget, pauses
@@ -552,7 +553,7 @@ separate jobs, and only one of them can wait:
 Settled 2026-10-02:
 
 1. **Resyncs stay pending**, as described in [Resyncs among the pending writes](#resyncs-among-the-pending-writes). Capacity
-   closes admission; it never replaces accepted entries with an owed snapshot.
+   closes admission; it never replaces accepted entries with a request for a fresh snapshot.
 2. **A partly failed write is cleaned locally** (step 1b).
 3. **Follow repository validation and push rules.** This changes the Git write and watch paths,
    so the high-risk exception in `AGENTS.md` requires a local e2e pass before an implementation

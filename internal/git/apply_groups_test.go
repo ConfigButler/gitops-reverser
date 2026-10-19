@@ -35,7 +35,7 @@ func TestGroups_OneOperationAtATimePerSource(t *testing.T) {
 		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform", false)),
 		applierTestTarget("charlie", true), fluxTrigger("charlie", applying("other", false)),
 	)
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 2, "one per source")
@@ -54,21 +54,21 @@ func TestGroups_OneOperationAtATimePerSource(t *testing.T) {
 }
 
 // TestGroups_TheSourceIsSharedInTurn: a push somebody else made while an operation of the group is
-// out is owed to every applier of the group, so if pushes keep coming, the applier that just had its
+// out is pending for every applier of the group, so if pushes keep coming, the applier that just had its
 // turn waits for its siblings instead of going again.
 func TestGroups_TheSourceIsSharedInTurn(t *testing.T) {
 	loop, requester := manualLoop(t,
 		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", false)),
 		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform", false)),
 	)
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	for i, want := range []string{"alpha", "bravo", "alpha", "bravo"} {
 		sent := requester.taken()
 		require.Len(t, sent, 1, "turn %d", i)
 		assert.Equal(t, applierRef(want), sent[0].Applier, "turn %d", i)
 
-		loop.w.debt.observe(RemoteObservation{Commit: fmt.Sprintf("push-%d", i), By: ObservedByFetch})
+		loop.w.inbox.observe(RemoteObservation{Commit: fmt.Sprintf("push-%d", i), By: ObservedByFetch})
 		loop.serviceAppliers()
 		assert.Empty(t, requester.taken(), "one operation at a time on the shared source")
 		report(sent[0], ApplySucceeded)
@@ -87,7 +87,7 @@ func TestPrefetch_APushIsFetchedAheadWhileTheBranchIsBusy(t *testing.T) {
 	)
 	loop.serviceAppliers() // lists the appliers
 	loop.openWindow = &openWindow{}
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "nothing is applied on a busy branch")
@@ -110,18 +110,18 @@ func TestPrefetch_NotWhileAnOperationOfTheSourceIsInFlight(t *testing.T) {
 	loop, requester := manualLoop(t,
 		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", true)),
 	)
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	require.Len(t, requester.taken(), 1)
 
 	loop.openWindow = &openWindow{}
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
 	loop.serviceAppliers()
 	assert.Empty(t, requester.prefetches)
 }
 
 // siblingLoops is two workers on one repository and branch, under two GitProviders, whose
-// FluxTriggers alpha and bravo apply the GitRepository platform, each owed a ForeignCommit.
+// FluxTriggers alpha and bravo apply the GitRepository platform, each with a ForeignCommit pending.
 func siblingLoops(t *testing.T) (
 	*branchWorkerEventLoop, *recordingRequester, *branchWorkerEventLoop, *recordingRequester,
 ) {
@@ -135,7 +135,7 @@ func siblingLoops(t *testing.T) (
 		loop.w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
 		loop.w.applyWake = make(chan struct{}, 1)
 		siblings.add(loop.w)
-		owesForeign(loop.w)
+		observeForeignCommit(loop.w)
 	}
 	return first, firstRequests, second, secondRequests
 }
@@ -164,7 +164,7 @@ func TestGroups_OneOperationAtATimePerSourceAcrossWorkers(t *testing.T) {
 	require.Len(t, next, 1)
 	assert.Equal(t, applierRef("bravo"), next[0].Applier)
 
-	first.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	first.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
 	first.serviceAppliers()
 	assert.Empty(t, firstRequests.taken(), "and now the first waits for the second")
 }
@@ -199,7 +199,7 @@ func TestPrefetch_NotWhileASiblingsOperationOfTheSourceIsInFlight(t *testing.T) 
 	require.Len(t, firstRequests.taken(), 1)
 
 	second.openWindow = &openWindow{}
-	second.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	second.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
 	second.serviceAppliers()
 	assert.Empty(t, secondRequests.prefetches)
 }

@@ -141,7 +141,7 @@ func NewArgoCD(client dynamic.Interface) *ArgoCD {
 //
 // An empty commit (the remote does not carry the branch) has nothing to pin, and asks nothing
 // (OutcomeCurrent): Argo CD reports the missing branch itself on its next refresh, and the branch
-// coming back is an observation that owes a new request.
+// coming back is an observation that leaves a new request pending.
 func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Started, error) {
 	var waitUntil time.Time
 	var abandonedState string

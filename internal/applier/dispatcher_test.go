@@ -505,7 +505,7 @@ func TestDispatcher_ATargetItsClusterProviderDeniesAsksNothing(t *testing.T) {
 // TestDispatcher_WithdrawnConsentAsksNothing is the executor's half of the second review's first
 // finding. A Refusal whose target withdrew consent used to become a CatchUp sent at once, which
 // fetched a behind artifact without the quiet period. Now it asks nothing, even with the artifact
-// behind, and the worker decides what is still owed.
+// behind, and the worker decides what is still pending.
 func TestDispatcher_WithdrawnConsentAsksNothing(t *testing.T) {
 	suspended := reapplying(gitTarget("a", checkoutRef(), ""))
 	suspended.Spec.Suspend = true

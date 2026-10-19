@@ -107,7 +107,7 @@ const applyTriggerSettleInterval = 15 * time.Second
 // holds is one GitOps Reverser can drive, and publishes what it applies (status.source) for the
 // GitTargets naming the trigger. For a FluxTrigger it also holds the Kustomization suspended, and
 // hands it back once the trigger is deleted (fluxtrigger_hold.go). It never starts an apply: the
-// branch workers decide when, and write status.operation and status.repairOwed. It writes
+// branch workers decide when, and write status.operation and status.repairPending. It writes
 // status.operation only for what no worker follows: an external resume, and an operation nobody
 // follows any more.
 type ApplyTriggerReconciler struct {
@@ -491,7 +491,7 @@ func (r *ApplyTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		// The status is written by two parties: this reconciler (conditions, source) and the branch
-		// workers (operation, repairOwed). A status-only update is filtered, as everywhere, except
+		// workers (operation, repairPending). A status-only update is filtered, as everywhere, except
 		// one that moves the operation's phase, which Ready reads.
 		For(trigger, builder.WithPredicates(applyTriggerSpecOrOperationChanged())).
 		// What makes a GitTarget eligible re-runs the check of the trigger it names, and of the one it

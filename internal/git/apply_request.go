@@ -36,7 +36,7 @@ func (a ApplierRef) String() string {
 	return a.Cluster + "/" + a.Kind + "/" + a.Namespace + "/" + a.Name
 }
 
-// CatchesUp reports whether the applier is owed a CatchUp after GitOps Reverser's own pushes. An
+// CatchesUp reports whether the applier is sent a CatchUp after GitOps Reverser's own pushes. An
 // Argo CD Application is not: with automated sync off it applies nothing on its own, so it holds no
 // stale state for a catch-up to correct.
 func (a ApplierRef) CatchesUp() bool { return a.Kind != v1alpha3.ApplierKindApplication }
@@ -216,7 +216,7 @@ type ApplyResult struct {
 }
 
 // ApplyTriggerStatus is what a branch worker publishes on an apply trigger: the operation it last
-// started on the trigger's applier, and whether a Repair is owed.
+// started on the trigger's applier, and whether a Repair is pending.
 type ApplyTriggerStatus struct {
 	// Operation is the operation status.operation shows, once it holds it: the writer moves an
 	// operation on, and writes one on a status that holds none, but never replaces another. Nil
@@ -226,8 +226,8 @@ type ApplyTriggerStatus struct {
 	// Withdrawn is an operation the worker recorded (ApplyRequest.Record) for an attempt that then
 	// asked for no apply. If status.operation still holds it, it is put back as it was before.
 	Withdrawn *v1alpha3.ApplyOperation
-	// RepairOwed is status.repairOwed.
-	RepairOwed bool
+	// RepairPending is status.repairPending.
+	RepairPending bool
 }
 
 // ApplyTriggerStatusWriter writes what the branch workers publish on their triggers' status.
@@ -259,9 +259,9 @@ type PrefetchRequest struct {
 	Commit  string
 }
 
-// StrongerApplyReason is the reason a target owed two requests is owed. A CatchUp asks for the
-// least: it asks nothing of a Kustomization that is suspended with the commit applied, where the
-// others always run the operation, so it never replaces any of them. A Repair and a ForeignCommit
+// StrongerApplyReason is the reason a target is asked for when two reasons are pending for it. A
+// CatchUp asks for the least: it asks nothing of a Kustomization that is suspended with the commit
+// applied, where the others always run the operation, so it never replaces any of them. A Repair and a ForeignCommit
 // outrank a Refusal because they need no consent, and a ForeignCommit outranks a Repair because the
 // commit it applies is news to the applier. The empty reason ranks below all four.
 func StrongerApplyReason(a, b v1alpha3.ApplyReason) v1alpha3.ApplyReason {

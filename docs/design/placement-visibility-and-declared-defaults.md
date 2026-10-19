@@ -37,7 +37,7 @@ states the findings behind each, the options, and the call.
 | Default `placement.default` in the CRD? | **No**, on narrower grounds than the first draft claimed | A defaulted default consumes the slot ahead of the one step no template can express ("beside the folder's one kustomization"). Once F10 is fixed this is a legibility trade rather than a correctness wall |
 | Publish the effective layout in status? | **Yes, now** | It gives the clarity the CRD default was reaching for, without freezing anything, and the seam it needs already exists |
 | `{kindLower}` or a `toLower` function? | **`{kindLower}`** | A function syntax is a language; one variable answers the actual need |
-| Is the kustomize root "still a little bit inference"? | **Yes, and it earns its keep anyway** | Its answer changes only when a `kustomization.yaml` changes, and ignoring it produces a file nothing renders. It gets the same visibility obligation as everything else |
+| Is the kustomize root "still a little bit inference"? | **Yes, and it earns its keep anyway** | Its answer changes only when a `kustomization.yaml` changes, and ignoring it produces a file nothing renders. It has to be made as visible as everything else |
 | A declared path in a subdirectory of a kustomize folder | **Bug, fix it**: walk up to the nearest kustomization | Today it is registered only when render-root scoping happens to be in force, so a `byType` entry into a subdirectory silently produces a file nothing renders (F10) |
 | Two kustomize roots (ambiguous) | **Keep writing, make it loud** | The file is currently unreachable *and* uncounted. Refusing would protect nothing that mirroring does not |
 
@@ -483,8 +483,8 @@ object changing. It differs from Option C in two ways that decide whether it sta
 | Changes when | any document is added or removed | a `kustomization.yaml` is added or removed |
 | Cost of ignoring it | a file in an unusual place | a file **nothing renders** |
 
-The third row is why it stays; the first two are why it is safe enough to keep. But the visibility
-obligation is identical, and that is what `renderRoot` plus `renderRootReason` discharge: the
+The third row is why it stays; the first two are why it is safe enough to keep. But it has to be
+made just as visible, and that is what `renderRoot` plus `renderRootReason` provide: the
 judgement becomes a field an operator can read, instead of a behavior they infer from where files
 appeared.
 

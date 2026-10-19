@@ -17,18 +17,19 @@ import (
 //   - An operation that has not completed is followed to its end, by its recorded tokens, with its
 //     apply window open, exactly as if this process had sent it: the apply may still be running, or
 //     the Kustomization may have been left resumed, and the follow suspends it again.
-//   - repairOwed is restored.
+//   - repairPending is restored.
 //
 // The trigger's reconciler records an apply somebody else started (`flux resume`) the same way, as
 // an operation with no request token. The worker follows such a record whenever it lists one, not
 // only on start, so its apply window opens for an apply nobody checked.
 //
-// The first observation of the branch is still a baseline that owes a CatchUp: a recovered
-// operation decides nothing about what is owed, and asks the applier for nothing.
+// The first observation of the branch is still a baseline that leaves a CatchUp pending: a
+// recovered operation decides nothing about which reasons are pending, and asks the applier for
+// nothing.
 
 // followRecordedOperations reads the triggers' recorded status on every pass, and follows what it
 // finds. Every pass, and not only while the branch has appliers: a GitTarget naming a trigger for
-// the first time is seen here, and owed its first apply (syncAppliers). The listing is cached. A
+// the first time is seen here, and gets its first apply (syncAppliers). The listing is cached. A
 // listing that fails is tried again on the next pass.
 func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
 	w := l.w
@@ -48,13 +49,13 @@ func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
 }
 
 // followRecordedFor follows what one applier's trigger records: anything in flight, and the
-// repair owed, the first time this process lists it; afterwards only an apply started elsewhere.
+// pending repair, the first time this process lists it; afterwards only an apply started elsewhere.
 func (l *branchWorkerEventLoop) followRecordedFor(state *applierState, now time.Time) {
-	recorded, repairOwed := recordedStatus(state)
+	recorded, repairPending := recordedStatus(state)
 	inFlight := recorded != nil && !recorded.Phase.Completed() && state.inflight == nil
 	if !state.recovered {
 		state.recovered = true
-		state.repair = state.repair || repairOwed
+		state.repair = state.repair || repairPending
 		if inFlight {
 			l.followRecorded(state, recorded, now)
 		}
@@ -65,18 +66,18 @@ func (l *branchWorkerEventLoop) followRecordedFor(state *applierState, now time.
 	}
 }
 
-// recordedStatus is the operation and repairOwed recorded on an applier's trigger, as listed with
+// recordedStatus is the operation and repairPending recorded on an applier's trigger, as listed with
 // any GitTarget naming it: they all name the same trigger.
 func recordedStatus(state *applierState) (*v1alpha3.ApplyOperation, bool) {
 	for _, target := range state.targets {
-		return target.recorded, target.repairOwed
+		return target.recorded, target.repairPending
 	}
 	return nil, false
 }
 
 // followRecorded hands the requester an attempt that follows a recorded operation instead of asking
 // for one, and opens its applier's apply window from now: the watches of this process see nothing
-// from before it. The attempt carries no obligation, so whatever it ends with, nothing is given
+// from before it. The attempt carries no pending reason, so whatever it ends with, nothing is given
 // back.
 func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1alpha3.ApplyOperation, now time.Time) {
 	w := l.w

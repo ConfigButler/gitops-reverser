@@ -440,7 +440,7 @@ Status has a kstatus-compatible summary layer plus domain conditions:
 - `status.streams` is a bounded count summary, not a per-type list.
 
 A trigger has `Configured` and the kstatus trio, `status.source` (what its applier applies, as last
-read), and `status.operation` and `status.repairOwed`, which the branch worker writes at every move
+read), and `status.operation` and `status.repairPending`, which the branch worker writes at every move
 of the operation it started.
 
 WatchRule and ClusterWatchRule add `ResourcesResolved` and `GitTargetReady`. `ResourcesResolved` explains
@@ -1367,7 +1367,7 @@ meantime is a moved remote too, so the replay builds on their commit instead of 
 holds when the server refuses our upload too, because the fallback reads both refs from one
 advertisement. A cycle planned on an empty repository that has since gained refs is refused at the
 advertisement (`RepositoryNotEmptyError`) and replayed, never pushed as an orphan. A parent that is
-missing, or a default branch that does not resolve, is a recovery obligation on the worker: it
+missing, or a default branch that does not resolve, opens parent recovery on the worker: it
 probes on its own backoff and publishes what it held back once the parent exists (see
 `docs/design/gittarget-parent-branch.md`). Proved end to end by the e2e spec "New write branch
 starts from its parent"; that publication alone finds a moved parent is proved by worker tests
@@ -1681,7 +1681,7 @@ attempt the worker decided to send (`applier_kind` is `kustomization`; `reason` 
 `ForeignCommit`, `Refusal`, `Repair` or `CatchUp`), with `outcome` separating
 `sent` from `failed` (the worker decides the retry), `dropped` (no target may still ask for that
 reason) and `stale` (the decision no longer held at the patch). It counts attempts, not
-obligations.
+the requests still due.
 `receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`, `unmatched`,
 `ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
 The receiver cannot tell a foreign push from an own one; the worker decides that from the

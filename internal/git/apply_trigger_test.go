@@ -2,8 +2,8 @@
 
 package git
 
-// The branch worker's half of the apply trigger, from docs/design/apply-trigger.md: what the appliers
-// are owed, and the rule that nothing is asked while anything live is unpublished.
+// The branch worker's half of the apply trigger, from docs/design/apply-trigger.md: which reasons are
+// pending for the appliers, and the rule that nothing is asked while anything live is unpublished.
 
 import (
 	"context"
@@ -39,13 +39,13 @@ func targetRefs(req ApplyRequest) []itypes.ResourceReference {
 }
 
 func TestApplyDebt_FirstObservationIsABaseline(t *testing.T) {
-	var debt applyDebt
-	debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
+	var inbox applyInbox
+	inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
 
-	tip, foreign, catchUp := debt.take()
+	tip, foreign, catchUp := inbox.take()
 	assert.Equal(t, "aaa", tip)
 	assert.False(t, foreign, "nothing says the applier has not applied what was there at startup")
-	assert.True(t, catchUp, "but nothing says it has, so it is owed a catch-up")
+	assert.True(t, catchUp, "but nothing says it has, so a catch-up is pending")
 }
 
 func TestApplyDebt_ClassifiesEachMove(t *testing.T) {
@@ -55,22 +55,22 @@ func TestApplyDebt_ClassifiesEachMove(t *testing.T) {
 		wantForeign bool
 		wantCatchUp bool
 	}{
-		{name: "an unchanged tip owes nothing", next: RemoteObservation{Commit: "aaa", By: ObservedByFetch}},
-		{name: "our own push owes a catch-up", next: RemoteObservation{Commit: "bbb", By: ObservedByPush},
+		{name: "an unchanged tip leaves nothing pending", next: RemoteObservation{Commit: "aaa", By: ObservedByFetch}},
+		{name: "our own push leaves a catch-up pending", next: RemoteObservation{Commit: "bbb", By: ObservedByPush},
 			wantCatchUp: true},
-		{name: "a fetch that found the branch moved owes a ForeignCommit",
+		{name: "a fetch that found the branch moved leaves a ForeignCommit pending",
 			next: RemoteObservation{Commit: "bbb", By: ObservedByFetch}, wantForeign: true},
 		{name: "a deleted branch is a move like any other",
 			next: RemoteObservation{By: ObservedByFetch}, wantForeign: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var debt applyDebt
-			debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
-			debt.take()
+			var inbox applyInbox
+			inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
+			inbox.take()
 
-			debt.observe(tc.next)
-			tip, foreign, catchUp := debt.take()
+			inbox.observe(tc.next)
+			tip, foreign, catchUp := inbox.take()
 			assert.Equal(t, tc.next.Commit, tip)
 			assert.Equal(t, tc.wantForeign, foreign)
 			assert.Equal(t, tc.wantCatchUp, catchUp)
@@ -79,14 +79,14 @@ func TestApplyDebt_ClassifiesEachMove(t *testing.T) {
 }
 
 func TestApplyDebt_RestorePutsBackWhatWasTaken(t *testing.T) {
-	var debt applyDebt
-	debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
-	debt.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch})
-	_, foreign, catchUp := debt.take()
+	var inbox applyInbox
+	inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
+	inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch})
+	_, foreign, catchUp := inbox.take()
 	require.True(t, foreign)
 
-	debt.restore(foreign, catchUp)
-	assert.True(t, debt.foreignOwed())
+	inbox.restore(foreign, catchUp)
+	assert.True(t, inbox.foreignPending())
 }
 
 // applierRef is the applier the trigger testApplier(name) names holds, for a GitTarget in team-a.
@@ -148,11 +148,11 @@ func applyTriggerLoop(t *testing.T, targets ...client.Object) (*branchWorkerEven
 	return loop, requester
 }
 
-// owesForeign makes the worker's debt hold a ForeignCommit at commit "bbb".
-func owesForeign(w *BranchWorker) {
-	w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
-	w.debt.take()
-	w.debt.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch})
+// observeForeignCommit makes the worker's inbox hold a ForeignCommit at commit "bbb".
+func observeForeignCommit(w *BranchWorker) {
+	w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
+	w.inbox.take()
+	w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch})
 }
 
 func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) {
@@ -165,7 +165,7 @@ func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) 
 			g.Spec.GitProviderRef.Name = "elsewhere"
 		}),
 	)
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 
 	loop.serviceAppliers()
 
@@ -197,14 +197,14 @@ func TestServiceAppliers_NothingIsSentWhileAnythingLiveIsUnpublished(t *testing.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-			owesForeign(loop.w)
+			observeForeignCommit(loop.w)
 			tc.busy(loop)
 
 			loop.serviceAppliers()
 
 			assert.Empty(t, requester.taken())
 			assert.True(t, loop.quietSince.IsZero(), "a busy branch is not quiet")
-			assert.True(t, loop.w.debt.foreignOwed(), "and the debt waits for it")
+			assert.True(t, loop.w.inbox.foreignPending(), "and the pending ForeignCommit waits for it")
 		})
 	}
 }
@@ -214,7 +214,7 @@ func TestServiceAppliers_CatchUpWaitsForTheQuietPeriod(t *testing.T) {
 		applierTestTarget("soon", true), fluxTrigger("soon", quietFor(time.Minute)),
 		applierTestTarget("late", true), fluxTrigger("late", quietFor(time.Hour)),
 	)
-	loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
 
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "the branch has only just become quiet")
@@ -242,18 +242,18 @@ func argoApplier(g *configv1alpha3.GitTarget) {
 	}
 }
 
-// TestServiceAppliers_AnApplicationIsNeverOwedACatchUp: with automated sync off Argo CD applies
-// nothing on its own, so GitOps Reverser's own pushes (and the baseline after a start) owe an
-// Application nothing, however long the branch stays quiet; a Kustomization beside it on the same
+// TestServiceAppliers_AnApplicationIsNeverSentACatchUp: with automated sync off Argo CD applies
+// nothing on its own, so GitOps Reverser's own pushes (and the baseline after a start) ask an
+// Application for nothing, however long the branch stays quiet; a Kustomization beside it on the same
 // branch is still caught up.
-func TestServiceAppliers_AnApplicationIsNeverOwedACatchUp(t *testing.T) {
+func TestServiceAppliers_AnApplicationIsNeverSentACatchUp(t *testing.T) {
 	loop, requester := applyTriggerLoop(t,
 		applierTestTarget("argo", true, argoApplier),
 		applierTestTarget("flux", true),
 	)
-	loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // the baseline
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // the baseline
 	loop.serviceAppliers()
-	loop.w.debt.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
 	loop.serviceAppliers()
 	loop.quietSince = time.Now().Add(-time.Hour)
 	loop.serviceAppliers()
@@ -274,7 +274,7 @@ func TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal(t *test
 
 	t.Run("a foreign commit", func(t *testing.T) {
 		loop, requester := applyTriggerLoop(t, applierTestTarget("argo", true, argoApplier))
-		owesForeign(loop.w)
+		observeForeignCommit(loop.w)
 		loop.serviceAppliers()
 		requests := requester.taken()
 		require.Len(t, requests, 1)
@@ -286,9 +286,9 @@ func TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal(t *test
 	t.Run("a refusal", func(t *testing.T) {
 		loop, requester := applyTriggerLoop(t, applierTestTarget("argo", true, argoApplier,
 			func(g *configv1alpha3.GitTarget) { g.Spec.OnRefusal = configv1alpha3.RefusalActionReapply }))
-		loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
-		loop.oweReapply(refusalKeyFor(itypes.NewResourceReference("argo", "team-a"), "deployments"),
-			owedRefusal{detail: "refused", uid: "uid-argo"}, "obs")
+		loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
+		loop.addUnsentRefusal(refusalKeyFor(itypes.NewResourceReference("argo", "team-a"), "deployments"),
+			unsentRefusal{detail: "refused", uid: "uid-argo"}, "obs")
 		loop.serviceAppliers()
 		requests := requester.taken()
 		require.Len(t, requests, 1, "a refusal is asked at once, with no quiet period")
@@ -299,7 +299,7 @@ func TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal(t *test
 
 func TestServiceAppliers_AWriteRestartsTheQuietPeriod(t *testing.T) {
 	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
 	loop.serviceAppliers()
 	loop.quietSince = time.Now().Add(-time.Hour)
 
@@ -326,7 +326,7 @@ func TestServiceAppliers_AWriteDecidedAndPushedInOneWakeRestartsTheQuietPeriod(t
 
 	loop.decide(PendingWrite{})
 	loop.pendingWrites, loop.pendingWritesBytes = nil, 0 // the same wake pushed it
-	loop.w.debt.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
 	loop.serviceAppliers()
 
 	assert.Empty(t, requester.taken(), "the catch-up waits a quiet period from the push, not from before it")
@@ -336,7 +336,7 @@ func TestServiceAppliers_AWriteDecidedAndPushedInOneWakeRestartsTheQuietPeriod(t
 
 // TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt is the other half of the race the
 // bi-directional e2e spec covers with real timers: two API edits a few seconds apart, each decided
-// and pushed in one wake. The catch-up owed for the first push must not go out between them, and
+// and pushed in one wake. The catch-up pending for the first push must not go out between them, and
 // when it goes out it names the second push.
 func TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt(t *testing.T) {
 	loop, requester := applyTriggerLoop(
@@ -344,13 +344,13 @@ func TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt(t *testing.T
 		applierTestTarget("alpha", true),
 		fluxTrigger("alpha", quietFor(time.Minute)),
 	)
-	loop.w.debt.observe(RemoteObservation{Commit: "base", By: ObservedByFetch})
-	loop.w.debt.take()
+	loop.w.inbox.observe(RemoteObservation{Commit: "base", By: ObservedByFetch})
+	loop.w.inbox.take()
 
 	pushInOneWake := func(commit string) {
 		loop.decide(PendingWrite{})
 		loop.pendingWrites, loop.pendingWritesBytes = nil, 0
-		loop.w.debt.observe(RemoteObservation{Commit: commit, By: ObservedByPush})
+		loop.w.inbox.observe(RemoteObservation{Commit: commit, By: ObservedByPush})
 		loop.serviceAppliers()
 	}
 
@@ -372,30 +372,30 @@ func TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt(t *testing.T
 	assert.Equal(t, "second", requests[0].Commit, "the catch-up names the later push, never the earlier")
 }
 
-func TestServiceAppliers_AForeignCommitAnswersEverythingElseOwed(t *testing.T) {
+func TestServiceAppliers_AForeignCommitAnswersEverythingElsePending(t *testing.T) {
 	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	loop.oweReapply(refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments"),
-		owedRefusal{detail: "refused", uid: "uid-alpha"}, "obs")
-	owesForeign(loop.w)
+	loop.addUnsentRefusal(refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments"),
+		unsentRefusal{detail: "refused", uid: "uid-alpha"}, "obs")
+	observeForeignCommit(loop.w)
 
 	loop.serviceAppliers()
 
 	requests := requester.taken()
 	require.Len(t, requests, 1, "one apply of the tip covers the refusal and the catch-up")
 	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requests[0].Reason)
-	assert.Empty(t, loop.reapplyOwed)
+	assert.Empty(t, loop.unsentRefusals)
 	assert.False(t, loop.appliers[applierRef("alpha")].catchUp)
 }
 
-func TestServiceAppliers_NoApplierOnTheBranchClearsTheDebt(t *testing.T) {
+func TestServiceAppliers_NoApplierOnTheBranchClearsThePendingReasons(t *testing.T) {
 	loop, requester := applyTriggerLoop(t, applierTestTarget("plain", false))
-	owesForeign(loop.w)
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
+	observeForeignCommit(loop.w)
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 
 	loop.serviceAppliers()
 
 	assert.Empty(t, requester.taken())
-	assert.False(t, loop.w.debt.foreignOwed())
+	assert.False(t, loop.w.inbox.foreignPending())
 	assert.Empty(t, loop.appliers)
 	assert.Nil(t, loop.applierTimer)
 }
@@ -403,17 +403,17 @@ func TestServiceAppliers_NoApplierOnTheBranchClearsTheDebt(t *testing.T) {
 // TestServiceAppliers_ANewlyNamedApplierIsCaughtUp is review 7's W1: a merge to the branch is
 // observed while no GitTarget names an applier, so the ForeignCommit is taken and dropped; then a
 // GitTarget names a trigger, whose Kustomization was suspended before its GitRepository fetched the
-// merge. The new applier was owed nothing, so the merge was never deployed until some later push.
-// A newly named applier is now owed what a first observation owes, a CatchUp (for Flux free when
-// the commit is already applied); an Application, which gets no CatchUp, waits for the next push.
+// merge. The new applier had nothing pending, so the merge was never deployed until some later push.
+// A newly named applier now starts where a first observation does, with a CatchUp pending (for
+// Flux free when the commit is already applied); an Application, which gets no CatchUp, waits for the next push.
 func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
 	loop, requester := applyTriggerLoop(t,
 		applierTestTarget("flux", false), fluxTrigger("flux"),
 		applierTestTarget("argo", false))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	require.Empty(t, requester.taken())
-	require.False(t, loop.w.debt.foreignOwed(), "taken, with no applier to owe it to")
+	require.False(t, loop.w.inbox.foreignPending(), "taken, with no applier to send it to")
 
 	for name, names := range map[string]func(*configv1alpha3.GitTarget){
 		"flux": func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("flux") },
@@ -448,11 +448,11 @@ func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
 func TestServiceAppliers_NoRequesterSwitchesTheTriggerOff(t *testing.T) {
 	loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true))
 	loop.w.applyRequester = nil
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 
 	loop.serviceAppliers()
 
-	assert.True(t, loop.w.debt.foreignOwed(), "nothing took the debt")
+	assert.True(t, loop.w.inbox.foreignPending(), "nothing took the pending ForeignCommit")
 }
 
 // TestCloseWindowForForeignCommit_PublishesTheOpenWindowNow: a window closes on silence, so a user
@@ -463,7 +463,7 @@ func TestCloseWindowForForeignCommit_PublishesTheOpenWindowNow(t *testing.T) {
 		name  string
 		cause func(l *branchWorkerEventLoop)
 	}{
-		{name: "a foreign commit observed", cause: func(l *branchWorkerEventLoop) { owesForeign(l.w) }},
+		{name: "a foreign commit observed", cause: func(l *branchWorkerEventLoop) { observeForeignCommit(l.w) }},
 		{name: "a Git host's push notice on a busy branch", cause: func(l *branchWorkerEventLoop) {
 			l.handleRefreshRequest(&RefreshRequest{PushNotice: true})
 		}},
@@ -546,10 +546,10 @@ func TestApplyTrigger_APushNoticeFindsAForeignCommit(t *testing.T) {
 	assert.Empty(t, foreignRequests(requester.taken()))
 }
 
-// TestApplyTrigger_ARejectedPushOwesTheReplayedTip is §3.4: the foreign commit is found by the
+// TestApplyTrigger_ARejectedPushAsksForTheReplayedTip is §3.4: the foreign commit is found by the
 // compare-and-swap, the pending write is replayed onto it, and the request names the replayed tip,
 // which carries the API side's answer.
-func TestApplyTrigger_ARejectedPushOwesTheReplayedTip(t *testing.T) {
+func TestApplyTrigger_ARejectedPushAsksForTheReplayedTip(t *testing.T) {
 	f, loop, requester := applierLedgerFixture(t, "apply-trigger-rejected")
 	f.publish("prime")
 	loop.endWake(0)

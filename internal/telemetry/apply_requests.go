@@ -16,7 +16,7 @@ import "go.opentelemetry.io/otel/metric"
 //	           a CatchUp found the Kustomization suspended with the commit applied already, or the
 //	           remote no longer carries the branch, so there is no commit to apply.
 //	failed   — the attempt could not ask, including an applier that applies another repository or
-//	           branch. The branch worker owns the obligation and decides a retry on a quiet branch,
+//	           branch. The branch worker keeps the reason pending and decides a retry on a quiet branch,
 //	           with a backoff of its own, so a failure that persists keeps counting. An
 //	           ApplyRequestFailed Event marks the first failure of a run.
 //	dropped  — the attempt asked nothing, because no GitTarget may still ask for its reason: each

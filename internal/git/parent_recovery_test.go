@@ -2,10 +2,10 @@
 
 package git
 
-// Work decided while the parent branch is missing is an obligation, not an observation: it stays
-// pending until it is published, so a transient failure after the parent reappears cannot strand it,
-// and it is driven by the worker on its own deadline, whatever the refresh configuration. These pin
-// the obligation, that nothing decided meanwhile is dropped, and the probe budget.
+// Work decided while the parent branch is missing stays pending until it is published, whatever the
+// parent's observed state: a transient failure after the parent reappears cannot strand it, and the
+// worker drives it on its own deadline, whatever the refresh configuration. These pin how long
+// parent recovery stays open, that nothing decided meanwhile is dropped, and the probe budget.
 
 import (
 	"context"
@@ -114,7 +114,7 @@ func TestParentRecovery_RetainedWritesLandAfterAFailedFirstAttempt(t *testing.T)
 			assert.True(t, f.ref("feature").IsZero(), "the first attempt failed")
 			require.Len(t, f.loop.pendingWrites, 1, "and the work is still held")
 			open, found = f.worker.ParentRecovery()
-			require.True(t, open, "the obligation outlives a failed attempt")
+			require.True(t, open, "parent recovery outlives a failed attempt")
 			assert.True(t, found)
 
 			clock.advance(retryMaxBackoff)
@@ -125,7 +125,7 @@ func TestParentRecovery_RetainedWritesLandAfterAFailedFirstAttempt(t *testing.T)
 			assert.Equal(t, []plumbing.Hash{release}, f.parentOf(tip))
 			assert.Empty(t, f.loop.pendingWrites)
 			open, _ = f.worker.ParentRecovery()
-			assert.False(t, open, "published: nothing is owed")
+			assert.False(t, open, "published: no pending writes remain")
 		})
 	}
 }
@@ -137,7 +137,7 @@ func refreshTarget() itypes.ResourceReference {
 // Test 2. Writes for two targets on one worker, decided while the parent is missing, stay pending
 // with their authors and collections, and so does a resync decided meanwhile, whose caller is told
 // it could not be applied yet. The probe that finds the parent publishes all of it, and nothing is
-// owed after that: no snapshot has to re-derive anything.
+// left pending after that: no snapshot has to re-derive anything.
 func TestParentRecovery_WritesDecidedWhileTheParentIsMissingAreKept(t *testing.T) {
 	f := newRealServerNewBranch(t, "recovery-kept-writes", seedMain(t))
 	clock := useTestClock(f.worker)
@@ -176,7 +176,7 @@ func TestParentRecovery_WritesDecidedWhileTheParentIsMissingAreKept(t *testing.T
 
 	assert.Empty(t, loop.pendingWrites, "all of it was published")
 	open, _ = f.worker.ParentRecovery()
-	assert.False(t, open, "and nothing is owed")
+	assert.False(t, open, "and nothing is left to publish")
 	names := gitIn(t, f.repoDir, "ls-tree", "-r", "--name-only", "refs/heads/feature")
 	for _, name := range []string{"a1", "b1", "a2"} {
 		assert.Contains(t, names, name)
@@ -249,7 +249,7 @@ func TestParentRecovery_ProbeBudgetIsPerWorker(t *testing.T) {
 }
 
 // A second outage while the first outage's writes still wait to be published. The write decided
-// during it is kept with them, and the obligation stays open until all of it is published.
+// during it is kept with them, and parent recovery stays open until all of it is published.
 func TestParentRecovery_ASecondOutageKeepsItsWritesToo(t *testing.T) {
 	f := newRealServerNewBranch(t, "recovery-second-outage", func(dir string) {
 		simulateClientCommitOnDisk(t, dir, "main", "README.md", "main\n")
@@ -411,10 +411,10 @@ func TestParentRecovery_AnEmptySaveWaitsForTheParent(t *testing.T) {
 	assert.False(t, open)
 }
 
-// An obligation with nothing to publish would never close, so a parent failure that left nothing
+// A recovery with nothing to publish would never close, so a parent failure that left nothing
 // pending opens none. Found in review of #413, when a failed empty save left the target
-// RecoveringParentBranch with nothing owed.
-func TestParentRecovery_NothingOwedOpensNoObligation(t *testing.T) {
+// RecoveringParentBranch with no pending writes.
+func TestParentRecovery_NothingPendingOpensNoRecovery(t *testing.T) {
 	w := &BranchWorker{}
 	loop := newBranchWorkerEventLoop(w, time.Second)
 	defer loop.stopTimers()
@@ -425,7 +425,7 @@ func TestParentRecovery_NothingOwedOpensNoObligation(t *testing.T) {
 	assert.False(t, open)
 }
 
-// Recovery ends when nothing is owed, not only when a push lands. A resync held while the parent
+// Recovery ends when no pending writes remain, not only when a push lands. A resync held while the parent
 // was missing can find nothing to change once it is back, and leave nothing pending without a push:
 // recovery and its retry then stayed open, and intake stayed paused for good.
 func TestParentRecovery_EndsWhenTheHeldWorkNeedsNoCommit(t *testing.T) {
@@ -447,7 +447,7 @@ func TestParentRecovery_EndsWhenTheHeldWorkNeedsNoCommit(t *testing.T) {
 	fireRetry(f.loop)
 
 	require.Empty(t, f.loop.pendingWrites, "the resync had nothing to change")
-	assert.False(t, f.loop.recovery.active, "nothing is owed, so there is nothing to recover")
+	assert.False(t, f.loop.recovery.active, "nothing is left to publish, so there is nothing to recover")
 	assert.False(t, f.loop.retry.pending(), "or to retry")
 	assert.Nil(t, f.worker.IntakePaused(), "and intake reopens")
 }

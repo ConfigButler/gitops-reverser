@@ -411,7 +411,7 @@ nothing watching it.
 
 **The apply window.** From the moment an operation is asked for until 10 seconds after it completes,
 a write by `kustomize-controller` over a newer API edit is withheld from Git, and GitOps Reverser
-asks for a `Repair`; the trigger shows `repairOwed` until that apply succeeds. Only a `kustomize-controller` entry newer
+asks for a `Repair`; the trigger shows `repairPending` until that apply succeeds. Only a `kustomize-controller` entry newer
 than the edit counts: undoing an edit can leave an older one as the newest entry, and that undo is
 mirrored. When `kustomize-controller` and another manager, or the edit, wrote in the same second,
 the write is mirrored and counted as `ambiguous`.

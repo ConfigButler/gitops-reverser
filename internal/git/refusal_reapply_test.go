@@ -184,7 +184,7 @@ func TestRefusalReapply_OwedRequestWaitsForAQuietBranch(t *testing.T) {
 	t.Cleanup(loop.stopTimers)
 
 	loop.openWindow = &openWindow{}
-	loop.oweReapply(editingKey(), owedRefusal{detail: "a base-owned field", uid: editingUID}, "observation-1")
+	loop.addUnsentRefusal(editingKey(), unsentRefusal{detail: "a base-owned field", uid: editingUID}, "observation-1")
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "nothing is sent while a commit window is open")
 
@@ -196,7 +196,7 @@ func TestRefusalReapply_OwedRequestWaitsForAQuietBranch(t *testing.T) {
 	assert.Equal(t, []itypes.ResourceReference{editingRef()}, targetRefs(requests[0]),
 		"only the refusing target's applier is asked")
 	assert.True(t, w.refusalAlreadyCovered(editingKey(), "observation-1"),
-		"the observation is covered once the request is owed")
+		"the observation is covered once the request is decided")
 }
 
 // gitOut runs git against a repository on disk and returns its trimmed output.
@@ -444,7 +444,7 @@ func TestRefusalReapply_OneTargetDoesNotDropAnothersPendingRequest(t *testing.T)
 	assert.Empty(t, loop.refusalPending, "every due entry is consumed exactly once")
 	limitedAlpha, _ := w.refusalRateLimited(alpha)
 	assert.True(t, limitedAlpha,
-		"alpha's request must have been owed, consuming its rate-limit window")
+		"alpha's request must have been decided, consuming its rate-limit window")
 	limitedBravo, _ := w.refusalRateLimited(bravo)
 	assert.False(t, limitedBravo,
 		"bravo's was declined for lack of consent, so it must not have consumed a window")

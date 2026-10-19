@@ -59,10 +59,10 @@ check is what protects the first write.
 | no | no, omitted, not empty (`HEAD` resolves to no branch, or only tags) | refuse the same way: `ParentBranchNotFound`, with a message to fix `HEAD` or set the field |
 | no | no, omitted, empty repository (no refs at all) | unborn `HEAD`; the first commit is a root commit on the write branch |
 
-- **Recovery from a missing parent** is an obligation on the branch worker, not an observation. It
-  latches when an attempt fails on the parent and clears only when the work is published. Writes,
-  saves and resyncs decided while the parent is missing are kept as the worker's pending writes,
-  not dropped, and admission backpressure bounds them
+- **Recovery from a missing parent** is held open by the branch worker until the held work lands,
+  whatever the parent's observed state. It latches when an attempt fails on the parent and clears
+  only when the work is published. Writes, saves and resyncs decided while the parent is missing
+  are kept as the worker's pending writes, not dropped, and admission backpressure bounds them
   ([`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md), step 3c). The worker probes
   with one advertisement after 10s, doubling to 5m, on its one retry schedule shared by every target
   on it; before a deadline nothing spends a connection on the parent, and reconciles never probe.

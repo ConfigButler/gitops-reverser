@@ -10,7 +10,7 @@ import "go.opentelemetry.io/otel/metric"
 // provider_name, branch, outcome}. outcome is a frozen enum:
 //
 //	withheld   — the write is proven to be the applier's (its field manager alone wrote last), so it
-//	             was not mirrored. Git keeps the API's value, and the applier is owed a Repair, an
+//	             was not mirrored. Git keeps the API's value, and a Repair is pending for the applier, an
 //	             apply that puts it back on the cluster. The edit was reverted on the cluster until then.
 //	ambiguous  — the applier and another field manager wrote in the same second, so the write may be
 //	             the API edit itself. It was mirrored as ever, which cannot lose an edit; if it was the

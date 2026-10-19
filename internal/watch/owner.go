@@ -99,7 +99,7 @@ type declareIntent struct {
 // pass has yet put in place.
 func (d declareIntent) forcePending() bool { return d.forceRequests != d.forceConsumed }
 
-// dirtyTarget is one GitTarget the owner owes a pass.
+// dirtyTarget is one GitTarget waiting for a plan pass from the owner.
 type dirtyTarget struct {
 	ref types.ResourceReference
 	// firstDirty is when this target went from clean to dirty, and is what maxSettleWait bounds.
@@ -282,7 +282,7 @@ func (m *Manager) declareIntentFor(
 	}
 	// A GitTarget reconcile is LEVEL-triggered: the controller re-declares on its steady requeue
 	// and on every event it watches, with the same values every time. Marking the target dirty for
-	// each of those would keep a healthy target permanently owed a pass, which is both a pass per
+	// each of those would keep a healthy target permanently waiting for a pass, which is both a pass per
 	// reconcile and — because "the declaration has landed" is a readiness input — a target that
 	// never reads converged. So a re-declare that changes nothing and has already landed is a
 	// no-op, and the 30s periodic sweep remains the floor under it.
@@ -340,7 +340,7 @@ func (m *Manager) forgetIntent(gitDest types.ResourceReference) {
 	t.signal()
 }
 
-// DeclareStatusForGitTarget reports whether the owner still owes this GitTarget a pass and how
+// DeclareStatusForGitTarget reports whether a plan pass is still pending for this GitTarget and how
 // the last one ended. A target whose passes keep timing out must not read as idle.
 func (m *Manager) DeclareStatusForGitTarget(gitDest types.ResourceReference) DeclareStatus {
 	t := m.triggers()
@@ -441,7 +441,7 @@ func (m *Manager) ownerTurn(ctx context.Context, log logr.Logger) time.Duration 
 	// behind a queue of passes.
 	entry, wait := m.nextReadyTarget()
 	if entry == nil {
-		// Nothing to plan. Sleep no longer than a backed-off shared refresh is owed, or a failed
+		// Nothing to plan. Sleep no longer than until a backed-off shared refresh is due, or a failed
 		// one would not be reattempted until something else happened to wake the loop.
 		return minDuration(wait, m.sharedRefreshWait())
 	}
@@ -450,7 +450,7 @@ func (m *Manager) ownerTurn(ctx context.Context, log logr.Logger) time.Duration 
 }
 
 // sharedRefreshWait is how long until a backed-off shared refresh may be reattempted, or a long
-// sleep when none is owed.
+// sleep when none is due.
 func (m *Manager) sharedRefreshWait() time.Duration {
 	t := m.triggers()
 	t.mu.Lock()

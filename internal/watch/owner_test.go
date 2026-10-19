@@ -317,7 +317,7 @@ func TestOwner_ARedeclareThatChangesNothingIsANoOp(t *testing.T) {
 
 	m.DeclareForGitTarget(ref, configPlaneClusterID, "route", v1alpha3.PruneOnEvent)
 
-	assert.Empty(t, m.triggers().dirty, "an identical re-declare owes the owner nothing")
+	assert.Empty(t, m.triggers().dirty, "an identical re-declare leaves the owner no pass to run")
 	assert.True(t, m.DeclareStatusForGitTarget(ref).Settled(),
 		"and leaves the target converged rather than perpetually pending")
 
@@ -386,9 +386,9 @@ func TestOwner_AStaleDeleteDoesNotDropTheSuccessorsPendingPass(t *testing.T) {
 	m.settle(first)
 	require.Equal(t, 1, m.runTurns(t, 4))
 
-	// The successor declares, and is owed a pass...
+	// The successor declares, and waits for a pass...
 	m.DeclareForGitTarget(second, "prod-eu-1", "", v1alpha3.PruneOnEvent)
-	require.Len(t, m.triggers().dirty, 1, "precondition: the recreation is owed a pass")
+	require.Len(t, m.triggers().dirty, 1, "precondition: the recreation waits for a pass")
 
 	// ...and only then does the predecessor's delete arrive.
 	m.ForgetGitTargetDeclaration(first)

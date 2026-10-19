@@ -27,7 +27,7 @@ const DefaultStatusRetryInterval = 5 * time.Second
 const maxStatusConflicts = 5
 
 // StatusWriter writes what the branch workers publish on their apply triggers: status.operation
-// and status.repairOwed. It implements git.ApplyTriggerStatusWriter, and runs as a manager.Runnable
+// and status.repairPending. It implements git.ApplyTriggerStatusWriter, and runs as a manager.Runnable
 // beside the branch workers, on the leader as they are.
 //
 // A publication never blocks the worker. It is held until written, and a later publication for the
@@ -204,7 +204,7 @@ func (w *StatusWriter) RecordApplyOperation(
 		}
 		// Kept before the update: an update that reports an error may still have landed.
 		w.recorded[ref] = recordedOperation{operation: operation, displaced: current.DeepCopy()}
-		trigger.SetOperation(operation, trigger.RepairOwed())
+		trigger.SetOperation(operation, trigger.RepairPending())
 		err = w.writer.Status().Update(ctx, trigger)
 		switch {
 		case err == nil:
@@ -275,7 +275,7 @@ func (w *StatusWriter) holdAgain(ref git.TriggerRef, failed publication) bool {
 	return false
 }
 
-// write sets one trigger's status.operation, as operationToWrite says, and status.repairOwed. A
+// write sets one trigger's status.operation, as operationToWrite says, and status.repairPending. A
 // trigger that is gone, or being deleted, takes the publication with it: errTriggerReleased.
 func (w *StatusWriter) write(ctx context.Context, ref git.TriggerRef, held publication) error {
 	for range maxStatusConflicts {
@@ -284,11 +284,11 @@ func (w *StatusWriter) write(ctx context.Context, ref git.TriggerRef, held publi
 			return err
 		}
 		operation := w.operationToWrite(ref, held, trigger.Operation())
-		repairOwed := held.status.RepairOwed
-		if trigger.RepairOwed() == repairOwed && equality.Semantic.DeepEqual(trigger.Operation(), operation) {
+		repairPending := held.status.RepairPending
+		if trigger.RepairPending() == repairPending && equality.Semantic.DeepEqual(trigger.Operation(), operation) {
 			return nil
 		}
-		trigger.SetOperation(operation, repairOwed)
+		trigger.SetOperation(operation, repairPending)
 		err = w.writer.Status().Update(ctx, trigger)
 		switch {
 		case err == nil:

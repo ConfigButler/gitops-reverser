@@ -20,9 +20,9 @@ import (
 )
 
 // recording gives a trigger a recorded status.
-func recording(operation *configv1alpha3.ApplyOperation, repairOwed bool) func(*configv1alpha3.FluxTrigger) {
+func recording(operation *configv1alpha3.ApplyOperation, repairPending bool) func(*configv1alpha3.FluxTrigger) {
 	return func(trigger *configv1alpha3.FluxTrigger) {
-		trigger.Status.Operation, trigger.Status.RepairOwed = operation, repairOwed
+		trigger.Status.Operation, trigger.Status.RepairPending = operation, repairPending
 	}
 }
 
@@ -64,7 +64,7 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySettling, SuspendToken: "T2"})
 	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySucceeded, SuspendToken: "T2",
 		AppliedRevision: "main@sha1:bbb"})
-	loop.openWindow = &openWindow{} // busy: the repair the withheld write owes waits
+	loop.openWindow = &openWindow{} // busy: the repair the withheld write left pending waits
 	loop.serviceAppliers()
 	status, _ := writer.last(applierRef("alpha").Trigger)
 	completed := status.Operation
@@ -78,13 +78,13 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 	loop.openWindow, loop.quietSince = nil, time.Time{}
 	loop.serviceAppliers()
 	repair := requester.taken()
-	require.Len(t, repair, 1, "the withheld write owes a repair, as in a process that never stopped")
+	require.Len(t, repair, 1, "the withheld write leaves a repair pending, as in a process that never stopped")
 	assert.Equal(t, configv1alpha3.ApplyReasonRepair, repair[0].Reason)
 }
 
-// TestRecovery_ARepairOwedIsRestored: repairOwed was recorded because a late apply was withheld;
-// the cluster still runs the older value, so the new process owes the repair.
-func TestRecovery_ARepairOwedIsRestored(t *testing.T) {
+// TestRecovery_APendingRepairIsRestored: repairPending was recorded because a late apply was withheld;
+// the cluster still runs the older value, so the new process sends the repair.
+func TestRecovery_APendingRepairIsRestored(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true),
 		fluxTrigger("alpha", recording(recordedOperation(configv1alpha3.ApplyOperationSucceeded), true)))
 	loop.followRecordedOperations(time.Now())

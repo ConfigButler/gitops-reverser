@@ -89,7 +89,7 @@ write that starts the apply.
 remaining problem in the hand-off between the worker's decisions and the deliverer's retries: a
 retry skipped the quiet check, outlived a refusal that had recovered, ran for a recreated target, or
 waited on another applier's backoff. The fix was structural rather than four patches. The worker
-owns every obligation until an operation that succeeded completes it. The dispatcher carries out one
+keeps every reason pending until an operation that succeeded answers it. The dispatcher carries out one
 attempt and reports back; it never retries, and never asks for something weaker than it was told. A
 retry is decided like a first attempt: on a quiet branch, at the tip as it is then.
 
@@ -109,7 +109,7 @@ the right unit is what makes the 1:n cases fall out:
 | Unit | Owns | Why |
 | --- | --- | --- |
 | The **branch** (repository and branch) | Quietness | A `Kustomization` applies the tip whichever folder an edit is in. Two `GitProvider`s naming one repository give one branch two workers, so a worker is quiet only when its siblings are too |
-| The **applier**, held by its trigger | Obligations, retries, the operation | One operation at a time, its own backoff, one for every `GitTarget` naming the trigger. The trigger's status records it, and its `quietPeriod` is declared once |
+| The **applier**, held by its trigger | Pending reasons, retries, the operation | One operation at a time, its own backoff, one for every `GitTarget` naming the trigger. The trigger's status records it, and its `quietPeriod` is declared once |
 | The **source** (cluster and `GitRepository`) | One operation at a time across its appliers | The artifact is shared: a sibling's fetch landing between an operation's recheck and its reconcile would apply another commit |
 | The **`GitTarget`**, by uid | Configuration, consent and eligibility | Consent to a `Refusal` is per target, and a target deleted and recreated under the same name inherits nothing due to the old one. A trigger acts only while an eligible `GitTarget` references it |
 
@@ -123,7 +123,7 @@ flowchart LR
         QUIET{"Quiet branch?<br/>this worker and its siblings"}
     end
     EXEC["Dispatcher<br/>one attempt, no retries"]
-    TRIG["Trigger status<br/>operation · repairOwed"]
+    TRIG["Trigger status<br/>operation · repairPending"]
     FLUX["Flux<br/>GitRepository · Kustomization"]
     ARGO["Argo CD<br/>Application"]
 
@@ -360,7 +360,7 @@ live event is mirrored before the windows of what it finds are open:
   A recorded token that is nowhere on the `Kustomization` (neither its `requestedAt` nor the last
   handled) means the process stopped between the record and the resume, or a suspend it never
   reported followed: the `Kustomization` is suspended, and the operation ends `Failed`.
-- **`repairOwed`** is restored.
+- **`repairPending`** is restored.
 - A worker's own record is read back once, when this process first lists the trigger; later reads
   can lag its own writes. A record with no request token (an external resume the reconciler
   suspended) is followed whenever it is listed, once per suspend token, so its window opens while the
@@ -426,7 +426,7 @@ was never released:
 5. **The resources are triggers,** with long kind names: `FluxTrigger` (`spec.kustomizationRef`)
    and `ArgoCDTrigger` (`spec.applicationRef`), named by `GitTarget.spec.applyTriggerRef` in the
    same namespace. Each is its own kind because suspension needs one owner object with a finalizer,
-   the operation and `repairOwed` need a durable status, and typed kinds replace the union of
+   the operation and `repairPending` need a durable status, and typed kinds replace the union of
    references and its CEL rules. The references are immutable: a re-pointed trigger would leave the
    old applier held by nothing.
 
@@ -481,7 +481,7 @@ wins**, as it does for any object both sides changed:
   the applier's folders that the API side edited after the attempt was sent, is not mirrored. Git
   keeps the edit, and the withheld write makes a `Repair` due to its applier: an apply of the tip at
   the next quiet moment, with no quiet period, for Flux and Argo CD alike. The cluster runs the
-  reverted value until then, and the trigger shows `repairOwed`.
+  reverted value until then, and the trigger shows `repairPending`.
 - **Only proof withholds.** `managedFields` times resolve to the second. When the applier ties
   with another manager, the write could be the edit itself, and withholding an edit loses it
   outright; it is mirrored as before. It is also remembered as an edit, even as the first write in
@@ -624,7 +624,7 @@ been quiet; `quietPeriod` is the knob for that trade.
 | Adoption, `SuspendOwnedElsewhere`, an external resume suspended again with an Event every time, the hand-back on deletion (a `ClusterProvider` gone included), and the source's other consumers | [`fluxtrigger_hold_test.go`](../../internal/controller/fluxtrigger_hold_test.go) |
 | The rule: a trigger nothing names reads nothing and is `Ready`; the first eligible reference adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; a re-created `GitTarget` releases and re-adopts; the binding over several `GitTarget`s; an older trigger not in line keeps none out, and a retiring holder stays first until its release is done; a holder left unconfigured says the `Kustomization` is suspended; `ApplierNamespaceNotAllowed` for both kinds | [`applytrigger_rule_test.go`](../../internal/controller/applytrigger_rule_test.go) |
 | `allowAnySourceNamespace: true` is refused on create and on any spec change, a stored one included; `false` and its removal are accepted; a `WatchRule` that relied on it is refused naming the new field | [`removed_allow_any_source_namespace_test.go`](../../internal/controller/removed_allow_any_source_namespace_test.go), [`watchrule_source_namespace_test.go`](../../internal/controller/watchrule_source_namespace_test.go) |
-| A restarted worker follows an operation left in flight with its window open, restores `repairOwed`, and follows an apply started elsewhere; one recorded but never resumed ends `Failed` | [`apply_recovery_test.go`](../../internal/git/apply_recovery_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
+| A restarted worker follows an operation left in flight with its window open, restores `repairPending`, and follows an apply started elsewhere; one recorded but never resumed ends `Failed` | [`apply_recovery_test.go`](../../internal/git/apply_recovery_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
 | Appliers sharing a source have one operation at a time; a push is prefetched only while the branch is busy and no operation of the source is in flight | [`apply_groups_test.go`](../../internal/git/apply_groups_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go) |
 | An applier in another cluster is reached through its own `ClusterProvider`, behind that provider's `accessFrom` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`clusterprovider_admission_test.go`](../../internal/authz/clusterprovider_admission_test.go), [`applytrigger_controller_test.go`](../../internal/controller/applytrigger_controller_test.go) |
 | The applier's late write over a newer edit is withheld, and nothing that could be the edit is: a tie, and an undo that leaves an older applier entry, are mirrored | [`apply_window_test.go`](../../internal/git/apply_window_test.go), [`last_field_managers_test.go`](../../internal/watch/last_field_managers_test.go) |

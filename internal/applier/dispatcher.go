@@ -33,7 +33,7 @@ const (
 	// EventReasonApplyRequested is a request that reached the applier.
 	EventReasonApplyRequested = "ApplyRequested"
 	// EventReasonApplyRequestFailed is the first failed attempt of a run of them. The branch worker
-	// keeps the obligation and asks again on a quiet branch; the Event is not repeated for its retries.
+	// keeps the reason pending and asks again on a quiet branch; the Event is not repeated for its retries.
 	EventReasonApplyRequestFailed = "ApplyRequestFailed"
 	// EventReasonApplyFailed is a requested apply the applier ran and did not complete, the first of
 	// a run of failed attempts. The branch worker asks again on a quiet branch.
@@ -95,7 +95,7 @@ const pollTimeout = 10 * time.Second
 // It keeps no queue and makes no decision of its own. Each request is one attempt for one applier,
 // carried out on its own goroutine and reported back to the worker that decided it: the request,
 // then the operation it started as it moves, until it completes or the worker abandons it. The
-// worker owns the obligation until an operation completes it, and decides every retry on a quiet
+// worker keeps the reason pending until an operation answers it, and decides every retry on a quiet
 // branch. So nothing goes out that a worker did not check on a quiet branch, and nothing here can
 // turn a delayed decision into an apply nobody checked.
 //
@@ -655,7 +655,7 @@ func (d *Dispatcher) completed(
 	if progress.Outcome != git.ApplyFailed {
 		if progress.Message != "" {
 			// The residual race: the source moved between the recheck and the apply. The apply
-			// window withholds a late write over a newer edit; nothing more is owed here.
+			// window withholds a late write over a newer edit; nothing more is asked here.
 			op.log.Info("the applier applied another revision than the commit it was asked for",
 				"after", took.String(), "message", progress.Message)
 			result.Message = progress.Message

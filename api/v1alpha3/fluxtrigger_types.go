@@ -91,10 +91,11 @@ type FluxTriggerStatus struct {
 	// +optional
 	Operation *ApplyOperation `json:"operation,omitempty"`
 
-	// RepairOwed is true while the Kustomization owes a Repair: an apply reverted an API edit made
-	// after it was asked for, so the cluster runs an older value than Git until the next apply.
+	// RepairPending is true while a Repair apply is pending for the Kustomization: an apply reverted
+	// an API edit made after it was asked for, so the cluster runs an older value than Git until the
+	// next apply.
 	// +optional
-	RepairOwed bool `json:"repairOwed,omitempty"`
+	RepairPending bool `json:"repairPending,omitempty"`
 }
 
 // FluxTriggerSource is the GitRepository a Kustomization applies.
@@ -139,7 +140,7 @@ type FluxTriggerSource struct {
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.phase`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1
 // +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.clusterProviderRef.name`,priority=1
-// +kubebuilder:printcolumn:name="RepairOwed",type=boolean,JSONPath=`.status.repairOwed`,priority=1
+// +kubebuilder:printcolumn:name="RepairPending",type=boolean,JSONPath=`.status.repairPending`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
@@ -228,10 +229,10 @@ func (t *FluxTrigger) Prefetches() bool { return t.Status.Source != nil && t.Sta
 // Operation is status.operation.
 func (t *FluxTrigger) Operation() *ApplyOperation { return t.Status.Operation }
 
-// RepairOwed is status.repairOwed.
-func (t *FluxTrigger) RepairOwed() bool { return t.Status.RepairOwed }
+// RepairPending is status.repairPending.
+func (t *FluxTrigger) RepairPending() bool { return t.Status.RepairPending }
 
-// SetOperation replaces status.operation and status.repairOwed.
-func (t *FluxTrigger) SetOperation(operation *ApplyOperation, repairOwed bool) {
-	t.Status.Operation, t.Status.RepairOwed = operation, repairOwed
+// SetOperation replaces status.operation and status.repairPending.
+func (t *FluxTrigger) SetOperation(operation *ApplyOperation, repairPending bool) {
+	t.Status.Operation, t.Status.RepairPending = operation, repairPending
 }

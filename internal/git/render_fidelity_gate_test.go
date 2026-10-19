@@ -298,7 +298,7 @@ func TestRenderFidelityGate_PendingMessageNamesTheScope(t *testing.T) {
 	require.True(t, applied)
 	require.Equal(t, RenderFidelityUnknown, status.State)
 	// The one that reported must drop out of the message; the one still pending must stay,
-	// carrying the revision it owes a report under.
+	// carrying the revision it is waiting for a report at.
 	assert.Contains(t, status.Message, "1 of 2")
 	assert.NotContains(t, status.Message, deployment.String())
 	assert.Contains(t, status.Message, configMap.String())
@@ -345,7 +345,7 @@ func TestRenderFidelityGate_PendingMessageNamesARefusedReport(t *testing.T) {
 
 	status := gate.Status(target)
 	require.Equal(t, RenderFidelityUnknown, status.State)
-	assert.Contains(t, status.Message, fmt.Sprintf("owes revision %d", current))
+	assert.Contains(t, status.Message, fmt.Sprintf("waiting for revision %d", current))
 	assert.Contains(t, status.Message, fmt.Sprintf("refused a report carrying revision %d", first[scope]))
 
 	// The correct report still converges the target, and clears the scope from the message.
@@ -376,7 +376,7 @@ func TestRenderFidelityGate_InvalidateClosesWritesUntilAFreshMeasurement(t *test
 
 	// A pass that restarts every scope is the fresh measurement, and only its result reopens.
 	_, after := restartAll(gate, target, scope)
-	assert.False(t, gate.AllowsWrites(target), "the fresh scope still owes a report")
+	assert.False(t, gate.AllowsWrites(target), "the fresh scope is still waiting for a report")
 	_, applied = gate.RecordScopeClean(target, after[scope], scope)
 	require.True(t, applied)
 	assert.True(t, gate.AllowsWrites(target))

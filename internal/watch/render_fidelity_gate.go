@@ -69,7 +69,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	}
 	if revision == 0 {
 		// A wired gate always issues a non-zero revision, so a stream reporting under zero was
-		// started without one. Its result is unusable and its scope keeps owing a report.
+		// started without one. Its result is unusable and its scope stays waiting for a report.
 		m.logUnappliedFidelityReport(target, collection, revision, "clean (stream carries no revision)")
 		return
 	}
@@ -100,7 +100,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 // This is the last silent branch in the roll-up. RecordScope* answers applied=false for three
 // different reasons — the target is unknown, the scope is not in the current plan, or the result
 // carries a superseded revision — and every caller used to drop that answer on the floor. A scope
-// then owes a report for ever with nothing to say why, which is Failure A's signature.
+// then waits for a report for ever with nothing to say why, which is Failure A's signature.
 //
 // The retention roll-up already logs its refusals, and that asymmetry is exactly why B had
 // evidence and A had none. Info, because it is rare by construction: a healthy plan produces one
@@ -113,7 +113,7 @@ func (m *Manager) logUnappliedFidelityReport(
 	kind string,
 ) {
 	m.Log.WithName("render-fidelity").Info(
-		"a render scope result was not applied; this scope still owes a report and cannot converge alone",
+		"a render scope result was not applied; this scope is still waiting for a report and cannot converge alone",
 		"gitDest", target.String(), "collection", collection.String(), "reportedRevision", revision, "result", kind,
 		"status", m.RenderFidelityForGitTarget(target).Message)
 }
@@ -131,7 +131,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 	}
 	if revision == 0 {
 		// A wired gate always issues a non-zero revision, so a stream reporting under zero was
-		// started without one. Its result is unusable and its scope keeps owing a report.
+		// started without one. Its result is unusable and its scope stays waiting for a report.
 		m.logUnappliedFidelityReport(target, collection, revision, "diverged (stream carries no revision)")
 		return
 	}

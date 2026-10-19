@@ -55,7 +55,7 @@ func windowEventAt(target, replicas string, at time.Time, managers ...string) Ev
 func sentAttempt(t *testing.T) (*branchWorkerEventLoop, ApplyRequest) {
 	t.Helper()
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", false))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
@@ -87,7 +87,7 @@ func TestApplyWindow_TheAppliersLateWriteOverANewerEditIsWithheld(t *testing.T) 
 // tmp=1` is mirrored; `kubectl label cm/x tmp-` then removes every field kubectl-label owns, which
 // deletes its managedFields entry, so the newest entry left is kustomize-controller's, from an
 // earlier apply. That undo looked like the applier's write alone over a newer edit: it was withheld
-// and a Repair owed, which put tmp=1 back. A real late apply moves the applier's entry forward; an
+// and a Repair sent, which put tmp=1 back. A real late apply moves the applier's entry forward; an
 // undo does not. So only an applier entry strictly newer than the edit is withheld.
 func TestApplyWindow_AnUndoOfAnEditIsMirrored(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
@@ -197,7 +197,7 @@ func TestApplyWindow_ArgoCDsLateWriteIsWithheldByItsOwnManagers(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	require.Len(t, requester.taken(), 1)
 
@@ -236,18 +236,18 @@ func TestApplyWindow_AFirstTieIsRememberedAsAnEdit(t *testing.T) {
 }
 
 // completedThenNext is a loop whose applier, alpha's, completed attempt A over an API edit made
-// while it ran, and was sent attempt B within A's grace: a push somebody else made owes it again.
+// while it ran, and was sent attempt B within A's grace: a push somebody else made asks it again.
 func completedThenNext(t *testing.T) (*branchWorkerEventLoop, *recordingRequester, ApplyRequest) {
 	t.Helper()
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", false))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
 	require.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")), "the edit is mirrored")
 
 	report(first[0], ApplySucceeded)
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
 	loop.serviceAppliers()
 	next := requester.taken()
 	require.Len(t, next, 1, "B goes out within A's grace")
@@ -267,7 +267,7 @@ func TestApplyWindow_ANewAttemptKeepsTheGraceOfTheOneBefore(t *testing.T) {
 	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
 		"A's late write over the edit is withheld while B is out")
 	assert.Equal(t, int64(1), collisions(t, reader, collisionWithheld))
-	assert.True(t, onlyApplier(t, loop).repair, "and owes a Repair")
+	assert.True(t, onlyApplier(t, loop).repair, "and has a Repair pending")
 }
 
 // TestApplyWindow_AnAttemptThatAppliedNothingKeepsTheGraceBeforeIt: B ending without an apply has no
@@ -311,8 +311,8 @@ func TestApplyWindow_TheCarriedGraceEndsWhenTheEarlierWindowWouldHave(t *testing
 }
 
 // TestApplyWindow_ConsecutiveOperationsOnOneApplier composes the steps: A completes, B is sent within
-// A's grace, A's late write over the edit is withheld, B completes, and the Repair that write owes
-// goes out once, on the quiet branch, at the tip. Each window closes a grace after its own attempt.
+// A's grace, A's late write over the edit is withheld, B completes, and the Repair that write left
+// pending goes out once, on the quiet branch, at the tip. Each window closes a grace after its own attempt.
 func TestApplyWindow_ConsecutiveOperationsOnOneApplier(t *testing.T) {
 	loop, requester, second := completedThenNext(t)
 	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, second.Reason)
@@ -333,7 +333,7 @@ func TestApplyWindow_ConsecutiveOperationsOnOneApplier(t *testing.T) {
 
 	report(repair[0], ApplySucceeded)
 	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the Repair is owed once")
-	assert.False(t, state.repairOwed())
+	assert.Empty(t, requester.taken(), "the Repair is sent once")
+	assert.False(t, state.repairPending())
 	assert.WithinDuration(t, time.Now().Add(applyWindowGrace), state.window.closesAt, time.Second)
 }

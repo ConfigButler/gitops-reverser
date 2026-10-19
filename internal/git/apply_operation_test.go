@@ -6,7 +6,7 @@ package git
 // it completes: Requested, Running, Settling, then Succeeded or Failed. An operation the dispatcher
 // stopped expecting to finish soon is Unresolved, never "delivered anyway", because a timer that
 // closes the window does not stop the apply. A late apply the window withheld leaves the cluster on
-// an older value than Git, and owes a Repair. See docs/design/apply-trigger.md.
+// an older value than Git, and leaves a Repair pending. See docs/design/apply-trigger.md.
 
 import (
 	"context"
@@ -24,11 +24,12 @@ import (
 // TestApplier_AWithheldRollbackIsRepairedWithASecondSync is the third review's second finding. An
 // Argo CD sync of replicas 2 runs, the API edits replicas to 3, and the sync's write of 2 arrives
 // after it: the window withholds it, so Git keeps 3, and the cluster runs 2. An Application is never
-// owed a CatchUp, so nothing used to sync again. The withheld write owes a Repair: a second sync,
-// pinned to the tip that holds the edit, sent on the quiet branch with no quiet period.
+// sent a CatchUp, so nothing used to sync again. The withheld write leaves a Repair pending: a
+// second sync, pinned to the tip that holds the edit, sent on the quiet branch with no quiet
+// period.
 func TestApplier_AWithheldRollbackIsRepairedWithASecondSync(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
@@ -37,7 +38,7 @@ func TestApplier_AWithheldRollbackIsRepairedWithASecondSync(t *testing.T) {
 	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")), "the edit is mirrored")
 	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", ArgoCDFieldManager)), "the rollback is not")
 	report(first[0], ApplySucceeded)
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush}) // the edit's push
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush}) // the edit's push
 	loop.serviceAppliers()
 
 	repair := requester.taken()
@@ -50,7 +51,7 @@ func TestApplier_AWithheldRollbackIsRepairedWithASecondSync(t *testing.T) {
 
 	report(repair[0], ApplySucceeded)
 	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "a repair is owed once")
+	assert.Empty(t, requester.taken(), "a repair is sent once")
 }
 
 // TestApplier_ARepairWaitsForTheBranchNotForAQuietPeriod: a Repair is decided like a Refusal. It
@@ -58,7 +59,7 @@ func TestApplier_AWithheldRollbackIsRepairedWithASecondSync(t *testing.T) {
 // failed one comes back.
 func TestApplier_ARepairWaitsForTheBranchNotForAQuietPeriod(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
@@ -85,7 +86,7 @@ func TestApplier_ARepairWaitsForTheBranchNotForAQuietPeriod(t *testing.T) {
 	dueNow(loop)
 	loop.serviceAppliers()
 	retry := requester.taken()
-	require.Len(t, retry, 1, "a repair whose apply failed is owed again")
+	require.Len(t, retry, 1, "a repair whose apply failed is pending again")
 	assert.Equal(t, configv1alpha3.ApplyReasonRepair, retry[0].Reason)
 }
 
@@ -97,7 +98,7 @@ func TestApplier_AnUnresolvedOperationKeepsItsWindowOpen(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
@@ -105,12 +106,12 @@ func TestApplier_AnUnresolvedOperationKeepsItsWindowOpen(t *testing.T) {
 	for _, phase := range []ApplyOutcome{ApplyRequested, ApplyRunning, ApplyUnresolved} {
 		report(first[0], phase)
 	}
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
 	loop.serviceAppliers()
 	state := onlyApplier(t, loop)
 	require.NotNil(t, state.inflight)
 	assert.Equal(t, ApplyUnresolved, state.inflight.phase)
-	assert.Empty(t, requester.taken(), "what is owed meanwhile waits for the operation")
+	assert.Empty(t, requester.taken(), "a reason that becomes pending meanwhile waits for the operation")
 	assert.True(t, state.window.open(time.Now().Add(24*time.Hour)), "no timer closes the window")
 	assert.Equal(t, int64(1), loop.w.unresolvedOperations.Load())
 
@@ -131,7 +132,7 @@ func TestApplier_AnUnresolvedOperationKeepsItsWindowOpen(t *testing.T) {
 // no GitTarget names its applier any more. The worker stops following it, and tells the requester.
 func TestApplier_AnApplierNoLongerNamedAbandonsItsOperation(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
@@ -140,7 +141,7 @@ func TestApplier_AnApplierNoLongerNamedAbandonsItsOperation(t *testing.T) {
 	require.Equal(t, int64(1), loop.w.unresolvedOperations.Load())
 
 	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil })
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 
 	assert.Empty(t, loop.appliers)
@@ -157,7 +158,7 @@ func TestApplier_AnApplierNoLongerNamedAbandonsItsOperation(t *testing.T) {
 // may have written part of the commit.
 func TestApplier_AFailedOperationIsRetriedOnItsBackoff(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
@@ -246,7 +247,7 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	loop.w.triggerStatus = writer
 	trigger := applierRef("alpha").Trigger
 
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	sent := requester.taken()
 	require.Len(t, sent, 1)
@@ -312,7 +313,7 @@ func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T
 			loop.w.triggerStatus = writer
 			trigger := argoApplierRef("alpha").Trigger
 
-			owesForeign(loop.w)
+			observeForeignCommit(loop.w)
 			loop.serviceAppliers()
 			first := requester.taken()
 			require.Len(t, first, 1)
@@ -322,7 +323,7 @@ func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T
 			completed, published := writer.last(trigger)
 			require.Equal(t, configv1alpha3.ApplyOperationSucceeded, completed.Operation.Phase)
 
-			owesForeign(loop.w)
+			observeForeignCommit(loop.w)
 			loop.serviceAppliers()
 			second := requester.taken()
 			require.Len(t, second, 1)
@@ -347,7 +348,7 @@ func TestApplier_AnAttemptEndedAfterItsRecordWithdrawsIt(t *testing.T) {
 	loop.w.triggerStatus = writer
 	trigger := applierRef("alpha").Trigger
 
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
@@ -356,7 +357,7 @@ func TestApplier_AnAttemptEndedAfterItsRecordWithdrawsIt(t *testing.T) {
 	loop.serviceAppliers()
 	completed, _ := writer.last(trigger)
 
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	second := requester.taken()
 	require.Len(t, second, 1)
@@ -375,15 +376,15 @@ func TestApplier_AnAttemptEndedAfterItsRecordWithdrawsIt(t *testing.T) {
 	assert.Equal(t, n, again, "withdrawn once")
 }
 
-// TestApplier_TheTriggerStatusSaysARepairIsOwed: repairOwed is published from the withheld write
+// TestApplier_TheTriggerStatusSaysARepairIsPending: repairPending is published from the withheld write
 // until an operation that carried the repair succeeded.
-func TestApplier_TheTriggerStatusSaysARepairIsOwed(t *testing.T) {
+func TestApplier_TheTriggerStatusSaysARepairIsPending(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	writer := &recordingStatusWriter{}
 	loop.w.triggerStatus = writer
 	trigger := applierRef("alpha").Trigger
 
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
@@ -392,19 +393,19 @@ func TestApplier_TheTriggerStatusSaysARepairIsOwed(t *testing.T) {
 	require.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)))
 	loop.serviceAppliers()
 	status, _ := writer.last(trigger)
-	assert.True(t, status.RepairOwed, "the withheld write owes a repair")
+	assert.True(t, status.RepairPending, "the withheld write leaves a repair pending")
 
 	report(first[0], ApplySucceeded)
 	loop.serviceAppliers()
 	repair := requester.taken()
 	require.Len(t, repair, 1)
 	status, _ = writer.last(trigger)
-	assert.True(t, status.RepairOwed, "still owed while the repair is out")
+	assert.True(t, status.RepairPending, "still pending while the repair is out")
 
 	report(repair[0], ApplyRequested)
 	report(repair[0], ApplySucceeded)
 	loop.serviceAppliers()
 	status, _ = writer.last(trigger)
-	assert.False(t, status.RepairOwed, "repaired")
+	assert.False(t, status.RepairPending, "repaired")
 	assert.Equal(t, configv1alpha3.ApplyReasonRepair, status.Operation.Reason)
 }

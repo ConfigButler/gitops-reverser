@@ -165,7 +165,7 @@ func TestPublicationRetry_AMissingParentIsProbedOnTheOneSchedule(t *testing.T) {
 	assert.Nil(t, f.loop.pushTimer, "the push timer is only the success cooldown")
 }
 
-// Once the parent is back, recovery's missing-parent hold is gone but its obligation stays open
+// Once the parent is back, recovery's missing-parent hold is gone but the recovery stays open
 // until the work publishes. A publication that fails then must not be retried by every new commit:
 // the commits wait for recovery's next deadline. Found in review of #412; it failed on main too.
 func TestPublicationRetry_AFailureAfterTheParentReturnsWaitsForRecovery(t *testing.T) {

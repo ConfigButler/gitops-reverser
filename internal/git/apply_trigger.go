@@ -25,7 +25,7 @@ import (
 // An apply is safe only when nothing live is missing from the commit being applied, and only the
 // workers on this branch can see the edits that are live and not yet pushed: their open commit
 // windows and pending writes. So an attempt goes out only on a QUIET branch, with neither on this
-// worker or on any other worker writing the same repository and branch. Four things owe one:
+// worker or on any other worker writing the same repository and branch. Four reasons ask for one:
 //
 //   - ForeignCommit: an observation of the remote found the branch somewhere this worker did not
 //     push it. Every applier on the branch is asked as soon as the branch is quiet, and an open
@@ -44,27 +44,28 @@ import (
 //
 // The three relations are kept apart on purpose. The BRANCH is the unit of quietness, because a
 // Kustomization applies the tip whichever GitTarget's folder an edit is in. The APPLIER is the unit
-// of obligation: one attempt in flight at a time, its own retry clock, and one attempt for all the
-// GitTargets that name it. The GITTARGET, by uid, is the unit of configuration and consent.
+// of pending reasons: one attempt in flight at a time, its own retry clock, and one attempt for all
+// the GitTargets that name it. The GITTARGET, by uid, is the unit of configuration and consent.
 //
-// The worker owns every obligation until an operation completes it. The requester carries out one
+// The worker keeps every pending reason until an operation answers it. The requester carries out one
 // attempt and reports its operation as it moves; it never retries, so a retry is decided here like
 // any first attempt, on a quiet branch, against what the targets are now. An operation is followed
 // for as long as it takes: one past the requester's budget is Unresolved, and keeps its window open
 // and its applier's next attempt back, because a timer that closes the window does not stop the
 // apply.
 
-// applyDebt is what the branch's appliers are owed because of what was OBSERVED about the remote,
-// and the reports of attempts that came back. It is written from other goroutines (the first clone
+// applyInbox holds what other goroutines tell the loop about applies: the reasons pending for the
+// branch's appliers because of what was OBSERVED about the remote, and the reports of attempts that
+// came back. It is written from other goroutines (the first clone
 // publishes an observation before the loop starts; the requester reports from its own), hence the
 // lock.
-type applyDebt struct {
+type applyInbox struct {
 	mu sync.Mutex
 	// known is whether anything has been observed yet, and tip is the last commit observed. Empty
 	// means the remote does not carry the branch.
 	known bool
 	tip   string
-	// foreign and catchUp are owed until the loop takes them on a quiet branch. prefetch is a push
+	// foreign and catchUp are pending until the loop takes them on a quiet branch. prefetch is a push
 	// somebody else made, until the loop takes it (apply_groups.go).
 	foreign  bool
 	catchUp  bool
@@ -74,14 +75,14 @@ type applyDebt struct {
 }
 
 // observe classifies one observation. The first one is a baseline, not a move: nothing says what
-// the appliers last applied, so they are owed a catch-up, never a ForeignCommit. A request on a
+// the appliers last applied, so a CatchUp is pending for them, never a ForeignCommit. A request on a
 // restart would otherwise apply the tip before the watches have captured the edits made while the
 // operator was down.
 //
 // After that, a commit that differs from the last one observed is either this worker's push, proved
 // by the push itself, or somebody else's, because every other observation is a fetch. When in doubt
 // the classification errs towards foreign, which costs one apply of the tip on a quiet branch.
-func (d *applyDebt) observe(observed RemoteObservation) {
+func (d *applyInbox) observe(observed RemoteObservation) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.known {
@@ -101,7 +102,7 @@ func (d *applyDebt) observe(observed RemoteObservation) {
 
 // takePrefetch returns whether a push somebody else made is to be fetched ahead, with the tip, and
 // clears it.
-func (d *applyDebt) takePrefetch() (string, bool) {
+func (d *applyInbox) takePrefetch() (string, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	due := d.prefetch
@@ -109,8 +110,8 @@ func (d *applyDebt) takePrefetch() (string, bool) {
 	return d.tip, due
 }
 
-// take returns what is owed and clears it. The caller restores it if it cannot act on it.
-func (d *applyDebt) take() (string, bool, bool) {
+// take returns the pending reasons and clears them. The caller restores it if it cannot act on it.
+func (d *applyInbox) take() (string, bool, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	tip, foreign, catchUp := d.tip, d.foreign, d.catchUp
@@ -119,34 +120,34 @@ func (d *applyDebt) take() (string, bool, bool) {
 }
 
 // restore puts back what take returned, for a caller that could not act on it.
-func (d *applyDebt) restore(foreign, catchUp bool) {
+func (d *applyInbox) restore(foreign, catchUp bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.foreign = d.foreign || foreign
 	d.catchUp = d.catchUp || catchUp
 }
 
-// foreignOwed reports whether a ForeignCommit is owed, without taking it.
-func (d *applyDebt) foreignOwed() bool {
+// foreignPending reports whether a ForeignCommit is pending, without taking it.
+func (d *applyInbox) foreignPending() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.foreign
 }
 
 // tipIs reports whether the last commit observed is commit.
-func (d *applyDebt) tipIs(commit string) bool {
+func (d *applyInbox) tipIs(commit string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.known && d.tip == commit
 }
 
-func (d *applyDebt) addResult(res ApplyResult) {
+func (d *applyInbox) addResult(res ApplyResult) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.results = append(d.results, res)
 }
 
-func (d *applyDebt) takeResults() []ApplyResult {
+func (d *applyInbox) takeResults() []ApplyResult {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	results := d.results
@@ -165,10 +166,10 @@ type branchTarget struct {
 	quietPeriod time.Duration
 	// consents is whether it asks for a Refusal request now (ConsentsToReapply).
 	consents bool
-	// recorded and repairOwed are the trigger's status.operation and status.repairOwed, as listed:
+	// recorded and repairPending are the trigger's status.operation and status.repairPending, as listed:
 	// what an earlier process, or the trigger's reconciler, recorded (apply_recovery.go).
-	recorded   *v1alpha3.ApplyOperation
-	repairOwed bool
+	recorded      *v1alpha3.ApplyOperation
+	repairPending bool
 	// group names the GitRepository a Flux trigger's Kustomization applies, in its cluster; empty
 	// for an Argo CD Application or a source not read yet. prefetch is the trigger's
 	// status.source.prefetch (apply_groups.go).
@@ -201,32 +202,32 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 			continue
 		}
 		listed = append(listed, branchTarget{
-			ref:         itypes.NewResourceReference(target.Name, target.Namespace),
-			uid:         target.UID,
-			applier:     ApplierOf(trigger),
-			quietPeriod: trigger.EffectiveQuietPeriod(),
-			consents:    ConsentsToReapply(target),
-			recorded:    trigger.Operation(),
-			repairOwed:  trigger.RepairOwed(),
-			group:       sourceGroup(trigger),
-			prefetch:    trigger.Prefetches(),
+			ref:           itypes.NewResourceReference(target.Name, target.Namespace),
+			uid:           target.UID,
+			applier:       ApplierOf(trigger),
+			quietPeriod:   trigger.EffectiveQuietPeriod(),
+			consents:      ConsentsToReapply(target),
+			recorded:      trigger.Operation(),
+			repairPending: trigger.RepairPending(),
+			group:         sourceGroup(trigger),
+			prefetch:      trigger.Prefetches(),
 		})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ref.String() < listed[j].ref.String() })
 	return listed, nil
 }
 
-// applierState is what one applier on this branch is owed, and how its attempts are going.
+// applierState is the reasons pending for one applier on this branch, and how its attempts are going.
 type applierState struct {
 	ref ApplierRef
 	// targets are the GitTargets that name it, as listed on the last pass.
 	targets []branchTarget
-	// foreign, catchUp and repair are owed until an attempt carries them.
+	// foreign, catchUp and repair are pending until an attempt carries them.
 	foreign bool
 	catchUp bool
 	repair  bool
 	// inflight is the attempt whose report has not ended it yet. While it is out, nothing else is
-	// sent to this applier: what is owed meanwhile waits for it.
+	// sent to this applier: a reason that becomes pending meanwhile waits for it.
 	inflight *inflightAttempt
 	// failures counts attempts that did not succeed since the last that did, and retryAt is when
 	// the next attempt may go.
@@ -255,19 +256,19 @@ type applierState struct {
 	followedSuspend string
 }
 
-// repairOwed reports whether a Repair is owed: not yet carried, or carried by the attempt out.
-func (s *applierState) repairOwed() bool {
+// repairPending reports whether a Repair is pending: not yet carried, or carried by the attempt out.
+func (s *applierState) repairPending() bool {
 	return s.repair || (s.inflight != nil && s.inflight.repair)
 }
 
-// inflightAttempt is what an attempt carries away from its applier's obligations. One that did not
-// succeed gives it back (restoreAttempt); one that succeeded keeps it.
+// inflightAttempt is what an attempt carries away from its applier's pending reasons. One that did
+// not succeed gives them back (restoreAttempt); one that succeeded keeps it.
 type inflightAttempt struct {
 	id       uint64
 	foreign  bool
 	catchUp  bool
 	repair   bool
-	refusals map[refusalKey]owedRefusal
+	refusals map[refusalKey]unsentRefusal
 	// phase is the last report of its operation, empty before the first.
 	phase ApplyOutcome
 	// previous is the operation recorded before this attempt's, with the attempt it belonged to,
@@ -313,7 +314,7 @@ func (l *branchWorkerEventLoop) closeWindowForForeignCommit() {
 	if l.openWindow == nil || l.w.applyRequester == nil {
 		return
 	}
-	if !hinted && !l.w.debt.foreignOwed() {
+	if !hinted && !l.w.inbox.foreignPending() {
 		return
 	}
 	l.w.Log.Info("The branch moved, or may have; closing the commit window to publish it now",
@@ -343,16 +344,16 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 		return
 	}
 	// Quiet: the attempts sent now fetch what they apply themselves.
-	w.debt.takePrefetch()
+	w.inbox.takePrefetch()
 
-	tip, foreign, catchUp := w.debt.take()
-	if !foreign && !catchUp && len(l.reapplyOwed) == 0 && !l.appliersOwe() {
+	tip, foreign, catchUp := w.inbox.take()
+	if !foreign && !catchUp && len(l.unsentRefusals) == 0 && !l.appliersHaveWork() {
 		l.stopApplierTimer()
 		return
 	}
 	targets, err := w.appliersOnBranch(w.ctx)
 	if err != nil {
-		w.debt.restore(foreign, catchUp)
+		w.inbox.restore(foreign, catchUp)
 		w.Log.Error(err, "Cannot list the appliers on this branch; retrying", "branch", w.Branch)
 		l.resetApplierTimer(applierRetryInterval)
 		return
@@ -383,8 +384,8 @@ func (l *branchWorkerEventLoop) branchQuiet(now time.Time) bool {
 	return true
 }
 
-// appliersOwe reports whether any applier is owed something or has an attempt out.
-func (l *branchWorkerEventLoop) appliersOwe() bool {
+// appliersHaveWork reports whether any applier has a reason pending or an attempt out.
+func (l *branchWorkerEventLoop) appliersHaveWork() bool {
 	for _, state := range l.appliers {
 		if state.foreign || state.catchUp || state.repair || state.inflight != nil {
 			return true
@@ -394,13 +395,14 @@ func (l *branchWorkerEventLoop) appliersOwe() bool {
 }
 
 // syncAppliers makes the applier states match the GitTargets listed now. An applier no GitTarget
-// names any more is forgotten, with whatever it was owed: nobody asks for it, and its operation, if
-// one is out, is abandoned. An applier named for the first time is owed what a first observation
-// owes, a CatchUp where its kind catches up: a commit observed before it was named was owed to
-// nobody, and was taken, so without one it would not be applied until some later push. For a
+// names any more is forgotten, with whatever was pending for it: nobody asks for it, and its
+// operation, if one is out, is abandoned. An applier named for the first time starts where a first
+// observation does, with a CatchUp pending where its kind catches up: a commit observed before it
+// was named was pending for nobody, and was taken, so without one it would not be applied until
+// some later push. For a
 // Kustomization that already applied the tip it costs nothing (Current); an Application gets no
-// CatchUp, and waits for the next push. A refusal owed for a GitTarget that is gone, or is now another
-// incarnation, is dropped the same way.
+// CatchUp, and waits for the next push. An unsent refusal of a GitTarget that is gone, or is now
+// another incarnation, is dropped the same way.
 func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	if l.appliers == nil {
 		l.appliers = map[ApplierRef]*applierState{}
@@ -431,14 +433,14 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 		}
 		state.targets = named
 	}
-	for key, owed := range l.reapplyOwed {
-		if uids[key.target] != owed.uid {
-			delete(l.reapplyOwed, key)
+	for key, refusal := range l.unsentRefusals {
+		if uids[key.target] != refusal.uid {
+			delete(l.unsentRefusals, key)
 		}
 	}
 }
 
-// sendDue sends an attempt to every applier that is owed one, is not waiting on one, and whose
+// sendDue sends an attempt to every applier that has a reason pending, is not waiting on one, and whose
 // retry and quiet periods have run out. The appliers are taken in turn order, so in a group, which
 // has one attempt out at a time, the attempt goes to the applier whose turn is longest ago. It
 // returns the earliest time one still waiting comes due.
@@ -454,7 +456,7 @@ func (l *branchWorkerEventLoop) sendDue(tip string, now time.Time) time.Time {
 		if l.attemptOut(state) {
 			continue
 		}
-		refusals := l.refusalsOwed(state)
+		refusals := l.unsentRefusalsFor(state)
 		if !state.foreign && !state.repair && len(refusals) == 0 && !state.catchUp {
 			continue
 		}
@@ -473,42 +475,42 @@ func (l *branchWorkerEventLoop) sendDue(tip string, now time.Time) time.Time {
 }
 
 // dueAt is when an applier's next attempt may go: once its backoff has run out, and, when only a
-// CatchUp is owed, once the branch has been quiet for the trigger's quiet period.
-func (l *branchWorkerEventLoop) dueAt(state *applierState, refusals map[refusalKey]owedRefusal) time.Time {
+// CatchUp is pending, once the branch has been quiet for the trigger's quiet period.
+func (l *branchWorkerEventLoop) dueAt(state *applierState, refusals map[refusalKey]unsentRefusal) time.Time {
 	if state.foreign || state.repair || len(refusals) > 0 {
 		return state.retryAt
 	}
 	return latest(state.retryAt, l.quietSince.Add(state.quietPeriod()))
 }
 
-// refusalsOwed is the refusals owed for the GitTargets naming this applier that still consent. A
-// refusal of a target that no longer consents is dropped: its consent was the obligation.
-func (l *branchWorkerEventLoop) refusalsOwed(state *applierState) map[refusalKey]owedRefusal {
+// unsentRefusalsFor is the unsent refusals of the GitTargets naming this applier that still consent.
+// A refusal of a target that no longer consents is dropped: its consent was the only reason to send it.
+func (l *branchWorkerEventLoop) unsentRefusalsFor(state *applierState) map[refusalKey]unsentRefusal {
 	consents := map[itypes.ResourceReference]bool{}
 	for _, target := range state.targets {
 		consents[target.ref] = target.consents
 	}
-	owed := map[refusalKey]owedRefusal{}
-	for key, refusal := range l.reapplyOwed {
+	unsent := map[refusalKey]unsentRefusal{}
+	for key, refusal := range l.unsentRefusals {
 		consenting, named := consents[key.target]
 		if !named {
 			continue
 		}
 		if !consenting {
-			delete(l.reapplyOwed, key)
+			delete(l.unsentRefusals, key)
 			continue
 		}
-		owed[key] = refusal
+		unsent[key] = refusal
 	}
-	return owed
+	return unsent
 }
 
 // sendAttempt hands one attempt for an applier to the requester and moves what it carries out of
-// the applier's obligations, into the attempt. Each target is asked for its own reason: every one
-// for a ForeignCommit, then for a Repair; otherwise a Refusal for a target with a refusal owed, and
-// a CatchUp for the rest when one is owed. Any operation that succeeds applies the tip, so it
-// answers an owed CatchUp or Repair too.
-func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, refusals map[refusalKey]owedRefusal) {
+// the applier's pending reasons, into the attempt. Each target is asked for its own reason: every
+// one for a ForeignCommit, then for a Repair; otherwise a Refusal for a target with an unsent
+// refusal, and a CatchUp for the rest when one is pending. Any operation that succeeds applies the
+// tip, so it answers a pending CatchUp or Repair too.
+func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, refusals map[refusalKey]unsentRefusal) {
 	refused := map[itypes.ResourceReference]bool{}
 	for key := range refusals {
 		refused[key.target] = true
@@ -545,7 +547,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	state.lastTurn = attempt.id
 	state.openApplyWindow(attempt.id, tip, sentAt)
 	for key := range refusals {
-		delete(l.reapplyOwed, key)
+		delete(l.unsentRefusals, key)
 	}
 	// What the trigger shows now goes out before the request, so the record replaces the latest of
 	// it: the operation before this one may have completed on this very pass.
@@ -585,7 +587,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 // replayed blind. A report for an applier no GitTarget names any more is dropped with it.
 func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 	defer l.publishUnresolved()
-	for _, res := range l.w.debt.takeResults() {
+	for _, res := range l.w.inbox.takeResults() {
 		state := l.applierAwaiting(res.ID)
 		if state == nil {
 			continue
@@ -750,7 +752,7 @@ func (l *branchWorkerEventLoop) publishTriggerStatus() {
 
 // publishStatusOf hands one applier's trigger what its status should show, and the operation it
 // withdraws, when that changed since the last time. A worker that has started no operation and
-// owes no Repair has nothing to say yet, and says nothing: the status may hold what an earlier
+// has no Repair pending has nothing to say yet, and says nothing: the status may hold what an earlier
 // process recorded.
 func (l *branchWorkerEventLoop) publishStatusOf(state *applierState) {
 	writer := l.w.triggerStatus
@@ -758,13 +760,13 @@ func (l *branchWorkerEventLoop) publishStatusOf(state *applierState) {
 		return
 	}
 	next := ApplyTriggerStatus{
-		Operation: state.shownOperation(), Withdrawn: state.withdrawn, RepairOwed: state.repairOwed(),
+		Operation: state.shownOperation(), Withdrawn: state.withdrawn, RepairPending: state.repairPending(),
 	}
 	if next.Withdrawn == nil {
-		if state.published == nil && next.Operation == nil && !next.RepairOwed {
+		if state.published == nil && next.Operation == nil && !next.RepairPending {
 			return
 		}
-		if state.published != nil && state.published.RepairOwed == next.RepairOwed &&
+		if state.published != nil && state.published.RepairPending == next.RepairPending &&
 			equality.Semantic.DeepEqual(state.published.Operation, next.Operation) {
 			return
 		}
@@ -796,11 +798,11 @@ func (l *branchWorkerEventLoop) restoreAttempt(state *applierState, attempt *inf
 		if !l.w.refusalStands(key) {
 			continue
 		}
-		if l.reapplyOwed == nil {
-			l.reapplyOwed = map[refusalKey]owedRefusal{}
+		if l.unsentRefusals == nil {
+			l.unsentRefusals = map[refusalKey]unsentRefusal{}
 		}
-		if _, owed := l.reapplyOwed[key]; !owed {
-			l.reapplyOwed[key] = refusal
+		if _, unsent := l.unsentRefusals[key]; !unsent {
+			l.unsentRefusals[key] = refusal
 		}
 	}
 }
@@ -840,14 +842,14 @@ func (w *BranchWorker) branchKey() BranchKey {
 // loop without an item, so the next attempt is not held by one of its own.
 func (w *BranchWorker) decisionHolds(tip string) bool {
 	siblingWriting, siblingWorking := w.siblingBusy()
-	return w.debt.tipIs(tip) && !w.busyWriting.Load() && w.inflightItems.Load() == 0 &&
+	return w.inbox.tipIs(tip) && !w.busyWriting.Load() && w.inflightItems.Load() == 0 &&
 		!siblingWriting && !siblingWorking
 }
 
 // reportApplyResult is ApplyRequest.Report: it records the report and wakes the loop to settle it.
 // It is called from the requester's goroutine.
 func (w *BranchWorker) reportApplyResult(res ApplyResult) {
-	w.debt.addResult(res)
+	w.inbox.addResult(res)
 	w.wakeApplier()
 }
 

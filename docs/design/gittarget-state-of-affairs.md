@@ -117,12 +117,13 @@ lands immediately before a crash can still be followed by a duplicate empty save
 ## What the refactor got right
 
 Keep the separation between deciding, materializing, and publishing. It lets a failed fetch keep a
-save obligation without guessing what a later snapshot would have meant. Step 4's refusal isolation
-also prevents one invalid folder from blocking another target on the same branch.
+save waiting for its answer without guessing what a later snapshot would have meant. Step 4's
+refusal isolation also prevents one invalid folder from blocking another target on the same branch.
 
-The earlier `owedSnapshot` proposal and a separate parent retry timer are unnecessary for the
-chosen capacity policy. Keep accepted entries and reject new admission explicitly. The next change
-should repair the acceptance boundary, not replace the pending writes or introduce a generic workflow engine.
+The earlier `owedSnapshot` proposal (a placeholder that would request a fresh snapshot in place of
+discarded work) and a separate parent retry timer are unnecessary for the chosen capacity policy.
+Keep accepted entries and reject new admission explicitly. The next change should repair the
+acceptance boundary, not replace the pending writes or introduce a generic workflow engine.
 
 ## Recommended order
 

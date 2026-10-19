@@ -172,10 +172,10 @@ type ApplyTrigger interface {
 	// Prefetches reports whether a push may be fetched into the shared source ahead of the apply:
 	// every other reader of it is held, so a new artifact applies nothing on its own.
 	Prefetches() bool
-	// Operation is status.operation, and SetOperation replaces it and status.repairOwed.
+	// Operation is status.operation, and SetOperation replaces it and status.repairPending.
 	Operation() *ApplyOperation
-	RepairOwed() bool
-	SetOperation(operation *ApplyOperation, repairOwed bool)
+	RepairPending() bool
+	SetOperation(operation *ApplyOperation, repairPending bool)
 	// StatusConditions returns the condition set, and SetObservedGeneration stamps the generation.
 	StatusConditions() *[]metav1.Condition
 	SetObservedGeneration(generation int64)

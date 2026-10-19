@@ -1239,7 +1239,7 @@ the branch worker, or on any other worker writing the same repository and branch
 | `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes, since the operator started, or since a `GitTarget` first named the trigger | Every `Kustomization` declared on the branch; never an `Application` |
 
 **What it reports.** The trigger reports its applier and the operation it is running. The branch
-worker writes `status.operation` and `status.repairOwed` at every move of the operation, so they are
+worker writes `status.operation` and `status.repairPending` at every move of the operation, so they are
 current without anything reconciling:
 
 ```yaml
@@ -1271,7 +1271,7 @@ status:
     appliedRevision: main@sha1:4f2c1ab9...
     requestedAt: "2026-10-20T10:14:03Z"
     finishedAt: "2026-10-20T10:14:21Z"
-  repairOwed: false
+  repairPending: false
 ```
 
 | Field | Means |
@@ -1280,7 +1280,7 @@ status:
 | `operation.token` | Identifies the request in the applier's own status: the `reconcile.fluxcd.io/requestedAt` value of the resume, or the `gitops-reverser request` entry in an Argo CD operation's `info` |
 | `operation.suspendToken` | Flux only: the token of the suspend after the apply. Once it is handled, nothing that started before the suspend is still running |
 | `operation.appliedRevision` | The revision the applier reports it applied. It can differ from `commit` when the branch moved between the check and the apply |
-| `repairOwed` | `true` while an apply reverted an API edit made after it was asked for: Git kept the edit, and the cluster runs the older value until the `Repair` |
+| `repairPending` | `true` while an apply reverted an API edit made after it was asked for: Git kept the edit, and the cluster runs the older value until the `Repair` |
 | `source.otherConsumers` | Flux only: the `Kustomization`s and `HelmRelease`s that apply the same `GitRepository` and that no `FluxTrigger` holds. Information only; it never affects `Ready` |
 | `source.prefetch` | Flux only: `true` while every consumer of the source is held, so GitOps Reverser may fetch the `GitRepository` ahead of the apply |
 

@@ -265,7 +265,7 @@ Six components in this chain logged what they REJECTED and said nothing about wh
 
 | Component | Before | Now |
 | --- | --- | --- |
-| the render-fidelity condition | a constant string naming nothing | names each pending scope and the revision it owes |
+| the render-fidelity condition | a constant string naming nothing | names each pending scope and the revision it is waiting for (`waiting for revision N`) |
 | `recordScope` revision mismatch | silent | recorded on the scope, surfaced in the condition |
 | `recordScope` `!found` guards | silent | logged, naming collection and revision |
 | zero-revision report | silent early return | logged as anomalous |
@@ -401,7 +401,7 @@ one behavioural fix (§4.9) is four lines.
 
 | # | Change | Commit |
 | --- | --- | --- |
-| 1 | The render-fidelity condition names its pending scopes and the revision each owes, instead of a constant string | `c87db68d` |
+| 1 | The render-fidelity condition names its pending scopes and the revision each is waiting for, instead of a constant string | `c87db68d` |
 | 2 | Deleted `explainNotRunning` / `notRunningHypothesis` / `cellNames` — ~70 lines aimed at the wrong subsystem — and lowered the supersession log | `17a57352` |
 | 3 | The resync drain starts even when the enqueue was dropped, so a queue-full reply is read by the drain the contract promises will read it | `fc04b15b` |
 | 4 | All four fidelity refusal branches name the collection, the revision and the gate's message | `32b75e02` |
@@ -442,7 +442,7 @@ The chain in §2.2 is instrumented at every hop, so a reproduction should be rea
 | --- | --- |
 | `status write lost a race` on the target, then a stale condition | A's mechanism, recurring — check the requeue that followed it |
 | `render scope result accepted` … `state:True`, condition still stale | the gate is fine; the failure is downstream in publication |
-| `a render scope result was not applied` | the gate refused a report — read `reportedRevision` against the owed revision |
+| `a render scope result was not applied` | the gate refused a report — read `reportedRevision` against the revision the scope is waiting for |
 | `stream carries no revision` | the plan pass and the gate disagree about the collection |
 | `a GitTarget reconcile request was dropped` | a load-bearing notification was crowded out |
 | `retention report accepted but published nothing` | a re-measurement produced the count already published — the bug is upstream of the roll-up |

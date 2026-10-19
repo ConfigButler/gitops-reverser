@@ -79,7 +79,7 @@ func (l *branchWorkerEventLoop) publishGroupsOut() {
 
 // turnOrder is the appliers with the one whose last turn is oldest first, those never sent an
 // attempt first of all, and by name between equals. Name order alone would starve a group: a push
-// somebody else made while an operation is out is owed to every applier of the group, so the first
+// somebody else made while an operation is out is pending for every applier of the group, so the first
 // by name would go again after each of its own operations, and pushes arriving faster than one
 // operation lasts would never let its siblings apply.
 func (l *branchWorkerEventLoop) turnOrder() []ApplierRef {
@@ -94,7 +94,7 @@ func (l *branchWorkerEventLoop) turnOrder() []ApplierRef {
 // a push somebody else made. One request per group: its appliers share the GitRepository.
 func (l *branchWorkerEventLoop) prefetchSources() {
 	w := l.w
-	tip, due := w.debt.takePrefetch()
+	tip, due := w.inbox.takePrefetch()
 	if !due || w.applyRequester == nil {
 		return
 	}

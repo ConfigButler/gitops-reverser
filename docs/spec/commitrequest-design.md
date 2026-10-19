@@ -173,7 +173,7 @@ that never left the worker would surface later, out of order.
 
 A decided write is kept when the remote cannot be reached, whether that happens at its commit (a
 rebuild of the checkout that needs a fetch) or at its push. The worker retries on its own schedule
-(10s, doubling to 5m), with parent recovery owning attempts while its obligation remains active. A
+(10s, doubling to 5m), with parent recovery owning attempts while it remains open. A
 request riding the write stays `WaitingForPush` until publication resolves it or worker shutdown
 fails it. An unavailable remote can leave it pending indefinitely, but retries no longer depend on
 another commit arriving. Only a failure of the write itself fails the request: a refused plan, or a

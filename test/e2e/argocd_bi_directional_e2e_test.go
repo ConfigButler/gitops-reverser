@@ -265,7 +265,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 			g.Expect(count).To(Equal(baseline+2),
 				"a sync of the first edit's commit over the second edit would show as more commits")
 			g.Expect(run.operationFinishedAt()).To(Equal(lastSync),
-				"GitOps Reverser's own commits owe Argo CD no sync: there is no catch-up")
+				"GitOps Reverser's own commits ask Argo CD for no sync: there is no catch-up")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
 		By("and Argo CD, which only compared, finds Git and the cluster in agreement")
