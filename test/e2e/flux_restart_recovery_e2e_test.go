@@ -13,8 +13,10 @@ import (
 
 // Restart recovery for a FluxTrigger (docs/design/apply-trigger.md, "Restart recovery"). The
 // operation an apply runs as is recorded on the trigger before the Kustomization is resumed, so a
-// manager that restarts while the apply runs follows that same operation to its end, suspends the
-// Kustomization again, and asks for nothing new until it has.
+// manager that restarts while the apply runs follows that same operation to its end, and asks for
+// nothing new until it has. The stopping manager suspends the Kustomization it had resumed (a
+// graceful stop), so Flux applies nothing on its own while no process follows the apply; the apply
+// already running still finishes, and the new process judges it.
 //
 // The apply is made slow on purpose: the Kustomization waits for its Deployment to be ready, and
 // the Deployment's pod is pinned to a node label no node has, so the reconcile that read the
@@ -102,16 +104,17 @@ var _ = Describe("Flux Restart Recovery", Label("flux-restart-recovery"), Serial
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeFalse(), "resumed for the apply")
 		}, 3*time.Minute, 2*time.Second).Should(Succeed())
 
-		By("restarting the manager while that apply runs")
+		By("restarting the manager while that apply runs: the stopping manager suspends the Kustomization")
 		restartControllerDeployment()
-		Expect(kustomizationSuspended(Default, fluxName)).To(BeFalse(),
-			"the apply is still running: no process suspended the Kustomization")
+		Eventually(func(g Gomega) {
+			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue(), "a graceful stop suspends what it resumed")
+		}, 30*time.Second, time.Second).Should(Succeed())
 
 		By("letting the Deployment become ready, which ends the reconcile that read the resume's token")
 		_, err := kubectlRun("label", "node", node, nodeLabel+"=true", "--overwrite")
 		Expect(err).NotTo(HaveOccurred())
 
-		By("the restarted manager completes that same operation, and the Kustomization is suspended again")
+		By("the restarted manager completes that same operation, and the Kustomization stays suspended")
 		Eventually(func(g Gomega) {
 			after := readTriggerOperation(g, testNs, fluxTriggerResource, fluxName)
 			g.Expect(after.Token).To(Equal(before.Token), "the operation recorded before the restart, not a new one")
