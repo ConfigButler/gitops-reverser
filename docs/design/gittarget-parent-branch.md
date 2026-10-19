@@ -5,7 +5,7 @@
 > records the contract as built and the reasoning behind it. Deferred:
 > [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) and
 > [`gittarget-parent-observation.md`](gittarget-parent-observation.md).
-> Related: [`push-notification-and-reconcile-trigger.md`](../finished/push-notification-and-reconcile-trigger.md),
+> Related: [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
 > [`../definitions.md`](../definitions.md), and `architecture.md` (Ground rules; "A branch that does
 > not exist yet").
 

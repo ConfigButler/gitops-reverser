@@ -5,7 +5,7 @@
 > unchanged. Option D needs measurement; option E remains rejected without that evidence.
 > Index: [`../INDEX.md`](../INDEX.md). Reviewed at `373bf8d7` on 2026-10-03.
 > Related: [`../api-first-publication.md`](../api-first-publication.md),
-> [`push-notification-and-reconcile-trigger.md`](../finished/push-notification-and-reconcile-trigger.md),
+> [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
 > [`../spec/commit-window-refactor.md`](../spec/commit-window-refactor.md)
 
 **The question.** `PushCooldown` predates the commit window. The window now groups an editing burst
@@ -238,7 +238,7 @@ soon as two are. Dropping the success wait is therefore a **measured** decision,
 and it belongs in option D behind the numbers §9 asks for.
 
 Before #412, `pushPending` stopped its timer on failure and armed no replacement outside parent
-recovery. A quiet branch retained its work indefinitely, while continued arrivals could provoke
+recovery. A branch with no new arrivals retained its work indefinitely, while continued arrivals could provoke
 a failed push per commit because `lastPushAt` advances only on success. #412 adds the independent
 failure backoff. Step 3b then unified the publication and parent-recovery deadlines. While parent
 recovery is open, the due attempt services it. The following diagram describes publication retries;
@@ -269,7 +269,7 @@ Ordered by how much they should worry you.
 1. **Request amplification on shared branches.** The architecture explicitly supports several
    `GitTarget`s per branch, and multi-tenant installs are the case where the cooldown is load-bearing.
    Option B turns row 4's `2` into `6`. This contradicts the premise of
-   [`push-notification-and-reconcile-trigger.md`](../finished/push-notification-and-reconcile-trigger.md),
+   [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
    which spent a whole change removing two requests per publication.
 2. **Hosted Git rate limits.** With serialization the bound is one push per push-duration, which on
    a fast remote is several per second sustained. Measure throttling on the supported hosts before

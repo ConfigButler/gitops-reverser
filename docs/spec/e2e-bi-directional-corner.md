@@ -25,8 +25,8 @@ Prometheus, cert-manager) are delivered as Flux `HelmRelease`s from
 cannot be removed. Argo CD is *not* load-bearing: only bi-directional tests need
 it. Installing it in all four CI legs would tax every leg to serve two specs.
 
-**Cohesion.** [`docs/bi-directional.md`](../bi-directional.md) currently says, under
-"What is not complete yet":
+**Cohesion.** [`docs/bi-directional.md`](../bi-directional.md) said, under
+"What is not complete yet", when this corner was designed:
 
 > equivalent alignment patterns for Argo CD or other GitOps operators
 
@@ -318,8 +318,9 @@ Per the existing per-file CRD-group convention, add
 [`test/e2e/icecream.go`](../../test/e2e/icecream.go) and register it in the
 suite's CRD pre-clean loop (`e2e_suite_test.go:225`).
 
-The Flux spec's body does not change. It keeps its exact-commit-count discipline,
-which works because it drives Flux as a manually triggered applier.
+The Flux spec keeps its exact-commit-count discipline, which works because it
+drives Flux as a manually triggered applier until its last phase hands the
+`Kustomization` to a `FluxTrigger`.
 
 ### 5. Push-triggered reconciliation (the webhook)
 
@@ -431,8 +432,10 @@ env var no overlay declaration can express.
 1. Seed the base and overlay, create the `Application` on the overlay
    (kustomize), and deploy it with one manual sync, before any `GitTarget` names it.
 2. Drift `LOG_LEVEL` to `debug`.
-3. Create the `GitTarget` on the overlay with `applicationRef` and
-   `onRefusal: Reapply`, and a `WatchRule` on `deployments`.
+3. Create the `GitTarget` on the overlay, an `ArgoCDTrigger` holding the `Application`,
+   name the trigger in the `GitTarget`'s `spec.applyTriggerRef` with
+   `onRefusal: Reapply`, wait for `ApplyTriggerReady=True`, and create a `WatchRule`
+   on `deployments`.
 4. Assert the write is refused at the boundary (`WriteBoundaryRefused`), and that
    GitOps Reverser's `Refusal` sync, pinned to the tip, reverts `LOG_LEVEL` to
    `info`, with no commit for it.
@@ -535,11 +538,14 @@ New matrix entry in `.github/workflows/ci.yml`:
 ```yaml
 - name: bi-directional
   script: "task test-e2e-bi-directional"
+  e2e_report_name: "bi-directional"
   needs_artifact: false
   coverage: "1"
-  e2e_ginkgo_procs: "2"
-  k3d_agent_count: "0"
 ```
+
+No `e2e_label_filter` and no `e2e_ginkgo_procs`: the task pins its own label filter
+and Ginkgo procs (`BI_DIRECTIONAL_GINKGO_PROCS`, default `3`), so values here would
+be ignored.
 
 `coverage: "1"` — the leg uses the default `config-dir` install, which carries the
 `GOCOVERDIR` overlay, so Codecov unions its `e2e` upload with the other legs and
@@ -550,8 +556,8 @@ check on `main` (only *Project image*, *Unit tests*, *Lint* are), so adding a le
 carries no merge-gating risk. The two specs are pulled out of `full-core`, so that
 leg gets faster.
 
-`--procs=2`: the two specs own separate Gitea repos and separate CRD groups, and
-neither is `Serial`.
+Three procs: the Flux, Argo CD and provenance spec files own separate Gitea repos,
+namespaces and resource names, and none is `Serial`.
 
 ## Risks
 
@@ -593,10 +599,10 @@ neither is `Serial`.
 
 ## References
 
-- [`docs/bi-directional.md`](../bi-directional.md) — the user-facing guidance this closes gaps in
-- [`docs/design/e2e-serial-registry.md`](e2e-serial-registry.md) — parallelism and shared cluster state
-- [`docs/design/e2e-ci-runner-sharding-plan.md`](../finished/e2e-ci-runner-sharding-plan.md) — leg membership and rebalancing
+- [`docs/bi-directional.md`](../bi-directional.md): the user-facing guidance this closes gaps in
+- [`docs/spec/e2e-serial-registry.md`](e2e-serial-registry.md): parallelism and shared cluster state
+- [`docs/finished/e2e-ci-runner-sharding-plan.md`](../finished/e2e-ci-runner-sharding-plan.md): leg membership and rebalancing
 - [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and
-  [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go) —
+  [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go):
   the two specs in this corner
-- [`internal/sanitize/types.go`](../../internal/sanitize/types.go) — the strip lists
+- [`internal/sanitize/types.go`](../../internal/sanitize/types.go): the strip lists

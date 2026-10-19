@@ -125,14 +125,14 @@ receiver:
   # exposed. Every request must still carry a valid signature for the route it names.
   bindAddress: ""
 
-# Optional RBAC that lets GitOps Reverser ask an applier in this cluster to apply a commit, after
-# somebody else pushed to a branch a GitTarget writes. Off unless asked for, since most installs run
-# one applier or none.
+# Optional RBAC that lets GitOps Reverser hold the applier an apply trigger names in this cluster:
+# a FluxTrigger's Kustomization, suspended and resumed for each apply, or an ArgoCDTrigger's
+# Application, synced for each apply. Off unless asked for, since one-way mirroring needs neither.
 applierAccess:
   # Grant get/patch on kustomize.toolkit.fluxcd.io Kustomizations and source.toolkit.fluxcd.io
   # GitRepositories, list on Kustomizations, HelmReleases and HelmCharts (to find a
   # GitRepository's other consumers), plus create on SelfSubjectAccessReviews (to check that access
-  # before relying on it). Cluster-wide, because a GitTarget's applier can live in any namespace.
+  # before relying on it). Cluster-wide, because a trigger's applier can live in any namespace.
   flux: false
   # Grant get/update on argoproj.io Applications (a sync is started by updating the Application's
   # operation, as Argo CD's own automated sync does), plus create on SelfSubjectAccessReviews.
@@ -368,7 +368,7 @@ clusterProvider:
 rbac:
   create: true
   # Which types the reverser may read. It never writes to a watched type, so verbs are always
-  # get/list/watch. Shape is enforced by values.schema.json; see docs/rbac.md.
+  # get/list/watch (applierAccess, above, is a separate grant). Shape is enforced by values.schema.json; see docs/rbac.md.
   #
   #   any      cluster-wide read on everything, so a WatchRule can name any type — including
   #            one installed later. It also means the reverser can list and read every Secret

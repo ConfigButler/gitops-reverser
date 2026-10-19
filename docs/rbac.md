@@ -13,6 +13,15 @@ credential we own".
 | `<release>-manager-role` | Exactly what the binary calls: its own CRs, `namespaces`, `customresourcedefinitions`, `apiservices`, and `secrets` with **`get`, `create`, `update`** | Generated from the kubebuilder markers into [`config/rbac/role.yaml`](../config/rbac/role.yaml). Never edit by hand. |
 | `<release>-watch-any` **or** `<release>-watch-selected` | The types a `WatchRule` may read, `get`/`list`/`watch` only | The chart's `rbac.watchTypes`; for kustomize, [`config/rbac/watch-any-role.yaml`](../config/rbac/watch-any-role.yaml). |
 
+Two more ClusterRoles exist only when asked for, for a folder that is both written and applied
+([`bi-directional.md`](bi-directional.md)): `<release>-applier-flux` (chart value
+`applierAccess.flux`; for kustomize,
+[`config/rbac/flux-applier-role.yaml`](../config/rbac/flux-applier-role.yaml)) lets a
+`FluxTrigger` suspend and resume its `Kustomization`, and `<release>-applier-argocd`
+(`applierAccess.argocd`;
+[`config/rbac/argocd-applier-role.yaml`](../config/rbac/argocd-applier-role.yaml)) lets an
+`ArgoCDTrigger` start its `Application`'s syncs.
+
 They are separate because **RBAC is additive**. A wildcard read folded into the manager role
 would grant cluster-wide Secret `list`/`watch` no matter how narrow the Secret rule beside
 it is, and no chart value could take it back. Split out, the wildcard can be replaced.
@@ -45,10 +54,10 @@ rbac:
         resources: ["deployments"]
 ```
 
-Verbs are always `get`, `list`, `watch` — the reverser never writes to a watched type, so a
-`verbs:` key is rejected rather than letting you grant one by accident. So is `mode:
-selected` with an empty list, which would leave the operator able to watch nothing, and an
-unknown key under `rbac`, which is how you think you narrowed access when you did not.
+Verbs are always `get`, `list`, `watch` (the applier grants above are separate): the reverser
+never writes to a watched type, so a `verbs:` key is rejected rather than letting you grant one
+by accident. So is `mode: selected` with an empty list, which would leave the operator able to
+watch nothing, and an unknown key under `rbac`, which is how you think you narrowed access when you did not.
 
 Those rules live in the chart's
 [`values.schema.json`](../charts/gitops-reverser/values.schema.json), which Helm enforces on

@@ -238,9 +238,10 @@ GitOps Reverser learns that the branch moved in three ways, and each feeds the s
 
 To serve the receiver:
 
-1. Set the chart's `receiver.bindAddress` (for example `":9292"`). The chart adds a
-   `<release>-receiver` `Service`. The listener is plain HTTP; expose it to your Git host with an
-   Ingress or Gateway route that terminates TLS, the way Flux's `webhook-receiver` is exposed.
+1. Set the chart's `receiver.bindAddress` (for example `":9292"`), which is the
+   `--receiver-bind-address` flag. The chart adds a `<release>-receiver` `Service`. The listener is
+   plain HTTP; expose it to your Git host with an Ingress or Gateway route that terminates TLS, the
+   way Flux's `webhook-receiver` is exposed.
 2. Create a Secret with the webhook secret under the key `token`, in the `GitProvider`'s namespace.
    It is the key a Flux `Receiver` Secret uses, so an existing one can be copied over.
 3. Set `GitProvider.spec.receiver` with that Secret and the host's `type`: `github`, `gitlab`,

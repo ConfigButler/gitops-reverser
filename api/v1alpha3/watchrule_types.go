@@ -12,7 +12,8 @@ import (
 // WatchRuleSpec defines the desired state of WatchRule.
 // WatchRule selects NAMESPACED resources on its GitTarget's source cluster. Each rules[] item
 // carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
-// or "*" for every namespace the GitTarget admits.
+// or "*" for every namespace the source credential can read (refused unless the ClusterProvider
+// sets allowCrossNamespace.sources).
 type WatchRuleSpec struct {
 	// GitTargetRef names the GitTarget this rule feeds, in this WatchRule's own namespace.
 	// +required

@@ -77,8 +77,8 @@ var biDirectionalRepo *RepoArtifacts
 // only place Argo CD is installed, and the two specs share that one cluster.
 //
 // Exact commit counts are safe here because Flux is driven as a *manually
-// triggered applier* — every reconcile in this spec is explicit. The Argo CD
-// spec cannot assert counts the same way; see the note on its selfHeal phase.
+// triggered applier* — every reconcile in this spec is explicit, until its last
+// phase hands the Kustomization to a FluxTrigger.
 //
 // Not Serial: a whole-cluster bidirectional behavioral test (Flux applies from
 // git while gitops-reverser mirrors live state back) that asserts on *exact*

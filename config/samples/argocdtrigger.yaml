@@ -10,6 +10,8 @@ spec:
   # The cluster the Application is in; "default" is the operator's own.
   clusterProviderRef:
     name: default
+  # In another namespace than the trigger's, so the ClusterProvider must set
+  # allowCrossNamespace.appliers: true, or the trigger reports ApplierNamespaceNotAllowed.
   applicationRef:
     namespace: argocd
     name: example-apps

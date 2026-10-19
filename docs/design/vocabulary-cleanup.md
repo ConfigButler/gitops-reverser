@@ -252,6 +252,10 @@ source-cluster one, which [`../definitions.md`](../definitions.md) now does. Thi
 case on the page of a definition being the right fix for an ambiguity, and it is worth noticing that
 the audit reached for a rename first.
 
+`allowAnySourceNamespace` was later replaced by `allowCrossNamespace.sources`, when a second
+cross-namespace grant, for appliers, needed a place beside it
+([`apply-trigger.md`](apply-trigger.md#decisions)).
+
 ## Decided: break it in place, and warn
 
 Nothing is open any more. The posture, decided by the maintainer: **there is no known production

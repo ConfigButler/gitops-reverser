@@ -41,8 +41,10 @@ branch; a `GitRepository` that has to fetch the tip wakes only the consumers no 
 allowed edit still in a commit window is published before the apply instead of being
 reverted with the refused one. The API rejects `Reapply` without `spec.applyTriggerRef`.
 
-A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`, and any update to it is
-rejected until the field changes. The old CRD rejects `Reapply`, so move in this order:
+A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`. The new CRD no longer
+lists the value: an API server that ratchets CRD validation (Kubernetes 1.30 and later) still
+accepts an update that leaves it in place, and an older one rejects every write to the target but a
+status update until the field changes. The old CRD rejects `Reapply`, so move in this order:
 
 1. Before upgrading, set `onRefusal: Ignore` on those targets.
 2. Upgrade the CRDs, the controller and its permissions.

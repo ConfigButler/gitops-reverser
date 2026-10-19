@@ -19,11 +19,10 @@
 # real behavioural regression into a silent pass.
 configs:
   cm:
-    # Make Argo's *spontaneous* refresh slow, not fast. Two clocks drive Argo and
-    # the gap between them is what the specs measure: self-heal reacts to live
-    # drift sub-second, while a NEW GIT REVISION is only noticed on this timed
-    # refresh. The specs drive refresh/sync explicitly, so they never wait on this;
-    # shortening it would make the selfHeal spec flaky. Longer than the 120s default.
+    # Make Argo's *spontaneous* refresh slow, not fast: a NEW GIT REVISION is only
+    # noticed on this timed refresh. The specs drive refresh/sync explicitly (an
+    # ArgoCDTrigger's sync, or the spec itself), so they never wait on it. Longer
+    # than the 120s default.
     timeout.reconciliation: 180s
   params:
     # Plain-HTTP UI behind the port-forward (task argocd-ui); no TLS gymnastics.

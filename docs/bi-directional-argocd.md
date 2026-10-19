@@ -239,9 +239,9 @@ stateDiagram-v2
 
 A trigger acts only while an eligible `GitTarget` references it: one in the trigger's namespace that
 names it, is admitted by its `ClusterProvider`s, and writes the repository and branch the
-`Application` syncs. A trigger nothing eligible references starts no sync, reads nothing in the
-`Application`'s cluster, and is not in line for it. An `Application` has nothing to hold, so there is
-nothing to hand back either.
+`Application` syncs. A trigger nothing eligible references starts no sync and is not in line for
+the `Application`; one no `GitTarget` names also reads nothing in the `Application`'s cluster. An
+`Application` has nothing to hold, so there is nothing to hand back either.
 
 The trigger reports `Configured`, and its `Ready` includes it:
 
@@ -259,6 +259,9 @@ The trigger reports `Configured`, and its `Ready` includes it:
 | `ClusterProviderNotFound` | The `clusterProviderRef` names a provider that does not exist | progressing |
 | `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger's, and the `ClusterProvider` does not set `allowCrossNamespace.appliers` | stalled |
 | `HeldByAnotherTrigger` | Another `ArgoCDTrigger` in line for the same `Application` in the same cluster, one an eligible `GitTarget` references, was created first and holds it; this one starts no sync, and takes over once that one is deleted or no longer referenced | stalled: delete one of the two |
+
+A sync that has not completed within 5 minutes also makes the trigger `Ready=False` with
+`OperationUnresolved`, a progressing state that clears when the sync completes.
 
 The `GitTarget` reports `ApplyTriggerReady`: `True` when the trigger is `Ready` and its
 `Application` syncs this repository and branch, `SourceMismatch` when it syncs another,
@@ -442,7 +445,7 @@ it.
 | Trigger `Configured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.argocd: true` |
 | A Warning `ApplyRequestFailed` Event | A request could not be delivered, such as a sync somebody else started that did not end within 5 minutes | GitOps Reverser keeps asking on a quiet branch, at most every five minutes |
 | A Warning `ApplyFailed` Event | The sync ended `Failed` or `Error`; the message carries Argo CD's | Fix what the message names; GitOps Reverser asks again on a quiet branch |
-| A Warning `ApplyUnresolved` Event | The sync has not completed in 5 minutes: hooks, waves, or Argo CD's own retries | Nothing is asked of the `Application` until it completes; look at its operation state |
+| A Warning `ApplyUnresolved` Event, trigger `OperationUnresolved` | The sync has not completed in 5 minutes: hooks, waves, or Argo CD's own retries | Nothing is asked of the `Application` until it completes; look at its operation state |
 | A file deleted in Git leaves its object running | The `Application` has no `automated.prune: true` | Add `automated: {enabled: false, prune: true}` |
 | The last sync stays `Running`: `Sync operation blocked by sync window` | A sync window blocks automated syncs | Remove the window from the `AppProject`; see [sync windows](#sync-windows-that-block-automated-syncs) |
 | A commit appears on every sync, adding or removing a `Job` | A `WatchRule` covers the objects a hook creates | Keep hook kinds out of the `WatchRule`s; see [hooks](#watching-the-objects-your-hooks-create) |

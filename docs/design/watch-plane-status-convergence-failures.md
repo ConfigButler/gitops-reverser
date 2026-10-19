@@ -31,7 +31,7 @@ running. It never was one.
 | --- | --- | --- | --- |
 | **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 6× (CI 4×, local 2×) | **SOLVED (§2).** A status write that loses an optimistic-lock race is discarded, the reconcile is told it succeeded, and nothing re-enqueues it — the winning write is status-only and every `For()` filters those |
 | **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 3× (CI twice, local once) | **Open**, narrowed to the roll-up's accept path; predicted to be the same defect as A, with a falsifier — see §3.5 |
-| C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified, and probably unrelated |
+| C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | **Moot:** the spec is gone, and the Argo CD corner runs with automated sync off |
 | D | Encryption-secret recreation spec times out | 4× in one day | **Ambient, pre-existing** — and now the dominant CI blocker; see §5.1 |
 
 **A green run is not evidence, and this page has been wrong twice for forgetting that.** Run

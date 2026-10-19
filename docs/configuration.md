@@ -13,6 +13,8 @@ The short version:
 - `ClusterWatchRule` does the same for cluster-scoped resources
 - `CommitRequest` optionally saves: it closes its author's commit window on its own timers, with
   its own message if it has one
+- `FluxTrigger` and `ArgoCDTrigger` hold the Flux `Kustomization` or Argo CD `Application` that
+  applies a folder back, so GitOps Reverser decides when it applies
 
 The chart's optional `quickstart` values are a convenience layer that creates starter
 instances of those same resources.
@@ -1290,7 +1292,8 @@ handled.
 
 **Conditions.** `Configured` is a gate, and the trigger's `Ready` aggregates it; a `FluxTrigger` is
 also `Ready` only once `Held` is `True` (`Suspended`, or `Applying` while an apply of GitOps
-Reverser's is in flight). An unreferenced trigger is `Ready=True` (`NotReferenced`). The
+Reverser's is in flight). Either kind is `Ready=False` (`OperationUnresolved`) while its operation
+is `Unresolved`. An unreferenced trigger is `Ready=True` (`NotReferenced`). The
 `GitTarget`s naming the trigger are reported as `NotBound` (`Unknown` while one cannot be judged
 yet, `False` once each is refused for different reasons), or as the refusal they share,
 `SourceMismatch` or `NamespaceNotAuthorized`, every `GitTarget` and its reason in the message. The
@@ -1347,7 +1350,7 @@ it, as they would for any push. The
 [bi-directional guide](bi-directional.md#choosing-speconrefusal) covers when to choose it.
 
 **It only fires for an edit to a document the folder already holds, and never for a write that
-removes one.** That is the pruning fence. Re-applying corrects drift on an object Git manages,
+removes one.** That is the pruning guard. Re-applying corrects drift on an object Git manages,
 which is the point. For an object Git does not manage, re-applying either does nothing (Flux prunes
 from its inventory and Argo CD from the resources it tracks, and a live-created object is in
 neither) or, if the object was managed and has since been removed from Git, prunes it. Hurrying

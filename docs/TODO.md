@@ -206,7 +206,8 @@ rebuild fails is no longer dropped: it stays pending for that retry
   lands.
 - [ ] Better branching and promotion strategies.
 
-- [ ] Bi-directional GitOps alignment with controllers such as Flux and Argo CD.
+- [ ] A webhook applier, so an apply trigger can hold a tool other than Flux or Argo CD. Flux and
+  Argo CD are built; see the [apply trigger design](design/apply-trigger.md).
 
 Research work:
 

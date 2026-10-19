@@ -81,8 +81,8 @@ without a kubeconfig.
 | --- | --- | --- |
 | `resource_condition` | gauge | `kind`, `resource_namespace`, `resource_name`, `type`, `status`, `reason` |
 
-- `kind` is `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider` or `ClusterProvider` — the
-  objects a human declares.
+- `kind` is `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider`, `ClusterProvider`,
+  `FluxTrigger` or `ArgoCDTrigger`: the objects a human declares.
 - `type` is the kstatus trio: `Ready` (the summary), `Reconciling` (working on it) and `Stalled`
   (given up, and nothing will retry without a human).
 - `status` is `True`, `False` or `Unknown`.
@@ -828,7 +828,7 @@ else pushed. See [who applies this folder](configuration.md#who-applies-this-fol
 | `apply_revision_mismatches_total` | counter | `applier_kind` | One per apply operation that succeeded on another revision than the commit GitOps Reverser checked. A `Kustomization` applies whatever its `GitRepository` artifact holds when it reconciles; the artifact is read again just before the resume, so this is somebody fetching the source in between (a person, or the source's own interval). The apply window still withholds a late write over a newer edit; a steady rate means something else keeps fetching the source |
 | `apply_window_collisions_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per write by the applier, while an apply it was asked for runs, to an object the API side edited after the request was sent: the apply arriving late over a newer edit. `outcome` is `withheld` (proven to be the applier's write, by its field manager alone, with an entry newer than the edit: `kustomize-controller`, or `argocd-controller` / `argocd-application-controller`; so not mirrored: Git keeps the API's value, and a `Repair` of the applier follows, which restores it on the cluster) or `ambiguous` (the applier and another field manager, or the applier and the edit, wrote in the same second, so it was mirrored as ever; if it was the apply, the revert is in Git as the applier's commit). An applier entry older than the edit is not counted: it is the API's undo of an edit, mirrored |
 | `apply_operations_unresolved` | gauge | `provider_namespace`, `provider_name`, `branch` | Apply operations on the branch that have not completed 5 minutes after they were requested. Each is still followed, holds its applier's apply window open, and holds back the applier's next request until it completes, so a value that stays above zero is an applier stuck mid-apply: read its status, and the `ApplyUnresolved` Event on the `GitTarget`s. Read at scrape time |
-| `receiver_deliveries_total` | counter | `type`, `outcome` | One per verified-or-refused delivery to `/git-push/`. `type` is the `GitProvider.spec.receiver.type`; `outcome` is `notified` (handed to the branch worker), `unmatched` (no worker for that branch), `ignored` (a ping, a tag, another branch's event type, or a `generic-hmac` body naming another repository), `rejected` (bad signature or an oversized body) or `invalid` (verified but unparseable) |
+| `receiver_deliveries_total` | counter | `type`, `outcome` | One per verified-or-refused delivery to `/git-push/`. `type` is the `GitProvider.spec.receiver.type`; `outcome` is `notified` (handed to the branch worker), `unmatched` (no worker for that branch), `ignored` (a ping, an event other than a push, a tag or other non-branch ref, or a `generic-hmac` body naming another repository), `rejected` (a missing or wrong signature or token, or an oversized body) or `invalid` (verified but unparseable) |
 
 A delivery counted `notified` is only a hint: the worker reads the advertisement, and fetches under
 `git_fetches_total{reason="refresh"}` only when the branch actually moved. A `ForeignCommit` request

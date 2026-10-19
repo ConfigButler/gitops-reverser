@@ -18,8 +18,8 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 
 - ✅ **Git synchronization**: Push Kubernetes changes back to Git repositories
 - ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
-- ✅ **Automatic CRD installation**: GitProvider, GitTarget, WatchRule, ClusterWatchRule, and
-  CommitRequest CRDs installed automatically
+- ✅ **Automatic CRD installation**: ClusterProvider, GitProvider, GitTarget, WatchRule,
+  ClusterWatchRule, CommitRequest, FluxTrigger, and ArgoCDTrigger CRDs installed automatically
 - ✅ **Watch-based ingestion**: object state comes from the Kubernetes watch API
 - ✅ **Optional audit attribution**: name commit authors from kube-apiserver audit events over HTTPS
 - ✅ **Prometheus metrics**: Built-in monitoring support
@@ -181,7 +181,7 @@ nodeSelector:
 | `controllerManager.commitRequestTTL` | How long a `CommitRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
 | `receiver.bindAddress` | `host:port` the push receiver listens on, over plain HTTP (`--receiver-bind-address`), for Git hosts' push webhooks to `GitProvider.status.webhookPath`. Empty or `"0"` serves no receiver. When set, the chart adds a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `""` |
-| `applierAccess.flux` | Grant the operator `get`, `list` and `patch` on Flux `Kustomizations`, `get` and `patch` on `GitRepositories`, `list` on `HelmReleases` and `HelmCharts` (to find a source's other consumers), and `create` on `SelfSubjectAccessReviews`, so it can ask Flux to apply a commit somebody else pushed | `false` |
+| `applierAccess.flux` | Grant the operator `get`, `list` and `patch` on Flux `Kustomizations`, `get` and `patch` on `GitRepositories`, `list` on `HelmReleases` and `HelmCharts` (to find a source's other consumers), and `create` on `SelfSubjectAccessReviews`, so it can hold the `Kustomization` a `FluxTrigger` names suspended and resume it for each apply | `false` |
 | `applierAccess.argocd` | Grant the operator `get` and `update` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can start the syncs of an `Application` an `ArgoCDTrigger` holds | `false` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
@@ -289,8 +289,15 @@ This chart automatically manages the following CRDs:
 | Operation | Behavior |
 |-----------|----------|
 | `helm install` | ✅ CRDs installed automatically |
-| `helm upgrade` | ✅ CRDs upgraded automatically |
+| `helm upgrade` | ⚠️ CRDs NOT upgraded (Helm never upgrades `crds/`): apply the release's `crds.yaml` first, as below |
 | `helm uninstall` | ⚠️ CRDs NOT deleted (prevents data loss) |
+
+Before `helm upgrade`, apply the new release's CRDs, so new kinds and changed schemas are served
+before the controller that needs them starts:
+
+```bash
+kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/download/<tag>/crds.yaml
+```
 
 To manually remove CRDs after uninstallation:
 

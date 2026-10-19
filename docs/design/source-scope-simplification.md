@@ -8,6 +8,11 @@
 > `sourceNamespace: "*"` section below remains the definition of record; the "Decided for the wave"
 > reading is now the shipped one.
 >
+> `allowAnySourceNamespace`, which this page introduced, has since been replaced by
+> `ClusterProvider.spec.allowCrossNamespace.sources`, unchanged in meaning, so that the grant for
+> appliers in other namespaces could sit beside it ([`apply-trigger.md`](apply-trigger.md#decisions)).
+> Read the field's old name below as the new one.
+>
 > Answers a design review's proposal to adopt Flux-style `serviceAccountName` impersonation for
 > source reads, by declining it. Evidence for the impersonation half is in
 > [`../facts/kubernetes-impersonation-and-flux-identity.md`](../facts/kubernetes-impersonation-and-flux-identity.md),
@@ -125,8 +130,8 @@ flowchart LR
 > `allowedSourceNamespaces` into a concrete set, one stream per namespace. Recorded here because the
 > migration note and several comments still refer to it.
 >
-> **Shipped**: one cluster-wide list and watch, rejected outright while `allowAnySourceNamespace` is
-> false. [`configuration.md`](../configuration.md#watching-a-different-source-namespace),
+> **Shipped**: one cluster-wide list and watch, rejected outright while
+> `allowCrossNamespace.sources` is false. [`configuration.md`](../configuration.md#watching-a-different-source-namespace),
 > [`architecture.md`](../architecture.md) and
 > [`watchrule_types.go`](../../api/v1alpha3/watchrule_types.go) describe this reading; they changed
 > in the same commit as the behavior.

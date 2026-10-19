@@ -58,7 +58,7 @@ const SuspendFieldManager = "gitops-reverser"
 const ReasonSuspendOwnedElsewhere = "SuspendOwnedElsewhere"
 
 // Flux holds a Flux Kustomization suspended, and resumes it for each apply GitOps Reverser asks of
-// it, in the applier's cluster. See "The Flux operation, suspended" in
+// it, in the applier's cluster. See "The Flux applier, suspended" in
 // docs/design/apply-trigger.md: every fact about kustomize-controller this relies on is
 // listed there, read in v1.9.6.
 type Flux struct {

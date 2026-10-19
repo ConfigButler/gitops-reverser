@@ -45,7 +45,7 @@ reasons make one due:
 | Reason | When | Applied by |
 | --- | --- | --- |
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed early and pending writes replayed onto it and pushed first, so the applied commit carries the API side's answer | Every applier on the branch |
-| `Refusal` | An edit had no legal destination in Git and the target opted in with `onRefusal: Reapply` | The refusing target's applier |
+| `Refusal` | An edit to a document the folder holds was refused at the write boundary, and the target opted in with `onRefusal: Reapply` and is not suspended. At most one request a minute per target; a refusal inside that minute is carried by a trailing one | The refusing target's applier |
 | `Repair` | The apply window withheld a late apply over a newer API edit, so the cluster runs an older value than Git | The applier that wrote it |
 | `CatchUp` | The branch has been quiet for `quietPeriod` after GitOps Reverser's own pushes, since it started, or since a `GitTarget` first named the trigger | Every Flux applier on the branch |
 
@@ -178,7 +178,8 @@ flowchart LR
   back what the attempt carried, a refusal only if it still stands, and starts that applier's
   backoff (2s doubling to 5m, at least 15s after a rejection). `ApplyRequestFailed` or
   `ApplyFailed` is recorded for the first failure of a run, and `ApplyUnresolved` when an operation
-  becomes `Unresolved`; `apply_operations_unresolved` counts those still out.
+  becomes `Unresolved`; `apply_operations_unresolved` counts those still out, and the trigger is
+  `Ready=False` (`OperationUnresolved`) until its operation completes.
 - **Learning about pushes.** A push webhook into GitOps Reverser's receiver (seconds), a rejected
   compare-and-swap push (at the next publication), or the periodic refresh (minutes). All three
   feed the same observation point.
@@ -215,7 +216,7 @@ drifted object with no new commit):
 2. **Recheck just before resuming:** read the `Kustomization` again (the same uid, the same
    `sourceRef`, no other manager applying `spec.suspend`: one replaced or re-pointed during the
    fetch is not resumed), read the artifact again, and ask the decision (`ApplyRequest.Current`).
-   This closes the race of measurement point 6 as far as it can be closed.
+   This narrows [the residual race](#what-it-costs) as far as it can be narrowed.
 3. **Record the operation** on the trigger, written through, as `Requested` with its token, and
    ask the decision once more: the record can wait on the API server, and a decision that went
    stale meanwhile withdraws the record and resumes nothing.
@@ -395,7 +396,9 @@ decides nothing about which apply is due.
 ### What the measurement found
 
 Measured on the e2e cluster (Flux v2.9.6, kustomize-controller and source-controller v1.9.6) with a
-throwaway Gitea repository, 1 and 200 ConfigMaps, polling through `kubectl proxy` (±30 ms):
+throwaway Gitea repository, 1 and 200 ConfigMaps, polling through `kubectl proxy` (±30 ms). The
+"request" columns are the client this design replaced, which left the `Kustomization` unsuspended
+and stamped its `requestedAt`; the "suspended" columns are the lifecycle above:
 
 | Median, ms from the first Flux write | 1 object, request | 1 object, suspended | 200 objects, request | 200 objects, suspended |
 | --- | ---: | ---: | ---: | ---: |
@@ -413,8 +416,7 @@ whatever the artifact holds then.
 
 ### Decisions
 
-Taken 2026-10-17, with the work built as a stack on #419 and released with it, so `spec.applier`
-was never released:
+Taken 2026-10-17:
 
 1. **Suspension is the only Flux mode,** as automated sync off is the only Argo CD mode. A second,
    request-based mode would keep every hole of the 24h setup alive, and two completion protocols.
@@ -426,9 +428,9 @@ was never released:
 5. **The resources are triggers,** with long kind names: `FluxTrigger` (`spec.kustomizationRef`)
    and `ArgoCDTrigger` (`spec.applicationRef`), named by `GitTarget.spec.applyTriggerRef` in the
    same namespace. Each is its own kind because suspension needs one owner object with a finalizer,
-   the operation and `repairPending` need a durable status, and typed kinds replace the union of
-   references and its CEL rules. The references are immutable: a re-pointed trigger would leave the
-   old applier held by nothing.
+   the operation and `repairPending` need a durable status, and a typed kind per applier needs no
+   union of references with CEL rules to keep them apart. The references are immutable: a re-pointed
+   trigger would leave the old applier held by nothing.
 
 Taken 2026-10-19, after the seventh review:
 
@@ -590,15 +592,15 @@ apply on its own. No in-process plugin: it would run with every credential the o
 
 ## Where this goes next
 
-The Flux applier PR (#419) and the stack on it (#420) carry what gitops-api, the first adopter,
-needs before it can drop its own gate: the three reviews' findings and the customer review's three
-blockers, the hardened receiver, the apply window, the Argo CD applier with automated sync off, and
-the Flux applier held suspended. After them, in order, each one pull request:
+What gitops-api, the first adopter, needs before it can drop its own gate is built: the hardened
+receiver, the apply window, the Argo CD applier with automated sync off, and the Flux applier held
+suspended. Next, in order, each one pull request:
 
 1. **The webhook applier**, as a third trigger kind.
 2. **More than one replica.** Leader election is not switched on, and the chart runs one replica.
-   Standbys need ownership coordination first (the HA plan in `docs/future/`), and deliveries then
-   need routing to the pod that owns the branch.
+   Standbys need ownership coordination first
+   ([the HA plan](../future/ha-gittarget-distribution-plan.md)), and deliveries then need routing to
+   the pod that owns the branch.
 
 Test gaps to close along the way: a remote source cluster and an applier in another cluster (a hub
 Argo CD among them) in e2e, `Forbidden` against real RBAC, the receiver and applier roles installed
@@ -643,4 +645,4 @@ been quiet; `quietPeriod` is the knob for that trade.
 
 The history of how the first trigger was decided, with the options weighed and the Git-side
 reference the code cites, is in
-[`../finished/push-notification-and-reconcile-trigger.md`](../finished/push-notification-and-reconcile-trigger.md).
+[`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md).

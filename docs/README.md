@@ -27,7 +27,8 @@ If you only want the supported product docs, start with the files below.
 - [`sops-age-guide.md`](sops-age-guide.md): Secret encryption with SOPS + age
 - [`security-model.md`](security-model.md): controller access, trust boundaries, and the Git
   credentials Secret shape
-- [`rbac.md`](rbac.md): the two ClusterRoles, and how to stop the reverser enumerating Secrets
+- [`rbac.md`](rbac.md): the two ClusterRoles (plus the optional applier grants), and how to stop the
+  reverser enumerating Secrets
 - [`bi-directional.md`](bi-directional.md): when Flux or Argo CD applies a folder GitOps Reverser
   writes, and why every other setup needs nothing
 - [`bi-directional-flux.md`](bi-directional-flux.md): the complete Flux setup for such a folder

@@ -190,8 +190,8 @@ and the two are not interchangeable.
 
 ## Applying back
 
-**Applier.** The object that applies a folder to its source cluster: a Flux `Kustomization`, an
-Argo CD `Application`, or a webhook standing in for another tool. An apply trigger names it. Not
+**Applier.** The object that applies a folder to its source cluster: a Flux `Kustomization` or an
+Argo CD `Application`. An apply trigger names it. Not
 "reconciler", which also names this operator's own controllers, and not "orchestrator", which says
 nothing about what it does to the cluster.
 
@@ -227,8 +227,9 @@ the moment the branch worker decides it until an attempt **carries** it; an oper
 succeeds **answers** it, and one that does not gives it back to pending. A pending `Repair` shows
 on the trigger as `status.repairPending`.
 
-**Quiet branch.** A branch whose worker holds no open commit window and no pending writes. Apply
-requests go out only on a quiet branch, because only then is nothing live missing from the tip.
+**Quiet branch.** A branch on which no branch worker writing that repository and branch holds an
+open commit window or pending writes. Apply requests go out only on a quiet branch, because only
+then is nothing live missing from the tip.
 
 **Receiver.** `GitProvider.spec.receiver`, the endpoint a Git host notifies on a push. The word and
 its `type` values are Flux's. A delivery to it is a hint to look, never a fact about the branch.
@@ -440,3 +441,4 @@ outage.
 | namespace access (bare) | access, or source namespace | two directions, two names |
 | reconciler, orchestrator (for Flux or Argo CD) | applier | "reconciler" also names our own controllers |
 | owed, owes, debt, obligation | pending, decided, sent, waiting for | an accounting word names no state: say what is pending, for whom, and what ends it |
+| fence, fenced (for what a trigger does to its applier) | suspend, held | the `Kustomization` is suspended, and the trigger holds it; say which, and whether the suspend is handled |

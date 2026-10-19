@@ -117,21 +117,24 @@ publish them over the incoming change.
 
 **GitOps Reverser decides when Git is applied to the cluster.** An apply is safe only when nothing
 live is missing from the commit being applied, and only the workers writing the branch can see the
-edits that are live and not yet pushed. So a `GitTarget` names its **applier**, the applier's own
-triggers are switched off, and the branch worker sends **apply requests** instead. A request is sent
-only on a **quiet branch**, with no open commit window and no pending writes on any worker writing
-that repository and branch:
+edits that are live and not yet pushed. So a `GitTarget` names an **apply trigger**, which holds
+its **applier** so that it applies nothing on its own (a Flux `Kustomization` is held suspended, an
+Argo CD `Application` has automated sync off), and the branch worker sends **apply requests**
+instead. A request is sent only on a **quiet branch**, with no open commit window and no pending
+writes on any worker writing that repository and branch:
 
 - for a commit somebody else pushed, after closing open windows and replaying the pending writes
   onto it, so the applied commit carries the API side's answer;
 - for a refused edit the target opted to revert;
-- for Flux only, to keep its artifact current after GitOps Reverser's own pushes, because Flux's
-  timers and restarts apply whatever artifact it holds. Argo CD is never asked to apply GitOps
-  Reverser's own commits: with automated sync off it applies nothing on its own, and a sync is pinned
-  to the commit the worker checked.
+- for an API edit that an apply reverted on the cluster after the edit was made, to put it back;
+- for Flux only, to catch up with GitOps Reverser's own pushes once the branch has been quiet for
+  the trigger's `quietPeriod`, because Flux's inventory learns of an object only from an apply of a
+  commit that holds it. Argo CD is never asked to apply GitOps Reverser's own commits: with automated
+  sync off it applies nothing on its own, and a sync is pinned to the commit the worker checked.
 
-The worker owns each request until it is delivered, and decides every retry the same way. A request
-asks and never reports; it runs off the publication path and cannot fail a publication. **Built:**
+The worker keeps each reason pending until an apply operation answers it, and decides every retry
+the same way. A request runs off the publication path and cannot fail a publication; the trigger's
+`status.operation` records the operation it started. **Built:**
 the Flux `Kustomization` applier and the Argo CD `Application` applier, with automated sync off.
 **The aim:** a webhook for any other tool. See [the apply trigger design](design/apply-trigger.md).
 
@@ -439,9 +442,9 @@ Status has a kstatus-compatible summary layer plus domain conditions:
   applier applies this repository and branch. It is a gate.
 - `status.streams` is a bounded count summary, not a per-type list.
 
-A trigger has `Configured` and the kstatus trio, `status.source` (what its applier applies, as last
-read), and `status.operation` and `status.repairPending`, which the branch worker writes at every move
-of the operation it started.
+A trigger has `Configured` (a `FluxTrigger` also `Held`) and the kstatus trio, `status.source`
+(what its applier applies, as last read), and `status.operation` and `status.repairPending`, which
+the branch worker writes at every move of the operation it started.
 
 WatchRule and ClusterWatchRule add `ResourcesResolved` and `GitTargetReady`. `ResourcesResolved` explains
 the source selector. `GitTargetReady` mirrors the referenced GitTarget's write readiness. This keeps
@@ -1571,9 +1574,10 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   by periodic reconciliation without retaining
   every Secret value in the control-plane cache. It watches the apply triggers its `GitTarget`s name,
   for `ApplyTriggerReady`.
-- `ApplyTriggerReconciler` (one per trigger kind) watches its triggers and their `ClusterProvider`s.
-  It does not watch appliers: it reads the Flux `Kustomization` or Argo CD `Application` on its tick
-  to set `Configured`, so a cluster without the Flux or Argo CD CRDs needs no informer for them.
+- `ApplyTriggerReconciler` (one per trigger kind) watches its triggers, the `GitTarget`s naming
+  them, `GitProvider`s, `ClusterProvider`s and `Namespace` labels. It does not watch appliers: it
+  reads the Flux `Kustomization` or Argo CD `Application` on its tick to set `Configured`, so a
+  cluster without the Flux or Argo CD CRDs needs no informer for them.
 - `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
   RuleStore, and trigger the rule-change reconcile.
 - `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
@@ -1677,7 +1681,7 @@ as one funnel and its loss paths as one selector:
   [Interpreting metrics](interpreting-metrics.md#reading-git_fetches_total).
 
 **Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
-attempt the worker decided to send (`applier_kind` is `kustomization`; `reason` is
+attempt the worker decided to send (`applier_kind` is `kustomization` or `application`; `reason` is
 `ForeignCommit`, `Refusal`, `Repair` or `CatchUp`), with `outcome` separating
 `sent` from `failed` (the worker decides the retry), `dropped` (no target may still ask for that
 reason) and `stale` (the decision no longer held at the patch). It counts attempts, not

@@ -38,9 +38,15 @@ To mirror live state into Git the controller must:
   `list` or a `watch`.
 - **Receive audit events.** The kube-apiserver audit webhook posts events to the audit ingress.
   Those carry object metadata and, for some resources, request/response bodies.
+- **Drive an applier, only with an apply trigger.** Holding a Flux `Kustomization` takes `get` and
+  `patch` on it and its `GitRepository`, plus `list` on `Kustomization`s, `HelmRelease`s and
+  `HelmChart`s; holding an Argo CD `Application` takes `get` and `update` on it. For the operator's
+  own cluster the chart grants these in ClusterRoles of their own, only with `applierAccess.flux`
+  or `applierAccess.argocd`.
 
-The controller never writes to a watched type. Its only write target is Git, plus the Secrets it
-generates itself (the signing key, and the age key under `generateWhenMissing`).
+Apart from the applier an apply trigger holds, the controller never writes to a watched type. Its
+write targets are Git, that applier, and the Secrets it generates itself (the signing key, and the
+age key under `generateWhenMissing`).
 
 ### Which namespaces a rule may read from
 
@@ -49,9 +55,9 @@ RBAC above is the hard maximum; *within* it, scope is carried by the rule **kind
 - A **`WatchRule`** selects namespaced resources. Each `spec.rules[]` item watches the rule's own
   namespace by default. Naming any other source namespace — including `sourceNamespace: "*"` —
   requires `ClusterProvider.spec.allowCrossNamespace.sources`, a platform-admin delegation that is
-  false by default. That flag is the only namespace policy in this direction: what may actually be read is
-  bounded by the provider credential's own Kubernetes RBAC, and a `"*"` reaches every namespace that
-  credential can read, as one cluster-wide watch.
+  false by default. That flag is the only namespace policy in this direction: what may actually be
+  read is bounded by the provider credential's own Kubernetes RBAC, and a `"*"` reaches every
+  namespace that credential can read, as one cluster-wide watch.
 
   On an **in-cluster** provider that delegation deliberately bypasses live namespace RBAC: the owner
   of an admitted `GitTarget` can then mirror another namespace's objects — read through the
@@ -106,6 +112,7 @@ namespace it already knows. Narrowing that further is
 | SOPS/age key material | Decrypts (and the public key encrypts) Secret data written to Git. |
 | Redis/Valkey queue | Buffers decoded audit events in transit; not an audit archive. |
 | Audit ingress (`/audit-webhook/default` for the default provider) | Accepts audit traffic; protected by mutual TLS via cert-manager. |
+| Push receiver (`--receiver-bind-address`, off by default) | Plain HTTP for Git hosts' push webhooks. Each `GitProvider` route is a path derived from its token, and a delivery must carry a valid signature or token for it. A delivery is only a hint that makes the branch worker read the remote, never a fact about the branch. |
 | Generated Secret material | Signing keys and generated age keys live in cluster Secrets. |
 | `ClusterProvider.spec.allowCrossNamespace.appliers` | Lets every namespace `accessFrom` admits suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`, through the provider's identity. A delegation, not owner consent: it does not prove the namespace owns the applier or its repository. A trigger only acts while an eligible `GitTarget` names it, and the binding check compares the `GitProvider` URL, not write access. |
 

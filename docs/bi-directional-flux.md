@@ -233,8 +233,9 @@ trigger. Every new write restarts it.
 
 A trigger acts only while an eligible `GitTarget` references it: one in the trigger's namespace that
 names it in `spec.applyTriggerRef`, is admitted by its `ClusterProvider`s, and writes the repository
-and branch the `Kustomization`'s `GitRepository` fetches. A trigger nothing eligible references
-holds nothing, reads nothing in the `Kustomization`'s cluster, and is `Ready`.
+and branch the `Kustomization`'s `GitRepository` fetches. A trigger no `GitTarget` names holds
+nothing, reads nothing in the `Kustomization`'s cluster, and is `Ready`. One that only ineligible
+`GitTarget`s name holds nothing either, and its `Configured` says why.
 
 ```mermaid
 stateDiagram-v2
@@ -514,7 +515,7 @@ down, before its watches caught them.
 | A Git-side push with an API edit on top lands both, and Flux applies the replayed commit | Bi-directional (Flux) |
 | A new `GitRepository` revision from a commit outside the applied folder is enough for the `Kustomization` to apply and revert drift | Bi-directional (Flux) |
 | A Git to cluster to Git round trip settles without a commit loop; a SOPS-encrypted Secret round-trips without a reverse commit; a Git revert removes the live object and the committed file | Bi-directional (Flux) |
-| A refused edit with `onRefusal: Reapply` is reverted by a resume, with no commit, and settles | [Refusal reapply](../test/e2e/refusal_reapply_e2e_test.go) |
+| A refused edit with `onRefusal: Reapply` is reverted by a resume, with no commit, and settles | [Manager Refusal Reapply](../test/e2e/refusal_reapply_e2e_test.go) |
 
 `task test-e2e` runs the Manager specs and Flux Restart Recovery, and
 `task test-e2e-bi-directional` the bi-directional corner. Not covered end to end yet: a remote

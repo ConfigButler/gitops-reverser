@@ -1,6 +1,8 @@
 # Reconcile triggering — how our controllers wake up
 
-> **design**: open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: open. §5 is superseded by [the apply trigger](apply-trigger.md); F1 is built for
+> `GitTarget` (`reconcile.configbutler.ai/requestedAt`), and F4 is built.
+> Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-06-29.
 
 A controller is only as good as the events that wake it. Periodic requeue is a
@@ -279,14 +281,19 @@ flowchart LR
     H -- yes --> R2[reconcile affected GitTargets]
 ```
 
-> **The middle step of that flow has since been ruled out, and the rest of this section stands.**
-> [inbound push notification](../finished/push-notification-and-reconcile-trigger.md) §7 shows that
+> **Superseded: pull-on-push is built, and not as this section planned.** The Git host's webhook
+> reaches `GitProvider.spec.receiver`, and a delivery is only a hint: the branch worker reads the
+> remote itself and classifies the move as its own push or somebody else's, which is also how the
+> self-push dedupe of §5.3 is done. The refresher catches what no webhook reports. Neither Path A
+> nor Path B in §5.4 was taken. The design of record is [the apply trigger](apply-trigger.md).
+>
+> **Why the receiver does not patch the annotation:**
+> [inbound push notification](push-notification-and-reconcile-trigger.md) §7 shows that
 > `requestedAt` drives a full cluster-to-Git snapshot, so a receiver that patches it can publish pre-push cluster state
 > over the very change it was told about, before Flux or Argo CD has applied it. The receiver needs
 > a request shape of its own: invalidate the base, record the new tip, replay retained work, and
-> never snapshot. §8.3 of that page is the wire contract. Read everything below (the signature
-> validation, the self-push dedupe in §5.3, the reuse question in §5.4) as still current; read
-> "patch the annotation" as the one step that was replaced.
+> never snapshot. §8.3 of that page is the wire contract. Read everything below as the options that
+> were weighed before it.
 
 ### 5.1 Can we reuse the Flux component?
 
@@ -450,6 +457,7 @@ Path A applies here too.
    through our own watch stream (§5.5), reusing the same credentials Secret. Near-zero
    end-user config for Flux users. Fall back to our own inbound git-webhook (§5.1) for
    non-Flux users. Both feed the subtree-OID drift check with §5.3 self-push dedupe.
+   **Superseded:** built as the push receiver instead; see the note in §5.
 6. **Replace CommitRequest polling (A4)** with the F5 nudge.
 
 ## 7. Open questions

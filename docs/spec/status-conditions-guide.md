@@ -285,6 +285,31 @@ Canonical reads:
   existed so a `sourceNamespace: "*"` against a policy admitting nothing could not look healthy while
   mirroring nothing; `"*"` is now one cluster-wide watch, which cannot resolve to an empty set.
 
+### Apply triggers
+
+`FluxTrigger` and `ArgoCDTrigger` use the trio with `Configured` as their gate, and a `FluxTrigger`
+adds `Held` as a second one.
+
+Canonical reads:
+
+- **not referenced** (no `GitTarget` names the trigger): `Configured=Unknown` and `Ready=True`, both
+  reason `NotReferenced`, `Reconciling=False`, `Stalled=False`. As for a `GitTarget` with nothing to
+  mirror, doing nothing when nothing is asked is converged, and a Flux health check that waits on
+  the trigger must not wait for the `GitTarget` that will name it
+- holding its applier: `Configured=True`, for a `FluxTrigger` `Held=True` (`Suspended` or
+  `Applying`), and `Ready=True`
+- applier or `ClusterProvider` missing (`ApplierNotFound`, `ClusterProviderNotFound`):
+  `Ready=False`, `Reconciling=True`, `Stalled=False`, because Flux and Argo CD objects are often
+  created after the trigger. Every other `Configured=False` reason is `Stalled=True`
+- an operation past its time (`status.operation.phase: Unresolved`): `Ready=False`,
+  `Reconciling=True`, reason `OperationUnresolved`. It clears when the operation completes
+- a `FluxTrigger` whose suspend is not handled yet, or that is handing its `Kustomization` back:
+  `Held=False` (`Suspending`, `Releasing`), `Ready=False`, `Reconciling=True`
+
+A `GitTarget` naming a trigger gains `ApplyTriggerReady`, a gate on its own trio. `SourceMismatch`,
+or a trigger that is itself `Stalled`, stalls the target; a missing trigger (`ApplyTriggerNotFound`)
+or one that is not `Ready` yet keeps it `Reconciling`.
+
 ### CommitRequest (one-shot)
 
 CommitRequest runs once to a terminal outcome. Best-practice 1 above would suggest a `Succeeded` summary,

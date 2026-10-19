@@ -52,9 +52,10 @@ type ArgoCDTriggerStatus struct {
 	// syncs a single source, has automated sync off, may be updated, and no other ArgoCDTrigger
 	// holds it) and the kstatus Ready/Reconciling/Stalled trio. A trigger acts only while an
 	// eligible GitTarget references it: one in its namespace that names it, is admitted by its
-	// ClusterProviders, and writes the repository and branch the Application syncs. Until one does,
-	// it reads nothing in the Application's cluster and is Configured=Unknown, Ready=True, both
-	// NotReferenced. Of the ArgoCDTriggers in line for one Application in one cluster, the one
+	// ClusterProviders, and writes the repository and branch the Application syncs. A trigger no
+	// GitTarget names reads nothing in the Application's cluster and is Configured=Unknown,
+	// Ready=True, both NotReferenced; one named only by GitTargets that are not eligible is
+	// Configured NotBound or a refusal. Of the ArgoCDTriggers in line for one Application in one cluster, the one
 	// created first holds it; the others are Configured=False (HeldByAnotherTrigger) until it is
 	// deleted or no longer referenced, and the next in line takes it over.
 	// +optional

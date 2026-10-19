@@ -27,13 +27,11 @@ particular deployment; requiring a fetch before every push would charge every AP
 common case of a competing Git writer. The push already checks the remote branch, so a healthy
 worker can plan locally and spend its network budget on publication.
 
-This guide describes the shipped behavior. The inbound Git push receiver remains a proposal: see
-[how to call the receiver](configuration.md#receiving-push-notifications-specreceiver)
-for the request shape it will accept. The one scheduling limitation to know about is that retained
-work has no retry timer of its own; [failure timing](#failure-timing-and-memory-limits) says what
-that means in practice. The [apply trigger design](design/apply-trigger.md)
-contains the implementation history and the proposed receiver; [architecture](architecture.md)
-covers the wider operator.
+This guide describes the shipped behavior. Retained work is retried on the worker's own backoff;
+[failure timing](#failure-timing-and-memory-limits) says what that means in practice. The
+[push receiver](configuration.md#receiving-push-notifications-specreceiver) lets a Git host report
+a push, the [apply trigger design](design/apply-trigger.md) covers what follows one, and
+[architecture](architecture.md) covers the wider operator.
 
 ## The structures and their responsibilities
 
@@ -233,8 +231,9 @@ preserved within the supported layout rules. See
 [shared-path behavior](bi-directional.md#what-a-write-does-to-the-file).
 
 This is the consequence of API-first ownership: the captured API object drives the supported
-manifest edit. A Git-side change reaches the cluster through a separate reconciler such as Flux
-or Argo CD. Reverser does not apply Git to Kubernetes.
+manifest edit. A Git-side change reaches the cluster through an applier such as Flux or Argo CD.
+Reverser does not apply Git to Kubernetes itself; with an apply trigger it decides when the applier
+does.
 
 The [deferred three-way comparison investigation](future/git-api-three-way-comparison.md) records
 the exact merge rules and the alternatives: timestamps, retained API contents, Git field
@@ -333,19 +332,23 @@ idle target can hold an old view after a foreign push; `--git-refresh-interval=0
 and restores the old behaviour, where the view is corrected by a later publication, resync, or
 explicit recheck.
 
-The proposed inbound push receiver would notify the worker that its base needs refreshing. It
-would coalesce notifications, refresh on the worker, and replay any retained writes. It is useful
-for idle visibility and for avoiding a rejected push. The healthy publication optimization
-already works without that receiver.
+The [push receiver](configuration.md#receiving-push-notifications-specreceiver) tells the worker
+that somebody pushed, in seconds rather than at the next refresh. A delivery is queued on the
+worker like a refresh and is only a hint: on an idle branch the worker reads the advertisement and
+fetches only if the branch moved; on a busy one it closes its open window and publishes, and the
+compare-and-swap push finds the move. The healthy publication optimization works without a
+receiver.
 
 There is a separate, existing manual mechanism: changing
 `reconcile.configbutler.ai/requestedAt` on a `GitTarget` requests a fresh reconcile. That performs
 a cluster-to-Git snapshot after fetching. It can write the cluster's current values over the
-fetched manifests. A passive Git refresh endpoint for a future webhook needs separate handling.
+fetched manifests, which is why a receiver delivery never triggers one.
 
-When Flux or Argo CD shares the path, its own refresh and apply cadence also affects whether a
-live edit survives long enough to be published. Those clocks belong to the other reconciler.
-The [bi-directional guide](bi-directional.md) describes the integration choices and limitations.
+When Flux or Argo CD applies the same path on its own schedule, its refresh and apply cadence also
+affects whether a live edit survives long enough to be published. An
+[apply trigger](configuration.md#who-applies-this-folder-specapplytriggerref) takes that clock
+away: the applier then applies only when GitOps Reverser asks, on a quiet branch. The
+[bi-directional guide](bi-directional.md) describes the integration choices and limitations.
 
 ## The other clocks around publication
 
@@ -395,10 +398,10 @@ not rate-limit fetches needed by a new window or snapshot. A branch with nothing
 silent.
 
 The byte threshold forces finalization but does not free retained writes during a remote outage.
-It is not a hard memory ceiling. The separate branch queue has `1000` slots by default and drops
-new items when full. Current-state resync can repair the resulting mirror, but cannot recover the
-exact dropped history. These throughput and recovery limits do not justify fetching before every
-healthy publication.
+It is not a hard memory ceiling. The separate branch queue has `1000` slots by default and refuses
+new items when full; the producer offers a refused item again (`git_queue_refusals_total`), and only
+a watch cursor that expires first costs that write's own commit. These throughput and recovery
+limits do not justify fetching before every healthy publication.
 
 ## What the network saving measures
 
@@ -437,7 +440,7 @@ entry point. They do not measure the complete operator startup sequence.
 Snapshot resync keeps its fetch because a no-op snapshot can finish without a push advertisement.
 Avoiding that fetch safely would require a separate freshness check on that path.
 
-The proposed notification's savings need their own measurement. With today's primitives, an
+A receiver delivery's savings need their own measurement. With today's primitives, an
 early notification followed by one object-transferring fetch and one successful push costs five
 HTTP requests. Its benefit in that scenario is avoiding the rejected advertisement, reducing six
 requests to five. Multiple remote moves depend on notification timing and coalescing.
@@ -465,8 +468,8 @@ Push-cycle duration excludes
 the earlier attribution and commit-window waits, cooldown, and recovery performed before entering
 the cycle. It cannot by itself answer “how long from my API edit until Git accepted it?”
 
-A flat recovery counter also cannot prove progress: the worker may be retaining work without a
-retry timer. Check queue depth, failure logs, and `CommitRequest` outcomes alongside rates.
+A flat recovery counter also cannot prove progress: the worker may be retaining work while it
+waits out its backoff. Check queue depth, failure logs, and `CommitRequest` outcomes alongside rates.
 
 A resync's fetch lands under `forced_recheck` whether or not the branch happened to hold retained
 writes, so a growing `publication` series means live publication is fetching again and nothing

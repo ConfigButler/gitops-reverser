@@ -68,8 +68,9 @@ type FluxTriggerStatus struct {
 	// Releasing: being handed back; NotReferenced; NotConfigured), and the kstatus
 	// Ready/Reconciling/Stalled trio. A trigger acts only while an eligible GitTarget references it:
 	// one in its namespace that names it, is admitted by its ClusterProviders, and writes the
-	// repository and branch the GitRepository fetches. Until one does, it reads nothing in the
-	// Kustomization's cluster and is Configured=Unknown, Ready=True, both NotReferenced. Of the
+	// repository and branch the GitRepository fetches. A trigger no GitTarget names reads nothing
+	// in the Kustomization's cluster and is Configured=Unknown, Ready=True, both NotReferenced; one
+	// named only by GitTargets that are not eligible is Configured NotBound or a refusal. Of the
 	// FluxTriggers in line for one Kustomization in one cluster, one holds it: the one with an apply
 	// in flight, then the one holding it already, then the one created first. The others are
 	// Configured=False (HeldByAnotherTrigger) until it lets go, and the next in line takes it over.
@@ -112,7 +113,7 @@ type FluxTriggerSource struct {
 	// +optional
 	Branch string `json:"branch,omitempty"`
 
-	// Why information only (decision 2 in docs/design/apply-trigger.md): one
+	// Why information only (decision 2 of 2026-10-17 in docs/design/apply-trigger.md): one
 	// GitRepository for several Kustomizations is a normal setup, and a consumer no trigger names
 	// applies a folder that has no promise of protection anyway.
 
