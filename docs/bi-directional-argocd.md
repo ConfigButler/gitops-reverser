@@ -321,8 +321,10 @@ applier on the branch, whether or not the push touched its folder.
 a field the `Application` sets can be reverted on the cluster by the sync. GitOps Reverser recognizes
 that write by Argo CD's field manager (`argocd-controller`, for a client-side and a server-side
 apply alike, or `argocd-application-controller` for a `Replace=true` sync), withholds it from Git,
-and owes a `Repair` sync pinned to the tip that holds the edit. When Argo CD and another manager
-wrote the object in the same second, the write is mirrored and counted as `ambiguous`.
+and owes a `Repair` sync pinned to the tip that holds the edit, but only when Argo CD's entry is
+newer than the edit: undoing an edit can leave an older entry of Argo CD's as the newest, and that
+undo is mirrored. When Argo CD and another manager, or the edit, wrote in the same second, the write
+is mirrored and counted as `ambiguous`.
 
 A request that fails, and a sync that ends `Failed` or `Error`, is decided again from scratch, after
 that `Application`'s own backoff. A sync still running after 5 minutes is `Unresolved`: GitOps

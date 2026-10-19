@@ -28,10 +28,14 @@ import (
 // back, so the withheld write owes its applier a Repair (apply_trigger.go).
 //
 // What the rule must never do is withhold an API edit, which would lose it outright. So it acts
-// only on proof: the object's latest managedFields entries are the applier's managers alone. When
-// the second-resolution times tie with another manager the write could be either, and it is mirrored
-// as before; the collision is logged and counted as ambiguous so it is still seen. A DELETE carries
-// no managedFields of its deleter and is never withheld.
+// only on proof: the object's latest managedFields entries are the applier's managers alone, and
+// they are newer than the edit. Alone is not enough: an update that removes every field a manager
+// owns deletes that manager's entry (structured-merge-diff, merge/update.go), so undoing an edit
+// (`kubectl label cm/x tmp-` after `tmp=1`) can leave the applier's entry from an earlier apply as
+// the newest. A late apply moves the applier's entry forward; an undo does not. When the
+// second-resolution times tie, with another manager or with the edit, the write could be either, and
+// it is mirrored as before; the collision is logged and counted as ambiguous so it is still seen. A
+// DELETE carries no managedFields of its deleter and is never withheld.
 
 // FluxFieldManager is the field manager kustomize-controller applies with (operation Apply). It is
 // fixed in Flux, not configurable (allFluxManagers in external-sources/flux/flux-operator
@@ -91,12 +95,13 @@ type applyWindow struct {
 	sentAt  time.Time
 	// closesAt is zero while the attempt is out.
 	closesAt time.Time
-	// edited holds the objects the API side wrote since the attempt was sent, by objectKey.
-	edited map[string]struct{}
+	// edited holds the objects the API side wrote since the attempt was sent, by objectKey, with the
+	// time of the latest such write's managedFields entries (zero when the event carried none).
+	edited map[string]time.Time
 	// carried holds the objects the window before this one had seen edited, when that window was
 	// still open as this attempt was sent, and carriedUntil is when it would have closed: the
 	// earlier apply's writes can arrive until then (openApplyWindow).
-	carried      map[string]struct{}
+	carried      map[string]time.Time
 	carriedUntil time.Time
 }
 
@@ -112,13 +117,18 @@ func objectKey(id itypes.ResourceIdentifier) string {
 }
 
 // editedSince reports whether the API side wrote an object since the attempt was sent, or, until
-// the window before it would have closed, since that one was.
-func (a *applyWindow) editedSince(key string, now time.Time) bool {
-	if _, edited := a.edited[key]; edited {
-		return true
+// the window before it would have closed, since that one was, and when it last did.
+func (a *applyWindow) editedSince(key string, now time.Time) (time.Time, bool) {
+	at, edited := a.edited[key]
+	if carriedAt, carried := a.carried[key]; carried && now.Before(a.carriedUntil) {
+		return latest(at, carriedAt), true
 	}
-	_, carried := a.carried[key]
-	return carried && now.Before(a.carriedUntil)
+	return at, edited
+}
+
+// recordEdit records an API-side write of an object at at, keeping the latest.
+func (a *applyWindow) recordEdit(key string, at time.Time) {
+	a.edited[key] = latest(a.edited[key], at)
 }
 
 // openApplyWindow starts an applier's window as its attempt is sent. The window before it can still
@@ -127,7 +137,7 @@ func (a *applyWindow) editedSince(key string, now time.Time) bool {
 // apply over one of them is still withheld. Replacing the window lost them, and the revert was
 // mirrored.
 func (state *applierState) openApplyWindow(attempt uint64, commit string, now time.Time) {
-	next := &applyWindow{attempt: attempt, commit: commit, sentAt: now, edited: map[string]struct{}{}}
+	next := &applyWindow{attempt: attempt, commit: commit, sentAt: now, edited: map[string]time.Time{}}
 	if before := state.window; before.open(now) {
 		next.carried = maps.Clone(before.edited)
 		if now.Before(before.carriedUntil) {
@@ -180,10 +190,11 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 			continue
 		}
 		byApplier, byApplierAlone := ref.writtenBy(event.LastFieldManagers)
-		editedSince := window.editedSince(key, now)
+		editedAt, editedSince := window.editedSince(key, now)
+		written := event.LastFieldManagedAt
 		switch {
 		case !byApplier || event.Operation == string(itypes.OperationDelete):
-			window.edited[key] = struct{}{}
+			window.recordEdit(key, written)
 		case !byApplierAlone:
 			// It may be the API edit itself, written in the same second: mirroring it is the
 			// choice that cannot lose an edit. It counts as one, too, even as the first write in the
@@ -192,10 +203,19 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 			if editedSince {
 				l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
 			}
-			window.edited[key] = struct{}{}
+			window.recordEdit(key, written)
 		case !editedSince:
 			// The applier applying an object nobody edited since the attempt: its content is the
 			// commit's, which Git already holds. Mirrored as ever.
+		case written.Equal(editedAt):
+			// The applier's entry and the edit in the same second: it could be either.
+			l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
+			window.recordEdit(key, written)
+		case written.Before(editedAt):
+			// The applier's entry is older than the edit, so the applier did not write this: an API
+			// update that removed every field its manager owned took that entry with it, and left
+			// the applier's from an earlier apply as the newest. It is an edit, the undo of one.
+			window.recordEdit(key, written)
 		default:
 			l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
 			applier.repair = true

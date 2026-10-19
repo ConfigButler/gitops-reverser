@@ -1329,18 +1329,18 @@ func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstru
 		Generation:      u.GetGeneration(),
 	}
 	if op != string(types.OperationDelete) {
-		event.LastFieldManagers = lastFieldManagers(u)
+		event.LastFieldManagers, event.LastFieldManagedAt = lastFieldManagers(u)
 		event.Object = sanitize.Sanitize(u)
 	}
 	return event
 }
 
 // lastFieldManagers returns the managers whose managedFields entries carry the latest time, in
-// entry order: who wrote the object last, or several when the second-resolution times tie. Status
+// entry order, and that time: who wrote the object last, and when, or several when the second-resolution times tie. Status
 // entries are left out, because a controller writing status after an apply would otherwise hide who
 // made the apply, and status is never mirrored. Other subresources stay: a write to scale is a
 // write to spec.replicas. Entries without a time are left out too.
-func lastFieldManagers(u *unstructured.Unstructured) []string {
+func lastFieldManagers(u *unstructured.Unstructured) ([]string, time.Time) {
 	var latest metav1.Time
 	var managers []string
 	for _, entry := range u.GetManagedFields() {
@@ -1354,7 +1354,7 @@ func lastFieldManagers(u *unstructured.Unstructured) []string {
 			managers = append(managers, entry.Manager)
 		}
 	}
-	return managers
+	return managers, latest.Time
 }
 
 func operationForWatchEvent(eventType watch.EventType) string {

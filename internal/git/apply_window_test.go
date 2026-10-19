@@ -21,8 +21,19 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// windowEvent is a live UPDATE to the Deployment "api" in target's folder, written last by managers.
+// windowClock is when the managedFields entries of the next windowEvent were written: a second
+// after the previous one, as the API server stamps them.
+var windowClock = time.Unix(1_700_000_000, 0)
+
+// windowEvent is a live UPDATE to the Deployment "api" in target's folder, written last by managers,
+// a second after the previous one.
 func windowEvent(target, replicas string, managers ...string) Event {
+	windowClock = windowClock.Add(time.Second)
+	return windowEventAt(target, replicas, windowClock, managers...)
+}
+
+// windowEventAt is windowEvent, its managers' latest entries written at.
+func windowEventAt(target, replicas string, at time.Time, managers ...string) Event {
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps/v1", "kind": "Deployment",
 		"metadata": map[string]any{"name": "api", "namespace": "shop"},
@@ -33,6 +44,7 @@ func windowEvent(target, replicas string, managers ...string) Event {
 		Identifier:         itypes.NewResourceIdentifier("apps", "v1", "deployments", "shop", "api"),
 		Operation:          string(itypes.OperationUpdate),
 		LastFieldManagers:  managers,
+		LastFieldManagedAt: at,
 		GitTargetName:      target,
 		GitTargetNamespace: "team-a",
 		Path:               "apps/" + target,
@@ -68,6 +80,30 @@ func TestApplyWindow_TheAppliersLateWriteOverANewerEditIsWithheld(t *testing.T) 
 	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")), "an API edit is mirrored")
 	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
 		"the applier's write over it is withheld")
+	assert.Equal(t, int64(1), collisions(t, reader, collisionWithheld))
+}
+
+// TestApplyWindow_AnUndoOfAnEditIsMirrored is review 7's W2. Inside a window, `kubectl label cm/x
+// tmp=1` is mirrored; `kubectl label cm/x tmp-` then removes every field kubectl-label owns, which
+// deletes its managedFields entry, so the newest entry left is kustomize-controller's, from an
+// earlier apply. That undo looked like the applier's write alone over a newer edit: it was withheld
+// and a Repair owed, which put tmp=1 back. A real late apply moves the applier's entry forward; an
+// undo does not. So only an applier entry strictly newer than the edit is withheld.
+func TestApplyWindow_AnUndoOfAnEditIsMirrored(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	loop, _ := sentAttempt(t)
+	earlierApply, edit := time.Unix(1_800_000_000, 0), time.Unix(1_800_000_100, 0)
+
+	assert.False(t, loop.withholdLateApply(windowEventAt("alpha", "3", edit, "kubectl-label")), "the edit")
+	assert.False(t, loop.withholdLateApply(windowEventAt("alpha", "2", earlierApply, FluxFieldManager)),
+		"its undo leaves only an older entry of the applier's, and is mirrored")
+	assert.False(t, loop.appliers[applierRef("alpha")].repair, "so no Repair puts the edit back")
+	assert.False(t, loop.withholdLateApply(windowEventAt("alpha", "2", edit, FluxFieldManager)),
+		"a write of the applier's in the same second as the edit could be either, and is mirrored")
+	assert.Equal(t, int64(1), collisions(t, reader, collisionAmbiguous))
+	assert.True(t, loop.withholdLateApply(windowEventAt("alpha", "2", edit.Add(time.Second), FluxFieldManager)),
+		"an apply arriving after the edit moves the applier's entry forward, and is withheld")
 	assert.Equal(t, int64(1), collisions(t, reader, collisionWithheld))
 }
 

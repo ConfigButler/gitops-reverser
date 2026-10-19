@@ -454,16 +454,21 @@ changed:
   applies apart: that costs one redundant `Repair`, never an edit.
 - **The late apply is withheld.** A write whose latest `managedFields` entries are the applier's
   own managers alone (`kustomize-controller`; `argocd-controller` or
-  `argocd-application-controller`), inside the window, to an object in the applier's folders that
-  the API side edited after the attempt was sent, is not mirrored. Git keeps the edit, and the
+  `argocd-application-controller`) and newer than the API edit, inside the window, to an object in
+  the applier's folders that the API side edited after the attempt was sent, is not mirrored. Git keeps the edit, and the
   withheld write owes its applier a `Repair`: an apply of the tip at the next quiet moment, with no
   quiet period, for Flux and Argo CD alike. The cluster runs the reverted value until then, and the
   trigger shows `repairOwed`.
 - **Only proof withholds.** `managedFields` times resolve to the second. When the applier ties
   with another manager, the write could be the edit itself, and withholding an edit loses it
   outright; it is mirrored as before. It is also remembered as an edit, even as the first write in
-  the window, so the applier's write alone a second later is still withheld. A DELETE carries
-  nothing about its deleter and is never withheld. Both are logged.
+  the window, so the applier's write alone a second later is still withheld. An applier entry in the
+  same second as the edit is mirrored the same way. One older than the edit is no write of the
+  applier's at all: an update that removes every field a manager owns deletes that manager's entry,
+  so undoing an edit (`kubectl label cm/x tmp-` after `tmp=1`) can leave the applier's entry from an
+  earlier apply as the newest. A late apply moves the applier's entry forward, so an older one is
+  the API's undo, mirrored as an edit. A DELETE carries nothing about its deleter and is never
+  withheld. All are logged.
 
 Every collision is logged with the object, the applier and the requested commit, and counted in
 `apply_window_collisions_total` (`withheld` or `ambiguous`). What remains: an edit reverted on the

@@ -668,6 +668,11 @@ type Event struct {
 	// apply window reads it to tell an applier's write from an API edit (apply_window.go).
 	LastFieldManagers []string
 
+	// LastFieldManagedAt is when those entries were written, to the second; zero with no
+	// LastFieldManagers. The apply window compares it with the time of an API edit: a late apply
+	// moves the applier's entry forward, and an undo that deletes the editor's entry does not.
+	LastFieldManagedAt time.Time
+
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo
 
