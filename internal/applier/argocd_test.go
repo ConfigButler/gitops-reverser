@@ -270,7 +270,10 @@ func TestArgoCDRequest_ARunningOperationIsNeverReplaced(t *testing.T) {
 		})
 
 	t.Run("a retry pending on a failed operation still counts as running", func(t *testing.T) {
+		// Argo CD keeps .operation set until the state completed (setOperationState), and processes
+		// an operation only while it is set: a retry waiting for its backoff keeps it.
 		app := manualApp()
+		_ = unstructured.SetNestedMap(app.Object, theirOperation(), "operation")
 		_ = unstructured.SetNestedMap(app.Object, map[string]any{
 			"phase": "Running", "finishedAt": "2026-10-20T10:14:00Z", "operation": theirOperation(),
 		}, "status", "operationState")
@@ -782,6 +785,62 @@ func TestArgoCD_Progress(t *testing.T) {
 	current, err := argo.Progress(context.Background(), platformApp, &Started{Outcome: OutcomeCurrent})
 	require.NoError(t, err)
 	assert.Equal(t, git.ApplySucceeded, current.Outcome, "nothing asked is nothing to wait for")
+}
+
+// TestArgoCD_ASyncWhoseOperationWasRemovedEnds is review 7's A1. Removing .operation is the
+// community workaround for a stuck hook: Argo CD then processes the Application no further, and
+// its operationState stays Running. GitOps Reverser followed such a sync forever, and refused every
+// later request as "in progress". Now our sync, Running with .operation gone, is Failed once it is
+// overdue (by then any controller pass in flight has written), and a request finds such a state
+// not in progress once it stayed unchanged for the whole wait.
+func TestArgoCD_ASyncWhoseOperationWasRemovedEnds(t *testing.T) {
+	orphaned := func(t *testing.T, client *dynamicfake.FakeDynamicClient, operation map[string]any) {
+		t.Helper()
+		app := readApp(t, client)
+		_ = unstructured.SetNestedMap(app.Object, map[string]any{
+			"operation": operation, "phase": "Running", "message": "waiting for the PreSync hook",
+		}, "status", "operationState")
+		unstructured.RemoveNestedField(app.Object, "operation")
+		writeApp(t, client, app)
+	}
+
+	t.Run("ours is Failed once overdue", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		argo := pinnedArgo(client)
+		started, err := argo.Request(context.Background(), platformApp, Ask{
+			Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token: requestToken(stampTime),
+		})
+		require.NoError(t, err)
+		ours, _, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
+		orphaned(t, client, ours)
+
+		running, err := argo.Progress(context.Background(), platformApp, &started)
+		require.NoError(t, err)
+		assert.Equal(t, git.ApplyRunning, running.Outcome, "a controller pass may still write it")
+		started.Overdue = true
+		failed, err := argo.Progress(context.Background(), platformApp, &started)
+		require.NoError(t, err)
+		assert.Equal(t, git.ApplyFailed, failed.Outcome)
+		assert.Contains(t, failed.Message, ".operation was removed")
+	})
+
+	t.Run("a request waits it out, then syncs", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		orphaned(t, client, theirOperation())
+		argo := NewArgoCD(client)
+		argo.CanI = allowAll
+		argo.OperationWait, argo.PollInterval = 50*time.Millisecond, time.Millisecond
+
+		started, err := argo.Request(context.Background(), platformApp, Ask{
+			Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token: requestToken(stampTime),
+		})
+
+		require.NoError(t, err, "a state nothing processes any more is not in progress")
+		assert.Equal(t, OutcomeSyncRequested, started.Outcome)
+		assert.Equal(t, started.Token, operationToken(readApp(t, client).Object["operation"]))
+	})
 }
 
 // TestNewClient_PicksTheClientByKind: the dispatcher and the Configured check use the kind of

@@ -4,6 +4,7 @@ package applier
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -143,6 +144,7 @@ func NewArgoCD(client dynamic.Interface) *ArgoCD {
 // coming back is an observation that owes a new request.
 func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Started, error) {
 	var waitUntil time.Time
+	var abandonedState string
 	record := ask.recordOnce()
 	for conflicts := 0; ; {
 		app, err := a.readControlled(ctx, ref, ask.Want)
@@ -152,8 +154,8 @@ func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask)
 		if ask.Commit == "" {
 			return Started{Outcome: OutcomeCurrent}, nil
 		}
-		if operationInProgress(app) {
-			if err := a.awaitOperation(ctx, ref, &waitUntil); err != nil {
+		if mustWait(app, abandonedState) {
+			if abandonedState, err = a.awaitOperation(ctx, ref, app, &waitUntil); err != nil {
 				return Started{}, err
 			}
 			continue
@@ -225,34 +227,74 @@ func (a *ArgoCD) setOperation(
 	return Started{}, fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
 }
 
-// awaitOperation waits until the Application has no operation in progress, or fails once
-// waitUntil passes, which it sets OperationWait from now when it is zero, so a request that waits
-// twice waits once in all. It decides nothing: Request reads the Application again after it.
-func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, until *time.Time) error {
+// awaitOperation waits until the Application, read as app, has no operation in progress, or fails
+// once waitUntil passes, which it sets OperationWait from now when it is zero, so a request that
+// waits twice waits once in all. It decides nothing: Request reads the Application again after it.
+//
+// A Running or Terminating operationState with no .operation, the same at every read of the whole
+// wait, is no operation in progress: Argo CD processes an operation only while .operation is set,
+// and clears it only once the state completed, so one whose .operation somebody removed (the
+// workaround for a stuck hook) never ends. awaitOperation then returns that state
+// (abandonedOperation), for Request to sync over it.
+func (a *ArgoCD) awaitOperation(
+	ctx context.Context, ref types.NamespacedName, app *unstructured.Unstructured, until *time.Time,
+) (string, error) {
 	if until.IsZero() {
 		*until = a.Now().Add(a.OperationWait)
 	}
 	waitUntil := *until
+	abandoned, polled := abandonedOperation(app), false
 	for {
 		if !a.Now().Before(waitUntil) {
-			return fmt.Errorf("%s %s has an operation in progress; asking again once the branch worker decides to",
-				kindApplication, ref)
+			if abandoned != "" && polled {
+				return abandoned, nil
+			}
+			return "", fmt.Errorf("%s %s has an operation in progress; asking again once the branch worker "+
+				"decides to", kindApplication, ref)
 		}
 		timer := time.NewTimer(min(a.PollInterval, waitUntil.Sub(a.Now())))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("wait for the operation in progress on %s %s: %w", kindApplication, ref, ctx.Err())
+			return "", fmt.Errorf("wait for the operation in progress on %s %s: %w", kindApplication, ref, ctx.Err())
 		case <-timer.C:
 		}
 		app, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
+			return "", fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
 		}
 		if !operationInProgress(app) {
-			return nil
+			return "", nil
 		}
+		if now := abandonedOperation(app); now != abandoned {
+			abandoned = ""
+		}
+		polled = true
 	}
+}
+
+// mustWait reports whether Request must wait for app's operation: one is in progress, and it is not
+// the abandoned state (abandonedOperation) the last wait found unchanged throughout.
+func mustWait(app *unstructured.Unstructured, abandoned string) bool {
+	return operationInProgress(app) && (abandoned == "" || abandonedOperation(app) != abandoned)
+}
+
+// abandonedOperation is the Application's operationState, encoded, when it is Running or
+// Terminating with no .operation set: a state Argo CD processes no further. It is "" otherwise.
+func abandonedOperation(app *unstructured.Unstructured) string {
+	if operation, found, _ := unstructured.NestedFieldNoCopy(app.Object, "operation"); found && operation != nil {
+		return ""
+	}
+	state, found, _ := unstructured.NestedMap(app.Object, "status", "operationState")
+	if phase, _, _ := unstructured.NestedString(state, "phase"); !found ||
+		(phase != argoPhaseRunning && phase != argoPhaseTerminating) {
+		return ""
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // Progress reports how far Argo CD is with the sync s asked for; the apply window closes once it
@@ -260,7 +302,8 @@ func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, u
 // is Running while its phase is Running (a failed sync waiting for Argo CD's own retry included,
 // which is Running with a finishedAt) or Terminating, Succeeded once Succeeded, and Failed once
 // Failed or Error. Until the controller starts it, the operation is still set with the token, and
-// Requested. An operation that is gone with no state of its own (somebody cleared it, or a later
+// Requested. One Running or Terminating whose .operation somebody removed is Failed once Overdue:
+// Argo CD processes it no further, and by then any controller pass in flight has written. An operation that is gone with no state of its own (somebody cleared it, or a later
 // sync replaced its record) is Failed: nothing of it will run, and the worker decides again.
 //
 // The token is nowhere on an Unconfirmed or Recovered operation whose update was never made, and
@@ -277,6 +320,10 @@ func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s *Star
 		return Progress{}, fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
 	}
 	if progress, found := syncProgress(app, s.Token); found {
+		if progress.Outcome == git.ApplyRunning && s.Overdue && abandonedOperation(app) != "" {
+			return Progress{Outcome: git.ApplyFailed, Message: "the sync's .operation was removed while it ran, " +
+				"so Argo CD processes it no further: " + statusString(app, "operationState", "message")}, nil
+		}
 		return progress, nil
 	}
 	if s.Recovered || s.Unconfirmed != nil {

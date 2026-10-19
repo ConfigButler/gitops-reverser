@@ -298,7 +298,7 @@ stateDiagram-v2
     Unanswered --> Failed: a guarded refresh write lands first, so the update never can
     Running --> Unresolved: not completed in 5 minutes
     Unresolved --> Succeeded
-    Unresolved --> Failed
+    Unresolved --> Failed: operationState Failed or Error, or .operation removed by hand
     Failed --> [*]: asked again from scratch, after the backoff
     Succeeded --> [*]
 ```
@@ -329,7 +329,10 @@ is mirrored and counted as `ambiguous`.
 A request that fails, and a sync that ends `Failed` or `Error`, is decided again from scratch, after
 that `Application`'s own backoff. A sync still running after 5 minutes is `Unresolved`: GitOps
 Reverser keeps following it, records an `ApplyUnresolved` Event, and asks the `Application` nothing
-more until it completes.
+more until it completes. Removing `.operation` by hand, the usual way out of a stuck hook, leaves
+the operation state `Running` for good, since Argo CD processes an operation only while
+`.operation` is set: once `Unresolved`, such a sync of GitOps Reverser's is `Failed` and asked again,
+and a request that finds one somebody else started, unchanged for its whole wait, syncs over it.
 
 **Reverting refused edits.** With `onRefusal: Reapply`, the target's `Application` alone is asked to
 sync the tip.
