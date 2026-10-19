@@ -28,10 +28,10 @@ common case of a competing Git writer. The push already checks the remote branch
 worker can plan locally and spend its network budget on publication.
 
 This guide describes the shipped behavior. The inbound Git push receiver remains a proposal: see
-[how to call the receiver](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it)
+[how to call the receiver](configuration.md#receiving-push-notifications-specreceiver)
 for the request shape it will accept. The one scheduling limitation to know about is that retained
 work has no retry timer of its own; [failure timing](#failure-timing-and-memory-limits) says what
-that means in practice. The [inbound notification design](design/push-notification-and-reconcile-trigger.md)
+that means in practice. The [apply trigger design](design/apply-trigger.md)
 contains the implementation history and the proposed receiver; [architecture](architecture.md)
 covers the wider operator.
 
@@ -187,9 +187,9 @@ A refusal is not a transient error and is not retried into success. It is the co
 edit never appears in Git while the worker looks healthy, so check the `GitTarget` conditions before
 the worker logs.
 
-[`spec.onRefusal: PushEmptyCommit`](bi-directional.md#choosing-speconrefusal) can request Git
-re-application for eligible refused edits. It leaves these gates in force, and publishing the
-empty commit does not establish that the live value was restored or the target recovered.
+[`spec.onRefusal: Reapply`](bi-directional.md#choosing-speconrefusal) asks the target's applier to
+reapply Git for eligible refused edits. It leaves these gates in force, and a delivered request does
+not establish that the live value was restored or the target recovered.
 
 Separately, a window whose finalize fails is **dropped**, not retried: its events are gone until
 the next resync re-derives them from the current live state. That is a deliberate choice, because

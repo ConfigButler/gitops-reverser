@@ -112,6 +112,33 @@ git:
   # "every tick". gitopsreverser_git_fetches_total{reason="refresh"} is what it costs.
   refreshInterval: 10m
 
+# The push receiver: the endpoint a Git host's push webhook points at, so GitOps Reverser learns in
+# seconds, instead of at the next refresh, that somebody else pushed. A GitProvider opts in with
+# spec.receiver and publishes its path as status.webhookPath (/git-push/<digest of the token>).
+receiver:
+  # host:port the receiver listens on (passed as --receiver-bind-address), e.g. ":9292". Empty (the
+  # default) serves no receiver: a foreign push is then still found, by the next rejected push or by
+  # git.refreshInterval. When set, the chart adds a containerPort and a <release>-receiver Service
+  # (port service.ports.receiver). The listener is plain HTTP, because a Git host cannot present the
+  # client certificate the audit listener requires: expose the Service to your Git host with an
+  # Ingress or Gateway route of your own that terminates TLS, the way Flux's webhook-receiver is
+  # exposed. Every request must still carry a valid signature for the route it names.
+  bindAddress: ""
+
+# Optional RBAC that lets GitOps Reverser ask an applier in this cluster to apply a commit, after
+# somebody else pushed to a branch a GitTarget writes. Off unless asked for, since most installs run
+# one applier or none.
+applierAccess:
+  # Grant get/patch on kustomize.toolkit.fluxcd.io Kustomizations and source.toolkit.fluxcd.io
+  # GitRepositories, plus create on SelfSubjectAccessReviews (to check that access before relying
+  # on it). Cluster-wide, because a GitTarget's applier can live in any
+  # namespace.
+  flux: false
+  # Grant get/update on argoproj.io Applications (a sync is started by updating the Application's
+  # operation, as Argo CD's own automated sync does), plus create on SelfSubjectAccessReviews.
+  # Cluster-wide, like the Flux grant.
+  argocd: false
+
 # cert-manager issuer shared by every certificate the chart mints. One self-signed CA
 # backs them all, so the issuer is genuinely cross-cutting and lives here; each server
 # opts into a cert via servers.<name>.tls.certManager. (Deliberately NOT duplicated per
@@ -406,6 +433,9 @@ service:
   ports:
     audit: 9444
     metrics: 8080
+    # Port of the <release>-receiver Service, rendered only when receiver.bindAddress is set. It
+    # forwards to the port in receiver.bindAddress.
+    receiver: 80
 
 auditService:
   type: NodePort

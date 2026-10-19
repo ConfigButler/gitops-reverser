@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -30,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/applier"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -151,6 +153,15 @@ type GitTargetReconciler struct {
 	// clock is the source of "now" for the publication ledger, so a test can hold time still
 	// across a reconcile that is measured in wall clock. Nil means time.Now.
 	clock func() time.Time
+
+	// ApplierClients resolves the dynamic client of a GitTarget's source cluster, where its
+	// spec.applier lives, and ApplyRequests is the ledger of requests delivered to it. Nil leaves
+	// ApplierConfigured Unknown and status.applier unpublished (tests, and the CLI).
+	ApplierClients applier.SourceClients
+	ApplyRequests  ApplyRequestLedger
+	// newApplier builds the client that checks an applier of a kind; nil is applier.NewClient. A
+	// seam for tests, whose fake source cluster cannot answer an access review.
+	newApplier func(kind string, client dynamic.Interface) applier.Client
 }
 
 // clockNow is the reconciler's wall clock.
@@ -166,6 +177,11 @@ func (r *GitTargetReconciler) clockNow() time.Time {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+
+// The Flux and Argo CD kinds a spec.applier names are NOT granted here: no GitTarget needs them
+// until one names an applier, and an install that does not use Flux or Argo CD should not hold
+// write rights on their objects. config/rbac/flux-applier-role.yaml and argocd-applier-role.yaml,
+// and the chart's applierAccess.flux and applierAccess.argocd, grant them.
 
 // newGitTargetReadiness starts the accumulator that owns this kind's kstatus trio. Its converged
 // outcome is what Ready reports when no gate objected.
@@ -281,11 +297,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
 
 	refs := r.publishReferenceReadiness(st, &target, providerNS, gitProvider, sourceProvider)
+	applierValue, hasApplier := r.observeApplier(ctx, st, &target, gitProvider)
 
 	rd := newGitTargetReadiness()
 	convergeAsSuspended(rd, &target)
 	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS, repoIdentityOf(gitProvider)),
 		refs.gitProvider, refs.clusterProvider, refs.sourceCluster, publicationCondition(publication))
+	applierReadiness(rd, applierValue, hasApplier)
 	parentRecoveryReadiness(rd, recoveringParent)
 	st.applyReadiness(rd)
 
@@ -1469,6 +1487,10 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// said, and an entry that outlives the object is a rate limit held against a name that may be
 	// recreated tomorrow with nothing published.
 	r.remotePublications.forget(gitDest)
+	// Same terms: the last apply request delivered for it.
+	if r.ApplyRequests != nil {
+		r.ApplyRequests.Forget(gitDest)
+	}
 	telemetry.ForgetResourceConditions(conditionKindGitTarget, namespacedName.Namespace, namespacedName.Name)
 	// Same terms, same reason: a join series that outlives its GitTarget keeps attributing a live
 	// branch's push failures to an object that no longer exists.
@@ -1685,7 +1707,8 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 	return requests
 }
 
-// clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it,
+// clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it, as
+// its source or as its applier's cluster,
 // across ALL namespaces (the provider is cluster-scoped). It re-enqueues dependents when the
 // provider's Ready flips or its accessFrom policy changes, so the projected
 // ClusterProviderReady and the namespace-authorization refusal converge without waiting for the
@@ -1703,7 +1726,8 @@ func (r *GitTargetReconciler) clusterProviderToGitTargets(
 	var requests []ctrlreconcile.Request
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.SourceCluster() != obj.GetName() {
+		usesApplier := t.Spec.Applier != nil && t.ApplierCluster() == obj.GetName()
+		if t.SourceCluster() != obj.GetName() && !usesApplier {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{

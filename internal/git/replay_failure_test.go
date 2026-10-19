@@ -18,7 +18,7 @@ package git
 // worktreeDirty is false throughout: the reset cleared it, and the worktree really is clean. It is
 // the retained writes that are stale, which is why this needs an invariant of its own.
 //
-// See docs/design/push-notification-and-reconcile-trigger.md §1.5.
+// See docs/finished/push-notification-and-reconcile-trigger.md §1.5.
 
 import (
 	"context"

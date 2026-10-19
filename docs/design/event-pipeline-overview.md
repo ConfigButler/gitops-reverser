@@ -295,7 +295,7 @@ replays current state.
 ## 5. Pending writes: decide, materialize, publish
 
 Every write takes one path, whatever produced it: a closed window, a resync, a save's empty
-record, a refusal's empty commit, or an atomic batch.
+record, or an atomic batch.
 
 ```mermaid
 stateDiagram-v2
@@ -522,8 +522,7 @@ remains:
 - **A healthy branch's FIFO is bounded by count only.** The budget applies while a retry is pending;
   until then, up to 1,000 queued items cost memory on top of the window and the pending writes. By design: a
   healthy branch drains.
-- **Work the loop derives can overshoot.** A refusal's empty commit is decided from work already
-  accepted, and work accepted before the outage began is kept, so the held total can pass the
+- **Work accepted before the outage can overshoot.** It is kept, so the held total can pass the
   budget by that much, and no further.
 
 ### Status and observability

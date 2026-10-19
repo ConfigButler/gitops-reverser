@@ -345,9 +345,6 @@ func (w *BranchWorker) executePendingWrite(
 	pendingWrite PendingWrite,
 ) (int, plumbing.Hash, messageResolution, error) {
 	switch pendingWrite.Kind {
-	case PendingWriteRefusalTouch:
-		created, hash, err := w.executeRefusalTouch(ctx, worktree, pendingWrite)
-		return created, hash, messageResolutionPreRendered, err
 	case PendingWriteRequestRecord:
 		return w.executeRequestRecord(ctx, worktree, pendingWrite)
 	case PendingWriteResync:

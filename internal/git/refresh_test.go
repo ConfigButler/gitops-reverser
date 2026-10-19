@@ -500,9 +500,7 @@ func TestRefresh_PublishesTheRecoveryWhenTheFolderIsFixed(t *testing.T) {
 
 // TestRefresh_WritesNothingWhileTheFolderIsRefused is the boundary, stated against the change that
 // made the refresher publish a refusal at all. Raising GitPathAccepted=False drives a recheck and
-// a resync, and that recovery machinery is the point — but the refresher itself must not commit,
-// not even the empty commit spec.onRefusal produces, which belongs to a path that had work in
-// hand.
+// a resync, and that recovery machinery is the point — but the refresher itself must not commit.
 func TestRefresh_WritesNothingWhileTheFolderIsRefused(t *testing.T) {
 	h := newRefreshHarness(t, "refresh-refused-writes-nothing")
 	h.publish("prime")

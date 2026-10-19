@@ -50,6 +50,11 @@ kinds:
       - path: commit.signing
         default: "off"
         doc: SSH commit signing. See [commit signing](#commit-signing)
+      - path: receiver
+        default: "off"
+        doc: >-
+          Push webhook endpoint, so the Git host can say somebody pushed. See
+          [receiving push notifications](#receiving-push-notifications-specreceiver)
 
   - kind: ClusterProvider
     title: "`ClusterProvider` (cluster-scoped): the source cluster"
@@ -132,6 +137,13 @@ kinds:
         doc: >-
           Which deletions reach Git. See
           [deletion policy](#deletion-policy-specprunemode)
+      - path: applier
+        default: the applier applies on its own schedule
+        doc: >-
+          The Flux `Kustomization` (`kustomizationRef`) or Argo CD `Application` (`applicationRef`)
+          that applies this folder, which GitOps Reverser then asks to apply, and for a
+          `Kustomization` how long the branch stays quiet before it catches up (`quietPeriod`,
+          `30s`). See [who applies this folder](#who-applies-this-folder-specapplier)
       - path: onRefusal
         doc: >-
           What happens to an edit with no legal destination. See

@@ -596,6 +596,9 @@ func registerCounters() error {
 		{"gitopsreverser_secret_encryptions_total", &SecretEncryptionsTotal},
 		{"gitopsreverser_watch_plan_passes_total", &WatchPlanPassesTotal},
 		{"gitopsreverser_watch_plan_triggers_total", &WatchPlanTriggersTotal},
+		{"gitopsreverser_apply_requests_total", &ApplyRequestsTotal},
+		{"gitopsreverser_apply_window_collisions_total", &ApplyWindowCollisionsTotal},
+		{"gitopsreverser_receiver_deliveries_total", &ReceiverDeliveriesTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)

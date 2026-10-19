@@ -11,7 +11,7 @@ package git
 // refuses a checkout that is not the projection of the retained writes, so a path that skipped
 // materialize fails rather than committing leftovers.
 //
-// See docs/design/push-notification-and-reconcile-trigger.md §1.5.
+// See docs/finished/push-notification-and-reconcile-trigger.md §1.5.
 
 import (
 	"errors"
@@ -25,8 +25,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // leftoverPath is the file a half-finished write staged before it died.
@@ -193,16 +191,6 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 				forceDue(loop)
 				loop.endWake(0)
 				require.Len(t, loop.pendingWrites, 2, "the record was made")
-			},
-		},
-		{
-			name: "empty commit for a refused write",
-			commit: func(t *testing.T, loop *branchWorkerEventLoop) {
-				t.Helper()
-				target := itypes.NewResourceReference("team-a", "default")
-				loop.commitRefusalTouch(refusalKeyFor(target, "configmaps"), "refused", "observation")
-				loop.endWake(0)
-				require.Len(t, loop.pendingWrites, 2, "the empty commit was made")
 			},
 		},
 	}

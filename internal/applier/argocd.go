@@ -1,0 +1,396 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package applier
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
+
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/repourl"
+)
+
+// The Argo CD half of the applier. Its standard is full control: the Application has automated
+// sync off, so its refresh only compares, and every sync it runs is one GitOps Reverser started,
+// pinned to a commit the branch worker checked. Argo CD is read through the dynamic client, as
+// Flux is, so a cluster without it installed costs one failed GET and this module does not import
+// Argo CD's API.
+//
+// Every rule below is Argo CD's own, read from external-sources/argo-cd (3.5.0):
+//
+//   - Automated sync is on when spec.syncPolicy.automated is present and its enabled is unset or
+//     true (SyncPolicy.IsAutomatedSyncEnabled in pkg/apis/application/v1alpha1/types.go).
+//   - A sync is started by setting the Application's operation, and never while one is set
+//     (SetAppOperation in util/argo/argo.go). It is an update of the whole object, which carries
+//     its status (the CRD has no status subresource), and clears status.operationState, so the
+//     controller starts the new operation rather than resume the last one.
+//   - The controller clears operation when the operation completes (Succeeded, Failed or Error),
+//     and leaves the result in status.operationState (setOperationState in
+//     controller/appcontroller.go). A failed operation that will be retried is Running again, with
+//     a finishedAt: it has not completed.
+//   - Automated sync builds its operation from the Application (autoSync, ibid.): source, prune
+//     from syncPolicy.automated, syncOptions and retry from syncPolicy, retry {limit: 5} when none
+//     is set, initiatedBy {automated: true}.
+
+// applicationGVR is Argo CD's Application.
+func applicationGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}
+}
+
+const kindApplication = "Application"
+
+// OutcomeSyncRequested set the Application's operation to a sync of the commit.
+const OutcomeSyncRequested Outcome = "SyncRequested"
+
+// ArgoCDInitiator is the username every sync GitOps Reverser starts carries in
+// operation.initiatedBy, next to automated: true. It is what Argo CD's UI and history show as the
+// sync's initiator.
+const ArgoCDInitiator = "gitops-reverser"
+
+// Info entries a sync carries in operation.info, which Argo CD shows with the operation.
+const (
+	// argoInfoRequest is the request's token, which tells this request's operation state from any
+	// other, including an earlier sync of the same commit.
+	argoInfoRequest = "gitops-reverser request"
+	// argoInfoReason is why GitOps Reverser asked.
+	argoInfoReason = "gitops-reverser reason"
+)
+
+// defaultArgoRetryLimit is the retry an automated sync gets when the Application sets none.
+const defaultArgoRetryLimit = 5
+
+// maxArgoUpdateConflicts bounds how often one request re-reads the Application after its update
+// lost a race. The controller writes an Application's status on every refresh, and with no status
+// subresource each of those writes conflicts with an update made from an older read.
+const maxArgoUpdateConflicts = 5
+
+// Operation phases, from gitops-engine's pkg/sync/common.
+const (
+	argoPhaseRunning     = "Running"
+	argoPhaseTerminating = "Terminating"
+)
+
+// ArgoCD asks an Argo CD Application to sync, in one cluster.
+type ArgoCD struct {
+	client dynamic.Interface
+
+	// Now is the clock a request's token is taken from.
+	Now func() time.Time
+	// CanI is the access check Validate runs for update. NewArgoCD sets it to a
+	// SelfSubjectAccessReview through the same client.
+	CanI AccessCheck
+	// OperationWait bounds how long one request waits for an operation that is running to end
+	// before it sets its own; zero does not wait, and the request fails at once.
+	OperationWait time.Duration
+	// PollInterval is how often that wait reads the Application.
+	PollInterval time.Duration
+}
+
+// NewArgoCD returns an Argo CD client over a cluster's dynamic client.
+func NewArgoCD(client dynamic.Interface) *ArgoCD {
+	return &ArgoCD{
+		client:       client,
+		Now:          time.Now,
+		CanI:         SelfSubjectAccessCheck(client),
+		PollInterval: DefaultHandledPollInterval,
+	}
+}
+
+// Request asks the Application ref to sync commit, the way Argo CD's automated sync would, with
+// the revision pinned to commit and initiatedBy {username: gitops-reverser, automated: true}.
+//
+// It first checks that the Application applies want and has automated sync off, and refuses with a
+// permanent error when not: a sync of another branch would deploy that branch, and an Application
+// that syncs on its own is not under GitOps Reverser's control. A sync somebody else started is
+// never replaced: Request waits for it to end (OperationWait), and its update is guarded by the
+// resourceVersion it read, so an operation set in between makes the update fail rather than be
+// overwritten; it then reads again and waits for that one too.
+//
+// current is asked just before the update. When it reports false the decision no longer holds and
+// nothing is set: errStale.
+//
+// An empty commit (the remote does not carry the branch) has nothing to pin, and asks nothing
+// (OutcomeCurrent): Argo CD reports the missing branch itself on its next refresh, and the branch
+// coming back is an observation that owes a new request.
+func (a *ArgoCD) Request(
+	ctx context.Context,
+	ref types.NamespacedName,
+	want Binding,
+	commit string,
+	reason v1alpha3.ApplyReason,
+	current func() bool,
+) (Stamped, error) {
+	var waitUntil time.Time
+	for conflicts := 0; ; {
+		app, err := a.readControlled(ctx, ref, want)
+		if err != nil {
+			return Stamped{}, err
+		}
+		if commit == "" {
+			return Stamped{Outcome: OutcomeCurrent}, nil
+		}
+		if operationInProgress(app) {
+			if waitUntil.IsZero() {
+				waitUntil = a.Now().Add(a.OperationWait)
+			}
+			if err := a.awaitOperation(ctx, ref, waitUntil); err != nil {
+				return Stamped{}, err
+			}
+			continue
+		}
+		if current != nil && !current() {
+			return Stamped{}, errStale
+		}
+		stamped, err := a.setOperation(ctx, ref, app, commit, reason)
+		if apierrors.IsConflict(err) && conflicts < maxArgoUpdateConflicts {
+			// Somebody wrote the Application since it was read: the controller's status, or an
+			// operation of its own. Read it again, and decide again from what it is now.
+			conflicts++
+			continue
+		}
+		return stamped, err
+	}
+}
+
+// readControlled reads the Application, and refuses with a permanent error one that does not apply
+// want, or that has automated sync on.
+func (a *ArgoCD) readControlled(
+	ctx context.Context, ref types.NamespacedName, want Binding,
+) (*unstructured.Unstructured, error) {
+	app, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
+	}
+	if msg := applicationMismatch(app, ref, want); msg != "" {
+		return nil, permanentError{fmt.Errorf("%s %s: %s", kindApplication, ref, msg)}
+	}
+	if automatedSyncEnabled(app) {
+		return nil, permanentError{fmt.Errorf("%s %s: %s", kindApplication, ref, automatedSyncMessage)}
+	}
+	return app, nil
+}
+
+// setOperation updates app, as read, with the sync operation and no operation state. The update
+// carries the resourceVersion read, so it fails with a conflict when anything wrote the
+// Application since.
+func (a *ArgoCD) setOperation(
+	ctx context.Context, ref types.NamespacedName, app *unstructured.Unstructured, commit string,
+	reason v1alpha3.ApplyReason,
+) (Stamped, error) {
+	token := requestToken(a.Now())
+	update := app.DeepCopy()
+	if err := unstructured.SetNestedField(update.Object, syncOperation(app, commit, reason, token),
+		"operation"); err != nil {
+		return Stamped{}, fmt.Errorf("build the sync operation for %s %s: %w", kindApplication, ref, err)
+	}
+	unstructured.RemoveNestedField(update.Object, "status", "operationState")
+	_, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).
+		Update(ctx, update, metav1.UpdateOptions{})
+	if err != nil {
+		return Stamped{}, fmt.Errorf("set the sync operation on %s %s: %w", kindApplication, ref, err)
+	}
+	return Stamped{Outcome: OutcomeSyncRequested, Token: token}, nil
+}
+
+// awaitOperation waits until the Application has no operation in progress, or fails once
+// waitUntil passes. It decides nothing: Request reads the Application again after it.
+func (a *ArgoCD) awaitOperation(ctx context.Context, ref types.NamespacedName, waitUntil time.Time) error {
+	for {
+		if !a.Now().Before(waitUntil) {
+			return fmt.Errorf("%s %s has an operation in progress; asking again once the branch worker decides to",
+				kindApplication, ref)
+		}
+		timer := time.NewTimer(min(a.PollInterval, waitUntil.Sub(a.Now())))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("wait for the operation in progress on %s %s: %w", kindApplication, ref, ctx.Err())
+		case <-timer.C:
+		}
+		app, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
+		}
+		if !operationInProgress(app) {
+			return nil
+		}
+	}
+}
+
+// Handled reports whether Argo CD has finished the sync s asked for, which is when the apply
+// window closes. The operation state is this request's when its info carries the request's token;
+// it has finished once its phase is Succeeded, Failed or Error. A failed sync closes the window
+// too: Argo CD's own retries of it are part of the operation, which stays Running until they end.
+// An operation that is gone before it ever ran (somebody cleared it) runs nothing, and is handled.
+func (a *ArgoCD) Handled(ctx context.Context, ref types.NamespacedName, s Stamped) (bool, error) {
+	if s.Outcome != OutcomeSyncRequested {
+		return true, nil
+	}
+	app, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	if err != nil {
+		return false, fmt.Errorf("get %s %s: %w", kindApplication, ref, err)
+	}
+	if state, found, _ := unstructured.NestedMap(app.Object, "status", "operationState"); found &&
+		operationToken(state["operation"]) == s.Token {
+		phase, _, _ := unstructured.NestedString(state, "phase")
+		return phase != "" && phase != argoPhaseRunning && phase != argoPhaseTerminating, nil
+	}
+	operation, found, _ := unstructured.NestedMap(app.Object, "operation")
+	return !found || operationToken(operation) != s.Token, nil
+}
+
+// Validate answers ApplierConfigured for an Application: that it exists in the cluster and its
+// kind is served there, that it applies want from a single source, that automated sync is off,
+// and that this identity may update it, since a request is an update.
+func (a *ArgoCD) Validate(ctx context.Context, ref types.NamespacedName, want Binding) Verdict {
+	app, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	if err != nil {
+		return readFailure("Argo CD", kindApplication, applicationGVR(), ref, err)
+	}
+	if msg := applicationMismatch(app, ref, want); msg != "" {
+		return Verdict{Reason: ReasonSourceMismatch, Message: msg}
+	}
+	if automatedSyncEnabled(app) {
+		return Verdict{
+			Reason:  ReasonAutomatedSyncEnabled,
+			Message: fmt.Sprintf("%s %s %s", kindApplication, ref, automatedSyncMessage),
+		}
+	}
+	if verdict := accessVerdict(ctx, a.CanI, kindApplication, applicationGVR(), ref, "update"); verdict != nil {
+		return *verdict
+	}
+	return Verdict{
+		OK:     true,
+		Reason: ReasonSucceeded,
+		Message: fmt.Sprintf("%s %s syncs branch %s, with automated sync off",
+			kindApplication, ref, want.Branch),
+	}
+}
+
+// automatedSyncMessage is why an Application with automated sync on is neither valid nor synced.
+const automatedSyncMessage = "has automated sync on, so it syncs every new commit on its own, " +
+	"without the check that nothing live is missing from it; set spec.syncPolicy.automated.enabled " +
+	"to false (or remove spec.syncPolicy.automated) and GitOps Reverser starts every sync"
+
+// automatedSyncEnabled is Argo CD's IsAutomatedSyncEnabled: spec.syncPolicy.automated is present,
+// and its enabled is unset or true.
+func automatedSyncEnabled(app *unstructured.Unstructured) bool {
+	automated, found, err := unstructured.NestedMap(app.Object, "spec", "syncPolicy", "automated")
+	if err != nil || !found {
+		return false
+	}
+	enabled, found, err := unstructured.NestedBool(automated, "enabled")
+	return err != nil || !found || enabled
+}
+
+// operationInProgress reports whether the Application has an operation set, or one still running:
+// Running (a retry pending included) or Terminating. Either one is not to be replaced.
+func operationInProgress(app *unstructured.Unstructured) bool {
+	if operation, found, _ := unstructured.NestedFieldNoCopy(app.Object, "operation"); found && operation != nil {
+		return true
+	}
+	phase := statusString(app, "operationState", "phase")
+	return phase == argoPhaseRunning || phase == argoPhaseTerminating
+}
+
+// operationToken is the request token an operation's info carries, or "".
+func operationToken(operation any) string {
+	op, ok := operation.(map[string]any)
+	if !ok {
+		return ""
+	}
+	info, _, _ := unstructured.NestedSlice(op, "info")
+	for _, item := range info {
+		entry, ok := item.(map[string]any)
+		if ok && entry["name"] == argoInfoRequest {
+			value, _ := entry["value"].(string)
+			return value
+		}
+	}
+	return ""
+}
+
+// syncOperation is the operation Argo CD's automated sync would set, with the revision pinned to
+// commit and GitOps Reverser as the initiator. It carries the request's token and reason in info.
+//
+// One difference is deliberate: a retry never drops the pin. An Application whose
+// syncPolicy.retry sets refresh: true has each retry sync the newest revision instead of the one
+// asked for, which would apply a commit the branch worker never checked; the retry is copied
+// without it.
+func syncOperation(
+	app *unstructured.Unstructured, commit string, reason v1alpha3.ApplyReason, token string,
+) map[string]any {
+	sync := map[string]any{
+		"revision": commit,
+		"prune":    automatedPrune(app),
+	}
+	if source, found, _ := unstructured.NestedMap(app.Object, "spec", "source"); found {
+		sync["source"] = source
+	}
+	if options, found, _ := unstructured.NestedSlice(app.Object, "spec", "syncPolicy", "syncOptions"); found &&
+		len(options) > 0 {
+		sync["syncOptions"] = options
+	}
+
+	retry := map[string]any{"limit": int64(defaultArgoRetryLimit)}
+	if configured, found, _ := unstructured.NestedMap(app.Object, "spec", "syncPolicy", "retry"); found {
+		retry = configured
+		delete(retry, "refresh")
+	}
+
+	return map[string]any{
+		"sync":        sync,
+		"initiatedBy": map[string]any{"username": ArgoCDInitiator, "automated": true},
+		"info": []any{
+			map[string]any{"name": argoInfoRequest, "value": token},
+			map[string]any{"name": argoInfoReason, "value": string(reason)},
+		},
+		"retry": retry,
+	}
+}
+
+// automatedPrune is spec.syncPolicy.automated.prune: the off switch automated.enabled: false keeps
+// it, and without the block a sync does not prune, as automated sync's GetPrune defaults it.
+func automatedPrune(app *unstructured.Unstructured) bool {
+	prune, _, _ := unstructured.NestedBool(app.Object, "spec", "syncPolicy", "automated", "prune")
+	return prune
+}
+
+// applicationMismatch returns why an Application does not sync branch of repositoryURL from a
+// single source, or "" when it does. targetRevision must name the branch, as its name or as
+// refs/heads/<name>: HEAD, a tag or a commit would never follow the branch GitOps Reverser writes.
+func applicationMismatch(app *unstructured.Unstructured, ref types.NamespacedName, want Binding) string {
+	if sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); len(sources) > 0 {
+		return fmt.Sprintf("%s %s has spec.sources; GitOps Reverser syncs only a single-source Application",
+			kindApplication, ref)
+	}
+	if _, found, _ := unstructured.NestedFieldNoCopy(app.Object, "spec", "sourceHydrator"); found {
+		return fmt.Sprintf("%s %s has spec.sourceHydrator; GitOps Reverser syncs only an Application "+
+			"whose spec.source it writes", kindApplication, ref)
+	}
+	source, found, _ := unstructured.NestedMap(app.Object, "spec", "source")
+	if !found {
+		return fmt.Sprintf("%s %s names no spec.source", kindApplication, ref)
+	}
+	url, _, _ := unstructured.NestedString(source, "repoURL")
+	if !repourl.Same(url, want.RepositoryURL) {
+		return fmt.Sprintf("%s %s syncs %s, not %s", kindApplication, ref, url, want.RepositoryURL)
+	}
+	revision, _, _ := unstructured.NestedString(source, "targetRevision")
+	if strings.TrimPrefix(revision, "refs/heads/") != want.Branch {
+		if revision == "" {
+			revision = "HEAD"
+		}
+		return fmt.Sprintf("%s %s targets revision %q, not branch %s", kindApplication, ref, revision, want.Branch)
+	}
+	return ""
+}

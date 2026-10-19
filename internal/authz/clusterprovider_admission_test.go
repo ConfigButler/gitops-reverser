@@ -300,3 +300,71 @@ func TestGitTargetAdmitted_ReadErrorsSurfaceAsError(t *testing.T) {
 		})
 	}
 }
+
+// TestApplierAdmitted: an applier in another cluster is reached with that ClusterProvider's
+// credential, so its accessFrom must admit the GitTarget too, and the source's denial comes first.
+func TestApplierAdmitted(t *testing.T) {
+	admits := func(name string, namespaces ...string) *configv1alpha3.ClusterProvider {
+		return providerNamed(name, &configv1alpha3.NamespaceMatcher{Names: namespaces})
+	}
+	withApplier := func(source, applierCluster string) *configv1alpha3.GitTarget {
+		target := targetIn(source)
+		target.Spec.Applier = &configv1alpha3.GitTargetApplier{}
+		if applierCluster != "" {
+			target.Spec.Applier.ClusterProviderRef = &meta.LocalObjectReference{Name: applierCluster}
+		}
+		return target
+	}
+	tests := []struct {
+		name        string
+		objects     []client.Object
+		target      *configv1alpha3.GitTarget
+		wantAllowed bool
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name:        "omitted, the applier's provider is the source's",
+			objects:     []client.Object{admits("prod-eu-1", testNS)},
+			target:      withApplier("prod-eu-1", ""),
+			wantAllowed: true,
+		},
+		{
+			name:        "another provider that admits the namespace",
+			objects:     []client.Object{admits("prod-eu-1", testNS), admits("hub", testNS)},
+			target:      withApplier("prod-eu-1", "hub"),
+			wantAllowed: true,
+		},
+		{
+			name:        "another provider that does not admit the namespace",
+			objects:     []client.Object{admits("prod-eu-1", testNS), admits("hub", "elsewhere")},
+			target:      withApplier("prod-eu-1", "hub"),
+			wantReason:  ReasonNamespaceNotAuthorized,
+			wantMessage: `ClusterProvider "hub"`,
+		},
+		{
+			name:        "another provider that does not exist",
+			objects:     []client.Object{admits("prod-eu-1", testNS)},
+			target:      withApplier("prod-eu-1", "hub"),
+			wantReason:  ReasonClusterProviderNotFound,
+			wantMessage: "spec.applier.clusterProviderRef",
+		},
+		{
+			name:        "the source's denial comes first",
+			objects:     []client.Object{admits("prod-eu-1", "elsewhere"), admits("hub", testNS)},
+			target:      withApplier("prod-eu-1", "hub"),
+			wantReason:  ReasonNamespaceNotAuthorized,
+			wantMessage: `ClusterProvider "prod-eu-1"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := fake.NewClientBuilder().WithScheme(admissionScheme(t)).WithObjects(tc.objects...).Build()
+			decision, err := ApplierAdmitted(context.Background(), reader, tc.target)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAllowed, decision.Allowed, decision.Message)
+			assert.Equal(t, tc.wantReason, decision.Reason)
+			assert.Contains(t, decision.Message, tc.wantMessage)
+		})
+	}
+}

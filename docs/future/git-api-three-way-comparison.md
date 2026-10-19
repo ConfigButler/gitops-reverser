@@ -479,7 +479,7 @@ needed for those forms, but neither every patch nor every update reveals an exac
 ## Why faster Git delivery helps but does not settle the merge
 
 Faster notification reduces how long the engine plans against stale Git state. The
-[inbound notification proposal](../design/push-notification-and-reconcile-trigger.md) can improve
+[apply trigger design](../design/apply-trigger.md) can improve
 that latency independently of this investigation.
 
 The timestamp example already gives Reverser the Git change before Alice edits. The remaining gap

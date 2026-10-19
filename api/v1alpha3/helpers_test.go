@@ -321,3 +321,21 @@ func TestIsLocalSource_IsANameTest(t *testing.T) {
 		})
 	}
 }
+
+// TestApplierCluster_DefaultsToTheSourceCluster: an omitted spec.applier.clusterProviderRef is the
+// GitTarget's own source cluster, never the "default" provider, so a remote-source target keeps its
+// meaning when the field is added to the API.
+func TestApplierCluster_DefaultsToTheSourceCluster(t *testing.T) {
+	target := &GitTarget{Spec: GitTargetSpec{
+		ClusterProviderRef: &meta.LocalObjectReference{Name: "prod-eu-1"},
+		Applier:            &GitTargetApplier{},
+	}}
+	assert.Equal(t, "prod-eu-1", target.ApplierCluster())
+
+	target.Spec.Applier.ClusterProviderRef = &meta.LocalObjectReference{Name: "hub"}
+	assert.Equal(t, "hub", target.ApplierCluster())
+
+	target.Spec.ClusterProviderRef = nil
+	target.Spec.Applier.ClusterProviderRef = nil
+	assert.Equal(t, DefaultClusterProviderName, target.ApplierCluster())
+}

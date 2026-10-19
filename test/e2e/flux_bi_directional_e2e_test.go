@@ -337,28 +337,22 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+2, biStableCountMediumWait)
 	})
 
-	// The mechanism behind GitTarget spec.onRefusal: PushEmptyCommit
-	// (docs/design/push-notification-and-reconcile-trigger.md, part 3 option 7).
+	// The Flux property GitOps Reverser's apply requests rest on
+	// (docs/design/apply-trigger.md): **a new GitRepository revision
+	// is enough**, on its own, to make the Kustomization apply and revert live drift, even when the
+	// manifests it builds are byte-identical to the ones it applied last time. A request that finds
+	// the artifact behind the commit stamps only the GitRepository and relies on exactly this.
 	//
-	// The wiring from a refused write to the commit is unit-tested, including that the commit
-	// lands with an empty tree diff. What only real Flux can answer is the claim the whole option
-	// rests on: **a new revision is enough**, on its own, to make the reconciler re-apply and
-	// revert live drift, even though the manifests it builds are byte-identical to the ones it
-	// applied last time.
-	//
-	// So this spec isolates exactly that claim and nothing else. It pushes the empty commit by
-	// hand rather than provoking a refusal, because combining the two would test the mechanism
-	// LESS precisely: a failure would not say which half broke.
-	//
-	// Two details carry the argument, and removing either makes the spec pass for the wrong
-	// reason:
+	// So this spec isolates that claim and nothing else, with a commit pushed by hand that changes
+	// only a file outside the folder the Kustomization builds. Two details carry the argument, and
+	// removing either makes the spec pass for the wrong reason:
 	//
 	//   - The GitTarget is SUSPENDED first. Otherwise the operator publishes the drift to Git and
 	//     there is no drift left for Flux to correct, so the revert would prove nothing.
 	//   - Only the GitRepository is reconciled, never the Kustomization. The Kustomization is on
 	//     a 30m interval, so if it applies inside this spec it is because a new source revision
-	//     woke it, which is the property a push webhook would supply in production.
-	It("reverts live drift from an empty commit, because a new revision is enough", func() {
+	//     woke it.
+	It("reverts live drift when only the source moves, because a new revision is enough", func() {
 		By("suspending the GitTarget so the drift stays drift instead of being published")
 		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName,
 			"--type=merge", "-p", `{"spec":{"suspend":true}}`)
@@ -385,21 +379,24 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 		Expect(err).NotTo(HaveOccurred(), "failed to drift the live IceCreamOrder")
 		Eventually(func(g Gomega) {
 			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("WaffleBowl"),
-				"the drift must be live before the empty commit is pushed")
+				"the drift must be live before the source moves")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
 		By("confirming the suspended operator leaves the drift alone")
 		run.consistentlyExpectRemoteCommitCount(baselineCommitCount, biStableCountMediumWait)
 
-		By("pushing a commit that changes no file")
-		Expect(run.commitAllAndPush("bi-directional: empty commit to trigger a reconcile")).To(Succeed())
-		emptyHead := run.gitHEAD()
-		Expect(run.emptyDiffAt(emptyHead)).To(BeTrue(),
-			"the commit under test must change no file, or this spec is measuring an ordinary sync")
+		By("pushing a commit that changes nothing the Kustomization builds")
+		Expect(os.WriteFile(filepath.Join(run.checkoutDir, "NOTES.md"),
+			[]byte("A change outside the applied folder.\n"), 0o600)).To(Succeed())
+		Expect(run.commitAllAndPush("bi-directional: a change outside the applied folder")).To(Succeed())
+		sourceHead := run.gitHEAD()
+		Expect(run.changedFilesAt(sourceHead)).To(Equal([]string{"NOTES.md"}),
+			"the commit under test must change nothing the Kustomization builds, or this spec is "+
+				"measuring an ordinary sync")
 
 		By("waking only the source, never the Kustomization")
 		run.reconcileFluxSource()
-		run.waitForFluxGitRepositoryRevision(emptyHead)
+		run.waitForFluxGitRepositoryRevision(sourceHead)
 
 		// A longer budget than the shared helper's, and deliberately so: every other caller has
 		// just reconciled the Kustomization by hand, while this one is waiting for Flux to notice
@@ -415,25 +412,106 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 				obj.Object, "status", "lastAppliedRevision")
 			g.Expect(revErr).NotTo(HaveOccurred())
 			g.Expect(found).To(BeTrue())
-			g.Expect(revision).To(ContainSubstring(emptyHead),
-				"the Kustomization must reach the empty commit without being reconciled by hand")
+			g.Expect(revision).To(ContainSubstring(sourceHead),
+				"the Kustomization must reach the new revision without being reconciled by hand")
 		}, 3*time.Minute, biPollInterval).Should(Succeed())
 		Eventually(func(g Gomega) {
 			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("Cup"),
 				"a new revision must be enough to make Flux re-apply and revert the drift")
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
+
+	// The race GitOps Reverser's apply trigger exists for, from docs/design/apply-trigger.md: two
+	// API edits to one field a few seconds apart. With Flux woken by every push, the first commit is
+	// applied over the second edit and the branch ping-pongs. With the Kustomization named as the GitTarget's applier, Flux is asked to catch up
+	// only once the branch has been quiet, so the later value survives and Flux still ends on the
+	// tip, without anybody reconciling it by hand.
+	It("asks Flux to apply only on a quiet branch, so the later of two quick API edits survives", func() {
+		By("naming the live Kustomization as the GitTarget's applier")
+		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName, "--type=merge", "-p",
+			fmt.Sprintf(`{"spec":{"applier":{"kustomizationRef":{"namespace":"flux-system","name":%q},`+
+				`"quietPeriod":"5s"}}}`, run.fluxLiveName))
+		Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierConfigured", "True", "Succeeded", "")
+		run.waitForGitTargetReady()
+
+		Expect(run.gitPull()).To(Succeed())
+		baseline := run.waitForStableRemoteCommitCount(biStableCountMediumWait)
+
+		By("editing the second order through the API, and again seconds after that edit is pushed")
+		_, err = kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
+			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"Cone"}}`)
+		Expect(err).NotTo(HaveOccurred())
+		run.waitForCommittedOrderSpec(run.secondOrderName, "Cone", "Strawberry", "WhippedCream")
+		_, err = kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
+			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"WaffleBowl"}}`)
+		Expect(err).NotTo(HaveOccurred())
+		run.waitForCommittedOrderSpec(run.secondOrderName, "WaffleBowl", "Strawberry", "WhippedCream")
+		head := run.gitHEAD()
+
+		By("Flux catches up with those pushes on its own, once the branch is quiet")
+		run.waitForFluxKustomizationRevision(run.fluxLiveName, head)
+
+		By("and the later value survives, with no commit after it")
+		Consistently(func(g Gomega) {
+			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("WaffleBowl"))
+			g.Expect(run.gitPull()).To(Succeed())
+			count, countErr := run.gitMainCommitCount()
+			g.Expect(countErr).NotTo(HaveOccurred())
+			g.Expect(count).To(Equal(baseline+2),
+				"an apply of the first edit's commit over the second edit would show as more commits")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+	})
+
+	// A Git-side push with an API edit on top of it, from
+	// docs/design/apply-trigger.md. Nothing tells GitOps Reverser
+	// about the push here, so it finds it the hard way: its own push is rejected, it replays the API
+	// edit onto the Git-side commit, and only then asks Flux to apply, so the commit Flux applies
+	// already carries the API side's answer. Nobody reconciles Flux by hand.
+	It("applies a Git-side push only after replaying the API edit made on top of it", func() {
+		Expect(run.gitPull()).To(Succeed())
+
+		By("pushing a Git-side change to the first order")
+		run.writeLiveOrder(iceCreamOrderFile{
+			Name:         run.firstOrderName,
+			Namespace:    testNs,
+			CustomerName: "Alice",
+			Container:    "Cup",
+			Scoops: []iceCreamScoop{
+				{Flavor: run.reverseFlavor, Quantity: 4},
+			},
+			Toppings: []string{run.reverseTopping},
+		})
+		Expect(run.commitAllAndPush("bi-directional: a Git-side change to the first order")).To(Succeed())
+
+		By("and editing the second order through the API before GitOps Reverser has heard of that push")
+		_, err := kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
+			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"Cup"}}`)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("its push is rejected, replayed onto the Git-side change, and Flux applies the result")
+		run.waitForCommittedOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
+		run.waitForCommittedOrderSpec(run.firstOrderName, "Cup", run.reverseFlavor, run.reverseTopping)
+		Expect(run.gitPull()).To(Succeed())
+		run.waitForFluxKustomizationRevision(run.fluxLiveName, run.gitHEAD())
+		run.waitForOrderSpec(run.firstOrderName, "Cup", run.reverseFlavor, run.reverseTopping)
+
+		By("and the API edit is not reverted by it")
+		Consistently(func(g Gomega) {
+			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("Cup"))
+		}, 20*time.Second, 2*time.Second).Should(Succeed())
+	})
 })
 
-// emptyDiffAt reports whether the commit changed no file, which is the property that separates
-// this from an ordinary Git-side change driving an ordinary sync.
-func (r biDirectionalRun) emptyDiffAt(sha string) bool {
+// changedFilesAt lists the files a commit changed, which is what separates a commit outside the
+// applied folder from an ordinary Git-side change driving an ordinary sync.
+func (r biDirectionalRun) changedFilesAt(sha string) []string {
 	GinkgoHelper()
 	cmd := exec.Command("git", "diff-tree", "--no-commit-id", "--name-only", "-r", sha)
 	cmd.Dir = r.checkoutDir
 	out, err := cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred(), "git diff-tree: %s", out)
-	return strings.TrimSpace(string(out)) == ""
+	return strings.Fields(string(out))
 }
 
 // liveOrderContainer reads one field of the live object, which is all this spec's drift needs.

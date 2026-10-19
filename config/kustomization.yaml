@@ -6,6 +6,7 @@ resources:
 - rbac
 - service.yaml
 - audit-service.yaml
+- receiver-service.yaml
 - deployment.yaml
 - certs
 - webhook

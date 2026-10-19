@@ -302,7 +302,7 @@ devcontainer**:
 | Operation | kubectl equivalent |
 | --- | --- |
 | refresh | a push fires the webhook (§5); no manual refresh needed |
-| sync | patch `.operation.sync` on the `Application` (manual-sync phase only) |
+| sync | GitOps Reverser sets `.operation` itself; the specs patch it by hand only to deploy the refusal spec's overlay before any `GitTarget` names it |
 | read state | `.status.sync.status`, `.status.sync.revision`, `.status.operationState.phase`, `.status.conditions` |
 
 ### 4. What moves
@@ -352,162 +352,98 @@ host — so it matches. A `localhost` ROOT_URL would silently fail to match and 
 app would refresh; that is why this is called out.
 
 A matched webhook triggers a **`normal`** refresh (`argo.RefreshApp` with
-`RefreshTypeNormal`). For an automated app that is `OutOfSync`, that refresh then
-auto-syncs — which is how phases 2 and 3 apply the new commit with no `kubectl`
-sync at all. For the manual-sync app in phase 1 the webhook only refreshes; the
-apply is still an explicit `.operation` patch.
+`RefreshTypeNormal`). The specs run the standard (automated sync off), so the
+webhook only refreshes: it makes Argo CD compare sooner, and the specs prove it
+never syncs. Every sync is one GitOps Reverser starts, learning of a push through
+its own receiver, which the corner registers as a second Gitea webhook. Only Spec E
+turns automated sync on, and there the webhook's refresh does auto-sync.
 
 ## Test design: `argocd_bi_directional_e2e_test.go`
 
-Four scenarios, sharing one Gitea repo and one `IceCreamOrder` CRD applied via
-`applyIceCreamCRD(crdGroupArgoBiDirectional)`.
+Every spec runs the standard of [`docs/argocd.md`](../argocd.md): the `Application`
+has automated sync off (`automated: {enabled: false, prune: true}`) and is named by
+the `GitTarget`'s `spec.applier.applicationRef`, so every sync it runs is one GitOps
+Reverser started, pinned to a commit it checked. The earlier phases that ran
+automated sync (`selfHeal: true` losing the edit, `ignoreDifferences`, and
+`selfHeal: false` with the webhook) are gone with it: they characterized an Argo CD
+that synced on its own, which the standard no longer allows.
 
-**They are implemented as four phases of a single `Ordered` `It`, driving one
-Application whose `syncPolicy` is re-applied between phases — not as separate
-specs with an Application each.** (Specs A–C plus Spec E below; Spec D remains
-unimplemented — see [Not done](#not-done).) Two Applications pointed at the same live path
-would each stamp their own tracking-id on the same objects, and by the very
-mechanism this spec documents, each would then see the other's id as foreign and
-raise `SharedResourceWarning`. The specs would fight. One Application, one order
-per phase.
+Specs A, B and E are three `It`s of one `Ordered` describe, sharing one Gitea repo,
+one `IceCreamOrder` CRD (`applyIceCreamCRD(crdGroupArgoBiDirectional)`) and one
+`Application`, with one order per spec. Two Applications pointed at the same live
+path would each stamp their own tracking-id on the same objects and raise
+`SharedResourceWarning`. Spec C has its own describe, repo, namespace and
+`Application`.
 
-The Argo `Application` lives in the `argocd` namespace, targets
+The `Application` lives in the `argocd` namespace, targets
 `spec.destination.namespace = <testNs>`, `spec.source.path = <livePath>`,
-`targetRevision: main`, `directory.recurse: true`.
+`targetRevision: main`, `directory.recurse: true`. The `GitProvider` has a
+`gitea` receiver, registered as a Gitea webhook next to Argo CD's own.
 
-Ordering matters: `SetupRepo` leaves the Gitea repo **empty**, so `main` does not
-exist on the remote until something pushes it, and `git pull` cannot fetch a ref
-that is not there. The spec therefore seeds the branch first and only then stands
-up the reverser pipeline — which also sidesteps the question of whether a
-`GitTarget` aimed at an empty repository bootstraps a commit of its own. The Flux
-spec depends on the same ordering.
+Ordering matters: `SetupRepo` leaves the Gitea repo **empty**, so the spec seeds
+`main` first, creates the `Application` (nothing to sync yet), and only then stands
+up the reverser pipeline, whose `GitTarget` needs the `Application` to report
+`ApplierConfigured=True`.
 
-### Spec A — Argo CD's stamps land in Git
+### Spec A — a Git-side push is synced through a pinned `ForeignCommit`
 
-`syncPolicy: {}` (manual). This is the characterization test: it records exactly
-what Argo writes and exactly what survives sanitization.
+1. Assert Argo CD has run **no operation**: GitOps Reverser's own bootstrap push,
+   and its start, ask for nothing.
+2. Push a clean `order-1` from the Git side, and nothing else.
+3. Assert the `Application`'s operation state is GitOps Reverser's: initiated by
+   `gitops-reverser` with `automated: true`, reason `ForeignCommit` in its info,
+   `sync.revision` and `syncResult.revision` both the pushed commit, `Succeeded`,
+   with resources. The `GitTarget`'s `status.applier` names the same commit.
+4. Assert the **live** object carries `argocd.argoproj.io/tracking-id` (exact
+   value format) and `kubectl.kubernetes.io/last-applied-configuration`, and the
+   **committed file** carries neither, nor `managedFields` or `resourceVersion`.
+5. Assert, with `Consistently`, that the sync produced **zero commits**.
 
-1. Commit a clean `order-1` (no Argo metadata). Refresh + sync via `kubectl`.
-2. Assert the **live** object has annotation `argocd.argoproj.io/tracking-id`
-   equal to `<app>:<group>/IceCreamOrder:<ns>/order-1` — proves default
-   `annotation` tracking, exact value format.
-3. Assert the **live** object has `kubectl.kubernetes.io/last-applied-configuration`
-   — proves client-side apply is the default.
-4. Assert the **committed file** contains none of it: no
-   `argocd.argoproj.io/tracking-id`, no `kubectl.kubernetes.io/last-applied-configuration`,
-   no `managedFields`, no `resourceVersion`.
-5. Assert, with `Consistently`, that the Argo sync produced **zero commits**.
+Step 5 is the strongest form of the bookkeeping assertion, and it only holds
+*because* of the sanitize fix: if sanitization is complete, the sanitized live
+object is byte-equal to the file already in Git, so the Reverser has nothing to
+write. The commit count is a sharper detector of a metadata leak than any
+substring assertion — it catches keys nobody thought to name.
 
-Step 5 is the strongest form of the assertion, and it only holds *because* of the
-sanitize fix. If sanitization is complete, the sanitized live object is byte-equal
-to the file already in Git, so the Reverser has nothing to write. Before the fix
-the tracking-id leaked, the sanitized object differed from Git, and the count grew
-by one. The commit count is therefore a sharper detector of a metadata leak than
-any substring assertion — it catches keys nobody thought to name.
+### Spec B — two quick API edits keep the later value
 
-(The same shape is what lets the Flux spec assert exact counts: Flux's stamps are
-stripped too, so its applies are commit-neutral.)
+The race the apply trigger exists for.
 
-### Spec B — `selfHeal: true` destroys the API-side change
+1. Push `order-4` from the Git side; it is synced by a `ForeignCommit`.
+2. Patch `container: Cup` through the API, wait for its commit, then patch
+   `container: WaffleBowl` and wait for that commit.
+3. `Consistently` assert live stays `WaffleBowl`, the commit count is exactly
+   baseline + 2, and the `Application`'s last `finishedAt` has not moved: GitOps
+   Reverser's own commits owe Argo CD no sync.
+4. Assert Argo CD, refreshed by its webhook, reports the `Application` `Synced`:
+   there was nothing to catch up.
 
-`syncPolicy.automated: {prune: true, selfHeal: true}`.
+### Spec C — a refused edit is reverted by an Argo CD sync
 
-1. Git holds `order-2` with `container: Cone`. Sync. Live = `Cone`.
-2. Patch the live object through the Kubernetes API: `container: WaffleBowl`.
-3. `Eventually` assert live is back to **`Cone`**, then `Consistently` assert it
-   stays `Cone`.
-4. `Eventually` assert the committed file is back to `Cone`; then `Consistently`
-   assert the commit count is stable.
+Its own describe, repo and namespace. Corpus shape 8, as in the Flux refusal
+spec: an overlay whose `Deployment` comes from `../../base`, and a live edit to an
+env var no overlay declaration can express.
 
-Expected timeline, from the verified constants: self-heal's **first** revert is
-sub-second (backoff is zero on attempt 0;
-[`argocd-bi-directional.md`](../design/support-boundary/argocd-bi-directional.md)), replaying the
-stale cached revision. The Reverser commits `WaffleBowl`, then observes the revert
-and commits `Cone`. At the 180s refresh Argo finds `Cone` in Git and is already
-Synced. **The user's change is lost, and Git history flaps.**
+1. Seed the base and overlay, create the `Application` on the overlay
+   (kustomize), and deploy it with one manual sync, before any `GitTarget` names it.
+2. Drift `LOG_LEVEL` to `debug`.
+3. Create the `GitTarget` on the overlay with `applicationRef` and
+   `onRefusal: Reapply`, and a `WatchRule` on `deployments`.
+4. Assert the write is refused at the boundary (`WriteBoundaryRefused`), and that
+   GitOps Reverser's `Refusal` sync, pinned to the tip, reverts `LOG_LEVEL` to
+   `info`, with no commit for it.
 
-The flap is **exactly two commits, deterministically** — and the spec asserts that
-`+2`. It is *not* a race, despite self-heal being sub-second: the Reverser watches
-the object through the Kubernetes API **watch**, which delivers every edit in order
-and never collapses them, so it observes both the `WaffleBowl` edit and the `Cone`
-revert; with `commitWindow=0` each observed edit finalizes as its own commit. So the
-self-heal round trip writes precisely two commits (the change, then its revert),
-which the spec asserts alongside the terminal `Cone` state. (This differs from the
-Flux spec only in that Flux is driven as a manual applier; both assert exact
-counts.)
+### Spec E — an `Application` with automated sync on is never synced
 
-### Spec C — split ownership (NOT bi-directional; see the caveat below)
-
-`syncPolicy.automated: {selfHeal: true}` **plus**:
-
-```yaml
-ignoreDifferences:
-  - group: argo-bi-directional.e2e.example.com
-    kind: IceCreamOrder
-    jsonPointers: ["/spec/scoops"]
-syncOptions: ["RespectIgnoreDifferences=true"]
-```
-
-1. Git holds `order-3` with `scoops: [{Vanilla, 2}]`. Sync.
-2. API-patch `scoops: [{MintChip, 4}]`.
-3. `Consistently` assert live **stays** `MintChip` despite `selfHeal: true` —
-   the field is ignored, so no drift, so no heal.
-4. Assert the `Application` remains `Synced`.
-5. Assert the Reverser commits `MintChip`.
-6. After an Argo refresh, assert still `Synced`, still `MintChip`, commit count stable.
-
-This is the Argo CD analogue of split ownership (mode 3 in
-[`bi-directional.md`](../bi-directional.md#the-split-ownership-alternative)) — and it is **not**
-bi-directional, which the spec asserts precisely so no one mistakes it for one.
-`ignoreDifferences` removes `/spec/scoops` from Argo's comparison in *both*
-directions: the API can now own it, but a **Git-side** change to `/spec/scoops`
-would no longer reach the cluster either. That is the whole point of split
-ownership, and the whole reason it is not the bi-directional answer. The genuine
-bi-directional configuration is `selfHeal: false` + the webhook (see
-[`argocd-bi-directional.md`](../design/support-boundary/argocd-bi-directional.md)); Spec C exists
-to pin the *contrast* — the difference from Spec B is one `ignoreDifferences`
-stanza, and it is the difference between the cluster losing the change and the
-cluster keeping it by taking the field out of GitOps.
-
-`RespectIgnoreDifferences=true` is belt-and-braces rather than load-bearing here:
-because the Reverser keeps Git current, target and live agree anyway. It closes
-the window in which an unrelated Git change triggers a sync *between* the API
-patch and the Reverser's commit, which would otherwise reset the field
-(`controller/sync.go:250-261`). Documented, not separately asserted.
-
-### Spec E — the recommended shared-field loop (`selfHeal: false` + webhook)
-
-`syncPolicy.automated: {prune: true, selfHeal: false}`, no `ignoreDifferences`.
-
-This is the genuine bi-directional configuration from
-[`argocd-bi-directional.md`](../design/support-boundary/argocd-bi-directional.md): the field stays
-fully GitOps-managed (unlike Spec C, which carves it out) and changes from **both**
-sides. It is the deterministic counterpart to Spec B — nothing reverts live drift,
-so every step can be asserted directly, with no timing race.
-
-1. Git holds `order-4` with `container: Cone`. The webhook drives the auto-sync;
-   live = `Cone`.
-2. **API side.** Patch the live object: `container: WaffleBowl`.
-3. `Consistently` assert live **stays** `WaffleBowl` — with `selfHeal: false`,
-   Argo marks the app `OutOfSync` but does not revert. (Contrast Spec B, where
-   `selfHeal: true` reverts within a second.) The Reverser committing `WaffleBowl`
-   fires the webhook, which only ever converges Argo *to* `WaffleBowl`.
-4. Assert the Reverser commits `WaffleBowl`.
-5. **Git side of the same field.** Commit `container: Cup` (a different valid enum
-   value — `spec.container` is constrained to `{Cup, Cone, WaffleBowl}`) and push.
-6. Assert the webhook drives automated sync to apply it: live becomes `Cup`. This
-   is the step `ignoreDifferences` (Spec C) would have silently blocked — proof the
-   shared field is still driven from Git. (Confirmed against Argo's own logs:
-   `Received push event … touchedHead: true` → `Updated sync status: Synced ->
-   OutOfSync` → `Initiated automated sync`. The webhook re-resolves the fresh
-   commit and auto-sync applies it, exactly as the recommended mode promises.)
-7. Assert both loops settle in agreement (`Cup` live and committed, commit count
-   stable).
-
-Spec B and Spec E together are the payoff of the whole corner: the *only*
-difference between them is the `selfHeal` flag, and it is the difference between
-the cluster losing a shared-field edit and keeping it while Git can still drive
-the same field.
+1. Re-apply the `Application` with automated sync on (an `automated` block with no
+   `enabled`), and request a `GitTarget` reconcile, since the applier is read on
+   reconcile rather than watched.
+2. Assert `ApplierConfigured=False` with `AutomatedSyncEnabled`, and `Stalled`.
+3. Push a Git-side change. Assert an `ApplyRequestFailed` Event: the `ForeignCommit`
+   was decided and refused at the `Application`.
+4. `Consistently` assert no operation initiated by `gitops-reverser` names the
+   pushed commit, and `status.applier` is unchanged. Argo CD's own automated sync
+   applies the push; that is not GitOps Reverser's.
 
 ### Spec D — arming the landmine (phase 2)
 
@@ -619,7 +555,7 @@ neither is `Serial`.
 | `_argocd-installed` `helm pull`s the chart from the argo-helm repo at install time — a network dependency | Retried 3× with an explicit error message. If CI flakes, mirror the `_ghcr-preflight` node as an `_argocd-preflight`, or vendor the chart tarball |
 | The chart could ship `NetworkPolicy` objects that k3s enforces | `global.networkPolicy.create` is off by default (we do not enable it), so no NPs are created. Port-forward goes kubelet→pod and bypasses NP anyway |
 | Argo's app-controller watches cluster-wide and will observe the Flux spec's objects | Only objects carrying a tracking-id are compared. Harmless, but confirm no `SharedResourceWarning` noise across specs |
-| Spec B asserts an exact `+2` commit delta | Deterministic, not timing-derived: the Kubernetes watch delivers every edit and `commitWindow=0` makes each its own commit. See Spec B |
+| Spec B asserts an exact `+2` commit delta | Deterministic, not timing-derived: the Kubernetes watch delivers every edit, `commitWindow=0` makes each its own commit, and nothing syncs GitOps Reverser's own commits |
 | A chart bump may move the tracking defaults | The defaults are asserted directly in Spec A. A behaviour change breaks the spec loudly, which is the point. README lists the re-verify checklist |
 
 ## Decisions

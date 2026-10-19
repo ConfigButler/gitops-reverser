@@ -6,6 +6,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/go-logr/logr"
+
 	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -149,4 +151,53 @@ func newGitProviderTestClient(t *testing.T, objects ...runtime.Object) ctrlclien
 		WithScheme(scheme).
 		WithRuntimeObjects(objects...).
 		Build()
+}
+
+// TestPublishWebhookPath_FollowsSpecReceiverAndToken pins status.webhookPath to spec.receiver and
+// its token: derived from the token while both exist, moved when the token rotates, and cleared when
+// either goes, so a stale path never points a Git host at a route that has stopped serving.
+func TestPublishWebhookPath_FollowsSpecReceiverAndToken(t *testing.T) {
+	ctx := context.Background()
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "receiver-token", Namespace: "team-a"},
+		Data:       map[string][]byte{configbutleraiv1alpha3.ReceiverTokenKey: []byte("first")},
+	}
+	c := newGitProviderTestClient(t, secret)
+	reconciler := &GitProviderReconciler{Client: c}
+	provider := &configbutleraiv1alpha3.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform-repo", Namespace: "team-a"},
+		Spec: configbutleraiv1alpha3.GitProviderSpec{
+			Receiver: &configbutleraiv1alpha3.GitProviderReceiver{
+				Type:      configbutleraiv1alpha3.ReceiverTypeGitHub,
+				SecretRef: meta.LocalObjectReference{Name: "receiver-token"},
+			},
+		},
+	}
+	log := logr.Discard()
+
+	reconciler.publishWebhookPath(ctx, log, provider)
+	first := provider.Status.WebhookPath
+	assert.Equal(t, configbutleraiv1alpha3.ReceiverPath([]byte("first"), "team-a", "platform-repo"), first)
+	assert.NotContains(t, first, "team-a", "the path must not name the namespace")
+	assert.NotContains(t, first, "platform-repo", "the path must not name the provider")
+
+	secret.Data[configbutleraiv1alpha3.ReceiverTokenKey] = []byte("second")
+	require.NoError(t, c.Update(ctx, secret))
+	reconciler.publishWebhookPath(ctx, log, provider)
+	assert.NotEqual(t, first, provider.Status.WebhookPath, "a rotated token moves the path")
+
+	secret.Data = map[string][]byte{"password": []byte("second")}
+	require.NoError(t, c.Update(ctx, secret))
+	reconciler.publishWebhookPath(ctx, log, provider)
+	assert.Empty(t, provider.Status.WebhookPath, "no token, no path")
+
+	provider.Status.WebhookPath = "/git-push/stale"
+	require.NoError(t, c.Delete(ctx, secret))
+	reconciler.publishWebhookPath(ctx, log, provider)
+	assert.Empty(t, provider.Status.WebhookPath, "no Secret, no path")
+
+	provider.Status.WebhookPath = "/git-push/stale"
+	provider.Spec.Receiver = nil
+	reconciler.publishWebhookPath(ctx, log, provider)
+	assert.Empty(t, provider.Status.WebhookPath, "no receiver, no path")
 }

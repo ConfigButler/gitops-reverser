@@ -180,6 +180,9 @@ nodeSelector:
 | `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds. While the remote cannot be reached, retained writes that reach it close the worker to new writes, saves and resyncs until they are published; the watch delivers a refused event again | `8Mi` |
 | `controllerManager.commitRequestTTL` | How long a `CommitRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
+| `receiver.bindAddress` | `host:port` the push receiver listens on, over plain HTTP (`--receiver-bind-address`), for Git hosts' push webhooks to `GitProvider.status.webhookPath`. Empty or `"0"` serves no receiver. When set, the chart adds a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `""` |
+| `applierAccess.flux` | Grant the operator `get` and `patch` on Flux `Kustomizations` and `GitRepositories`, and `create` on `SelfSubjectAccessReviews`, so it can ask Flux to apply a commit somebody else pushed | `false` |
+| `applierAccess.argocd` | Grant the operator `get` and `update` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can start the syncs of an `Application` named by `spec.applier.applicationRef` | `false` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |
@@ -220,6 +223,7 @@ nodeSelector:
 | `servers.metrics.tls.secretNameOverride` | Override Secret name for metrics TLS cert/key | `<release>-metrics-server-cert` |
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
 | `service.ports.audit` | Service port for audit ingress when `attribution.enabled=true` | `9444` |
+| `service.ports.receiver` | Port of the `<release>-receiver` Service when `receiver.bindAddress` is set | `80` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
 | `servers.admission.port` | Admission webhook container/Service port | `9443` |

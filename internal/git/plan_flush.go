@@ -351,14 +351,13 @@ func (b *fileBuffer) deleted() bool { return b.current == nil && b.original != n
 // **File survival is not the question, and a review found the hole where it was.** The first
 // version asked only whether the file existed and survived, so deleting one document out of a
 // two-document file answered yes — another document kept the file alive — and a refused deletion
-// qualified for an empty commit. An empty commit asks the reconciler to re-apply what Git holds,
-// and Git still holds the document the refusal failed to remove, so that commit would RECREATE an
-// object somebody deliberately deleted from the cluster.
+// qualified for a reapply. A reapply asks the applier to apply what Git holds, and Git still holds
+// the document the refusal failed to remove, so it would RECREATE an object somebody deliberately
+// deleted from the cluster.
 //
 // The batch-wide arm is deliberate rather than per-file: the flush is all-or-nothing, so a refusal
-// aborts the removal along with everything else, and the commit it would earn wakes the reconciler
-// over the whole folder rather than over one file. A batch that meant to remove anything therefore
-// earns no commit at all.
+// aborts the removal along with everything else, and the reapply it would earn covers the whole
+// folder rather than one file. A batch that meant to remove anything therefore earns no reapply.
 func (wb *writeBatch) holdsExistingDocument(b *fileBuffer) bool {
 	if b.original == nil || b.deleted() || b.removedDocument {
 		return false

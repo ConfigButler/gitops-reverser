@@ -5,7 +5,7 @@
 > unchanged. Option D needs measurement; option E remains rejected without that evidence.
 > Index: [`../INDEX.md`](../INDEX.md). Reviewed at `373bf8d7` on 2026-10-03.
 > Related: [`../api-first-publication.md`](../api-first-publication.md),
-> [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
+> [`push-notification-and-reconcile-trigger.md`](../finished/push-notification-and-reconcile-trigger.md),
 > [`../spec/commit-window-refactor.md`](../spec/commit-window-refactor.md)
 
 **The question.** `PushCooldown` predates the commit window. The window now groups an editing burst
@@ -269,8 +269,8 @@ Ordered by how much they should worry you.
 1. **Request amplification on shared branches.** The architecture explicitly supports several
    `GitTarget`s per branch, and multi-tenant installs are the case where the cooldown is load-bearing.
    Option B turns row 4's `2` into `6`. This contradicts the premise of
-   [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md), which spent a whole change
-   removing two requests per publication.
+   [`push-notification-and-reconcile-trigger.md`](../finished/push-notification-and-reconcile-trigger.md),
+   which spent a whole change removing two requests per publication.
 2. **Hosted Git rate limits.** With serialization the bound is one push per push-duration, which on
    a fast remote is several per second sustained. Measure throttling on the supported hosts before
    increasing publication frequency.

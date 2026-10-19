@@ -270,7 +270,7 @@ A type observed in three namespaces still counts as one type in public status.
 ### Git writes, resyncs, and refusals
 
 Rename provenance in `Event`, `ResyncRequest`, write aggregation, queue logging, and
-[`refusal_touch.go`](../../internal/git/refusal_touch.go). Preserve these distinct cases:
+[`refusal_reapply.go`](../../internal/git/refusal_reapply.go). Preserve these distinct cases:
 
 - A single producer supplies its collection; mixed-producer or whole-target work remains unclaimed.
 - `ResyncRequest.refusalCollection()` continues deriving its key from the resync scope. It must
@@ -497,8 +497,8 @@ identifier occurrences; `comments` and `strings` count matched words/components 
 | [`internal/git/git_path_refusal.go`](../../internal/git/git_path_refusal.go) | 7 | 2 | 1 | 10 |
 | [`internal/git/git_path_refusal_test.go`](../../internal/git/git_path_refusal_test.go) | 16 | 0 | 0 | 16 |
 | [`internal/git/refusal_observation_test.go`](../../internal/git/refusal_observation_test.go) | 9 | 9 | 3 | 21 |
-| [`internal/git/refusal_touch.go`](../../internal/git/refusal_touch.go) | 23 | 14 | 1 | 38 |
-| [`internal/git/refusal_touch_test.go`](../../internal/git/refusal_touch_test.go) | 2 | 2 | 0 | 4 |
+| [`internal/git/refusal_reapply.go`](../../internal/git/refusal_reapply.go) | 23 | 14 | 1 | 38 |
+| [`internal/git/refusal_reapply_test.go`](../../internal/git/refusal_reapply_test.go) | 2 | 2 | 0 | 4 |
 | [`internal/git/render_fidelity_gate.go`](../../internal/git/render_fidelity_gate.go) | 13 | 6 | 0 | 19 |
 | [`internal/git/render_fidelity_gate_test.go`](../../internal/git/render_fidelity_gate_test.go) | 16 | 7 | 8 | 31 |
 | [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go) | 2 | 3 | 0 | 5 |
@@ -542,7 +542,7 @@ identifier occurrences; `comments` and `strings` count matched words/components 
 | [`internal/watch/watch_plane_state.go`](../../internal/watch/watch_plane_state.go) | 5 | 5 | 0 | 10 |
 | [`internal/watch/watched_type_resolver.go`](../../internal/watch/watched_type_resolver.go) | 1 | 5 | 0 | 6 |
 | [`test/e2e/audit_route_attribution_e2e_test.go`](../../test/e2e/audit_route_attribution_e2e_test.go) | 0 | 2 | 0 | 2 |
-| [`test/e2e/refusal_empty_commit_e2e_test.go`](../../test/e2e/refusal_empty_commit_e2e_test.go) | 0 | 1 | 0 | 1 |
+| [`test/e2e/refusal_reapply_e2e_test.go`](../../test/e2e/refusal_reapply_e2e_test.go) | 0 | 1 | 0 | 1 |
 
 ### Current documents
 

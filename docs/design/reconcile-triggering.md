@@ -280,8 +280,8 @@ flowchart LR
 ```
 
 > **The middle step of that flow has since been ruled out, and the rest of this section stands.**
-> [inbound push notification](push-notification-and-reconcile-trigger.md) §7 shows that `requestedAt` drives a
-> full cluster-to-Git snapshot, so a receiver that patches it can publish pre-push cluster state
+> [inbound push notification](../finished/push-notification-and-reconcile-trigger.md) §7 shows that
+> `requestedAt` drives a full cluster-to-Git snapshot, so a receiver that patches it can publish pre-push cluster state
 > over the very change it was told about, before Flux or Argo CD has applied it. The receiver needs
 > a request shape of its own: invalidate the base, record the new tip, replay retained work, and
 > never snapshot. §8.3 of that page is the wire contract. Read everything below (the signature

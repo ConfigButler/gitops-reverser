@@ -1,0 +1,30 @@
+# What GitOps Reverser needs to drive an Argo CD Application named in GitTarget.spec.applier: read
+# the Application, set its operation to a sync (an update of the whole object, as Argo CD's own
+# SetAppOperation makes it), and check that it may.
+#
+# It is kept OUT of role.yaml because no GitTarget needs it until one names an Application, and an
+# install that does not use Argo CD should not hold update rights on Applications. Drop this pair
+# when no GitTarget sets spec.applier.applicationRef (Helm: `applierAccess.argocd: false`, the
+# default there). For an Application in another cluster, grant the same to the identity of the
+# ClusterProvider's kubeconfig there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-argocd-applier
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - applications
+    verbs:
+      - get
+      - update
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - selfsubjectaccessreviews
+    verbs:
+      - create

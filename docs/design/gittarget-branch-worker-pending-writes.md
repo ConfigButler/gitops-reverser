@@ -216,16 +216,14 @@ itself is terminal. Pinned by `TestDecidedWrite_SurvivesAFailedRebuildAndLandsTh
 `pcr.committed` reused to mean "decided", and an executor that re-entered itself through refusal
 handling. This step closes them, in [`pending_writes_loop.go`](../../internal/git/pending_writes_loop.go):
 
-- Every write kind (window, atomic batch, resync, a save's empty record, a refusal's empty commit)
-  is decided into the pending writes and committed by `materialize`. `l.commit`, `retain` and the commit guard
-  are gone, with the separate resync, atomic and refusal-touch commit paths.
+- Every write kind (window, atomic batch, resync, a save's empty record) is decided into the
+  pending writes and committed by `materialize`. `l.commit`, `retain` and the commit guard are gone,
+  with the separate resync and atomic commit paths.
 - One place classifies an attempt: committed (`settleCommitted`), failed for good (`settleFailed`,
   terminal for that write), or kept pending for the retry, with any waiting resync caller answered
-  (`replyToDeferredResyncs`). A write's origin (the resync caller, the atomic request,
-  the refusal a touch answers) rides with it so its outcome can be settled there.
-- `materialize` is never re-entered. A refusal's empty commit decided while a refused write is being
-  settled is appended to the pending writes, and the running pass commits it in order. No push starts inside a
-  pass.
+  (`replyToDeferredResyncs`). A write's origin (the resync caller, the atomic request) rides
+  with it so its outcome can be settled there.
+- `materialize` is never re-entered, and no push starts inside a pass.
 - Every commit re-reads its write's prune policy, as a replay does
   (`TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy`, a review finding). The read comes
   from the informer cache.
@@ -383,8 +381,7 @@ producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
   beyond its payload and message, so the byte budget also bounds the item count, empty records
   included. The producer sizes each event and snapshot once, off the loop, and the loop reuses the
   size. The charge is serialized YAML, not heap: a queued object is held as an unstructured map of
-  about six times that. Overshoot is limited to work accepted before the outage began and to work
-  the loop derives from accepted work, such as a refusal's empty commit.
+  about six times that. Overshoot is limited to work accepted before the outage began.
 - **Pause is a latch.** A payload that would cross the budget is refused and pauses the branch;
   every later payload is refused until the retry clears, which means a publication landed or
   nothing is owed. Room under the budget again, a partial replay, or a remote that can be read but

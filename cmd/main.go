@@ -38,6 +38,7 @@ import (
 	ctrladmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/applier"
 	"github.com/ConfigButler/gitops-reverser/internal/attribution"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -132,6 +133,7 @@ func main() {
 	workerManager.SetSSHHostKeyConfig(cfg.sshHostKeys)
 	workerManager.SetCredentialTransportPolicy(cfg.credentialPolicy)
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
+	setupPushReceiver(mgr, cfg, workerManager)
 
 	// Watch ingestion manager (placeholder, will get EventRouter set later)
 	watchMgr := &watch.Manager{
@@ -179,6 +181,13 @@ func main() {
 	// The read-only twin of the refusal reporter: the refresher re-reads an idle target's folder,
 	// and a folder somebody else broke in Git produces no Kubernetes event to notice it by.
 	workerManager.SetScanAcceptanceReporter(watchMgr.ReportGitPathScan)
+	// The branch workers decide when a GitTarget's applier may apply; the dispatcher delivers it,
+	// off their queues, to the Flux objects in each target's source cluster.
+	applyDispatcher := applier.NewDispatcher(
+		mgr.GetClient(), watchMgr.ApplierDynamicClient, mgr.GetEventRecorderFor("gittarget"),
+		ctrl.Log.WithName("applier"))
+	fatalIfErr(mgr.Add(applyDispatcher), "unable to add apply request dispatcher to manager")
+	workerManager.SetApplyRequester(applyDispatcher)
 
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{
@@ -345,6 +354,8 @@ func main() {
 		Recorder:      mgr.GetEventRecorderFor("gittarget"),
 
 		GitRefreshInterval: cfg.gitRefreshInterval,
+		ApplierClients:     watchMgr.ApplierDynamicClient,
+		ApplyRequests:      applyDispatcher,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
@@ -447,6 +458,7 @@ type appConfig struct {
 	attributionCollectionWindow time.Duration
 	attributionCollectionUIDCap int
 	auditRouteAnnotationKey     string
+	receiverBindAddress         string
 	// replicaCount is how many replicas of this Deployment run. The process cannot observe that
 	// itself, so the chart templates it in from .Values.replicaCount. It exists for exactly one
 	// check: the in-memory fact transport only works when the audit receiver and the resolver are
@@ -661,6 +673,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"known_hosts at all. A present-but-unparseable known_hosts is always a hard error.")
 	fs.BoolVar(&cfg.credentialPolicy.AllowInsecureGitHTTP, "insecure-allow-git-http", false,
 		"INSECURE, dev/throwaway clusters only: permit credentials with http:// GitProvider URLs.")
+	bindReceiverFlags(fs, &cfg)
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.
 		Development: false,
@@ -688,6 +701,9 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		return appConfig{}, err
 	}
 	if err := validateAdmissionWebhookConfig(cfg); err != nil {
+		return appConfig{}, err
+	}
+	if err := validateReceiverConfig(cfg); err != nil {
 		return appConfig{}, err
 	}
 	// Rejected rather than read as "keep everything": a negative age has no meaning, and 0 already
