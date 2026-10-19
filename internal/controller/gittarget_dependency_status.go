@@ -65,10 +65,14 @@ func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionV
 // object that contradicts itself for minutes, with StreamsRunning already back to True because the
 // stream-state channel told it so directly. That made the mirrored condition unusable for alerting.
 //
-// Only Status and Reason are compared. Both are low-cardinality and are what a printer column or an
-// alert keys on, whereas the mirrored Message is free-form and moves with transient stream detail;
-// including it would re-enqueue every rule of a target on churn that changes no verdict. A
-// message-only drift self-corrects on the next Status or Reason move.
+// Only Status, Reason and the Stalled verdict are compared. All three are low-cardinality and are
+// what a printer column or an alert keys on, whereas the mirrored Message is free-form and moves
+// with transient stream detail; including it would re-enqueue every rule of a target on churn that
+// changes no verdict. A message-only drift self-corrects on the next move of any of the three.
+//
+// The verdict is compared on its own because one reason can be either: the apply-trigger gate
+// reports the same reason as a stall or as progress, so a target can flip Stalled while its mirrored
+// Status and Reason stay put, and the rule judges its stall from that verdict (see ruleReadiness).
 func gitTargetReadyProjectionChanged() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc:  func(event.CreateEvent) bool { return true },
@@ -85,7 +89,8 @@ func gitTargetReadyProjectionChanged() predicate.Predicate {
 			}
 			before := gitTargetReadyCondition(*oldTarget)
 			after := gitTargetReadyCondition(*newTarget)
-			return before.Status != after.Status || before.Reason != after.Reason
+			return before.Status != after.Status || before.Reason != after.Reason ||
+				gitTargetStalled(*oldTarget) != gitTargetStalled(*newTarget)
 		},
 	}
 }
