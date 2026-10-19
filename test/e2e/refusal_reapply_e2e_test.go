@@ -45,6 +45,7 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 	)
 
 	BeforeAll(func() {
+		allowCrossNamespaceAppliers()
 		By("creating the test namespace")
 		testNs = testNamespaceFor("manager-refusal-reapply")
 		_, _ = kubectlRun("create", "namespace", testNs)

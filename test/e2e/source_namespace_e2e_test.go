@@ -271,7 +271,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		By("asserting the terminal refusal is published with a fix-naming message")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
 			"SourceNamespaceAuthorized", "False", "SourceNamespaceNotAllowed",
-			"allowAnySourceNamespace")
+			"spec.allowCrossNamespace.sources")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
 			"Stalled", "True", "SourceNamespaceNotAllowed", "")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
@@ -307,7 +307,8 @@ metadata:
 spec:
   accessFrom:
     names: [%s]
-  allowAnySourceNamespace: %t
+  allowCrossNamespace:
+    sources: %t
 `, name, allowedNS, delegate)
 	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
 }

@@ -37,6 +37,7 @@ var _ = Describe("Flux Restart Recovery", Label("flux-restart-recovery"), Serial
 	)
 
 	BeforeAll(func() {
+		allowCrossNamespaceAppliers()
 		testNs = testNamespaceFor("flux-restart-recovery")
 		appliedNs = testNs + "-applied"
 		fluxName = "flux-recovery-" + testNs

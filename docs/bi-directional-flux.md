@@ -176,9 +176,14 @@ information only and never affects `Ready`: one source for `apps` and `infra` is
   with its apply window open, for as long as it runs.
 - `spec.dependsOn`: a dependency whose apply failed is suspended with its generation unapplied, so
   its dependents wait until GitOps Reverser's retry of it succeeds.
-- It may live in any namespace. GitOps Reverser resumes only a `Kustomization` whose source fetches
-  this `GitProvider`'s repository and branch, so naming one elsewhere grants nothing that write
-  access to the repository does not already give.
+- It lives in the trigger's namespace unless the trigger's `ClusterProvider` sets
+  `allowCrossNamespace.appliers: true`; a trigger naming one elsewhere without it reports
+  `ApplierNamespaceNotAllowed`. A `Kustomization` in `flux-system` therefore needs the grant. It is
+  a delegation, not owner consent: every namespace the provider's `accessFrom` admits may then
+  suspend and apply any `Kustomization` in reach of the provider's identity whose source fetches the
+  repository its `GitProvider` names. Nothing proves that the namespace owns the `Kustomization`, or
+  may write to that repository: the binding compares URLs. See
+  [what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
 - Several `GitTarget`s may name one `FluxTrigger`, for a `Kustomization` whose `path` covers several
   folders. It is applied once for all of them.
 - Two `GitProvider`s may name one repository. The branch counts as quiet only when both of their
@@ -289,6 +294,7 @@ The trigger reports `Configured` and `Held`, and its `Ready` includes both:
 | `Configured`: `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository` | stalled |
 | `Configured`: `NamespaceNotAuthorized` | The `clusterProviderRef` names a provider whose `accessFrom` does not admit the trigger's namespace | stalled |
 | `Configured`: `ClusterProviderNotFound` | The `clusterProviderRef` names a provider that does not exist | progressing |
+| `Configured`: `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the trigger's, and the `ClusterProvider` does not set `allowCrossNamespace.appliers` | stalled |
 | `Configured`: `HeldByAnotherTrigger` | Another `FluxTrigger` holds this `Kustomization` | stalled: delete one of the two |
 | `Held`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
 | `Held`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |

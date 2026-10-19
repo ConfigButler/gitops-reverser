@@ -11,7 +11,7 @@ spec:
   branch: main
   path: clusters/home
   # The WatchRule beside this file names source namespaces other than its own. The
-  # ClusterProvider's allowAnySourceNamespace is the only grant that needs, and the
+  # ClusterProvider's allowCrossNamespace.sources is the only grant that needs, and the
   # source credential's RBAC bounds what it can actually read.
   # No placement declared and no kustomization anywhere in the subtree, so the
   # ladder falls through to the built-in identity path:

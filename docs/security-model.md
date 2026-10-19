@@ -48,8 +48,8 @@ RBAC above is the hard maximum; *within* it, scope is carried by the rule **kind
 
 - A **`WatchRule`** selects namespaced resources. Each `spec.rules[]` item watches the rule's own
   namespace by default. Naming any other source namespace — including `sourceNamespace: "*"` —
-  requires `ClusterProvider.spec.allowAnySourceNamespace`, a platform-admin delegation that is false
-  by default. That flag is the only namespace policy in this direction: what may actually be read is
+  requires `ClusterProvider.spec.allowCrossNamespace.sources`, a platform-admin delegation that is
+  false by default. That flag is the only namespace policy in this direction: what may actually be read is
   bounded by the provider credential's own Kubernetes RBAC, and a `"*"` reaches every namespace that
   credential can read, as one cluster-wide watch.
 
@@ -107,6 +107,7 @@ namespace it already knows. Narrowing that further is
 | Redis/Valkey queue | Buffers decoded audit events in transit; not an audit archive. |
 | Audit ingress (`/audit-webhook/default` for the default provider) | Accepts audit traffic; protected by mutual TLS via cert-manager. |
 | Generated Secret material | Signing keys and generated age keys live in cluster Secrets. |
+| `ClusterProvider.spec.allowCrossNamespace.appliers` | Lets every namespace `accessFrom` admits suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`, through the provider's identity. A delegation, not owner consent: it does not prove the namespace owns the applier or its repository. A trigger only acts while an eligible `GitTarget` names it, and the binding check compares the `GitProvider` URL, not write access. |
 
 ## Secret data the controller writes to Git
 

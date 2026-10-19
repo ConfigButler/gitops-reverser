@@ -403,6 +403,21 @@
               "type": "object",
               "description": "Deny-by-default control-cluster namespace policy (names and/or selector) for which namespaces may reference this provider from a GitTarget.",
               "additionalProperties": true
+            },
+            "allowCrossNamespace": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "What an admitted namespace may reach outside itself through this provider.",
+              "properties": {
+                "sources": {
+                  "type": "boolean",
+                  "description": "A WatchRule may watch other namespaces, \"*\" included."
+                },
+                "appliers": {
+                  "type": "boolean",
+                  "description": "A FluxTrigger or ArgoCDTrigger may name a Kustomization or Application in another namespace."
+                }
+              }
             }
           }
         }

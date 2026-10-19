@@ -61,7 +61,7 @@ The two directions, which share the word "source" and must not share anything el
   `ClusterProvider` from a `GitTarget`. `spec.accessFrom` (the spelling is Flux's, on purpose).
 - **Source namespace** is the source-cluster direction: which source-cluster namespace a rule reads
   objects from. `WatchRule.spec.rules[].sourceNamespace`, gated by
-  `ClusterProvider.spec.allowAnySourceNamespace`.
+  `ClusterProvider.spec.allowCrossNamespace.sources`.
 
 A sentence about namespace policy names one of those two. Never "namespace access" unqualified.
 

@@ -25,4 +25,7 @@ spec:
   {{- end }}
   accessFrom:
     {{- toYaml .Values.clusterProvider.default.accessFrom | nindent 4 }}
+  allowCrossNamespace:
+    sources: {{ .Values.clusterProvider.default.allowCrossNamespace.sources }}
+    appliers: {{ .Values.clusterProvider.default.allowCrossNamespace.appliers }}
 {{- end }}

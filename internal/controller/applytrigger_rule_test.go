@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
@@ -23,6 +24,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 )
 
 // The rule (review 7): a trigger acts only while an eligible GitTarget references it. These tests
@@ -435,4 +437,82 @@ func TestApplyTriggerRule_AGitTargetEventRerunsTheTriggersItNames(t *testing.T) 
 
 	argo := &ApplyTriggerReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplyTriggerKindArgoCD}
 	assert.Empty(t, argo.gitProviderToTriggers(context.Background(), platformProvider()), "another kind's")
+}
+
+// TestApplyTriggerRule_AnApplierInAnotherNamespaceNeedsTheOptIn is B1: a namespace a ClusterProvider
+// admits may suspend and apply an applier in another namespace only when the provider sets
+// spec.allowCrossNamespace.appliers; one in the trigger's own namespace needs nothing. Refused, the
+// trigger never asks the applier's cluster, and holds nothing.
+func TestApplyTriggerRule_AnApplierInAnotherNamespaceNeedsTheOptIn(t *testing.T) {
+	for _, kind := range []string{configbutleraiv1alpha3.ApplyTriggerKindFlux, configbutleraiv1alpha3.ApplyTriggerKindArgoCD} {
+		for name, tc := range map[string]struct {
+			sameNamespace, optIn bool
+			wantStatus           metav1.ConditionStatus
+			wantReason           string
+		}{
+			"another namespace, without the opt-in": {
+				wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonApplierNamespaceNotAllowed,
+			},
+			"another namespace, with the opt-in": {optIn: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded},
+			"its own namespace, which needs nothing": {
+				sameNamespace: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded,
+			},
+		} {
+			t.Run(kind+"/"+name, func(t *testing.T) {
+				r, calls := applierNamespaceReconciler(t, kind, tc.sameNamespace, tc.optIn)
+
+				got := reconcileTrigger(t, r)
+
+				configured := findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
+				require.NotNil(t, configured)
+				assert.Equal(t, tc.wantStatus, configured.Status, configured.Message)
+				assert.Equal(t, tc.wantReason, configured.Reason)
+				if tc.wantStatus == metav1.ConditionFalse {
+					assert.Contains(t, configured.Message, "spec.allowCrossNamespace.appliers")
+					assert.True(t, conditionIsTrue(*got.StatusConditions(), ConditionTypeStalled))
+					assert.Zero(t, *calls, "the applier's cluster is never asked")
+					assert.Empty(t, got.GetFinalizers(), "and nothing is held")
+				}
+			})
+		}
+	}
+}
+
+// applierNamespaceReconciler is a reconciler of kind over the trigger team-a/checkout, whose
+// applier is in team-a when sameNamespace is set and in flux-system or argocd otherwise, with the
+// default ClusterProvider setting allowCrossNamespace.appliers when optIn is set. It counts the
+// lookups of the applier's cluster.
+func applierNamespaceReconciler(
+	t *testing.T, kind string, sameNamespace, optIn bool,
+) (*ApplyTriggerReconciler, *int) {
+	t.Helper()
+	trigger := ctrlclient.Object(testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+	appliers := applierFluxObjects()
+	if kind == configbutleraiv1alpha3.ApplyTriggerKindArgoCD {
+		trigger = testArgoCDTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+		appliers = []runtime.Object{applierArgoApplication(nil)}
+	}
+	if sameNamespace {
+		switch typed := trigger.(type) {
+		case *configbutleraiv1alpha3.FluxTrigger:
+			typed.Spec.KustomizationRef.Namespace = ""
+		case *configbutleraiv1alpha3.ArgoCDTrigger:
+			typed.Spec.ApplicationRef.Namespace = ""
+		}
+		for _, obj := range appliers {
+			obj.(*unstructured.Unstructured).SetNamespace("team-a")
+		}
+	}
+	provider := admitting(configbutleraiv1alpha3.DefaultClusterProviderName, "team-a")
+	if !optIn {
+		provider.Spec.AllowCrossNamespace = nil
+	}
+	r := triggerReconciler(triggerTestClient(t, trigger, provider), kind, applierFakeSource(t, appliers...), nil, true)
+	calls := new(int)
+	clients := r.ApplierClients
+	r.ApplierClients = func(ctx context.Context, cluster string) (dynamic.Interface, error) {
+		*calls++
+		return clients(ctx, cluster)
+	}
+	return r, calls
 }

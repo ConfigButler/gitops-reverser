@@ -75,8 +75,8 @@ func snClusterProvider(delegate bool) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: snProvider},
 		Spec: configv1alpha3.ClusterProviderSpec{
-			AccessFrom:              &configv1alpha3.NamespaceMatcher{Names: []string{snTenantNS}},
-			AllowAnySourceNamespace: delegate,
+			AccessFrom:          &configv1alpha3.NamespaceMatcher{Names: []string{snTenantNS}},
+			AllowCrossNamespace: &configv1alpha3.ClusterProviderCrossNamespace{Sources: delegate},
 		},
 	}
 }

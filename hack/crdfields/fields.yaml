@@ -67,8 +67,16 @@ kinds:
         doc: >-
           Deny-by-default list of control-cluster namespaces that may reference this provider.
           Omitted, none may; an empty `selector: {}` admits every namespace
-      - path: allowAnySourceNamespace
-        doc: Whether rules may watch namespaces other than their own, `*` included
+      - path: allowCrossNamespace.sources
+        default: "`false`"
+        doc: >-
+          Whether rules may watch namespaces other than their own, `*` included. See
+          [cross-namespace grants](#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace)
+      - path: allowCrossNamespace.appliers
+        default: "`false`"
+        doc: >-
+          Whether triggers may name a `Kustomization` or `Application` in another namespace than
+          their own
       - path: attribution.auditRoute
         default: the provider's own name
         doc: >-
@@ -84,6 +92,8 @@ kinds:
         skip: the old spelling of `client.qps`, kept in the schema only so admission refuses it
       - path: burst
         skip: the old spelling of `client.burst`, kept in the schema only so admission refuses it
+      - path: allowAnySourceNamespace
+        skip: removed for `allowCrossNamespace.sources`, kept in the schema only so admission refuses `true`
 
   - kind: GitTarget
     title: "`GitTarget` (namespaced): which branch and folder"

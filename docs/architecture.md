@@ -351,7 +351,7 @@ The two namespace controls intentionally live in different planes:
 
 - `ClusterProvider.spec.accessFrom` authorizes **control-cluster** namespaces to reference the
   provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
-- `ClusterProvider.spec.allowAnySourceNamespace` delegates the CHOICE of source namespace to the
+- `ClusterProvider.spec.allowCrossNamespace.sources` delegates the CHOICE of source namespace to the
   `GitTarget`s that provider admits. It grants nothing: what may actually be read from the source
   cluster is bounded by that credential's own Kubernetes RBAC, which is the only bound there is. The
   operator reads no `Namespace` objects in a source cluster for authorization.

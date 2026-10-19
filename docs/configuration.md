@@ -74,7 +74,8 @@ fields that need more than a line.
 |---|---|---|
 | `kubeConfig` | the operator's own cluster | Points at a remote source cluster instead of the one the operator runs in |
 | `accessFrom` | **no namespace** | Deny-by-default list of control-cluster namespaces that may reference this provider. Omitted, none may; an empty `selector: {}` admits every namespace |
-| `allowAnySourceNamespace` | `false` | Whether rules may watch namespaces other than their own, `*` included |
+| `allowCrossNamespace.sources` | `false` | Whether rules may watch namespaces other than their own, `*` included. See [cross-namespace grants](#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace) |
+| `allowCrossNamespace.appliers` | `false` | Whether triggers may name a `Kustomization` or `Application` in another namespace than their own |
 | `attribution.auditRoute` | the provider's own name | Audit route this provider joins. See [audit route](#audit-route-and-auditfactsreceived) |
 | `client.qps` | `20` | Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted |
 | `client.burst` | `30` | Client burst for this source cluster. Ignored when `kubeConfig` is omitted |
@@ -509,22 +510,39 @@ with the shown label, may reference `prod-eu-1`. `names` and `selector` are ORed
 policy admits no control-cluster namespace.
 
 Which namespaces are read *from the source cluster* is bounded by the source connection's Kubernetes
-RBAC: the credential's own RBAC is the hard maximum, and there is no second allow-list beside it. A
-`WatchRule` may name a source namespace other than its own only when this provider also sets:
+RBAC: the credential's own RBAC is the hard maximum, and there is no second allow-list beside it.
+
+### What a namespace may reach outside itself (`spec.allowCrossNamespace`)
 
 ```yaml
-  # Deny-by-default. While false, a WatchRule mirroring through this provider may
-  # watch only its OWN namespace.
-  allowAnySourceNamespace: true
+  allowCrossNamespace:   # what an admitted namespace may reach outside itself
+    sources: false       # a WatchRule may watch other namespaces, "*" included
+    appliers: false      # a trigger may name a Kustomization or Application in another namespace
 ```
 
-That flag delegates the *choice* of source namespace to the `GitTarget`s this provider admits; it
-grants nothing on its own, since the credential still has to be able to read what is chosen. It is
-required for **every** cross-source-namespace request, including `sourceNamespace: "*"`. Setting it on an
-**in-cluster** provider is a much sharper decision than on a remote one: there the config plane *is*
-the watched cluster, so it deliberately bypasses live namespace RBAC and lets the owner of an
-admitted `GitTarget` mirror another namespace's objects into a Git destination they control. That is
-legitimate to grant on purpose, which is why it is explicit and defaults to false.
+Both default to `false`, and each is a power of its own:
+
+- **`sources`** lets a namespace *read* other namespaces' objects into its own Git. A `WatchRule` may
+  name a source namespace other than its own only while it is `true`; while it is `false`, it
+  watches only its own namespace, and `sourceNamespace: "*"` is refused outright. It delegates the
+  *choice* of source namespace and grants nothing on its own, since the credential still has to be
+  able to read what is chosen.
+- **`appliers`** lets a namespace *suspend and apply* another namespace's deployments: a
+  `FluxTrigger` or `ArgoCDTrigger` may name a `Kustomization` or `Application` outside its own
+  namespace, such as `flux-system`. While it is `false`, a trigger naming one elsewhere reports
+  `Configured=False` (`ApplierNamespaceNotAllowed`). The trigger's own namespace is always allowed;
+  in a remote cluster that is the namespace of the same name.
+
+**It is a delegation, not owner consent.** You trust every namespace `accessFrom` admits with
+everything in reach of the provider's identity. Neither flag proves that a namespace owns the
+objects it reaches, or the repository its `GitTarget` writes. Setting either on an **in-cluster**
+provider is a much sharper decision than on a remote one: there the config plane *is* the watched
+cluster, so it deliberately bypasses live namespace RBAC and lets the owner of an admitted object
+act on another namespace through the operator's own credential. That is legitimate to grant on
+purpose, which is why each is explicit and defaults to false.
+
+`allowAnySourceNamespace`, which `sources` replaces, is no longer read. Setting it to `true` is
+refused; see [UPGRADING](UPGRADING.md).
 
 `spec.kubeConfig` and `GitTarget.spec.clusterProviderRef` are immutable: changing either would silently
 make an existing materialization mean a different source cluster. Rotate credential *contents* in the
@@ -1268,7 +1286,8 @@ Until one does, the trigger reads and writes nothing in the applier's cluster, a
 also `Ready` only once `Held` is `True` (`Suspended`, or `Applying` while an apply of GitOps
 Reverser's is in flight). `NotBound` (`Unknown` while a naming `GitTarget` cannot be judged yet,
 `False` once each is refused for different reasons), `SourceMismatch` and `NamespaceNotAuthorized`
-report the `GitTarget`s naming the trigger. The other `False` reasons are `ApplierNotFound`,
+report the `GitTarget`s naming the trigger, and `ApplierNamespaceNotAllowed` an applier in another
+namespace without the provider's `allowCrossNamespace.appliers`. The other `False` reasons are `ApplierNotFound`,
 `UnsupportedSource`, `AutomatedSyncEnabled` (Argo CD), `SuspendOwnedElsewhere` (Flux), `Forbidden`,
 `NamespaceNotAuthorized`, `ClusterProviderNotFound` and `HeldByAnotherTrigger`; each guide's table
 says what they mean for its applier and how to fix them
@@ -2009,7 +2028,7 @@ Naming anything other than the rule's own namespace, **including `"*"`**, is aut
 things, both of which must hold:
 
 1. the `GitTarget`'s namespace is admitted by its `ClusterProvider`'s `accessFrom`; and
-2. that `ClusterProvider` sets `allowAnySourceNamespace: true`.
+2. that `ClusterProvider` sets `allowCrossNamespace.sources: true`.
 
 There is no third condition on the `GitTarget`. What a target may read from its source cluster is
 bounded by that cluster's RBAC for the provider's credential: a request these two conditions permit
@@ -2035,7 +2054,7 @@ spec:
 `"*"` is one cluster-wide list and one cluster-wide watch per matched type, not one of each per
 namespace. Connection count is bounded per matched type, but object count, traffic, and memory
 still grow with the cluster. Access is bounded by the source credential's RBAC
-and by nothing else, which is why it is refused outright while `allowAnySourceNamespace` is false.
+and by nothing else, which is why it is refused outright while `allowCrossNamespace.sources` is false.
 
 A `"*"` item and a named-namespace item for the same type **overlap**, so one `GitTarget` cannot
 hold both: the newer rule is refused (see [overlapping collections](#overlapping-collections)). Keep
@@ -2045,7 +2064,7 @@ The outcome for all items is aggregated into one `SourceNamespaceAuthorized` con
 `kubectl get watchrules -o wide`. A **denied** explicit name refuses the whole `WatchRule`
 (`Ready=False`, `Stalled=True`, no streams) rather than silently trimming that item and mirroring
 part of what you asked for; the message names the failing item by index and by what it selects.
-Authorization is re-evaluated on every reconcile, so withdrawing `allowAnySourceNamespace` revokes a
+Authorization is re-evaluated on every reconcile, so withdrawing `allowCrossNamespace.sources` revokes a
 running rule rather than only affecting new ones.
 
 This changes only which namespace is **watched**. Git placement always follows each mirrored

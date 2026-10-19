@@ -7,6 +7,28 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `allowAnySourceNamespace` is gone; `allowCrossNamespace.sources` replaces it
+
+**Breaking.** `ClusterProvider.spec.allowAnySourceNamespace` is no longer read.
+`spec.allowCrossNamespace.sources` takes its place, beside `spec.allowCrossNamespace.appliers` for
+apply triggers. A cross-namespace `WatchRule` (a `rules[].sourceNamespace` other than its own
+namespace, `"*"` included) that relied on the old field stops mirroring and reports
+`SourceNamespaceAuthorized=False` (`SourceNamespaceNotAllowed`), and the message names
+`allowCrossNamespace.sources`. Set it after the upgrade, on each provider that set the old field:
+
+```yaml
+spec:
+  allowCrossNamespace:
+    sources: true
+  # allowAnySourceNamespace: true   <- remove this line
+```
+
+For the chart-rendered `default` provider, set `clusterProvider.default.allowCrossNamespace.sources:
+true`. A provider that still stores `allowAnySourceNamespace: true` keeps working as one without it,
+and any change to its `spec` is refused ("allowAnySourceNamespace was removed; set
+allowCrossNamespace.sources") until the line is removed or set to `false`. `false`, which the old
+default stored on every provider, is accepted.
+
 ## `onRefusal: PushEmptyCommit` is now `onRefusal: Reapply`, and needs an apply trigger
 
 **Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
@@ -25,7 +47,11 @@ rejected until the field changes. The old CRD rejects `Reapply`, so move in this
 1. Before upgrading, set `onRefusal: Ignore` on those targets.
 2. Upgrade the CRDs, the controller and its permissions.
 3. Create a `FluxTrigger` or `ArgoCDTrigger` for each applier, name it in each target's
-   `spec.applyTriggerRef`, and wait for `ApplyTriggerReady=True`.
+   `spec.applyTriggerRef`, and wait for `ApplyTriggerReady=True`. A trigger whose applier is in
+   another namespace than its own, such as `flux-system` or `argocd`, needs
+   `allowCrossNamespace.appliers: true` on its `ClusterProvider` (Helm:
+   `clusterProvider.default.allowCrossNamespace.appliers`), or it reports
+   `ApplierNamespaceNotAllowed`.
 4. Set `onRefusal: Reapply` where you want it.
 
 See [who applies this folder](configuration.md#who-applies-this-folder-specapplytriggerref) and

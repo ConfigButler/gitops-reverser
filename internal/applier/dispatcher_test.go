@@ -136,7 +136,11 @@ func reapplying(target *v1alpha3.GitTarget) *v1alpha3.GitTarget {
 func clusterProvider(name string, admits ...string) *v1alpha3.ClusterProvider {
 	return &v1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       v1alpha3.ClusterProviderSpec{AccessFrom: &v1alpha3.NamespaceMatcher{Names: admits}},
+		Spec: v1alpha3.ClusterProviderSpec{
+			AccessFrom: &v1alpha3.NamespaceMatcher{Names: admits},
+			// The test appliers live in flux-system and argocd, not in the triggers' namespace.
+			AllowCrossNamespace: &v1alpha3.ClusterProviderCrossNamespace{Appliers: true},
+		},
 	}
 }
 

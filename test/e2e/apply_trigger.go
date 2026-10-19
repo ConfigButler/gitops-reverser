@@ -63,6 +63,17 @@ spec:
 	Expect(err).NotTo(HaveOccurred(), "failed to create ArgoCDTrigger %s/%s", namespace, name)
 }
 
+// allowCrossNamespaceAppliers lets the triggers that reach their applier through the default
+// ClusterProvider name one in another namespace, as the e2e appliers are: in flux-system and
+// argocd, while each spec's triggers live in its own namespace. Granting it is idempotent, and no
+// spec relies on its absence on the default provider, so parallel specs may all ask for it.
+func allowCrossNamespaceAppliers() {
+	GinkgoHelper()
+	_, err := kubectlRun("patch", "clusterprovider", "default", "--type=merge", "-p",
+		`{"spec":{"allowCrossNamespace":{"appliers":true}}}`)
+	Expect(err).NotTo(HaveOccurred(), "failed to let the default ClusterProvider's triggers reach other namespaces")
+}
+
 // nameApplyTrigger points a GitTarget at the trigger of kind (FluxTrigger or ArgoCDTrigger) and
 // name, and sets onRefusal when it is not empty.
 func nameApplyTrigger(namespace, gitTarget, kind, trigger, onRefusal string) {

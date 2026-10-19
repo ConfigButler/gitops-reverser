@@ -6,7 +6,7 @@ These samples are quick starting points for common GitOps Reverser setups.
 - `quickstart-gittarget.yaml`: Minimal `GitTarget` using a non-root `spec.path` and SOPS encryption auto-generation.
 - `quickstart-watchrule.yaml`: Minimal `WatchRule` for ConfigMaps.
 - `clusterprovider.yaml`: The conventional `default` provider (in-cluster) and a remote one, showing
-  `accessFrom` and `allowAnySourceNamespace`.
+  `accessFrom` and `allowCrossNamespace`.
 - `clusterwatchrule.yaml`: Minimal `ClusterWatchRule` for cluster-scoped resources.
 - `fluxtrigger.yaml`, `argocdtrigger.yaml`: An apply trigger holding the Flux `Kustomization` or
   the Argo CD `Application` that applies `example-target`'s folder, for its `spec.applyTriggerRef`.

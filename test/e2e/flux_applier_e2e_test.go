@@ -39,6 +39,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 	)
 
 	BeforeAll(func() {
+		allowCrossNamespaceAppliers()
 		testNs = testNamespaceFor("manager-flux-applier")
 		appliedNs = testNs + "-applied"
 		fluxName = "flux-applier-" + testNs

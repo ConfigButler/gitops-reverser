@@ -14,6 +14,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -56,7 +57,7 @@ func wrsnClusterProvider(delegate bool) *configbutleraiv1alpha3.ClusterProvider 
 			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{
 				Names: []string{wrsnTenantNS},
 			},
-			AllowAnySourceNamespace: delegate,
+			AllowCrossNamespace: &configbutleraiv1alpha3.ClusterProviderCrossNamespace{Sources: delegate},
 		},
 	}
 }
@@ -189,8 +190,32 @@ func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "allowAnySourceNamespace",
+	assert.Contains(t, cond.Message, "spec.allowCrossNamespace.sources",
 		"the message must name the fix")
+}
+
+// TestReconcile_TheRemovedFieldDelegatesNothing: a ClusterProvider that still stores
+// allowAnySourceNamespace: true, from the release that read it, delegates nothing; the WatchRule
+// that relied on it is refused, and the message names the field that replaced it.
+func TestReconcile_TheRemovedFieldDelegatesNothing(t *testing.T) {
+	ctx := context.Background()
+	objects := wrsnBaseObjects(false, wrsnSourceNS)
+	for _, obj := range objects {
+		if provider, ok := obj.(*configbutleraiv1alpha3.ClusterProvider); ok {
+			provider.Spec.AllowCrossNamespace = nil
+			provider.Spec.RemovedAllowAnySourceNamespace = ptr.To(true)
+		}
+	}
+	f := newWRSNFixture(t, objects)
+
+	_, err := f.reconcile(ctx)
+
+	require.NoError(t, err)
+	assert.Empty(t, f.compiledNames(), "the removed field is never read")
+	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
+	assert.Contains(t, cond.Message, "does not set spec.allowCrossNamespace.sources")
 }
 
 // TestReconcile_DeniedSourceNamespacePublishesTheFailedTrio pins the whole kstatus verdict a
@@ -260,7 +285,7 @@ func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *tes
 	// The platform admin withdraws the delegation.
 	var provider configbutleraiv1alpha3.ClusterProvider
 	require.NoError(t, f.client.Get(ctx, k8stypes.NamespacedName{Name: wrsnProvider}, &provider))
-	provider.Spec.AllowAnySourceNamespace = false
+	provider.Spec.AllowCrossNamespace = nil
 	require.NoError(t, f.client.Update(ctx, &provider))
 
 	// Observe the world at the exact moment the data plane is replanned.
@@ -398,7 +423,7 @@ func TestReconcile_WildcardWithoutDelegationIsRefused(t *testing.T) {
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "allowAnySourceNamespace")
+	assert.Contains(t, cond.Message, "spec.allowCrossNamespace.sources")
 	assert.Equal(t, metav1.ConditionTrue, wrsnCondition(t, rule, ConditionTypeStalled).Status,
 		"a refusal is terminal: nothing this controller does will change the verdict")
 }

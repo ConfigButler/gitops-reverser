@@ -186,8 +186,14 @@ spec:
 
 `clusterProviderRef` names the cluster that holds the `Application`: the operator's own cluster for
 `default`, or a management cluster for a hub Argo CD that deploys to other clusters. The
-`GitTarget`'s own `spec.clusterProviderRef` stays the cluster it mirrors. Both references are
-immutable: delete and recreate the trigger to hold another `Application`. The trigger writes nothing
+`GitTarget`'s own `spec.clusterProviderRef` stays the cluster it mirrors. An `Application` in
+another namespace than the trigger's, such as `argocd`, needs `allowCrossNamespace.appliers: true` on
+that `ClusterProvider`; without it the trigger reports `ApplierNamespaceNotAllowed`. That is a
+delegation, not owner consent: every namespace the provider admits may then sync any `Application`
+in reach of its identity whose source is the repository its `GitProvider` names, and nothing proves
+it owns the `Application` or may write to the repository. See
+[what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
+Both references are immutable: delete and recreate the trigger to hold another `Application`. The trigger writes nothing
 to the `Application` until it syncs it, so deleting it needs no hand-back: switch automated sync on
 afterwards if the `Application` should sync on its own again.
 
@@ -233,6 +239,7 @@ The trigger reports `Configured`, and its `Ready` includes it:
 | `Forbidden` | The applier cluster's identity may not update the `Application` | stalled |
 | `NamespaceNotAuthorized` | The `clusterProviderRef` names a provider whose `accessFrom` does not admit the trigger's namespace | stalled |
 | `ClusterProviderNotFound` | The `clusterProviderRef` names a provider that does not exist | progressing |
+| `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger's, and the `ClusterProvider` does not set `allowCrossNamespace.appliers` | stalled |
 | `HeldByAnotherTrigger` | An older `ArgoCDTrigger` an eligible `GitTarget` references names the same `Application` in the same cluster and holds it; this one starts no sync, and takes over once that one is deleted or no longer referenced | stalled: delete one of the two |
 
 The `GitTarget` reports `ApplyTriggerReady`: `True` when the trigger is `Ready` and its

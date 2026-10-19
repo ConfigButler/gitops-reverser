@@ -355,6 +355,14 @@ clusterProvider:
     # out of the box; tighten it to a names list or a label selector in a real install.
     accessFrom:
       selector: {}
+    # What a namespace accessFrom admits may reach OUTSIDE itself through this provider's identity.
+    # Each is a power of its own: sources lets a WatchRule read other namespaces' objects into its
+    # own Git ("*" included); appliers lets a FluxTrigger or ArgoCDTrigger suspend and apply a
+    # Kustomization or Application in another namespace. It is a delegation to every admitted
+    # namespace, not proof that a namespace owns what it reaches.
+    allowCrossNamespace:
+      sources: false
+      appliers: false
 
 # RBAC configuration
 rbac:

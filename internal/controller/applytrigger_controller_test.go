@@ -97,12 +97,14 @@ func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
 	return fluxsim.New(t, client)
 }
 
-// admitting is a ClusterProvider whose accessFrom admits namespaces.
+// admitting is a ClusterProvider whose accessFrom admits namespaces, and which lets a trigger name
+// an applier in another namespace (the test appliers live in flux-system and argocd).
 func admitting(name string, namespaces ...string) *configbutleraiv1alpha3.ClusterProvider {
 	return &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Names: namespaces},
+			AccessFrom:          &configbutleraiv1alpha3.NamespaceMatcher{Names: namespaces},
+			AllowCrossNamespace: &configbutleraiv1alpha3.ClusterProviderCrossNamespace{Appliers: true},
 		},
 	}
 }

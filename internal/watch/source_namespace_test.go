@@ -50,8 +50,8 @@ func snbClusterProvider(delegate bool) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: snbProvider},
 		Spec: configv1alpha3.ClusterProviderSpec{
-			AccessFrom:              &configv1alpha3.NamespaceMatcher{Names: []string{snbTenantNS}},
-			AllowAnySourceNamespace: delegate,
+			AccessFrom:          &configv1alpha3.NamespaceMatcher{Names: []string{snbTenantNS}},
+			AllowCrossNamespace: &configv1alpha3.ClusterProviderCrossNamespace{Sources: delegate},
 		},
 	}
 }
@@ -184,7 +184,7 @@ func TestCompileWatchRule_WildcardIsRefusedWithoutDelegation(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.False(t, resolved.Admitted())
-	assert.Contains(t, resolved.Message, "allowAnySourceNamespace",
+	assert.Contains(t, resolved.Message, "spec.allowCrossNamespace.sources",
 		"the refusal must name the flag a platform admin has to set")
 	assert.Empty(t, m.RuleStore.SnapshotWatchRules())
 }
@@ -211,7 +211,7 @@ func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing
 	// The platform admin withdraws the delegation.
 	var stored configv1alpha3.ClusterProvider
 	require.NoError(t, m.Client.Get(ctx, k8stypes.NamespacedName{Name: snbProvider}, &stored))
-	stored.Spec.AllowAnySourceNamespace = false
+	stored.Spec.AllowCrossNamespace = nil
 	require.NoError(t, m.Client.Update(ctx, &stored))
 
 	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)

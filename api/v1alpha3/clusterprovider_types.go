@@ -35,6 +35,13 @@ const DefaultClusterProviderName = "default"
 // spec.qps and spec.burst moved to spec.client. A pruned field would apply cleanly and drop the
 // throttle without a word, so the old spellings stay in the schema only to be refused by name.
 // +kubebuilder:validation:XValidation:rule="!has(self.qps) && !has(self.burst)",message="spec.qps and spec.burst moved to spec.client.qps and spec.client.burst"
+//
+// spec.allowAnySourceNamespace was removed for spec.allowCrossNamespace.sources. A pruned field
+// would apply cleanly and stop the cross-namespace mirroring without a word, so it stays in the
+// schema only so that true is refused by name. The rule sits on spec, not on the field: any spec
+// change re-runs it, so CRD validation ratcheting cannot wave a stored true through on the next
+// edit. false stays accepted, because the old default stored it on every provider.
+// +kubebuilder:validation:XValidation:rule="!has(self.allowAnySourceNamespace) || !self.allowAnySourceNamespace",message="allowAnySourceNamespace was removed; set allowCrossNamespace.sources"
 type ClusterProviderSpec struct {
 	// KubeConfig names the SOURCE CLUSTER this provider represents and the credentials to reach it
 	// (Flux's meta.KubeConfigReference, embedded verbatim). OMITTED means the operator's own
@@ -60,26 +67,15 @@ type ClusterProviderSpec struct {
 	// +optional
 	AccessFrom *NamespaceMatcher `json:"accessFrom,omitempty"`
 
-	// The dangerous case is an IN-CLUSTER provider (kubeConfig omitted), where same-name coupling
-	// WAS the boundary: setting this bypasses live namespace RBAC, letting the owner of an admitted
-	// GitTarget mirror another namespace's objects through the operator's own cluster-wide
-	// credential into a destination they control. Legitimate to grant deliberately, never by
-	// default or as a side effect of another field, which is why it defaults to false.
-
-	// AllowAnySourceNamespace delegates SOURCE-namespace selection to the GitTargets this provider
-	// admits. While false (the default) a WatchRule mirroring through this provider may watch only
-	// its OWN namespace.
-	//
-	// It grants no access by itself: the source credential's own RBAC remains the hard maximum, and
-	// a request it permits still fails 403 if the credential cannot read that namespace. What it
-	// delegates is the AUTHORITY to choose, so set it only when the owners of admitted GitTargets
-	// are trusted to pick a subset of what that credential may read. Every cross-namespace request
-	// needs it, including a rules[].sourceNamespace of "*", which reaches every namespace the
-	// credential can read. It does not apply to ClusterWatchRule, which selects no namespaces at
-	// all.
+	// AllowCrossNamespace grants what a namespace this provider admits may reach outside itself,
+	// through this provider's credential. Omitted, it may reach nothing outside itself.
 	// +optional
-	// +kubebuilder:default=false
-	AllowAnySourceNamespace bool `json:"allowAnySourceNamespace,omitempty"`
+	AllowCrossNamespace *ClusterProviderCrossNamespace `json:"allowCrossNamespace,omitempty"`
+
+	// RemovedAllowAnySourceNamespace is the removed spelling of allowCrossNamespace.sources. It is
+	// never read; setting it to true is refused.
+	// +optional
+	RemovedAllowAnySourceNamespace *bool `json:"allowAnySourceNamespace,omitempty"`
 
 	// Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
 	// the built-in defaults apply (20 QPS, burst 30). Ignored when kubeConfig is omitted (the
@@ -101,6 +97,33 @@ type ClusterProviderSpec struct {
 	// source-cluster object already supplies that scope.
 	// +optional
 	Attribution *ClusterProviderAttribution `json:"attribution,omitempty"`
+}
+
+// Each field is a power of its own, granted on purpose: sources lets a namespace READ other
+// namespaces' objects into its own Git, appliers lets it suspend and apply other namespaces'
+// deployments. On an IN-CLUSTER provider (kubeConfig omitted) same-name coupling WAS the boundary,
+// so either one bypasses live namespace RBAC: the owner of an admitted object acts on another
+// namespace through the operator's own credential. It is a delegation, not owner consent: it does
+// not prove that the namespace owns the objects it reaches, or the repository it writes.
+
+// ClusterProviderCrossNamespace is what a namespace a ClusterProvider admits may reach outside
+// itself. The trust is in every admitted namespace, for everything in reach of the provider's
+// identity; it does not prove that the namespace owns what it reaches.
+type ClusterProviderCrossNamespace struct {
+	// Sources lets a WatchRule mirroring through this provider watch namespaces other than its own,
+	// including a rules[].sourceNamespace of "*", which reaches every namespace the credential can
+	// read. False (the default): a WatchRule watches only its own namespace. It grants no access by
+	// itself: the source credential's RBAC remains the hard maximum. It does not apply to
+	// ClusterWatchRule, which selects no namespaces at all.
+	// +optional
+	Sources bool `json:"sources,omitempty"`
+
+	// Appliers lets a FluxTrigger or ArgoCDTrigger reaching its applier through this provider name a
+	// Kustomization or Application in another namespace than its own. False (the default): only
+	// the trigger's own namespace, which in a remote cluster is the namespace of the same name; a
+	// trigger naming another is Configured=False (ApplierNamespaceNotAllowed).
+	// +optional
+	Appliers bool `json:"appliers,omitempty"`
 }
 
 // ClusterProviderClient holds the per-cluster kube-client throttles.
@@ -275,11 +298,16 @@ func (p *ClusterProvider) AllowsNamespace(nsName string, nsLabels map[string]str
 	return p.Spec.AccessFrom.Matches(nsName, nsLabels)
 }
 
-// AllowsAnySourceNamespace reports whether this provider delegates source-namespace selection to
-// the GitTargets it admits. See the field's documentation: false (the default) means a WatchRule
-// mirroring through this provider may watch only its own namespace.
-func (p *ClusterProvider) AllowsAnySourceNamespace() bool {
-	return p.Spec.AllowAnySourceNamespace
+// AllowsCrossNamespaceSources reports whether a WatchRule mirroring through this provider may
+// watch namespaces other than its own (spec.allowCrossNamespace.sources).
+func (p *ClusterProvider) AllowsCrossNamespaceSources() bool {
+	return p.Spec.AllowCrossNamespace != nil && p.Spec.AllowCrossNamespace.Sources
+}
+
+// AllowsCrossNamespaceAppliers reports whether a trigger reaching its applier through this provider
+// may name one in another namespace than its own (spec.allowCrossNamespace.appliers).
+func (p *ClusterProvider) AllowsCrossNamespaceAppliers() bool {
+	return p.Spec.AllowCrossNamespace != nil && p.Spec.AllowCrossNamespace.Appliers
 }
 
 func init() {

@@ -31,7 +31,9 @@ flowchart TD
 ```
 
 Everything bi-directional is opt-in and off by default: the apply triggers, the push receiver,
-`onRefusal: Reapply`, and the chart's `applierAccess` grants. A `GitTarget` without
+`onRefusal: Reapply`, the chart's `applierAccess` grants, and the `ClusterProvider`'s
+`allowCrossNamespace.appliers`, which a trigger needs to hold an applier outside its own namespace,
+such as one in `flux-system` or `argocd`. A `GitTarget` without
 `spec.applyTriggerRef` never reads, patches or syncs anything of Flux's or Argo CD's, so a
 `Kustomization` keeps its interval and an `Application` keeps automated sync.
 
