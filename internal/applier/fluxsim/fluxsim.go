@@ -70,6 +70,10 @@ type Sim struct {
 	Client *dynamicfake.FakeDynamicClient
 	// version is the last resourceVersion given out.
 	version atomic.Int64
+	// writes makes each read-modify-write of an object (a patch, a status write) one step, as the
+	// API server's resourceVersion check does: the tracker does not, so a status write that read
+	// the object before a resume landed would otherwise write the resume away.
+	writes sync.Mutex
 
 	mu sync.Mutex
 	// remote is the revision a GitRepository's fetch finds, by GitRepository.
@@ -444,6 +448,8 @@ func reconciled(obj *unstructured.Unstructured, revision, status string) {
 // resourceVersion.
 func (s *Sim) WriteStatus(_ context.Context, gvr schema.GroupVersionResource, key types.NamespacedName,
 	change func(*unstructured.Unstructured)) {
+	s.writes.Lock()
+	defer s.writes.Unlock()
 	current, err := s.Client.Tracker().Get(gvr, key.Namespace, key.Name)
 	if err != nil {
 		return
@@ -548,6 +554,8 @@ func (s *Sim) patchKustomization(action k8stesting.Action) (bool, runtime.Object
 		return true, nil, err
 	}
 	apply := patch.PatchType == types.ApplyPatchType
+	s.writes.Lock()
+	defer s.writes.Unlock()
 	held, err := s.patched(patch, body, apply)
 	if err != nil {
 		return true, nil, err

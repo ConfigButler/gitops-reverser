@@ -210,6 +210,54 @@ func TestSim_ManagedFields(t *testing.T) {
 	assert.Empty(t, owners(ks))
 }
 
+// A status write and a patch are each one step, as the API server's resourceVersion check makes
+// them: a resume that arrives while a reconcile is writing its status lands after that write, and is
+// not written away by it. CI once lost a resume this way, and the operation never ended.
+func TestSim_AStatusWriteNeverWritesAResumeAway(t *testing.T) {
+	sim := newSim(t, true)
+	defer sim.PauseKustomizations()()
+
+	read, release := make(chan struct{}), make(chan struct{})
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		sim.WriteStatus(context.Background(), KustomizationGVR(), ksKey, func(ks *unstructured.Unstructured) {
+			close(read)
+			<-release
+			_ = unstructured.SetNestedField(ks.Object, "T0", "status", "lastHandledReconcileAt")
+		})
+	}()
+	<-read
+
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion("kustomize.toolkit.fluxcd.io/v1")
+	obj.SetKind(kindKustomization)
+	obj.SetNamespace(ksKey.Namespace)
+	obj.SetName(ksKey.Name)
+	obj.SetAnnotations(map[string]string{fluxmeta.ReconcileRequestAnnotation: "T1"})
+	require.NoError(t, unstructured.SetNestedField(obj.Object, false, "spec", "suspend"))
+	resumed := make(chan error, 1)
+	go func() {
+		_, err := sim.Client.Resource(KustomizationGVR()).Namespace(ksKey.Namespace).Apply(context.Background(),
+			ksKey.Name, obj, metav1.ApplyOptions{FieldManager: manager, Force: true})
+		resumed <- err
+	}()
+	select {
+	case err := <-resumed:
+		t.Fatalf("the resume landed inside the status write (err %v)", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-written
+	require.NoError(t, <-resumed)
+
+	ks := sim.Kustomization(ksKey)
+	assert.False(t, suspended(ks), "the resume stands")
+	assert.Equal(t, "T1", ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation])
+	handled, _, _ := unstructured.NestedString(ks.Object, "status", "lastHandledReconcileAt")
+	assert.Equal(t, "T0", handled, "and so does the status write")
+}
+
 // A write that changes the object moves its resourceVersion, and one that changes nothing does
 // not. A server-side apply that carries a resourceVersion or a uid has them checked as the API
 // server checks them (measured in envtest): a resourceVersion that moved is a Conflict, another
