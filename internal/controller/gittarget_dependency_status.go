@@ -12,6 +12,19 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
+// gitTargetStalled is the GitTarget's own verdict that it will not converge without a human: Ready
+// is published and not True, and Stalled is True. A rule stalls on this verdict rather than on a
+// list of the reasons behind it, so a reason the GitTarget learns to stall on reaches its rules
+// without a second edit here.
+func gitTargetStalled(target configbutleraiv1alpha3.GitTarget) bool {
+	ready := findCondition(target.Status.Conditions, GitTargetConditionReady)
+	if ready == nil || ready.Status == metav1.ConditionTrue {
+		return false
+	}
+	stalled := findCondition(target.Status.Conditions, GitTargetConditionStalled)
+	return stalled != nil && stalled.Status == metav1.ConditionTrue
+}
+
 func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionValue {
 	if ready := findCondition(target.Status.Conditions, GitTargetConditionReady); ready != nil {
 		if ready.Status == metav1.ConditionTrue {
@@ -21,8 +34,8 @@ func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionV
 				Message: fmt.Sprintf("GitTarget %s/%s is ready", target.Namespace, target.Name),
 			}
 		}
-		if stalled := findCondition(target.Status.Conditions, GitTargetConditionStalled); stalled != nil &&
-			stalled.Status == metav1.ConditionTrue {
+		if gitTargetStalled(target) {
+			stalled := findCondition(target.Status.Conditions, GitTargetConditionStalled)
 			reason, message := conditionReasonMessage(stalled, ReasonFailed, "GitTarget is stalled")
 			return conditionValue{Status: metav1.ConditionFalse, Reason: reason, Message: message}
 		}

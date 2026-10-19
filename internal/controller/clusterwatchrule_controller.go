@@ -234,7 +234,8 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 		clusterRule.Spec.GitTargetRef.Namespace,
 		clusterRule.Spec.GitTargetRef.Name,
 	)
-	return commitRule(ctx, st, ruleReadiness(clusterRule.Status.Conditions, "ClusterWatchRule", msg))
+	return commitRule(ctx, st,
+		ruleReadiness(clusterRule.Status.Conditions, gitTargetStalled(target), "ClusterWatchRule", msg))
 }
 
 // gateClusterWatchRule is the ClusterWatchRule gate and the ONE place this controller compiles a
