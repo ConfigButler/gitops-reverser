@@ -347,9 +347,10 @@ spec:
                   "Reapply" asks this target's applier (through spec.applyTriggerRef, which it requires) to
                   apply the current tip once the branch holds no open window and no pending writes, which
                   reverts the refused edit and nothing that is still waiting to be published. Only this
-                  target's applier is asked; if its GitRepository has to fetch to reach the tip, every
-                  Kustomization on that GitRepository applies the new revision, as for any push. Give the
-                  folder its own GitRepository to keep the apply to it alone.
+                  target's applier is asked. If its GitRepository has to fetch to reach the tip, the
+                  Kustomizations a FluxTrigger holds stay suspended and ignore the new artifact; only the
+                  consumers no trigger holds, listed in the trigger's status.source.otherConsumers, apply it, as
+                  they would for any push.
 
                   It fires only for an edit to a document the folder ALREADY holds, in a write that removes no
                   document anywhere: re-applying would otherwise prune, or put back, an object somebody else is

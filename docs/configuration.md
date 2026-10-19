@@ -1334,8 +1334,9 @@ spec:
 to this target's applier alone, and it waits for a quiet branch, so an allowed edit still in a
 commit window is published before the apply and is not reverted with the refused one. An
 `Application` is asked to sync the tip. When a `Kustomization`'s `GitRepository` has to fetch to
-reach the tip, every `Kustomization` on that `GitRepository` applies the new revision, as it would
-for any push; give the folder its own `GitRepository` if the apply must reach it alone. The
+reach the tip, the `Kustomization`s a `FluxTrigger` holds stay suspended and ignore the new artifact;
+only the consumers no trigger holds, listed in the trigger's `status.source.otherConsumers`, apply
+it, as they would for any push. The
 [bi-directional guide](bi-directional.md#choosing-speconrefusal) covers when to choose it.
 
 **It only fires for an edit to a document the folder already holds, and never for a write that

@@ -281,6 +281,8 @@ This chart automatically manages the following CRDs:
 - **`watchrules.configbutler.ai`** - Namespaced watch rules
 - **`clusterwatchrules.configbutler.ai`** - Cluster-scoped watch rules
 - **`commitrequests.configbutler.ai`** - One-shot "save now" signals that finalize the open commit window
+- **`fluxtriggers.configbutler.ai`** - Apply triggers holding a Flux `Kustomization` for bi-directional GitOps
+- **`argocdtriggers.configbutler.ai`** - Apply triggers holding an Argo CD `Application` for bi-directional GitOps
 
 ### CRD Lifecycle
 
@@ -293,8 +295,10 @@ This chart automatically manages the following CRDs:
 To manually remove CRDs after uninstallation:
 
 ```bash
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai clusterproviders.configbutler.ai
 ```
+
+Delete the triggers while the operator still runs, before this ([Uninstallation](#uninstallation)).
 
 > ⚠️ **Warning**: Deleting CRDs will also delete all custom resources of those types!
 
@@ -360,6 +364,20 @@ If upgrading from earlier chart versions:
 
 ## Uninstallation
 
+**Hand Flux its `Kustomization`s back first, while the operator still runs.** A `FluxTrigger` that
+holds its `Kustomization` carries the finalizer `configbutler.ai/flux-trigger`, and only the running
+operator removes it, once it has handed the `Kustomization` back. One left after `helm uninstall`
+keeps its namespace and the `fluxtriggers` CRD from being deleted, and its `Kustomization` stays
+suspended. Delete your `GitTarget`s, or the triggers, before uninstalling, and wait until they are
+gone:
+
+```bash
+kubectl delete fluxtriggers,argocdtriggers --all --all-namespaces --wait
+```
+
+A trigger that never held its `Kustomization`, such as one no `GitTarget` names, carries no
+finalizer. An `ArgoCDTrigger` never carries one.
+
 ```bash
 # Uninstall chart
 helm uninstall gitops-reverser --namespace gitops-reverser
@@ -368,7 +386,7 @@ helm uninstall gitops-reverser --namespace gitops-reverser
 kubectl delete namespace gitops-reverser
 
 # Delete CRDs (optional, but removes all custom resources)
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai clusterproviders.configbutler.ai
 ```
 
 ## Troubleshooting
