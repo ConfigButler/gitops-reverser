@@ -600,5 +600,5 @@ func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *te
 	require.NoError(t, err, "and left the replacement's alone")
 	assert.True(t, manager.ReplacementPending(
 		BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}),
-		"and the targets on the branch still owe a rebuild in the new one")
+		"and the targets on the branch still wait to be rebuilt in the new one")
 }

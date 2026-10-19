@@ -309,7 +309,7 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		// React to a ClusterProvider's allowAnySourceNamespace (or accessFrom)
+		// React to a ClusterProvider's allowCrossNamespace.sources (or accessFrom)
 		// changing. The GitTarget->WatchRules edge above still cannot be relied on to carry this: a
 		// ClusterProvider change reaches the GitTarget as a status update that need not move the
 		// GitTarget's readiness at all, and only a readiness move re-enqueues the rules. Without

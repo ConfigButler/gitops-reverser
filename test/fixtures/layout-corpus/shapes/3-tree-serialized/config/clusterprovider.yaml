@@ -10,4 +10,5 @@ metadata:
 spec:
   accessFrom:
     names: [homelab-config]
-  allowAnySourceNamespace: true
+  allowCrossNamespace:
+    sources: true

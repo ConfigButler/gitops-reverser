@@ -66,8 +66,8 @@ type targetPassStatus struct {
 	Landed bool
 }
 
-// DeclareStatus is the observable state of a GitTarget's declaration: whether the owner still
-// owes it a plan pass, and how the last one ended. It is what makes a target whose passes keep
+// DeclareStatus is the observable state of a GitTarget's declaration: whether a plan pass is still
+// pending for it, and how the last one ended. It is what makes a target whose passes keep
 // timing out read as failing rather than as idle.
 type DeclareStatus struct {
 	// Declared reports whether the GitTarget has ever reached DeclareForGitTarget. It is the
@@ -78,7 +78,7 @@ type DeclareStatus struct {
 	// ClusterID is the source cluster the declaration named — a ClusterProvider name, empty for
 	// the cluster the operator runs in. Meaningful only when Declared.
 	ClusterID string
-	// Pending reports whether a plan pass is owed — the target is dirty, or has never
+	// Pending reports whether a plan pass is pending — the target is dirty, or has never
 	// successfully applied a plan.
 	Pending bool
 	// Failures counts consecutive failed passes; LastError carries the most recent message.
@@ -86,7 +86,7 @@ type DeclareStatus struct {
 	LastError string
 }
 
-// Settled reports whether the target's declaration has landed: it declared, nothing is owed,
+// Settled reports whether the target's declaration has landed: it declared, no pass is pending,
 // and the last pass succeeded.
 func (s DeclareStatus) Settled() bool {
 	return s.Declared && !s.Pending && s.Failures == 0

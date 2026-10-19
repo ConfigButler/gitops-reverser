@@ -40,7 +40,7 @@ Almost every naming mistake in this project's history came from one ambiguity: t
 without a side, or "namespace" without a direction. Fix the side first and the rest of the
 vocabulary follows.
 
-**Control cluster.** The cluster the operator runs in, and where its own six kinds live. When a
+**Control cluster.** The cluster the operator runs in, and where its own eight kinds live. When a
 document says "a namespace" with no qualifier, it means a control-cluster namespace.
 
 **Source cluster.** The cluster whose objects are mirrored into Git. A `ClusterProvider` names one.
@@ -61,7 +61,7 @@ The two directions, which share the word "source" and must not share anything el
   `ClusterProvider` from a `GitTarget`. `spec.accessFrom` (the spelling is Flux's, on purpose).
 - **Source namespace** is the source-cluster direction: which source-cluster namespace a rule reads
   objects from. `WatchRule.spec.rules[].sourceNamespace`, gated by
-  `ClusterProvider.spec.allowAnySourceNamespace`.
+  `ClusterProvider.spec.allowCrossNamespace.sources`.
 
 A sentence about namespace policy names one of those two. Never "namespace access" unqualified.
 
@@ -190,16 +190,46 @@ and the two are not interchangeable.
 
 ## Applying back
 
-**Applier.** The object that applies a folder to its source cluster: a Flux `Kustomization`, an
-Argo CD `Application`, or a webhook standing in for another tool. `GitTarget.spec.applier` names
-it. Not "reconciler", which also names this operator's own controllers, and not "orchestrator",
-which says nothing about what it does to the cluster.
+**Applier.** The object that applies a folder to its source cluster: a Flux `Kustomization` or an
+Argo CD `Application`. An apply trigger names it. Not
+"reconciler", which also names this operator's own controllers, and not "orchestrator", which says
+nothing about what it does to the cluster.
+
+**Apply trigger.** This operator's resource that holds one applier and starts every apply it makes: a
+`FluxTrigger` (`spec.kustomizationRef`) or an `ArgoCDTrigger` (`spec.applicationRef`). A
+`GitTarget` names one with `spec.applyTriggerRef` and reports it in its `ApplyTriggerReady`
+condition. The trigger is never called the applier: the applier is the object it triggers. Not
+"Argo trigger", which names a trigger of Argo Events.
+
+**Eligible.** A `GitTarget` is eligible for the trigger it names when it is in the trigger's
+namespace, not being deleted, admitted by its `ClusterProvider`s, and writes the repository and
+branch the applier fetches. A trigger acts only while an eligible `GitTarget` references it; one
+nothing references is `NotReferenced`. Eligibility is judged from those inputs alone, never from
+the `GitTarget`'s `Ready`. "Bound" names a trigger with at least one eligible `GitTarget`.
+
+**In line.** The triggers that may hold one applier: those an eligible `GitTarget` references, and a
+`FluxTrigger` that holds the `Kustomization` or is handing it back. One of them holds it; the
+others report `HeldByAnotherTrigger`.
+
+**Held.** How a `FluxTrigger` reports its `Kustomization`, from the trigger's side: `Suspended`
+(suspended under GitOps Reverser's field manager, the last suspend handled, nothing applies),
+`Applying` (resumed for an apply GitOps Reverser started), `Suspending` (a suspend was sent, and
+Flux has not handled its token yet), `Releasing` (being handed back to Flux), `NotReferenced`
+(nothing to hold) and `NotConfigured`. A suspend counts as done only once it is handled: by then no
+reconcile that started before it is still running. Not "fenced", and not "resumed", which says what
+happens to the `Kustomization` rather than what the trigger does. **Hand back** is releasing
+`spec.suspend`, so Flux applies on its own again.
 
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
-(`ForeignCommit`, `Refusal`, `CatchUp`). It asks; it never reports that the apply happened.
+(`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`). It asks; the operation it starts is followed
+until the applier's status shows the apply completed. A reason is **pending** for an applier from
+the moment the branch worker decides it until an attempt **carries** it; an operation that
+succeeds **answers** it, and one that does not gives it back to pending. A pending `Repair` shows
+on the trigger as `status.repairPending`.
 
-**Quiet branch.** A branch whose worker holds no open commit window and no pending writes. Apply
-requests go out only on a quiet branch, because only then is nothing live missing from the tip.
+**Quiet branch.** A branch on which no branch worker writing that repository and branch holds an
+open commit window or pending writes. Apply requests go out only on a quiet branch, because only
+then is nothing live missing from the tip.
 
 **Receiver.** `GitProvider.spec.receiver`, the endpoint a Git host notifies on a push. The word and
 its `type` values are Flux's. A delivery to it is a hint to look, never a fact about the branch.
@@ -410,3 +440,5 @@ outage.
 | sha, revision (for a commit hash) | commit | `revision` is Flux's word for a polymorphic identifier, and is reserved for one |
 | namespace access (bare) | access, or source namespace | two directions, two names |
 | reconciler, orchestrator (for Flux or Argo CD) | applier | "reconciler" also names our own controllers |
+| owed, owes, debt, obligation | pending, decided, sent, waiting for | an accounting word names no state: say what is pending, for whom, and what ends it |
+| fence, fenced (for what a trigger does to its applier) | suspend, held | the `Kustomization` is suspended, and the trigger holds it; say which, and whether the suspend is handled |

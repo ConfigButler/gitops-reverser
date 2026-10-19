@@ -274,6 +274,7 @@ func (r *EventRouter) enqueueScopedResync(
 	desired []manifestanalyzer.DesiredResource,
 	resourceVersion string,
 	heal bool,
+	renderFidelityRevision uint64,
 ) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resyncTarget(ctx, gitDest)
 	if err != nil {
@@ -288,7 +289,10 @@ func (r *EventRouter) enqueueScopedResync(
 		Scope:              &scope,
 		SourceCollection:   sourceCollection,
 		Heal:               heal,
-		Result:             resultCh,
+		// The worker records the scope clean itself once the resync applies, before the drain
+		// below hears of it, so a live event queued behind the resync meets the gate it produced.
+		RenderFidelityRevision: renderFidelityRevision,
+		Result:                 resultCh,
 	})
 	return resultCh, enqueued, nil
 }

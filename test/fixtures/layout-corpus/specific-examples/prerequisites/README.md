@@ -23,13 +23,13 @@ provider in another namespace.
 The examples here use the operator's in-cluster source. A target that captures objects from a
 different source namespace needs one grant, and it belongs to the platform admin: the
 `ClusterProvider` delegates the *ability* to choose a source namespace
-(`allowAnySourceNamespace`). What may actually be read is bounded by that provider credential's own
+(`allowCrossNamespace.sources`). What may actually be read is bounded by that provider credential's own
 RBAC in the source cluster. Concrete specimens are in
 [`../../shapes/1-flat-serialized/config/`](../../shapes/1-flat-serialized/config/clusterprovider.yaml)
 and [`../../shapes/3-tree-serialized/config/`](../../shapes/3-tree-serialized/config/clusterprovider.yaml).
 
 The source-cluster rule and source-namespace authorization are separate checks. `accessFrom` decides
-which configuration namespaces may reference the provider at all; `allowAnySourceNamespace` decides
+which configuration namespaces may reference the provider at all; `allowCrossNamespace.sources` decides
 whether those namespaces' `GitTarget`s may look outside their own.
 
 ## Credentials stay out of this design

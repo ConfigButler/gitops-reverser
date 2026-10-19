@@ -112,27 +112,15 @@ git:
   # "every tick". gitopsreverser_git_fetches_total{reason="refresh"} is what it costs.
   refreshInterval: 10m
 
-# The push receiver: the endpoint a Git host's push webhook points at, so GitOps Reverser learns in
-# seconds, instead of at the next refresh, that somebody else pushed. A GitProvider opts in with
-# spec.receiver and publishes its path as status.webhookPath (/git-push/<digest of the token>).
-receiver:
-  # host:port the receiver listens on (passed as --receiver-bind-address), e.g. ":9292". Empty (the
-  # default) serves no receiver: a foreign push is then still found, by the next rejected push or by
-  # git.refreshInterval. When set, the chart adds a containerPort and a <release>-receiver Service
-  # (port service.ports.receiver). The listener is plain HTTP, because a Git host cannot present the
-  # client certificate the audit listener requires: expose the Service to your Git host with an
-  # Ingress or Gateway route of your own that terminates TLS, the way Flux's webhook-receiver is
-  # exposed. Every request must still carry a valid signature for the route it names.
-  bindAddress: ""
 
-# Optional RBAC that lets GitOps Reverser ask an applier in this cluster to apply a commit, after
-# somebody else pushed to a branch a GitTarget writes. Off unless asked for, since most installs run
-# one applier or none.
+# Optional RBAC that lets GitOps Reverser hold the applier an apply trigger names in this cluster:
+# a FluxTrigger's Kustomization, suspended and resumed for each apply, or an ArgoCDTrigger's
+# Application, synced for each apply. Off unless asked for, since one-way mirroring needs neither.
 applierAccess:
   # Grant get/patch on kustomize.toolkit.fluxcd.io Kustomizations and source.toolkit.fluxcd.io
-  # GitRepositories, plus create on SelfSubjectAccessReviews (to check that access before relying
-  # on it). Cluster-wide, because a GitTarget's applier can live in any
-  # namespace.
+  # GitRepositories, list on Kustomizations, HelmReleases and HelmCharts (to find a
+  # GitRepository's other consumers), plus create on SelfSubjectAccessReviews (to check that access
+  # before relying on it). Cluster-wide, because a trigger's applier can live in any namespace.
   flux: false
   # Grant get/update on argoproj.io Applications (a sync is started by updating the Application's
   # operation, as Argo CD's own automated sync does), plus create on SelfSubjectAccessReviews.
@@ -248,6 +236,22 @@ servers:
         # Leave empty to use the chart-generated Secret name.
         secretNameOverride: ""
 
+  # The push receiver: the endpoint a Git host's push webhook points at, so GitOps Reverser learns in
+  # seconds, instead of at the next refresh, that somebody else pushed. A GitProvider opts in with
+  # spec.receiver and publishes its path as status.webhookPath (/git-push/<digest of the token>).
+  # Off by default: a foreign push is then still found, by the next rejected push or by
+  # git.refreshInterval. Enabled, the chart adds a containerPort and a <release>-receiver Service
+  # (port service.ports.receiver). The listener is plain HTTP, because a Git host cannot present the
+  # client certificate the audit listener requires: expose the Service to your Git host with an
+  # Ingress or Gateway route of your own that terminates TLS, the way Flux's webhook-receiver is
+  # exposed. Every request must still carry a valid signature for the route it names.
+  receiver:
+    enabled: false
+    # host:port the receiver binds to (passed as --receiver-bind-address).
+    bindAddress: ":9292"
+    # Container/Service target port; must match the port in bindAddress above.
+    port: 9292
+
 # Redis/Valkey holds each GitTarget's watch resume cursors (warm restart) and, when attribution is
 # enabled, the audit attribution facts. Empty by default: the chart runs in configured-author mode with
 # no Redis (watches cold-replay on restart). Set addr to enable warm restarts; required when
@@ -355,12 +359,20 @@ clusterProvider:
     # out of the box; tighten it to a names list or a label selector in a real install.
     accessFrom:
       selector: {}
+    # What a namespace accessFrom admits may reach OUTSIDE itself through this provider's identity.
+    # Each is a power of its own: sources lets a WatchRule read other namespaces' objects into its
+    # own Git ("*" included); appliers lets a FluxTrigger or ArgoCDTrigger suspend and apply a
+    # Kustomization or Application in another namespace. It is a delegation to every admitted
+    # namespace, not proof that a namespace owns what it reaches.
+    allowCrossNamespace:
+      sources: false
+      appliers: false
 
 # RBAC configuration
 rbac:
   create: true
   # Which types the reverser may read. It never writes to a watched type, so verbs are always
-  # get/list/watch. Shape is enforced by values.schema.json; see docs/rbac.md.
+  # get/list/watch (applierAccess, above, is a separate grant). Shape is enforced by values.schema.json; see docs/rbac.md.
   #
   #   any      cluster-wide read on everything, so a WatchRule can name any type — including
   #            one installed later. It also means the reverser can list and read every Secret
@@ -433,8 +445,8 @@ service:
   ports:
     audit: 9444
     metrics: 8080
-    # Port of the <release>-receiver Service, rendered only when receiver.bindAddress is set. It
-    # forwards to the port in receiver.bindAddress.
+    # Port of the <release>-receiver Service, rendered only when servers.receiver.enabled. Port 80,
+    # like Flux's webhook-receiver Service, since an Ingress or Gateway route sits in front of it.
     receiver: 80
 
 auditService:

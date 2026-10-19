@@ -338,7 +338,7 @@ func (h *AuditHandler) processEvents(ctx context.Context, route auditRoute, even
 // deciding each from whether it produced a fact at all and then from whether its OWN stream
 // appended.
 //
-// An event that produced no fact is not a failure — nothing was owed for it — but it is not queued
+// An event that produced no fact is not a failure — nothing was expected for it — but it is not queued
 // either. It used to be counted queued, which claimed an append that never happened and hid the
 // whole population that can never be attributed behind the busiest value on the counter. This is
 // the only place it can be counted: no fact exists, so no fact-side counter can ever see it.

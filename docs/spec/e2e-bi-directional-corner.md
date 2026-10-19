@@ -25,8 +25,8 @@ Prometheus, cert-manager) are delivered as Flux `HelmRelease`s from
 cannot be removed. Argo CD is *not* load-bearing: only bi-directional tests need
 it. Installing it in all four CI legs would tax every leg to serve two specs.
 
-**Cohesion.** [`docs/bi-directional.md`](../bi-directional.md) currently says, under
-"What is not complete yet":
+**Cohesion.** [`docs/bi-directional.md`](../bi-directional.md) said, under
+"What is not complete yet", when this corner was designed:
 
 > equivalent alignment patterns for Argo CD or other GitOps operators
 
@@ -318,8 +318,9 @@ Per the existing per-file CRD-group convention, add
 [`test/e2e/icecream.go`](../../test/e2e/icecream.go) and register it in the
 suite's CRD pre-clean loop (`e2e_suite_test.go:225`).
 
-The Flux spec's body does not change. It keeps its exact-commit-count discipline,
-which works because it drives Flux as a manually triggered applier.
+The Flux spec keeps its exact-commit-count discipline, which works because it
+drives Flux as a manually triggered applier until its last phase hands the
+`Kustomization` to a `FluxTrigger`.
 
 ### 5. Push-triggered reconciliation (the webhook)
 
@@ -360,9 +361,9 @@ turns automated sync on, and there the webhook's refresh does auto-sync.
 
 ## Test design: `argocd_bi_directional_e2e_test.go`
 
-Every spec runs the standard of [`docs/argocd.md`](../argocd.md): the `Application`
-has automated sync off (`automated: {enabled: false, prune: true}`) and is named by
-the `GitTarget`'s `spec.applier.applicationRef`, so every sync it runs is one GitOps
+Every spec runs the standard of [`docs/bi-directional-argocd.md`](../bi-directional-argocd.md): the `Application`
+has automated sync off (`automated: {enabled: false, prune: true}`) and is held by
+the `ArgoCDTrigger` the `GitTarget` names, so every sync it runs is one GitOps
 Reverser started, pinned to a commit it checked. The earlier phases that ran
 automated sync (`selfHeal: true` losing the edit, `ignoreDifferences`, and
 `selfHeal: false` with the webhook) are gone with it: they characterized an Argo CD
@@ -377,13 +378,16 @@ path would each stamp their own tracking-id on the same objects and raise
 
 The `Application` lives in the `argocd` namespace, targets
 `spec.destination.namespace = <testNs>`, `spec.source.path = <livePath>`,
-`targetRevision: main`, `directory.recurse: true`. The `GitProvider` has a
-`gitea` receiver, registered as a Gitea webhook next to Argo CD's own.
+`targetRevision: main`, `directory.recurse: true`. The trigger lives in the test
+namespace, so each describe first grants `allowCrossNamespace.appliers` on the
+`default` `ClusterProvider`, as a user must for an `Application` in `argocd`. The
+`GitProvider` has a `gitea` receiver, registered as a Gitea webhook next to Argo
+CD's own.
 
 Ordering matters: `SetupRepo` leaves the Gitea repo **empty**, so the spec seeds
 `main` first, creates the `Application` (nothing to sync yet), and only then stands
-up the reverser pipeline, whose `GitTarget` needs the `Application` to report
-`ApplierConfigured=True`.
+up the reverser pipeline, whose `GitTarget` needs its trigger's `Application` to
+report `ApplyTriggerReady=True`.
 
 ### Spec A — a Git-side push is synced through a pinned `ForeignCommit`
 
@@ -393,7 +397,8 @@ up the reverser pipeline, whose `GitTarget` needs the `Application` to report
 3. Assert the `Application`'s operation state is GitOps Reverser's: initiated by
    `gitops-reverser` with `automated: true`, reason `ForeignCommit` in its info,
    `sync.revision` and `syncResult.revision` both the pushed commit, `Succeeded`,
-   with resources. The `GitTarget`'s `status.applier` names the same commit.
+   with resources. The trigger's `status.operation` names the same commit, as
+   `Succeeded`, written by the branch worker with no reconcile asked for.
 4. Assert the **live** object carries `argocd.argoproj.io/tracking-id` (exact
    value format) and `kubectl.kubernetes.io/last-applied-configuration`, and the
    **committed file** carries neither, nor `managedFields` or `resourceVersion`.
@@ -414,7 +419,7 @@ The race the apply trigger exists for.
    `container: WaffleBowl` and wait for that commit.
 3. `Consistently` assert live stays `WaffleBowl`, the commit count is exactly
    baseline + 2, and the `Application`'s last `finishedAt` has not moved: GitOps
-   Reverser's own commits owe Argo CD no sync.
+   Reverser's own commits ask Argo CD for no sync.
 4. Assert Argo CD, refreshed by its webhook, reports the `Application` `Synced`:
    there was nothing to catch up.
 
@@ -427,8 +432,10 @@ env var no overlay declaration can express.
 1. Seed the base and overlay, create the `Application` on the overlay
    (kustomize), and deploy it with one manual sync, before any `GitTarget` names it.
 2. Drift `LOG_LEVEL` to `debug`.
-3. Create the `GitTarget` on the overlay with `applicationRef` and
-   `onRefusal: Reapply`, and a `WatchRule` on `deployments`.
+3. Create the `GitTarget` on the overlay, an `ArgoCDTrigger` holding the `Application`,
+   name the trigger in the `GitTarget`'s `spec.applyTriggerRef` with
+   `onRefusal: Reapply`, wait for `ApplyTriggerReady=True`, and create a `WatchRule`
+   on `deployments`.
 4. Assert the write is refused at the boundary (`WriteBoundaryRefused`), and that
    GitOps Reverser's `Refusal` sync, pinned to the tip, reverts `LOG_LEVEL` to
    `info`, with no commit for it.
@@ -436,13 +443,14 @@ env var no overlay declaration can express.
 ### Spec E — an `Application` with automated sync on is never synced
 
 1. Re-apply the `Application` with automated sync on (an `automated` block with no
-   `enabled`), and request a `GitTarget` reconcile, since the applier is read on
+   `enabled`), and request a trigger reconcile, since the applier is read on
    reconcile rather than watched.
-2. Assert `ApplierConfigured=False` with `AutomatedSyncEnabled`, and `Stalled`.
+2. Assert the trigger's `Configured=False` with `AutomatedSyncEnabled`, and the
+   `GitTarget`'s `ApplyTriggerReady=False` with the same reason, and `Stalled`.
 3. Push a Git-side change. Assert an `ApplyRequestFailed` Event: the `ForeignCommit`
    was decided and refused at the `Application`.
 4. `Consistently` assert no operation initiated by `gitops-reverser` names the
-   pushed commit, and `status.applier` is unchanged. Argo CD's own automated sync
+   pushed commit, and the trigger's `status.operation` is unchanged. Argo CD's own automated sync
    applies the push; that is not GitOps Reverser's.
 
 ### Spec D — arming the landmine (phase 2)
@@ -530,11 +538,14 @@ New matrix entry in `.github/workflows/ci.yml`:
 ```yaml
 - name: bi-directional
   script: "task test-e2e-bi-directional"
+  e2e_report_name: "bi-directional"
   needs_artifact: false
   coverage: "1"
-  e2e_ginkgo_procs: "2"
-  k3d_agent_count: "0"
 ```
+
+No `e2e_label_filter` and no `e2e_ginkgo_procs`: the task pins its own label filter
+and Ginkgo procs (`BI_DIRECTIONAL_GINKGO_PROCS`, default `3`), so values here would
+be ignored.
 
 `coverage: "1"` — the leg uses the default `config-dir` install, which carries the
 `GOCOVERDIR` overlay, so Codecov unions its `e2e` upload with the other legs and
@@ -545,8 +556,8 @@ check on `main` (only *Project image*, *Unit tests*, *Lint* are), so adding a le
 carries no merge-gating risk. The two specs are pulled out of `full-core`, so that
 leg gets faster.
 
-`--procs=2`: the two specs own separate Gitea repos and separate CRD groups, and
-neither is `Serial`.
+Three procs: the Flux, Argo CD and provenance spec files own separate Gitea repos,
+namespaces and resource names, and none is `Serial`.
 
 ## Risks
 
@@ -588,10 +599,10 @@ neither is `Serial`.
 
 ## References
 
-- [`docs/bi-directional.md`](../bi-directional.md) — the user-facing guidance this closes gaps in
-- [`docs/design/e2e-serial-registry.md`](e2e-serial-registry.md) — parallelism and shared cluster state
-- [`docs/design/e2e-ci-runner-sharding-plan.md`](../finished/e2e-ci-runner-sharding-plan.md) — leg membership and rebalancing
+- [`docs/bi-directional.md`](../bi-directional.md): the user-facing guidance this closes gaps in
+- [`docs/spec/e2e-serial-registry.md`](e2e-serial-registry.md): parallelism and shared cluster state
+- [`docs/finished/e2e-ci-runner-sharding-plan.md`](../finished/e2e-ci-runner-sharding-plan.md): leg membership and rebalancing
 - [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and
-  [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go) —
+  [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go):
   the two specs in this corner
-- [`internal/sanitize/types.go`](../../internal/sanitize/types.go) — the strip lists
+- [`internal/sanitize/types.go`](../../internal/sanitize/types.go): the strip lists

@@ -64,20 +64,25 @@ func (s *branchSiblings) remove(w *BranchWorker) {
 	s.wakeOthers(w)
 }
 
-// othersBusy reports whether another worker on w's repository and branch is busy writing.
-func (s *branchSiblings) othersBusy(w *BranchWorker) bool {
+// othersBusy reports whether another worker on w's repository and branch is busy writing, and
+// whether one has work items queued or in hand: a queued watch event is an edit that is live and
+// not yet decided, and the item a loop is handling may be committing and pushing before the wake
+// that publishes it ends.
+func (s *branchSiblings) othersBusy(w *BranchWorker) (bool, bool) {
 	key, ok := siblingKey(w)
 	if !ok {
-		return false
+		return false, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	writing, working := false, false
 	for sibling := range s.byKey[key] {
-		if sibling != w && sibling.busyWriting.Load() {
-			return true
+		if sibling != w {
+			writing = writing || sibling.busyWriting.Load()
+			working = working || sibling.inflightItems.Load() > 0
 		}
 	}
-	return false
+	return writing, working
 }
 
 // wakeOthers wakes every other worker on w's repository and branch, so one that held back an
@@ -108,7 +113,91 @@ func (w *BranchWorker) publishWriteBusy(busy bool) {
 	}
 }
 
-// siblingWriteBusy reports whether another worker on this repository and branch is busy writing.
-func (w *BranchWorker) siblingWriteBusy() bool {
-	return w.siblings != nil && w.siblings.othersBusy(w)
+// claimGroup records that w sends an attempt for an applier of group, and reports false, recording
+// nothing, when another worker on its repository and branch has one out for that group. Checking
+// and recording under one lock is what keeps two workers from sending for one group at once.
+func (s *branchSiblings) claimGroup(w *BranchWorker, group string) bool {
+	key, ok := siblingKey(w)
+	if !ok {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.groupOutLocked(key, w, group) {
+		return false
+	}
+	if w.groupsOut == nil {
+		w.groupsOut = map[string]struct{}{}
+	}
+	w.groupsOut[group] = struct{}{}
+	return true
+}
+
+// groupOutElsewhere reports whether another worker on w's repository and branch has an attempt out
+// for an applier of group.
+func (s *branchSiblings) groupOutElsewhere(w *BranchWorker, group string) bool {
+	key, ok := siblingKey(w)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.groupOutLocked(key, w, group)
+}
+
+func (s *branchSiblings) groupOutLocked(key string, w *BranchWorker, group string) bool {
+	for sibling := range s.byKey[key] {
+		if _, out := sibling.groupsOut[group]; out && sibling != w {
+			return true
+		}
+	}
+	return false
+}
+
+// publishGroupsOut replaces the groups w has attempts out for, and wakes the others when one of them
+// is no longer out: they may have held an attempt back for it.
+func (s *branchSiblings) publishGroupsOut(w *BranchWorker, groups map[string]struct{}) {
+	if _, ok := siblingKey(w); !ok {
+		return
+	}
+	s.mu.Lock()
+	released := false
+	for group := range w.groupsOut {
+		if _, out := groups[group]; !out {
+			released = true
+		}
+	}
+	w.groupsOut = groups
+	s.mu.Unlock()
+	if released {
+		s.wakeOthers(w)
+	}
+}
+
+// claimGroup records that this worker sends an attempt for an applier of group, unless a sibling
+// has one out for it (branchSiblings.claimGroup). An applier in no group claims nothing.
+func (w *BranchWorker) claimGroup(group string) bool {
+	return group == "" || w.siblings == nil || w.siblings.claimGroup(w, group)
+}
+
+// groupOutOnSibling reports whether a sibling has an attempt out for an applier of group.
+func (w *BranchWorker) groupOutOnSibling(group string) bool {
+	return group != "" && w.siblings != nil && w.siblings.groupOutElsewhere(w, group)
+}
+
+// releaseInflightItem takes one item off the in-flight count, and wakes the siblings when it was
+// the last: they may have held an attempt back for it.
+func (w *BranchWorker) releaseInflightItem() {
+	if w.inflightItems.Add(-1) == 0 && w.siblings != nil {
+		w.siblings.wakeOthers(w)
+	}
+}
+
+// siblingBusy reports whether another worker on this repository and branch is busy writing, and
+// whether one has work items queued or in hand (othersBusy).
+func (w *BranchWorker) siblingBusy() (bool, bool) {
+	if w.siblings == nil {
+		return false, false
+	}
+	return w.siblings.othersBusy(w)
 }

@@ -117,21 +117,24 @@ publish them over the incoming change.
 
 **GitOps Reverser decides when Git is applied to the cluster.** An apply is safe only when nothing
 live is missing from the commit being applied, and only the workers writing the branch can see the
-edits that are live and not yet pushed. So a `GitTarget` names its **applier**, the applier's own
-triggers are switched off, and the branch worker sends **apply requests** instead. A request is sent
-only on a **quiet branch**, with no open commit window and no pending writes on any worker writing
-that repository and branch:
+edits that are live and not yet pushed. So a `GitTarget` names an **apply trigger**, which holds
+its **applier** so that it applies nothing on its own (a Flux `Kustomization` is held suspended, an
+Argo CD `Application` has automated sync off), and the branch worker sends **apply requests**
+instead. A request is sent only on a **quiet branch**, with no open commit window and no pending
+writes on any worker writing that repository and branch:
 
 - for a commit somebody else pushed, after closing open windows and replaying the pending writes
   onto it, so the applied commit carries the API side's answer;
 - for a refused edit the target opted to revert;
-- for Flux only, to keep its artifact current after GitOps Reverser's own pushes, because Flux's
-  timers and restarts apply whatever artifact it holds. Argo CD is never asked to apply GitOps
-  Reverser's own commits: with automated sync off it applies nothing on its own, and a sync is pinned
-  to the commit the worker checked.
+- for an API edit that an apply reverted on the cluster after the edit was made, to put it back;
+- for Flux only, to catch up with GitOps Reverser's own pushes once the branch has been quiet for
+  the trigger's `quietPeriod`, because Flux's inventory learns of an object only from an apply of a
+  commit that holds it. Argo CD is never asked to apply GitOps Reverser's own commits: with automated
+  sync off it applies nothing on its own, and a sync is pinned to the commit the worker checked.
 
-The worker owns each request until it is delivered, and decides every retry the same way. A request
-asks and never reports; it runs off the publication path and cannot fail a publication. **Built:**
+The worker keeps each reason pending until an apply operation answers it, and decides every retry
+the same way. A request runs off the publication path and cannot fail a publication; the trigger's
+`status.operation` records the operation it started. **Built:**
 the Flux `Kustomization` applier and the Argo CD `Application` applier, with automated sync off.
 **The aim:** a webhook for any other tool. See [the apply trigger design](design/apply-trigger.md).
 
@@ -252,11 +255,13 @@ capture audit and admission with **no** resulting watch event.
 
 ## Configuration model
 
-You configure GitOps Reverser through six CRDs (group `configbutler.ai`, version `v1alpha3`).
+You configure GitOps Reverser through eight CRDs (group `configbutler.ai`, version `v1alpha3`).
 `WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
 `CommitRequest` can ask for the current window to be saved. `GitTarget` joins one source cluster to one
 Git destination. `ClusterProvider` supplies the source connection and authorization boundary;
-`GitProvider` supplies the repository, credentials, commit settings, and push policy.
+`GitProvider` supplies the repository, credentials, commit settings, and push policy. `FluxTrigger`
+and `ArgoCDTrigger` hold the Flux `Kustomization` or Argo CD `Application` that applies a folder back,
+so GitOps Reverser decides when it applies.
 
 ```mermaid
 graph LR
@@ -264,6 +269,7 @@ graph LR
         WR[WatchRule] -->|gitTargetRef| GT[GitTarget]
         CWR[ClusterWatchRule] -->|gitTargetRef| GT
         CR[CommitRequest] -->|gitTargetRef| GT
+        GT -->|applyTriggerRef| TR["FluxTrigger /\nArgoCDTrigger"]
         GT -->|clusterProviderRef| CP[ClusterProvider]
         GT -->|gitProviderRef| GP[GitProvider]
         KCFG[("Remote kubeconfig Secret\noperator namespace")]
@@ -280,7 +286,7 @@ graph LR
     CP -. "optional kubeconfig reference" .-> KCFG
     CP -->|"source identity + config"| WM
     WM -->|"source client"| API
-    GT -. "spec.applier" .-> APPLIER
+    TR -. "kustomizationRef / applicationRef" .-> APPLIER
     HOST -. "push webhook to spec.receiver" .-> GP
 
     style GP fill:#e8f4fd,stroke:#2196f3
@@ -298,9 +304,10 @@ source context: client, discovery catalog, followability registry, source-namesp
 reachability state. Its `GitTarget`s open their source watches through that context. The contexts are keyed
 by provider name and are released when no `GitTarget` references them.
 
-The applier is not one of the six kinds. It belongs to Flux or Argo CD, lives in the source cluster
-it applies to or in the cluster `spec.applier.clusterProviderRef` names, and is reached through that
-`ClusterProvider`'s identity.
+The applier is not one of the eight kinds. It belongs to Flux or Argo CD, lives in the cluster the
+trigger's `spec.clusterProviderRef` names (the source cluster, or a management cluster), and is
+reached through that `ClusterProvider`'s identity. The trigger is ours: it holds the applier, and
+records the apply operation it started.
 
 | CRD | Scope | One line role |
 |---|---|---|
@@ -310,6 +317,8 @@ it applies to or in the cluster `spec.applier.clusterProviderRef` names, and is 
 | `GitTarget` | namespaced | one materialization from a source provider to `(provider, branch, path)` |
 | `ClusterProvider` | cluster | one source-cluster connection plus namespace access policy |
 | `GitProvider` | namespaced | a Git repo + credentials + commit/signing config |
+| `FluxTrigger` | namespaced | the Flux `Kustomization` GitOps Reverser asks to apply, and the apply in flight |
+| `ArgoCDTrigger` | namespaced | the Argo CD `Application` GitOps Reverser asks to sync, and the sync in flight |
 
 ### WatchRule / ClusterWatchRule
 
@@ -345,7 +354,7 @@ The two namespace controls intentionally live in different planes:
 
 - `ClusterProvider.spec.accessFrom` authorizes **control-cluster** namespaces to reference the
   provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
-- `ClusterProvider.spec.allowAnySourceNamespace` delegates the CHOICE of source namespace to the
+- `ClusterProvider.spec.allowCrossNamespace.sources` delegates the CHOICE of source namespace to the
   `GitTarget`s that provider admits. It grants nothing: what may actually be read from the source
   cluster is bounded by that credential's own Kubernetes RBAC, which is the only bound there is. The
   operator reads no `Namespace` objects in a source cluster for authorization.
@@ -400,12 +409,11 @@ Key fields:
 - `spec.commit.window`: when this target's commit windows close: `idleTimeout` (default `5s`) of
   silence, or `maxDuration` (default `1m`) after the window opened.
 - `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
-- `spec.applier`: optional; exactly one of `kustomizationRef` (the Flux `Kustomization` that applies
-  this folder, and that GitOps Reverser asks to apply) and `applicationRef` (the Argo CD
-  `Application`, automated sync off, whose syncs GitOps Reverser starts), with `quietPeriod`
-  (default `30s`) for a `Kustomization` only.
+- `spec.applyTriggerRef`: optional; the `FluxTrigger` (a Flux `Kustomization` GitOps Reverser asks
+  to apply, with its `quietPeriod`, default `30s`) or `ArgoCDTrigger` (an Argo CD `Application`,
+  automated sync off, whose syncs GitOps Reverser starts) in this namespace.
 - `spec.onRefusal`: `Ignore` (default) or `Reapply`, which asks the applier to reapply the tip when
-  an edit to an existing document is refused. `Reapply` requires `spec.applier`.
+  an edit to an existing document is refused. `Reapply` requires `spec.applyTriggerRef`.
 
 `spec.commit` describes the folder, not the connection, so two `GitTarget`s sharing one `GitProvider`
 may batch and phrase their commits differently. A branch worker serves a `(provider, branch)` pair and
@@ -429,11 +437,14 @@ Status has a kstatus-compatible summary layer plus domain conditions:
   source API the data plane can currently reach.
 - `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
-- `ApplierConfigured`, present only with `spec.applier`, says the applier exists in its cluster,
-  applies this repository and branch, can be written, and (an `Application`) has automated sync off.
-  It is a gate.
+- `ApplyTriggerReady`, present only with `spec.applyTriggerRef`, says the trigger is `Ready` (its
+  applier exists, can be written, and, an `Application`, has automated sync off) and that the
+  applier applies this repository and branch. It is a gate.
 - `status.streams` is a bounded count summary, not a per-type list.
-- `status.applier` is an observation: the last apply request's commit, time and reason.
+
+A trigger has `Configured` (a `FluxTrigger` also `Held`) and the kstatus trio, `status.source`
+(what its applier applies, as last read), and `status.operation` and `status.repairPending`, which
+the branch worker writes at every move of the operation it started.
 
 WatchRule and ClusterWatchRule add `ResourcesResolved` and `GitTargetReady`. `ResourcesResolved` explains
 the source selector. `GitTargetReady` mirrors the referenced GitTarget's write readiness. This keeps
@@ -671,22 +682,27 @@ A delivery is handled on the worker's own queue, so it is never judged while a p
 the push has recorded its commit before the delivery is read. A rollback onto one of the worker's
 older commits is foreign, because the advertisement names a tip other than the last one observed.
 
-The same quiet-branch rule sends two other requests: `Refusal`, to the refusing target's applier
-when `spec.onRefusal: Reapply` is set, and `CatchUp`, to every applier on the branch once it has
-been quiet for `spec.applier.quietPeriod` after the worker's own pushes (the longest among the
-`GitTarget`s that share an applier, since its apply reaches all their folders).
+The same quiet-branch rule sends three other requests: `Refusal`, to the refusing target's applier
+when `spec.onRefusal: Reapply` is set; `Repair`, to an applier whose late write over a newer API
+edit the apply window withheld; and `CatchUp`, to every Flux `Kustomization` on the branch once it
+has been quiet for the trigger's `quietPeriod` after the worker's own pushes, or after a `GitTarget`
+first names the trigger.
 
-What each applier is owed lives on the worker, per applier: one attempt out at a time, and its own
-retry clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
+Which apply is due lives on the worker, per applier: one attempt out at a time, and its own retry
+clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
 reports back. It reads each `GitTarget` again first (the same incarnation by uid, still naming this
-applier on this branch, still admitted, still consenting to a `Refusal`), checks that the
-`Kustomization`'s source fetches this repository and branch, asks the worker whether its decision
-still holds (the commit is still the tip and nothing is waiting to be published), and only then
-stamps `reconcile.fluxcd.io/requestedAt` on the `GitRepository`, or, for a `Refusal` at an artifact
-that already holds the commit, on the `Kustomization`. It never retries:
+applier through its trigger on this branch, still admitted, still consenting to a `Refusal`), checks that the
+`Kustomization`'s source fetches this repository and branch, has the `GitRepository` fetch the
+commit when its artifact lacks it, asks the worker whether its decision still holds (the commit is
+still the tip and nothing is waiting to be published), writes the operation through to the trigger's
+`status.operation`, and only then resumes the `Kustomization` the trigger holds suspended, with a
+`requestedAt` token. It follows the apply until that token is handled, suspends the `Kustomization`
+again with a second token, and reports the operation complete once that one is handled
+([`apply-trigger.md`](design/apply-trigger.md#the-flux-applier-suspended)). It never retries:
 an attempt that does not deliver gives the worker back what it carried, a refusal only while it still
 stands, and the worker decides the retry on a quiet branch after that applier's backoff. A delivered
-request records an `ApplyRequested` Event and `status.applier`. A failed request never reaches back
+request records an `ApplyRequested` Event, and the worker records the operation on the trigger's
+`status.operation`. A failed request never reaches back
 into the publication that caused it.
 
 ***
@@ -1258,8 +1274,8 @@ stops a fact being published by something that cannot actually prove it.
 | Where is branch B on the remote, and when was that proved? | the branch worker, on its queue | `GitTarget.status.remote`, sampled by each `GitTarget` on the branch |
 | What is this repository being used for? | the `GitTarget`s that reference it | `GitProvider.status.branches` |
 | Is this folder accepted, streaming and matching live? | the watch plane, per `GitTarget` | the `GitTarget`'s conditions and `status.placement` |
-| Does the applier need to apply, and is now safe? | the branch worker, on its queue | `GitTarget.status.applier` and an `ApplyRequested` Event |
-| Can the applier be asked at all? | the `GitTarget` controller, reading the applier in the source cluster | `ApplierConfigured` |
+| Does the applier need to apply, and is now safe? | the branch worker, on its queue | the trigger's `status.operation` and an `ApplyRequested` Event |
+| Can the applier be asked at all? | the trigger controller, reading the applier in its cluster | the trigger's `Configured`, and the `GitTarget`'s `ApplyTriggerReady` |
 
 A branch worker sits at the intersection and belongs wholly to neither object: `GitTarget`s decide
 which branches are needed, `GitProvider` decides which repository those branches are in. So the
@@ -1354,7 +1370,7 @@ meantime is a moved remote too, so the replay builds on their commit instead of 
 holds when the server refuses our upload too, because the fallback reads both refs from one
 advertisement. A cycle planned on an empty repository that has since gained refs is refused at the
 advertisement (`RepositoryNotEmptyError`) and replayed, never pushed as an orphan. A parent that is
-missing, or a default branch that does not resolve, is a recovery obligation on the worker: it
+missing, or a default branch that does not resolve, opens parent recovery on the worker: it
 probes on its own backoff and publishes what it held back once the parent exists (see
 `docs/design/gittarget-parent-branch.md`). Proved end to end by the e2e spec "New write branch
 starts from its parent"; that publication alone finds a moved parent is proved by worker tests
@@ -1556,9 +1572,12 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   Namespace label changes re-check provider-reference access. Rule changes re-resolve selected
   collections. It deliberately does **not** watch encryption Secrets, so their recovery is picked up
   by periodic reconciliation without retaining
-  every Secret value in the control-plane cache. Nor does it watch appliers: it reads the Flux
-  `Kustomization` on its tick to set `ApplierConfigured`, so a cluster without the Flux CRDs needs no
-  informer for them.
+  every Secret value in the control-plane cache. It watches the apply triggers its `GitTarget`s name,
+  for `ApplyTriggerReady`.
+- `ApplyTriggerReconciler` (one per trigger kind) watches its triggers, the `GitTarget`s naming
+  them, `GitProvider`s, `ClusterProvider`s and `Namespace` labels. It does not watch appliers: it
+  reads the Flux `Kustomization` or Argo CD `Application` on its tick to set `Configured`, so a
+  cluster without the Flux or Argo CD CRDs needs no informer for them.
 - `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
   RuleStore, and trigger the rule-change reconcile.
 - `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
@@ -1662,11 +1681,11 @@ as one funnel and its loss paths as one selector:
   [Interpreting metrics](interpreting-metrics.md#reading-git_fetches_total).
 
 **Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
-attempt the worker decided to send (`applier_kind` is `kustomization`; `reason` is
-`ForeignCommit`, `Refusal` or `CatchUp`), with `outcome` separating
+attempt the worker decided to send (`applier_kind` is `kustomization` or `application`; `reason` is
+`ForeignCommit`, `Refusal`, `Repair` or `CatchUp`), with `outcome` separating
 `sent` from `failed` (the worker decides the retry), `dropped` (no target may still ask for that
 reason) and `stale` (the decision no longer held at the patch). It counts attempts, not
-obligations.
+the requests still due.
 `receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`, `unmatched`,
 `ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
 The receiver cannot tell a foreign push from an own one; the worker decides that from the
@@ -1741,12 +1760,13 @@ Current limitations:
   is refused with more than one replica, and it loses every unjoined fact on restart by design; a
   multi-replica install must use the Redis transport.
 - **No pull request creation;** the operator writes directly to branches.
-- **GitOps Reverser is the fast path to a deployment.** With `spec.applier` set, the applier's own
-  triggers are off, so while the operator is down a Git-side push reaches the cluster only through a
-  manual sync, `flux reconcile`, or Flux's long backstop interval.
+- **GitOps Reverser is the only path to a deployment.** With an apply trigger, the applier applies
+  nothing on its own (a `Kustomization` is held suspended, an `Application` has automated sync
+  off), so while the operator is down a Git-side push reaches the cluster only through a manual
+  sync or `flux resume`, which the operator suspends again when it starts.
 - **Only Flux and Argo CD can be appliers yet,** and an Argo CD `Application` only with automated
   sync off: one that syncs on its own is refused, not driven. The applier may live in any cluster a
-  `ClusterProvider` reaches (`spec.applier.clusterProviderRef`), such as a management cluster.
+  `ClusterProvider` reaches (the trigger's `spec.clusterProviderRef`), such as a management cluster.
 - **An apply request cannot reserve time.** An edit made while the requested apply runs, to a field
   the applier sets, is reverted on the cluster. Its value stays in Git, because the applier's write
   over it is not mirrored, and the next apply restores it; until then the cluster runs the older
@@ -1768,7 +1788,7 @@ Current limitations:
 | Package | Role |
 |---|---|
 | [api/v1alpha3/](../api/v1alpha3/) | CRD types |
-| [internal/applier/](../internal/applier/) | apply requests: the Flux client, the dispatcher that carries out each attempt, and the `ApplierConfigured` check |
+| [internal/applier/](../internal/applier/) | apply requests: the Flux and Argo CD clients, the dispatcher that carries out each attempt, the trigger status writer, and the `Configured` check |
 | [cmd/](../cmd/) | operator entry point and server setup |
 | [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers feeding attribution facts |
 | [internal/controller/](../internal/controller/) | Kubernetes reconcilers |

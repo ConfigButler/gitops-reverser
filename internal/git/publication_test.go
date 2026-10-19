@@ -108,6 +108,11 @@ func TestPublication_MetricsDescribeTheBacklog(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, loop.retry.due.Unix(), nextRetry)
 
+	f.worker.unresolvedOperations.Store(1)
+	unresolved, ok := gauge(telemetry.GaugeApplyOperationsUnresolved)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), unresolved, "an operation past its budget is still followed, and seen")
+
 	f.worker.branchBufferMaxBytes = 1
 	loop.publishLoopState(0)
 	paused, _ = gauge(telemetry.GaugeGitIntakePaused)
@@ -121,7 +126,7 @@ func TestPublication_MetricsDescribeTheBacklog(t *testing.T) {
 	_, ok = gauge(telemetry.GaugeGitOldestRetainedWrite)
 	assert.False(t, ok, "nothing kept, nothing to date")
 	_, ok = gauge(telemetry.GaugeGitNextRetry)
-	assert.False(t, ok, "nothing owed, no retry due")
+	assert.False(t, ok, "nothing pending, no retry due")
 }
 
 // A change of the report reaches every GitTarget on the branch, and none on another branch: they

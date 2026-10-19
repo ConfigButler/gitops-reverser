@@ -240,6 +240,14 @@ var (
 	// every object in that window until the next resync re-derives them, and until now the only
 	// trace was a log line (or, for a refusal, a GitTarget condition nobody is alerting on).
 	GitCommitFailuresTotal metric.Int64Counter
+	// GitWritesDroppedTotal counts the live events and atomic writes a branch worker dropped
+	// because their GitTarget's render fidelity was not established, labelled by
+	// {provider_namespace, provider_name, branch, kind, reason}. kind is `event` (one live event)
+	// or `atomic` (an atomic write request); reason is `render_fidelity_pending` (a scope of the
+	// GitTarget has not reported under its current revision yet) or `render_fidelity_diverged` (a
+	// rendered value does not match the live object). A dropped write is not retried: the edit is
+	// missing from Git until the object changes again or its collection replays.
+	GitWritesDroppedTotal metric.Int64Counter
 	// GitCommitWindowsTotal counts closed commit windows, labelled by {gittarget_namespace,
 	// gittarget_name, close_reason, timer_source}. close_reason says what ended the window
 	// (idle_timeout, max_duration, attach_next, identity_change, buffer_limit, resync_before_apply,
@@ -562,6 +570,7 @@ func registerCounters() error {
 		{"gitopsreverser_git_commits_total", &GitCommitsTotal},
 		{"gitopsreverser_commit_requests_total", &CommitRequestsTotal},
 		{"gitopsreverser_git_commit_failures_total", &GitCommitFailuresTotal},
+		{"gitopsreverser_git_writes_dropped_total", &GitWritesDroppedTotal},
 		{"gitopsreverser_git_commit_windows_total", &GitCommitWindowsTotal},
 		{"gitopsreverser_git_pushes_total", &GitPushesTotal},
 		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
@@ -597,6 +606,7 @@ func registerCounters() error {
 		{"gitopsreverser_watch_plan_passes_total", &WatchPlanPassesTotal},
 		{"gitopsreverser_watch_plan_triggers_total", &WatchPlanTriggersTotal},
 		{"gitopsreverser_apply_requests_total", &ApplyRequestsTotal},
+		{"gitopsreverser_apply_revision_mismatches_total", &ApplyRevisionMismatchesTotal},
 		{"gitopsreverser_apply_window_collisions_total", &ApplyWindowCollisionsTotal},
 		{"gitopsreverser_receiver_deliveries_total", &ReceiverDeliveriesTotal},
 	}
@@ -730,6 +740,7 @@ func registerObservableGauges() error {
 		},
 		{"gitopsreverser_resource_condition", GaugeResourceCondition},
 		{"gitopsreverser_git_branch_targets", GaugeGitBranchTargets},
+		{"gitopsreverser_apply_operations_unresolved", GaugeApplyOperationsUnresolved},
 	}
 	for _, o := range observable {
 		if _, err := otelMeter.Int64ObservableGauge(

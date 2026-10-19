@@ -246,11 +246,11 @@ retained anyway.
 
 Shipped so far: the storm source is fixed and resyncs coalesce
 ([#312](https://github.com/ConfigButler/gitops-reverser/pull/312)); the ordering
-hazard that coalescing introduced is fenced; and collection identity is settled,
+hazard that coalescing introduced is fenced; collection identity is settled,
 with one stream per collection and the producing collection stamped on queued
-work. The diff itself is unbuilt.
+work; and the diff is built and applied. Removal semantics are not.
 
-The writes stay a log throughout. Only the resync half of the queue is in
+The writes stay ordered pending writes throughout. Only the resync half of the queue is in
 question, and the answer is to make the stream set incremental rather than to
 replace the queue.
 

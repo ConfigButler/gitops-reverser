@@ -49,7 +49,7 @@ ServiceMonitors (it gates them on `monitoring.coreos.com` being present).
 The specs in `test/e2e/argocd_bi_directional_e2e_test.go` assert Argo CD's
 *defaults* — the `annotation` resource-tracking method, the exact `tracking-id`
 value format, client-side apply. A floating version would let an upstream default
-change turn a real behavioural regression into a silent pass.
+change turn a real behavioral regression into a silent pass.
 
 `ARGOCD_CHART_VERSION` lives in [`test/e2e/Taskfile-e2e.yml`](../../Taskfile-e2e.yml) and
 pins the chart, which carries a specific Argo CD release (its appVersion; e.g.
@@ -65,13 +65,14 @@ chart `10.1.3` ships `v3.4.5`). When bumping, re-verify against the upstream sou
    `<app>:<group>/<Kind>:<namespace>/<name>`?
 4. `reposerver/repository/repository.go` — does the repo-server still call
    `SetAppInstance` on every non-CRD target?
-5. `cmd/argocd-application-controller/commands/` — is the self-heal backoff still
-   2s initial (vs. the 120s reconciliation default)? The `selfHeal` spec depends
-   on that gap.
 
 Also re-check that the **chart** did not start pinning
 `configs.cm.application.resourceTrackingMethod` or enabling server-side apply by
 default — `values.yaml` relies on both staying unset.
+
+`values.yaml` also pins the redis image to `mirror.gcr.io`, by digest, because ECR Public
+rate-limits the chart's default pull from shared CI runners. On a bump, set its tag and
+digest to the chart's new `redis.image.tag`.
 
 If any of those move, the specs fail loudly. That is intended.
 

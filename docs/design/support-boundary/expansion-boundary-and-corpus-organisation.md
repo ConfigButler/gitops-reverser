@@ -630,10 +630,10 @@ single-use and can."* That is a report, not a standard, and it is achievable.
 ## Residual open questions
 
 1. ~~**Argo CD's triggered-hydration handshake is still unproven in e2e.**~~
-   **Closed.** The `selfHeal: false` + push-webhook loop, with a shared field changing
-   from *both* sides, is exercised against a real Argo CD in the bi-directional corner
-   ([`argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go)),
-   alongside its `selfHeal: true` foil where the edit is lost.
+   **Closed.** Automated sync off, with an `ArgoCDTrigger` starting every sync and a shared
+   field changing from *both* sides, is exercised against a real Argo CD in the bi-directional
+   corner ([`argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go)),
+   alongside an `Application` with automated sync on, which GitOps Reverser never syncs.
 2. **What exactly makes a chart a chart?** Decision 4 says "recognisable folder
    structure." `Chart.yaml` + `templates/` is the obvious test, but `mixed-and-hostile`
    plants a `templates/` directory with **no** `Chart.yaml` and unparseable content

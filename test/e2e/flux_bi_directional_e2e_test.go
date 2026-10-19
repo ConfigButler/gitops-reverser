@@ -77,8 +77,8 @@ var biDirectionalRepo *RepoArtifacts
 // only place Argo CD is installed, and the two specs share that one cluster.
 //
 // Exact commit counts are safe here because Flux is driven as a *manually
-// triggered applier* — every reconcile in this spec is explicit. The Argo CD
-// spec cannot assert counts the same way; see the note on its selfHeal phase.
+// triggered applier* — every reconcile in this spec is explicit, until its last
+// phase hands the Kustomization to a FluxTrigger.
 //
 // Not Serial: a whole-cluster bidirectional behavioral test (Flux applies from
 // git while gitops-reverser mirrors live state back) that asserts on *exact*
@@ -96,6 +96,7 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 
 	BeforeAll(func() {
 		skipUnlessBiDirectionalEnabled()
+		allowCrossNamespaceAppliers()
 
 		By("creating test namespace")
 		testNs = testNamespaceFor("bi-directional")
@@ -427,19 +428,17 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 	// only once the branch has been quiet, so the later value survives and Flux still ends on the
 	// tip, without anybody reconciling it by hand.
 	It("asks Flux to apply only on a quiet branch, so the later of two quick API edits survives", func() {
-		By("naming the live Kustomization as the GitTarget's applier")
-		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName, "--type=merge", "-p",
-			fmt.Sprintf(`{"spec":{"applier":{"kustomizationRef":{"namespace":"flux-system","name":%q},`+
-				`"quietPeriod":"5s"}}}`, run.fluxLiveName))
-		Expect(err).NotTo(HaveOccurred(), "failed to set spec.applier")
-		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierConfigured", "True", "Succeeded", "")
+		By("naming a trigger that holds the live Kustomization")
+		createFluxTrigger(testNs, run.fluxLiveName, run.fluxLiveName, "5s")
+		nameApplyTrigger(testNs, run.gitTargetName, "FluxTrigger", run.fluxLiveName, "")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 		run.waitForGitTargetReady()
 
 		Expect(run.gitPull()).To(Succeed())
 		baseline := run.waitForStableRemoteCommitCount(biStableCountMediumWait)
 
 		By("editing the second order through the API, and again seconds after that edit is pushed")
-		_, err = kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
+		_, err := kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
 			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"Cone"}}`)
 		Expect(err).NotTo(HaveOccurred())
 		run.waitForCommittedOrderSpec(run.secondOrderName, "Cone", "Strawberry", "WhippedCream")

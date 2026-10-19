@@ -1038,7 +1038,7 @@ func (m *Manager) enqueueReplayResync(
 	if !stream.gate.enqueue(ctx, func() {
 		resultCh, enqueued, err = m.EventRouter.enqueueScopedResync(
 			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), snapshot.desired,
-			resourceVersion, false)
+			resourceVersion, false, stream.revision)
 	}) {
 		return nil
 	}
@@ -1049,7 +1049,7 @@ func (m *Manager) enqueueReplayResync(
 	// case: EnqueueResync has ALREADY delivered ErrFinalizeQueueFull on the reply channel for the
 	// drain to record, so returning here instead left that reply in a buffered channel nobody ever
 	// read -- and with it went the only calls that mark acceptance, render fidelity and retention
-	// for this collection. The render-fidelity scope then owed a report under a revision no running
+	// for this collection. The render-fidelity scope then waited for a report at a revision no running
 	// stream would ever report again, which pins the GitTarget at Ready=False and, through it,
 	// every WatchRule pointing at it.
 	//
@@ -1329,18 +1329,18 @@ func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstru
 		Generation:      u.GetGeneration(),
 	}
 	if op != string(types.OperationDelete) {
-		event.LastFieldManagers = lastFieldManagers(u)
+		event.LastFieldManagers, event.LastFieldManagedAt = lastFieldManagers(u)
 		event.Object = sanitize.Sanitize(u)
 	}
 	return event
 }
 
 // lastFieldManagers returns the managers whose managedFields entries carry the latest time, in
-// entry order: who wrote the object last, or several when the second-resolution times tie. Status
+// entry order, and that time: who wrote the object last, and when, or several when the second-resolution times tie. Status
 // entries are left out, because a controller writing status after an apply would otherwise hide who
 // made the apply, and status is never mirrored. Other subresources stay: a write to scale is a
 // write to spec.replicas. Entries without a time are left out too.
-func lastFieldManagers(u *unstructured.Unstructured) []string {
+func lastFieldManagers(u *unstructured.Unstructured) ([]string, time.Time) {
 	var latest metav1.Time
 	var managers []string
 	for _, entry := range u.GetManagedFields() {
@@ -1354,7 +1354,7 @@ func lastFieldManagers(u *unstructured.Unstructured) []string {
 			managers = append(managers, entry.Manager)
 		}
 	}
-	return managers
+	return managers, latest.Time
 }
 
 func operationForWatchEvent(eventType watch.EventType) string {

@@ -86,7 +86,7 @@ func flushWithPolicy(
 	require.NoError(t, err)
 }
 
-// The signal the Option C deletion owes its users: a repository whose layout this operator
+// The signal the Option C deletion must give its users: a repository whose layout this operator
 // cannot derive gets the built-in path, and `source="builtin"` on placements_total names
 // the GitTarget and the type that needs one `placement.byType` line. Without the labels the
 // counter would only say a fall-back happened somewhere, which is not a fix anybody can act on.

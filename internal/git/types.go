@@ -520,6 +520,10 @@ type ResyncRequest struct {
 	// whole-GitTarget resync, which speaks for no single collection. Diagnostic only: nothing
 	// filters the queue on it. See source_collection.go.
 	SourceCollection types.CollectionKey
+	// RenderFidelityRevision is the render-fidelity revision of the target-watch stream whose
+	// replay this is, for the scope Scope.Collection names. Zero for a resync no stream replayed.
+	// The worker records that scope clean once the resync applies (recordReplayClean).
+	RenderFidelityRevision uint64
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult
@@ -667,6 +671,11 @@ type Event struct {
 	// removes managedFields); empty for a DELETE and for producers that observed no object. The
 	// apply window reads it to tell an applier's write from an API edit (apply_window.go).
 	LastFieldManagers []string
+
+	// LastFieldManagedAt is when those entries were written, to the second; zero with no
+	// LastFieldManagers. The apply window compares it with the time of an API edit: a late apply
+	// moves the applier's entry forward, and an undo that deletes the editor's entry does not.
+	LastFieldManagedAt time.Time
 
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo

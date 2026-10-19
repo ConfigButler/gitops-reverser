@@ -69,8 +69,10 @@ var _ = Describe("Superseded source-scope fields", func() {
 		provider := &configbutleraiv1alpha3.ClusterProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-source-scope"},
 			Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-				AccessFrom:              &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}},
-				AllowAnySourceNamespace: true,
+				AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}},
+				AllowCrossNamespace: &configbutleraiv1alpha3.ClusterProviderCrossNamespace{
+					Sources: true, Appliers: true,
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
@@ -79,7 +81,8 @@ var _ = Describe("Superseded source-scope fields", func() {
 		var storedProvider configbutleraiv1alpha3.ClusterProvider
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: provider.Name}, &storedProvider)).To(Succeed())
 		Expect(storedProvider.Spec.AccessFrom).NotTo(BeNil(), "accessFrom must round-trip, not be pruned")
-		Expect(storedProvider.Spec.AllowAnySourceNamespace).To(BeTrue())
+		Expect(storedProvider.AllowsCrossNamespaceSources()).To(BeTrue(), "allowCrossNamespace must round-trip")
+		Expect(storedProvider.AllowsCrossNamespaceAppliers()).To(BeTrue())
 
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-commit", Namespace: "default"},

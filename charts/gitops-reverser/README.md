@@ -18,8 +18,8 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 
 - ✅ **Git synchronization**: Push Kubernetes changes back to Git repositories
 - ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
-- ✅ **Automatic CRD installation**: GitProvider, GitTarget, WatchRule, ClusterWatchRule, and
-  CommitRequest CRDs installed automatically
+- ✅ **Automatic CRD installation**: ClusterProvider, GitProvider, GitTarget, WatchRule,
+  ClusterWatchRule, CommitRequest, FluxTrigger, and ArgoCDTrigger CRDs installed automatically
 - ✅ **Watch-based ingestion**: object state comes from the Kubernetes watch API
 - ✅ **Optional audit attribution**: name commit authors from kube-apiserver audit events over HTTPS
 - ✅ **Prometheus metrics**: Built-in monitoring support
@@ -174,15 +174,17 @@ nodeSelector:
 | `servers.audit.timeouts.write` | Audit-server write timeout | `30s` |
 | `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
 | `servers.audit.tls.secretNameOverride` | Override Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
+| `servers.receiver.enabled` | Serve the push receiver, over plain HTTP, for Git hosts' push webhooks to `GitProvider.status.webhookPath`, and add a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `false` |
+| `servers.receiver.bindAddress` | host:port the push receiver binds to (`--receiver-bind-address`) | `:9292` |
+| `servers.receiver.port` | Push receiver container port; must match the port in `bindAddress` | `9292` |
 | `controllerManager.additionalSensitiveResources` | Extra Secret-shaped resource types encrypted as `resource` or `group/resource` | `[]` |
 | `controllerManager.insecureAllowGitHTTP` | Permit credentials with `http://` GitProvider URLs for trusted in-cluster development Git servers | `false` |
 | `controllerManager.branchWorkerQueueDepth` | Event queue depth per branch worker. A full queue refuses the write (`git_queue_refusals_total`) instead of stalling the watch path; the watch delivers it again from its cursor, and only a cursor that expires first loses that write's own commit (and, under `prune.mode: OnEvent`, a delete's removal). Costs queue depth × payload of pod memory, which `branchBufferMaxSize` does **not** cover | `1000` |
 | `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds. While the remote cannot be reached, retained writes that reach it close the worker to new writes, saves and resyncs until they are published; the watch delivers a refused event again | `8Mi` |
 | `controllerManager.commitRequestTTL` | How long a `CommitRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
-| `receiver.bindAddress` | `host:port` the push receiver listens on, over plain HTTP (`--receiver-bind-address`), for Git hosts' push webhooks to `GitProvider.status.webhookPath`. Empty or `"0"` serves no receiver. When set, the chart adds a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `""` |
-| `applierAccess.flux` | Grant the operator `get` and `patch` on Flux `Kustomizations` and `GitRepositories`, and `create` on `SelfSubjectAccessReviews`, so it can ask Flux to apply a commit somebody else pushed | `false` |
-| `applierAccess.argocd` | Grant the operator `get` and `update` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can start the syncs of an `Application` named by `spec.applier.applicationRef` | `false` |
+| `applierAccess.flux` | Grant the operator `get`, `list` and `patch` on Flux `Kustomizations`, `get` and `patch` on `GitRepositories`, `list` on `HelmReleases` and `HelmCharts` (to find a source's other consumers), and `create` on `SelfSubjectAccessReviews`, so it can hold the `Kustomization` a `FluxTrigger` names suspended and resume it for each apply | `false` |
+| `applierAccess.argocd` | Grant the operator `get` and `update` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can start the syncs of an `Application` an `ArgoCDTrigger` holds | `false` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |
@@ -213,6 +215,8 @@ nodeSelector:
 | `clusterProvider.default.kubeConfig.secretRef.name` | Secret (release namespace) holding a kubeconfig for the rendered `default` provider. Empty means the operator's **own in-cluster** cluster; a name points `default` at a **remote** cluster instead. The name is a convention | `""` |
 | `clusterProvider.default.kubeConfig.secretRef.key` | Key within that Secret. Empty reads `value` then `value.yaml` | `""` |
 | `clusterProvider.default.accessFrom` | Deny-by-default policy (`names` and/or `selector`) for which **control-cluster** namespaces may reference this provider from a `GitTarget`. The default empty selector admits every namespace | `{selector: {}}` |
+| `clusterProvider.default.allowCrossNamespace.sources` | Let a `WatchRule` in an admitted namespace watch other namespaces, `"*"` included. A delegation to every admitted namespace, not proof that it owns what it reads | `false` |
+| `clusterProvider.default.allowCrossNamespace.appliers` | Let a `FluxTrigger` or `ArgoCDTrigger` in an admitted namespace suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`. A delegation to every admitted namespace, not proof that it owns the applier or the repository | `false` |
 | `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
 | `rbac.create` | Create the manager ClusterRole and its binding | `true` |
 | `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything, including every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
@@ -223,7 +227,7 @@ nodeSelector:
 | `servers.metrics.tls.secretNameOverride` | Override Secret name for metrics TLS cert/key | `<release>-metrics-server-cert` |
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
 | `service.ports.audit` | Service port for audit ingress when `attribution.enabled=true` | `9444` |
-| `service.ports.receiver` | Port of the `<release>-receiver` Service when `receiver.bindAddress` is set | `80` |
+| `service.ports.receiver` | Port of the `<release>-receiver` Service when `servers.receiver.enabled=true` | `80` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
 | `servers.admission.port` | Admission webhook container/Service port | `9443` |
@@ -279,20 +283,31 @@ This chart automatically manages the following CRDs:
 - **`watchrules.configbutler.ai`** - Namespaced watch rules
 - **`clusterwatchrules.configbutler.ai`** - Cluster-scoped watch rules
 - **`commitrequests.configbutler.ai`** - One-shot "save now" signals that finalize the open commit window
+- **`fluxtriggers.configbutler.ai`** - Apply triggers holding a Flux `Kustomization` for bi-directional GitOps
+- **`argocdtriggers.configbutler.ai`** - Apply triggers holding an Argo CD `Application` for bi-directional GitOps
 
 ### CRD Lifecycle
 
 | Operation | Behavior |
 |-----------|----------|
 | `helm install` | ✅ CRDs installed automatically |
-| `helm upgrade` | ✅ CRDs upgraded automatically |
+| `helm upgrade` | ⚠️ CRDs NOT upgraded (Helm never upgrades `crds/`): apply the release's `crds.yaml` first, as below |
 | `helm uninstall` | ⚠️ CRDs NOT deleted (prevents data loss) |
+
+Before `helm upgrade`, apply the new release's CRDs, so new kinds and changed schemas are served
+before the controller that needs them starts:
+
+```bash
+kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/download/<tag>/crds.yaml
+```
 
 To manually remove CRDs after uninstallation:
 
 ```bash
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai clusterproviders.configbutler.ai
 ```
+
+Delete the triggers while the operator still runs, before this ([Uninstallation](#uninstallation)).
 
 > ⚠️ **Warning**: Deleting CRDs will also delete all custom resources of those types!
 
@@ -358,6 +373,20 @@ If upgrading from earlier chart versions:
 
 ## Uninstallation
 
+**Hand Flux its `Kustomization`s back first, while the operator still runs.** A `FluxTrigger` that
+holds its `Kustomization` carries the finalizer `configbutler.ai/flux-trigger`, and only the running
+operator removes it, once it has handed the `Kustomization` back. One left after `helm uninstall`
+keeps its namespace and the `fluxtriggers` CRD from being deleted, and its `Kustomization` stays
+suspended. Delete your `GitTarget`s, or the triggers, before uninstalling, and wait until they are
+gone:
+
+```bash
+kubectl delete fluxtriggers,argocdtriggers --all --all-namespaces --wait
+```
+
+A trigger that never held its `Kustomization`, such as one no `GitTarget` names, carries no
+finalizer. An `ArgoCDTrigger` never carries one.
+
 ```bash
 # Uninstall chart
 helm uninstall gitops-reverser --namespace gitops-reverser
@@ -366,7 +395,7 @@ helm uninstall gitops-reverser --namespace gitops-reverser
 kubectl delete namespace gitops-reverser
 
 # Delete CRDs (optional, but removes all custom resources)
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai clusterproviders.configbutler.ai
 ```
 
 ## Troubleshooting

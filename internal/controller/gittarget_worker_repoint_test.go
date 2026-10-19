@@ -212,6 +212,6 @@ func TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried(t *testing.
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"shop/apps"}, manager.ForcedRecheckTargetsForTest(),
-		"the replay the replacement owes is forced by a later pass, not lost with the first")
+		"the replay the replacement still needs is forced by a later pass, not lost with the first")
 	assert.False(t, workers.ReplacementPending(branch), "and it is not asked for again")
 }

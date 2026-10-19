@@ -57,7 +57,7 @@ type adoSimulator struct {
 
 	// ledger tallies every request the backend sees, with bytes, so an operation's cost in
 	// round trips to the Git host can be measured rather than guessed. See
-	// git_request_ledger_test.go and docs/finished/push-notification-and-reconcile-trigger.md §1.6.
+	// git_request_ledger_test.go and docs/design/push-notification-and-reconcile-trigger.md §1.6.
 	ledger *gitRequestLedger
 
 	// around, when set, serves each request in place of the backend and decides whether and how

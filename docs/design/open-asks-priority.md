@@ -223,7 +223,7 @@ Three things came out of building it that the argument above did not contain.
 - **Deleting the inference exposed a second implementation of a rule, not just the rule.** "Omit
   `metadata.namespace`, the build context supplies it" was read off a *sibling's bytes*, so it only
   ever fired for an inferred placement. A **declared** path into the same kustomize directory wrote a
-  `namespace:` line every other document in that folder omits. The obligation belongs to the
+  `namespace:` line every other document in that folder omits. The rule belongs to the
   kustomization that governs the destination, not to whatever document happened to be next door, and
   moving it there fixed the declared path for free.
 - **And that rule was missing its safety half.** The old kustomize-root fallback asked only whether a

@@ -382,7 +382,7 @@ func aggregatedCreateEvent(auditID, user string) string {
 // objectRef carries no name at all — produces no fact, so nothing is appended for it and no watch
 // event can ever join it.
 //
-// It used to be counted `queued`, which claimed an append that was never owed and buried the whole
+// It used to be counted `queued`, which claimed an append that was never expected and buried the whole
 // population under the busiest value on the counter. It is Dropped rather than Error because
 // nothing failed, which also keeps the e2e invariant on category="error" intact.
 func TestAuditHandler_AnEventThatProducesNoFactIsCountedAsSuch(t *testing.T) {
@@ -417,7 +417,7 @@ func TestAuditHandler_AnEventThatProducesNoFactIsCountedAsSuch(t *testing.T) {
 
 	// The invariant the e2e suite gates on is untouched: nothing here is an error.
 	_, anyError := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{"category": "error"})
-	assert.False(t, anyError, "an event that owes no append has not failed")
+	assert.False(t, anyError, "an event that expects no append has not failed")
 }
 
 // TestAuditHandler_RecordsTheRouteOfEveryAppendedBatch pins the publish-side signal the

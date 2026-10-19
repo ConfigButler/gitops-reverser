@@ -242,7 +242,7 @@ func requireGitPathEvent(t *testing.T, events <-chan event.GenericEvent) {
 // TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake covers the branch that made
 // Failure A undiagnosable: the gate answers applied=false for a stale revision, an unknown scope
 // or an unknown target, and the caller used to discard that answer without a word — so a scope
-// could owe a report for ever with nothing anywhere saying why.
+// could wait for a report for ever with nothing anywhere saying why.
 func TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake(t *testing.T) {
 	workerManager := git.NewWorkerManager(
 		nil,
@@ -271,7 +271,7 @@ func TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake(t *testing
 
 // TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision covers the earlier return. A wired
 // gate always issues a non-zero revision, so a stream reporting under zero was started without
-// one; its result is unusable and its scope keeps owing a report.
+// one; its result is unusable and its scope stays waiting for a report.
 func TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision(t *testing.T) {
 	workerManager := git.NewWorkerManager(
 		nil,

@@ -37,7 +37,7 @@ const (
 
 	// ReasonSourceNamespaceNotAllowed is the TERMINAL False reason for a refusal: the referenced
 	// ClusterProvider does not exist, does not admit this GitTarget's namespace, or does not set
-	// spec.allowAnySourceNamespace. It is a decision, never an inability to decide.
+	// spec.allowCrossNamespace.sources. It is a decision, never an inability to decide.
 	ReasonSourceNamespaceNotAllowed = "SourceNamespaceNotAllowed"
 )
 
@@ -118,7 +118,7 @@ func (s ResolvedSourceScope) Fingerprint() string {
 //     on upgrade.
 //  2. Any OTHER namespace — a name, or "*" for every namespace the credential can read —
 //     additionally requires the GitTarget's namespace to be admitted by its ClusterProvider, and
-//     that provider to set spec.allowAnySourceNamespace.
+//     that provider to set spec.allowCrossNamespace.sources.
 //
 // There is no third rule. GitTarget.spec.allowedSourceNamespaces used to supply one, and what it
 // bounded is now bounded by the source credential's own RBAC: a request this gate permits still
@@ -193,7 +193,7 @@ func (g *itemGate) decide(
 		// named-namespace collection on the same type, never a replacement for one.
 		base.Namespaces = []string{""}
 		base.Message = fmt.Sprintf(
-			"%s: ClusterProvider %q sets spec.allowAnySourceNamespace, so this item watches every "+
+			"%s: ClusterProvider %q sets spec.allowCrossNamespace.sources, so this item watches every "+
 				"namespace its source credential can read, as one cluster-wide stream",
 			g.describeItem(index, item), g.target.SourceCluster())
 		return base, nil
@@ -202,7 +202,7 @@ func (g *itemGate) decide(
 	candidate := item.EffectiveSourceNamespace(g.rule.Namespace)
 	base.Namespaces = []string{candidate}
 	base.Message = fmt.Sprintf(
-		"%s: ClusterProvider %q sets spec.allowAnySourceNamespace, so this item may watch source "+
+		"%s: ClusterProvider %q sets spec.allowCrossNamespace.sources, so this item may watch source "+
 			"namespace %q; whether it can is decided by that credential's RBAC",
 		g.describeItem(index, item), g.target.SourceCluster(), candidate)
 	return base, nil
@@ -251,7 +251,7 @@ func (g *itemGate) evaluateDelegation(ctx context.Context) (*SourceNamespaceDeci
 				Message: fmt.Sprintf(
 					"referenced ClusterProvider %q was not found, so it delegates nothing; a "+
 						"WatchRule may watch a namespace other than its own only through an "+
-						"existing provider that sets spec.allowAnySourceNamespace",
+						"existing provider that sets spec.allowCrossNamespace.sources",
 					providerName),
 			}, nil
 		}
@@ -273,11 +273,11 @@ func (g *itemGate) evaluateDelegation(ctx context.Context) (*SourceNamespaceDeci
 		}, nil
 	}
 
-	if !provider.AllowsAnySourceNamespace() {
+	if !provider.AllowsCrossNamespaceSources() {
 		return &SourceNamespaceDecision{
 			Reason: ReasonSourceNamespaceNotAllowed,
 			Message: fmt.Sprintf(
-				"ClusterProvider %q does not set spec.allowAnySourceNamespace; a WatchRule may "+
+				"ClusterProvider %q does not set spec.allowCrossNamespace.sources; a WatchRule may "+
 					"watch only its own namespace %q until a platform admin delegates that choice",
 				providerName, g.rule.Namespace),
 		}, nil

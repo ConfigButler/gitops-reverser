@@ -10,20 +10,20 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 )
 
-// This file is the worker's recovery from a parent branch that is missing or does not resolve: the
-// obligation to write what was decided while it was gone, once it exists.
+// This file is the worker's recovery from a parent branch that is missing or does not resolve: once
+// the parent exists again, it still has to write what was decided while it was gone.
 //
-// An observation flip is not an obligation. "The parent is Found again" says nothing about whether
-// the writes decided meanwhile have landed: the first attempt after it can fail transiently, the
+// An observation flip does not end the recovery. "The parent is Found again" says nothing about
+// whether the writes decided meanwhile have landed: the first attempt after it can fail transiently, the
 // refresher skips a branch that holds work, and with --git-refresh-interval=0 there is no refresher
-// at all. So the worker latches an obligation the moment an attempt fails on the parent, and clears
-// it only when nothing is owed any more: the pending writes were published, or every one of them
-// settled without needing a push (endOutage).
+// at all. So the worker latches parent recovery the moment an attempt fails on the parent, and clears
+// it only when no pending writes remain: they were published, or every one of them settled without
+// needing a push (endOutage).
 //
-// The obligation is the pending writes themselves. A write decided while the parent is missing stays
-// pending like any other a remote failure holds back (pending_writes_loop.go), and admission
-// backpressure bounds them however long the parent stays away, so nothing is dropped and no snapshot
-// is owed.
+// What the recovery waits on is the pending writes themselves. A write decided while the parent is
+// missing stays pending like any other a remote failure holds back (pending_writes_loop.go), and
+// admission backpressure bounds them however long the parent stays away, so nothing is dropped and
+// no snapshot has to be requested again.
 //
 // The worker probes for the parent itself, on the event loop, with one advertisement per deadline of
 // its one retry schedule (retry.go), shared by every target on the worker. Until the parent is
@@ -42,7 +42,7 @@ func isParentUnavailable(err error) bool {
 	return errors.Is(err, ErrParentBranchNotFound) || errors.Is(err, ErrDefaultBranchUnresolved)
 }
 
-// parentRecovery is the loop's latch on the obligation. Loop-goroutine only.
+// parentRecovery is the loop's latch on parent recovery. Loop-goroutine only.
 type parentRecovery struct {
 	// active is the latch.
 	active bool
@@ -60,9 +60,9 @@ func (w *BranchWorker) now() time.Time {
 	return time.Now()
 }
 
-// noteParentUnavailable latches the obligation when err was caused by the parent and pending writes
-// are owed. Any other error is not this obligation's concern, and neither is a failure that left
-// nothing owed: an obligation with nothing to publish would never close. It does not schedule the
+// noteParentUnavailable latches parent recovery when err was caused by the parent and pending writes
+// remain. Any other error is not this recovery's concern, and neither is a failure that left no
+// pending writes: a recovery with nothing to publish would never close. It does not schedule the
 // next attempt: whoever observed the failure does, once (scheduleRetry), and a new latch starts that
 // schedule over so the first probe is one initial backoff away.
 func (l *branchWorkerEventLoop) noteParentUnavailable(err error) {
@@ -88,7 +88,7 @@ func (l *branchWorkerEventLoop) probeDue() bool {
 	return r.active && (!l.w.now().Before(l.retry.due) || r.gen != l.w.parentSnapshot().gen)
 }
 
-// runParentProbe is the attempt while the obligation is open: while the parent is missing it spends
+// runParentProbe is the attempt while parent recovery is open: while the parent is missing it spends
 // one advertisement, and once it is found it publishes the pending writes. A publication that fails schedules
 // the next attempt itself.
 func (l *branchWorkerEventLoop) runParentProbe() {
@@ -172,8 +172,8 @@ func (w *BranchWorker) awaitingParentProbe() bool {
 	return hold != nil && hold.gen == w.parentSnapshot().gen && w.now().Before(hold.until)
 }
 
-// ParentRecovery reports whether the worker still owes work decided while the parent branch was
-// missing (the first result), and whether the parent has been found since (the second).
+// ParentRecovery reports whether work decided while the parent branch was missing is still pending
+// on the worker (the first result), and whether the parent has been found since (the second).
 func (w *BranchWorker) ParentRecovery() (bool, bool) {
 	return w.parentRecoveryOpen.Load(), w.parentRecoveryFound.Load()
 }

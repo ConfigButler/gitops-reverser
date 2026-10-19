@@ -3,8 +3,8 @@
 package git
 
 // What happens to an apply attempt after the worker decided it, and how one worker serves the
-// many GitTargets and appliers on its branch. The worker owns every obligation until an attempt
-// delivers it; an attempt that does not deliver gives back only what still stands, and its retry is
+// many GitTargets and appliers on its branch. The worker keeps every pending reason until an
+// attempt delivers it; an attempt that does not deliver gives back only what still stands, and its retry is
 // decided again like a first attempt. See docs/design/apply-trigger.md.
 
 import (
@@ -57,10 +57,11 @@ func updateTarget(t *testing.T, loop *branchWorkerEventLoop, name string, mutate
 // reapplying makes a GitTarget consent to a Refusal request.
 func reapplying(g *configv1alpha3.GitTarget) { g.Spec.OnRefusal = configv1alpha3.RefusalActionReapply }
 
-// oweAlphaRefusal owes alpha's applier a Refusal request for a standing refusal of its deployments.
-func oweAlphaRefusal(loop *branchWorkerEventLoop) refusalKey {
+// addAlphaUnsentRefusal decides a Refusal request for alpha's applier, for a standing refusal of its
+// deployments.
+func addAlphaUnsentRefusal(loop *branchWorkerEventLoop) refusalKey {
 	key := refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments")
-	loop.oweReapply(key, owedRefusal{detail: "a base-owned field", uid: "uid-alpha"}, "obs-alpha")
+	loop.addUnsentRefusal(key, unsentRefusal{detail: "a base-owned field", uid: "uid-alpha"}, "obs-alpha")
 	return key
 }
 
@@ -69,12 +70,12 @@ func oweAlphaRefusal(loop *branchWorkerEventLoop) refusalKey {
 // it is then.
 func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	first := requester.taken()
 	require.Len(t, first, 1)
 
-	report(first[0], ApplyFailed)
+	report(first[0], ApplyRequestFailed)
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "not before its backoff")
 	assert.NotNil(t, loop.applierTimer, "the backoff is armed")
@@ -85,11 +86,11 @@ func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
 	assert.Empty(t, requester.taken(), "not while the branch is busy")
 
 	loop.openWindow = nil
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	loop.serviceAppliers()
 	retry := requester.taken()
 	require.Len(t, retry, 1)
-	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, retry[0].Reason, "the obligation came back")
+	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, retry[0].Reason, "the pending ForeignCommit came back")
 	assert.Equal(t, "ccc", retry[0].Commit, "at the tip as it is now")
 	assert.Equal(t, 1, retry[0].PriorFailures, "so the requester does not report the failure twice")
 }
@@ -100,11 +101,10 @@ func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
 // the requester only reports that the reason no longer holds, and the worker decides: no Refusal,
 // and a CatchUp only after the quiet period.
 func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
-	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying, func(g *configv1alpha3.GitTarget) {
-		g.Spec.Applier.QuietPeriod = &metav1.Duration{Duration: time.Hour}
-	}))
-	loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // owes a catch-up
-	oweAlphaRefusal(loop)
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying),
+		fluxTrigger("alpha", quietFor(time.Hour)))
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // leaves a CatchUp pending
+	addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
@@ -122,7 +122,7 @@ func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
 	loop.serviceAppliers()
 
 	assert.Empty(t, requester.taken(), "the catch-up waits out the hour-long quiet period")
-	assert.Empty(t, loop.reapplyOwed, "and the Refusal is gone with the consent")
+	assert.Empty(t, loop.unsentRefusals, "and the Refusal is gone with the consent")
 	assert.True(t, loop.appliers[applierRef("alpha")].catchUp)
 }
 
@@ -130,28 +130,28 @@ func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
 // recovered while its attempt was out came back with the failed attempt and was requested again.
 func TestApplier_ARecoveredRefusalIsNotRetried(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying))
-	key := oweAlphaRefusal(loop)
+	key := addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
 
 	loop.refusalRecovered(key.target, key.collection)
-	report(out[0], ApplyFailed)
+	report(out[0], ApplyRequestFailed)
 	loop.serviceAppliers()
 	dueNow(loop)
 	loop.serviceAppliers()
 
 	assert.Empty(t, requester.taken(), "a recovered refusal has nothing left to ask for")
-	assert.Empty(t, loop.reapplyOwed)
+	assert.Empty(t, loop.unsentRefusals)
 }
 
-// TestApplier_ARecreatedTargetInheritsNothing is the second review's third finding: an obligation
+// TestApplier_ARecreatedTargetInheritsNothing is the second review's third finding: a request
 // decided for one incarnation of a GitTarget executed for another created under the same name.
-// Requests carry the uid, and the worker drops what was owed to an incarnation that is gone.
+// Requests carry the uid, and the worker drops what was pending for an incarnation that is gone.
 func TestApplier_ARecreatedTargetInheritsNothing(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying))
 	loop.openWindow = &openWindow{}
-	oweAlphaRefusal(loop)
+	addAlphaUnsentRefusal(loop)
 
 	old := &configv1alpha3.GitTarget{}
 	require.NoError(
@@ -166,9 +166,9 @@ func TestApplier_ARecreatedTargetInheritsNothing(t *testing.T) {
 	loop.openWindow = nil
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "the refusal was the old incarnation's")
-	assert.Empty(t, loop.reapplyOwed)
+	assert.Empty(t, loop.unsentRefusals)
 
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
@@ -181,14 +181,14 @@ func TestApplier_ARecreatedTargetInheritsNothing(t *testing.T) {
 // recovered.
 func TestApplier_EachApplierRetriesOnItsOwnClock(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", true))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 2)
 
 	loop.appliers[applierRef("bravo")].failures = 6 // a long run of failures behind it
 	for _, req := range out {
-		report(req, ApplyFailed)
+		report(req, ApplyRequestFailed)
 	}
 	loop.serviceAppliers()
 	assert.Equal(t, 1, loop.appliers[applierRef("alpha")].failures)
@@ -201,21 +201,17 @@ func TestApplier_EachApplierRetriesOnItsOwnClock(t *testing.T) {
 	assert.Equal(t, applierRef("alpha"), retry[0].Applier)
 }
 
-// TestApplier_OneAttemptForEveryTargetNamingIt: GitTargets that share a Kustomization are asked for
-// together, each with its own reason, and the shared applier waits for the longest of their quiet
-// periods, because its apply reaches every one of their folders.
+// TestApplier_OneAttemptForEveryTargetNamingIt: GitTargets that share a trigger are asked for
+// together, each with its own reason, and wait for the trigger's quiet period, because its apply
+// reaches every one of their folders.
 func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
-	shared := func(quiet time.Duration) func(*configv1alpha3.GitTarget) {
-		return func(g *configv1alpha3.GitTarget) {
-			g.Spec.Applier = testApplier("shared")
-			g.Spec.Applier.QuietPeriod = &metav1.Duration{Duration: quiet}
-		}
-	}
+	shared := func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("shared") }
 	loop, requester := applyTriggerLoop(t,
-		applierTestTarget("alpha", true, shared(time.Minute), reapplying),
-		applierTestTarget("bravo", true, shared(time.Hour)),
+		applierTestTarget("alpha", true, shared, reapplying),
+		applierTestTarget("bravo", true, shared),
+		fluxTrigger("shared", quietFor(time.Hour)),
 	)
-	loop.w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
 	loop.serviceAppliers()
 	assert.Equal(t, time.Hour, loop.appliers[applierRef("shared")].quietPeriod())
 
@@ -223,7 +219,7 @@ func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "past alpha's quiet period, not bravo's")
 
-	oweAlphaRefusal(loop)
+	addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1, "one attempt for the shared applier")
@@ -239,24 +235,24 @@ func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
 			UID:    "uid-bravo",
 			Reason: configv1alpha3.ApplyReasonCatchUp,
 		},
-	}, out[0].Targets, "a Refusal applies the tip, so it answers the catch-up owed to bravo as well")
+	}, out[0].Targets, "a Refusal applies the tip, so it answers bravo's pending CatchUp as well")
 	assert.False(t, loop.appliers[applierRef("shared")].catchUp)
 }
 
-// TestApplier_AnAttemptOutHoldsTheNext: one attempt per applier at a time. What is owed while it is
-// out waits for its report, and goes in the attempt after.
+// TestApplier_AnAttemptOutHoldsTheNext: one attempt per applier at a time. A reason that becomes pending
+// while it is out waits for its report, and goes in the attempt after.
 func TestApplier_AnAttemptOutHoldsTheNext(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
 
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "the first attempt is still out")
 
-	report(out[0], ApplyDelivered)
+	report(out[0], ApplySucceeded)
 	loop.serviceAppliers()
 	next := requester.taken()
 	require.Len(t, next, 1)
@@ -264,19 +260,19 @@ func TestApplier_AnAttemptOutHoldsTheNext(t *testing.T) {
 	assert.Zero(t, next[0].PriorFailures)
 }
 
-// TestApplier_ATargetThatNoLongerNamesAnApplierIsOwedNothing: a report for an applier nobody names
+// TestApplier_ATargetThatNoLongerNamesAnApplierHasNothingPending: a report for an applier nobody names
 // any more is dropped with it.
-func TestApplier_ATargetThatNoLongerNamesAnApplierIsOwedNothing(t *testing.T) {
+func TestApplier_ATargetThatNoLongerNamesAnApplierHasNothingPending(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
 
-	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.Applier = nil })
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
+	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil })
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	loop.serviceAppliers()
-	report(out[0], ApplyFailed)
+	report(out[0], ApplyRequestFailed)
 	loop.serviceAppliers()
 
 	assert.Empty(t, loop.appliers)
@@ -303,7 +299,7 @@ func TestSiblings_ABusyWorkerOnTheSameBranchHoldsTheOther(t *testing.T) {
 
 	other.publishWriteBusy(true)
 	sibling.publishWriteBusy(true)
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "the sibling's open window is on this branch too")
 	assert.True(t, loop.quietSince.IsZero())
@@ -318,7 +314,40 @@ func TestSiblings_ABusyWorkerOnTheSameBranchHoldsTheOther(t *testing.T) {
 	assert.Len(t, requester.taken(), 1, "a worker on another repository never held it")
 
 	siblings.remove(sibling)
-	assert.False(t, loop.w.siblingWriteBusy())
+	writing, working := loop.w.siblingBusy()
+	assert.False(t, writing)
+	assert.False(t, working)
+}
+
+// TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod: a sibling's queued or
+// in-hand item holds the attempt back the way this worker's own queued work does. It keeps
+// quietSince, because the branch is busy only once that work opens a window, and the sibling's
+// loop wakes this one as it releases its last item.
+func TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod(t *testing.T) {
+	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	sibling := newMetricsTestWorker()
+	siblings := newBranchSiblings()
+	for _, w := range []*BranchWorker{loop.w, sibling} {
+		w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
+		w.applyWake = make(chan struct{}, 1)
+		siblings.add(w)
+	}
+
+	require.True(t, sibling.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
+	observeForeignCommit(loop.w)
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken(), "the sibling's item is a live edit not yet decided")
+	assert.False(t, loop.quietSince.IsZero(), "the quiet period runs on")
+
+	<-sibling.eventQueue // its loop takes the item, and then releases it, as run does
+	sibling.releaseInflightItem()
+	select {
+	case <-loop.w.applyWake:
+	default:
+		t.Fatal("a sibling releasing its last item must wake the worker it held back")
+	}
+	loop.serviceAppliers()
+	assert.Len(t, requester.taken(), 1)
 }
 
 func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
@@ -337,13 +366,13 @@ func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
 // carried comes back, and the next quiet moment decides again at the new tip.
 func TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
-	owesForeign(loop.w)
+	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
 	require.True(t, out[0].Current(), "decided at the tip on a quiet branch")
 
-	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
+	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	assert.False(t, out[0].Current(), "the branch moved on")
 
 	report(out[0], ApplyStale)
@@ -358,7 +387,7 @@ func TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff(t *testing.T) {
 // TestDecisionHolds_OnlyAtTheTipOnAQuietBranch: the check the requester makes before it patches.
 func TestDecisionHolds_OnlyAtTheTipOnAQuietBranch(t *testing.T) {
 	w := newMetricsTestWorker()
-	w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
+	w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
 	assert.True(t, w.decisionHolds("aaa"))
 	assert.False(t, w.decisionHolds("older"), "another commit is not the tip")
 
@@ -366,8 +395,51 @@ func TestDecisionHolds_OnlyAtTheTipOnAQuietBranch(t *testing.T) {
 	assert.False(t, w.decisionHolds("aaa"), "a window open since")
 	w.publishWriteBusy(false)
 
-	w.eventQueue <- WorkItem{}
+	require.True(t, w.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
 	assert.False(t, w.decisionHolds("aaa"), "a queued event is a live edit not yet decided")
+}
+
+// TestDecisionHolds_NotWhileTheLoopHandlesAnItem is the fifth review's second finding. The check
+// read the queue's length, and busyWriting, which a wake publishes only as it ends: once the loop
+// had taken its last item both said quiet, for as long as that item took to commit and push. The
+// item counts until its wake has published what it left behind, for this worker's attempts and for
+// a sibling's. The loop runs for real here, held inside the item by the render fidelity gate.
+func TestDecisionHolds_NotWhileTheLoopHandlesAnItem(t *testing.T) {
+	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
+	w := loop.w
+	sibling := newMetricsTestWorker()
+	siblings := newBranchSiblings()
+	for _, worker := range []*BranchWorker{w, sibling} {
+		worker.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
+		worker.applyWake = make(chan struct{}, 1)
+		worker.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
+		siblings.add(worker)
+	}
+	gate := NewRenderFidelityGate()
+	w.renderFidelityGate = gate
+	ctx, cancel := context.WithCancel(context.Background())
+	w.ctx = ctx
+	done := make(chan struct{})
+
+	gate.mu.Lock() // the loop's write check waits here
+	go func() {
+		defer close(done)
+		loop.run()
+	}()
+	require.True(t, w.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
+	require.Eventually(t, func() bool { return len(w.eventQueue) == 0 }, 5*time.Second, time.Millisecond)
+	assert.False(t, w.busyWriting.Load(), "the wake has published nothing yet")
+	assert.False(t, w.decisionHolds("aaa"), "the item the loop is handling is a live edit")
+	assert.False(t, sibling.decisionHolds("aaa"), "for a sibling too")
+	gate.mu.Unlock()
+
+	require.Eventually(t, func() bool { return w.inflightItems.Load() == 0 }, 5*time.Second, time.Millisecond)
+	assert.True(t, w.busyWriting.Load(), "the window it opened is published before the item is released")
+	assert.False(t, sibling.decisionHolds("aaa"))
+
+	restartAll(gate, itypes.NewResourceReference("alpha", "team-a"), fidelityScope("apps", "deployments"))
+	cancel()
+	<-done
 }
 
 // TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow is the customer review's third blocker: the

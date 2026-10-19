@@ -226,7 +226,8 @@ metadata:
 spec:
   accessFrom:
     names: [%s, %s]
-  allowAnySourceNamespace: %t
+  allowCrossNamespace:
+    sources: %t
   attribution:
     auditRoute: %s
 `, name, allowedNS, extraNS, delegate, auditRoute)
@@ -250,7 +251,7 @@ spec:
 
 // applyGitTargetForClusterProvider applies a GitTarget that mirrors through a named
 // ClusterProvider. Which SOURCE namespaces may reach it is bounded by that provider's
-// spec.allowAnySourceNamespace plus the source credential's own RBAC, not by any field here.
+// spec.allowCrossNamespace.sources plus the source credential's own RBAC, not by any field here.
 func applyGitTargetForClusterProvider(
 	ns, name, gitProvider, targetPath, clusterProvider string,
 ) (string, error) {

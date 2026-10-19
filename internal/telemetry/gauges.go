@@ -60,6 +60,10 @@ const (
 	// target's join series ends at the next scrape rather than attributing a live branch's
 	// failures to an object that is gone. See branch_targets.go.
 	GaugeGitBranchTargets = "git_branch_targets"
+	// GaugeApplyOperationsUnresolved is how many apply operations on a branch did not complete
+	// within the dispatcher's budget and are still followed, each holding its applier's apply
+	// window open and its next attempt back. Read from what the branch worker's loop last published.
+	GaugeApplyOperationsUnresolved = "apply_operations_unresolved"
 )
 
 var (

@@ -55,7 +55,7 @@ spec:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
     control-plane: gitops-reverser
 {{- end }}
-{{- if include "gitops-reverser.receiverEnabled" . }}
+{{- if .Values.servers.receiver.enabled }}
 ---
 # The push receiver: plain HTTP for Git hosts' push webhooks. ClusterIP only; expose it with an
 # Ingress or Gateway route of your own that terminates TLS, the way Flux's webhook-receiver is.

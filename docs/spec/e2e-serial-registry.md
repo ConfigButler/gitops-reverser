@@ -11,7 +11,7 @@ under bounded Ginkgo parallelism (Phase 2.5 of
 > The two audit-consumer specs, `bi_directional`, and `aggregated_apiserver` have
 > all been de-serialized (see the "De-serialized" section). `crd_lifecycle` was
 > de-serialized and then **re-serialized** (commit `3d249e3`) when a residual
-> cluster-wide CRD-discovery churn re-flaked it. The current Serial set is the two
+> cluster-wide CRD-discovery churn re-flaked it. The current Serial set is the three
 > singleton-controller specs, `crd_lifecycle`, and `playground`.
 
 ## Rule
@@ -32,6 +32,7 @@ row below.
 | File | Container | Shared state it touches | Why name isolation can't fix it |
 |---|---|---|---|
 | [test/e2e/restart_reconcile_e2e_test.go](../../test/e2e/restart_reconcile_e2e_test.go) | `Restart Reconcile Safety` | Rollout-restarts the controller deployment. | The controller is a singleton; restarting it disrupts in-flight reconciles/commits for every other spec. |
+| [test/e2e/flux_restart_recovery_e2e_test.go](../../test/e2e/flux_restart_recovery_e2e_test.go) | `Flux Restart Recovery` | Rollout-restarts the controller deployment while a Flux apply runs, and labels a node so that apply's Deployment can schedule. | The controller is a singleton, as for `Restart Reconcile Safety`; a node label is cluster-wide. |
 | [test/e2e/image_refresh_test.go](../../test/e2e/image_refresh_test.go) | `image refresh dependency chain` | Changes the controller image / redeploys the controller. | Same singleton controller; an image swap perturbs all concurrent specs. |
 | [test/e2e/crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go) | `Manager CRD Lifecycle` | Installs/deletes a cluster-scoped CRD and watches all `customresourcedefinitions` cluster-wide, asserting exact Git file presence/absence. | A concurrent CRD install/delete bumps the global discovery-catalog generation and re-resolves every GitTarget's watched-type tables, delaying this spec's reconcile (CRD file appears late / post-delete sweep lags — the 649↔673 flake). A cluster-wide catalog bump cannot be scoped by name. |
 | [test/e2e/tilt_playground_e2e_test.go](../../test/e2e/tilt_playground_e2e_test.go) | `playground` | Reusable manual-playground fixture: fixed (non-randomized) `tilt-playground` namespace and `playground` repo/provider names, preserved across runs. | A singleton by construction — its resource names are intentionally stable so `task playground-*` can re-attach, so per-run name isolation does not apply. |

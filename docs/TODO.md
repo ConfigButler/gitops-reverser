@@ -91,7 +91,7 @@ rebuild fails is no longer dropped: it stays pending for that retry
   signing snapshot-message specs, then passed on rerun. Capture and mitigation notes live in the
   [e2e serial registry](spec/e2e-serial-registry.md).
   This should be addressed before the next feature that expands commit-message, snapshot, or
-  write-window behavior, otherwise new failures will be hard to separate from existing timing debt.
+  write-window behavior, otherwise new failures will be hard to separate from the existing timing flakes.
 
 - [ ] Use [bestpractices.dev](https://www.bestpractices.dev/en) as a project maturity checklist.
   Review the current gaps, decide which items matter for this project, and turn the useful ones
@@ -206,7 +206,8 @@ rebuild fails is no longer dropped: it stays pending for that retry
   lands.
 - [ ] Better branching and promotion strategies.
 
-- [ ] Bi-directional GitOps alignment with controllers such as Flux and Argo CD.
+- [ ] A webhook applier, so an apply trigger can hold a tool other than Flux or Argo CD. Flux and
+  Argo CD are built; see the [apply trigger design](design/apply-trigger.md).
 
 Research work:
 

@@ -7,10 +7,10 @@ resources:
   # See docs/rbac.md; the Helm chart renders the same pair from `rbac.watchTypes`.
   - watch-any-role.yaml
   - watch-any-rolebinding.yaml
-  # Patch rights on Flux Kustomizations and GitRepositories, for GitTarget.spec.applier. See the file.
+  # Patch rights on Flux Kustomizations and GitRepositories, for FluxTriggers. See the file.
   - flux-applier-role.yaml
   - flux-applier-rolebinding.yaml
-  # Update rights on Argo CD Applications, for GitTarget.spec.applier.applicationRef. See the file.
+  # Update rights on Argo CD Applications, for ArgoCDTriggers. See the file.
   - argocd-applier-role.yaml
   - argocd-applier-rolebinding.yaml
   - cluster-role-jane-aggregated.yaml

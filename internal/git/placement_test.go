@@ -121,7 +121,7 @@ func TestPlacement_DeclaredBundle_AppendsToExistingMultiDocFile(t *testing.T) {
 // A declared destination inside a kustomize context must not write metadata.namespace:
 // the kustomization's namespace: transformer supplies it, and repeating it would break the
 // "no namespace: in this file" convention every other document in the bundle follows. The
-// obligation used to come from reading the siblings' bytes; it now comes from the
+// rule to omit it used to come from reading the siblings' bytes; it now comes from the
 // governing kustomization, which is the thing that actually decides the rendered namespace.
 func TestPlacement_DeclaredBundle_OmitsNamespaceInKustomizeContext(t *testing.T) {
 	worktree := newWorktreeForTest(t)

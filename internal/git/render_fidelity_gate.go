@@ -362,7 +362,7 @@ func pendingScopesMessage(state renderFidelityTargetState, scopes []types.Collec
 		if result.finished && result.clean {
 			continue
 		}
-		name := fmt.Sprintf("%s (owes revision %d", scope.String(), result.revision)
+		name := fmt.Sprintf("%s (waiting for revision %d", scope.String(), result.revision)
 		if result.refusedRevision != 0 {
 			name += fmt.Sprintf("; refused a report carrying revision %d", result.refusedRevision)
 		}

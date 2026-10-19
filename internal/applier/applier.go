@@ -7,12 +7,14 @@ commit is safe to apply. The worker decides WHEN; this package decides HOW, off 
 so a slow or unreachable applier never holds a branch.
 
 Two kinds are served, behind one Client: a Flux Kustomization whose sourceRef is a GitRepository
-(spec.applier.kustomizationRef, flux.go), and an Argo CD Application with automated sync off
-(spec.applier.applicationRef, argocd.go). See docs/design/apply-trigger.md.
+(a FluxTrigger's spec.kustomizationRef, flux.go), held suspended while idle and resumed for each
+apply, and an Argo CD Application with automated sync off (an ArgoCDTrigger's
+spec.applicationRef, argocd.go). Either way the applier applies only when GitOps Reverser asks.
+See docs/design/apply-trigger.md, "The Flux applier, suspended".
 
-A request asks and never reports. Nothing here claims an apply happened; the applier's own status
-(lastAppliedRevision on a Kustomization, status.operationState on an Application) is the record of
-that.
+Each request starts one operation, which the dispatcher follows until the applier's own status
+(the handled tokens and Ready of a Kustomization, status.operationState of an Application) says it
+completed.
 */
 package applier
 
@@ -34,26 +36,84 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// Client asks one kind of applier, in one cluster, to apply. The dispatcher and the
-// ApplierConfigured check pick one by the applier's kind (NewClient), and use nothing else of it.
+// Client asks one kind of applier, in one cluster, to apply. The dispatcher (Dispatcher.client) and
+// the trigger's Configured check (NewClient) pick one by the applier's kind, and use nothing else of
+// it.
 type Client interface {
-	// Validate answers ApplierConfigured: the applier exists, applies want, and may be asked.
-	Validate(ctx context.Context, ref types.NamespacedName, want Binding) Verdict
-	// Request asks the applier to apply commit, after checking it still applies want and asking
-	// current just before it writes. A permanent error is a configuration no retry can fix;
-	// errStale is a decision that no longer held.
-	Request(
-		ctx context.Context,
-		ref types.NamespacedName,
-		want Binding,
-		commit string,
-		reason v1alpha3.ApplyReason,
-		current func() bool,
-	) (Stamped, error)
-	// Handled reports whether the applier has finished the apply a Request asked for.
-	Handled(ctx context.Context, ref types.NamespacedName, s Stamped) (bool, error)
+	// Validate answers a trigger's Configured condition: the applier exists, applies a source GitOps
+	// Reverser can drive, and may be asked. It reports the source it read, whatever the verdict.
+	Validate(ctx context.Context, ref types.NamespacedName) Verdict
+	// Request starts one apply of ask.Commit, after checking the applier still applies ask.Want and
+	// asking ask.Current just before it writes. A permanent error is a configuration no retry can
+	// fix; errStale is a decision that no longer held.
+	Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Started, error)
+	// Progress reports how far the applier is with the apply a Request started, and takes the
+	// operation's next step when it is the client's to take (a Flux Kustomization is suspended again
+	// after its apply). A read or write that fails is an error, and its Progress says nothing.
+	Progress(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error)
+}
+
+// Ask is what one Request asks of an applier.
+type Ask struct {
+	// Want is the repository and branch the applier must apply.
+	Want Binding
+	// Commit is the commit to apply; empty when the remote does not carry the branch.
+	Commit string
+	// Reason is why.
+	Reason v1alpha3.ApplyReason
+	// Token identifies the request in the applier's own status: the requestedAt a Flux
+	// Kustomization is resumed with, or the request entry in an Argo CD operation's info.
+	Token string
+	// Current reports whether the decision still holds; nil always does.
+	Current func() bool
+	// Record writes the operation on its trigger, and returns once it is written. It is called just
+	// before the write that starts the apply, so a restart finds every apply that may have started.
+	// Current is asked again after it, since it can wait on the status writer and the API server.
+	// Nil records nothing.
+	Record func(ctx context.Context) error
+	// Held reports, from a fresh read, whether the trigger holds its Flux Kustomization suspended
+	// (Held=True), and errs when it does not: a resume while the trigger's reconciler is still
+	// suspending it (an adoption, an external resume) would race that suspend. It is asked just
+	// before Record. Nil always holds; the Argo CD client never asks it.
+	Held func(ctx context.Context) error
+}
+
+// recordOnce is Record, called the first time only: a request that writes more than once (an Argo
+// CD update that lost a race) records its operation once.
+func (a Ask) recordOnce() func(ctx context.Context) error {
+	recorded := a.Record == nil
+	return func(ctx context.Context) error {
+		if recorded {
+			return nil
+		}
+		if err := a.Record(ctx); err != nil {
+			return err
+		}
+		recorded = true
+		return nil
+	}
+}
+
+// holds asks Current whether the decision still holds; a nil Current always does.
+func (a Ask) holds() bool {
+	return a.Current == nil || a.Current()
+}
+
+// Progress is where the operation a Request started stands, as the applier's status shows it.
+type Progress struct {
+	// Outcome is git.ApplyRequested, git.ApplyRunning, git.ApplySettling, git.ApplySucceeded or
+	// git.ApplyFailed.
+	Outcome git.ApplyOutcome
+	// Message is why a Failed operation failed, or what a Succeeded one applied instead of the
+	// commit.
+	Message string
+	// SuspendToken is the requestedAt the suspend after a Flux apply carried, once written.
+	SuspendToken string
+	// AppliedRevision is the revision the applier reports it applied, once the operation completed.
+	AppliedRevision string
 }
 
 var (
@@ -83,29 +143,36 @@ type Outcome string
 // OutcomeCurrent asked for nothing: the applier needed no request (see each client's Request).
 const OutcomeCurrent Outcome = "Current"
 
-// ApplierConfigured reasons (docs/configuration.md, "Who applies this folder"). Succeeded and
-// Failed are the generic reasons, aliased from Flux's meta package as the conditions guide asks.
+// Configured and ApplyTriggerReady reasons (docs/configuration.md, "Who applies this folder").
+// Succeeded and Failed are the generic reasons, aliased from Flux's meta package as the conditions
+// guide asks.
 const (
-	// ReasonSucceeded is ApplierConfigured=True: the applier exists, applies this repository and
-	// branch, and may be asked to apply.
+	// ReasonSucceeded is Configured=True: the applier exists, applies a source GitOps Reverser can
+	// drive, and may be asked to apply.
 	ReasonSucceeded = fluxmeta.SucceededReason
-	// ReasonApplierNotFound is no such object in the source cluster, or its kind is not served there.
+	// ReasonApplierNotFound is no such object in the applier's cluster, or its kind is not served
+	// there.
 	ReasonApplierNotFound = "ApplierNotFound"
-	// ReasonSourceMismatch is an applier that applies a different repository or branch.
+	// ReasonUnsupportedSource is an applier whose source GitOps Reverser cannot drive: a
+	// Kustomization that applies no GitRepository, or one pinned to anything but a branch, or an
+	// Application with several sources.
+	ReasonUnsupportedSource = "UnsupportedSource"
+	// ReasonSourceMismatch is ApplyTriggerReady=False on a GitTarget whose trigger's applier applies
+	// a different repository or branch than the GitTarget writes.
 	ReasonSourceMismatch = "SourceMismatch"
 	// ReasonAutomatedSyncEnabled is an Argo CD Application with automated sync on, which syncs on
 	// its own and so is never asked to.
 	ReasonAutomatedSyncEnabled = "AutomatedSyncEnabled"
-	// ReasonForbidden is a source-cluster identity that may not read or write the applier.
+	// ReasonForbidden is a ClusterProvider identity that may not read or write the applier.
 	ReasonForbidden = "Forbidden"
-	// ReasonCheckFailed is a check that could not complete: the source cluster did not answer.
+	// ReasonCheckFailed is a check that could not complete: the applier's cluster did not answer.
 	// Verdict.Err carries the cause; it says nothing about the applier itself.
 	ReasonCheckFailed = fluxmeta.FailedReason
 )
 
-// Verdict is the answer Validate gives for the ApplierConfigured condition.
+// Verdict is the answer Validate gives for a trigger's Configured condition.
 type Verdict struct {
-	// OK is ApplierConfigured=True.
+	// OK is Configured=True.
 	OK bool
 	// Reason is the condition reason.
 	Reason string
@@ -114,35 +181,81 @@ type Verdict struct {
 	// Err is set only with ReasonCheckFailed: the read that failed. A caller may prefer to keep the
 	// verdict it already published over replacing a known answer with "could not tell".
 	Err error
+	// Source is what the applier applies, when Validate could read it.
+	Source *Source
 }
 
-// Stamped is what one Request did, with what the applier reported before it, so Handled can tell
-// when it has finished the apply it was asked for.
-type Stamped struct {
+// Source is what an applier applies from: a GitRepository's spec.url and spec.ref.branch for a
+// Kustomization, or an Application's spec.source repoURL and targetRevision.
+type Source struct {
+	// GitRepository is the Kustomization's GitRepository (Flux only).
+	GitRepository types.NamespacedName
+	// URL is the repository.
+	URL string
+	// Revision is the branch a GitRepository follows, or an Application's targetRevision as
+	// written.
+	Revision string
+}
+
+// Started is the operation one Request started, may have started (Unconfirmed), or read back from
+// the trigger's record (Recovered), for Progress to follow; with Outcome Current, nothing was asked.
+type Started struct {
 	// Outcome is what was asked, if anything.
 	Outcome Outcome
-	// Token identifies the request: the reconcile.fluxcd.io/requestedAt value stamped on a Flux
-	// object, or the request entry in an Argo CD operation's info. Empty when nothing was asked.
+	// Token identifies the request: the requestedAt a Flux Kustomization was resumed with, or the
+	// request entry in an Argo CD operation's info. Empty when nothing was asked.
 	Token string
-	// Source is the GitRepository the Kustomization applies from (Flux only).
-	Source types.NamespacedName
-	// PriorAttemptedRevision is the Kustomization's status.lastAttemptedRevision before the stamp
-	// (Flux only).
-	PriorAttemptedRevision string
-	// PriorArtifactRevision is the GitRepository's status.artifact.revision before the stamp
-	// (Flux only).
-	PriorArtifactRevision string
+	// Commit is the commit asked for.
+	Commit string
+	// SuspendToken is the requestedAt a Flux Kustomization was suspended again with, once it was.
+	SuspendToken string
+	// Overdue is set by the dispatcher once the operation is Unresolved. A Flux Kustomization is
+	// then suspended at once, rather than once its apply was seen to end.
+	Overdue bool
+	// Recovered is an operation read back from the trigger's record rather than started by this
+	// process: the write that would start it (a Flux resume, an Argo CD update) may never have been
+	// made, and the record says nothing of that.
+	Recovered bool
+	// Unconfirmed is the error of the write that started the operation (a Flux resume, an Argo CD
+	// update), when it failed without saying whether it reached the API server (a timeout, a lost
+	// connection); nil for one that was answered. Such an operation is followed, because the apply
+	// may be running, as a Recovered one is: a Flux one is suspended again, and an Argo CD one is
+	// followed by its token until it completed or can no longer be set.
+	Unconfirmed error
+	// unseen is a Recovered or Unconfirmed operation whose token the Kustomization did not carry
+	// when it was first read: never written, or stamped over before it was handled.
+	unseen bool
+	// RequestedAt is when a Recovered operation was asked for, as its record says. A reconcile
+	// that ran since is the only evidence of its apply this process can read.
+	RequestedAt time.Time
+	// verdict is the outcome of a Flux apply, read once the resume's token was handled and kept
+	// until the suspend after it is.
+	verdict *Progress
+	// resumedFrom is what a reconcile that builds moves on the Kustomization, as it stood when this
+	// process resumed it: a verdict that reads it unmoved reads an apply from before the resume.
+	resumedFrom *reconcileMark
 }
 
 // Binding is the repository and branch an applier must apply from: the GitProvider's spec.url and
-// the GitTarget's spec.branch. Request checks it before it writes anything, not only Validate,
-// because a published ApplierConfigured verdict can be older than the applier it describes.
+// the GitTarget's spec.branch. Request checks it before it writes anything, because a trigger's
+// published source can be older than the applier it describes.
 type Binding struct {
 	RepositoryURL string
 	Branch        string
 }
 
-// AccessCheck reports whether the source-cluster identity may perform attrs.
+// BindingMismatch returns why the source a trigger last read is not want, or "" when it is. The
+// GitTarget's ApplyTriggerReady condition reads it; Request checks the same against the applier
+// itself before it writes.
+func BindingMismatch(trigger v1alpha3.ApplyTrigger, want Binding) string {
+	url, branch, known := trigger.SourceBinding()
+	if !known {
+		return ""
+	}
+	return bindingMismatch(trigger, url, branch, want)
+}
+
+// AccessCheck reports whether the ClusterProvider identity may perform attrs.
 type AccessCheck func(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error)
 
 // permanentError marks a request no retry can make succeed: the applier is configured in a way a
@@ -156,6 +269,19 @@ func (e permanentError) Unwrap() error { return e.err }
 
 // errStale reports a request whose decision no longer held when the write was due.
 var errStale = errors.New("the decision no longer holds: the branch moved on or became busy")
+
+// mayHaveLanded reports whether a write that failed with err may have been made all the same: the
+// API server did not answer it (a timeout, a lost connection, the context ending while it waited),
+// or answered that it cannot tell (a server timeout, an internal error). Any other answer refused
+// the write.
+func mayHaveLanded(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return true
+	}
+	return apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) || apierrors.IsInternalError(err) ||
+		apierrors.IsUnexpectedServerError(err)
+}
 
 // isPermanent reports whether err is a permanentError.
 func isPermanent(err error) bool {
@@ -190,18 +316,18 @@ func readFailure(
 	case apimeta.IsNoMatchError(err) || (apierrors.IsNotFound(err) && !namesObject(err, ref.Name)):
 		return Verdict{
 			Reason: ReasonApplierNotFound,
-			Message: fmt.Sprintf("the source cluster does not serve %s (%s); is %s installed there?",
+			Message: fmt.Sprintf("the applier's cluster does not serve %s (%s); is %s installed there?",
 				kind, gvr.GroupVersion(), product),
 		}
 	case apierrors.IsNotFound(err):
 		return Verdict{
 			Reason:  ReasonApplierNotFound,
-			Message: fmt.Sprintf("%s %s not found in the source cluster", kind, ref),
+			Message: fmt.Sprintf("%s %s not found in the applier's cluster", kind, ref),
 		}
 	case apierrors.IsForbidden(err):
 		return Verdict{
 			Reason:  ReasonForbidden,
-			Message: fmt.Sprintf("the source-cluster identity may not get %s %s: %v", kind, ref, err),
+			Message: fmt.Sprintf("the ClusterProvider identity may not get %s %s: %v", kind, ref, err),
 		}
 	default:
 		return Verdict{
@@ -246,7 +372,7 @@ func accessVerdict(
 	if !allowed {
 		return &Verdict{
 			Reason: ReasonForbidden,
-			Message: fmt.Sprintf("the source-cluster identity may not %s %s %s (%s)",
+			Message: fmt.Sprintf("the ClusterProvider identity may not %s %s %s (%s)",
 				verb, kind, ref, gvr.GroupResource()),
 		}
 	}
@@ -263,7 +389,7 @@ func pastTense(verb string) string {
 
 // SelfSubjectAccessCheck answers an AccessCheck with a SelfSubjectAccessReview created through
 // client, so it is answered for the identity client authenticates as. It goes through the dynamic
-// client rather than a typed clientset because that client is the only one a source cluster has.
+// client rather than a typed clientset because that client is the only one a remote cluster has.
 func SelfSubjectAccessCheck(client dynamic.Interface) AccessCheck {
 	return func(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error) {
 		review := &authorizationv1.SelfSubjectAccessReview{

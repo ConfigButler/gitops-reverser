@@ -11,3 +11,7 @@ spec:
   # no kubeConfig => the operator's own in-cluster config (optional for any provider name)
   accessFrom:
     selector: {}
+  # Nothing outside the admitted namespaces, as the chart renders it.
+  allowCrossNamespace:
+    sources: false
+    appliers: false

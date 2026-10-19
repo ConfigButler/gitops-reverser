@@ -185,7 +185,7 @@ func (wb *writeBatch) authorInheritedDelete(
 // cluster again: the patch file goes, and so does its patches: entry. It returns the base document's
 // path when this batch has brought the object back into the render, now or by an earlier event, so
 // the caller plans the upsert against the staged render; retired reports that it happened now, in
-// which case the caller also owes the oracle an intent that the object renders again.
+// which case the caller must also give the oracle an intent that the object renders again.
 //
 // It runs before the upsert, so the upsert edits the base document the render will hold rather
 // than one it hides.

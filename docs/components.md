@@ -23,7 +23,7 @@ the target watches supply *state*, the branch worker owns *Git*, and audit only 
 ```mermaid
 flowchart TB
     subgraph CFG["Config plane (operator's own cluster)"]
-        CRD["api/v1alpha3<br/>GitTarget · WatchRule · ClusterWatchRule<br/>GitProvider · ClusterProvider · CommitRequest"]
+        CRD["api/v1alpha3<br/>GitTarget · WatchRule · ClusterWatchRule<br/>GitProvider · ClusterProvider · CommitRequest<br/>FluxTrigger · ArgoCDTrigger"]
         CTRL["internal/controller<br/>reconcilers"]
         ADM["internal/webhook<br/>admission handlers"]
         AUTHZ["internal/authz<br/>namespace admission"]
@@ -76,10 +76,10 @@ The operator's own API surface and the reconcilers behind it.
 
 | Component | Path | Role |
 |---|---|---|
-| CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the six kinds users apply |
+| CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the eight kinds users apply |
 | Reconcilers | [`internal/controller/`](../internal/controller/) | one per kind, plus shared condition and status helpers |
 | Admission handlers | [`internal/webhook/`](../internal/webhook/) | the always-allow observer and `validate-operator-types`, which captures a `CommitRequest` submitter |
-| Namespace admission | [`internal/authz/`](../internal/authz/) | the `ClusterProvider.spec.accessFrom` decision and the `spec.allowAnySourceNamespace` gate, in their own package because several call sites need the same answer |
+| Namespace admission | [`internal/authz/`](../internal/authz/) | the `ClusterProvider.spec.accessFrom` decision and the `spec.allowCrossNamespace` gates, in their own package because several call sites need the same answer |
 | Rule store | [`internal/rulestore/`](../internal/rulestore/) | compiled `WatchRule` and `ClusterWatchRule` cache the data plane reads |
 
 ### Type and scope resolution
@@ -124,6 +124,8 @@ write to that branch goes through its single event loop.
 | Document editor | [`internal/git/manifestedit/`](../internal/git/manifestedit/) | edits one YAML document in place inside a multi-document file |
 | Manifest report | [`internal/manifestreport/`](../internal/manifestreport/) | projects a live object into a comparable manifest |
 | Encryption and signing | [`internal/git/sops_encryptor.go`](../internal/git/sops_encryptor.go), [`internal/sshsig/`](../internal/sshsig/) | SOPS for sensitive types, SSH signatures for commits |
+| Apply requests | [`internal/applier/`](../internal/applier/) | the Flux and Argo CD clients, the dispatcher that carries out each apply attempt a branch worker decides, and the trigger's `Configured` check |
+| Push receiver | [`internal/webhook/receiver.go`](../internal/webhook/receiver.go) | `/git-push/` deliveries from a Git host, handed to the branch worker as a hint to read the remote |
 
 ### Attribution
 
@@ -187,7 +189,9 @@ flowchart LR
 | Target watches | **objects** of claimed types | source cluster | raw `dynamic ... Watch()`, no informer and no cache ([`internal/watch/target_watch.go:969`](../internal/watch/target_watch.go#L969)) |
 
 Two more paths reach the operator without being watches at all. The audit webhook is a **push** from
-kube-apiserver, and the admission webhooks are synchronous requests. Neither observes state.
+kube-apiserver, and the admission webhooks are synchronous requests. Neither observes state. The
+apply trigger reconciler reads each trigger's `Kustomization` or `Application` with a GET on its own
+tick rather than a watch, so a cluster without Flux or Argo CD needs no informer for them.
 
 ### Why two type observers is correct
 

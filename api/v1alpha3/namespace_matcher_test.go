@@ -128,6 +128,11 @@ func TestResourceRule_EffectiveSourceNamespace(t *testing.T) {
 // otherwise.
 func TestClusterProvider_DelegationFlagDefaultsClosed(t *testing.T) {
 	provider := &ClusterProvider{}
-	assert.False(t, provider.AllowsAnySourceNamespace(),
+	assert.False(t, provider.AllowsCrossNamespaceSources(),
 		"source-namespace delegation must never be on by default")
+	assert.False(t, provider.AllowsCrossNamespaceAppliers(),
+		"nor may a trigger reach another namespace's applier by default")
+	provider.Spec.AllowCrossNamespace = &ClusterProviderCrossNamespace{Appliers: true}
+	assert.False(t, provider.AllowsCrossNamespaceSources(), "each power is granted on its own")
+	assert.True(t, provider.AllowsCrossNamespaceAppliers())
 }

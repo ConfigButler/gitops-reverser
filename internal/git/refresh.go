@@ -61,14 +61,14 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 	w.pendingResyncsMu.Lock()
 	defer w.pendingResyncsMu.Unlock()
 	if w.stoppingLocked() {
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalRefresh)
 		return
 	}
 	select {
 	case w.eventQueue <- WorkItem{Refresh: req}:
 	default:
-		w.inflightItems.Add(-1)
+		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalRefresh)
 		w.Log.V(1).Info("Event queue full, refresh dropped; the next reconcile asks again",
 			"branch", w.Branch, "gitTarget", req.Target.String())

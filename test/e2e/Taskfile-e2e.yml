@@ -1319,11 +1319,13 @@ tasks:
     cmds:
       - mkdir -p "{{.CS}}"
       - '{{.KUSTOMIZE}} build config/crd | {{.KUBECTL}} --context "{{.CTX}}" apply -f -'
+      # Not a bare `kubectl wait`: on a CRD created by the apply above it can fail at once.
       - |
-        {{.KUBECTL}} --context "{{.CTX}}" wait --for=condition=Established --timeout=60s \
+        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/e2e/wait-crds-established.sh 60 \
           crd/clusterproviders.configbutler.ai crd/clusterwatchrules.configbutler.ai \
           crd/commitrequests.configbutler.ai crd/gitproviders.configbutler.ai \
-          crd/gittargets.configbutler.ai crd/watchrules.configbutler.ai
+          crd/gittargets.configbutler.ai crd/watchrules.configbutler.ai \
+          crd/fluxtriggers.configbutler.ai crd/argocdtriggers.configbutler.ai
       - touch "{{.CS}}/crds.installed"
 
   _install-config-dir:
@@ -1545,11 +1547,10 @@ tasks:
         done
         kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/voter-gitops/crds/coffeeconfigs.yaml"
         kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/vote/crds"
-        kubectl --context "{{.CTX}}" wait --for=condition=Established \
+        CTX="{{.CTX}}" bash hack/e2e/wait-crds-established.sh 180 \
           crd/coffeeconfigs.examples.configbutler.ai \
           crd/quizsessions.examples.configbutler.ai \
-          crd/quizsubmissions.examples.configbutler.ai \
-          --timeout=180s
+          crd/quizsubmissions.examples.configbutler.ai
         # Traefik and kro live in the demo path (not the core bring-up): the
         # demo podinfo flows below need kro's ResourceGraphDefinition CRD and
         # traefik's IngressRoutes. Install them here and wait before applying

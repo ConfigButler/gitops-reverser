@@ -85,8 +85,9 @@ distinguishes those planned gates from the permanent construct boundary.
   the staged design for safely editing it.
 - [Git write preflight](../git-write-preflight.md): onboarding refusal and all-target admission
   checks, with target errors for late failures. This replaces the per-edit accounting proposal.
-- [Admission consent](admission-consent.md) and [reconcile trigger](../../finished/push-notification-and-reconcile-trigger.md):
-  deferred extensions; preflight does not promise automatic rollback.
+- [Admission consent](admission-consent.md): a deferred extension. Reverting a refused edit on the
+  cluster is opt-in, through `onRefusal: Reapply` and [the apply trigger](../apply-trigger.md);
+  preflight itself promises no automatic rollback.
 - Historical implementation records: [image/replica edit-through](finished/images-and-replicas-edit-through.md)
   and [higher-level KRM support](finished/higher-level-krm-documents.md).
 - [Fixture corpus](../../../test/fixtures/gitops-layouts/) — executable evidence; its

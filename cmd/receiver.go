@@ -30,7 +30,7 @@ const (
 
 	// The receiver's server timeouts. A delivery is one small POST answered without waiting on the
 	// remote (the branch worker reads the remote later, on its own loop), so these only have to
-	// outlast a slow client sending a body up to the 25 MiB cap, and keep an idle or trickling
+	// outlast a slow client sending a body up to the 2 MiB cap, and keep an idle or trickling
 	// connection from holding a socket. They are not flags: nothing a Git host does needs them
 	// tuned, and every knob is one more thing to get wrong.
 	receiverReadHeaderTimeout = 10 * time.Second

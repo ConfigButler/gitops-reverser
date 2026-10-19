@@ -5,6 +5,7 @@ package applier
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 const argoNS = "argocd"
@@ -144,11 +146,16 @@ func TestArgoCDRequest_TheOperationIsWhatAutomatedSyncWouldBuild(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newArgoSource(applicationObj(testRepoURL, testBranch, tt.syncPolicy))
 
-			stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-				v1alpha3.ApplyReasonForeignCommit, nil)
+			started, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+				Want:   testBinding,
+				Commit: testCommit,
+				Reason: v1alpha3.ApplyReasonForeignCommit,
+				Token:  requestToken(stampTime),
+			})
 
 			require.NoError(t, err)
-			assert.Equal(t, Stamped{Outcome: OutcomeSyncRequested, Token: requestToken(stampTime)}, stamped)
+			assert.Equal(t, Started{Outcome: OutcomeSyncRequested, Token: requestToken(stampTime), Commit: testCommit},
+				started)
 			operation, found, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
 			require.True(t, found)
 			assert.Equal(t, map[string]any{
@@ -174,8 +181,9 @@ func TestArgoCDRequest_ClearsTheLastOperationState(t *testing.T) {
 	_ = unstructured.SetNestedField(app.Object, "Synced", "status", "sync", "status")
 	client := newArgoSource(app)
 
-	_, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-		v1alpha3.ApplyReasonRefusal, nil)
+	_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+		Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonRefusal, Token: requestToken(stampTime),
+	})
 
 	require.NoError(t, err)
 	written := readApp(t, client)
@@ -198,8 +206,12 @@ func TestArgoCDRequest_ARunningOperationIsNeverReplaced(t *testing.T) {
 	t.Run("with no time to wait, the attempt fails and writes nothing", func(t *testing.T) {
 		client := newArgoSource(running())
 
-		_, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-			v1alpha3.ApplyReasonForeignCommit, nil)
+		_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+			Want:   testBinding,
+			Commit: testCommit,
+			Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token:  requestToken(stampTime),
+		})
 
 		require.ErrorContains(t, err, "has an operation in progress")
 		assert.False(t, isPermanent(err), "the operation ends; asking again later can succeed")
@@ -221,12 +233,16 @@ func TestArgoCDRequest_ARunningOperationIsNeverReplaced(t *testing.T) {
 		argo := NewArgoCD(client)
 		argo.OperationWait, argo.PollInterval = 5*time.Second, time.Millisecond
 
-		stamped, err := argo.Request(context.Background(), platformApp, testBinding, testCommit,
-			v1alpha3.ApplyReasonForeignCommit, nil)
+		started, err := argo.Request(context.Background(), platformApp, Ask{
+			Want:   testBinding,
+			Commit: testCommit,
+			Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token:  requestToken(stampTime),
+		})
 
 		require.NoError(t, err)
-		assert.Equal(t, OutcomeSyncRequested, stamped.Outcome)
-		assert.Equal(t, stamped.Token, operationToken(readApp(t, client).Object["operation"]))
+		assert.Equal(t, OutcomeSyncRequested, started.Outcome)
+		assert.Equal(t, started.Token, operationToken(readApp(t, client).Object["operation"]))
 	})
 
 	t.Run("an operation set between the read and the update makes the update fail, not replace it",
@@ -242,22 +258,33 @@ func TestArgoCDRequest_ARunningOperationIsNeverReplaced(t *testing.T) {
 					errors.New("the object has been modified"))
 			})
 
-			_, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-				v1alpha3.ApplyReasonForeignCommit, nil)
+			_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+				Want:   testBinding,
+				Commit: testCommit,
+				Reason: v1alpha3.ApplyReasonForeignCommit,
+				Token:  requestToken(stampTime),
+			})
 
 			require.ErrorContains(t, err, "has an operation in progress")
 			assert.Equal(t, theirOperation(), readApp(t, client).Object["operation"], "theirs is untouched")
 		})
 
 	t.Run("a retry pending on a failed operation still counts as running", func(t *testing.T) {
+		// Argo CD keeps .operation set until the state completed (setOperationState), and processes
+		// an operation only while it is set: a retry waiting for its backoff keeps it.
 		app := manualApp()
+		_ = unstructured.SetNestedMap(app.Object, theirOperation(), "operation")
 		_ = unstructured.SetNestedMap(app.Object, map[string]any{
 			"phase": "Running", "finishedAt": "2026-10-20T10:14:00Z", "operation": theirOperation(),
 		}, "status", "operationState")
 		client := newArgoSource(app)
 
-		_, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-			v1alpha3.ApplyReasonForeignCommit, nil)
+		_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+			Want:   testBinding,
+			Commit: testCommit,
+			Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token:  requestToken(stampTime),
+		})
 
 		require.ErrorContains(t, err, "has an operation in progress")
 		assert.Zero(t, updates(client))
@@ -278,12 +305,254 @@ func TestArgoCDRequest_AConflictWithAStatusWriteIsReadAgain(t *testing.T) {
 		return false, nil, nil
 	})
 
-	stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, testCommit,
-		v1alpha3.ApplyReasonForeignCommit, nil)
+	started, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+		Want:   testBinding,
+		Commit: testCommit,
+		Reason: v1alpha3.ApplyReasonForeignCommit,
+		Token:  requestToken(stampTime),
+	})
 
 	require.NoError(t, err)
-	assert.Equal(t, OutcomeSyncRequested, stamped.Outcome)
+	assert.Equal(t, OutcomeSyncRequested, started.Outcome)
 	assert.Equal(t, 2, updates(client))
+}
+
+// guardResourceVersions makes the fake's Application updates what the API server's are
+// (guardedUpdate). The fake tracker checks no resourceVersion.
+func guardResourceVersions(t *testing.T, client *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+	client.PrependReactor("update", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		update, _ := action.(k8stesting.UpdateActionImpl)
+		obj, err := guardedUpdate(client, update.GetObject().(*unstructured.Unstructured))
+		return true, obj, err
+	})
+}
+
+// guardedUpdate stores an Application update as the API server would: one whose resourceVersion is
+// not the stored one is a Conflict, and one that is made moves the version on. It writes the
+// tracker directly, so a reactor can call it.
+func guardedUpdate(client *dynamicfake.FakeDynamicClient, obj *unstructured.Unstructured) (runtime.Object, error) {
+	stored, err := client.Tracker().Get(applicationGVR(), obj.GetNamespace(), obj.GetName())
+	if err != nil {
+		return nil, err
+	}
+	was := stored.(*unstructured.Unstructured).GetResourceVersion()
+	if obj.GetResourceVersion() != was {
+		return nil, apierrors.NewConflict(applicationGVR().GroupResource(), obj.GetName(),
+			errors.New("the object has been modified"))
+	}
+	version, _ := strconv.Atoi(was)
+	obj = obj.DeepCopy()
+	obj.SetResourceVersion(strconv.Itoa(version + 1))
+	if err := client.Tracker().Update(applicationGVR(), obj, obj.GetNamespace()); err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
+// TestArgoCDRequest_AnUnansweredUpdateIsFollowed is review 5's first finding: an update whose
+// answer was lost (a timeout, a reset connection, a 504) may have set the operation all the same,
+// and a RequestFailed withdrew its record and closed the apply window while Argo CD synced. Now it
+// is an Unconfirmed operation, followed by its token: one that was set is followed until the sync
+// completes. One whose token is not seen is settled with a write guarded by the version read: once
+// it is made, the update can never land, and the operation is Failed, so the worker asks again. No
+// deadline of the API server's is assumed. An update the API server refused is still an error.
+func TestArgoCDRequest_AnUnansweredUpdateIsFollowed(t *testing.T) {
+	request := func(t *testing.T, argo *ArgoCD) Started {
+		t.Helper()
+		started, err := argo.Request(context.Background(), platformApp, Ask{
+			Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token: requestToken(stampTime),
+		})
+		require.NoError(t, err)
+		require.Error(t, started.Unconfirmed)
+		assert.Equal(t, []any{OutcomeSyncRequested, requestToken(stampTime), testCommit},
+			[]any{started.Outcome, started.Token, started.Commit})
+		return started
+	}
+	progress := func(t *testing.T, argo *ArgoCD, started *Started) Progress {
+		t.Helper()
+		got, err := argo.Progress(context.Background(), platformApp, started)
+		require.NoError(t, err)
+		return got
+	}
+	// unanswered answers the request's update with answer, having made it when landed, and keeps it
+	// back otherwise: the returned func makes it then, as the API server would, at the version it was
+	// made from.
+	unanswered := func(client *dynamicfake.FakeDynamicClient, landed bool, answer error) func() error {
+		var answered atomic.Bool
+		var held *unstructured.Unstructured
+		client.PrependReactor("update", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			if answered.Swap(true) {
+				return false, nil, nil
+			}
+			update, _ := action.(k8stesting.UpdateActionImpl)
+			held = update.GetObject().(*unstructured.Unstructured).DeepCopy()
+			if landed {
+				_, err := guardedUpdate(client, held)
+				require.NoError(t, err)
+			}
+			return true, nil, answer
+		})
+		return func() error {
+			_, err := guardedUpdate(client, held)
+			return err
+		}
+	}
+
+	t.Run("set, then the answer was lost: followed until the sync completes", func(t *testing.T) {
+		for name, answer := range map[string]error{
+			"timed out":     context.DeadlineExceeded,
+			"a 504":         apierrors.NewTimeoutError("slow", 1),
+			"a 500":         apierrors.NewInternalError(errors.New("etcd leader changed")),
+			"a lost answer": errors.New("connection reset by peer"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				client := newArgoSource(manualApp())
+				guardResourceVersions(t, client)
+				unanswered(client, true, answer)
+				argo := pinnedArgo(client)
+				started := request(t, argo)
+				ours, _, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
+				require.Equal(t, started.Token, operationToken(ours), "the update was made")
+
+				assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome, "set, not started")
+				app := readApp(t, client)
+				_ = unstructured.SetNestedMap(app.Object, map[string]any{"operation": ours, "phase": "Running"},
+					"status", "operationState")
+				writeApp(t, client, app)
+				assert.Equal(t, git.ApplyRunning, progress(t, argo, &started).Outcome)
+				app = readApp(t, client)
+				unstructured.RemoveNestedField(app.Object, "operation")
+				_ = unstructured.SetNestedField(app.Object, "Succeeded", "status", "operationState", "phase")
+				writeApp(t, client, app)
+				assert.Equal(t, git.ApplySucceeded, progress(t, argo, &started).Outcome)
+				assert.NotContains(t, readApp(t, client).GetAnnotations(), argoRefreshAnnotation,
+					"an update seen to land is never settled")
+			})
+		}
+	})
+
+	t.Run("not set: Failed once a write guarded by the version read lands, and it never can", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		guardResourceVersions(t, client)
+		land := unanswered(client, false, apierrors.NewTimeoutError("slow", 1))
+		argo := pinnedArgo(client)
+		started := request(t, argo)
+
+		failed := progress(t, argo, &started)
+
+		assert.Equal(t, git.ApplyFailed, failed.Outcome)
+		assert.Contains(t, failed.Message, "was never made")
+		assert.Equal(t, argoRefreshNormal, readApp(t, client).GetAnnotations()[argoRefreshAnnotation],
+			"the write asks Argo CD for a refresh, which only compares")
+		require.True(t, apierrors.IsConflict(land()), "the update can no longer land")
+		assert.NotContains(t, readApp(t, client).Object, "operation")
+	})
+
+	t.Run("not set when read, landed before the settling write: read again, and followed", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		guardResourceVersions(t, client)
+		land := unanswered(client, false, context.DeadlineExceeded)
+		argo := pinnedArgo(client)
+		started := request(t, argo)
+		client.PrependReactor("get", "applications", func(k8stesting.Action) (bool, runtime.Object, error) {
+			stored, err := client.Tracker().Get(applicationGVR(), argoNS, "platform")
+			require.NoError(t, err)
+			require.NoError(t, land(), "the update lands right after Progress read the Application")
+			return true, stored, nil
+		})
+
+		assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome,
+			"the settling write conflicts: the update may have landed")
+		client.ReactionChain = client.ReactionChain[1:]
+		assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome, "set, not started")
+		assert.NotContains(t, readApp(t, client).GetAnnotations(), argoRefreshAnnotation)
+	})
+
+	t.Run("not set, with a refresh pending: left to the controller's write, which moves it on", func(t *testing.T) {
+		app := manualApp()
+		app.SetAnnotations(map[string]string{argoRefreshAnnotation: "hard"})
+		client := newArgoSource(app)
+		guardResourceVersions(t, client)
+		unanswered(client, false, context.DeadlineExceeded)
+		argo := pinnedArgo(client)
+		started := request(t, argo)
+		before := updates(client)
+
+		assert.Equal(t, git.ApplyRequested, progress(t, argo, &started).Outcome)
+		assert.Equal(t, before, updates(client), "a pending refresh is not overwritten")
+		app = readApp(t, client)
+		app.SetAnnotations(nil)
+		writeApp(t, client, app) // the controller consumed it
+		assert.Equal(t, git.ApplyFailed, progress(t, argo, &started).Outcome)
+	})
+
+	t.Run("refused: an error, and nothing to follow", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		unanswered(client, false, apierrors.NewForbidden(applicationGVR().GroupResource(), "platform",
+			errors.New("no")))
+
+		_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+			Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token: requestToken(stampTime),
+		})
+
+		require.ErrorContains(t, err, "set the sync operation")
+		assert.False(t, isPermanent(err))
+	})
+}
+
+// TestArgoCD_ARecoveredSyncIsSettledFromItsRecordAlone is review 5's P1 after the fix above: a
+// process that recorded the operation, sent the update, lost the answer and stopped leaves nothing
+// but the record. The next one rebuilds the operation from that record alone, reads the Application
+// without the token, and settles it as an Unconfirmed one is: the update it may have sent can no
+// longer land, so the window it would have needed is never needed.
+func TestArgoCD_ARecoveredSyncIsSettledFromItsRecordAlone(t *testing.T) {
+	client := newArgoSource(manualApp())
+	guardResourceVersions(t, client)
+	app := readApp(t, client)
+	_ = unstructured.SetNestedField(app.Object, syncOperation(app, testCommit, v1alpha3.ApplyReasonForeignCommit,
+		requestToken(stampTime)), "operation")
+	sentBeforeTheRestart := app // made from version 1, its answer lost, still on its way
+
+	started := recoveredStarted(git.ApplyRequest{
+		Applier: git.ApplierRef{Kind: v1alpha3.ApplierKindApplication},
+		Recovered: &v1alpha3.ApplyOperation{
+			Phase: v1alpha3.ApplyOperationRequested, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Commit: testCommit, Token: requestToken(stampTime), RequestedAt: metav1.NewTime(stampTime),
+		},
+	})
+	failed, err := pinnedArgo(client).Progress(context.Background(), platformApp, &started)
+
+	require.NoError(t, err)
+	assert.Equal(t, git.ApplyFailed, failed.Outcome)
+	assert.Contains(t, failed.Message, "recovered after a restart")
+	_, err = guardedUpdate(client, sentBeforeTheRestart)
+	require.True(t, apierrors.IsConflict(err), "the update sent before the restart can no longer land")
+	assert.NotContains(t, readApp(t, client).Object, "operation")
+}
+
+// TestArgoCDRequest_ADecisionThatGoesStaleWhileRecordedSyncsNothing is review 5's sixth finding:
+// recording the operation can wait on the status writer and the API server, and the branch can
+// move on meanwhile. The decision is asked again after the record, just before the update.
+func TestArgoCDRequest_ADecisionThatGoesStaleWhileRecordedSyncsNothing(t *testing.T) {
+	client := newArgoSource(manualApp())
+	holds, recorded := true, false
+
+	_, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+		Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+		Token:   requestToken(stampTime),
+		Current: func() bool { return holds },
+		Record: func(context.Context) error {
+			holds, recorded = false, true
+			return nil
+		},
+	})
+
+	require.ErrorIs(t, err, errStale)
+	assert.True(t, recorded, "the worker withdraws what was recorded")
+	assert.Zero(t, updates(client), "nothing is set")
 }
 
 // TestArgoCDRequest_RefusesWhatIsNotUnderControl: a published verdict can be older than the
@@ -313,8 +582,13 @@ func TestArgoCDRequest_RefusesWhatIsNotUnderControl(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newArgoSource(tt.app)
 
-			stamped, err := pinnedArgo(client).Request(context.Background(), platformApp, testBinding, tt.commit,
-				v1alpha3.ApplyReasonForeignCommit, tt.current)
+			started, err := pinnedArgo(client).Request(context.Background(), platformApp, Ask{
+				Want:    testBinding,
+				Commit:  tt.commit,
+				Reason:  v1alpha3.ApplyReasonForeignCommit,
+				Token:   requestToken(stampTime),
+				Current: tt.current,
+			})
 
 			switch {
 			case tt.wantErr != "":
@@ -324,14 +598,14 @@ func TestArgoCDRequest_RefusesWhatIsNotUnderControl(t *testing.T) {
 				require.ErrorIs(t, err, errStale)
 			default:
 				require.NoError(t, err)
-				assert.Equal(t, tt.wantOutcome, stamped.Outcome)
+				assert.Equal(t, tt.wantOutcome, started.Outcome)
 			}
 			assert.Zero(t, updates(client), "nothing is written")
 		})
 	}
 }
 
-// TestArgoCDValidate_Reasons covers every ApplierConfigured answer for an Application.
+// TestArgoCDValidate_Reasons covers every Configured answer for an Application.
 func TestArgoCDValidate_Reasons(t *testing.T) {
 	sources := map[string]any{"sources": []any{map[string]any{"repoURL": testRepoURL}}}
 	tests := []struct {
@@ -345,7 +619,8 @@ func TestArgoCDValidate_Reasons(t *testing.T) {
 		wantErr     bool
 	}{
 		{name: "configured", objs: []runtime.Object{manualApp()}, wantReason: ReasonSucceeded,
-			wantMessage: "Application argocd/platform syncs branch main, with automated sync off"},
+			wantMessage: `Application argocd/platform syncs revision "main" of ` + testRepoURL +
+				", with automated sync off"},
 		{name: "configured, as refs/heads/ names the branch",
 			objs: []runtime.Object{applicationObj(testRepoURL, "refs/heads/main", nil)}, wantReason: ReasonSucceeded},
 		{name: "configured, with the off switch that keeps prune",
@@ -364,33 +639,25 @@ func TestArgoCDValidate_Reasons(t *testing.T) {
 			wantReason:  ReasonApplierNotFound,
 			wantMessage: "does not serve Application (argoproj.io/v1alpha1); is Argo CD installed there?",
 		},
-		{name: "another repository",
-			objs:       []runtime.Object{applicationObj("https://github.com/acme/other", testBranch, nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: "syncs https://github.com/acme/other, not"},
-		{name: "another branch", objs: []runtime.Object{applicationObj(testRepoURL, "release", nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: `targets revision "release", not branch main`},
-		{name: "HEAD", objs: []runtime.Object{applicationObj(testRepoURL, "HEAD", nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: `targets revision "HEAD"`},
-		{name: "no targetRevision, which is HEAD", objs: []runtime.Object{applicationObj(testRepoURL, "", nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: `targets revision "HEAD"`},
-		{name: "a tag", objs: []runtime.Object{applicationObj(testRepoURL, "v1.0.0", nil)},
-			wantReason: ReasonSourceMismatch, wantMessage: `targets revision "v1.0.0"`},
+		{name: "another repository and revision, which only a GitTarget can judge",
+			objs:       []runtime.Object{applicationObj("https://github.com/acme/other", "v1.0.0", nil)},
+			wantReason: ReasonSucceeded, wantMessage: `syncs revision "v1.0.0" of https://github.com/acme/other`},
 		{name: "multi-source", objs: []runtime.Object{manualApp()},
 			mutate: func(app *unstructured.Unstructured) {
 				unstructured.RemoveNestedField(app.Object, "spec", "source")
 				_ = unstructured.SetNestedField(app.Object, sources["sources"], "spec", "sources")
 			},
-			wantReason: ReasonSourceMismatch, wantMessage: "syncs only a single-source Application"},
+			wantReason: ReasonUnsupportedSource, wantMessage: "syncs only a single-source Application"},
 		{name: "a source hydrator", objs: []runtime.Object{manualApp()},
 			mutate: func(app *unstructured.Unstructured) {
 				_ = unstructured.SetNestedMap(app.Object, map[string]any{}, "spec", "sourceHydrator")
 			},
-			wantReason: ReasonSourceMismatch, wantMessage: "has spec.sourceHydrator"},
+			wantReason: ReasonUnsupportedSource, wantMessage: "has spec.sourceHydrator"},
 		{
 			name:        "no source",
 			objs:        []runtime.Object{manualApp()},
 			mutate:      func(app *unstructured.Unstructured) { unstructured.RemoveNestedField(app.Object, "spec", "source") },
-			wantReason:  ReasonSourceMismatch,
+			wantReason:  ReasonUnsupportedSource,
 			wantMessage: "names no spec.source",
 		},
 		{name: "automated sync on, as an empty block turns it on",
@@ -433,7 +700,7 @@ func TestArgoCDValidate_Reasons(t *testing.T) {
 				argo.CanI = tt.canI
 			}
 
-			verdict := argo.Validate(context.Background(), platformApp, testBinding)
+			verdict := argo.Validate(context.Background(), platformApp)
 
 			assert.Equal(t, tt.wantReason, verdict.Reason, verdict.Message)
 			assert.Equal(t, tt.wantReason == ReasonSucceeded, verdict.OK)
@@ -453,20 +720,26 @@ func TestArgoCDValidate_AsksForUpdate(t *testing.T) {
 		return true, nil
 	}
 
-	require.True(t, argo.Validate(context.Background(), platformApp, testBinding).OK)
+	require.True(t, argo.Validate(context.Background(), platformApp).OK)
 	assert.Equal(t, []authorizationv1.ResourceAttributes{{
 		Namespace: argoNS, Verb: "update", Group: "argoproj.io", Version: "v1alpha1",
 		Resource: "applications", Name: "platform",
 	}}, asked)
 }
 
-// TestArgoCD_Handled pins when an Argo CD apply window closes: when this request's operation has
-// completed, whatever its phase, and not while it runs or retries, nor on another operation's state.
-func TestArgoCD_Handled(t *testing.T) {
+// TestArgoCD_Progress pins how an Argo CD operation is followed: Requested while this request's
+// operation is set and not started, Running while its state runs (or waits for Argo CD's own retry),
+// and complete once Succeeded, Failed or Error, which is when the apply window closes. An operation
+// cleared before it recorded an outcome ran nothing, and is Failed so the worker asks again.
+func TestArgoCD_Progress(t *testing.T) {
 	client := newArgoSource(manualApp())
 	argo := pinnedArgo(client)
-	stamped, err := argo.Request(context.Background(), platformApp, testBinding, testCommit,
-		v1alpha3.ApplyReasonForeignCommit, nil)
+	started, err := argo.Request(context.Background(), platformApp, Ask{
+		Want:   testBinding,
+		Commit: testCommit,
+		Reason: v1alpha3.ApplyReasonForeignCommit,
+		Token:  requestToken(stampTime),
+	})
 	require.NoError(t, err)
 	ours, _, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
 
@@ -475,42 +748,128 @@ func TestArgoCD_Handled(t *testing.T) {
 		app := readApp(t, client)
 		_ = unstructured.SetNestedMap(app.Object, map[string]any{
 			"operation": operation, "phase": phase, "finishedAt": "2026-10-20T10:15:00Z",
+			"message": "one or more objects failed to apply",
 		}, "status", "operationState")
 		if !keepOperation {
 			unstructured.RemoveNestedField(app.Object, "operation")
 		}
 		writeApp(t, client, app)
 	}
-	handled := func(t *testing.T) bool {
+	progress := func(t *testing.T) Progress {
 		t.Helper()
-		ok, err := argo.Handled(context.Background(), platformApp, stamped)
+		got, err := argo.Progress(context.Background(), platformApp, &started)
 		require.NoError(t, err)
-		return ok
+		return got
 	}
 
-	assert.False(t, handled(t), "set, not started")
+	assert.Equal(t, git.ApplyRequested, progress(t).Outcome, "set, not started")
 	setState(t, theirOperation(), "Succeeded", true)
-	assert.False(t, handled(t), "another operation's state is not ours, and ours is still set")
+	assert.Equal(t, git.ApplyRequested, progress(t).Outcome,
+		"another operation's state is not ours, and ours is still set")
 	setState(t, ours, "Running", true)
-	assert.False(t, handled(t), "running, or a failed sync waiting for its retry (Running with a finishedAt)")
-	setState(t, ours, "Failed", false)
-	assert.True(t, handled(t), "a failed sync closes the window")
+	assert.Equal(t, git.ApplyRunning, progress(t).Outcome,
+		"running, or a failed sync waiting for its retry (Running with a finishedAt)")
+	setState(t, ours, "Terminating", true)
+	assert.Equal(t, git.ApplyRunning, progress(t).Outcome)
+	for _, phase := range []string{"Failed", "Error"} {
+		setState(t, ours, phase, false)
+		failed := progress(t)
+		assert.Equal(t, git.ApplyFailed, failed.Outcome, phase)
+		assert.Equal(t, "the sync ended "+phase+": one or more objects failed to apply", failed.Message)
+	}
 	setState(t, ours, "Succeeded", false)
-	assert.True(t, handled(t))
+	assert.Equal(t, Progress{Outcome: git.ApplySucceeded}, progress(t))
 	setState(t, theirOperation(), "Succeeded", false)
-	assert.True(t, handled(t), "ours was cleared before it ran: nothing of it will apply")
+	assert.Equal(t, git.ApplyFailed, progress(t).Outcome, "ours was cleared before it recorded an outcome")
 
-	assert.True(t, func() bool {
-		ok, err := argo.Handled(context.Background(), platformApp, Stamped{Outcome: OutcomeCurrent})
-		require.NoError(t, err)
-		return ok
-	}(), "nothing asked is nothing to wait for")
+	current, err := argo.Progress(context.Background(), platformApp, &Started{Outcome: OutcomeCurrent})
+	require.NoError(t, err)
+	assert.Equal(t, git.ApplySucceeded, current.Outcome, "nothing asked is nothing to wait for")
 }
 
-// TestNewClient_PicksTheClientByKind: the dispatcher and the ApplierConfigured check use the kind
-// spec.applier names.
+// TestArgoCD_ASyncWhoseOperationWasRemovedEnds is review 7's A1. Removing .operation is the
+// community workaround for a stuck hook: Argo CD then processes the Application no further, and
+// its operationState stays Running. GitOps Reverser followed such a sync forever, and refused every
+// later request as "in progress". Now our sync, Running with .operation gone, is Failed once it is
+// overdue (by then any controller pass in flight has written), and a request finds such a state
+// not in progress once it stayed unchanged for the whole wait.
+func TestArgoCD_ASyncWhoseOperationWasRemovedEnds(t *testing.T) {
+	orphaned := func(t *testing.T, client *dynamicfake.FakeDynamicClient, operation map[string]any) {
+		t.Helper()
+		app := readApp(t, client)
+		_ = unstructured.SetNestedMap(app.Object, map[string]any{
+			"operation": operation, "phase": "Running", "message": "waiting for the PreSync hook",
+		}, "status", "operationState")
+		unstructured.RemoveNestedField(app.Object, "operation")
+		writeApp(t, client, app)
+	}
+
+	t.Run("ours is Failed once overdue", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		argo := pinnedArgo(client)
+		started, err := argo.Request(context.Background(), platformApp, Ask{
+			Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token: requestToken(stampTime),
+		})
+		require.NoError(t, err)
+		ours, _, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
+		orphaned(t, client, ours)
+
+		running, err := argo.Progress(context.Background(), platformApp, &started)
+		require.NoError(t, err)
+		assert.Equal(t, git.ApplyRunning, running.Outcome, "a controller pass may still write it")
+		started.Overdue = true
+		failed, err := argo.Progress(context.Background(), platformApp, &started)
+		require.NoError(t, err)
+		assert.Equal(t, git.ApplyFailed, failed.Outcome)
+		assert.Contains(t, failed.Message, ".operation was removed")
+	})
+
+	t.Run("a request waits it out, then syncs", func(t *testing.T) {
+		client := newArgoSource(manualApp())
+		orphaned(t, client, theirOperation())
+		argo := NewArgoCD(client)
+		argo.CanI = allowAll
+		argo.OperationWait, argo.PollInterval = 50*time.Millisecond, time.Millisecond
+
+		started, err := argo.Request(context.Background(), platformApp, Ask{
+			Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+			Token: requestToken(stampTime),
+		})
+
+		require.NoError(t, err, "a state nothing processes any more is not in progress")
+		assert.Equal(t, OutcomeSyncRequested, started.Outcome)
+		assert.Equal(t, started.Token, operationToken(readApp(t, client).Object["operation"]))
+	})
+}
+
+// TestNewClient_PicksTheClientByKind: the dispatcher and the Configured check use the kind of
+// applier the trigger holds.
 func TestNewClient_PicksTheClientByKind(t *testing.T) {
 	client := newArgoSource()
 	assert.IsType(t, &ArgoCD{}, NewClient(v1alpha3.ApplierKindApplication, client))
 	assert.IsType(t, &Flux{}, NewClient(v1alpha3.ApplierKindKustomization, client))
+}
+
+// TestArgoCDTrigger_BindingMismatchReadsTheTargetRevision: an Application binds a GitTarget when its
+// targetRevision names the GitTarget's branch, as its name or as refs/heads/ and the name. HEAD, an
+// empty targetRevision (which is HEAD), a tag and another branch never follow it.
+func TestArgoCDTrigger_BindingMismatchReadsTheTargetRevision(t *testing.T) {
+	for revision, want := range map[string]string{
+		testBranch:                 "",
+		"refs/heads/" + testBranch: "",
+		"release":                  `applies branch "release", not main`,
+		"HEAD":                     `applies branch "HEAD"`,
+		"":                         `applies branch "HEAD"`,
+		"v1.0.0":                   `applies branch "v1.0.0"`,
+	} {
+		trigger := &v1alpha3.ArgoCDTrigger{ObjectMeta: metav1.ObjectMeta{Name: "platform"}}
+		trigger.Status.Source = &v1alpha3.ArgoCDTriggerSource{RepoURL: testRepoURL + ".git", TargetRevision: revision}
+		got := BindingMismatch(trigger, testBinding)
+		if want == "" {
+			assert.Empty(t, got, revision)
+			continue
+		}
+		assert.Contains(t, got, want, revision)
+	}
 }

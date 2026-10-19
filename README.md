@@ -57,9 +57,11 @@ several source clusters, repositories, branches, and folders.
 
 ## Principles
 
-- **Creates Git commits.** The only output is Git commits that reflect the state of your cluster.
+- **Creates Git commits.** The output is Git commits that reflect the state of your cluster.
   Deploying is Flux's and Argo CD's job: run one alongside to bring changes from Git back into the
-  cluster. See [bi-directional usage](docs/bi-directional.md).
+  cluster. Only a folder that both GitOps Reverser writes and Flux or Argo CD applies needs more: an
+  apply trigger, so GitOps Reverser decides when it is applied. See
+  [bi-directional usage](docs/bi-directional.md).
 - **API-first, not API-only.** Most changes are assumed to arrive through the API, so that is what
   publishing is tuned for. Your changes end up in your remote Git repo within seconds. Other
   authors can push to the same branch, and that is handled without conflicts. If an API edit and a
@@ -158,14 +160,15 @@ made after the changes or before them. It runs on top of the quickstart above.
 ## Try it with your existing repo
 
 Start with a [scratch branch](docs/configuration.md#seeing-what-a-target-will-do-before-it-does-it)
-containing your existing manifests, with no reconciler deploying that branch. Select a small resource
+containing your existing manifests, with nothing deploying that branch. Select a small resource
 scope and one destination folder. Inspect the initial commits before making a live edit, then check
 which source files changed.
 
-The operator pushes directly to the configured branch. If you later write to a branch that Flux or
-Argo CD deploys, read the [bidirectional guide](docs/bi-directional.md) first. Live edits can be
-reverted by the reconciler, and [replaying captured state](docs/api-first-publication.md) can overwrite
-concurrent Git edits to the same object. Decide per folder which side is authoritative.
+The operator pushes directly to the configured branch. Flux or Argo CD deploying other folders is
+unaffected. If one of them deploys the folder you write, read the
+[bi-directional guide](docs/bi-directional.md) first. Without an apply trigger, live edits can be
+reverted by Flux or Argo CD, and [replaying captured state](docs/api-first-publication.md) can
+overwrite concurrent Git edits to the same object. Decide per folder which side is authoritative.
 
 ## Before you adopt it
 

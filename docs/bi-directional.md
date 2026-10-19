@@ -1,23 +1,65 @@
-# Bi-directional usage guide
+# Bi-directional GitOps
 
-GitOps Reverser publishes live cluster state to Git. Flux or Argo CD applies Git back to the
-cluster. Run both and a resource can be changed from either side. This guide covers who decides
-what, how to configure each actor, and which parts are proven by tests.
+GitOps Reverser writes live cluster state to Git. Flux and Argo CD apply Git to the cluster. This
+page covers the one setup where the two meet on the same folder, so that a resource can be changed
+from either side: who decides what, which states the system moves through, and what stays exposed.
+The complete setups are [bi-directional GitOps with Flux](bi-directional-flux.md) and
+[bi-directional GitOps with Argo CD](bi-directional-argocd.md).
 
-**The short version.** GitOps Reverser decides when the cluster is applied from Git. Flux or Argo
-CD keeps doing what it is good at (fetching, rendering, applying, pruning, reporting health), but it
-applies when GitOps Reverser asks, not on its own schedule. You configure that in three places:
+## Do you need any of this?
 
-1. Name each folder's **applier** on its `GitTarget`: the Flux `Kustomization` or the Argo CD
-   `Application` that applies it. See [declaring the applier](#declaring-the-applier).
-2. Switch off the applier's own triggers: for Flux, short intervals and any Git-host webhook into a
-   Flux `Receiver` ([configure Flux](#configure-flux)); for Argo CD, automated sync
-   ([configure Argo CD](#configure-argo-cd)).
-3. Point your Git host's push webhook at GitOps Reverser. See
-   [telling GitOps Reverser that somebody else pushed](#telling-gitops-reverser-that-somebody-else-pushed).
+Only when Flux or Argo CD applies a folder that GitOps Reverser also writes. Every other setup is
+ordinary GitOps and needs nothing from this page.
 
-There is no merge and no lock. What remains exposed is small and named in
-[what is still exposed](#what-is-still-exposed).
+| Your setup | What you configure |
+| --- | --- |
+| GitOps Reverser mirrors a folder that nothing applies: an audit trail, a backup, the start of a repository | A `GitTarget` and its watch rules |
+| Flux or Argo CD applies other folders or other repositories, next to GitOps Reverser | Nothing. Flux and Argo CD stay exactly as they are |
+| Flux or Argo CD applies a folder that GitOps Reverser writes | An apply trigger, as this page describes |
+
+```mermaid
+flowchart TD
+    Q1{"Does Flux or Argo CD apply a folder<br/>that GitOps Reverser writes?"}
+    Q1 -->|no| ONEWAY["One-way. Mirror only, or GitOps as usual beside it.<br/>Nothing on this page applies"]
+    Q1 -->|yes| Q2{"Does an apply trigger hold that applier?"}
+    Q2 -->|yes| BI["Bi-directional. GitOps Reverser decides when it applies"]
+    Q2 -->|no| EXPOSED["Shared folder without a trigger.<br/>Works, and the applier can revert live edits"]
+
+    style ONEWAY fill:#e8f5e9,stroke:#43a047
+    style BI fill:#e8f5e9,stroke:#43a047
+    style EXPOSED fill:#fff3e0,stroke:#ff9800
+```
+
+Everything bi-directional is opt-in and off by default: the apply triggers, the push receiver,
+`onRefusal: Reapply`, the chart's `applierAccess` grants, and the `ClusterProvider`'s
+`allowCrossNamespace.appliers`, which a trigger needs to hold an applier outside its own namespace,
+such as one in `flux-system` or `argocd`. A `GitTarget` without `spec.applyTriggerRef` never reads,
+patches or syncs anything of Flux's or Argo CD's, and neither does a trigger no `GitTarget` names, so
+a `Kustomization` keeps its interval and an `Application` keeps automated sync.
+
+**A shared folder without a trigger works, and is exposed.** The applier keeps its own schedule,
+and that schedule cannot see the edits GitOps Reverser has not pushed yet
+([why](#why-the-applier-cannot-decide-for-itself)). An apply at the wrong moment reverts a live edit,
+and GitOps Reverser then commits the revert as the applier's change. With Argo CD's
+`selfHeal: true`, a live edit is reverted within a second, before it can reach Git at all. If you
+run a shared folder this way, keep [controller bookkeeping out of Git](#keep-controller-bookkeeping-out-of-git),
+and consider [split ownership](#the-split-ownership-alternative) for the fields both sides change.
+
+## How it works
+
+GitOps Reverser decides when the cluster is applied from Git. Flux or Argo CD keeps fetching,
+rendering, applying, pruning and reporting health, and applies when GitOps Reverser asks. Three
+things set that up:
+
+1. **An apply trigger holds the applier.** A `FluxTrigger` holds a Flux `Kustomization`, an
+   `ArgoCDTrigger` an Argo CD `Application`, and the `GitTarget` names the trigger in
+   `spec.applyTriggerRef`. A trigger acts only while an eligible `GitTarget` names it: one in its
+   namespace, admitted by its `ClusterProvider`s, that writes the repository and branch the applier
+   fetches.
+2. **The applier's own triggers are off.** The `FluxTrigger` keeps its `Kustomization` suspended;
+   the `Application` runs with automated sync off.
+3. **The Git host's push webhook reaches GitOps Reverser**, so a Git-side push is applied in
+   seconds. See [telling GitOps Reverser that somebody else pushed](#telling-gitops-reverser-that-somebody-else-pushed).
 
 ```mermaid
 flowchart LR
@@ -40,64 +82,62 @@ flowchart LR
     style APP fill:#fff3e0,stroke:#ff9800
 ```
 
-## Who does what
+The two appliers get the same contract by different means:
 
-| Actor | Does | Does not |
+| | Flux | Argo CD |
 | --- | --- | --- |
-| Kubernetes API | Takes edits from people and controllers | |
-| GitOps Reverser | Mirrors every edit into Git, and decides when the applier may apply | Apply anything to the cluster itself |
-| Git host | Stores the branch, and tells GitOps Reverser when somebody else pushed | Notify the applier |
-| Applier (a Flux `Kustomization` or an Argo CD `Application`) | Fetches, renders, applies and prunes, when asked | Apply on a short timer, a webhook or an automated sync of its own |
-| A human | Can still run `flux reconcile` or press Sync | |
+| Held by | A `FluxTrigger` | An `ArgoCDTrigger` |
+| Kept from applying on its own by | `spec.suspend`, which the trigger owns | Automated sync off, which you set on the `Application` |
+| One apply is | A resume for one reconcile, then a suspend | A sync operation pinned to the commit |
+| Catches up with GitOps Reverser's own pushes | Yes, once the branch is quiet for `quietPeriod` | No: nothing it holds goes stale |
+| The tool's own push webhook | Removed: GitOps Reverser's receiver replaces it | May stay: with automated sync off it only compares |
+| A human override | `flux resume` applies once; it is suspended again within a minute | Sync applies; GitOps Reverser waits for it to end |
+| Handing it back | Delete the trigger, or stop naming it from every `GitTarget`: the `Kustomization` is resumed | Delete the trigger, or stop naming it, then switch automated sync on |
+| Complete setup | [Bi-directional GitOps with Flux](bi-directional-flux.md) | [Bi-directional GitOps with Argo CD](bi-directional-argocd.md) |
 
-## Why GitOps Reverser owns the trigger
+## Why the applier cannot decide for itself
 
-An apply is safe only when nothing live is missing from the commit being applied. Between an edit
-and its push, the edit is live in the cluster and absent from Git: it sits in an open commit window
-or in the pending writes. An apply at that moment writes Git's older value over it. GitOps Reverser
-would then mirror that revert faithfully, as a commit authored by the applier, and the edit would be
-gone. (An edit that lands while an apply GitOps Reverser asked for is running keeps its value in
-Git: the applier's write over it is not mirrored. See
-[the Flux guide](flux.md#what-gitops-reverser-asks-and-when) and
-[the Argo CD guide](argocd.md#what-gitops-reverser-asks-and-when).)
+An apply is safe only when nothing live is missing from the commit it applies. Between an edit and
+its push, the edit is live in the cluster and absent from Git: it sits in an open commit window or
+in the branch worker's pending writes. An apply at that moment writes Git's older value over it,
+GitOps Reverser mirrors that revert faithfully, and the edit is gone.
 
-Only GitOps Reverser can see those pending edits. The applier cannot. So an apply nobody asked
-GitOps Reverser about is an apply nobody checked, and every trigger the applier runs by itself is
-one of those:
+Only GitOps Reverser can see the pending edits, so every trigger the applier runs by itself is an
+apply nobody checked:
 
-- **A Git-host webhook into the applier** fires on every push, including GitOps Reverser's own. Two
-  API edits a few seconds apart are enough to have the first commit applied over the second edit.
-- **Argo CD's timed refresh** (`timeout.reconciliation`, 120s plus up to 60s of jitter) resolves
-  the branch tip, and automated sync runs whenever that tip is a commit it has not synced. With
-  `selfHeal: false` it skips only a commit it already synced. Every push GitOps Reverser makes is a
-  new commit, so two to three minutes after each push the whole `Application` is synced over
-  whatever is pending at that moment.
-- **Flux's intervals** apply on every reconcile, whatever woke it: kustomize-controller corrects
-  drift each time. A short `GitRepository` interval turns each of GitOps Reverser's pushes into an
-  apply a minute later.
+- **A Git-host webhook into the applier** fires on every push, GitOps Reverser's own included. Two
+  API edits a few seconds apart are enough for the first commit to be applied over the second edit.
+- **Argo CD's automated sync** syncs every commit it has not synced yet, and every push GitOps
+  Reverser makes is one. Two to three minutes after each push (`timeout.reconciliation`, 120s plus
+  jitter), the `Application` is synced over whatever is pending. `selfHeal: false` does not change
+  that.
+- **Flux's intervals** apply on every reconcile, whatever woke it: on the interval, on a new
+  artifact, on a controller restart.
 
-None of these can be filtered from outside. They have to be switched off, and GitOps Reverser has
-to make the requests instead.
+None of these can be filtered from outside. They are switched off, and GitOps Reverser makes the
+requests instead.
 
-## When GitOps Reverser requests an apply
+## The quiet branch
 
-Every request waits for a **quiet branch**: no open commit window and no pending writes on the
-branch worker. That is the moment nothing live is missing from the tip.
+Every apply GitOps Reverser asks for waits for a **quiet branch**: no open commit window and no
+pending writes, on this branch worker or on any other worker writing the same repository and branch
+through another `GitProvider`. That is the moment nothing live is missing from the tip.
 
-| Reason | When | Which applier |
-| --- | --- | --- |
-| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push | Every applier declared on the branch |
-| `Refusal` | An edit was refused and the target has `onRefusal: Reapply` | The refusing target's applier |
-| `CatchUp` | The branch has been quiet for `spec.applier.quietPeriod` after GitOps Reverser's own pushes | Every Flux `Kustomization` on the branch |
+```mermaid
+stateDiagram-v2
+    direction LR
+    Quiet --> Busy: an API edit opens a commit window
+    Busy --> Busy: more edits, commits and pushes
+    Busy --> Quiet: every window closed, every write pushed
+    note right of Quiet
+        An apply starts only here,
+        after the decision is checked again
+    end note
+```
 
-The cluster already holds the values of GitOps Reverser's own commits, because they were read from
-it, so applying them changes nothing. Flux is asked to catch up with them anyway, and
-[configure Flux](#configure-flux) says why. Argo CD is not: with automated sync off it applies
-nothing by itself, so nothing it holds goes stale.
-
-A foreign commit that arrives while edits are pending does not wait for their windows to close.
-GitOps Reverser closes them, replays the pending writes onto the foreign commit, pushes, and asks
-the applier to apply the commit it just pushed:
+A foreign commit does not wait for open windows to close on their own. GitOps Reverser closes them,
+replays the pending writes onto the foreign commit, pushes, and asks for the commit it just pushed.
+The applied commit holds the API side's values, so applying it reverts nothing:
 
 ```mermaid
 sequenceDiagram
@@ -117,112 +157,74 @@ sequenceDiagram
     Note over API: W's objects already hold W's values,<br/>so only Bob's change lands
 ```
 
-The applied commit carries the API side's answer, so applying it reverts nothing Alice did. That
-is the [contested-cell rule](#what-happens-when-somebody-else-pushed-first) seen from the cluster:
-for an object both sides changed, the API value wins.
+## When GitOps Reverser asks for an apply
 
-A request asks; it never reports that the apply happened. Requests are sent off the publication
-path, and a failed request never fails a publication that succeeded: the worker keeps what the
-applier is owed and decides the retry on a quiet branch. Read the applier's own status to see what
+| Reason | When | Which applier |
+| --- | --- | --- |
+| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push | Every applier declared on the branch |
+| `Refusal` | An edit was refused and the target has `onRefusal: Reapply` | The refusing target's applier |
+| `Repair` | An apply reverted an API edit made while it ran; Git kept the edit | That applier |
+| `CatchUp` | The branch has been quiet for the `FluxTrigger`'s `quietPeriod` after GitOps Reverser's own pushes, since the operator started, or since a `GitTarget` first named the trigger | Every Flux `Kustomization` on the branch |
+
+GitOps Reverser's own commits hold values it read from the cluster, so applying them changes
+nothing, and only Flux is asked to catch up with them: its inventory learns of an object only from
+an apply of a commit that holds it, and an object it never applied is not pruned when Git later
+deletes it. An `Application` with automated sync off applies nothing by itself, so nothing it holds
+goes stale.
+
+Several `GitTarget`s may name one trigger, for a `Kustomization` or `Application` whose path covers
+several folders: the applier is asked once for all of them.
+
+## The life of an apply
+
+An apply is an **operation**, recorded on the trigger's `status.operation` before the applier is
+asked, so a restarted operator finds it and follows it to its end:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Due: ForeignCommit, Refusal, Repair or CatchUp
+    Due --> Due: tip moved or an edit is pending, decide again later
+    Due --> Requested: quiet branch, decision still holds, operation recorded
+    Requested --> Running: the applier is seen working on it
+    Running --> Settling: Flux only, applied and suspended again
+    Running --> Succeeded
+    Running --> Failed
+    Settling --> Succeeded
+    Settling --> Failed
+    Requested --> Unresolved: not completed in 5 minutes
+    Running --> Unresolved
+    Settling --> Unresolved
+    Unresolved --> Succeeded
+    Unresolved --> Failed
+    Failed --> Due: after the applier's backoff
+    Succeeded --> Due: an edit was withheld during the apply (Repair)
+    Succeeded --> [*]
+```
+
+`Due` lives only in the branch worker's memory: an apply it means to ask for, and nothing shows it
+until it is asked. Every other state is `status.operation.phase`. While an operation is in flight
+(`Requested`, `Running`, `Settling` or `Unresolved`), the applier is asked nothing else.
+
+- **Just before it asks, GitOps Reverser checks the decision again**: the commit is still the branch
+  tip, no edit waits to be published, and each `GitTarget` still names this trigger on this branch,
+  is still admitted by its `ClusterProvider`s, and, for a `Refusal`, still consents; and the trigger
+  still holds the applier. When any of that
+  changed, it asks nothing and decides again at the next quiet moment. It never asks for something
+  weaker than what it was told.
+- **An edit made while the apply runs keeps its value in Git.** The apply writes the older commit
+  over it on the cluster. GitOps Reverser recognizes that write by the applier's field manager,
+  withholds it from Git, and asks for a `Repair`, which applies the tip that holds the edit. Only a
+  write proven to be the applier's is withheld: its field manager alone, with an entry newer than the
+  edit. One that ties with the edit is mirrored, and a delete never is withheld. Each such write is
+  counted in `apply_window_collisions_total`.
+- **A failed operation is decided again from scratch**, after that applier's own backoff (2 seconds
+  doubling to 5 minutes), on a quiet branch, at the tip as it is then.
+- **An operation still in flight after 5 minutes is `Unresolved`.** It is still followed, nothing
+  ends it by timer, and nothing more is asked of that applier until it completes.
+
+A request asks; it never reports that the apply happened. Requests run off the publication path,
+and a failed one never fails a publication that succeeded. Read the applier's own status for what
 it applied.
-
-## Declaring the applier
-
-`spec.applier` names exactly one applier per `GitTarget`, a Flux `Kustomization` or an Argo CD
-`Application`:
-
-```yaml
-apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
-metadata:
-  name: checkout
-  namespace: team-a
-spec:
-  gitProviderRef:
-    name: platform-repo
-  branch: main
-  path: apps/checkout
-  applier:
-    kustomizationRef:
-      namespace: flux-system
-      name: checkout
-  onRefusal: Reapply
-```
-
-```yaml
-spec:
-  applier:
-    applicationRef:
-      namespace: argocd
-      name: checkout
-```
-
-GitOps Reverser looks the applier up in the **source cluster**, the cluster it applies to, with
-the identity the `ClusterProvider` already uses, or in the cluster `spec.applier.clusterProviderRef`
-names. That identity needs permission to read and write the applier; the chart grants it for the
-operator's own cluster with `applierAccess.flux: true` or `applierAccess.argocd: true`.
-The applier must apply this folder's repository and branch, or the target reports
-`ApplierConfigured=False`. The
-[configuration reference](configuration.md#who-applies-this-folder-specapplier) has every field
-and reason.
-
-Several `GitTarget`s may name the same applier, for example a `Kustomization` whose path covers
-several folders. Requests to one applier are sent once.
-
-## Configure Argo CD
-
-[Using GitOps Reverser with Argo CD](argocd.md) is the complete setup, with a worked example a unit
-test holds to the code. The standard is full control: the `Application` named by
-`spec.applier.applicationRef` has **automated sync off**, and every sync it runs is one GitOps
-Reverser started, pinned to a commit it checked.
-
-```yaml
-spec:
-  syncPolicy:
-    automated:
-      enabled: false   # automated sync off; GitOps Reverser starts every sync
-      prune: true      # kept for the syncs GitOps Reverser starts
-```
-
-An `Application` with automated sync on is `ApplierConfigured=False` with `AutomatedSyncEnabled`,
-and GitOps Reverser never syncs it. `selfHeal` means nothing with automated sync off. Argo CD's
-timed refresh and its `/api/webhook` may stay: with automated sync off they only compare. A sync
-GitOps Reverser starts is the one automated sync would (`prune`, `syncOptions` and `retry` from the
-`Application`), with the revision pinned and `initiatedBy` set to `gitops-reverser`; it waits for a
-sync already running rather than replace it.
-
-Without `spec.applier`, an `Application` with automated sync keeps its own triggers, with the
-exposure [why GitOps Reverser owns the trigger](#why-gitops-reverser-owns-the-trigger) describes:
-each of GitOps Reverser's pushes is synced over whatever is pending at that moment, and with
-`selfHeal: true` a live edit is reverted in about a second, before GitOps Reverser can publish it.
-
-### The split-ownership alternative
-
-`ignoreDifferences` on a field, with `RespectIgnoreDifferences=true` in `syncOptions`, hands that
-one field to the API. Its differences alone do not make the `Application` `OutOfSync`, and the
-option copies the live value into the apply target, so an ordinary sync preserves it.
-
-The cost is that the field stops being Git-driven on an existing object: Git seeds it at creation,
-but later Git edits to it do not reach the object while the ignore is active. It protects no other
-field from GitOps Reverser's whole-object replay.
-
-## Configure Flux
-
-[Using GitOps Reverser with Flux](flux.md) is the complete setup, with a worked example a unit test
-holds to the code. In short: Flux has no fetch-only mode (a new `GitRepository` artifact makes every
-`Kustomization` reading it apply, and `suspend: true` also blocks GitOps Reverser's requests), so
-set both intervals to a long backstop such as `24h`, keep the `Kustomization` unsuspended, and
-remove any Git-host webhook into a Flux `Receiver` for the repository. GitOps Reverser then asks the
-`GitRepository` to fetch: after a foreign push, after a refusal, and, once the branch has been
-quiet for `spec.applier.quietPeriod` (`30s` by default), to catch up with its own pushes, so a
-Flux restart never applies a stale artifact.
-
-Flux's equivalent of split ownership is `Kustomization.spec.ignore`, added in kustomize-controller
-`v1.9.0`, with the same trade as Argo CD's. The
-[source review](facts/gitops-apply-and-field-ignore.md) has the code paths.
-
-When upgrading a chart whose pin is declared in Git, reconcile the owning `Kustomization` first
-so it applies the new `HelmRelease` and source configuration, then the `HelmRelease` if needed.
 
 ## Telling GitOps Reverser that somebody else pushed
 
@@ -232,254 +234,150 @@ GitOps Reverser learns that the branch moved in three ways, and each feeds the s
 | --- | --- | --- |
 | A push webhook from the Git host | Seconds | `GitProvider.spec.receiver` |
 | A rejected compare-and-swap push | At the next publication | Nothing: it is how every push works |
-| The periodic refresh | Within `--git-refresh-interval` (10m) plus the 5-minute reconcile tick | Nothing: on by default |
+| The periodic refresh | Within `--git-refresh-interval` (`10m`) plus the 5-minute reconcile tick | Nothing: on by default |
 
-Point the Git host's push webhook at the URL in `GitProvider.status.webhookPath`, served on the
-receiver listener. The receiver speaks GitHub's, GitLab's and Gitea's native push payloads, plus a
-`generic-hmac` body for a relay you run yourself. See
-[receiving push notifications](configuration.md#receiving-push-notifications-specreceiver).
+To serve the receiver:
 
-A delivery is only a hint. GitOps Reverser does not trust the commit it names: it reads the
-branch's ref advertisement (one request) and decides from what the remote says. So a late delivery
-for one of GitOps Reverser's own pushes, a duplicate, or a rollback onto one of its older commits
-all come out right. When it cannot tell whether a commit is its own, it treats it as foreign.
+1. Set the chart's `servers.receiver.enabled: true`, which passes `--receiver-bind-address=:9292`
+   (`servers.receiver.bindAddress`). The chart adds a `<release>-receiver` `Service`. The listener is
+   plain HTTP; expose it to your Git host with an Ingress or Gateway route that terminates TLS, the
+   way Flux's `webhook-receiver` is exposed.
+2. Create a Secret with the webhook secret under the key `token`, in the `GitProvider`'s namespace.
+   It is the key a Flux `Receiver` Secret uses, so an existing one can be copied over.
+3. Set `GitProvider.spec.receiver` with that Secret and the host's `type`: `github`, `gitlab`,
+   `gitea`, or `generic-hmac` for a relay of your own.
+4. Read the path from `status.webhookPath` and register `https://<your route><path>` as a push
+   webhook with the same secret:
 
-Without a receiver everything still works, later: a foreign push is applied once the refresh finds
-it.
+   ```bash
+   kubectl get gitprovider platform -n team-a -o jsonpath='{.status.webhookPath}'
+   # /git-push/3f9a…c41e
+   ```
 
-**A notification that the branch moved never triggers a cluster snapshot.** The cluster still holds
-the values from before the push, so a snapshot would publish them over the incoming change. A push
-tells GitOps Reverser about Git; it says nothing about the cluster.
+   The path is derived from the token, as a Flux `Receiver` path is. A wrong path and a wrong
+   secret both answer `404`; the operator's log says which. Rotating the token moves the path.
 
-Read where the branch is, what proved it, and what was last requested:
+A delivery is only a hint. GitOps Reverser reads the branch's ref advertisement and decides from
+what the remote says, so a late delivery, a duplicate, or one for its own push applies nothing it
+should not. When it cannot tell whether a commit is its own, it treats it as foreign. The
+[configuration reference](configuration.md#receiving-push-notifications-specreceiver) has every
+field.
 
-```bash
-kubectl get gittarget checkout -n team-a \
-  -o jsonpath='{.status.remote}{"\n"}{.status.applier}{"\n"}'
-# {"commit":"4f2c1ab9...","lastVerifiedAt":"2026-10-20T10:14:02Z","verifiedBy":"Fetch"}
-# {"requestedCommit":"4f2c1ab9...","requestedAt":"2026-10-20T10:14:03Z","reason":"ForeignCommit"}
-```
+**A push never triggers a cluster snapshot.** The cluster still holds the values from before the
+push, so a snapshot would publish them over the incoming change.
 
-## One queue per branch
+## When both sides edit the same object
 
-Every watched event for a given `GitProvider` and branch lands on one queue owned by one branch
-worker. Events are applied in arrival order and never overtake each other, and two `GitTarget`
-objects on the same provider and branch share that worker, its ordering, and its quiet moments.
-
-1. **Commit.** Events collapse into one local commit per author after
-   [`spec.commit.window.idleTimeout`](configuration.md#the-commit-window-speccommitwindow) of silence,
-   `5s` by default, or at most `maxDuration` (`1m`) after the first. `0s` gives one commit per event.
-2. **Push.** Local commits go to the remote at most once every five seconds, as a
-   compare-and-swap. The push declares the commit it expects the branch to be at, and the Git host
-   refuses the update if the branch has moved off the commits' base.
-
-A publishing target reads the remote only through the push it was making anyway. An idle target
-re-proves where its branch is every
-[`--git-refresh-interval`](configuration.md#keeping-an-idle-target-fresh---git-refresh-interval),
-at the cost of one ref advertisement, and fetches only when the branch actually moved.
-
-## What happens when somebody else pushed first
-
-Your push is rejected and the worker **replays**: it fetches the new tip, re-plans every pending
-write against it, and pushes again. Three attempts, then the writes stay pending for a later try.
-Whatever the worker learned along the way, it now knows the branch gained a foreign commit, and the
-appliers are asked to apply once the replayed push lands.
-
-```mermaid
-flowchart TD
-    PUSH["Push, declaring the commit the writes were based on"] --> MOVED{"Is the branch still there?"}
-    MOVED -->|yes| DONE["Accepted"]
-    MOVED -->|"no: somebody else pushed"| FETCH["Fetch the new tip"]
-    FETCH --> REPLAN["Re-plan every pending write against the new tree"]
-    REPLAN --> DIFF{"Does the captured object still differ from what Git now holds?"}
-    DIFF -->|no| NOOP["No commit. The other writer's value stands."]
-    DIFF -->|yes| COMMIT["Commit on top, then push again"]
-    COMMIT --> MOVED
-
-    style DONE fill:#e8f5e9,stroke:#43a047
-    style NOOP fill:#e8f5e9,stroke:#43a047
-```
-
-Replay re-plans; it does not rebase a diff. Each pending write still carries the object as the
-watch captured it, and writing that object onto the new tree has one of two outcomes:
-
-- **No change, so no commit.** The file in Git already says what the captured object says,
-  because whoever pushed made the same change.
-- **A change, committed on top.** The captured object is written over the other writer's value,
-  and the branch ends at the API side's value.
-
-A write with no legal destination is refused instead, and there is no merge: a watch event carries
-the object's whole state, with no baseline that would say which fields changed on each side.
+The API side wins. When a push is rejected because somebody else pushed first, the branch worker
+fetches the new tip, re-plans every pending write against it, and pushes again. Each pending write
+carries the whole object as the watch captured it, so writing it onto the new tree either changes
+nothing (the other writer made the same change) or writes the API side's value over the other
+writer's. There is no merge: a watch event has no baseline that says which fields changed on each
+side. [API-first publication](api-first-publication.md) has the replay in detail.
 
 ### What a write does to the file
 
 The writer edits fields in place within the existing document, so what matters is which fields
-change rather than which files. For a plain manifest:
+change rather than which files:
 
-| In the file | What a replay does to it |
+| In the file | What a write does to it |
 | --- | --- |
 | A field the live object also carries | Set to the live value |
 | A field in Git that the live object does not have | **Removed** |
 | Comments, key order, other documents in the file | Preserved |
 | An edit that cannot be placed safely | Refused, and the file is left untouched |
 
-In a kustomize layout the live object is the rendered result rather than the contents of any one
-file, so the edit is projected back through the build first and only the fields that document is
-responsible for are touched. An edit the projection cannot place is refused rather than guessed
-at, which is why the last row exists.
+In a kustomize layout, the edit is projected back through the build first, and only the fields that
+document is responsible for are touched. An edit the projection cannot place is refused.
 
 **The consequence to plan around.** If Alice changes `replicas` through the API while Bob changes
-`image` in Git on the same object, replaying Alice's captured object writes her `replicas` and
-also the `image` she was looking at. Bob's change to a different field of the same object does
-not survive, and a field Bob added that the cluster never had is removed outright. Separate
-objects are independent of each other. Separate fields of one object are not.
+`image` in Git on the same object, Alice's captured object carries her `replicas` and the `image` she
+was looking at. Bob's change to that object does not survive, and a field Bob added that the cluster
+never had is removed. Separate objects are independent of each other; separate fields of one object
+are not.
+
+### The split-ownership alternative
+
+Hand a field to one side instead. Argo CD's `ignoreDifferences` with `RespectIgnoreDifferences=true`
+in `syncOptions`, and Flux's `Kustomization.spec.ignore` (kustomize-controller `v1.9.0` and later),
+make the applier leave that field alone. The cost is that the field stops being Git-driven on an
+existing object: Git seeds it at creation, and later Git edits to it do not reach the object. It
+protects no other field from the whole-object replay. The
+[source review](facts/gitops-apply-and-field-ignore.md) has the code paths.
 
 ## There are no timing guarantees
 
 Committing and pushing takes on the order of a second at best, and the Kubernetes API accepts a
-great many changes in a second. Treat live editing as a different way of making changes rather
-than a faster `git push`:
-
-- You make a change and then observe that it arrived. You do not save and receive a confirmation.
-- Intermediate values may never reach Git. Two edits inside one commit window produce one commit
-  holding the later value.
-- Git history records the states the worker captured and published. Expect gaps between them.
-
-When a specific change has to be confirmed in Git, use a
-[`CommitRequest`](configuration.md#commitrequest). `Pushed=True` with `status.commit` and
-`status.branch` names the commit it produced.
-
-### What is still exposed
-
-Owning the trigger removes every apply that could revert an edit for no reason. It cannot reserve
-the seconds an apply takes:
-
-- **An edit made while a requested apply runs** is reverted, then mirrored as the applier's
-  commit. That happens only after somebody else pushed, after a refusal with `Reapply`, or after a
-  `quietPeriod` of silence on a Flux branch. It no longer follows every commit GitOps Reverser
-  makes.
-- **Flux's backstop timers** still apply on their own, at the tip as the last catch-up left it.
-  Argo CD with automated sync off has none.
-- **A human** running `flux reconcile` or pressing Sync applies whenever they do.
-
-## Why the loop stops
-
-The obvious fear is a feedback loop: GitOps Reverser commits, the applier applies, the apply
-produces a watch event, GitOps Reverser commits again. It settles instead, for two reasons.
-
-GitOps Reverser does not ask for its own commits to be applied, except Flux's catch-up. And when a
-commit it wrote is applied, the live object already holds those values, because they were read
-from that object in the first place. The apply changes nothing, the event it produces carries
-content identical to the file already in Git, and no commit is made. In general: **applying a
-resource that already matches does not produce a change.** What can break that reasoning is
-controller bookkeeping.
+great many changes in a second. Treat a live edit as a change you observe arriving, not a save that
+returns a confirmation. Two edits inside one commit window produce one commit holding the later
+value, so Git history records the states the worker captured, with gaps between them. When a
+specific change has to be confirmed in Git, use a [`CommitRequest`](configuration.md#commitrequest).
 
 ## Keep controller bookkeeping out of Git
 
 Argo CD stamps `argocd.argoproj.io/tracking-id` on every non-CRD object it applies, Flux stamps
 `kustomize.toolkit.fluxcd.io/` labels and annotations, and a client-side apply writes
-`kubectl.kubernetes.io/last-applied-configuration`. None of it is user intent. If it reached Git
-the sanitized live object would stop matching the committed file, and every apply would produce a
-commit.
+`kubectl.kubernetes.io/last-applied-configuration`. None of it is user intent. If it reached Git,
+the live object would stop matching the committed file, and every apply would produce a commit.
 
 GitOps Reverser strips all of it before writing, along with `argocd.argoproj.io/installation-id`,
-`kro.run/`, `applyset.kubernetes.io/`, and `kcp.io/cluster`. The rules and the reasoning for each
-are in [`internal/sanitize/types.go`](../internal/sanitize/types.go). Under
-`argocd.argoproj.io/` only the exact tracking keys go: siblings such as `sync-wave`,
-`sync-options`, and `hook` are user intent that belongs in Git.
+`kro.run/`, `applyset.kubernetes.io/`, and `kcp.io/cluster`; the rules and reasons are in
+[`internal/sanitize/types.go`](../internal/sanitize/types.go). Under `argocd.argoproj.io/` only the
+exact tracking keys go: `sync-wave`, `sync-options` and `hook` are user intent that belongs in Git.
+That is also why the loop settles: an applied commit GitOps Reverser wrote matches the live object,
+so the watch event it produces commits nothing.
 
-**Leave Argo CD on its default `annotation` resource tracking for mirrored paths.** The `label`
-and `annotation+label` methods stamp `app.kubernetes.io/instance`, which is indistinguishable from
-the standard recommended label that Helm and Kustomize set for application reasons. GitOps Reverser
-therefore does not strip it, and label tracking would put Argo CD's bookkeeping into your commits.
+**Leave Argo CD on its default `annotation` resource tracking for mirrored paths.** The `label` and
+`annotation+label` methods stamp `app.kubernetes.io/instance`, the same label Helm and Kustomize set
+for application reasons, so GitOps Reverser cannot strip it, and Argo CD's bookkeeping would reach
+your commits.
 
-## When a write is refused or a push fails
+## Choosing `spec.onRefusal`
 
-A live edit can succeed while its publication does not. The cluster holds the change and Git does
-not. Watch push failures and the target's write-acceptance conditions: a successful Kubernetes
-edit confirms the API write and nothing beyond it.
-
-Pending writes are held in worker memory. They do not survive a restart, and an edit that failed
-before becoming a pending write is gone from GitOps Reverser's side. Recovery is a resync, which
-derives state from the cluster as it exists at that moment, so it cannot reproduce an intermediate
-value that has since been overwritten.
-
-### Choosing `spec.onRefusal`
-
-A refused edit has no legal destination in Git, so nothing is committed for it and it stays live
+A refused edit has no legal destination in Git, so nothing is committed for it, and it stays live
 until something applies Git over it.
 
-| Policy | Response to a refused edit | Operator's trade |
+| Policy | Response to a refused edit | Trade |
 | --- | --- | --- |
-| `Ignore` (default) | Report the refusal | Leave recovery to a human or a later apply |
-| `Reapply` | Ask the target's applier to apply the current tip, once the branch is quiet | The refused edit is reverted; nothing still waiting to be published is |
+| `Ignore` (default) | Report the refusal | Recovery is left to a human or a later apply |
+| `Reapply` | Ask the target's applier to apply the tip, once the branch is quiet | The refused edit is reverted; nothing still waiting to be published is |
 
-`Reapply` needs a declared applier, and the request goes to that applier alone: an `Application`
-syncs the tip. When a `Kustomization`'s `GitRepository` has to fetch to reach the tip, though, every
-`Kustomization` on that `GitRepository` applies the new revision, exactly as it would for any push:
-moving the source is the only way to apply the tip, and Flux wakes everything that reads it. Give
-the folder its own `GitRepository` if the apply must reach that folder alone. Waiting for a quiet
-branch means an allowed edit still in a commit window is published first, so the apply reverts only
-what has no home in Git.
-
-Eligibility is narrow: the folder must be accepted, the refused edit must concern a document the
-folder already holds, and the write must remove no document, because re-applying would put back an
-object somebody deliberately deleted. Invalid or unsupported folders, new objects and removals do
-not trigger it. A standing refusal is requested once, not on every recheck, and a suspended target
-requests nothing. See
+`Reapply` needs an apply trigger. It fires only for an edit to a document the folder already holds,
+never for a write that removes one, and a reverted edit does not clear the refusal: the target
+returns to `Ready=True` only after a resync covering the refused scope. The eligibility rules are in
 [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
 
-### A restored value does not prove the target recovered
+## What is still exposed, and what it costs
 
-A refusal still reports `GitPathAccepted=False`, `Stalled=True`, and `Ready=False`, under either
-policy. The target keeps rechecking, roughly every ten seconds; `Stalled` does not mean the
-controller has stopped running.
-
-Re-applying neither clears those conditions nor makes an unrepresentable edit writable. A
-successful resync covering the refused scope must establish acceptance again. Treat recovery as two
-observations: the live resource has the intended value, and the `GitTarget` returns to
-`Ready=True`.
-
-## What it costs
-
-**GitOps Reverser becomes the only fast path to a deployment.** While it is down, a push by a
-human reaches the cluster only through a manual sync, `flux reconcile`, or Flux's backstop
-interval. Bi-directional editing is already stopped in that state; Git-side deployments now slow
-down with it. Monitor the operator the way you monitor the applier.
-
-**Round trips to the Git host are the seconds you wait through.** An uncontended publication talks
-to the remote twice, and a foreign push costs a fetch, a replay on a checkout already on disk, and
-one push. If your workload is mostly Git-side edits with occasional live changes, you are using the
-tool against its grain. The per-operation numbers are measured, in
-[`git-roundtrip-ledger.golden`](../internal/git/testdata/git-roundtrip-ledger.golden).
+- **An edit made while a requested apply runs** is reverted on the cluster until the `Repair`. It
+  keeps its value in Git. It can happen only during an apply GitOps Reverser asked for: after a
+  foreign push, a refusal with `Reapply`, or a Flux catch-up.
+- **A human** running `flux resume` or pressing Sync applies whenever they do. GitOps Reverser
+  suspends a resumed `Kustomization` again within a minute.
+- **GitOps Reverser becomes the only path to a deployment.** While it is down, the shared folders
+  wait: a push reaches the cluster only through a manual sync or `flux resume`. A graceful stop
+  suspends a `Kustomization` it had resumed; after a crash, the apply that was running finishes,
+  and the next process suspends it. Monitor the operator the way you monitor the applier.
+- **A trigger may hold any applier its `ClusterProvider` reaches.** With
+  `allowCrossNamespace.appliers`, every namespace the provider admits may hold a `Kustomization` or
+  `Application` in another namespace whose source is the repository its `GitProvider` names. That
+  is a delegation by the platform admin: nothing proves the namespace owns the applier, or may
+  write to the repository, since the binding compares URLs.
+- **Pending writes live in worker memory.** They do not survive a restart; recovery is a resync of
+  the cluster as it is then.
+- **Round trips to the Git host are the seconds you wait through.** A foreign push costs a fetch, a
+  replay and one push. If your workload is mostly Git-side edits with occasional live changes, you
+  are using the tool against its grain. The measured numbers are in
+  [`git-roundtrip-ledger.golden`](../internal/git/testdata/git-roundtrip-ledger.golden).
 
 ## What the tests prove
 
-The bi-directional corner runs against deployed Flux and Argo CD, each configured as this guide
-says. Its timing assertions describe those scenarios; they do not guarantee the ordering of
-concurrent writers.
-
-| Covered | Where |
-| --- | --- |
-| Two API edits to one field seconds apart end at the later value with no further commit, and Flux catches up with both by itself | [Flux](../test/e2e/flux_bi_directional_e2e_test.go) |
-| A Git-side push with an API edit on top lands both, and Flux applies the replayed commit without being reconciled by hand | Flux |
-| A new `GitRepository` revision, from a commit outside the applied folder, is enough for the `Kustomization` to apply and revert drift | Flux |
-| A refused edit with `onRefusal: Reapply` is reverted by its `Kustomization`, with no commit, and settles instead of repeating | [Refusal reapply](../test/e2e/refusal_reapply_e2e_test.go) |
-| A `SourceMismatch` applier is never stamped, a push the Git host reports or the refresh finds is applied, without the corner | [Manager Flux Applier](../test/e2e/flux_applier_e2e_test.go), and [the Flux guide](flux.md#what-the-tests-prove) |
-| A Git to cluster to Git round trip settles without a commit loop | Flux |
-| A SOPS-encrypted Secret round-trips without a reverse commit | Flux |
-| A Git revert removes the live object and the committed file | Flux |
-| Argo CD bookkeeping never reaches Git, asserted as zero commits during a sync | [Argo CD](../test/e2e/argocd_bi_directional_e2e_test.go) |
-| Two API edits to one field seconds apart keep the later value with no further commit, and Argo CD is never asked to catch up | Argo CD |
-| A Git-side push is synced by a `ForeignCommit` request, pinned to that commit | Argo CD |
-| A refused edit with `onRefusal: Reapply` is reverted by an Argo CD sync | Argo CD |
-| An `Application` with automated sync on is `AutomatedSyncEnabled` and is never synced | Argo CD |
+Each tool guide lists what its unit and end-to-end tests cover:
+[Flux](bi-directional-flux.md#what-the-tests-prove) and
+[Argo CD](bi-directional-argocd.md#what-the-tests-prove). The bi-directional corner runs against
+deployed Flux and Argo CD, each configured as those guides say; `task test-e2e-bi-directional` runs
+it, and the [corner specification](spec/e2e-bi-directional-corner.md) describes the setup.
 
 **No spec tests simultaneous writes to one field from both sides**, because the outcome depends on
-arrival order the corner does not control. The replay mechanism is covered; a conflict policy is
-not, because there is not one.
-
-Run `task test-e2e-bi-directional` for the corner, which is also a CI job. `task test-e2e` excludes
-the corner and includes the refusal spec. `task argocd-ui` opens the installed Argo CD UI. The
-[corner specification](spec/e2e-bi-directional-corner.md) describes
-the setup.
+an arrival order the corner does not control. The replay is covered; a conflict policy is not,
+because there is not one.

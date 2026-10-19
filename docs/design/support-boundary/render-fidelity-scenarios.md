@@ -120,7 +120,7 @@ resync reply.
 ## 5. End-to-end proof
 
 The dedicated fixture at `test/e2e/fixtures/render-fidelity/` is implemented and runs in the
-regular `manager` E2E shard (not the Argo-only bi-directional lane). It uses a real Flux
+regular `manager` E2E shard, outside the opt-in bi-directional corner. It uses a real Flux
 `Kustomization`: the repository Deployment contains `${REGION}`, while
 `postBuild.substitute` resolves it to `us-east` in the live object. Do not reuse a
 render-root-scoping fixture: this fixture owns the render-vs-live pair directly.

@@ -314,7 +314,7 @@ func TestLocateNew_KustomizeContextNamespaceMismatch_NewFileKeepsItsOwnNamespace
 	}
 }
 
-// A DECLARED template pointing into a governed directory carries the same obligation as
+// A DECLARED template pointing into a governed directory follows the same rule as
 // the kustomize-root fallback: the context supplies the namespace, so the file must not
 // repeat it. Before the Option C deletion this only ever came out of a sibling's own
 // bytes, so a declared placement silently wrote a namespace: line the folder omits.

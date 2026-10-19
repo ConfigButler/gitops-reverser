@@ -219,7 +219,7 @@ Do it in the same breaking wave as F6/F12, not separately.
 **the operator never discovers.** A GitTarget is told exactly one subtree. Argo and Flux scan;
 we deliberately do not.
 
-That architectural call is right — and it makes onboarding a **step the product owes the user**,
+That architectural call is right — and it makes onboarding a **step the product must provide**,
 performed by `manifest-analyzer --mode scan-repo`, which answers precisely the question the
 original doubt raises: *which folders can become GitTargets, what layout is each, which are
 supported and why not, and what GitTarget/WatchRule would express each one.*

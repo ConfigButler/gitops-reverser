@@ -200,7 +200,7 @@ func TestParentBranchReadiness_AnOmittedParentCanStall(t *testing.T) {
 }
 
 // TestParentRecovering_ReadsTheWorkerOnly: the reconciler reports recovery from the branch worker's
-// memory and nothing else. No worker manager, no worker, or a worker that owes nothing is not
+// memory and nothing else. No worker manager, no worker, or a worker with no pending writes is not
 // recovering.
 func TestParentRecovering_ReadsTheWorkerOnly(t *testing.T) {
 	target := parentBranchTarget("apps", "edits", "apps", "release", time.Now())
@@ -212,7 +212,7 @@ func TestParentRecovering_ReadsTheWorkerOnly(t *testing.T) {
 	repo := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
 	_, err := r.ensureEventStream(context.Background(), target, "shop", repo, logr.Discard())
 	require.NoError(t, err)
-	assert.False(t, r.parentRecovering(target, "shop"), "a worker that owes nothing")
+	assert.False(t, r.parentRecovering(target, "shop"), "a worker with no pending writes")
 }
 
 func TestParentRecoveryReadiness_IsProgressNotAStall(t *testing.T) {

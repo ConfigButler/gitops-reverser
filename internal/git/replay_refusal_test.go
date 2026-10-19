@@ -88,7 +88,7 @@ func assertOnlyTheRefusedWriteWasDropped(
 	assert.NotContains(t, names, "refused-on-replay", "the refused write is not")
 	assert.Contains(t, names, "team-a/kustomization.yaml", "and the other writer's commit is kept")
 	assert.Empty(t, loop.pendingWrites, "nothing is left pending to block the writes after it")
-	assert.False(t, loop.retry.pending(), "nothing is owed, so no retry is scheduled")
+	assert.False(t, loop.retry.pending(), "nothing is left to publish, so no retry is scheduled")
 
 	require.Len(t, *refusals, 1, "the refusal is reported on the target's status, once")
 	assert.Equal(t, itypes.NewResourceReference(ledgerTargetName, "default"), (*refusals)[0].target)

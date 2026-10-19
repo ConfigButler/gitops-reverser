@@ -14,7 +14,7 @@
 >   it the dangling name (§4.3 test 1's `master`) never reaches the client: the observation's
 >   branch is empty and the message says the remote has no default branch.
 > - Once the probe has found the parent it stops reading advertisements: later deadlines retry the
->   retained writes and re-request the snapshots still owed. A failure caused by the parent arms
+>   retained writes and re-request the snapshots still missing from Git. A failure caused by the parent arms
 >   the latch again.
 >
 > **The merge boundary.** #407 merges when this pass is done: the existing parent-branch feature
@@ -30,14 +30,14 @@
 Both are fixed, each with the reviewer's reproduction as its regression test (red before the fix).
 Both failures were reproduced through the worker event handlers against canonical `git http-backend`.
 
-1. **P1: a second parent outage loses the obligation for newer dropped writes.** A recovery
+1. **P1: a second parent outage forgets to republish newer dropped writes.** A recovery
    snapshot commits locally and enters `awaitingPush`. Before it is pushed, the parent disappears
    again and another event from the same scope is dropped. `noteParentUnavailable` keeps the
    scope's old `awaitingPush` entry. On recovery, `noteRecoveryPublished` clears that scope after
    publishing the older snapshot, and no new snapshot is requested. The reproduction publishes
    `cm1`, leaves `cm2` absent, closes recovery, and leaves `SnapshotRequestSeq` at 1. Invalidate
-   the old publication credit when new work is dropped, or track the obligation's generation.
-   Acceptance: publishing the old snapshot keeps the newer obligation open, requests a fresh
+   the old publication credit when new work is dropped, or track the generation of the dropped work.
+   Acceptance: publishing the old snapshot keeps recovery open for the newer write, requests a fresh
    snapshot, and eventually publishes `cm2` without another cluster edit.
    **Fixed:** a dropped write removes its scope's publication credit; pinned by
    `TestParentRecovery_ASecondOutageKeepsTheWorkDroppedInIt`.
@@ -226,7 +226,7 @@ reconciles and refresh ticks occur. §4.4 defines it and tests it.
   - e2e does not assert which fetch reason found B (§4.6).
 - **Default-branch resolution follows go-git, not a stricter rule of our own** (§4.3).
 - **Recovery comes before cost.** §4.4 writes the recovery tests first. If the worker-side probe
-  grows larger than expected, ship the recovery obligation and its tests with a simpler
+  grows larger than expected, ship the recovery latch and its tests with a simpler
   controller-side backoff (§4.4, fallback). Never weaken recovery to save fetches.
 
 ## 4. Work items, in order
@@ -481,7 +481,7 @@ Update the documentation in three places:
 - A failed `pushPending` stops its push timer (~1673), and nothing re-arms it until the next
   event.
 - With `--git-refresh-interval=0` there is no refresher at all.
-- An observation flip is not an obligation:
+- An observation flip does not show that the held work landed:
   - If the first recovery attempt after `Found` fails transiently, the observation stays `Found`,
     the timer is stopped, a probe gated on `Missing` no longer runs, and the work is stranded.
   - A controller that keys off "the stored Ready reason was `ParentBranchNotFound`" can miss a
@@ -489,7 +489,7 @@ Update the documentation in three places:
 
 #### Design
 
-1. **A recovery obligation on the worker.** Its lifetime is decoupled from observations.
+1. **A recovery latch on the worker.** Its lifetime is decoupled from observations.
    - The worker latches `parentRecovery` the moment a cycle fails with `ErrParentBranchNotFound`
      or `ErrDefaultBranchUnresolved`.
    - The latch has two independent halves:
@@ -536,7 +536,7 @@ Update the documentation in three places:
    - Drop the per-reconcile `parentWasMissing` force.
    - Ready reporting:
      - `ParentBranchNotFound` stays Ready=False/Stalled while the parent is missing.
-     - While the obligation is open but the parent has been found, report Ready=False with
+     - While recovery is open but the parent has been found, report Ready=False with
        `Reconciling=True`, reason `RecoveringParentBranch`. This keeps the not-Ready requeue
        cadence, so the controller sees the sequence within one requeue, and the state stays
        visible. Verify that the not-Ready requeue applies to that reason.
@@ -586,7 +586,7 @@ Write the recovery tests first, against current code. They are the safety net fo
 
 #### Fallback, if step 2 or 3 grows too large
 
-- Keep step 1 (the obligation) and step 4 (the request sequence). The obligation is the
+- Keep step 1 (the recovery latch) and step 4 (the request sequence). The latch is the
   correctness part and is non-negotiable.
 - Replace the worker probe with a controller-side forced recheck under exponential backoff, still
   gated on the latch rather than on the Ready reason.
@@ -704,7 +704,7 @@ Kept here so they are not re-litigated. Each was checked against the code.
 
 - **No pull before push.** A pull cannot close the race; the compare-and-swap plus bounded replay
   does. Every fix in this pass reads evidence the push or discovery already holds.
-- **Recovery is an obligation, not an observation.** It stays open until the work is published,
+- **Recovery tracks the held work, not an observation.** It stays open until the work is published,
   so a transient failure after the parent reappears cannot strand it (§4.4). It is tracked per
   `(target, collection)` scope.
 - **A configuration change is applied at a push admission boundary**, with one `{name, gen}`

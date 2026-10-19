@@ -495,7 +495,7 @@ change 3.
 `stop` canceling a stream without touching files is not an interim state. It is
 what [`configuration.md`](../configuration.md) promises today: a deselected
 namespace's documents stay in Git. The sweep converges the mirror afterwards, and
-the plan owes it nothing in the meantime. A reader of the repository sees the
+the plan has nothing left to do for it in the meantime. A reader of the repository sees the
 behavior the documentation already describes, reached more cheaply.
 
 Bundling change 3 would put an unresolved product decision ("The one decision
@@ -526,7 +526,7 @@ it.
 
 ### What this left behind
 
-Two small debts, recorded so they are paid rather than discovered:
+Two small follow-ups, recorded so they are fixed rather than discovered:
 
 - `streamRevisions` fills in zero revisions when no shared fidelity gate is
   wired. That path exists only because the gate can be absent in test wiring, and

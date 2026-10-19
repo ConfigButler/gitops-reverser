@@ -9,20 +9,11 @@ amount of configuration reconciles them — because the moment a live write land
 Argo already has everything it needs to revert it, and there is no hook where an
 external system can say "wait, this one is legitimate."
 
-The Argo CD configuration that supports a shared field changing from **both**
-directions is:
-
-- **automated sync off** (`syncPolicy.automated.enabled: false`), with the
-  `Application` named by the `GitTarget`'s `spec.applier.applicationRef`, so GitOps
-  Reverser starts every sync, pinned to a commit it checked
-  ([the Argo CD guide](../../argocd.md)), plus
-- **a push webhook** into GitOps Reverser's receiver for the Git → cluster
-  direction.
-
-Automated sync with `selfHeal: false` was the answer before GitOps Reverser could
-drive an `Application`, and is still the best an unnamed `Application` can do; it
-leaves the timed refresh syncing GitOps Reverser's own pushes over whatever is
-pending ([why](#why-selfheal-false-is-not-enough)).
+The configuration that supports a shared field changing from **both** directions is
+automated sync **off**, with the `Application` held by an `ArgoCDTrigger`, so GitOps Reverser
+starts every sync, pinned to a commit it checked. The user guide is
+[bi-directional GitOps with Argo CD](../../bi-directional-argocd.md); this record is the evidence
+for why nothing short of that works.
 
 Everything else that looks like a solution — `ignoreDifferences`,
 `managedFieldsManagers`, three-way merge, PreSync hooks, self-heal timing knobs —
@@ -36,7 +27,7 @@ line, which is materially identical for these paths). The configuration it leads
 to is exercised end-to-end in
 [`../../../test/e2e/argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go);
 corner design in
-[`../e2e-bi-directional-corner.md`](../../spec/e2e-bi-directional-corner.md).
+[`e2e-bi-directional-corner.md`](../../spec/e2e-bi-directional-corner.md).
 
 ## How fast is self-heal, and why it cannot be slowed
 
@@ -154,47 +145,23 @@ setting. Verdict: **cannot be used to be slow.**
 
 ## The configuration that works
 
-Turn automated sync **off** and let GitOps Reverser start every sync. It is
-`selfHeal: false` taken to its end: nothing in Argo CD applies on its own, so the
-only syncs are ones started on a quiet branch, pinned to a commit with nothing live
-missing from it. Argo CD's own rules make it safe to drive this way: a sync is
-started by setting the `Application`'s `operation` as automated sync would
-(`controller/appcontroller.go` `autoSync`), and never while another operation is set
-(`util/argo/argo.go` `SetAppOperation`). With automated sync off, a refresh only
-compares (`autoSync` returns at once when `IsAutomatedSyncEnabled` is false).
+Turn automated sync **off** and let GitOps Reverser start every sync. Nothing in Argo CD then
+applies on its own, so the only syncs are ones started on a quiet branch, pinned to a commit with
+nothing live missing from it. Argo CD's own rules make it safe to drive this way: a sync is started
+by setting the `Application`'s `operation` as automated sync would (`controller/appcontroller.go`
+`autoSync`), and never while another operation is set (`util/argo/argo.go` `SetAppOperation`). With
+automated sync off, a refresh only compares: `autoSync` returns at once when
+`IsAutomatedSyncEnabled` is false.
 
-### Why `selfHeal: false` is not enough
+Automated sync with `selfHeal: false` was the answer before GitOps Reverser could drive an
+`Application`, and is still the best an `Application` without a trigger can do. It stops the live
+revert, and leaves one hole: automated sync still applies **every new commit**, GitOps Reverser's
+own included, two to three minutes later on the timed refresh, over whatever is pending at that
+moment.
 
-The intermediate step, still useful for an `Application` no `GitTarget` names, is
-automated sync with self-heal **off**:
-
-- **Cluster → Git.** With `selfHeal: false`, Argo does not revert live drift — it
-  marks the app `OutOfSync` and waits. GitOps Reverser captures the live change to
-  Git at its own pace. You can be as slow as you like; nothing overwrites the
-  cluster in the meantime.
-- **Git → cluster.** A push webhook (which the corner wires up:
-  `argocd-server` `/api/webhook`, Gogs-format from Gitea) makes Argo apply a new
-  Git commit within seconds — *including a change to the same shared field from the
-  Git side*, which `ignoreDifferences` would have broken.
-
-```text
-   API edit ─▶ Cluster ──watch──▶ GitOps Reverser ──commit──▶ Git
-      ▲                                                        │
-      └──────────── apply ◀── Argo CD (selfHeal off) ◀─push webhook┘
-```
-
-This is bi-directional on a shared field, with one hole: automated sync still
-applies **every new commit**, including each one GitOps Reverser pushes, two to three
-minutes later on the timed refresh (or seconds later with Argo CD's webhook), over
-whatever is pending at that moment. Two API edits a few seconds apart are enough to
-have the first commit synced over the second edit. Only switching automated sync
-off and letting GitOps Reverser start the syncs closes it, which is what the e2e
-corner now exercises.
-
-**What you give up** is self-heal's one unique service: reverting drift that
-*should not* be captured (a rogue or accidental change). That loss is inherent —
-you cannot ask one flag to both "erase unauthorized drift" and "keep authorized
-drift," because Argo has no notion of authority.
+**What you give up** is self-heal's one unique service: reverting drift that *should not* be
+captured. That loss is inherent: one flag cannot both erase unauthorized drift and keep authorized
+drift, because Argo CD has no notion of authority.
 
 ## If you need "revert unauthorized drift" as well
 
@@ -218,13 +185,13 @@ forgotten.
 | PreSync hook (veto) | **No** | also aborts legitimate deploys; can't tell them apart |
 | self-heal timeout / backoff | **No** | throttles repeats; first drift reverted immediately |
 | `selfHeal: false` + push webhook | **Mostly** | nothing reverts drift, but every new commit, GitOps Reverser's own included, is synced over pending edits |
-| automated sync off + `spec.applier.applicationRef` | **Yes** | GitOps Reverser starts every sync, on a quiet branch, pinned to a checked commit |
+| automated sync off + an `ArgoCDTrigger` | **Yes** | GitOps Reverser starts every sync, on a quiet branch, pinned to a checked commit |
 | admission gate on Argo's writes | (recovers "revert unauthorized") | per-write authority decision; external to Argo |
 
 ## References
 
-- User-facing guidance: [`../../bi-directional.md`](../../bi-directional.md) and
-  [`../../argocd.md`](../../argocd.md)
-- E2E corner design: [`../e2e-bi-directional-corner.md`](../../spec/e2e-bi-directional-corner.md)
+- User-facing guidance: [`bi-directional.md`](../../bi-directional.md) and
+  [`bi-directional-argocd.md`](../../bi-directional-argocd.md)
+- E2E corner design: [`e2e-bi-directional-corner.md`](../../spec/e2e-bi-directional-corner.md)
 - Exercised behavior: [`../../../test/e2e/argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go)
 - Argo CD source (vendored): `external-sources/argo-cd` — cited inline by file:line.

@@ -31,7 +31,7 @@ running. It never was one.
 | --- | --- | --- | --- |
 | **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 6× (CI 4×, local 2×) | **SOLVED (§2).** A status write that loses an optimistic-lock race is discarded, the reconcile is told it succeeded, and nothing re-enqueues it — the winning write is status-only and every `For()` filters those |
 | **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 3× (CI twice, local once) | **Open**, narrowed to the roll-up's accept path; predicted to be the same defect as A, with a falsifier — see §3.5 |
-| C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified, and probably unrelated |
+| C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | **Moot:** the spec is gone, and the Argo CD corner runs with automated sync off |
 | D | Encryption-secret recreation spec times out | 4× in one day | **Ambient, pre-existing** — and now the dominant CI blocker; see §5.1 |
 
 **A green run is not evidence, and this page has been wrong twice for forgetting that.** Run
@@ -265,7 +265,7 @@ Six components in this chain logged what they REJECTED and said nothing about wh
 
 | Component | Before | Now |
 | --- | --- | --- |
-| the render-fidelity condition | a constant string naming nothing | names each pending scope and the revision it owes |
+| the render-fidelity condition | a constant string naming nothing | names each pending scope and the revision it is waiting for (`waiting for revision N`) |
 | `recordScope` revision mismatch | silent | recorded on the scope, surfaced in the condition |
 | `recordScope` `!found` guards | silent | logged, naming collection and revision |
 | zero-revision report | silent early return | logged as anomalous |
@@ -401,7 +401,7 @@ one behavioural fix (§4.9) is four lines.
 
 | # | Change | Commit |
 | --- | --- | --- |
-| 1 | The render-fidelity condition names its pending scopes and the revision each owes, instead of a constant string | `c87db68d` |
+| 1 | The render-fidelity condition names its pending scopes and the revision each is waiting for, instead of a constant string | `c87db68d` |
 | 2 | Deleted `explainNotRunning` / `notRunningHypothesis` / `cellNames` — ~70 lines aimed at the wrong subsystem — and lowered the supersession log | `17a57352` |
 | 3 | The resync drain starts even when the enqueue was dropped, so a queue-full reply is read by the drain the contract promises will read it | `fc04b15b` |
 | 4 | All four fidelity refusal branches name the collection, the revision and the gate's message | `32b75e02` |
@@ -442,7 +442,7 @@ The chain in §2.2 is instrumented at every hop, so a reproduction should be rea
 | --- | --- |
 | `status write lost a race` on the target, then a stale condition | A's mechanism, recurring — check the requeue that followed it |
 | `render scope result accepted` … `state:True`, condition still stale | the gate is fine; the failure is downstream in publication |
-| `a render scope result was not applied` | the gate refused a report — read `reportedRevision` against the owed revision |
+| `a render scope result was not applied` | the gate refused a report — read `reportedRevision` against the revision the scope is waiting for |
 | `stream carries no revision` | the plan pass and the gate disagree about the collection |
 | `a GitTarget reconcile request was dropped` | a load-bearing notification was crowded out |
 | `retention report accepted but published nothing` | a re-measurement produced the count already published — the bug is upstream of the roll-up |

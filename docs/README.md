@@ -27,10 +27,12 @@ If you only want the supported product docs, start with the files below.
 - [`sops-age-guide.md`](sops-age-guide.md): Secret encryption with SOPS + age
 - [`security-model.md`](security-model.md): controller access, trust boundaries, and the Git
   credentials Secret shape
-- [`rbac.md`](rbac.md): the two ClusterRoles, and how to stop the reverser enumerating Secrets
-- [`bi-directional.md`](bi-directional.md): safe shared-path and handoff patterns
-- [`flux.md`](flux.md): the complete Flux setup when GitOps Reverser decides when Flux applies
-- [`argocd.md`](argocd.md): the complete Argo CD setup when GitOps Reverser starts every sync
+- [`rbac.md`](rbac.md): the two ClusterRoles (plus the optional applier grants), and how to stop the
+  reverser enumerating Secrets
+- [`bi-directional.md`](bi-directional.md): when Flux or Argo CD applies a folder GitOps Reverser
+  writes, and why every other setup needs nothing
+- [`bi-directional-flux.md`](bi-directional-flux.md): the complete Flux setup for such a folder
+- [`bi-directional-argocd.md`](bi-directional-argocd.md): the complete Argo CD setup for such a folder
 - [`alternatives.md`](alternatives.md): nearby tools and when another approach fits better
 - [`UPGRADING.md`](UPGRADING.md): breaking changes and migration steps, newest first
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md): contributor workflow and validation commands

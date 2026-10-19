@@ -367,7 +367,7 @@ and only the reply was lost, so the cycle settles as published instead of replay
 
 ## 6. Retry and intake
 
-One retry deadline covers everything the worker still owes: 10 seconds, doubling to 5 minutes.
+One retry deadline covers all of the worker's pending writes: 10 seconds, doubling to 5 minutes.
 While a parent branch is missing, the deadline's attempt is a single advertisement probe;
 otherwise it materializes and pushes. The deadline records the failure it is waiting out and when
 the outage began. The worker publishes both, with the intake pause, as its publication report:
@@ -380,7 +380,7 @@ stateDiagram-v2
     Healthy --> RetryPending: an attempt failed<br/>scheduleRetry(cause)
     RetryPending --> RetryPending: new decisions wait<br/>(no connection spent);<br/>a resync is answered with the cause
     RetryPending --> Attempt: retry deadline fires
-    Attempt --> Healthy: published, nothing owed<br/>clearRetry(): intake reopens
+    Attempt --> Healthy: published, nothing pending<br/>clearRetry(): intake reopens
     Attempt --> RetryPending: failed again<br/>backoff doubles
 
     state RetryPending {
@@ -555,7 +555,7 @@ remains:
 
 ### High availability
 
-- **One process owns a branch.** There is no failover, no handoff of a worker's obligations, and
+- **One process owns a branch.** There is no failover, no handoff of a worker's pending writes, and
   no shared journal. Owner: HA plan; deferred.
 
 ## Where to read the code

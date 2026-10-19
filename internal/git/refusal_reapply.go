@@ -88,19 +88,20 @@ func (w *BranchWorker) refusalConsent(ctx context.Context, target itypes.Resourc
 	return gitTarget.UID, ConsentsToReapply(gitTarget)
 }
 
-// owedRefusal is one refusal its target's applier is owed a Refusal request for: what was refused,
-// for the logs, and the incarnation of the GitTarget that consented. A GitTarget deleted and
-// recreated under the same name is another incarnation, and inherits nothing owed to the first.
-type owedRefusal struct {
+// unsentRefusal is one refusal the worker decided to send its target's applier a Refusal request
+// for, not sent yet: what was refused, for the logs, and the incarnation of the GitTarget that
+// consented. A GitTarget deleted and recreated under the same name is another incarnation, and
+// inherits no unsent refusal of the first.
+type unsentRefusal struct {
 	detail string
 	uid    k8stypes.UID
 }
 
 // ConsentsToReapply reports whether a GitTarget, as it is now, asks for its applier to reapply on a
-// refusal. The worker asks before it owes a Refusal request and again before it sends one, and the
+// refusal. The worker asks before it decides a Refusal request and again before it sends one, and the
 // applier dispatcher asks before every attempt to deliver one.
 func ConsentsToReapply(gitTarget *v1alpha3.GitTarget) bool {
-	if gitTarget.EffectiveOnRefusal() != v1alpha3.RefusalActionReapply || gitTarget.Spec.Applier == nil {
+	if gitTarget.EffectiveOnRefusal() != v1alpha3.RefusalActionReapply || gitTarget.Spec.ApplyTriggerRef == nil {
 		return false
 	}
 	// A suspended target has stopped publishing the live edits a reapply would be weighed against.
@@ -131,8 +132,8 @@ func (w *BranchWorker) refusalRateLimited(target itypes.ResourceReference) (bool
 	return false, 0
 }
 
-// reapplyForRefusal is the loop-side half: it turns a reported refusal into a Refusal apply request
-// owed to the target's applier, sent once the branch is quiet (serviceAppliers).
+// reapplyForRefusal is the loop-side half: it turns a reported refusal into an unsent Refusal apply
+// request for the target's applier, sent once the branch is quiet (serviceAppliers).
 //
 // It runs on the event loop, after the refusal has already been reported, and it is deliberately
 // best-effort. A refusal is already surfaced as GitPathAccepted=False; failing to ask for a reapply
@@ -178,7 +179,7 @@ func (l *branchWorkerEventLoop) reapplyForRefusal(
 		return
 	}
 
-	l.oweReapply(key, owedRefusal{detail: detail, uid: uid}, observation)
+	l.addUnsentRefusal(key, unsentRefusal{detail: detail, uid: uid}, observation)
 }
 
 // refusalObservation digests what was refused: the objects the write would have produced, and the
@@ -263,7 +264,7 @@ func (w *BranchWorker) refusalAlreadyCovered(key refusalKey, observation string)
 	return w.coveredRefusal[newRefusalKey(key.target, key.collection)] == observation
 }
 
-// recordRefusalObservation remembers what the request just owed covers. An empty observation is
+// recordRefusalObservation remembers what the request just decided covers. An empty observation is
 // recorded too, though it covers nothing (refusalAlreadyCovered): the entry is also the record that
 // the refusal stands until it recovers (refusalStands).
 func (w *BranchWorker) recordRefusalObservation(key refusalKey, observation string) {
@@ -292,7 +293,7 @@ func (w *BranchWorker) recordRefusalObservation(key refusalKey, observation stri
 // Dropping the memory is what keeps the fence from becoming a permanent mute: a refused live edit
 // earns a request, the applier reverts it, and the same edit is made again — sanitized content
 // cannot tell the second from the first, so only the acceptance in between can. Cancelling the
-// queued request is the other half: an obligation whose object has since been accepted has nothing
+// queued request is the other half: a request whose object has since been accepted has nothing
 // left to ask for, and firing it anyway would move the branch for a refusal that no longer exists.
 func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference, collection itypes.CollectionKey) {
 	if target.Name == "" || target.Namespace == "" {
@@ -308,18 +309,18 @@ func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference
 			delete(l.refusalPending, key)
 		}
 	}
-	// An obligation already owed, waiting for a quiet branch, is cancelled the same way. Keyed by
+	// An unsent refusal, decided and waiting for a quiet branch, is cancelled the same way. Keyed by
 	// target alone it could not be told apart from a sibling collection's, so it outlived the
 	// recovery and asked for an apply for a refusal that no longer existed.
-	for key := range l.reapplyOwed {
+	for key := range l.unsentRefusals {
 		if recovered(key) {
-			delete(l.reapplyOwed, key)
+			delete(l.unsentRefusals, key)
 		}
 	}
 	l.rearmRefusalTimer()
 }
 
-// refusalStands reports whether a request was owed for this refusal and it has not recovered since.
+// refusalStands reports whether a request was decided for this refusal and it has not recovered since.
 func (w *BranchWorker) refusalStands(key refusalKey) bool {
 	w.refusalMu.Lock()
 	defer w.refusalMu.Unlock()
@@ -390,7 +391,7 @@ func (l *branchWorkerEventLoop) rearmRefusalTimer() {
 	l.refusalTimer = time.NewTimer(max(time.Until(earliest), 0))
 }
 
-// flushPendingReapply owes every coalesced request that has come due.
+// flushPendingReapply decides every coalesced request that has come due, as an unsent refusal.
 //
 // Consent is re-checked per entry rather than trusted from when the refusal arrived, because a
 // minute is long enough for a target to have been suspended or set back to Ignore, and acting on
@@ -409,7 +410,7 @@ func (l *branchWorkerEventLoop) flushPendingReapply() {
 		if !consents {
 			continue
 		}
-		// Re-checked here as well as on arrival: another request for this collection may have been owed
+		// Re-checked here as well as on arrival: another request for this collection may have been decided
 		// while this entry waited, and if it covered the same observation this one has nothing
 		// left to ask for. An entry whose collection RECOVERED in the meantime is not here at all —
 		// refusalRecovered removed it.
@@ -422,13 +423,13 @@ func (l *branchWorkerEventLoop) flushPendingReapply() {
 			l.armTrailingReapply(entry.key, entry.detail, entry.observation, wait)
 			continue
 		}
-		l.oweReapply(entry.key, owedRefusal{detail: entry.detail, uid: uid}, entry.observation)
+		l.addUnsentRefusal(entry.key, unsentRefusal{detail: entry.detail, uid: uid}, entry.observation)
 	}
 	l.rearmRefusalTimer()
 }
 
 // sortedRefusalKeys makes the flush order deterministic, so a test that queues two targets sees
-// the same one owed first every run.
+// the same one decided first every run.
 func sortedRefusalKeys(pending map[refusalKey]pendingRefusalReapply) []refusalKey {
 	keys := make([]refusalKey, 0, len(pending))
 	for key := range pending {
@@ -438,19 +439,20 @@ func sortedRefusalKeys(pending map[refusalKey]pendingRefusalReapply) []refusalKe
 	return keys
 }
 
-// oweReapply records that the target's applier is owed a Refusal request, which serviceAppliers
-// sends once the branch is quiet. Several refusals for one target before then share one request.
-func (l *branchWorkerEventLoop) oweReapply(key refusalKey, refusal owedRefusal, observation string) {
-	// Recorded as covered now, when the request is owed, rather than when it is delivered: the
+// addUnsentRefusal records that the worker decided a Refusal request for the target's applier,
+// which serviceAppliers sends once the branch is quiet. Several refusals for one target before then
+// share one request.
+func (l *branchWorkerEventLoop) addUnsentRefusal(key refusalKey, refusal unsentRefusal, observation string) {
+	// Recorded as covered now, when the request is decided, rather than when it is delivered: the
 	// request is the worker's decision, and a recheck of the same refusal while the branch is still
-	// busy must not owe a second one. An attempt that does not deliver gives the refusal back while
+	// busy must not decide a second one. An attempt that does not deliver gives the refusal back while
 	// it stands (restoreAttempt).
 	l.w.recordRefusalObservation(key, observation)
-	if l.reapplyOwed == nil {
-		l.reapplyOwed = map[refusalKey]owedRefusal{}
+	if l.unsentRefusals == nil {
+		l.unsentRefusals = map[refusalKey]unsentRefusal{}
 	}
-	l.reapplyOwed[key] = refusal
-	l.w.Log.Info("Refused edit owes its applier a reapply, sent once the branch is quiet",
+	l.unsentRefusals[key] = refusal
+	l.w.Log.Info("Refused edit: asking its applier to reapply once the branch is quiet",
 		"gitTarget", key.target.String(), "branch", l.w.Branch, "refused", refusal.detail)
 }
 

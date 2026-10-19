@@ -30,8 +30,9 @@ The first HA release uses active/passive ownership:
 
 The baseline durability contract is eventual state convergence under the configured write and
 prune policies. A missed DELETE cannot be inferred from a snapshot under `prune.mode: onEvent`;
-an `always` target permits scoped absence-based pruning. The proposed extension preserves accepted
-save obligations, including window membership, attribution, messages, deadlines, and outcomes.
+an `always` target permits scoped absence-based pruning. The proposed extension preserves what an
+accepted save still waits for, including window membership, attribution, messages, deadlines, and
+outcomes.
 The event model defines those execution semantics; this plan owns how their records survive failure.
 
 Before implementing the extension, agree on retention, target replacement, and the response to
@@ -194,11 +195,11 @@ Separate three durable milestones:
 | Milestone | What it proves |
 |---|---|
 | Accepted | Input is recoverable; its source cursor may advance |
-| Processed | Decisions and remaining obligations are recoverable |
+| Processed | Decisions and the work still pending are recoverable |
 | Completed | Publication or an explicit terminal outcome is proved |
 
-Persist the consumed input position, resulting decisions, and new effect obligations together.
-Otherwise a crash can consume a command but lose its push, or create an obligation twice.
+Persist the consumed input position, resulting decisions, and the effects still to run together.
+Otherwise a crash can consume a command but lose its push, or schedule the same effect twice.
 Stable effect identities permit redelivery. A durable outbox holds external operations and
 status updates still requiring execution; writing it does not prove those operations succeeded.
 
@@ -287,13 +288,13 @@ acknowledge the journal or prove a request's historical execution.
 ## Surviving hours without Git
 
 Use the same pause/recover/resume behavior as the in-memory worker, with durable admission as the
-acceptance boundary. Storage changes how long accepted obligations survive and how much backlog
-fits; it does not change which outcomes the worker owes.
+acceptance boundary. Storage changes how long accepted work survives and how much backlog
+fits; it does not change which outcomes the worker must reach.
 
 | Boundary | During an outage | At capacity | After recovery |
 |---|---|---|---|
 | Current in-memory path | Retain accepted writes while the process lives | Refuse new admission; explicit producer pause is planned | Replay retained decisions, then resume watches |
-| Future durable journal | Persist accepted inputs and workflow decisions; page the active working set | Stop durable admission before eviction or storage failure | Recover accepted obligations, then catch up sources |
+| Future durable journal | Persist accepted inputs and workflow decisions; page the active working set | Stop durable admission before eviction or storage failure | Recover accepted pending work, then catch up sources |
 
 If Git is unavailable but the durable store has capacity, producers can keep appending without
 loading that backlog into the worker's RAM. When the store fills or cannot guarantee a durable
@@ -313,7 +314,7 @@ of every later Kubernetes mutation: a prolonged ingestion stop can outlast watch
 Retained accepted work drains in branch order before a fresh source snapshot can supersede current
 state. An expired watch cursor records a continuity gap; the complete scoped snapshot repairs only
 what the current write/prune policy permits. Missed intermediate versions and expired delete
-events are not recreated. An accepted save keeps its original obligation through this catch-up;
+events are not recreated. An accepted save keeps its original pending write through this catch-up;
 an unaccepted save has no durable receipt. State these limits in status and operator documentation.
 
 Give recovery and lifecycle work a way to run under saturation, with its causal ordering intact.
@@ -322,7 +323,7 @@ in-memory working set independently of journal size; keeping every persisted pay
 `pendingWrites` would preserve the current memory problem.
 
 Snapshot compaction must respect save boundaries. Replacing a request-bearing batch with the
-latest object state loses its message, attribution, and publication obligation. Define explicitly
+latest object state loses its message, attribution, and the publication it still waits for. Define explicitly
 which ordinary writes can coalesce, and preserve references needed by retained windows.
 
 The store's persistence, replication, retention, and eviction settings are part of the guarantee.
@@ -361,7 +362,7 @@ Add a journal package beside the existing Redis store:
 
 - publish idempotent records with explicit admission receipts;
 - atomically couple watch cursor advancement to durable admission;
-- persist worker decisions and effect obligations with their processing position;
+- persist worker decisions and the effects still to run with their processing position;
 - route live observations, snapshots, saves, withdrawals, deadlines, and results through the
   recoverable boundary;
 - encode and encrypt sensitive payloads, enforce quotas, and page retained payloads to bound memory;
@@ -495,7 +496,7 @@ scope has completed its authoritative replay.
 - No completed delivery is acknowledged without recoverable publication evidence or an explicit
   terminal outcome; pending status projection and required deduplication receipts remain durable.
 - A stale or partitioned owner cannot overwrite a newer Git ref.
-- Replays and queue claims preserve accepted save obligations. Post-push-before-ack crashes use
+- Replays and queue claims preserve accepted saves until they are answered. Post-push-before-ack crashes use
   the publication protocol; missing evidence produces explicit uncertainty rather than an
   unsupported success or duplicate-publication guarantee.
 - Sensitive resource content is never stored as plaintext in the durable queue.

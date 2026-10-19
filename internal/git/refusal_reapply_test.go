@@ -24,6 +24,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -48,14 +49,17 @@ func refusalTouchWorker(t *testing.T, spec configv1alpha3.GitTargetSpec) *Branch
 	if spec.Path == "" {
 		spec.Path = "apps"
 	}
-	if spec.OnRefusal == configv1alpha3.RefusalActionReapply && spec.Applier == nil {
-		spec.Applier = testApplier("editing")
+	if spec.OnRefusal == configv1alpha3.RefusalActionReapply && spec.ApplyTriggerRef == nil {
+		spec.ApplyTriggerRef = testApplier("editing")
 	}
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "editing", Namespace: "team-a", UID: editingUID},
 		Spec:       spec,
 	}
-	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).Build()
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(testTriggersFor([]client.Object{target})...).
+		Build()
 
 	w := newMetricsTestWorker()
 	// A GitTarget names its GitProvider in its own namespace, which is where a worker looks for
@@ -180,7 +184,7 @@ func TestRefusalReapply_OwedRequestWaitsForAQuietBranch(t *testing.T) {
 	t.Cleanup(loop.stopTimers)
 
 	loop.openWindow = &openWindow{}
-	loop.oweReapply(editingKey(), owedRefusal{detail: "a base-owned field", uid: editingUID}, "observation-1")
+	loop.addUnsentRefusal(editingKey(), unsentRefusal{detail: "a base-owned field", uid: editingUID}, "observation-1")
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "nothing is sent while a commit window is open")
 
@@ -189,10 +193,10 @@ func TestRefusalReapply_OwedRequestWaitsForAQuietBranch(t *testing.T) {
 	requests := requester.taken()
 	require.Len(t, requests, 1)
 	assert.Equal(t, configv1alpha3.ApplyReasonRefusal, requests[0].Reason)
-	assert.Equal(t, []itypes.ResourceReference{editingRef()}, requests[0].TargetRefs(),
+	assert.Equal(t, []itypes.ResourceReference{editingRef()}, targetRefs(requests[0]),
 		"only the refusing target's applier is asked")
 	assert.True(t, w.refusalAlreadyCovered(editingKey(), "observation-1"),
-		"the observation is covered once the request is owed")
+		"the observation is covered once the request is decided")
 }
 
 // gitOut runs git against a repository on disk and returns its trimmed output.
@@ -403,9 +407,9 @@ func TestRefusalReapply_OneTargetDoesNotDropAnothersPendingRequest(t *testing.T)
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 			Spec: configv1alpha3.GitTargetSpec{
 				Branch: "main", Path: "apps/" + name,
-				OnRefusal: configv1alpha3.RefusalActionReapply,
-				Applier:   testApplier(name),
-				Suspend:   suspend,
+				OnRefusal:       configv1alpha3.RefusalActionReapply,
+				ApplyTriggerRef: testApplier(name),
+				Suspend:         suspend,
 			},
 		}
 		target.Spec.GitProviderRef.Name = "test-provider"
@@ -413,7 +417,7 @@ func TestRefusalReapply_OneTargetDoesNotDropAnothersPendingRequest(t *testing.T)
 	}
 	// B is suspended, so its delayed request must be declined when the timer fires. A is not.
 	client := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(newTarget("alpha", false), newTarget("bravo", true)).Build()
+		WithObjects(testTriggersFor([]client.Object{newTarget("alpha", false), newTarget("bravo", true)})...).Build()
 
 	w := newMetricsTestWorker()
 	w.Client = client
@@ -440,7 +444,7 @@ func TestRefusalReapply_OneTargetDoesNotDropAnothersPendingRequest(t *testing.T)
 	assert.Empty(t, loop.refusalPending, "every due entry is consumed exactly once")
 	limitedAlpha, _ := w.refusalRateLimited(alpha)
 	assert.True(t, limitedAlpha,
-		"alpha's request must have been owed, consuming its rate-limit window")
+		"alpha's request must have been decided, consuming its rate-limit window")
 	limitedBravo, _ := w.refusalRateLimited(bravo)
 	assert.False(t, limitedBravo,
 		"bravo's was declined for lack of consent, so it must not have consumed a window")
@@ -469,9 +473,83 @@ func TestRefusalReapply_TheTimerTracksTheEarliestDeadline(t *testing.T) {
 	}
 }
 
-// testApplier is a GitTarget applier naming a Kustomization of the given name.
-func testApplier(name string) *configv1alpha3.GitTargetApplier {
-	return &configv1alpha3.GitTargetApplier{KustomizationRef: &meta.NamespacedObjectReference{Name: name}}
+// testApplier is a GitTarget's reference to the FluxTrigger of the given name. testTriggersFor
+// creates the trigger, holding a Kustomization of the same name.
+func testApplier(name string) *configv1alpha3.ApplyTriggerReference {
+	return &configv1alpha3.ApplyTriggerReference{Kind: configv1alpha3.ApplyTriggerKindFlux, Name: name}
+}
+
+// fluxTrigger is a FluxTrigger in team-a holding the Kustomization of its own name, in the default
+// cluster.
+func fluxTrigger(name string, mutate ...func(*configv1alpha3.FluxTrigger)) *configv1alpha3.FluxTrigger {
+	trigger := &configv1alpha3.FluxTrigger{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
+		Spec: configv1alpha3.FluxTriggerSpec{
+			ClusterProviderRef: &meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
+			KustomizationRef:   meta.NamespacedObjectReference{Name: name},
+		},
+	}
+	for _, m := range mutate {
+		m(trigger)
+	}
+	return trigger
+}
+
+// quietFor sets a FluxTrigger's quietPeriod.
+func quietFor(d time.Duration) func(*configv1alpha3.FluxTrigger) {
+	return func(t *configv1alpha3.FluxTrigger) { t.Spec.QuietPeriod = &metav1.Duration{Duration: d} }
+}
+
+// testTriggersFor adds to objects the trigger each GitTarget among them names that objects does not
+// hold already: a FluxTrigger as fluxTrigger builds it, or an ArgoCDTrigger holding the Application
+// argocd/<name>, each in the GitTarget's namespace.
+func testTriggersFor(objects []client.Object) []client.Object {
+	held := map[string]bool{}
+	for _, obj := range objects {
+		if trigger, ok := obj.(configv1alpha3.ApplyTrigger); ok {
+			held[trigger.TriggerKind()+"/"+obj.GetNamespace()+"/"+obj.GetName()] = true
+		}
+	}
+	out := append([]client.Object(nil), objects...)
+	for _, obj := range objects {
+		target, ok := obj.(*configv1alpha3.GitTarget)
+		if !ok || target.Spec.ApplyTriggerRef == nil {
+			continue
+		}
+		ref := target.Spec.ApplyTriggerRef
+		key := ref.Kind + "/" + target.Namespace + "/" + ref.Name
+		if held[key] {
+			continue
+		}
+		held[key] = true
+		out = append(out, testTrigger(target.Namespace, ref))
+	}
+	return out
+}
+
+// testTrigger is the trigger testTriggersFor creates for ref, in namespace.
+func testTrigger(namespace string, ref *configv1alpha3.ApplyTriggerReference) client.Object {
+	if ref.Kind == configv1alpha3.ApplyTriggerKindArgoCD {
+		return &configv1alpha3.ArgoCDTrigger{
+			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: namespace},
+			Spec: configv1alpha3.ArgoCDTriggerSpec{
+				ClusterProviderRef: &meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
+				ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: ref.Name},
+			},
+		}
+	}
+	trigger := fluxTrigger(ref.Name)
+	trigger.Namespace = namespace
+	return trigger
+}
+
+// createTestTrigger creates, through c, the trigger target names, unless it exists.
+func createTestTrigger(t *testing.T, c client.Client, target *configv1alpha3.GitTarget) {
+	t.Helper()
+	err := c.Create(context.Background(), testTrigger(target.Namespace, target.Spec.ApplyTriggerRef))
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		require.NoError(t, err)
+	}
 }
 
 // recordingRequester records every apply request a worker sends, and reports each one at once with
@@ -480,10 +558,18 @@ func testApplier(name string) *configv1alpha3.GitTargetApplier {
 type recordingRequester struct {
 	mu       sync.Mutex
 	requests []ApplyRequest
+	// prefetches are the PrefetchSource requests, in order.
+	prefetches []PrefetchRequest
 	// counted keeps the reasons of the requests taken, so refusals still sees them.
 	counted map[configv1alpha3.ApplyReason]int
 	outcome ApplyOutcome
 	manual  bool
+}
+
+func (r *recordingRequester) PrefetchSource(req PrefetchRequest) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prefetches = append(r.prefetches, req)
 }
 
 func (r *recordingRequester) RequestApply(req ApplyRequest) {
@@ -495,7 +581,7 @@ func (r *recordingRequester) RequestApply(req ApplyRequest) {
 		return
 	}
 	if outcome == "" {
-		outcome = ApplyDelivered
+		outcome = ApplySucceeded
 	}
 	req.Report(ApplyResult{ID: req.ID, Outcome: outcome})
 }

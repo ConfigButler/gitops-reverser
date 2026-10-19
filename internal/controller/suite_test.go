@@ -127,6 +127,15 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	// No ApplierClients: a trigger's applier is never read here, so Configured stays Unknown
+	// (NotChecked), which is enough to drive the watches between a trigger and its GitTargets.
+	for _, kind := range []string{
+		configbutleraiv1alpha3.ApplyTriggerKindFlux, configbutleraiv1alpha3.ApplyTriggerKindArgoCD,
+	} {
+		err = (&ApplyTriggerReconciler{Client: mgr.GetClient(), Kind: kind}).SetupWithManager(mgr)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
 	err = (&WatchRuleReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),

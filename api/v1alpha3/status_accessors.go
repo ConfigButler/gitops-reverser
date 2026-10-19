@@ -54,3 +54,19 @@ func (r *ClusterWatchRule) SetObservedGeneration(generation int64) {
 
 // StatusConditions returns the condition set to write through.
 func (r *ClusterWatchRule) StatusConditions() *[]metav1.Condition { return &r.Status.Conditions }
+
+// SetObservedGeneration records the generation this object's status describes.
+func (t *FluxTrigger) SetObservedGeneration(generation int64) {
+	t.Status.ObservedGeneration = generation
+}
+
+// StatusConditions returns the condition set to write through.
+func (t *FluxTrigger) StatusConditions() *[]metav1.Condition { return &t.Status.Conditions }
+
+// SetObservedGeneration records the generation this object's status describes.
+func (t *ArgoCDTrigger) SetObservedGeneration(generation int64) {
+	t.Status.ObservedGeneration = generation
+}
+
+// StatusConditions returns the condition set to write through.
+func (t *ArgoCDTrigger) StatusConditions() *[]metav1.Condition { return &t.Status.Conditions }

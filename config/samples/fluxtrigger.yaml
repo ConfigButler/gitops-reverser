@@ -1,0 +1,20 @@
+# A FluxTrigger holds the Flux Kustomization that applies example-target's folder. Name it from the
+# GitTarget with spec.applyTriggerRef: {kind: FluxTrigger, name: example-trigger}. See
+# docs/bi-directional-flux.md.
+apiVersion: configbutler.ai/v1alpha3
+kind: FluxTrigger
+metadata:
+  name: example-trigger
+  namespace: default
+spec:
+  # The cluster the Kustomization is in; "default" is the operator's own.
+  clusterProviderRef:
+    name: default
+  # In another namespace than the trigger's, so the ClusterProvider must set
+  # allowCrossNamespace.appliers: true, or the trigger reports ApplierNamespaceNotAllowed.
+  kustomizationRef:
+    namespace: flux-system
+    name: example-apps
+  # How long the branch stays quiet after GitOps Reverser's own pushes before the Kustomization is
+  # asked to catch up with them.
+  quietPeriod: 30s

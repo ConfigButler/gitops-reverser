@@ -7,42 +7,79 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
-## `onRefusal: PushEmptyCommit` is now `onRefusal: Reapply`, and needs `spec.applier`
+## `allowAnySourceNamespace` is gone; `allowCrossNamespace.sources` replaces it
+
+**Breaking.** `ClusterProvider.spec.allowAnySourceNamespace` is no longer read.
+`spec.allowCrossNamespace.sources` takes its place, beside `spec.allowCrossNamespace.appliers` for
+apply triggers. A cross-namespace `WatchRule` (a `rules[].sourceNamespace` other than its own
+namespace, `"*"` included) that relied on the old field stops mirroring and reports
+`SourceNamespaceAuthorized=False` (`SourceNamespaceNotAllowed`), and the message names
+`allowCrossNamespace.sources`. Set it after the upgrade, on each provider that set the old field:
+
+```yaml
+spec:
+  allowCrossNamespace:
+    sources: true
+  # allowAnySourceNamespace: true   <- remove this line
+```
+
+For the chart-rendered `default` provider, set `clusterProvider.default.allowCrossNamespace.sources:
+true`. A provider that still stores `allowAnySourceNamespace: true` is read as if the line were not
+there, and any change to its `spec` is refused ("allowAnySourceNamespace was removed; set
+allowCrossNamespace.sources") until the line is removed or set to `false`. `false`, which the old
+default stored on every provider, is accepted.
+
+## `onRefusal: PushEmptyCommit` is now `onRefusal: Reapply`, and needs an apply trigger
 
 **Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
 GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
-`Reapply` it asks the target's applier, the Flux `Kustomization` named in the new
-`spec.applier.kustomizationRef` or the Argo CD `Application` named in `spec.applier.applicationRef`,
-to apply the current tip once the branch holds no open commit window and no pending writes. Only
-that applier is asked, rather than every applier watching the branch, though a `GitRepository` that
-has to fetch the tip still wakes every `Kustomization` that reads it. An allowed edit still in a
-commit window is published before the apply instead of being reverted with the refused one. The API
-rejects `Reapply` without `spec.applier`.
+`Reapply` it asks the target's applier to apply the current tip once the branch holds no open
+commit window and no pending writes. The applier is the Flux `Kustomization` a `FluxTrigger` holds,
+or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget` names the trigger in the
+new `spec.applyTriggerRef`. Only that applier applies, rather than every applier watching the
+branch; a `GitRepository` that has to fetch the tip wakes only the consumers no trigger holds. An
+allowed edit still in a commit window is published before the apply instead of being
+reverted with the refused one. The API rejects `Reapply` without `spec.applyTriggerRef`.
 
-A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`, and any update to it is
-rejected until the field changes. The old CRD rejects `Reapply`, so move in this order:
+A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`. The new CRD no longer
+lists the value: an API server that ratchets CRD validation (Kubernetes 1.30 and later) still
+accepts an update that leaves it in place, and an older one rejects every write to the target but a
+status update until the field changes. The old CRD rejects `Reapply`, so move in this order:
 
 1. Before upgrading, set `onRefusal: Ignore` on those targets.
 2. Upgrade the CRDs, the controller and its permissions.
-3. Set `spec.applier` on each target and wait for `ApplierConfigured=True`.
+3. Create a `FluxTrigger` or `ArgoCDTrigger` for each applier, name it in each target's
+   `spec.applyTriggerRef`, and wait for `ApplyTriggerReady=True`. A trigger whose applier is in
+   another namespace than its own, such as `flux-system` or `argocd`, needs
+   `allowCrossNamespace.appliers: true` on its `ClusterProvider` (Helm:
+   `clusterProvider.default.allowCrossNamespace.appliers`), or it reports
+   `ApplierNamespaceNotAllowed`.
 4. Set `onRefusal: Reapply` where you want it.
 
-See [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
+See [who applies this folder](configuration.md#who-applies-this-folder-specapplytriggerref) and
+[reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
 
-`spec.applier` also changes what else applies the folder: GitOps Reverser asks the Kustomization to
-apply when somebody else pushes to the branch, and to catch up with its own pushes once the branch
-has been quiet for `spec.applier.quietPeriod`. Lengthen the `GitRepository` and `Kustomization`
-intervals and remove any Git-host webhook into a Flux `Receiver` for the repository, as the
-[bi-directional guide](bi-directional.md#configure-flux) describes, or Flux keeps applying on its own
-schedule as well. The operator needs `get` and `patch` on `kustomizations` and `gitrepositories`,
-and `create` on `selfsubjectaccessreviews`, in the source cluster: Helm `applierAccess.flux: true`
-grants them for the operator's own cluster.
+A trigger also changes what else applies the folder. A `FluxTrigger` holds its `Kustomization`
+suspended, so Flux applies it only when GitOps Reverser resumes it: when somebody else pushes to the
+branch, after a refusal or a reverted edit, and to catch up with its own pushes, or with the branch
+once a `GitTarget` first names the trigger, after the branch has been quiet for the trigger's
+`quietPeriod`. `flux get ks` shows it `Suspended`, and while the
+operator is down it waits suspended: a graceful stop suspends one it had resumed, and after a crash
+the next process does. Remove `spec.suspend` from whatever applies the
+`Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
+webhook into a Flux `Receiver` for the repository, as [the Flux guide](bi-directional-flux.md)
+describes. A trigger acts only while an eligible `GitTarget` names it, so create the two in any
+order: until one names it, it is `Ready` (`NotReferenced`) and holds nothing. Deleting the trigger,
+or the last `GitTarget` naming it, hands the `Kustomization` back to Flux. The operator needs `get`,
+`list` and `patch` on `kustomizations`, `list` on `helmreleases` and `helmcharts`, `get` and `patch`
+on `gitrepositories`, and `create` on `selfsubjectaccessreviews`, in the trigger's cluster: Helm
+`applierAccess.flux: true` grants them for the operator's own cluster.
 
 For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its automated sync off
-(`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before naming it; one with automated
-sync on reports `ApplierConfigured=False` (`AutomatedSyncEnabled`) and is never synced. The operator
-needs `get` and `update` on `applications`: Helm `applierAccess.argocd: true`. See
-[Using GitOps Reverser with Argo CD](argocd.md).
+(`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before its trigger holds it; one with
+automated sync on reports `Configured=False` (`AutomatedSyncEnabled`) on the trigger and is never
+synced. The operator needs `get` and `update` on `applications`: Helm `applierAccess.argocd: true`.
+See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
 
 ## `git_queue_drops_total` is now `git_queue_refusals_total`
 

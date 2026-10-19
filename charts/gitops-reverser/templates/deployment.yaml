@@ -109,8 +109,8 @@ spec:
             - --branch-buffer-max-size={{ .Values.controllerManager.branchBufferMaxSize }}
             - --git-refresh-interval={{ .Values.git.refreshInterval }}
             - --commit-request-ttl={{ .Values.controllerManager.commitRequestTTL }}
-            {{- if include "gitops-reverser.receiverEnabled" . }}
-            - {{ printf "--receiver-bind-address=%s" (.Values.receiver.bindAddress | toString | trim) | quote }}
+            {{- if .Values.servers.receiver.enabled }}
+            - --receiver-bind-address={{ .Values.servers.receiver.bindAddress }}
             {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
@@ -138,9 +138,9 @@ spec:
               containerPort: {{ .Values.servers.admission.port }}
               protocol: TCP
             {{- end }}
-            {{- if include "gitops-reverser.receiverEnabled" . }}
+            {{- if .Values.servers.receiver.enabled }}
             - name: receiver
-              containerPort: {{ include "gitops-reverser.receiverPort" . }}
+              containerPort: {{ .Values.servers.receiver.port }}
               protocol: TCP
             {{- end }}
           env:

@@ -476,7 +476,7 @@ exists to avoid — but it is scoped to ADO, and it is provably enough for Flux'
 [the capability matrix](#the-capability-matrix), `PushAtomic` speaks `receive-pack`, which has no
 `multi_ack`, and the two guards that make it atomic live in the advertisement of that session and in
 the server-side compare-and-swap. A clone-fresh read path changes what fills the object store, not
-how we write. The only obligations it inherits are the ones
+how we write. The only requirements it inherits are the ones
 [the shallow-store section](#the-one-real-interaction-shallow-object-stores) names: leave `rootHash`
 present as the tip, and leave `HEAD` on the working branch — which is what the post-fetch branch
 setup does today anyway, since a fresh clone lands `HEAD` on the remote default branch.

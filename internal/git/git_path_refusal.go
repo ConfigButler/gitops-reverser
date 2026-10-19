@@ -10,10 +10,18 @@ import (
 )
 
 func (w *BranchWorker) normalWritesAllowed(targetName, targetNamespace string) bool {
+	_, closed := w.renderFidelityClosed(targetName, targetNamespace)
+	return !closed
+}
+
+// renderFidelityClosed reports whether the render-fidelity gate closes a target's normal writes,
+// and the gate's status for the target when it does: the status says which scopes it waits for.
+func (w *BranchWorker) renderFidelityClosed(targetName, targetNamespace string) (RenderFidelityStatus, bool) {
 	if w.renderFidelityGate == nil || targetName == "" || targetNamespace == "" {
-		return true
+		return RenderFidelityStatus{}, false
 	}
-	return w.renderFidelityGate.AllowsWrites(itypes.NewResourceReference(targetName, targetNamespace))
+	status := w.renderFidelityGate.Status(itypes.NewResourceReference(targetName, targetNamespace))
+	return status, status.State != RenderFidelityTrue
 }
 
 // PathRefusalReporter surfaces a refused write plan to the layer that owns GitTarget

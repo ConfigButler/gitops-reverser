@@ -141,20 +141,31 @@ spec:
                     x-kubernetes-map-type: atomic
                 type: object
               allowAnySourceNamespace:
-                default: false
                 description: |-
-                  AllowAnySourceNamespace delegates SOURCE-namespace selection to the GitTargets this provider
-                  admits. While false (the default) a WatchRule mirroring through this provider may watch only
-                  its OWN namespace.
-
-                  It grants no access by itself: the source credential's own RBAC remains the hard maximum, and
-                  a request it permits still fails 403 if the credential cannot read that namespace. What it
-                  delegates is the AUTHORITY to choose, so set it only when the owners of admitted GitTargets
-                  are trusted to pick a subset of what that credential may read. Every cross-namespace request
-                  needs it, including a rules[].sourceNamespace of "*", which reaches every namespace the
-                  credential can read. It does not apply to ClusterWatchRule, which selects no namespaces at
-                  all.
+                  RemovedAllowAnySourceNamespace is the removed spelling of allowCrossNamespace.sources. It is
+                  never read; setting it to true is refused.
                 type: boolean
+              allowCrossNamespace:
+                description: |-
+                  AllowCrossNamespace grants what a namespace this provider admits may reach outside itself,
+                  through this provider's credential. Omitted, it may reach nothing outside itself.
+                properties:
+                  appliers:
+                    description: |-
+                      Appliers lets a FluxTrigger or ArgoCDTrigger reaching its applier through this provider name a
+                      Kustomization or Application in another namespace than its own. False (the default): only
+                      the trigger's own namespace, which in a remote cluster is the namespace of the same name; a
+                      trigger naming another is Configured=False (ApplierNamespaceNotAllowed).
+                    type: boolean
+                  sources:
+                    description: |-
+                      Sources lets a WatchRule mirroring through this provider watch namespaces other than its own,
+                      including a rules[].sourceNamespace of "*", which reaches every namespace the credential can
+                      read. False (the default): a WatchRule watches only its own namespace. It grants no access by
+                      itself: the source credential's RBAC remains the hard maximum. It does not apply to
+                      ClusterWatchRule, which selects no namespaces at all.
+                    type: boolean
+                type: object
               attribution:
                 description: |-
                   Attribution groups this cluster's author-attribution settings. The block is spelled
@@ -305,6 +316,8 @@ spec:
                 > 0'
             - message: spec.qps and spec.burst moved to spec.client.qps and spec.client.burst
               rule: '!has(self.qps) && !has(self.burst)'
+            - message: allowAnySourceNamespace was removed; set allowCrossNamespace.sources
+              rule: '!has(self.allowAnySourceNamespace) || !self.allowAnySourceNamespace'
           status:
             description: status defines the observed state of ClusterProvider.
             properties:

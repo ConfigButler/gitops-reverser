@@ -509,7 +509,7 @@ semantics rather than reinventing glob handling.
   extra states. If a real need ever appears the ratchet still permits adding one later, but it is explicitly
   out of scope here.
 - **D-foreign-5 — `WrapAsConfigMap` deferred — NOTED for later.** Out of scope for this doc. The only thing
-  this design owes it is to *keep the route open*, which refusing foreign content now does: a future
+  this design has to do for it is to *keep the route open*, which refusing foreign content now does: a future
   opt-in could wrap matched foreign files into a ConfigMap without a breaking change. It gets its own design
   (and its own narrow field) when the time comes.
 - **D-foreign-6 — shadowing is closed by a write-time invariant, not static analysis — DECIDED (§4.3).**

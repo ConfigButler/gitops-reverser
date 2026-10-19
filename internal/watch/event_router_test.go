@@ -107,6 +107,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 		nil,
 		"12",
 		false,
+		0,
 	)
 
 	require.Error(t, err)
@@ -140,6 +141,7 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 		nil,
 		"12",
 		false,
+		0,
 	)
 
 	require.Error(t, err)
@@ -515,7 +517,7 @@ func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T
 //
 // enqueueReplayResync used to return on !enqueued BEFORE starting the drain, leaving that reply in
 // a buffered channel nobody read. With it went the only calls that mark acceptance, render
-// fidelity and retention for the collection, so the render-fidelity scope owed a report under a revision
+// fidelity and retention for the collection, so the render-fidelity scope waited for a report at a revision
 // no running stream would ever report again — which pins the GitTarget at Ready=False and, through
 // GitTargetReady, every WatchRule pointing at it.
 //

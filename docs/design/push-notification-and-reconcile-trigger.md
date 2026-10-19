@@ -1,9 +1,10 @@
 # Push notification and the apply trigger
 
-> **finished**: superseded on 2026-10-16 by [`../design/apply-trigger.md`](../design/apply-trigger.md),
-> which is the current design and what is still open. This page is the record of how the apply
-> trigger was decided. Its Part 1 (how the branch worker reads the remote) is still cited from the
-> Git code by its section numbers, which predate the last restructuring of this page.
+> **built, and superseded** on 2026-10-16 by [`apply-trigger.md`](apply-trigger.md), which is the
+> current design and what is still open. This page is the record of how the apply trigger was
+> decided. It stays in `design/` because its Part 1 (how the branch worker reads the remote) is
+> still cited from the Git code by its section numbers, which predate the last restructuring of
+> this page.
 
 GitOps Reverser and the applier (Flux or Argo CD) share a branch. This page is how they talk:
 how GitOps Reverser learns that somebody else pushed, and how it decides when the applier applies.
@@ -364,7 +365,7 @@ URL normalization is the receiver's (§4.1): case-insensitive host and path, no 
 ### 4.1 The receiver
 
 `GitProvider.spec.receiver` (`type`, `secretRef`), named after Flux's `Receiver`, served on its own
-listener (`--receiver-bind-address`, Helm `receiver.bindAddress`, off by default), on the elected
+listener (`--receiver-bind-address`, Helm `servers.receiver`, off by default), on the elected
 replica only. It cannot share
 the audit listener, which requires a client certificate signed by the audit CA that no Git host can
 present.
@@ -439,7 +440,7 @@ Both are in [interpreting-metrics.md](../interpreting-metrics.md#apply-requests-
 
 ### 4.4 Chart
 
-- `receiver.bindAddress` and a `gitops-reverser-receiver` Service when it is set. Exposing it is the
+- `servers.receiver` and a `gitops-reverser-receiver` Service when it is enabled. Exposing it is the
   installer's Ingress or Gateway route.
 - RBAC for the operator's own cluster: `get` and `patch` on `kustomize.toolkit.fluxcd.io`
   `kustomizations` and `source.toolkit.fluxcd.io` `gitrepositories`; `get` and `update` on

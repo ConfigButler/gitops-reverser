@@ -37,6 +37,11 @@ const (
 	// admitted by its ClusterProvider's spec.accessFrom — including the case where that
 	// policy carries a selector the apiserver accepted but that does not convert to a selector.
 	ReasonNamespaceNotAuthorized = "NamespaceNotAuthorized"
+
+	// ReasonApplierNamespaceNotAllowed is the denial reason when a trigger names an applier in
+	// another namespace than its own and its ClusterProvider does not set
+	// spec.allowCrossNamespace.appliers.
+	ReasonApplierNamespaceNotAllowed = "ApplierNamespaceNotAllowed"
 )
 
 // Decision is the outcome of a ClusterProvider namespace-admission check. A denial always carries
@@ -68,55 +73,87 @@ func GitTargetAdmitted(
 	target *configv1alpha3.GitTarget,
 ) (Decision, error) {
 	providerName := target.SourceCluster()
-	return namespaceAdmitted(ctx, reader, target.Namespace, providerName, fmt.Sprintf(
+	decision, _, err := namespaceAdmitted(ctx, reader, target.Namespace, providerName, fmt.Sprintf(
 		"referenced ClusterProvider %q was not found; a GitTarget may mirror a source cluster "+
 			"only through an existing ClusterProvider. The operator never creates one: declare it "+
 			"yourself, or let the chart render %q via clusterProvider.createDefault",
 		providerName, configv1alpha3.DefaultClusterProviderName))
+	return decision, err
 }
 
-// ApplierAdmitted reports whether target may ask its applier to apply: its namespace is admitted
-// by its own ClusterProvider (GitTargetAdmitted) and, when spec.applier.clusterProviderRef names
-// another one, by that one too. The applier is reached with that provider's credential, so the
-// provider's accessFrom decides who may wield it, exactly as for mirroring. Call it only with
-// spec.applier set.
+// ApplyTriggerAdmitted reports whether a trigger's namespace is admitted by the ClusterProvider it
+// names (spec.clusterProviderRef), and whether it may reach its applier there. The applier is
+// reached with that provider's credential, so the provider's accessFrom decides who may wield it,
+// exactly as for mirroring, and its allowCrossNamespace.appliers whether a namespace may suspend
+// and apply another namespace's applier. The trigger's own namespace is always allowed; in a remote
+// cluster that is the namespace of the same name, as it is for mirroring.
+func ApplyTriggerAdmitted(
+	ctx context.Context,
+	reader client.Reader,
+	trigger configv1alpha3.ApplyTrigger,
+) (Decision, error) {
+	providerName := trigger.ClusterProvider()
+	decision, provider, err := namespaceAdmitted(ctx, reader, trigger.GetNamespace(), providerName, fmt.Sprintf(
+		"ClusterProvider %q named by %s %s/%s spec.clusterProviderRef was not found",
+		providerName, trigger.TriggerKind(), trigger.GetNamespace(), trigger.GetName()))
+	if err != nil || !decision.Allowed {
+		return decision, err
+	}
+	applier := trigger.Applier()
+	if applier.Namespace != trigger.GetNamespace() && !provider.AllowsCrossNamespaceAppliers() {
+		return Decision{
+			Reason: ReasonApplierNamespaceNotAllowed,
+			Message: fmt.Sprintf(
+				"%s %s is in another namespace than the trigger's own %q, and ClusterProvider %q does not "+
+					"set spec.allowCrossNamespace.appliers", trigger.ApplierKind(), applier, trigger.GetNamespace(),
+				providerName),
+		}, nil
+	}
+	return decision, nil
+}
+
+// ApplierAdmitted reports whether target may ask the applier its trigger holds to apply: its
+// namespace is admitted by its own ClusterProvider (GitTargetAdmitted) and by the trigger's
+// (ApplyTriggerAdmitted). A GitTarget names a trigger in its own namespace only, so the second
+// answers for the GitTarget's namespace too. A ClusterProvider's client is shared by every object
+// that uses the cluster, so a client being available is no permission to use it.
 func ApplierAdmitted(
 	ctx context.Context,
 	reader client.Reader,
 	target *configv1alpha3.GitTarget,
+	trigger configv1alpha3.ApplyTrigger,
 ) (Decision, error) {
 	decision, err := GitTargetAdmitted(ctx, reader, target)
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
-	providerName := target.ApplierCluster()
-	if providerName == target.SourceCluster() {
+	if trigger.ClusterProvider() == target.SourceCluster() && trigger.GetNamespace() == target.Namespace {
 		return decision, nil
 	}
-	return namespaceAdmitted(ctx, reader, target.Namespace, providerName, fmt.Sprintf(
-		"ClusterProvider %q named by spec.applier.clusterProviderRef was not found", providerName))
+	return ApplyTriggerAdmitted(ctx, reader, trigger)
 }
 
 // namespaceAdmitted is the check both admissions share: the provider exists, and its accessFrom
-// admits namespace. notFound is the denial message for a provider that does not exist.
+// admits namespace. notFound is the denial message for a provider that does not exist. It returns
+// the provider it read once it exists.
 func namespaceAdmitted(
 	ctx context.Context,
 	reader client.Reader,
 	namespace, providerName, notFound string,
-) (Decision, error) {
-	var provider configv1alpha3.ClusterProvider
-	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: providerName}, &provider); err != nil {
+) (Decision, *configv1alpha3.ClusterProvider, error) {
+	provider := &configv1alpha3.ClusterProvider{}
+	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: providerName}, provider); err != nil {
 		if apierrors.IsNotFound(err) {
-			return Decision{Reason: ReasonClusterProviderNotFound, Message: notFound}, nil
+			return Decision{Reason: ReasonClusterProviderNotFound, Message: notFound}, nil, nil
 		}
-		return Decision{}, fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
+		return Decision{}, nil, fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
 	}
 
 	nsLabels := map[string]string{}
 	var ns corev1.Namespace
 	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: namespace}, &ns); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return Decision{}, fmt.Errorf("read namespace %q: %w", namespace, err)
+			return Decision{}, nil, fmt.Errorf("read namespace %q: %w", namespace, err)
 		}
 	} else {
 		nsLabels = ns.Labels
@@ -128,7 +165,7 @@ func namespaceAdmitted(
 			Reason: ReasonNamespaceNotAuthorized,
 			Message: fmt.Sprintf(
 				"ClusterProvider %q accessFrom selector is invalid: %v", providerName, selErr),
-		}, nil
+		}, provider, nil
 	}
 	if !allowed {
 		return Decision{
@@ -136,8 +173,8 @@ func namespaceAdmitted(
 			Message: fmt.Sprintf(
 				"namespace %q is not permitted to reference ClusterProvider %q (spec.accessFrom)",
 				namespace, providerName),
-		}, nil
+		}, provider, nil
 	}
 
-	return Decision{Allowed: true}, nil
+	return Decision{Allowed: true}, provider, nil
 }
