@@ -76,32 +76,30 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		cleanupNamespace(testNs)
 	})
 
-	// A Kustomization whose source follows another branch is reported, and a request for it never
-	// stamps that source, however it is triggered; once the source is fixed, Flux reaches the tip.
-	It("reports the applier through its trigger, and never stamps a source on another branch", func() {
-		By("naming a trigger whose Kustomization does not exist yet")
+	// A trigger acts only while an eligible GitTarget references it. One nothing names, or one whose
+	// Kustomization's source follows another branch than the GitTarget writes, holds nothing, and a
+	// request for it never stamps that source; once the source is fixed, the trigger adopts the
+	// Kustomization and Flux reaches the tip. Dropping the reference hands it back, and naming the
+	// trigger again adopts it anew.
+	It("holds the Kustomization only while an eligible GitTarget names its trigger", func() {
+		By("creating the Kustomization, with a GitRepository that follows the release branch")
+		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "release", "./"+fluxApplierFolder)
+
+		By("creating a trigger no GitTarget names: it is Ready, and does nothing")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
 		createFluxTrigger(testNs, fluxName, fluxName, "")
-		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "")
-		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Configured", "False", "ApplierNotFound",
-			"not found in the applier's cluster")
-		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "False", "ApplierNotFound",
-			"not found in the applier's cluster")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "NotReferenced", "")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "False", "NotReferenced", "")
+		Expect(kustomizationSuspended(Default, fluxName)).To(BeFalse(), "Flux applies it on its own")
 
-		By("creating it, with a GitRepository that follows the release branch")
-		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "release", "./"+fluxApplierFolder)
-		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "Succeeded", "")
-		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
-		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "the trigger holds its Kustomization")
-		prefetch, err := kubectlRunInNamespace(testNs, "get", fluxTriggerResource, fluxName,
-			"-o", "jsonpath={.status.source.prefetch}|{.status.source.otherConsumers}")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(strings.TrimSpace(prefetch)).To(Equal("true|"),
-			"its Kustomization is the GitRepository's only consumer, so the source is prefetched")
-		Expect(eventMessages(Default, testNs, "FluxTrigger", fluxName, "Adopted")).
-			To(ContainSubstring("suspended Kustomization flux-system/" + fluxName))
+		By("naming it from a GitTarget that writes main: the trigger is refused, and holds nothing")
+		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Configured", "False", "SourceMismatch",
+			`applies branch "release", not main`)
 		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "False", "SourceMismatch",
 			`applies branch "release", not main`)
+		Expect(kustomizationSuspended(Default, fluxName)).To(BeFalse(), "a trigger that is not bound adopts nothing")
+		Expect(fluxTriggerEvents(Default, testNs, fluxName, "Adopted")).To(BeEmpty())
 		Expect(fluxSourceStamp(fluxName)).To(BeEmpty(), "nothing has asked Flux to fetch yet")
 
 		By("mirroring a first API edit, so the branch has a tip GitOps Reverser pushed")
@@ -130,24 +128,50 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		Consistently(func(g Gomega) {
 			g.Expect(fluxSourceStamp(fluxName)).To(BeEmpty(),
 				"a GitRepository that follows another branch must never be stamped for this one")
-			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue(), "and its Kustomization never resumed")
 		}, 20*time.Second, 2*time.Second).Should(Succeed())
 
-		// The branch worker keeps the ForeignCommit and decides it again after its backoff. Changing
-		// the GitRepository's branch makes Flux fetch on its own, but the suspended Kustomization
-		// ignores the new artifact: the worker's retry resumes it. The worker's half (an obligation
-		// kept across a rejected attempt) is proven in apply_attempt_test.go.
-		By("pointing the GitRepository at main, after which Flux reaches the tip")
+		// Changing the GitRepository's branch binds the trigger, which adopts the Kustomization. The
+		// branch worker keeps the ForeignCommit across the rejected attempts and decides it again
+		// after its backoff; Flux may also apply the new artifact on its own before the adoption.
+		By("pointing the GitRepository at main: the trigger adopts the Kustomization, and Flux reaches the tip")
 		head := remoteHeadSHA(Default, repo.CheckoutDir)
-		_, err = kubectlRunInNamespace("flux-system", "patch", "gitrepository", fluxName, "--type=merge", "-p",
+		_, err := kubectlRunInNamespace("flux-system", "patch", "gitrepository", fluxName, "--type=merge", "-p",
 			`{"spec":{"ref":{"branch":"main"}}}`)
 		Expect(err).NotTo(HaveOccurred(), "failed to point the GitRepository at main")
 		requestTriggerReconcile(testNs, fluxTriggerResource, fluxName)
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "Succeeded", "")
 		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
+		Expect(fluxTriggerEvents(Default, testNs, fluxName, "Adopted")).
+			To(ContainSubstring("suspended Kustomization flux-system/" + fluxName))
 		Eventually(func(g Gomega) {
 			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
 			g.Expect(appliedColor(g, appliedNs)).To(Equal("green"))
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
+		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "the trigger holds its Kustomization")
+		prefetch, err := kubectlRunInNamespace(testNs, "get", fluxTriggerResource, fluxName,
+			"-o", "jsonpath={.status.source.prefetch}|{.status.source.otherConsumers}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(prefetch)).To(Equal("true|"),
+			"its Kustomization is the GitRepository's only consumer, so the source is prefetched")
+
+		By("dropping the reference: the trigger hands the Kustomization back, and is idle again")
+		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", destName, "--type=merge", "-p",
+			`{"spec":{"applyTriggerRef":null}}`)
+		Expect(err).NotTo(HaveOccurred(), "failed to drop the GitTarget's applyTriggerRef")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "False", "NotReferenced", "")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "NotReferenced", "")
+		Eventually(func(g Gomega) {
+			g.Expect(kustomizationSuspended(g, fluxName)).To(BeFalse())
+			g.Expect(kustomizationManagers(g, fluxName)).NotTo(ContainSubstring("gitops-reverser"))
+			g.Expect(fluxTriggerEvents(g, testNs, fluxName, "Released")).
+				To(ContainSubstring("handed Kustomization flux-system/" + fluxName + " back to Flux"))
+		}, time.Minute, 2*time.Second).Should(Succeed())
+
+		By("naming the trigger again: it adopts the Kustomization anew")
+		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
+		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue())
 	})
 
 	// With no receiver and no API edit, the only thing that can find a Git-side push is the
@@ -248,7 +272,7 @@ data:
 		Expect(err).NotTo(HaveOccurred())
 		requestTriggerReconcile(testNs, fluxTriggerResource, fluxName)
 		Eventually(func(g Gomega) {
-			g.Expect(eventMessages(g, testNs, "FluxTrigger", fluxName, "ResumedElsewhere")).
+			g.Expect(fluxTriggerEvents(g, testNs, fluxName, "ResumedElsewhere")).
 				To(ContainSubstring("was resumed outside GitOps Reverser"))
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue(), "suspended again")
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())

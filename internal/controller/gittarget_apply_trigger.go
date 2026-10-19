@@ -76,6 +76,13 @@ func (r *GitTargetReconciler) applyTriggerVerdict(
 		return applyTriggerVerdict{value: conditionValue{
 			Status: metav1.ConditionUnknown, Reason: reason, Message: name + ": " + message,
 		}}
+	case ready.Reason == applier.ReasonNotReferenced:
+		// The trigger's reconcile has not seen this reference yet: naming a trigger does not change its
+		// generation, so the generation check above cannot tell.
+		return applyTriggerVerdict{value: conditionValue{
+			Status: metav1.ConditionUnknown, Reason: applier.ReasonNotReferenced,
+			Message: name + " has not observed that this GitTarget names it yet",
+		}}
 	case ready.Status == metav1.ConditionFalse:
 		return applyTriggerVerdict{
 			value: conditionValue{

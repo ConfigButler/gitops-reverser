@@ -131,10 +131,10 @@ func kustomizationManagers(g Gomega, name string) string {
 	return strings.TrimSpace(out)
 }
 
-// eventMessages is every message of the Events with reason recorded on the object kind/name.
-func eventMessages(g Gomega, namespace, kind, name, reason string) string {
+// fluxTriggerEvents is every message of the Events with reason recorded on the FluxTrigger name.
+func fluxTriggerEvents(g Gomega, namespace, name, reason string) string {
 	out, err := kubectlRunInNamespace(namespace, "get", "events", "--field-selector",
-		"involvedObject.kind="+kind+",involvedObject.name="+name+",reason="+reason,
+		"involvedObject.kind=FluxTrigger,involvedObject.name="+name+",reason="+reason,
 		"-o", "jsonpath={.items[*].message}")
 	g.Expect(err).NotTo(HaveOccurred())
 	return out

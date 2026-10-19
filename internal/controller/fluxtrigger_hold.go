@@ -47,12 +47,8 @@ import (
 // follows any more is suspended here (suspendUnfollowed), so the Kustomization is never left resumed
 // with nothing guarding it.
 func (r *ApplyTriggerReconciler) holdKustomization(
-	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, configured conditionValue,
+	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) conditionValue {
-	if configured.Status != metav1.ConditionTrue {
-		return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured,
-			Message: "the Kustomization is held once the trigger is Configured"}
-	}
 	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
 	defer cancel()
 	held, err := r.readHold(ctx, trigger)
@@ -368,27 +364,28 @@ func (r *ApplyTriggerReconciler) fluxClient(
 	return applier.NewFlux(dynamicClient), nil
 }
 
-// releaseDeadline is how long a deleted FluxTrigger tries to hand its Kustomization back, counted
-// from its deletionTimestamp, before it lets go anyway with a Warning Event that says what the
-// Kustomization is left as. The suspend it waits for is handled once the apply running then ends, so
+// releaseDeadline is how long a retiring FluxTrigger tries to hand its Kustomization back, counted
+// from when its Held condition turned Releasing, before it lets go anyway with a Warning Event that
+// says what the Kustomization is left as. The suspend it waits for is handled once the apply running then ends, so
 // the deadline is longer than an apply usually takes; a kustomize-controller that is down never
 // handles it, and the deletion must not wait on that forever.
 const releaseDeadline = 10 * time.Minute
 
-// release hands a deleted FluxTrigger's Kustomization back to Flux, and then lets the trigger go:
-// it suspends it once more if it is resumed (a branch worker's apply may still be running), waits
-// until that suspend's token is handled, and releases spec.suspend, unless a trigger in line takes
-// the Kustomization over (releaseStep). A Kustomization or a cluster
-// that is gone has nothing to hand back, and one the identity may not write is let go with a
-// Warning Event: neither should hold the trigger forever. Nor does anything else past
-// releaseDeadline. A trigger behind another in line for the Kustomization hands nothing back: the
-// Kustomization is that one's.
-func (r *ApplyTriggerReconciler) release(
-	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
+// retire hands a FluxTrigger's Kustomization back to Flux, and then lets go of it: a trigger being
+// deleted (check nil), or one no eligible GitTarget references any more (check is what the
+// reconcile found). It suspends the Kustomization once more if it is resumed (a branch worker's
+// apply may still be running), waits until that suspend's token is handled, and releases
+// spec.suspend, unless a trigger in line takes the Kustomization over (releaseStep). Until that is
+// done the trigger stays the holder, Held=False (Releasing), so no successor acts on the
+// Kustomization meanwhile. A Kustomization or a cluster that is gone has nothing to hand back, and
+// one the identity may not write is let go with a Warning Event: neither should hold the trigger
+// forever. Nor does anything else past releaseDeadline. A trigger behind another in line for the
+// Kustomization hands nothing back: the Kustomization is that one's. Letting go removes the
+// finalizer; a live trigger then holds nothing until an eligible GitTarget references it again,
+// which adopts the Kustomization anew.
+func (r *ApplyTriggerReconciler) retire(
+	ctx context.Context, st *reconcileStatus, trigger *configbutleraiv1alpha3.FluxTrigger, check *triggerCheck,
 ) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(trigger, configbutleraiv1alpha3.FluxTriggerFinalizer) {
-		return ctrl.Result{}, nil
-	}
 	holder, err := applier.HeldByAnother(ctx, r.Client, trigger)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -409,15 +406,120 @@ func (r *ApplyTriggerReconciler) release(
 		cancel()
 	}
 	if pending != nil {
-		if time.Since(trigger.DeletionTimestamp.Time) < releaseDeadline {
-			return pending.result, pending.err
+		since := releasingSince(trigger)
+		if time.Since(since) < releaseDeadline {
+			r.publishReleasing(st, trigger, check, since)
+			if err := st.commit(ctx); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: st.requeueAfter(pending.result.RequeueAfter)}, pending.err
 		}
 		r.event(trigger, corev1.EventTypeWarning, EventReasonReleaseFailed,
-			"gave up handing Kustomization %s back to Flux %s after the trigger was deleted: %s",
+			"gave up handing Kustomization %s back to Flux %s after it began: %s",
 			trigger.Applier(), releaseDeadline, pending.left)
 	}
-	controllerutil.RemoveFinalizer(trigger, configbutleraiv1alpha3.FluxTriggerFinalizer)
-	return ctrl.Result{}, client.IgnoreNotFound(r.Update(ctx, trigger))
+	if check == nil {
+		controllerutil.RemoveFinalizer(trigger, configbutleraiv1alpha3.FluxTriggerFinalizer)
+		return ctrl.Result{}, client.IgnoreNotFound(r.Update(ctx, trigger))
+	}
+	if err := r.setFinalizer(ctx, st, trigger, false); err != nil {
+		return ctrl.Result{}, err
+	}
+	r.letGoOfOperation(trigger)
+	held := conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonNotReferenced,
+		Message: "nothing to hold: no GitTarget names this trigger, and its Kustomization was handed back"}
+	if check.refs.Named() {
+		held = conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured,
+			Message: "the Kustomization was handed back, and is held again once an eligible GitTarget references " +
+				"the trigger"}
+	}
+	st.setValue(ApplyTriggerConditionHeld, held)
+	st.applyReadiness(r.triggerReadiness(trigger, check.configured, &held))
+	if err := st.commit(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: st.requeueAfter(fluxTriggerSteadyInterval)}, nil
+}
+
+// publishReleasing sets Held=False (Releasing) and the trio on a trigger whose hand-back is not
+// done, its deadline counted from since. The condition is written anew when it was not Releasing
+// before, so its lastTransitionTime says when the release began.
+func (r *ApplyTriggerReconciler) publishReleasing(
+	st *reconcileStatus, trigger *configbutleraiv1alpha3.FluxTrigger, check *triggerCheck, since time.Time,
+) {
+	why := "the trigger is being deleted"
+	if check != nil && check.refs.Named() {
+		why = "no GitTarget naming the trigger is eligible any more"
+	} else if check != nil {
+		why = "no GitTarget names the trigger any more"
+	}
+	held := conditionValue{Status: metav1.ConditionFalse, Reason: ReasonReleasing, Message: fmt.Sprintf(
+		"%s: handing Kustomization %s back to Flux, by %s at the latest", why, trigger.Applier(),
+		since.Add(releaseDeadline).UTC().Format(time.RFC3339))}
+	if previous := findCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld); previous == nil ||
+		previous.Reason != ReasonReleasing {
+		st.remove(ApplyTriggerConditionHeld)
+	}
+	st.setValue(ApplyTriggerConditionHeld, held)
+	if check == nil {
+		rd := newReadiness("", trigger.TriggerKind()+" is not stalled")
+		rd.progressing(held.Status, held.Reason, held.Message)
+		st.applyReadiness(rd)
+		return
+	}
+	st.applyReadiness(r.triggerReadiness(trigger, check.configured, &held))
+}
+
+// releasingSince is when the trigger's Held condition turned Releasing, or now when it has not.
+func releasingSince(trigger *configbutleraiv1alpha3.FluxTrigger) time.Time {
+	held := findCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld)
+	if held == nil || held.Reason != ReasonReleasing || held.LastTransitionTime.IsZero() {
+		return time.Now()
+	}
+	return held.LastTransitionTime.Time
+}
+
+// letGoOfOperation completes an operation a retired trigger still records in flight, when this
+// process does not follow it: nobody would complete it, and its Kustomization is handed back.
+func (r *ApplyTriggerReconciler) letGoOfOperation(trigger *configbutleraiv1alpha3.FluxTrigger) {
+	operation := trigger.Status.Operation
+	if operation == nil || operation.Phase.Completed() {
+		return
+	}
+	ref := git.TriggerRef{Kind: trigger.TriggerKind(), Namespace: trigger.Namespace, Name: trigger.Name}
+	if operation.Token != "" && r.Follower != nil && r.Follower.Following(ref, operation.Token) {
+		return
+	}
+	completed := operation.DeepCopy()
+	finished := metav1.NewTime(time.Now())
+	completed.Phase, completed.FinishedAt = configbutleraiv1alpha3.ApplyOperationFailed, &finished
+	completed.Message = "the trigger handed its Kustomization back before the apply was seen to end"
+	trigger.Status.Operation = completed
+	r.unfollowed.forget(trigger, "")
+}
+
+// setFinalizer puts the finalizer on the trigger, or takes it off, and carries the metadata that
+// write left into the status session, so the status patch that follows is made against it. The
+// finalizer is what hands the Kustomization back, so it is in place before the first adoption
+// write, and off once the trigger has handed the Kustomization back or over.
+func (r *ApplyTriggerReconciler) setFinalizer(
+	ctx context.Context, st *reconcileStatus, trigger *configbutleraiv1alpha3.FluxTrigger, present bool,
+) error {
+	update := trigger.DeepCopy()
+	changed := controllerutil.RemoveFinalizer(update, configbutleraiv1alpha3.FluxTriggerFinalizer)
+	if present {
+		changed = controllerutil.AddFinalizer(update, configbutleraiv1alpha3.FluxTriggerFinalizer)
+	}
+	if !changed {
+		return nil
+	}
+	if err := r.Update(ctx, update); err != nil {
+		return err
+	}
+	trigger.SetFinalizers(update.GetFinalizers())
+	trigger.SetResourceVersion(update.GetResourceVersion())
+	st.metadataWritten()
+	return nil
 }
 
 // nextInLine is the trigger that takes the Kustomization over once trigger is gone, or nil when no

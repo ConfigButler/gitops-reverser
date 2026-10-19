@@ -43,6 +43,27 @@ func rival(t *testing.T, f *dispatcherFixture, kind, name string, older bool) {
 		typed.Spec.ApplicationRef = ref
 	}
 	require.NoError(t, f.control.Create(context.Background(), other.(client.Object)))
+	referenceFrom(t, f.control, other)
+}
+
+// referenceFrom puts a GitTarget in trigger's namespace that names it, and admits that namespace
+// on the ClusterProviders, so the trigger is in line for its applier.
+func referenceFrom(t *testing.T, c client.Client, trigger v1alpha3.ApplyTrigger) {
+	t.Helper()
+	ctx := context.Background()
+	target := gitTarget("names-"+trigger.GetName(), nil, "")
+	target.Namespace = trigger.GetNamespace()
+	target.Spec.ApplyTriggerRef = &v1alpha3.ApplyTriggerReference{Kind: trigger.TriggerKind(), Name: trigger.GetName()}
+	require.NoError(t, c.Create(ctx, target))
+	for _, name := range []string{v1alpha3.DefaultClusterProviderName, "prod-eu-1", trigger.ClusterProvider()} {
+		provider := &v1alpha3.ClusterProvider{}
+		if err := c.Get(ctx, client.ObjectKey{Name: name}, provider); err != nil {
+			require.NoError(t, c.Create(ctx, clusterProvider(name, targetNS, trigger.GetNamespace())))
+			continue
+		}
+		provider.Spec.AccessFrom.Names = append(provider.Spec.AccessFrom.Names, trigger.GetNamespace())
+		require.NoError(t, c.Update(ctx, provider))
+	}
 }
 
 // TestDispatcher_OnlyTheHolderAsksItsApplier is review 5's finding 5, the dispatcher's half: two
@@ -88,9 +109,9 @@ func TestDispatcher_OnlyTheHolderAsksItsApplier(t *testing.T) {
 	}
 }
 
-// TestHolder_FirstInLine: the holder is the trigger created first, then by namespace and name; one
-// being deleted still holds until it is gone, and a trigger naming another applier, or the same one
-// in another cluster, is not in line.
+// TestHolder_FirstInLine: the holder is the trigger in line created first, then by namespace and
+// name; one being deleted still holds until it is gone, one no eligible GitTarget references is not
+// in line, and neither is a trigger naming another applier, or the same one in another cluster.
 func TestHolder_FirstInLine(t *testing.T) {
 	at := func(minutes int) metav1.Time {
 		return metav1.NewTime(time.Unix(0, 0).Add(time.Duration(minutes) * time.Minute))
@@ -114,12 +135,19 @@ func TestHolder_FirstInLine(t *testing.T) {
 		trigger("team-a", "other", "default", "infra", at(1)),
 		trigger("team-b", "same-second", "default", "checkout", at(10)),
 	}
+	unreferenced := trigger("team-a", "stray", "default", "checkout", at(1))
 	f := newDispatcherFixture(t, nil)
-	for _, obj := range objects {
+	for _, obj := range append(objects, unreferenced) {
 		require.NoError(t, f.control.Create(context.Background(), obj))
 	}
 
 	holder, err := firstInLine(context.Background(), f.control, self)
+	require.NoError(t, err)
+	assert.Equal(t, "team-c/mine", holder.GetNamespace()+"/"+holder.GetName(),
+		"older triggers nothing eligible references keep no younger one out")
+
+	referenceFrom(t, f.control, objects[3].(*v1alpha3.FluxTrigger))
+	holder, err = firstInLine(context.Background(), f.control, self)
 	require.NoError(t, err)
 	assert.Equal(t, "team-b/same-second", holder.GetNamespace()+"/"+holder.GetName(),
 		"created in the same second: the namespace decides")
@@ -132,7 +160,7 @@ func TestHolder_FirstInLine(t *testing.T) {
 
 	others, err := TriggersOfApplier(context.Background(), f.control, self)
 	require.NoError(t, err)
-	assert.Len(t, others, 2, "the same Kustomization in another cluster, or another one, is not in line")
+	assert.Len(t, others, 3, "the same Kustomization in another cluster, or another one, is not in line")
 }
 
 // TestHolder_AnApplyInFlightComesFirst is review 5's P2: a FluxTrigger with an operation in flight

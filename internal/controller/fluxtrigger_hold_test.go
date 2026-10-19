@@ -555,7 +555,12 @@ func TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
 			ks.SetAnnotations(map[string]string{meta.ReconcileRequestAnnotation: "T2"})
 			trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 			trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
-			trigger.DeletionTimestamp = &metav1.Time{Time: time.Now().Add(-deleted)}
+			trigger.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			// The deadline counts from when Held turned Releasing, not from the deletion.
+			trigger.Status.Conditions = []metav1.Condition{{
+				Type: ApplyTriggerConditionHeld, Status: metav1.ConditionFalse, Reason: ReasonReleasing,
+				LastTransitionTime: metav1.NewTime(time.Now().Add(-deleted)),
+			}}
 			f := newHoldFixture(t, trigger, ks, objs[1])
 
 			result, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
@@ -571,7 +576,7 @@ func TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
 			assert.True(t, apierrors.IsNotFound(err), "the trigger is let go: %v", err)
 			require.Len(t, events, 1)
 			assert.True(t, strings.HasPrefix(events[0], "Warning ReleaseFailed gave up handing Kustomization "+
-				"flux-system/checkout back to Flux 10m0s after the trigger was deleted: it is suspended, and has "+
+				"flux-system/checkout back to Flux 10m0s after it began: it is suspended, and has "+
 				"not handled the suspend yet"), events[0])
 			assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)),
 				"left suspended, as the Event says")

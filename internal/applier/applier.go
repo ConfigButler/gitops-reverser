@@ -37,7 +37,6 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 )
 
 // Client asks one kind of applier, in one cluster, to apply. The dispatcher (Dispatcher.client) and
@@ -253,14 +252,7 @@ func BindingMismatch(trigger v1alpha3.ApplyTrigger, want Binding) string {
 	if !known {
 		return ""
 	}
-	name := trigger.TriggerKind() + " " + trigger.GetName()
-	if !repourl.Same(url, want.RepositoryURL) {
-		return fmt.Sprintf("the applier of %s applies %s, not %s", name, url, want.RepositoryURL)
-	}
-	if branch != want.Branch {
-		return fmt.Sprintf("the applier of %s applies branch %q, not %s", name, branch, want.Branch)
-	}
-	return ""
+	return bindingMismatch(trigger, url, branch, want)
 }
 
 // AccessCheck reports whether the ClusterProvider identity may perform attrs.

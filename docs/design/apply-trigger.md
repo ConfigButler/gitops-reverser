@@ -258,20 +258,38 @@ later deletes it.
 
 ### Who owns `spec.suspend`
 
+- **A trigger acts only while an eligible `GitTarget` references it.** Eligible: in the trigger's
+  namespace, not being deleted, naming the trigger, admitted by its `ClusterProvider`s
+  (`ApplierAdmitted`), and writing the repository and branch the applier's source fetches. It is
+  judged from those inputs alone, never from the `GitTarget`'s `Ready`, which reads the trigger's
+  own `Ready` back. A trigger no `GitTarget` names is `Configured=Unknown` and `Ready=True`, both
+  `NotReferenced`: it reads and writes nothing in the applier's cluster and is not in line. With
+  several naming it, one eligible binds it; none eligible while one cannot be judged yet (its
+  `GitProvider` missing, a read failed) is `Configured=Unknown`, `NotBound`, progressing; each
+  refused is `Configured=False` with the reason they share, or `NotBound`, stalled. The trigger
+  reconciler watches what eligibility reads: `GitTarget`s (before and after an update),
+  `GitProvider`s, `ClusterProvider`s and namespace labels. A `GitTarget` reads `ApplyTriggerReady`
+  `Unknown` (`NotReferenced`) until the trigger has observed it, since naming a trigger does not
+  move its generation.
 - **One trigger per applier.** Every trigger suspends under the same field manager, so two holding
   one `Kustomization` would take each other's resume for an external one and release each other's
-  hold. Of the triggers of one kind naming one applier in one cluster, the oldest by
-  `creationTimestamp` (then namespace and name) holds it; the others are `Configured=False`,
-  `HeldByAnotherTrigger`, do nothing, and release nothing when deleted, and the dispatcher drops a
-  request through them. A `FluxTrigger` with an operation in flight comes first, whatever its age,
-  so a `Kustomization` changes hands only between operations: a trigger created in the same second
-  as the holder, and ahead of it by name, waits for the holder's apply to end. The dispatcher's
-  check before a resume, and the reconciler's suspend of a resumed `Kustomization`, read the
-  triggers uncached. Deleting the holder leaves the `Kustomization` suspended, its suspend handled, for the
-  next in line, and enqueues it. The same rule holds for `ArgoCDTrigger`s, which would otherwise
-  both start syncs, without the in-flight rule: a sync somebody else started is never replaced.
-- **Adoption.** A `Configured` `FluxTrigger` suspends its `Kustomization` with a server-side apply
-  under `gitops-reverser`, and a token. It is `Held=True` (`Suspended`), and `Ready`, once that
+  hold. Of the triggers of one kind in line for one applier in one cluster, one holds it; the others
+  are `Configured=False`, `HeldByAnotherTrigger`, do nothing, and release nothing, and the dispatcher
+  drops a request through them. In line: an eligible `GitTarget` references the trigger, or, for a
+  `FluxTrigger`, it carries its finalizer (it holds the `Kustomization`, or is handing it back), so
+  an older trigger with the wrong repository, or not admitted, keeps no younger one out. First comes
+  a `FluxTrigger` with an operation in flight, then one that carries its finalizer, then the oldest
+  by `creationTimestamp` (then namespace and name). So a `Kustomization` changes hands only once its
+  holder lets go of it, and never mid-apply or mid-release. The dispatcher's check before a resume,
+  and the reconciler's suspend of a resumed `Kustomization`, read the triggers uncached. A holder
+  that lets go with a trigger in line leaves the `Kustomization` suspended, its suspend handled, for
+  it, and the change re-runs the others. The same rule holds for `ArgoCDTrigger`s, which would
+  otherwise both start syncs, without the in-flight and finalizer rules: a sync somebody else
+  started is never replaced.
+- **Adoption.** A `Configured` `FluxTrigger`, so one an eligible `GitTarget` references, puts its
+  finalizer in place and then suspends its `Kustomization` with a server-side apply under
+  `gitops-reverser`, and a token. A trigger that never adopted has no finalizer, and deletes at
+  once. It is `Held=True` (`Suspended`), and `Ready`, once that
   token is handled; `Held=True` (`Applying`) while an operation of a branch worker is in flight and
   followed. A `Normal` `Adopted` Event records it.
 - **The manifest omits `suspend`.** Whatever applies the `Kustomization` object (a parent
@@ -295,9 +313,20 @@ later deletes it.
   `Kustomization` with a token, sends a `Warning` `OperationUnfollowed` Event, and completes the
   operation `Failed` once the suspend is handled. A resumed `Kustomization` is never left with
   nothing watching it.
-- **Hand-back.** The trigger carries the finalizer `configbutler.ai/flux-trigger`. Deleting it
-  suspends the `Kustomization` with a token if an apply has it resumed, waits until that is handled,
-  then releases `spec.suspend` with an empty apply, so Flux owns it again (`Released`). With another
+- **Hand-back.** The trigger carries the finalizer `configbutler.ai/flux-trigger` from before its
+  first adoption write until it has handed the `Kustomization` back or over, also while its
+  configuration is invalid (then `Held=Unknown`, `NotConfigured`, and the message says the
+  `Kustomization` is left suspended under `gitops-reverser`). It hands it back when it is deleted,
+  and when no eligible `GitTarget` references it any more, conclusively: a reference that cannot be
+  judged yet keeps the hold, since a release is not undone. Until the hand-back is done the trigger
+  is `Held=False`, `Releasing`, and stays the holder in line. It suspends the `Kustomization` with a
+  token if an apply has it resumed, waits until that is handled, then releases `spec.suspend` with
+  an empty apply, so Flux owns it again (`Released`). An operation still recorded in flight that
+  this process does not follow then completes as `Failed`. A reference that returns before the
+  release is done holds the `Kustomization` again; one that returns after adopts it anew. Deleting
+  or re-creating a `GitTarget` therefore hands it back, and Flux applies the tip at once: what Flux
+  does without GitOps Reverser, accepted because with no `GitTarget` nobody carries live edits to
+  Git anyway. With another
   trigger in line that can take it over (`Configured=True`, or `False` only for
   `HeldByAnotherTrigger`), it is not released but left suspended for that one: released, Flux would
   apply it at once, unchecked against the branch, before the next trigger suspended it. On a real
@@ -307,8 +336,8 @@ later deletes it.
   operation whose trigger is being deleted completes as `Failed` and writes nothing more to the
   `Kustomization`; the dispatcher reads the trigger uncached before every step that may suspend. A
   `Kustomization` or `ClusterProvider` that is gone, a suspend or release the identity may not make,
-  or a hand-back still unfinished 10 minutes after the deletion (each a `Warning` `ReleaseFailed`
-  Event) lets the trigger go. A `GitTarget` that stops naming the trigger releases nothing.
+  or a hand-back still unfinished 10 minutes after `Held` turned `Releasing` (each a `Warning`
+  `ReleaseFailed` Event) lets the trigger go.
 
 ### Restart recovery
 

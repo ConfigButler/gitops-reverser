@@ -210,9 +210,16 @@ recreate the trigger to hold another `Kustomization`.
 
 ### How the trigger holds the `Kustomization`
 
+A trigger acts only while an eligible `GitTarget` references it: one in the trigger's namespace that
+names it in `spec.applyTriggerRef`, is admitted by its `ClusterProvider`s, and writes the repository
+and branch the `Kustomization`'s `GitRepository` fetches. A trigger nothing eligible references
+holds nothing, reads nothing in the `Kustomization`'s cluster, and is `Ready`.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> NotConfigured
+    [*] --> NotReferenced
+    NotReferenced --> NotConfigured: a GitTarget names it, not yet Configured
+    NotConfigured --> NotReferenced: no GitTarget names it any more
     NotConfigured --> Suspending: Configured turns True, so it adopts
     Suspending --> Suspended: the suspend is handled
     Suspended --> Applying: an operation is recorded as Requested
@@ -220,7 +227,11 @@ stateDiagram-v2
     Applying --> Suspending: nobody followed it past the grace, the trigger suspends it
     Suspended --> Suspending: found resumed (flux resume) or suspended by another (flux suspend)
     Suspended --> NotConfigured: Configured drops to False, left suspended
-    Suspended --> [*]: trigger deleted (Released, or left suspended for the next in line)
+    Suspended --> Releasing: no eligible reference left, or trigger deleted
+    Applying --> Releasing: the same, suspended first
+    Releasing --> Suspended: a reference returns before the release
+    Releasing --> NotReferenced: released, Flux applies on its own again
+    Releasing --> [*]: trigger deleted
 
     note right of NotConfigured
         Configured says why
@@ -231,29 +242,47 @@ stateDiagram-v2
     end note
 ```
 
-- **Adopting.** Once `Configured`, the trigger suspends the `Kustomization` with a server-side apply
-  under the field manager `gitops-reverser` and a new `reconcile.fluxcd.io/requestedAt` token, and
-  records an `Adopted` Event. The suspend is handled once the `Kustomization` reports that token:
-  reconciles of one object never overlap, so by then nothing that was running before is.
-- **One trigger per `Kustomization`.** When two `FluxTrigger`s name the same `Kustomization` in the
-  same cluster, the oldest holds it, except that one with an apply in flight keeps it until that
-  apply ends. The other reports `HeldByAnotherTrigger`, does nothing, and takes over once the holder
-  is deleted.
-- **Deleting the trigger hands the `Kustomization` back.** The trigger carries the finalizer
-  `configbutler.ai/flux-trigger`. Deleting it suspends the `Kustomization` once more if an apply has
-  it resumed, waits until that is handled, and releases `spec.suspend`, so Flux applies it on its
-  own again (a `Released` Event), even one somebody had `flux suspend`ed before. One whose
-  `spec.suspend` another manager also applies stays suspended, and the Event names that manager.
-  With another `FluxTrigger` in line, the `Kustomization` stays suspended for that one. A hand-back
-  that has not finished 10 minutes after the deletion lets the trigger go with a `ReleaseFailed`
-  Event saying where the `Kustomization` was left. A `GitTarget` that stops naming the trigger
-  releases nothing.
+- **Adopting.** Once an eligible `GitTarget` names it and it is `Configured`, the trigger puts its
+  finalizer `configbutler.ai/flux-trigger` in place, suspends the `Kustomization` with a server-side
+  apply under the field manager `gitops-reverser` and a new `reconcile.fluxcd.io/requestedAt` token,
+  and records an `Adopted` Event. The suspend is handled once the `Kustomization` reports that
+  token: reconciles of one object never overlap, so by then nothing that was running before is.
+- **Several `GitTarget`s.** One eligible `GitTarget` among those naming the trigger is enough. While
+  none is, and one cannot be judged yet (its `GitProvider` is missing), the trigger reports
+  `NotBound` and waits. Once each is refused, it reports the reason they share (`SourceMismatch`,
+  `NamespaceNotAuthorized`), or `NotBound` for mixed ones, with every `GitTarget` and its reason in
+  the message.
+- **One trigger per `Kustomization`.** When two `FluxTrigger`s an eligible `GitTarget` references
+  name the same `Kustomization` in the same cluster, the one holding it keeps it, the one with an
+  apply in flight first of all; otherwise the oldest takes it. The other reports
+  `HeldByAnotherTrigger`, does nothing, and takes over once the holder lets go. A trigger nothing
+  eligible references is not in line, so it keeps no other out.
+- **The trigger hands the `Kustomization` back** when no eligible `GitTarget` references it any
+  more, and when it is deleted. `Held` reads `Releasing`: it suspends the `Kustomization` once more
+  if an apply has it resumed, waits until that is handled, and releases `spec.suspend`, so Flux
+  applies it on its own again (a `Released` Event), even one somebody had `flux suspend`ed before.
+  Until that is done it stays the holder, so no other trigger acts on the `Kustomization`. One
+  whose `spec.suspend` another manager also applies stays suspended, and the Event names that
+  manager. With another `FluxTrigger` in line, the `Kustomization` stays suspended for that one. A
+  hand-back that has not finished 10 minutes after `Held` turned `Releasing` lets go with a
+  `ReleaseFailed` Event saying where the `Kustomization` was left. A reference that returns before
+  the release is done holds the `Kustomization` again; one that returns after adopts it anew.
+- **Deleting or re-creating a `GitTarget` hands the `Kustomization` back.** Flux then applies the
+  Git tip at once, which overwrites live edits not yet in Git, and the trigger adopts the
+  `Kustomization` again once the `GitTarget` is back. That is what Flux does without GitOps
+  Reverser, and with no `GitTarget` nobody would carry those edits to Git anyway.
+- **A trigger whose configuration turns invalid keeps its hold.** It reports `Held=Unknown`
+  (`NotConfigured`), and the message says the `Kustomization` is left suspended under GitOps
+  Reverser's field manager; deleting the trigger, or its `GitTarget`s, hands it back.
 
 The trigger reports `Configured` and `Held`, and its `Ready` includes both:
 
 | Reason | Means | Readiness |
 | --- | --- | --- |
-| `Configured`: `Succeeded` | The `Kustomization` exists, applies a `GitRepository` that follows a branch, and may be patched | ready |
+| `Configured`: `Succeeded` | An eligible `GitTarget` names the trigger, and the `Kustomization` exists, applies a `GitRepository` that follows a branch, and may be patched | ready |
+| `Configured`: `NotReferenced` (`Unknown`) | No `GitTarget` names the trigger. Nothing is read or written | ready: `Ready=True`, `NotReferenced` |
+| `Configured`: `NotBound` (`Unknown`) | No `GitTarget` naming the trigger is eligible yet, and one cannot be judged yet | progressing |
+| `Configured`: `SourceMismatch`, `NamespaceNotAuthorized` or `NotBound` (`False`) | Every `GitTarget` naming the trigger is refused: it writes another repository or branch, or is not admitted. The message lists each | stalled |
 | `Configured`: `ApplierNotFound` | No such `Kustomization` in the applier's cluster, or Flux is not installed there | progressing: Flux objects are often created after the trigger |
 | `Configured`: `UnsupportedSource` | The source is not a `GitRepository`, or breaks one of the [`GitRepository` rules](#the-gitrepository) | stalled |
 | `Configured`: `SuspendOwnedElsewhere` | Another field manager applies `spec.suspend` | stalled: remove the field from the manifest it applies |
@@ -264,13 +293,20 @@ The trigger reports `Configured` and `Held`, and its `Ready` includes both:
 | `Held`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
 | `Held`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |
 | `Held`: `Suspending` | Just suspended; waiting for the `Kustomization` to handle it | progressing |
-| `Held`: `NotConfigured` | The trigger is not `Configured`, so nothing is held | follows `Configured` |
+| `Held`: `Releasing` | Handing the `Kustomization` back: suspending it if needed, then releasing `spec.suspend`, within 10 minutes | progressing |
+| `Held`: `NotReferenced` | Nothing to hold: no `GitTarget` names the trigger | ready |
+| `Held`: `NotConfigured` | The trigger is not `Configured`, so nothing is held, or the `Kustomization` is left suspended as the trigger last held it (the message says which) | follows `Configured` |
 | `Ready`: `OperationUnresolved` | An apply has not completed within 5 minutes, or the `Kustomization` was [resumed by hand](#overriding-by-hand) | progressing; it clears when the apply does |
+
+`Ready=True` for a trigger no `GitTarget` names is deliberate: it does all it is asked to, which is
+nothing. A Flux health check reads `Ready`, so a `Kustomization` that creates the trigger and waits
+for it would otherwise never become ready, and the `Kustomization` that creates the `GitTarget`
+after it would never apply.
 
 The `GitTarget` reports `ApplyTriggerReady`: `True` when the trigger is `Ready` and its
 `GitRepository` fetches this repository and branch, `SourceMismatch` when it fetches another,
-`ApplyTriggerNotFound` when the trigger does not exist, and otherwise the trigger's own `Ready`
-reason.
+`ApplyTriggerNotFound` when the trigger does not exist, `Unknown` (`NotReferenced`) until the
+trigger has seen that the `GitTarget` names it, and otherwise the trigger's own `Ready` reason.
 
 ## Permissions
 
@@ -362,7 +398,8 @@ tip, the consumers GitOps Reverser holds ignore the new artifact, and one in
 - **`flux reconcile ks checkout`** does nothing visible while the `Kustomization` is suspended: Flux
   marks the request handled without applying.
 - **`flux suspend ks checkout`** is taken back with a token of GitOps Reverser's.
-- To hand the `Kustomization` back to Flux for good, delete the `FluxTrigger`.
+- To hand the `Kustomization` back to Flux for good, delete the `FluxTrigger`, or stop naming it from
+  every `GitTarget`.
 
 ## Checking that it works
 

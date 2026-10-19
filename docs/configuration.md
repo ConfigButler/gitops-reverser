@@ -1258,16 +1258,25 @@ A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is suspended a
 an `Unresolved` operation with no `reason` and no `commit`, which completes once the suspend is
 handled.
 
+**A trigger acts only while an eligible `GitTarget` references it**: one in its namespace that names
+it, is admitted by its `ClusterProvider`s, and writes the repository and branch the applier fetches.
+Until one does, the trigger reads and writes nothing in the applier's cluster, and reports
+`Configured=Unknown` and `Ready=True`, both `NotReferenced`. A `FluxTrigger` that held its
+`Kustomization` hands it back once no eligible `GitTarget` references it any more.
+
 **Conditions.** `Configured` is a gate, and the trigger's `Ready` aggregates it; a `FluxTrigger` is
 also `Ready` only once `Held` is `True` (`Suspended`, or `Applying` while an apply of GitOps
-Reverser's is in flight). The `False` reasons are `ApplierNotFound`,
+Reverser's is in flight). `NotBound` (`Unknown` while a naming `GitTarget` cannot be judged yet,
+`False` once each is refused for different reasons), `SourceMismatch` and `NamespaceNotAuthorized`
+report the `GitTarget`s naming the trigger. The other `False` reasons are `ApplierNotFound`,
 `UnsupportedSource`, `AutomatedSyncEnabled` (Argo CD), `SuspendOwnedElsewhere` (Flux), `Forbidden`,
 `NamespaceNotAuthorized`, `ClusterProviderNotFound` and `HeldByAnotherTrigger`; each guide's table
 says what they mean for its applier and how to fix them
 ([Flux](bi-directional-flux.md#the-fluxtrigger), [Argo CD](bi-directional-argocd.md#the-argocdtrigger)).
 The `GitTarget` reports `ApplyTriggerReady`, and its `Ready` aggregates it: `True` when the trigger
 is `Ready` and its applier applies this target's repository and branch, otherwise the trigger's own
-`Ready` reason, `ApplyTriggerNotFound`, or `SourceMismatch`. Each delivered request records an
+`Ready` reason, `ApplyTriggerNotFound`, `SourceMismatch`, or `Unknown` (`NotReferenced`) until the
+trigger has seen that the `GitTarget` names it. Each delivered request records an
 `ApplyRequested` Event on the `GitTarget`, and one that could not be delivered records
 `ApplyRequestFailed` once.
 
@@ -1279,7 +1288,9 @@ is `Suspending` is read every 2 seconds. Annotate the trigger with
 `reconcile.configbutler.ai/requestedAt` to have it read now.
 
 **Deleting a `FluxTrigger` hands the `Kustomization` back to Flux,** through the finalizer
-`configbutler.ai/flux-trigger`, unless another `FluxTrigger` is in line for it. The
+`configbutler.ai/flux-trigger`, unless another `FluxTrigger` is in line for it, and so does the last
+eligible `GitTarget` that stops naming it. A trigger that never held its `Kustomization` carries no
+finalizer. The
 [Flux guide](bi-directional-flux.md#how-the-trigger-holds-the-kustomization) has the details.
 
 ### Reverting a refused edit (`spec.onRefusal`)

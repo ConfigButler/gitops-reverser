@@ -37,11 +37,13 @@ branch, after a refusal or a reverted edit, and to catch up with its own pushes 
 been quiet for the trigger's `quietPeriod`. `flux get ks` shows it `Suspended`, and while the
 operator is down nothing applies it. Remove `spec.suspend` from whatever applies the
 `Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
-webhook into a Flux `Receiver` for the repository, as [the Flux guide](bi-directional-flux.md) describes. Deleting
-the trigger hands the `Kustomization` back to Flux. The operator needs `get`, `list` and `patch` on
-`kustomizations`, `list` on `helmreleases` and `helmcharts`, `get` and `patch` on `gitrepositories`, and `create` on
-`selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true` grants them for
-the operator's own cluster.
+webhook into a Flux `Receiver` for the repository, as [the Flux guide](bi-directional-flux.md)
+describes. A trigger acts only while an eligible `GitTarget` names it, so create the two in any
+order: until one names it, it is `Ready` (`NotReferenced`) and holds nothing. Deleting the trigger,
+or the last `GitTarget` naming it, hands the `Kustomization` back to Flux. The operator needs `get`,
+`list` and `patch` on `kustomizations`, `list` on `helmreleases` and `helmcharts`, `get` and `patch`
+on `gitrepositories`, and `create` on `selfsubjectaccessreviews`, in the trigger's cluster: Helm
+`applierAccess.flux: true` grants them for the operator's own cluster.
 
 For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its automated sync off
 (`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before its trigger holds it; one with

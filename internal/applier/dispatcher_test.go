@@ -808,6 +808,7 @@ func TestDispatcher_ATriggerAnotherCameBeforeIsNotResumed(t *testing.T) {
 	other.Namespace, other.ResourceVersion = "team-z", ""
 	other.Spec.KustomizationRef.Namespace = own.Applier().Namespace
 	other.Status.Operation = &v1alpha3.ApplyOperation{Phase: v1alpha3.ApplyOperationRunning, Token: "T0"}
+	other.Finalizers = []string{v1alpha3.FluxTriggerFinalizer} // the holder whose apply this is
 	scheme := runtime.NewScheme()
 	require.NoError(t, v1alpha3.AddToScheme(scheme))
 	f.dispatcher.APIReader = fake.NewClientBuilder().WithScheme(scheme).WithObjects(own.DeepCopy(), other).Build()

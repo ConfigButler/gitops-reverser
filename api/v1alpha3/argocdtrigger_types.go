@@ -48,11 +48,15 @@ type ArgoCDTriggerStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are Configured (the Application exists, syncs a single source, has automated sync
-	// off, may be updated, and no other ArgoCDTrigger holds it) and the kstatus
-	// Ready/Reconciling/Stalled trio. Of the ArgoCDTriggers naming one Application in one cluster,
-	// the one created first holds it; the others are Configured=False (HeldByAnotherTrigger) until
-	// it is deleted, and the next in line takes it over.
+	// Conditions are Configured (an eligible GitTarget names the trigger; the Application exists,
+	// syncs a single source, has automated sync off, may be updated, and no other ArgoCDTrigger
+	// holds it) and the kstatus Ready/Reconciling/Stalled trio. A trigger acts only while an
+	// eligible GitTarget references it: one in its namespace that names it, is admitted by its
+	// ClusterProviders, and writes the repository and branch the Application syncs. Until one does,
+	// it reads nothing in the Application's cluster and is Configured=Unknown, Ready=True, both
+	// NotReferenced. Of the ArgoCDTriggers in line for one Application in one cluster, the one
+	// created first holds it; the others are Configured=False (HeldByAnotherTrigger) until it is
+	// deleted or no longer referenced, and the next in line takes it over.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -60,8 +64,9 @@ type ArgoCDTriggerStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Source is the Application's spec.source, as last read. A GitTarget naming this trigger must
-	// write the repository it syncs, on the branch its targetRevision names.
+	// Source is the Application's spec.source, as last read, published while an eligible GitTarget
+	// references the trigger. A GitTarget naming this trigger must write the repository it syncs, on
+	// the branch its targetRevision names.
 	// +optional
 	Source *ArgoCDTriggerSource `json:"source,omitempty"`
 

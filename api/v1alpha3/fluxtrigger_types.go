@@ -10,10 +10,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// FluxTriggerFinalizer is the finalizer a FluxTrigger carries while it may hold its Kustomization
-// suspended. Deleting the trigger suspends the Kustomization once more, waits until nothing started
-// before that suspend is running, and then hands it back to Flux: spec.suspend is released, so the
-// Kustomization is resumed.
+// FluxTriggerFinalizer is the finalizer a FluxTrigger carries while it holds its Kustomization
+// suspended: from before its first adoption write until it has handed the Kustomization back or
+// over. Deleting the trigger, or the last eligible GitTarget naming it, suspends the Kustomization
+// once more, waits until nothing started before that suspend is running, and then hands it back to
+// Flux: spec.suspend is released, so the Kustomization is resumed. A trigger that never held its
+// Kustomization has none.
 const FluxTriggerFinalizer = "configbutler.ai/flux-trigger"
 
 // FluxTriggerSpec names the Flux Kustomization the trigger holds, and the cluster it is in.
@@ -59,13 +61,18 @@ type FluxTriggerStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are Configured (the Kustomization exists, applies a GitRepository that follows a
-	// branch, may be patched, and no other FluxTrigger holds it), Held (Suspended: suspended under
-	// GitOps Reverser with the last suspend handled; Applying: resumed for an apply GitOps Reverser
-	// started; Suspending: a suspend is not handled yet; NotConfigured), and the kstatus
-	// Ready/Reconciling/Stalled trio. Of the FluxTriggers naming one Kustomization in one cluster, the
-	// one created first holds it; the others are Configured=False (HeldByAnotherTrigger) until it is
-	// deleted, and the next in line takes it over.
+	// Conditions are Configured (an eligible GitTarget names the trigger; the Kustomization exists,
+	// applies a GitRepository that follows a branch, may be patched, and no other FluxTrigger holds
+	// it), Held (Suspended: suspended under GitOps Reverser with the last suspend handled; Applying:
+	// resumed for an apply GitOps Reverser started; Suspending: a suspend is not handled yet;
+	// Releasing: being handed back; NotReferenced; NotConfigured), and the kstatus
+	// Ready/Reconciling/Stalled trio. A trigger acts only while an eligible GitTarget references it:
+	// one in its namespace that names it, is admitted by its ClusterProviders, and writes the
+	// repository and branch the GitRepository fetches. Until one does, it reads nothing in the
+	// Kustomization's cluster and is Configured=Unknown, Ready=True, both NotReferenced. Of the
+	// FluxTriggers in line for one Kustomization in one cluster, one holds it: the one with an apply
+	// in flight, then the one holding it already, then the one created first. The others are
+	// Configured=False (HeldByAnotherTrigger) until it lets go, and the next in line takes it over.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -73,8 +80,9 @@ type FluxTriggerStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Source is the GitRepository the Kustomization applies, as last read. A GitTarget naming this
-	// trigger must write the repository and branch it fetches.
+	// Source is the GitRepository the Kustomization applies, as last read, published while an
+	// eligible GitTarget references the trigger. A GitTarget naming this trigger must write the
+	// repository and branch it fetches.
 	// +optional
 	Source *FluxTriggerSource `json:"source,omitempty"`
 

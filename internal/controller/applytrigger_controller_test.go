@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,23 +129,79 @@ func testArgoCDTrigger(cluster string) *configbutleraiv1alpha3.ArgoCDTrigger {
 	}
 }
 
-// triggerTestClient is a control cluster holding objects, and the ClusterProviders "default" and
-// "hub" admitting team-a unless objects carries its own.
+// referencingTarget is a GitTarget team-a/name writing main of the test repository through the
+// GitProvider platform, naming the trigger kind/checkout.
+func referencingTarget(name, kind string) *configbutleraiv1alpha3.GitTarget {
+	return &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			GitProviderRef:  meta.LocalObjectReference{Name: "platform"},
+			Branch:          "main",
+			Path:            name,
+			ApplyTriggerRef: &configbutleraiv1alpha3.ApplyTriggerReference{Kind: kind, Name: "checkout"},
+		},
+	}
+}
+
+// platformProvider is the GitProvider team-a/platform of the test repository.
+func platformProvider() *configbutleraiv1alpha3.GitProvider {
+	return &configbutleraiv1alpha3.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: "team-a"},
+		Spec:       configbutleraiv1alpha3.GitProviderSpec{URL: applierTestRepo},
+	}
+}
+
+// referencedIn is a GitProvider platform and a GitTarget checkout-<kind> naming the trigger
+// kind/checkout, both in namespace: what makes a trigger there eligible.
+func referencedIn(namespace, kind string) []ctrlclient.Object {
+	provider := platformProvider()
+	provider.Namespace = namespace
+	target := referencingTarget("checkout-"+strings.ToLower(kind), kind)
+	target.Namespace = namespace
+	return []ctrlclient.Object{provider, target}
+}
+
+// unreferenced marks a triggerTestClient that holds no GitTarget naming the triggers.
+type unreferenced struct{ ctrlclient.Object }
+
+// triggerTestClient is a control cluster holding objects, the ClusterProviders "default" and "hub"
+// admitting team-a unless objects carries its own, the GitProvider platform unless objects carries a
+// GitProvider, and a GitTarget naming each trigger kind's checkout unless objects carries a
+// GitTarget or unreferenced{}.
 func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 	held := map[string]bool{}
+	hasTarget, hasProvider := false, false
+	kept := objects[:0:0]
 	for _, obj := range objects {
-		if _, ok := obj.(*configbutleraiv1alpha3.ClusterProvider); ok {
+		switch obj.(type) {
+		case *configbutleraiv1alpha3.ClusterProvider:
 			held[obj.GetName()] = true
+		case *configbutleraiv1alpha3.GitTarget, unreferenced:
+			hasTarget = true
+		case *configbutleraiv1alpha3.GitProvider:
+			hasProvider = true
+		}
+		if _, marker := obj.(unreferenced); !marker {
+			kept = append(kept, obj)
 		}
 	}
+	objects = kept
 	for _, name := range []string{configbutleraiv1alpha3.DefaultClusterProviderName, "hub"} {
 		if !held[name] {
 			objects = append(objects, admitting(name, "team-a"))
 		}
+	}
+	if !hasProvider {
+		objects = append(objects, platformProvider())
+	}
+	if !hasTarget {
+		objects = append(objects,
+			referencingTarget("checkout-flux", configbutleraiv1alpha3.ApplyTriggerKindFlux),
+			referencingTarget("checkout-argo", configbutleraiv1alpha3.ApplyTriggerKindArgoCD))
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
 		WithStatusSubresource(&configbutleraiv1alpha3.FluxTrigger{}, &configbutleraiv1alpha3.ArgoCDTrigger{}).
@@ -178,8 +235,9 @@ var triggerKey = k8stypes.NamespacedName{Namespace: "team-a", Name: "checkout"}
 
 // reconcileTrigger reconciles team-a/checkout until it settles and returns the trigger as it is
 // then. While its Kustomization's suspend is being handled, a FluxTrigger is read again at the
-// suspending interval. Every pass publishes its conditions: the first one too, which also adds the finalizer,
-// since nothing re-enqueues a trigger for a metadata-only update.
+// suspending interval. Every pass publishes its conditions: the one that adopts too, which also adds
+// the finalizer, since nothing re-enqueues a trigger for a metadata-only update. A FluxTrigger
+// carries the finalizer exactly while it is Configured: it holds its Kustomization.
 func reconcileTrigger(t *testing.T, r *ApplyTriggerReconciler) configbutleraiv1alpha3.ApplyTrigger {
 	t.Helper()
 	var trigger configbutleraiv1alpha3.ApplyTrigger
@@ -191,8 +249,9 @@ func reconcileTrigger(t *testing.T, r *ApplyTriggerReconciler) configbutleraiv1a
 		require.NotNil(t, findCondition(*trigger.StatusConditions(), ConditionTypeReady),
 			"every pass publishes Ready")
 		flux, holds := trigger.(*configbutleraiv1alpha3.FluxTrigger)
-		if holds {
-			require.True(t, controllerutil.ContainsFinalizer(flux, configbutleraiv1alpha3.FluxTriggerFinalizer))
+		if holds && conditionIsTrue(flux.Status.Conditions, ApplyTriggerConditionConfigured) {
+			require.True(t, controllerutil.ContainsFinalizer(flux, configbutleraiv1alpha3.FluxTriggerFinalizer),
+				"a trigger that holds its Kustomization carries the finalizer")
 		}
 		if held := findCondition(*trigger.StatusConditions(), ApplyTriggerConditionHeld); held != nil &&
 			held.Reason == ReasonSuspending {
@@ -231,12 +290,8 @@ func TestApplyTriggerReconcile_FluxVerdicts(t *testing.T) {
 			}},
 		{name: "no such Kustomization, which may be on its way", allowed: true,
 			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonApplierNotFound},
-		{name: "an identity that may not patch it", objects: applierFluxObjects(),
-			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonForbidden, wantStalled: true,
-			wantSource: &configbutleraiv1alpha3.FluxTriggerSource{
-				GitRepository: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "platform"},
-				URL:           "https://github.com/acme/platform", Branch: "main",
-			}},
+		{name: "an identity that may not patch it, which publishes no source", objects: applierFluxObjects(),
+			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonForbidden, wantStalled: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -301,7 +356,7 @@ func TestApplyTriggerReconcile_ArgoCDVerdicts(t *testing.T) {
 			assert.Equal(t, tc.wantStatus, configured.Status, configured.Message)
 			assert.Equal(t, tc.wantReason, configured.Reason)
 			assert.Equal(t, tc.wantStalled, conditionIsTrue(trigger.Status.Conditions, ConditionTypeStalled))
-			if tc.objects != nil {
+			if tc.wantStatus == metav1.ConditionTrue {
 				assert.Equal(t, &configbutleraiv1alpha3.ArgoCDTriggerSource{
 					RepoURL: "https://github.com/acme/platform", TargetRevision: "main",
 				}, trigger.Status.Source)
@@ -474,16 +529,15 @@ func TestApplyTriggerSpecOrOperationChanged_ReadsTheOperationPhase(t *testing.T)
 }
 
 // TestApplyTriggerReconcile_ClusterProviderAndNamespaceEventsFindTheirTriggers: a provider event
-// re-runs the triggers naming it, and a namespace label change the triggers in it.
+// re-runs every trigger, since it admits the GitTargets naming triggers too, and a namespace label
+// change the triggers in it.
 func TestApplyTriggerReconcile_ClusterProviderAndNamespaceEventsFindTheirTriggers(t *testing.T) {
 	other := testFluxTrigger("other")
 	other.Name = "elsewhere"
 	c := triggerTestClient(t, testFluxTrigger("hub"), other)
 	r := &ApplyTriggerReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplyTriggerKindFlux}
 
-	requests := r.clusterProviderToTriggers(context.Background(), admitting("hub"))
-	require.Len(t, requests, 1)
-	assert.Equal(t, "checkout", requests[0].Name)
+	assert.Len(t, r.clusterProviderToTriggers(context.Background(), admitting("hub")), 2)
 
 	ns := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}}
 	assert.Len(t, r.namespaceToTriggers(context.Background(), ns), 2)

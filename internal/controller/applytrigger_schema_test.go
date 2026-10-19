@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/applier"
 )
 
 // The API server holds the trigger kinds to their contract: each names one applier and its
@@ -78,17 +79,22 @@ var _ = Describe("Apply trigger schema", func() {
 		Expect(create(noKustomization)).To(MatchError(ContainSubstring("spec.kustomizationRef.name must not be empty")))
 	})
 
-	// A regression guard from the first local e2e of the suspend lifecycle: the first reconcile adds
-	// the finalizer, and a metadata-only update does not pass the trigger's predicate, so a reconcile
-	// that stopped there left the trigger with no status for good.
-	It("publishes a new FluxTrigger's conditions in the pass that adds its finalizer", func() {
+	// A trigger no GitTarget names adopts nothing, so it carries no finalizer and deletes at once;
+	// it still publishes its conditions, Ready because it does all it is asked to.
+	It("publishes a new FluxTrigger's conditions, and holds nothing while no GitTarget names it", func() {
 		trigger := flux("flux-first-pass")
 		Expect(create(trigger)).To(Succeed())
 		Eventually(func(g Gomega) {
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trigger), trigger)).To(Succeed())
-			g.Expect(trigger.Finalizers).To(ContainElement(configbutleraiv1alpha3.FluxTriggerFinalizer))
-			g.Expect(findCondition(trigger.Status.Conditions, ConditionTypeReady)).NotTo(BeNil())
+			ready := findCondition(trigger.Status.Conditions, ConditionTypeReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(ready.Reason).To(Equal(applier.ReasonNotReferenced))
 		}, 20*time.Second, 100*time.Millisecond).Should(Succeed())
+		Expect(trigger.Finalizers).NotTo(ContainElement(configbutleraiv1alpha3.FluxTriggerFinalizer))
+		held := findCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld)
+		Expect(held).NotTo(BeNil())
+		Expect(held.Reason).To(Equal(applier.ReasonNotReferenced))
 	})
 
 	It("never points a trigger at another applier or cluster", func() {
@@ -148,8 +154,9 @@ var _ = Describe("Apply trigger schema", func() {
 	})
 })
 
-// The trigger reconciler runs under the manager: a trigger created gets its trio, here with
-// Configured Unknown because the suite reaches no applier cluster.
+// The trigger reconciler runs under the manager: a trigger created gets its trio, Ready while no
+// GitTarget names it, and a GitTarget naming it re-runs the check, though nothing else changed on
+// the trigger. The suite reaches no applier cluster, so that check goes no further.
 var _ = Describe("Apply trigger reconcile", func() {
 	ctx := context.Background()
 
@@ -164,16 +171,31 @@ var _ = Describe("Apply trigger reconcile", func() {
 		Expect(k8sClient.Create(ctx, trigger)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, trigger) })
 
-		Eventually(func(g Gomega) {
+		configuredReason := func(g Gomega) string {
 			got := &configbutleraiv1alpha3.ArgoCDTrigger{}
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trigger), got)).To(Succeed())
+			g.Expect(got.Status.ObservedGeneration).To(Equal(got.Generation))
 			configured := findCondition(got.Status.Conditions, ApplyTriggerConditionConfigured)
 			g.Expect(configured).NotTo(BeNil())
-			g.Expect(configured.Reason).To(Equal(GitTargetReasonNotChecked))
-			ready := findCondition(got.Status.Conditions, ConditionTypeReady)
-			g.Expect(ready).NotTo(BeNil())
-			g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
-			g.Expect(got.Status.ObservedGeneration).To(Equal(got.Generation))
+			return configured.Reason
+		}
+		Eventually(func(g Gomega) {
+			g.Expect(configuredReason(g)).To(Equal(applier.ReasonNotReferenced))
+		}, 30*time.Second, 250*time.Millisecond).Should(Succeed())
+
+		target := &configbutleraiv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "names-reconciled", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.GitTargetSpec{
+				GitProviderRef: meta.LocalObjectReference{Name: "prov"}, Branch: "main", Path: "apps/reconciled",
+				ApplyTriggerRef: &configbutleraiv1alpha3.ApplyTriggerReference{
+					Kind: configbutleraiv1alpha3.ApplyTriggerKindArgoCD, Name: "reconciled",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, target)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, target) })
+		Eventually(func(g Gomega) {
+			g.Expect(configuredReason(g)).NotTo(Equal(applier.ReasonNotReferenced))
 		}, 30*time.Second, 250*time.Millisecond).Should(Succeed())
 	})
 })

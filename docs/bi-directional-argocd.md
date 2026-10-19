@@ -213,23 +213,32 @@ stateDiagram-v2
     end note
 ```
 
+A trigger acts only while an eligible `GitTarget` references it: one in the trigger's namespace that
+names it, is admitted by its `ClusterProvider`s, and writes the repository and branch the
+`Application` syncs. A trigger nothing eligible references starts no sync, reads nothing in the
+`Application`'s cluster, and is not in line for it. An `Application` has nothing to hold, so there is
+nothing to hand back either.
+
 The trigger reports `Configured`, and its `Ready` includes it:
 
 | Reason | Means | Readiness |
 | --- | --- | --- |
-| `Succeeded` | The `Application` exists, syncs a single source, has automated sync off, and may be updated | ready |
+| `Succeeded` | An eligible `GitTarget` names the trigger, and the `Application` exists, syncs a single source, has automated sync off, and may be updated | ready |
+| `NotReferenced` (`Unknown`) | No `GitTarget` names the trigger. Nothing is read or written | ready: `Ready=True`, `NotReferenced` |
+| `NotBound` (`Unknown`) | No `GitTarget` naming the trigger is eligible yet, and one cannot be judged yet | progressing |
+| `SourceMismatch`, `NamespaceNotAuthorized` or `NotBound` (`False`) | Every `GitTarget` naming the trigger is refused: it writes another repository or branch, or is not admitted. The message lists each | stalled |
 | `ApplierNotFound` | No such `Application` in the applier's cluster, or Argo CD is not installed there | progressing: `Application`s are often created after the trigger |
 | `UnsupportedSource` | The `Application` has several sources, a source hydrator, or no source | stalled |
 | `AutomatedSyncEnabled` | Automated sync is on | stalled |
 | `Forbidden` | The applier cluster's identity may not update the `Application` | stalled |
 | `NamespaceNotAuthorized` | The `clusterProviderRef` names a provider whose `accessFrom` does not admit the trigger's namespace | stalled |
 | `ClusterProviderNotFound` | The `clusterProviderRef` names a provider that does not exist | progressing |
-| `HeldByAnotherTrigger` | An older `ArgoCDTrigger` names the same `Application` in the same cluster and holds it; this one starts no sync, and takes over once that one is deleted | stalled: delete one of the two |
+| `HeldByAnotherTrigger` | An older `ArgoCDTrigger` an eligible `GitTarget` references names the same `Application` in the same cluster and holds it; this one starts no sync, and takes over once that one is deleted or no longer referenced | stalled: delete one of the two |
 
 The `GitTarget` reports `ApplyTriggerReady`: `True` when the trigger is `Ready` and its
 `Application` syncs this repository and branch, `SourceMismatch` when it syncs another,
-`ApplyTriggerNotFound` when the trigger does not exist, and otherwise the trigger's own `Ready`
-reason.
+`ApplyTriggerNotFound` when the trigger does not exist, `Unknown` (`NotReferenced`) until the
+trigger has seen that the `GitTarget` names it, and otherwise the trigger's own `Ready` reason.
 
 ## Permissions
 

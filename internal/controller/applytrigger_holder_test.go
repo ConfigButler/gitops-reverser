@@ -15,6 +15,7 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -38,12 +39,22 @@ func duplicateFixture(t *testing.T) *holdFixture {
 	second.CreationTimestamp = metav1.NewTime(first.CreationTimestamp.Add(time.Hour))
 
 	sim := applierSim(t, applierFluxObjects()...)
-	c := triggerTestClient(t, first, second, admitting(configbutleraiv1alpha3.DefaultClusterProviderName,
-		"team-a", "team-b"))
+	c := inLineClient(t, configbutleraiv1alpha3.ApplyTriggerKindFlux, first, second)
 	r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux, sim.Client, nil, true)
 	recorder := record.NewFakeRecorder(64)
 	r.Recorder = recorder
 	return &holdFixture{r: r, sim: sim, recorder: recorder}
+}
+
+// inLineClient is a control cluster holding triggers, in team-a and team-b, each referenced by an
+// eligible GitTarget of its namespace, with the default ClusterProvider admitting both.
+func inLineClient(t *testing.T, kind string, triggers ...ctrlclient.Object) ctrlclient.Client {
+	t.Helper()
+	objects := append([]ctrlclient.Object{admitting(configbutleraiv1alpha3.DefaultClusterProviderName,
+		"team-a", "team-b")}, triggers...)
+	objects = append(objects, referencedIn("team-a", kind)...)
+	objects = append(objects, referencedIn("team-b", kind)...)
+	return triggerTestClient(t, objects...)
 }
 
 // reconcileKey reconciles one trigger a few times, enough to settle a suspend, and returns it.
@@ -91,8 +102,8 @@ func TestFluxTrigger_OneTriggerHoldsAKustomization(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, configured.Status)
 	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, configured.Reason)
 	assert.Equal(t, "Kustomization flux-system/checkout in the cluster of ClusterProvider \"default\" is held by "+
-		"FluxTrigger team-a/checkout, which was created first; this trigger takes it over once that one is deleted",
-		configured.Message)
+		"FluxTrigger team-a/checkout, which was created first; this trigger takes it over once that one is deleted "+
+		"or no eligible GitTarget references it", configured.Message)
 	ready := findCondition(second.Status.Conditions, ConditionTypeReady)
 	require.NotNil(t, ready)
 	assert.Equal(t, metav1.ConditionFalse, ready.Status)
@@ -189,8 +200,8 @@ func TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine(t *testing.T) {
 	requests := f.r.triggersInLine(context.Background(), gone)
 	require.Len(t, requests, 1)
 	assert.Equal(t, inLineKey, requests[0].NamespacedName)
-	assert.True(t, triggerGone().Delete(event.DeleteEvent{Object: gone}))
-	assert.False(t, triggerGone().Update(event.UpdateEvent{ObjectOld: gone, ObjectNew: gone}))
+	assert.True(t, triggerLineChanged().Delete(event.DeleteEvent{Object: gone}))
+	assert.False(t, triggerLineChanged().Update(event.UpdateEvent{ObjectOld: gone, ObjectNew: gone}))
 
 	second := f.reconcileKey(t, inLineKey)
 
@@ -205,16 +216,16 @@ func TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine(t *testing.T) {
 // TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt is review 5's second finding (P2): a trigger
 // created in the same second as the holder, which comes before it by name, appears while the
 // holder's apply is in flight. It waits: it is Configured=False, leaves the resumed Kustomization to
-// the holder's worker, and records nothing. Once that apply ends, it takes the Kustomization over,
-// as it was left.
+// the holder's worker, and records nothing. Once that apply ends, the holder still keeps it: a
+// trigger that holds its Kustomization comes before any that does not, so the Kustomization changes
+// hands only once the holder lets go of it.
 func TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt(t *testing.T) {
 	holderTrigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 	holderTrigger.Namespace = inLineKey.Namespace // team-b: after team-a by name
 	holderTrigger.CreationTimestamp = metav1.NewTime(time.Unix(1_000_000, 0))
 	holderKey := k8stypes.NamespacedName{Namespace: holderTrigger.Namespace, Name: holderTrigger.Name}
 	sim := applierSim(t, applierFluxObjects()...)
-	c := triggerTestClient(t, holderTrigger, admitting(configbutleraiv1alpha3.DefaultClusterProviderName,
-		"team-a", "team-b"))
+	c := inLineClient(t, configbutleraiv1alpha3.ApplyTriggerKindFlux, holderTrigger)
 	r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux, sim.Client, nil, true)
 	recorder := record.NewFakeRecorder(64)
 	r.Recorder = recorder
@@ -262,12 +273,13 @@ func TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt(t *testing.T) {
 		&finished
 	require.NoError(t, f.r.Status().Update(context.Background(), held))
 
-	taken := f.reconcileKey(t, triggerKey)
-	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplyTriggerConditionConfigured), "first in line now")
-	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplyTriggerConditionHeld))
-	behind := findCondition(f.reconcileKey(t, holderKey).Status.Conditions, ApplyTriggerConditionConfigured)
-	require.NotNil(t, behind)
-	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, behind.Reason)
+	still := findCondition(f.reconcileKey(t, triggerKey).Status.Conditions, ApplyTriggerConditionConfigured)
+	require.NotNil(t, still)
+	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, still.Reason)
+	assert.Contains(t, still.Message, "which holds it now")
+	assert.True(t, conditionIsTrue(f.reconcileKey(t, holderKey).Status.Conditions, ApplyTriggerConditionConfigured),
+		"the holder keeps it between applies too")
+	assert.Empty(t, f.events(), "and nothing is adopted twice")
 }
 
 // TestArgoCDTrigger_OneTriggerHoldsAnApplication: two ArgoCDTriggers on one Application would both
@@ -278,8 +290,7 @@ func TestArgoCDTrigger_OneTriggerHoldsAnApplication(t *testing.T) {
 	second := testArgoCDTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 	second.Namespace = inLineKey.Namespace
 	second.CreationTimestamp = first.CreationTimestamp
-	c := triggerTestClient(t, first, second, admitting(configbutleraiv1alpha3.DefaultClusterProviderName,
-		"team-a", "team-b"))
+	c := inLineClient(t, configbutleraiv1alpha3.ApplyTriggerKindArgoCD, first, second)
 	r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindArgoCD,
 		applierFakeSource(t, applierArgoApplication(nil)), nil, true)
 
