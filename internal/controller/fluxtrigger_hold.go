@@ -377,9 +377,9 @@ const releaseDeadline = 10 * time.Minute
 // apply may still be running), waits until that suspend's token is handled, and releases
 // spec.suspend, unless a trigger in line takes the Kustomization over (releaseStep). Until that is
 // done the trigger stays the holder, Held=False (Releasing), so no successor acts on the
-// Kustomization meanwhile. A Kustomization or a cluster that is gone has nothing to hand back, and
-// one the identity may not write is let go with a Warning Event: neither should hold the trigger
-// forever. Nor does anything else past releaseDeadline. A trigger behind another in line for the
+// Kustomization meanwhile. A Kustomization that is gone has nothing to hand back; a cluster no
+// client reaches any more since its ClusterProvider went (releaseClient), and a Kustomization the
+// identity may not write, are let go with a Warning Event: none should hold the trigger forever. Nor does anything else past releaseDeadline. A trigger behind another in line for the
 // Kustomization hands nothing back: the Kustomization is that one's. Letting go removes the
 // finalizer; a live trigger then holds nothing until an eligible GitTarget references it again,
 // which adopts the Kustomization anew.
@@ -629,8 +629,12 @@ func (r *ApplyTriggerReconciler) releaseFailed(
 	return &pendingRelease{err: err, left: left}
 }
 
-// releaseClient is the Flux client a deleted trigger hands its Kustomization back through, or nil
-// when there is nothing to reach: no cluster clients are wired, or the ClusterProvider is gone.
+// releaseClient is the Flux client a retiring trigger hands its Kustomization back through, or nil
+// when there is nothing to reach: no cluster clients are wired, or the ClusterProvider is gone and
+// no client reaches its cluster any more, which lets the trigger go with a Warning Event. A
+// ClusterProvider that is gone does not end the hand-back by itself: one without kubeConfig names
+// the operator's own cluster, which still answers, and a remote one may still be reached through the
+// client it left.
 func (r *ApplyTriggerReconciler) releaseClient(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) (*applier.Flux, error) {
@@ -639,16 +643,18 @@ func (r *ApplyTriggerReconciler) releaseClient(
 	}
 	provider := &configbutleraiv1alpha3.ClusterProvider{}
 	err := r.Get(ctx, client.ObjectKey{Name: trigger.ClusterProvider()}, provider)
-	if apierrors.IsNotFound(err) {
-		logf.FromContext(ctx).Info("the trigger's ClusterProvider is gone; nothing to hand back",
-			"clusterProvider", trigger.ClusterProvider())
-		return nil, nil //nolint:nilnil // as above
-	}
-	if err != nil {
+	gone := apierrors.IsNotFound(err)
+	if err != nil && !gone {
 		return nil, err
 	}
 	flux, err := r.fluxClient(ctx, trigger)
-	if err != nil {
+	switch {
+	case err != nil && gone:
+		r.event(trigger, corev1.EventTypeWarning, EventReasonReleaseFailed,
+			"could not hand Kustomization %s back to Flux: its ClusterProvider %q is gone; it is left suspended, "+
+				"and `flux resume` resumes it", trigger.Applier(), trigger.ClusterProvider())
+		return nil, nil //nolint:nilnil // nothing to reach, and the Event says so
+	case err != nil:
 		return nil, fmt.Errorf("reach the cluster of Kustomization %s to hand it back: %w", trigger.Applier(), err)
 	}
 	return flux, nil

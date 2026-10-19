@@ -355,6 +355,60 @@ func TestFluxTrigger_DeletionLetsGoOfWhatIsGone(t *testing.T) {
 	}
 }
 
+// TestFluxTrigger_AGoneClusterProviderStillHandsBack is review 7's C1: a folder holding both a
+// ClusterProvider and a FluxTrigger is removed, and the provider goes first. The hand-back was
+// skipped with an Info log line, and the Kustomization stayed suspended under gitops-reverser for
+// good, though for a provider without kubeConfig its cluster is still reachable. Now the release
+// goes on through whatever client still resolves, and only when none does is the trigger let go,
+// with a Warning ReleaseFailed saying the Kustomization is left suspended.
+func TestFluxTrigger_AGoneClusterProviderStillHandsBack(t *testing.T) {
+	held := func(t *testing.T) *holdFixture {
+		t.Helper()
+		f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+		reconcileTrigger(t, f.r)
+		f.events()
+		require.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
+		provider := &configbutleraiv1alpha3.ClusterProvider{}
+		require.NoError(t, f.r.Get(context.Background(),
+			ctrlclient.ObjectKey{Name: configbutleraiv1alpha3.DefaultClusterProviderName}, provider))
+		require.NoError(t, f.r.Delete(context.Background(), provider))
+		require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
+		return f
+	}
+	gone := func(t *testing.T, f *holdFixture) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+			require.NoError(t, err)
+			err = f.r.Get(context.Background(), triggerKey, &configbutleraiv1alpha3.FluxTrigger{})
+			return apierrors.IsNotFound(err)
+		}, 5*time.Second, 5*time.Millisecond, "the finalizer goes")
+	}
+
+	t.Run("its cluster still answers, so the Kustomization is handed back", func(t *testing.T) {
+		f := held(t)
+		gone(t, f)
+		assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "handed back to Flux")
+		events := f.events()
+		require.Len(t, events, 1)
+		assert.True(t, strings.HasPrefix(events[0], "Normal Released handed Kustomization flux-system/checkout back"),
+			events[0])
+	})
+	t.Run("its cluster no longer answers, so the trigger lets go loudly", func(t *testing.T) {
+		f := held(t)
+		f.r.ApplierClients = func(context.Context, string) (dynamic.Interface, error) {
+			return nil, errors.New(`ClusterProvider "default" not found`)
+		}
+		gone(t, f)
+		assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "left suspended, as the Event says")
+		events := f.events()
+		require.Len(t, events, 1)
+		assert.True(t, strings.HasPrefix(events[0], "Warning ReleaseFailed could not hand Kustomization "+
+			"flux-system/checkout back to Flux: its ClusterProvider \"default\" is gone; it is left suspended, "+
+			"and `flux resume` resumes it"), events[0])
+	})
+}
+
 // TestFluxTrigger_TakesOverASuspendBySomebodyElse: a Kustomization `flux suspend` suspended is not
 // held: that write may have let a reconcile run, so the trigger takes the field over with a token of
 // its own and is Ready once it is handled.

@@ -335,9 +335,12 @@ later deletes it.
   forced `suspend: false`. A manager that *applies* the field keeps it, and `Released` names it. An
   operation whose trigger is being deleted completes as `Failed` and writes nothing more to the
   `Kustomization`; the dispatcher reads the trigger uncached before every step that may suspend. A
-  `Kustomization` or `ClusterProvider` that is gone, a suspend or release the identity may not make,
-  or a hand-back still unfinished 10 minutes after `Held` turned `Releasing` (each a `Warning`
-  `ReleaseFailed` Event) lets the trigger go.
+  `Kustomization` that is gone lets the trigger go. A `ClusterProvider` that is gone does not end the
+  hand-back: it goes on through whatever client still reaches the cluster, which for a provider
+  without `kubeConfig` is the operator's own. A cluster no client reaches any more, a suspend or
+  release the identity may not make, or a hand-back still unfinished 10 minutes after `Held` turned
+  `Releasing` (each a `Warning` `ReleaseFailed` Event, which says where the `Kustomization` was left)
+  lets the trigger go.
 
 ### Restart recovery
 
