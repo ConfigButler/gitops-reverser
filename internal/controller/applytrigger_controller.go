@@ -40,19 +40,24 @@ const ApplyTriggerConditionConfigured = "Configured"
 // time it was given. It clears when the operation completes.
 const ReasonOperationUnresolved = "OperationUnresolved"
 
-// ApplyTriggerConditionSuspended reports whether a FluxTrigger holds its Kustomization: suspended
+// ApplyTriggerConditionHeld reports whether a FluxTrigger holds its Kustomization: suspended
 // under GitOps Reverser's field manager, with the last suspend's token handled, so nothing that
-// started before the suspend is still running. A FluxTrigger is Ready only once it is.
-const ApplyTriggerConditionSuspended = applier.TriggerConditionSuspended
+// started before the suspend is still running, or resumed for an apply of GitOps Reverser's own. A
+// FluxTrigger is Ready only once it is.
+const ApplyTriggerConditionHeld = applier.TriggerConditionHeld
 
-// Suspended reasons, and the Events of the suspend lifecycle on a FluxTrigger.
+// Held reasons, and the Events of the suspend lifecycle on a FluxTrigger.
 const (
-	// ReasonHeld is Suspended=True.
-	ReasonHeld = "Held"
-	// ReasonFencing is Suspended=False while the token of the suspend is not handled yet.
-	ReasonFencing = "Fencing"
-	// ReasonNotHeld is Suspended=Unknown on a trigger that is not Configured: nothing is suspended.
-	ReasonNotHeld = "NotHeld"
+	// ReasonSuspended is Held=True: the Kustomization is suspended, the last suspend handled, and
+	// nothing applies.
+	ReasonSuspended = "Suspended"
+	// ReasonApplying is Held=True while an operation of a branch worker is in flight and followed:
+	// the Kustomization is resumed for it, and suspended again when it ends.
+	ReasonApplying = "Applying"
+	// ReasonSuspending is Held=False while the token of the suspend is not handled yet.
+	ReasonSuspending = "Suspending"
+	// ReasonNotConfigured is Held=Unknown on a trigger that is not Configured: nothing is held.
+	ReasonNotConfigured = "NotConfigured"
 	// EventReasonAdopted is a Kustomization suspended for the first time.
 	EventReasonAdopted = "Adopted"
 	// EventReasonResumedElsewhere is a held Kustomization found resumed by somebody else, such as
@@ -68,9 +73,9 @@ const (
 // that read is what finds a `flux resume`, so it is more often than other kinds settle.
 const fluxTriggerSteadyInterval = time.Minute
 
-// applyTriggerFenceInterval is how soon a trigger waiting on its Kustomization's suspend is read
-// again: a suspended reconcile handles the token in tens of milliseconds.
-const applyTriggerFenceInterval = 2 * time.Second
+// applyTriggerSuspendingInterval is how soon a trigger waiting on its Kustomization's suspend is
+// read again: a suspended reconcile handles the token in tens of milliseconds.
+const applyTriggerSuspendingInterval = 2 * time.Second
 
 // applierCheckTimeout bounds the Configured check: at most two GETs and two access reviews
 // against the applier's cluster. Its client has no request timeout, because it also carries the
@@ -82,7 +87,7 @@ const applierCheckTimeout = 10 * time.Second
 // Argo CD may not be installed in the applier's cluster at all, and an informer on a kind that is
 // not served would be a failure to report rather than a check that answers "not found". The
 // cadence is its own: RequeueSteadyInterval (fluxTriggerSteadyInterval for a FluxTrigger),
-// applyTriggerFenceInterval while a Kustomization has not handled its suspend yet, or
+// applyTriggerSuspendingInterval while a Kustomization has not handled its suspend yet, or
 // applyTriggerSettleInterval while something is expected to clear on its own, such as an applier
 // created after its trigger.
 
@@ -160,7 +165,7 @@ func (r *ApplyTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	var held *conditionValue
 	if holds {
 		value := r.holdFlux(ctx, flux, configured, checked)
-		st.setValue(ApplyTriggerConditionSuspended, value)
+		st.setValue(ApplyTriggerConditionHeld, value)
 		held = &value
 	}
 
@@ -179,8 +184,8 @@ func (r *ApplyTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		requeue = fluxTriggerSteadyInterval
 	}
 	switch {
-	case held != nil && held.Reason == ReasonFencing:
-		requeue = applyTriggerFenceInterval
+	case held != nil && held.Reason == ReasonSuspending:
+		requeue = applyTriggerSuspendingInterval
 	case rd.converging():
 		requeue = applyTriggerSettleInterval
 	}
@@ -189,7 +194,7 @@ func (r *ApplyTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 // holdFlux holds a FluxTrigger's Kustomization, and then publishes its source consumers when its
 // applier was checked and is Configured: prefetch also needs the Kustomization held. It returns the
-// Suspended condition.
+// Held condition.
 func (r *ApplyTriggerReconciler) holdFlux(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, configured conditionValue, checked bool,
 ) conditionValue {

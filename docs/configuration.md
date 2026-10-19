@@ -1220,9 +1220,9 @@ status:
       status: "True"
       reason: Succeeded
       message: Kustomization flux-system/checkout applies GitRepository flux-system/platform, ...
-    - type: Suspended          # FluxTrigger only
+    - type: Held               # FluxTrigger only
       status: "True"
-      reason: Held             # Held | Fencing | NotHeld
+      reason: Suspended        # Suspended | Applying | Suspending | NotConfigured
     - type: Ready
       status: "True"
   source:
@@ -1237,7 +1237,7 @@ status:
     reason: ForeignCommit      # ForeignCommit | Refusal | Repair | CatchUp
     commit: 4f2c1ab9...
     token: "2026-10-20T10:14:03.123456789Z"
-    fenceToken: "2026-10-20T10:14:20.987654321Z"
+    suspendToken: "2026-10-20T10:14:20.987654321Z"
     appliedRevision: main@sha1:4f2c1ab9...
     requestedAt: "2026-10-20T10:14:03Z"
     finishedAt: "2026-10-20T10:14:21Z"
@@ -1248,7 +1248,7 @@ status:
 | --- | --- |
 | `operation.phase` | `Requested`, `Running`, `Settling` (Flux only: applied, not yet seen suspended again) and `Unresolved` (not completed in 5 minutes, still followed) are in flight; `Succeeded` and `Failed` have completed. [The life of an apply](bi-directional.md#the-life-of-an-apply) draws the transitions |
 | `operation.token` | Identifies the request in the applier's own status: the `reconcile.fluxcd.io/requestedAt` value of the resume, or the `gitops-reverser request` entry in an Argo CD operation's `info` |
-| `operation.fenceToken` | Flux only: the token of the suspend after the apply. Once it is handled, nothing that started before the suspend is still running |
+| `operation.suspendToken` | Flux only: the token of the suspend after the apply. Once it is handled, nothing that started before the suspend is still running |
 | `operation.appliedRevision` | The revision the applier reports it applied. It can differ from `commit` when the branch moved between the check and the apply |
 | `repairOwed` | `true` while an apply reverted an API edit made after it was asked for: Git kept the edit, and the cluster runs the older value until the `Repair` |
 | `source.otherConsumers` | Flux only: the `Kustomization`s and `HelmRelease`s that apply the same `GitRepository` and that no `FluxTrigger` holds. Information only; it never affects `Ready` |
@@ -1259,7 +1259,8 @@ an `Unresolved` operation with no `reason` and no `commit`, which completes once
 handled.
 
 **Conditions.** `Configured` is a gate, and the trigger's `Ready` aggregates it; a `FluxTrigger` is
-also `Ready` only once `Suspended` is `True`. The `False` reasons are `ApplierNotFound`,
+also `Ready` only once `Held` is `True` (`Suspended`, or `Applying` while an apply of GitOps
+Reverser's is in flight). The `False` reasons are `ApplierNotFound`,
 `UnsupportedSource`, `AutomatedSyncEnabled` (Argo CD), `SuspendOwnedElsewhere` (Flux), `Forbidden`,
 `NamespaceNotAuthorized`, `ClusterProviderNotFound` and `HeldByAnotherTrigger`; each guide's table
 says what they mean for its applier and how to fix them
@@ -1274,7 +1275,7 @@ The applier is read on the trigger's own reconcile tick rather than watched, so 
 the Flux or Argo CD CRDs costs nothing: every 15 seconds while it is expected to clear on its own,
 such as an applier created after its trigger, and otherwise every minute for a `FluxTrigger` (that
 read is what finds a `flux resume`) and every 5 minutes for an `ArgoCDTrigger`. A `FluxTrigger` that
-is `Fencing` is read every 2 seconds. Annotate the trigger with
+is `Suspending` is read every 2 seconds. Annotate the trigger with
 `reconcile.configbutler.ai/requestedAt` to have it read now.
 
 **Deleting a `FluxTrigger` hands the `Kustomization` back to Flux,** through the finalizer

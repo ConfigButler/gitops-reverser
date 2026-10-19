@@ -60,7 +60,7 @@ func (l *branchWorkerEventLoop) followRecordedFor(state *applierState, now time.
 		}
 		return
 	}
-	if inFlight && recorded.Token == "" && recorded.FenceToken != state.followedFence {
+	if inFlight && recorded.Token == "" && recorded.SuspendToken != state.followedSuspend {
 		l.followRecorded(state, recorded, now)
 	}
 }
@@ -87,7 +87,7 @@ func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1
 		previous: state.operation, previousID: state.operationID,
 	}
 	state.inflight, state.lastTurn = attempt, attempt.id
-	state.followedFence = recorded.FenceToken
+	state.followedSuspend = recorded.SuspendToken
 	state.openApplyWindow(attempt.id, recorded.Commit, now)
 	state.operation, state.operationID = recorded.DeepCopy(), attempt.id
 

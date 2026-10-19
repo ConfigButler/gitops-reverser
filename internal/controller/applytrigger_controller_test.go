@@ -177,8 +177,8 @@ func triggerReconciler(
 var triggerKey = k8stypes.NamespacedName{Namespace: "team-a", Name: "checkout"}
 
 // reconcileTrigger reconciles team-a/checkout until it settles and returns the trigger as it is
-// then. While its Kustomization's suspend is being handled, a FluxTrigger is read again at the fence
-// interval. Every pass publishes its conditions: the first one too, which also adds the finalizer,
+// then. While its Kustomization's suspend is being handled, a FluxTrigger is read again at the
+// suspending interval. Every pass publishes its conditions: the first one too, which also adds the finalizer,
 // since nothing re-enqueues a trigger for a metadata-only update.
 func reconcileTrigger(t *testing.T, r *ApplyTriggerReconciler) configbutleraiv1alpha3.ApplyTrigger {
 	t.Helper()
@@ -194,9 +194,9 @@ func reconcileTrigger(t *testing.T, r *ApplyTriggerReconciler) configbutleraiv1a
 		if holds {
 			require.True(t, controllerutil.ContainsFinalizer(flux, configbutleraiv1alpha3.FluxTriggerFinalizer))
 		}
-		if held := findCondition(*trigger.StatusConditions(), ApplyTriggerConditionSuspended); held != nil &&
-			held.Reason == ReasonFencing {
-			assert.Equal(t, applyTriggerFenceInterval, result.RequeueAfter, "a suspend is waited for closely")
+		if held := findCondition(*trigger.StatusConditions(), ApplyTriggerConditionHeld); held != nil &&
+			held.Reason == ReasonSuspending {
+			assert.Equal(t, applyTriggerSuspendingInterval, result.RequeueAfter, "a suspend is waited for closely")
 			return false
 		}
 		want := RequeueSteadyInterval

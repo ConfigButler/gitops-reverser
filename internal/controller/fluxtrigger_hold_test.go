@@ -95,10 +95,10 @@ func TestFluxTrigger_AdoptsItsKustomization(t *testing.T) {
 
 	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
 
-	held := findCondition(got.Status.Conditions, ApplyTriggerConditionSuspended)
+	held := findCondition(got.Status.Conditions, ApplyTriggerConditionHeld)
 	require.NotNil(t, held)
 	assert.Equal(t, metav1.ConditionTrue, held.Status, held.Message)
-	assert.Equal(t, ReasonHeld, held.Reason)
+	assert.Equal(t, ReasonSuspended, held.Reason)
 	assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeReady))
 	ks := f.sim.Kustomization(checkoutKustomization)
 	assert.True(t, suspendedSpec(ks))
@@ -132,7 +132,7 @@ func TestFluxTrigger_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 		recorded := f.trigger(t).Status.Operation
 		require.NotNil(t, recorded, "round %d", round)
 		assert.Equal(t, configbutleraiv1alpha3.ApplyOperationUnresolved, recorded.Phase)
-		assert.NotEmpty(t, recorded.FenceToken)
+		assert.NotEmpty(t, recorded.SuspendToken)
 		assert.Empty(t, recorded.Token, "no request of GitOps Reverser's")
 		assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
 		events := f.events()
@@ -145,8 +145,8 @@ func TestFluxTrigger_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 		assert.Equal(t, configbutleraiv1alpha3.ApplyOperationSucceeded, got.Status.Operation.Phase,
 			"complete once the suspend's token is handled")
 		assert.NotNil(t, got.Status.Operation.FinishedAt)
-		assert.Equal(t, recorded.FenceToken, got.Status.Operation.FenceToken)
-		assert.True(t, conditionIsTrue(got.Status.Conditions, ApplyTriggerConditionSuspended))
+		assert.Equal(t, recorded.SuspendToken, got.Status.Operation.SuspendToken)
+		assert.True(t, conditionIsTrue(got.Status.Conditions, ApplyTriggerConditionHeld))
 	}
 	assert.Len(t, f.sim.Applied(), 2, "each resume applied once, unchecked; that is what the record says")
 }
@@ -158,7 +158,7 @@ func TestFluxTrigger_LeavesABranchWorkersOperationAlone(t *testing.T) {
 	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 	trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
 	trigger.Status.Conditions = []metav1.Condition{{
-		Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionTrue, Reason: ReasonHeld,
+		Type: ApplyTriggerConditionHeld, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 		LastTransitionTime: metav1.Now(),
 	}}
 	trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
@@ -185,7 +185,7 @@ func workerOperationTrigger() *configbutleraiv1alpha3.FluxTrigger {
 	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 	trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
 	trigger.Status.Conditions = []metav1.Condition{{
-		Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionTrue, Reason: ReasonHeld,
+		Type: ApplyTriggerConditionHeld, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 		LastTransitionTime: metav1.Now(),
 	}}
 	trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
@@ -195,12 +195,12 @@ func workerOperationTrigger() *configbutleraiv1alpha3.FluxTrigger {
 	return trigger
 }
 
-// TestFluxTrigger_AnOperationNobodyFollowsIsFenced is review 4's B backstop: the reconciler left a
+// TestFluxTrigger_AnOperationNobodyFollowsIsSuspended is review 4's B backstop: the reconciler left a
 // Kustomization resumed for any worker operation in flight, for ever, though nothing followed it
 // (abandoned, undelivered, lost at startup). Now it leaves it only while this process follows the
 // operation, or for a grace after it first saw nobody following it; past that it suspends the
 // Kustomization, and completes the operation Failed once the suspend is handled.
-func TestFluxTrigger_AnOperationNobodyFollowsIsFenced(t *testing.T) {
+func TestFluxTrigger_AnOperationNobodyFollowsIsSuspended(t *testing.T) {
 	f := newHoldFixture(t, workerOperationTrigger())
 	f.r.UnfollowedGrace = time.Nanosecond
 	f.r.Follower = followerStub{"T1": true}
@@ -208,6 +208,12 @@ func TestFluxTrigger_AnOperationNobodyFollowsIsFenced(t *testing.T) {
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
 	require.NoError(t, err)
 	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "followed: left to the worker")
+	applying := &configbutleraiv1alpha3.FluxTrigger{}
+	require.NoError(t, f.r.Get(context.Background(), triggerKey, applying))
+	held := findCondition(applying.Status.Conditions, ApplyTriggerConditionHeld)
+	require.NotNil(t, held)
+	assert.Equal(t, metav1.ConditionTrue, held.Status, "an operation of ours in flight is held")
+	assert.Equal(t, ReasonApplying, held.Reason)
 
 	f.r.Follower = followerStub{}
 	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
@@ -215,10 +221,10 @@ func TestFluxTrigger_AnOperationNobodyFollowsIsFenced(t *testing.T) {
 	require.NotNil(t, got.Status.Operation)
 	assert.Equal(t, configbutleraiv1alpha3.ApplyOperationFailed, got.Status.Operation.Phase)
 	assert.Equal(t, "T1", got.Status.Operation.Token, "the worker's operation, completed")
-	assert.NotEmpty(t, got.Status.Operation.FenceToken)
+	assert.NotEmpty(t, got.Status.Operation.SuspendToken)
 	assert.NotNil(t, got.Status.Operation.FinishedAt)
 	assert.Contains(t, got.Status.Operation.Message, "followed by nobody")
-	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplyTriggerConditionSuspended))
+	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplyTriggerConditionHeld))
 	events := f.events()
 	require.Len(t, events, 1)
 	assert.True(t, strings.HasPrefix(events[0], "Warning OperationUnfollowed the Refusal apply"), events[0])
@@ -310,7 +316,7 @@ func TestFluxTrigger_DeletionHandsTheKustomizationBack(t *testing.T) {
 		) {
 			return true
 		}
-		assert.Equal(t, applyTriggerFenceInterval, result.RequeueAfter)
+		assert.Equal(t, applyTriggerSuspendingInterval, result.RequeueAfter)
 		return false
 	}, 5*time.Second, 5*time.Millisecond, "the finalizer goes once the Kustomization is handed back")
 
@@ -360,7 +366,7 @@ func TestFluxTrigger_TakesOverASuspendBySomebodyElse(t *testing.T) {
 
 	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
 
-	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplyTriggerConditionSuspended))
+	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplyTriggerConditionHeld))
 	assert.Contains(t, kustomizationManagers(f.sim.Kustomization(checkoutKustomization)), applier.SuspendFieldManager)
 	assert.Empty(t, f.events(), "neither an adoption of a running Kustomization nor an external resume")
 }
@@ -424,7 +430,7 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	assert.True(t, conditionIsTrue(f.trigger(t).Status.Conditions, ConditionTypeReady), "information only")
 
 	// The fourth review's finding C: a trigger holds its Kustomization only once it says so
-	// (Suspended=True). One that is not Configured (SuspendOwnedElsewhere), or still fencing, leaves
+	// (Held=True). One that is not Configured (SuspendOwnedElsewhere), or still suspending, leaves
 	// a Kustomization Flux applies on its own.
 	infraTrigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
 	infraTrigger.Name, infraTrigger.Spec.KustomizationRef.Name = "infra", "infra"
@@ -434,8 +440,8 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 		{Kind: "Kustomization", Namespace: "flux-system", Name: "infra"},
 	}
 	for _, suspended := range []metav1.Condition{
-		{Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionUnknown, Reason: ReasonNotHeld},
-		{Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionFalse, Reason: ReasonFencing},
+		{Type: ApplyTriggerConditionHeld, Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured},
+		{Type: ApplyTriggerConditionHeld, Status: metav1.ConditionFalse, Reason: ReasonSuspending},
 	} {
 		setTriggerCondition(t, f.r, "infra", suspended)
 		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
@@ -445,7 +451,7 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	}
 
 	setTriggerCondition(t, f.r, "infra", metav1.Condition{
-		Type: ApplyTriggerConditionSuspended, Status: metav1.ConditionTrue, Reason: ReasonHeld,
+		Type: ApplyTriggerConditionHeld, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 	})
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
 	require.NoError(t, err)
@@ -463,7 +469,7 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 
 	trigger := f.trigger(t)
 	f.r.publishConsumers(context.Background(), trigger,
-		conditionValue{Status: metav1.ConditionFalse, Reason: ReasonFencing})
+		conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending})
 	assert.Empty(t, trigger.Status.Source.OtherConsumers)
 	assert.False(t, trigger.Status.Source.Prefetch, "nor while its own Kustomization is not held yet")
 }
@@ -492,7 +498,7 @@ func TestFluxTrigger_CompletesTheLiveExternalOperation(t *testing.T) {
 	f := newHoldFixture(t, cached, ks, objs[1])
 	live := cached.DeepCopy()
 	live.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
-		Phase: configbutleraiv1alpha3.ApplyOperationUnresolved, FenceToken: "T2", RequestedAt: metav1.Now(),
+		Phase: configbutleraiv1alpha3.ApplyOperationUnresolved, SuspendToken: "T2", RequestedAt: metav1.Now(),
 	}
 	f.r.APIReader = triggerTestClient(t, live)
 
@@ -502,7 +508,7 @@ func TestFluxTrigger_CompletesTheLiveExternalOperation(t *testing.T) {
 	got := f.trigger(t)
 	require.NotNil(t, got.Status.Operation, "the live operation is completed")
 	assert.True(t, got.Status.Operation.Phase.Completed(), got.Status.Operation.Phase)
-	assert.Equal(t, "T2", got.Status.Operation.FenceToken)
+	assert.Equal(t, "T2", got.Status.Operation.SuspendToken)
 	assert.NotNil(t, got.Status.Operation.FinishedAt)
 }
 
@@ -558,7 +564,7 @@ func TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
 			events := f.events()
 			if deleted == 0 {
 				require.NoError(t, err, "still waiting for the suspend")
-				assert.Equal(t, applyTriggerFenceInterval, result.RequeueAfter)
+				assert.Equal(t, applyTriggerSuspendingInterval, result.RequeueAfter)
 				assert.Empty(t, events)
 				return
 			}

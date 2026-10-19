@@ -249,10 +249,10 @@ type applierState struct {
 	// it is published as withdrawn.
 	withdrawn *v1alpha3.ApplyOperation
 	// recovered is whether the trigger's recorded status was read back for this applier, once,
-	// when this process first listed it; followedFence is the fence token of the last operation
+	// when this process first listed it; followedSuspend is the suspend token of the last operation
 	// the trigger's reconciler recorded that this worker followed (apply_recovery.go).
-	recovered     bool
-	followedFence string
+	recovered       bool
+	followedSuspend string
 }
 
 // repairOwed reports whether a Repair is owed: not yet carried, or carried by the attempt out.
@@ -682,8 +682,8 @@ func (s *applierState) recordOperation(attempt *inflightAttempt, res ApplyResult
 		return
 	}
 	operation := s.operation.DeepCopy()
-	if res.FenceToken != "" {
-		operation.FenceToken = res.FenceToken
+	if res.SuspendToken != "" {
+		operation.SuspendToken = res.SuspendToken
 	}
 	if operation.Phase != v1alpha3.ApplyOperationUnresolved || phase.Completed() {
 		operation.Phase = phase

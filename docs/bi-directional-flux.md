@@ -159,7 +159,7 @@ information only and never affects `Ready`: one source for `apps` and `infra` is
 - While the list is empty and the trigger holds its own `Kustomization`, `status.source.prefetch` is
   `true`: when GitOps Reverser learns of a push while the branch is busy, it has the source fetch at
   once, so the artifact is ready when the apply is due. A consumer counts as held only while its
-  `FluxTrigger` reports `Suspended=True`, checked again on the cluster just before the fetch.
+  `FluxTrigger` reports `Held=True`, checked again on the cluster just before the fetch.
 - Appliers on one branch that share a source apply one at a time.
 
 ## The `Kustomization`
@@ -212,21 +212,21 @@ recreate the trigger to hold another `Kustomization`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Free
-    Free --> Fencing: the trigger is Configured and adopts it
-    Fencing --> Held: the Kustomization handled the suspend
-    Held --> Resumed: GitOps Reverser asks for an apply
-    Resumed --> Fencing: the reconcile ended, suspended again
-    Held --> Fencing: found resumed (flux resume) or suspended by another (flux suspend)
-    Held --> Free: trigger deleted, nobody in line (Released)
-    Held --> Fencing: trigger deleted, another FluxTrigger in line takes it
+    [*] --> NotConfigured
+    NotConfigured --> Suspending: Configured turns True, so it adopts
+    Suspending --> Suspended: the suspend is handled
+    Suspended --> Applying: an operation is recorded as Requested
+    Applying --> Suspended: the operation completed, its suspend handled
+    Applying --> Suspending: nobody followed it past the grace, the trigger suspends it
+    Suspended --> Suspending: found resumed (flux resume) or suspended by another (flux suspend)
+    Suspended --> NotConfigured: Configured drops to False, left suspended
+    Suspended --> [*]: trigger deleted (Released, or left suspended for the next in line)
 
-    note right of Free
-        Flux applies it on its own,
-        as without GitOps Reverser
+    note right of NotConfigured
+        Configured says why
     end note
-    note right of Resumed
-        The trigger still reports Suspended=True (Held);
+    note right of Applying
+        the only state in which Flux applies;
         status.operation shows the apply
     end note
 ```
@@ -249,7 +249,7 @@ stateDiagram-v2
   Event saying where the `Kustomization` was left. A `GitTarget` that stops naming the trigger
   releases nothing.
 
-The trigger reports `Configured` and `Suspended`, and its `Ready` includes both:
+The trigger reports `Configured` and `Held`, and its `Ready` includes both:
 
 | Reason | Means | Readiness |
 | --- | --- | --- |
@@ -261,9 +261,10 @@ The trigger reports `Configured` and `Suspended`, and its `Ready` includes both:
 | `Configured`: `NamespaceNotAuthorized` | The `clusterProviderRef` names a provider whose `accessFrom` does not admit the trigger's namespace | stalled |
 | `Configured`: `ClusterProviderNotFound` | The `clusterProviderRef` names a provider that does not exist | progressing |
 | `Configured`: `HeldByAnotherTrigger` | Another `FluxTrigger` holds this `Kustomization` | stalled: delete one of the two |
-| `Suspended`: `Held` | Suspended under GitOps Reverser, and the last suspend is handled | ready |
-| `Suspended`: `Fencing` | Just suspended; waiting for the `Kustomization` to handle it | progressing |
-| `Suspended`: `NotHeld` | The trigger is not `Configured`, so nothing is suspended | follows `Configured` |
+| `Held`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
+| `Held`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |
+| `Held`: `Suspending` | Just suspended; waiting for the `Kustomization` to handle it | progressing |
+| `Held`: `NotConfigured` | The trigger is not `Configured`, so nothing is held | follows `Configured` |
 | `Ready`: `OperationUnresolved` | An apply has not completed within 5 minutes, or the `Kustomization` was [resumed by hand](#overriding-by-hand) | progressing; it clears when the apply does |
 
 The `GitTarget` reports `ApplyTriggerReady`: `True` when the trigger is `Ready` and its
@@ -307,7 +308,7 @@ to be applied again. On a quiet branch, GitOps Reverser:
    enqueues applies (`Running`).
 5. Waits for the `Kustomization` to report that token handled, whether the apply succeeded, failed,
    or waited on a dependency.
-6. Suspends it again with another token, the fence (`Settling`). Once the fence is handled, nothing
+6. Suspends it again with another token (`Settling`). Once that suspend is handled, nothing
    that started before it is still running, and the operation completes: `Succeeded` for
    `Ready=True`, `Failed` with Flux's reason for `Ready=False`.
 
@@ -324,8 +325,8 @@ sequenceDiagram
     Rev->>Trig: operation Requested
     Rev->>Ks: suspend: false + token
     Ks-->>Rev: token handled, Ready says how it went
-    Rev->>Ks: suspend: true + fence token
-    Ks-->>Rev: fence handled
+    Rev->>Ks: suspend: true + suspend token
+    Ks-->>Rev: suspend handled
     Rev->>Trig: operation Succeeded or Failed
 ```
 
@@ -373,7 +374,7 @@ kubectl get gittarget checkout -n team-a \
 
 # The last apply, why, and where it stands; and what else applies the same source.
 kubectl get fluxtrigger checkout -n team-a -o jsonpath='{.status.operation}{"\n"}{.status.source}{"\n"}'
-# {"appliedRevision":"main@sha1:4f2c1ab9...","commit":"4f2c1ab9...","fenceToken":"...","phase":"Succeeded","reason":"ForeignCommit",...}
+# {"appliedRevision":"main@sha1:4f2c1ab9...","commit":"4f2c1ab9...","phase":"Succeeded","reason":"ForeignCommit",...}
 
 # Each apply asked for, each one that could not be asked or did not complete.
 kubectl get events -n team-a --field-selector involvedObject.name=checkout,involvedObject.kind=GitTarget

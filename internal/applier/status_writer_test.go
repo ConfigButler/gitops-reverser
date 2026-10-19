@@ -273,7 +273,7 @@ func TestStatusWriter_ARecordWritesTheLatestViewFirst(t *testing.T) {
 func TestStatusWriter_ARecordNeverReplacesAnotherOperationInFlight(t *testing.T) {
 	writer, c := statusWriterFixture(t, interceptor.Funcs{})
 	external := &v1alpha3.ApplyOperation{
-		Phase: v1alpha3.ApplyOperationUnresolved, FenceToken: "F1",
+		Phase: v1alpha3.ApplyOperationUnresolved, SuspendToken: "F1",
 		RequestedAt: metav1.NewTime(stampTime.Add(time.Hour)),
 	}
 	setOperation(t, c, external)
@@ -366,7 +366,7 @@ func TestStatusWriter_NeverWritesOverAnotherOperation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			writer, c := statusWriterFixture(t, interceptor.Funcs{})
 			external := &v1alpha3.ApplyOperation{
-				Phase: v1alpha3.ApplyOperationUnresolved, FenceToken: "F1", RequestedAt: metav1.NewTime(stampTime),
+				Phase: v1alpha3.ApplyOperationUnresolved, SuspendToken: "F1", RequestedAt: metav1.NewTime(stampTime),
 			}
 			setOperation(t, c, external)
 
@@ -388,7 +388,7 @@ func TestStatusWriter_NeverWritesOverAnotherOperation(t *testing.T) {
 func TestStatusWriter_NeverReopensACompletedOperation(t *testing.T) {
 	writer, c := statusWriterFixture(t, interceptor.Funcs{})
 	listed := &v1alpha3.ApplyOperation{
-		Phase: v1alpha3.ApplyOperationUnresolved, FenceToken: "F1", RequestedAt: metav1.NewTime(stampTime),
+		Phase: v1alpha3.ApplyOperationUnresolved, SuspendToken: "F1", RequestedAt: metav1.NewTime(stampTime),
 	}
 	completed := listed.DeepCopy()
 	completed.Phase = v1alpha3.ApplyOperationSucceeded

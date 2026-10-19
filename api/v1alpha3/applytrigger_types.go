@@ -118,11 +118,11 @@ type ApplyOperation struct {
 	// +optional
 	Token string `json:"token,omitempty"`
 
-	// FenceToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
+	// SuspendToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
 	// Once the Kustomization reports it handled, nothing started before the suspend is still
 	// running. Flux only.
 	// +optional
-	FenceToken string `json:"fenceToken,omitempty"`
+	SuspendToken string `json:"suspendToken,omitempty"`
 
 	// AppliedRevision is the revision the applier reports it applied once the operation completed.
 	// It can differ from commit when the branch moved between the check and the apply.

@@ -46,7 +46,7 @@ func duplicateFixture(t *testing.T) *holdFixture {
 	return &holdFixture{r: r, sim: sim, recorder: recorder}
 }
 
-// reconcileKey reconciles one trigger a few times, enough to settle a fence, and returns it.
+// reconcileKey reconciles one trigger a few times, enough to settle a suspend, and returns it.
 func (f *holdFixture) reconcileKey(t *testing.T, key k8stypes.NamespacedName) *configbutleraiv1alpha3.FluxTrigger {
 	t.Helper()
 	trigger := &configbutleraiv1alpha3.FluxTrigger{}
@@ -54,8 +54,8 @@ func (f *holdFixture) reconcileKey(t *testing.T, key k8stypes.NamespacedName) *c
 		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
 		require.NoError(t, err)
 		require.NoError(t, f.r.Get(context.Background(), key, trigger))
-		held := findCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended)
-		return held == nil || held.Reason != ReasonFencing
+		held := findCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld)
+		return held == nil || held.Reason != ReasonSuspending
 	}, 5*time.Second, 5*time.Millisecond)
 	return trigger
 }
@@ -84,7 +84,7 @@ func TestFluxTrigger_OneTriggerHoldsAKustomization(t *testing.T) {
 	second := f.reconcileKey(t, inLineKey)
 	first := f.reconcileKey(t, triggerKey)
 
-	assert.True(t, conditionIsTrue(first.Status.Conditions, ApplyTriggerConditionSuspended), "the first holds it")
+	assert.True(t, conditionIsTrue(first.Status.Conditions, ApplyTriggerConditionHeld), "the first holds it")
 	assert.True(t, conditionIsTrue(first.Status.Conditions, ConditionTypeReady))
 	configured := findCondition(second.Status.Conditions, ApplyTriggerConditionConfigured)
 	require.NotNil(t, configured)
@@ -98,10 +98,10 @@ func TestFluxTrigger_OneTriggerHoldsAKustomization(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, ready.Status)
 	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, ready.Reason)
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ConditionTypeStalled), "a human removes one of them")
-	held := findCondition(second.Status.Conditions, ApplyTriggerConditionSuspended)
+	held := findCondition(second.Status.Conditions, ApplyTriggerConditionHeld)
 	require.NotNil(t, held)
 	assert.Equal(t, metav1.ConditionUnknown, held.Status)
-	assert.Equal(t, ReasonNotHeld, held.Reason)
+	assert.Equal(t, ReasonNotConfigured, held.Reason)
 
 	events := f.events()
 	require.Len(t, events, 1, "one adoption, by the holder: %v", events)
@@ -164,10 +164,10 @@ func TestFluxTrigger_DeletingTheTriggerInLineHandsNothingBack(t *testing.T) {
 	assert.Contains(t, kustomizationManagers(ks), applier.SuspendFieldManager)
 	assert.Empty(t, f.events(), "nothing released")
 	holder := f.reconcileKey(t, triggerKey)
-	assert.True(t, conditionIsTrue(holder.Status.Conditions, ApplyTriggerConditionSuspended))
+	assert.True(t, conditionIsTrue(holder.Status.Conditions, ApplyTriggerConditionHeld))
 }
 
-// TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine: the holder fences the Kustomization as
+// TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine: the holder suspends the Kustomization as
 // it goes, and leaves it suspended for the trigger in line instead of releasing it: released, Flux
 // would apply it at once, unchecked against the branch, before the next trigger could suspend it
 // again (review 6). Its going enqueues the trigger in line (a deletion maps to the others naming the
@@ -195,7 +195,7 @@ func TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine(t *testing.T) {
 	second := f.reconcileKey(t, inLineKey)
 
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ApplyTriggerConditionConfigured))
-	assert.True(t, conditionIsTrue(second.Status.Conditions, ApplyTriggerConditionSuspended))
+	assert.True(t, conditionIsTrue(second.Status.Conditions, ApplyTriggerConditionHeld))
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ConditionTypeReady))
 	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
 	assert.Equal(t, []string{"Normal Released left Kustomization flux-system/checkout suspended for FluxTrigger " +
@@ -264,7 +264,7 @@ func TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt(t *testing.T) {
 
 	taken := f.reconcileKey(t, triggerKey)
 	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplyTriggerConditionConfigured), "first in line now")
-	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplyTriggerConditionSuspended))
+	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplyTriggerConditionHeld))
 	behind := findCondition(f.reconcileKey(t, holderKey).Status.Conditions, ApplyTriggerConditionConfigured)
 	require.NotNil(t, behind)
 	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, behind.Reason)

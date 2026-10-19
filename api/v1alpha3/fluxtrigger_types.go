@@ -60,7 +60,9 @@ type FluxTriggerStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions are Configured (the Kustomization exists, applies a GitRepository that follows a
-	// branch, may be patched, and no other FluxTrigger holds it) and the kstatus
+	// branch, may be patched, and no other FluxTrigger holds it), Held (Suspended: suspended under
+	// GitOps Reverser with the last suspend handled; Applying: resumed for an apply GitOps Reverser
+	// started; Suspending: a suspend is not handled yet; NotConfigured), and the kstatus
 	// Ready/Reconciling/Stalled trio. Of the FluxTriggers naming one Kustomization in one cluster, the
 	// one created first holds it; the others are Configured=False (HeldByAnotherTrigger) until it is
 	// deleted, and the next in line takes it over.
@@ -124,6 +126,7 @@ type FluxTriggerSource struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Held",type=string,JSONPath=`.status.conditions[?(@.type=="Held")].reason`
 // +kubebuilder:printcolumn:name="Kustomization",type=string,JSONPath=`.spec.kustomizationRef.name`
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.phase`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1

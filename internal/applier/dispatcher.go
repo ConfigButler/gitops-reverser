@@ -274,7 +274,7 @@ func recoveredStarted(req git.ApplyRequest) Started {
 		outcome = OutcomeSyncRequested
 	}
 	return Started{
-		Outcome: outcome, Token: req.Recovered.Token, FenceToken: req.Recovered.FenceToken,
+		Outcome: outcome, Token: req.Recovered.Token, SuspendToken: req.Recovered.SuspendToken,
 		Commit: req.Recovered.Commit, Recovered: true, RequestedAt: req.Recovered.RequestedAt.Time,
 	}
 }
@@ -438,7 +438,7 @@ func (d *Dispatcher) client(kind string, applierClient dynamic.Interface) Client
 // attempt or the dispatcher stops.
 func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *operation) (git.ApplyResult, bool) {
 	started := d.Now()
-	phase, fence := git.ApplyRequested, ""
+	phase, suspendToken := git.ApplyRequested, ""
 	interval := d.PollInterval
 	for {
 		progress, err := d.progress(ctx, req, op)
@@ -449,18 +449,18 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 			}
 		case progress.Outcome.Ends():
 			return d.completed(ctx, req, op, progress, d.Now().Sub(started)), true
-		case progress.Outcome != phase && phase != git.ApplyUnresolved, progress.FenceToken != fence:
+		case progress.Outcome != phase && phase != git.ApplyUnresolved, progress.SuspendToken != suspendToken:
 			if phase != git.ApplyUnresolved {
 				phase = progress.Outcome
 			}
-			fence = progress.FenceToken
-			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase, FenceToken: fence})
+			suspendToken = progress.SuspendToken
+			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase, SuspendToken: suspendToken})
 		}
 		if phase != git.ApplyUnresolved && d.Now().Sub(started) >= d.UnresolvedAfter {
 			phase = git.ApplyUnresolved
 			op.started.Overdue = true
 			d.unresolved(ctx, req, op)
-			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase, FenceToken: fence})
+			req.Report(git.ApplyResult{ID: req.ID, Outcome: phase, SuspendToken: suspendToken})
 		}
 		if phase == git.ApplyUnresolved {
 			interval = min(unresolvedBackoff*interval, max(d.UnresolvedPollMax, d.PollInterval))
@@ -468,7 +468,7 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 		if !wait(ctx, req.Abandoned, interval) {
 			abandoned := ctx.Err() == nil
 			if abandoned {
-				d.fenceAbandoned(ctx, req, op)
+				d.suspendAbandoned(ctx, req, op)
 			}
 			op.log.V(1).Info("stopped following the requested apply", "abandoned", abandoned)
 			return git.ApplyResult{}, false
@@ -476,14 +476,14 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 	}
 }
 
-// fenceAbandoned sees an abandoned Flux operation through to the fence before the attempt lets it
+// suspendAbandoned sees an abandoned Flux operation through to its suspend before the attempt lets it
 // go: the worker forgot its applier (no GitTarget names it any more), but the Kustomization may
 // still be resumed, and nothing else follows the operation. It is treated as overdue, so it is
 // suspended at once, and read until that suspend's token is handled, within AttemptTimeout and
 // whether or not the dispatcher stops meanwhile. It reports nothing: nobody waits for the report.
 // A trigger being deleted completes it without a suspend, since the trigger hands its Kustomization
 // back itself.
-func (d *Dispatcher) fenceAbandoned(ctx context.Context, req git.ApplyRequest, op *operation) {
+func (d *Dispatcher) suspendAbandoned(ctx context.Context, req git.ApplyRequest, op *operation) {
 	if op.started.Outcome != OutcomeResumed {
 		return
 	}
@@ -499,7 +499,7 @@ func (d *Dispatcher) fenceAbandoned(ctx context.Context, req git.ApplyRequest, o
 		}
 		if !wait(ctx, nil, d.PollInterval) {
 			op.log.Info("the worker abandoned the operation, and its Kustomization was not seen suspended again "+
-				"in time; the trigger's reconciler suspends it", "fenceToken", op.started.FenceToken)
+				"in time; the trigger's reconciler suspends it", "suspendToken", op.started.SuspendToken)
 			return
 		}
 	}
@@ -527,14 +527,15 @@ func (d *Dispatcher) progress(ctx context.Context, req git.ApplyRequest, op *ope
 	return progress, err
 }
 
-// TriggerConditionSuspended is a FluxTrigger's Suspended condition: True (reason Held) once its
+// TriggerConditionHeld is a FluxTrigger's Held condition: True (reason Suspended) once its
 // Kustomization is suspended under GitOps Reverser's field manager and that suspend's token is
-// handled. The trigger's reconciler sets it.
-const TriggerConditionSuspended = "Suspended"
+// handled, and True (reason Applying) while an operation of a branch worker has it resumed. The
+// trigger's reconciler sets it.
+const TriggerConditionHeld = "Held"
 
 // triggerHolds is Ask.Held: it reads the FluxTrigger uncached, and errs unless it is
-// Suspended=True and not being deleted. Its reconciler is otherwise suspending the Kustomization,
-// or about to (an adoption, an external resume it fences, a hand-back), and that suspend would land
+// Held=True and not being deleted. Its reconciler is otherwise suspending the Kustomization,
+// or about to (an adoption, an external resume it suspends again, a hand-back), and that suspend would land
 // on the resume: Flux would then handle the resume's token on a suspended return, and apply
 // nothing. It also errs when another trigger comes first in line for the Kustomization, read
 // uncached as well: the recheck's cached read can still miss one. The attempt fails, and the worker
@@ -547,7 +548,7 @@ func (d *Dispatcher) triggerHolds(ctx context.Context, ref git.TriggerRef) error
 	if err := d.APIReader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger); err != nil {
 		return fmt.Errorf("read %s: %w", ref, err)
 	}
-	held := apimeta.FindStatusCondition(trigger.Status.Conditions, TriggerConditionSuspended)
+	held := apimeta.FindStatusCondition(trigger.Status.Conditions, TriggerConditionHeld)
 	holder, err := HeldByAnother(ctx, d.APIReader, trigger)
 	switch {
 	case err != nil:
@@ -559,9 +560,9 @@ func (d *Dispatcher) triggerHolds(ctx context.Context, ref git.TriggerRef) error
 		return fmt.Errorf("FluxTrigger %s/%s is being deleted, and hands its Kustomization back",
 			ref.Namespace, ref.Name)
 	case held == nil || held.Status != metav1.ConditionTrue:
-		message := "it reports no Suspended condition yet"
+		message := "it reports no Held condition yet"
 		if held != nil {
-			message = fmt.Sprintf("it is Suspended=%s, %s: %s", held.Status, held.Reason, held.Message)
+			message = fmt.Sprintf("it is Held=%s, %s: %s", held.Status, held.Reason, held.Message)
 		}
 		return fmt.Errorf("FluxTrigger %s/%s does not hold its Kustomization suspended: %s",
 			ref.Namespace, ref.Name, message)
@@ -611,7 +612,7 @@ func (d *Dispatcher) completed(
 	ctx context.Context, req git.ApplyRequest, op *operation, progress Progress, took time.Duration,
 ) git.ApplyResult {
 	result := git.ApplyResult{
-		ID: req.ID, Outcome: progress.Outcome, FenceToken: progress.FenceToken,
+		ID: req.ID, Outcome: progress.Outcome, SuspendToken: progress.SuspendToken,
 		AppliedRevision: progress.AppliedRevision,
 	}
 	if progress.Outcome != git.ApplyFailed {
@@ -920,7 +921,7 @@ func (d *Dispatcher) prefetch(ctx context.Context, req git.PrefetchRequest) erro
 // heldNow checks again, in the applier's cluster, what the trigger's status.source.prefetch said when
 // its reconciler last ran, up to a minute ago: every consumer of its GitRepository is a
 // Kustomization a FluxTrigger on the same cluster names, and is suspended, held by GitOps Reverser
-// and fenced now. A consumer that appeared since, or one Flux applies on its own again, would apply
+// with its suspend handled now. A consumer that appeared since, or one Flux applies on its own again, would apply
 // the prefetched artifact at once, over live edits not pushed yet (errPrefetchHeld). It returns the
 // Flux client of the applier's cluster.
 func (d *Dispatcher) heldNow(
@@ -953,7 +954,7 @@ func (d *Dispatcher) heldNow(
 		if err != nil {
 			return nil, fmt.Errorf("read %s %s: %w", kindKustomization, key, err)
 		}
-		if !suspension.Suspended || !suspension.Held || !suspension.Fenced {
+		if !suspension.Suspended || !suspension.Held || !suspension.Handled {
 			return nil, fmt.Errorf("%w: %s %s is not held suspended now", errPrefetchHeld, kindKustomization, key)
 		}
 	}

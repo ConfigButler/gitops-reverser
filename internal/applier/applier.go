@@ -76,7 +76,7 @@ type Ask struct {
 	// Nil records nothing.
 	Record func(ctx context.Context) error
 	// Held reports, from a fresh read, whether the trigger holds its Flux Kustomization suspended
-	// (Suspended=True), and errs when it does not: a resume while the trigger's reconciler is still
+	// (Held=True), and errs when it does not: a resume while the trigger's reconciler is still
 	// suspending it (an adoption, an external resume) would race that suspend. It is asked just
 	// before Record. Nil always holds; the Argo CD client never asks it.
 	Held func(ctx context.Context) error
@@ -111,8 +111,8 @@ type Progress struct {
 	// Message is why a Failed operation failed, or what a Succeeded one applied instead of the
 	// commit.
 	Message string
-	// FenceToken is the requestedAt the suspend after a Flux apply carried, once written.
-	FenceToken string
+	// SuspendToken is the requestedAt the suspend after a Flux apply carried, once written.
+	SuspendToken string
 	// AppliedRevision is the revision the applier reports it applied, once the operation completed.
 	AppliedRevision string
 }
@@ -208,8 +208,8 @@ type Started struct {
 	Token string
 	// Commit is the commit asked for.
 	Commit string
-	// FenceToken is the requestedAt a Flux Kustomization was suspended again with, once it was.
-	FenceToken string
+	// SuspendToken is the requestedAt a Flux Kustomization was suspended again with, once it was.
+	SuspendToken string
 	// Overdue is set by the dispatcher once the operation is Unresolved. A Flux Kustomization is
 	// then suspended at once, rather than once its apply was seen to end.
 	Overdue bool
@@ -230,7 +230,7 @@ type Started struct {
 	// that ran since is the only evidence of its apply this process can read.
 	RequestedAt time.Time
 	// verdict is the outcome of a Flux apply, read once the resume's token was handled and kept
-	// until the fence is.
+	// until the suspend after it is.
 	verdict *Progress
 	// resumedFrom is what a reconcile that builds moves on the Kustomization, as it stood when this
 	// process resumed it: a verdict that reads it unmoved reads an apply from before the resume.

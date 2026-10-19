@@ -129,7 +129,7 @@ flowchart LR
     OBS --> OWE --> QUIET
     QUIET -- "yes, and due" --> EXEC
     EXEC -- "record before the write" --> TRIG
-    EXEC -- "recheck, fetch, resume with a token,<br/>follow, suspend with a fence" --> FLUX
+    EXEC -- "recheck, fetch, resume with a token,<br/>follow, suspend again" --> FLUX
     EXEC -- "recheck, set a pinned sync,<br/>follow its token" --> ARGO
     EXEC -. "report: Requested · Running · Settling ·<br/>Unresolved · Succeeded · Failed · Current ·<br/>RequestFailed · Rejected · Dropped · Stale" .-> OWE
 ```
@@ -154,7 +154,7 @@ flowchart LR
   still owed). A recorded attempt that then asks for nothing withdraws its record, which puts back
   what the status held: the trigger never shows an operation nothing could have applied. The
   writer matches operations by their token, never by time. A `FluxTrigger` that is not
-  `Suspended=True` (still adopting, or being deleted) is not resumed (`RequestFailed`). A source
+  `Held=True` (still adopting, or being deleted) is not resumed (`RequestFailed`). A source
   on another repository or branch, a `Kustomization` whose `spec.suspend` another manager applies,
   or an `Application` with automated sync on, is `Rejected`. A decision that no longer holds when
   the write is due (the commit is no longer the tip, or something is waiting to be published) asks
@@ -166,7 +166,7 @@ flowchart LR
   `Unresolved`: a Flux `Kustomization` is suspended at once, and the operation is followed on, at an
   interval doubling to a minute. The applier object being deleted, or its trigger being deleted,
   completes it as `Failed`; no `GitTarget` naming the trigger any more abandons it, and a Flux
-  `Kustomization` is suspended with a fence before it is let go.
+  `Kustomization` is suspended, and that suspend handled, before it is let go.
 - **Settling.** An operation that succeeded is done. A stale attempt gives back what it carried and
   is decided again at the next quiet moment. Any other outcome, a failed operation included, gives
   back what the attempt carried, a refusal only if it still stands, and starts that applier's
@@ -217,7 +217,7 @@ drifted object with no new commit):
    `spec.suspend: false` and `requestedAt: <T1>`, carrying the uid and `resourceVersion` of that
    last read as preconditions, so anything that changed the object since is a conflict (read again,
    up to five times) and a deleted one is not re-created. A resume whose answer is lost (a timeout,
-   an internal error) may have landed, so it is followed and fenced as if it had.
+   an internal error) may have landed, so it is followed and suspended again as if it had.
 5. **Wait for T1 handled.** A token somebody stamped over T1 (`flux reconcile`) stands in for it:
    the reconcile that handles it started after the resume. A handled token does not prove a
    reconcile ran resumed, though: a suspend landing between the resume and the reconcile (a
@@ -235,11 +235,11 @@ drifted object with no new commit):
    | `Ready=False`, `DependencyNotReady` | `Failed`, with a reason of its own |
    | `Ready=False`, anything else, or no `Ready` | `Failed` |
 
-6. **Suspend with a fence:** another server-side apply sets `spec.suspend: true` and
-   `requestedAt: <T2>` (`Settling`, the token recorded as `fenceToken`). T2 handled proves that any
+6. **Suspend again:** another server-side apply sets `spec.suspend: true` and
+   `requestedAt: <T2>` (`Settling`, the token recorded as `suspendToken`). T2 handled proves that any
    reconcile that started before the suspend has ended and the object is suspended now: a suspended
    reconcile handles a token without applying, and reconciles of one object never overlap. Found
-   resumed again before T2 is handled, the `Kustomization` is fenced again.
+   resumed again before T2 is handled, the `Kustomization` is suspended again.
 7. **Complete** once T2 is handled, and keep the window open 10 s more.
 
 A `ForeignCommit` or `CatchUp` asks nothing (`Current`) when the `Kustomization` is suspended and
@@ -248,7 +248,7 @@ until it is resumed. A `Refusal` and a `Repair` always run the operation. A fail
 like any other, which is what stops Flux's own `retryInterval` retry; the worker owns the retry.
 
 An `Unresolved` operation is suspended at once (the suspend does not stop the running apply, but it
-stops whatever would follow), and the fence then decides when it completes. There is no automatic
+stops whatever would follow), and that suspend's token then decides when it completes. There is no automatic
 cancellation.
 
 `CatchUp` stays, as convergence rather than safety: a suspended `Kustomization` never applies a
@@ -267,12 +267,13 @@ later deletes it.
   so a `Kustomization` changes hands only between operations: a trigger created in the same second
   as the holder, and ahead of it by name, waits for the holder's apply to end. The dispatcher's
   check before a resume, and the reconciler's suspend of a resumed `Kustomization`, read the
-  triggers uncached. Deleting the holder leaves the `Kustomization` suspended and fenced for the
+  triggers uncached. Deleting the holder leaves the `Kustomization` suspended, its suspend handled, for the
   next in line, and enqueues it. The same rule holds for `ArgoCDTrigger`s, which would otherwise
   both start syncs, without the in-flight rule: a sync somebody else started is never replaced.
 - **Adoption.** A `Configured` `FluxTrigger` suspends its `Kustomization` with a server-side apply
-  under `gitops-reverser`, and a token. It is `Suspended=True`, and `Ready`, once that token is
-  handled. A `Normal` `Adopted` Event records it.
+  under `gitops-reverser`, and a token. It is `Held=True` (`Suspended`), and `Ready`, once that
+  token is handled; `Held=True` (`Applying`) while an operation of a branch worker is in flight and
+  followed. A `Normal` `Adopted` Event records it.
 - **The manifest omits `suspend`.** Whatever applies the `Kustomization` object (a parent
   `Kustomization`, Helm, flux-operator) must not set the field, or it takes it back on its next
   apply. A `managedFields` entry of another manager with operation `Apply` owning
@@ -282,8 +283,8 @@ later deletes it.
 - **Resumed by someone else.** The reconciler finds the `Kustomization` resumed with no operation of
   a branch worker in flight (read uncached, since the worker records its operation a moment before
   it resumes). It suspends it with a token, records a `Normal` `ResumedElsewhere` Event, and records
-  the apply as an `Unresolved` operation with that fence token and no request token, which it
-  completes once the fence is handled. It does this every time, with an Event each time: there is no
+  the apply as an `Unresolved` operation with that suspend token and no request token, which it
+  completes once the suspend is handled. It does this every time, with an Event each time: there is no
   step-back state. A `FluxTrigger` that is `Ready` reads its `Kustomization` every minute, which
   bounds how long such a resume runs unsuspended. The reconciler reads the operation before and
   after the `Kustomization`, so an operation that completes between the two reads is no external
@@ -292,7 +293,7 @@ later deletes it.
   alone only while this process's dispatcher follows it (`Following`), or for a minute after it
   first saw it unfollowed, so restart recovery gets its chance. After that it suspends the
   `Kustomization` with a token, sends a `Warning` `OperationUnfollowed` Event, and completes the
-  operation `Failed` once the fence is handled. A resumed `Kustomization` is never left with
+  operation `Failed` once the suspend is handled. A resumed `Kustomization` is never left with
   nothing watching it.
 - **Hand-back.** The trigger carries the finalizer `configbutler.ai/flux-trigger`. Deleting it
   suspends the `Kustomization` with a token if an apply has it resumed, waits until that is handled,
@@ -317,7 +318,7 @@ live event is mirrored before the windows of what it finds are open:
 - **An operation not completed** is followed to its end by its recorded tokens, asking the applier
   for nothing (`ApplyRequest.Recovered`), with its apply window open from the recovery. For Flux,
   the follow suspends the `Kustomization` again. A recorded token that was stamped over (by our own
-  fence before the crash, or a `flux reconcile`) is judged on whether a reconcile ran since the
+  suspend before the crash, or a `flux reconcile`) is judged on whether a reconcile ran since the
   operation's `requestedAt`. A recorded request arriving before the dispatcher starts waits for it.
   A recorded token that is nowhere on the
   `Kustomization` (neither its `requestedAt` nor the last handled) means the process stopped
@@ -326,7 +327,7 @@ live event is mirrored before the windows of what it finds are open:
 - **`repairOwed`** is restored.
 - A worker's own record is read back once, when this process first lists the trigger; later reads
   can lag its own writes. A record with no request token (an external resume the reconciler
-  suspended) is followed whenever it is listed, once per fence token, so its window opens while the
+  suspended) is followed whenever it is listed, once per suspend token, so its window opens while the
   process runs too.
 
 The first observation is still a baseline that owes a `CatchUp`, so a recovered operation decides
@@ -338,7 +339,7 @@ nothing about what is owed.
   `Kustomization`s with that `sourceRef`, and `HelmRelease`s whose chart comes from it, directly or
   through a `HelmChart` their `chartRef` names (at whichever `HelmRelease` version the cluster
   serves; consumers that cannot be determined are an error, so no prefetch). Those no `FluxTrigger`
-  on the same `ClusterProvider` holds, that is reports `Suspended=True`, are
+  on the same `ClusterProvider` holds, that is reports `Held=True`, are
   `status.source.otherConsumers`, information
   only: it never affects `Ready`, and no `Warning` is sent, because one `GitRepository` for `apps`
   and `infra` is a normal setup.
@@ -383,7 +384,7 @@ was never released:
    request-based mode would keep every hole of the 24h setup alive, and two completion protocols.
 2. **A shared source is information only:** `status.source.otherConsumers`, prefetch off while it is
    not empty, no `SharedSource` condition.
-3. **An external resume is always fenced and re-suspended,** with a `Normal` Event each time.
+3. **An external resume is always suspended again,** with a `Normal` Event each time.
 4. **`CatchUp` stays for Flux,** as convergence. The same inventory question exists for Argo CD,
    which was decided without `CatchUp`.
 5. **The resources are triggers,** with long kind names: `FluxTrigger` (`spec.kustomizationRef`)
@@ -407,7 +408,7 @@ GitOps Reverser pushed to. Inside it, **the API wins**, as it does for any objec
 changed:
 
 - **The window is known.** It opens when the attempt is sent and stays open until its operation
-  completed: for Flux, the resume's token and the fence after it handled; for Argo CD, the operation
+  completed: for Flux, the resume's token and the suspend after it handled; for Argo CD, the operation
   state carrying the request's token completed. An `Unresolved` operation keeps it open until it
   completes. Then the worker keeps it open 10 seconds more, because the applier's writes reach it
   through the watch. An attempt sent within those 10 seconds carries the edits seen in the window
@@ -443,7 +444,7 @@ setup for bi-directional editing with Argo CD, not an option next to automated s
 `Application` with automated sync on makes its trigger `Configured=False` (`AutomatedSyncEnabled`)
 and is never synced. The user guide is [`../bi-directional-argocd.md`](../bi-directional-argocd.md).
 
-Automated sync off is Argo CD's equivalent of a suspended `Kustomization`, and it needs no fence: an
+Automated sync off is Argo CD's equivalent of a suspended `Kustomization`, and it needs no suspend after an apply: an
 Argo CD operation that has completed is not followed by another one nobody started. **It gets no
 `CatchUp`**: an `ArgoCDTrigger` has no `quietPeriod`, and the worker never owes an `Application`
 one.
@@ -543,7 +544,7 @@ been quiet; `quietPeriod` is the knob for that trade.
 | The operation is recorded before the write that starts it, moves through its phases on the trigger's status, an attempt that asked nothing restores the record before it, and a withheld rollback owes a `Repair` | [`apply_operation_test.go`](../../internal/git/apply_operation_test.go), [`status_writer_test.go`](../../internal/applier/status_writer_test.go) |
 | Every attempt rechecks targets, asks for nothing weaker than it was told, and resumes no `Kustomization` on another branch | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`flux_test.go`](../../internal/applier/flux_test.go) |
 | The suspended lifecycle against the source facts: an apply is not finished when attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../../internal/applier/flux_lifecycle_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go), [`fluxsim`](../../internal/applier/fluxsim/fluxsim_test.go) |
-| Adoption, `SuspendOwnedElsewhere`, an external resume fenced with an Event every time, the hand-back on deletion, and the source's other consumers | [`fluxtrigger_hold_test.go`](../../internal/controller/fluxtrigger_hold_test.go) |
+| Adoption, `SuspendOwnedElsewhere`, an external resume suspended again with an Event every time, the hand-back on deletion, and the source's other consumers | [`fluxtrigger_hold_test.go`](../../internal/controller/fluxtrigger_hold_test.go) |
 | A restarted worker follows an operation left in flight with its window open, restores `repairOwed`, and follows an apply started elsewhere; one recorded but never resumed ends `Failed` | [`apply_recovery_test.go`](../../internal/git/apply_recovery_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
 | Appliers sharing a source have one operation at a time; a push is prefetched only while the branch is busy and no operation of the source is in flight | [`apply_groups_test.go`](../../internal/git/apply_groups_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go) |
 | An applier in another cluster is reached through its own `ClusterProvider`, behind that provider's `accessFrom` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`clusterprovider_admission_test.go`](../../internal/authz/clusterprovider_admission_test.go), [`applytrigger_controller_test.go`](../../internal/controller/applytrigger_controller_test.go) |

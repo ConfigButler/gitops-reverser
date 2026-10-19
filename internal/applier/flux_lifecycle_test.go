@@ -3,7 +3,7 @@
 package applier
 
 // The suspended Flux lifecycle, against fluxSim: a resume with a token, the outcome read once the
-// reconcile that read it ended, the suspend fence, and the hand-back. The first tests are the third
+// reconcile that read it ended, the suspend after the apply, and the hand-back. The first tests are the third
 // review's probes and the measurements of docs/design/apply-trigger.md, each of which
 // failed against the request-based client this replaced.
 
@@ -119,7 +119,7 @@ func TestFluxProbe_AnApplyIsNotFinishedWhenItWasAttempted(t *testing.T) {
 	tail := steps[len(steps)-2:]
 	assert.Equal(t, []git.ApplyOutcome{git.ApplySettling, git.ApplySucceeded}, outcomes(tail))
 	assert.Equal(t, "main@sha1:"+testCommit, tail[1].AppliedRevision)
-	assert.Equal(t, started.FenceToken, tail[1].FenceToken)
+	assert.Equal(t, started.SuspendToken, tail[1].SuspendToken)
 	assert.Equal(t, []string{"flux-system/checkout main@sha1:" + testCommit}, sim.Applied())
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)), "suspended again")
 }
@@ -208,7 +208,7 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 		},
 		{
 			// Not suspended yet (the trigger has not adopted it): it may apply on its own, so the
-			// operation runs, and its fence suspends it.
+			// operation runs, and its suspend after the apply holds it again.
 			name: "a catch-up applied but not suspended resumes", artifact: "main@sha1:" + testCommit,
 			applied: "main@sha1:" + testCommit,
 			commit:  testCommit, reason: v1alpha3.ApplyReasonCatchUp, want: OutcomeResumed,
@@ -540,7 +540,7 @@ func TestFluxProgress_ASuspendDoesNotStopARunningApply(t *testing.T) {
 	progress, err := flux.Progress(context.Background(), checkoutKey, &started)
 	require.NoError(t, err)
 	assert.Equal(t, git.ApplySettling, progress.Outcome, "suspended at once")
-	require.NotEmpty(t, progress.FenceToken)
+	require.NotEmpty(t, progress.SuspendToken)
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
 	progress, err = flux.Progress(context.Background(), checkoutKey, &started)
 	require.NoError(t, err)
@@ -574,9 +574,9 @@ func TestFluxProgress_ATokenStampedOverOursStandsInForIt(t *testing.T) {
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
 }
 
-// TestFluxProgress_AResumeAfterTheFenceIsFencedAgain: a Kustomization resumed by somebody else while
+// TestFluxProgress_AResumeAfterTheSuspendIsSuspendedAgain: a Kustomization resumed by somebody else while
 // the operation settles is suspended again before the operation completes.
-func TestFluxProgress_AResumeAfterTheFenceIsFencedAgain(t *testing.T) {
+func TestFluxProgress_AResumeAfterTheSuspendIsSuspendedAgain(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+testCommit, true)
 	flux := simFlux(sim)
 	started, err := flux.Request(context.Background(), checkoutKey, ask(v1alpha3.ApplyReasonRefusal))
@@ -586,7 +586,7 @@ func TestFluxProgress_AResumeAfterTheFenceIsFencedAgain(t *testing.T) {
 		progress, err = flux.Progress(context.Background(), checkoutKey, &started)
 		require.NoError(t, err)
 	}
-	first := started.FenceToken
+	first := started.SuspendToken
 	patch := []byte(`{"spec":{"suspend":false}}`)
 	_, err = sim.Client.Resource(kustomizationGVR()).Namespace(fluxSystemNS).
 		Patch(context.Background(), "checkout", types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "flux"})
@@ -594,7 +594,7 @@ func TestFluxProgress_AResumeAfterTheFenceIsFencedAgain(t *testing.T) {
 
 	steps := follow(t, flux, &started)
 	assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
-	assert.NotEqual(t, first, started.FenceToken, "fenced again")
+	assert.NotEqual(t, first, started.SuspendToken, "suspended again")
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
 }
 
@@ -686,7 +686,7 @@ func TestFluxProgress_AnApplyOfANewerArtifactSucceeds(t *testing.T) {
 }
 
 // TestFluxProgress_ARecoveredTokenStampedOverIsJudgedOnWhatRan is review 4's I: a process that
-// resumed with T1, saw the apply end and suspended with its fence, then stopped before reporting,
+// resumed with T1, saw the apply end and suspended it again, then stopped before reporting,
 // leaves T1 nowhere on the Kustomization. That ended Failed, though the apply ran. Now a recovered
 // token handled by a later one is judged on what ran since the operation was asked for.
 func TestFluxProgress_ARecoveredTokenStampedOverIsJudgedOnWhatRan(t *testing.T) {
@@ -700,8 +700,8 @@ func TestFluxProgress_ARecoveredTokenStampedOverIsJudgedOnWhatRan(t *testing.T) 
 		progress, err = flux.Progress(context.Background(), checkoutKey, &started)
 		require.NoError(t, err)
 	}
-	eventually(t, func() bool { return tokenHandled(sim.Kustomization(checkoutKey), started.FenceToken) },
-		"the fence is handled; then the process stops")
+	eventually(t, func() bool { return tokenHandled(sim.Kustomization(checkoutKey), started.SuspendToken) },
+		"the suspend is handled; then the process stops")
 
 	recovered := Started{Outcome: OutcomeResumed, Token: "T1", Commit: testCommit, Recovered: true, RequestedAt: asked}
 	steps := follow(t, flux, &recovered)
@@ -799,8 +799,8 @@ func TestReconcileMark_MovesOnAReconcileThatBuilt(t *testing.T) {
 	assert.False(t, before.since(time.Time{}), "no mark at all is no evidence")
 }
 
-// TestFlux_SuspendAndRelease: the trigger reconciler's half. Suspend fences, Suspension reports
-// held and fenced once the token is handled, and Release hands spec.suspend back: the Kustomization
+// TestFlux_SuspendAndRelease: the trigger reconciler's half. Suspend suspends, Suspension reports
+// held and handled once the token is handled, and Release hands spec.suspend back: the Kustomization
 // is resumed, and holds nothing of GitOps Reverser's.
 func TestFlux_SuspendAndRelease(t *testing.T) {
 	sim := simCluster(t, "main@sha1:"+testCommit, false)
@@ -815,9 +815,9 @@ func TestFlux_SuspendAndRelease(t *testing.T) {
 	require.NoError(t, err)
 	eventually(t, func() bool {
 		held, err := flux.Suspension(context.Background(), checkoutKey)
-		return err == nil && held.Suspended && held.Held && held.Fenced &&
+		return err == nil && held.Suspended && held.Held && held.Handled &&
 			sim.Kustomization(checkoutKey).GetAnnotations()[fluxmeta.ReconcileRequestAnnotation] == token
-	}, "held and fenced")
+	}, "held and handled")
 
 	keeper, err := flux.Release(context.Background(), checkoutKey)
 	require.NoError(t, err)
@@ -927,7 +927,7 @@ func TestFluxProgress_AnExternalResumeIsJudgedAsItsReconcilerJudgesIt(t *testing
 	client := newSourceClient(ks, gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch),
 		"main@sha1:"+testCommit))
 
-	recovered := &Started{Outcome: OutcomeResumed, FenceToken: "F1", Recovered: true, RequestedAt: noticed}
+	recovered := &Started{Outcome: OutcomeResumed, SuspendToken: "F1", Recovered: true, RequestedAt: noticed}
 	got, err := NewFlux(client).Progress(context.Background(), checkoutKey, recovered)
 
 	require.NoError(t, err)

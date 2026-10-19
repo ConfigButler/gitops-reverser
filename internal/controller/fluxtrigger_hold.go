@@ -28,7 +28,7 @@ import (
 // lifecycle, from docs/design/apply-trigger.md ("Who owns spec.suspend"):
 //
 //   - Adoption: a Configured trigger suspends its Kustomization, under GitOps Reverser's field
-//     manager, with a token; Suspended (and so Ready) waits until the Kustomization handled it.
+//     manager, with a token; Held (and so Ready) waits until the Kustomization handled it.
 //   - External resume: a held Kustomization found resumed with no operation of a branch worker in
 //     flight was resumed by somebody else (`flux resume`). It is suspended again with a token, every
 //     time, with a Normal Event, and recorded as an Unresolved operation that completes once that
@@ -37,39 +37,46 @@ import (
 //     spec.suspend, so Flux owns the Kustomization's applies again.
 //
 // All of it is the holder's alone (applier.HeldByAnother): another trigger naming the same Kustomization
-// is Configured=False (HeldByAnotherTrigger), so it never suspends, fences or records an external
+// is Configured=False (HeldByAnotherTrigger), so it never suspends or records an external
 // resume, and its deletion hands nothing back. It takes the Kustomization over, with an adoption,
 // once the holder is gone.
 
 // holdKustomization holds a Configured FluxTrigger's Kustomization suspended, and returns the
-// trigger's Suspended condition. It writes nothing while a branch worker's operation is in flight
+// trigger's Held condition. It writes nothing while a branch worker's operation is in flight
 // and followed: the worker resumes the Kustomization and suspends it again itself. One nobody
-// follows any more is fenced here (fenceUnfollowed), so the Kustomization is never left resumed
+// follows any more is suspended here (suspendUnfollowed), so the Kustomization is never left resumed
 // with nothing guarding it.
 func (r *ApplyTriggerReconciler) holdKustomization(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, configured conditionValue,
 ) conditionValue {
 	if configured.Status != metav1.ConditionTrue {
-		return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotHeld,
+		return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured,
 			Message: "the Kustomization is held once the trigger is Configured"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
 	defer cancel()
 	held, err := r.readHold(ctx, trigger)
 	if err != nil {
-		return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended, err.Error())
+		return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, err.Error())
 	}
 	if !held.inFlight() || held.operation.Token == "" {
 		r.unfollowed.forget(trigger, "")
 	}
 	if held.inFlight() && held.operation.Token != "" {
 		if r.followed(trigger, held.operation) {
-			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended,
-				fmt.Sprintf("Kustomization %s is resumed for an apply", trigger.Applier()))
+			return applyingCondition(held.operation)
 		}
-		return r.fenceUnfollowed(ctx, trigger, held)
+		return r.suspendUnfollowed(ctx, trigger, held)
 	}
 	return r.hold(ctx, trigger, held)
+}
+
+// applyingCondition is Held=True (Applying) for a branch worker's operation in flight that is
+// followed: the Kustomization is resumed for it, or about to be, and suspended again when it ends.
+func applyingCondition(operation *configbutleraiv1alpha3.ApplyOperation) conditionValue {
+	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonApplying, Message: fmt.Sprintf(
+		"applying %s for a %s; suspended again when it ends", applier.DescribeCommit(operation.Commit),
+		operation.Reason)}
 }
 
 // OperationFollower answers whether this process carries out or follows a branch worker's
@@ -79,7 +86,7 @@ type OperationFollower interface {
 }
 
 // DefaultUnfollowedGrace is how long a branch worker's operation in flight may go unfollowed
-// before the reconciler fences it. It covers the moments nobody follows an operation that is fine:
+// before the reconciler suspends it. It covers the moments nobody follows an operation that is fine:
 // a process that just started, whose worker has not recovered the operation yet, and an operation
 // whose completion is not written yet.
 const DefaultUnfollowedGrace = time.Minute
@@ -105,12 +112,12 @@ func (r *ApplyTriggerReconciler) followed(
 	return time.Since(r.unfollowed.since(trigger, operation.Token)) < grace
 }
 
-// fenceUnfollowed sees a branch worker's operation that nobody follows through, as the worker's own
+// suspendUnfollowed sees a branch worker's operation that nobody follows through, as the worker's own
 // follow would have: it suspends the Kustomization with a token, waits until that is handled, and
 // completes the operation Failed, since whether its apply ran cannot be told from here. The worker,
-// should it still name the trigger, asks again. The fence token is recorded on the operation, so a
-// worker that recovers it meanwhile follows the same fence.
-func (r *ApplyTriggerReconciler) fenceUnfollowed(
+// should it still name the trigger, asks again. The suspend token is recorded on the operation, so a
+// worker that recovers it meanwhile follows the same suspend.
+func (r *ApplyTriggerReconciler) suspendUnfollowed(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, held heldState,
 ) conditionValue {
 	ref := trigger.Applier()
@@ -119,18 +126,18 @@ func (r *ApplyTriggerReconciler) fenceUnfollowed(
 	case !held.suspension.Suspended || !held.suspension.Held:
 		token, err := held.flux.Suspend(ctx, ref)
 		if err != nil {
-			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended, err.Error())
+			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, err.Error())
 		}
 		r.event(trigger, corev1.EventTypeWarning, EventReasonOperationUnfollowed,
 			"the %s apply of %s is followed by nobody; suspended Kustomization %s again", operation.Reason,
 			applier.DescribeCommit(operation.Commit), ref)
-		operation.FenceToken = token
+		operation.SuspendToken = token
 		operation.Message = "followed by nobody; suspended again, and complete once nothing it started is running"
 		trigger.Status.Operation = operation
-		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonFencing,
+		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending,
 			Message: fmt.Sprintf("Kustomization %s is being suspended: its apply is followed by nobody", ref)}
-	case !held.suspension.Fenced:
-		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonFencing,
+	case !held.suspension.Handled:
+		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending,
 			Message: fmt.Sprintf("Kustomization %s is suspended; waiting for it to handle the suspend", ref)}
 	}
 	finished := metav1.NewTime(time.Now())
@@ -140,7 +147,7 @@ func (r *ApplyTriggerReconciler) fenceUnfollowed(
 		"ran cannot be told"
 	trigger.Status.Operation = operation
 	r.unfollowed.forget(trigger, operation.Token)
-	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonHeld,
+	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 		Message: fmt.Sprintf("Kustomization %s is suspended; GitOps Reverser starts every apply it makes", ref)}
 }
 
@@ -237,18 +244,18 @@ func sameOperationPhase(a, b *configbutleraiv1alpha3.ApplyOperation) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.Token == b.Token && a.FenceToken == b.FenceToken && a.Phase == b.Phase &&
+	return a.Token == b.Token && a.SuspendToken == b.SuspendToken && a.Phase == b.Phase &&
 		a.RequestedAt.Equal(&b.RequestedAt)
 }
 
-// hold suspends the Kustomization when it is not held and fenced, and completes the operation an
+// hold suspends the Kustomization when it is not held with its suspend handled, and completes the operation an
 // external resume was recorded as once it is.
 func (r *ApplyTriggerReconciler) hold(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, held heldState,
 ) conditionValue {
 	ref := trigger.Applier()
-	fencing := func(message string) conditionValue {
-		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonFencing, Message: message}
+	suspending := func(message string) conditionValue {
+		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending, Message: message}
 	}
 	switch {
 	case !held.suspension.Suspended:
@@ -260,28 +267,28 @@ func (r *ApplyTriggerReconciler) hold(
 			if other != nil {
 				message = applier.HeldByAnotherMessage(trigger, other)
 			}
-			return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotHeld, Message: message}
+			return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured, Message: message}
 		}
 		token, err := held.flux.Suspend(ctx, ref)
 		if err != nil {
-			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended, err.Error())
+			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, err.Error())
 		}
 		r.suspended(trigger, token, heldBefore(trigger) || held.inFlight())
-		return fencing(fmt.Sprintf("Kustomization %s is being suspended", ref))
+		return suspending(fmt.Sprintf("Kustomization %s is being suspended", ref))
 	case !held.suspension.Held:
 		// Suspended by somebody else's write (`flux suspend`): take the field over, with a token, so
 		// nothing that write let run is taken for idle.
 		if _, err := held.flux.Suspend(ctx, ref); err != nil {
-			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionSuspended, err.Error())
+			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, err.Error())
 		}
-		return fencing(fmt.Sprintf("Kustomization %s is being suspended under GitOps Reverser", ref))
-	case !held.suspension.Fenced:
-		return fencing(fmt.Sprintf("Kustomization %s is suspended; waiting for it to handle the suspend", ref))
+		return suspending(fmt.Sprintf("Kustomization %s is being suspended under GitOps Reverser", ref))
+	case !held.suspension.Handled:
+		return suspending(fmt.Sprintf("Kustomization %s is suspended; waiting for it to handle the suspend", ref))
 	}
 	if held.inFlight() {
 		completeExternalOperation(trigger, held.operation, held.suspension)
 	}
-	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonHeld,
+	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 		Message: fmt.Sprintf("Kustomization %s is suspended; GitOps Reverser starts every apply it makes", ref)}
 }
 
@@ -298,7 +305,7 @@ func (r *ApplyTriggerReconciler) suspended(trigger *configbutleraiv1alpha3.FluxT
 		"Kustomization %s was resumed outside GitOps Reverser, which suspended it again; the apply "+
 			"that resume started was not checked against the branch", ref)
 	trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
-		Phase: configbutleraiv1alpha3.ApplyOperationUnresolved, FenceToken: token,
+		Phase: configbutleraiv1alpha3.ApplyOperationUnresolved, SuspendToken: token,
 		RequestedAt: metav1.NewTime(time.Now()),
 		Message: "the Kustomization was resumed outside GitOps Reverser; suspended again, and " +
 			"complete once nothing that resume started is running",
@@ -327,7 +334,7 @@ func completeExternalOperation(
 
 // heldBefore reports whether the trigger last said it held its Kustomization.
 func heldBefore(trigger *configbutleraiv1alpha3.FluxTrigger) bool {
-	return apimeta.IsStatusConditionTrue(trigger.Status.Conditions, ApplyTriggerConditionSuspended)
+	return apimeta.IsStatusConditionTrue(trigger.Status.Conditions, ApplyTriggerConditionHeld)
 }
 
 // liveOperation reads the trigger's status.operation uncached: a branch worker writes it just before
@@ -363,7 +370,7 @@ func (r *ApplyTriggerReconciler) fluxClient(
 
 // releaseDeadline is how long a deleted FluxTrigger tries to hand its Kustomization back, counted
 // from its deletionTimestamp, before it lets go anyway with a Warning Event that says what the
-// Kustomization is left as. The fence it waits for is handled once the apply running then ends, so
+// Kustomization is left as. The suspend it waits for is handled once the apply running then ends, so
 // the deadline is longer than an apply usually takes; a kustomize-controller that is down never
 // handles it, and the deletion must not wait on that forever.
 const releaseDeadline = 10 * time.Minute
@@ -447,7 +454,7 @@ type pendingRelease struct {
 }
 
 // releaseStep takes the hand-back one step, and returns nil once the trigger may go. With a
-// successor (nextInLine), the Kustomization is not released but left suspended and fenced for it:
+// successor (nextInLine), the Kustomization is not released but left suspended, its suspend handled, for it:
 // released, Flux would apply it at once, unchecked against the branch, before the successor's
 // adoption could suspend it again.
 func (r *ApplyTriggerReconciler) releaseStep(
@@ -463,8 +470,8 @@ func (r *ApplyTriggerReconciler) releaseStep(
 		return nil
 	}
 	ref := trigger.Applier()
-	fencing := &pendingRelease{
-		result: ctrl.Result{RequeueAfter: applyTriggerFenceInterval},
+	suspending := &pendingRelease{
+		result: ctrl.Result{RequeueAfter: applyTriggerSuspendingInterval},
 		left: "it is suspended, and has not handled the suspend yet (is kustomize-controller running?); " +
 			"`flux resume` resumes it",
 	}
@@ -481,9 +488,9 @@ func (r *ApplyTriggerReconciler) releaseStep(
 			return r.releaseFailed(trigger, err, fmt.Sprintf("it is resumed, and suspending it failed (%v), so "+
 				"GitOps Reverser's field manager still holds spec.suspend", err))
 		}
-		return fencing
-	case !suspension.Fenced:
-		return fencing
+		return suspending
+	case !suspension.Handled:
+		return suspending
 	}
 	if successor != nil {
 		r.event(trigger, corev1.EventTypeNormal, EventReasonReleased,
@@ -555,7 +562,7 @@ func (r *ApplyTriggerReconciler) event(object client.Object, eventType, reason, 
 // publishConsumers sets the trigger's status.source.otherConsumers and status.source.prefetch: the
 // consumers of its GitRepository in the applier's cluster, other than its own Kustomization, that no
 // FluxTrigger on the same ClusterProvider holds. Prefetch also needs its own Kustomization held,
-// which held, this pass's Suspended, says. A listing that fails publishes none and no prefetch,
+// which held, this pass's Held, says. A listing that fails publishes none and no prefetch,
 // because the precondition cannot be checked. Information only (decision 2): it never affects Ready.
 func (r *ApplyTriggerReconciler) publishConsumers(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, held conditionValue,
@@ -595,8 +602,8 @@ func (r *ApplyTriggerReconciler) publishConsumers(
 }
 
 // heldKustomizations is every Kustomization a FluxTrigger on the ClusterProvider holds: one whose
-// Suspended condition is True. A trigger that is not Configured (SuspendOwnedElsewhere), or has not
-// fenced its Kustomization yet, does not hold it: Flux may still apply a new artifact on its own.
+// Held condition is True. A trigger that is not Configured (SuspendOwnedElsewhere), or whose
+// Kustomization has not handled its suspend yet, does not hold it: Flux may still apply a new artifact on its own.
 func (r *ApplyTriggerReconciler) heldKustomizations(
 	ctx context.Context,
 	cluster string,

@@ -91,7 +91,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		By("creating it, with a GitRepository that follows the release branch")
 		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "release", "./"+fluxApplierFolder)
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "Succeeded", "")
-		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Suspended", "True", "Held", "")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "the trigger holds its Kustomization")
 		prefetch, err := kubectlRunInNamespace(testNs, "get", fluxTriggerResource, fluxName,
 			"-o", "jsonpath={.status.source.prefetch}|{.status.source.otherConsumers}")
@@ -252,7 +252,7 @@ data:
 				To(ContainSubstring("was resumed outside GitOps Reverser"))
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue(), "suspended again")
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
-		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Suspended", "True", "Held", "")
+		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
 	})
 
 	// Deleting the trigger hands the Kustomization back: its finalizer waits until nothing is

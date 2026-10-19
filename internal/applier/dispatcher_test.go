@@ -118,7 +118,7 @@ func triggersFor(objects []client.Object) []client.Object {
 				ClusterProviderRef: provider,
 				KustomizationRef:   fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
 			}, Status: v1alpha3.FluxTriggerStatus{Conditions: []metav1.Condition{{
-				Type: TriggerConditionSuspended, Status: metav1.ConditionTrue, Reason: "Held",
+				Type: TriggerConditionHeld, Status: metav1.ConditionTrue, Reason: "Suspended",
 				LastTransitionTime: metav1.Now(),
 			}}}})
 		}
@@ -660,10 +660,13 @@ func TestDispatcher_ARequestedApplyIsFollowedUntilFluxFinished(t *testing.T) {
 	f.sim.Release()
 	settling := next(t, reports)
 	assert.Equal(t, git.ApplySettling, settling.Outcome)
-	require.NotEmpty(t, settling.FenceToken)
+	require.NotEmpty(t, settling.SuspendToken)
 	done := next(t, reports)
 	assert.Equal(t, git.ApplyResult{
-		ID: 1, Outcome: git.ApplySucceeded, FenceToken: settling.FenceToken, AppliedRevision: "main@sha1:" + testCommit,
+		ID:              1,
+		Outcome:         git.ApplySucceeded,
+		SuspendToken:    settling.SuspendToken,
+		AppliedRevision: "main@sha1:" + testCommit,
 	}, done)
 	_, open := <-reports
 	assert.False(t, open, "and that ends the attempt")
@@ -687,9 +690,9 @@ func TestDispatcher_AnApplyPastItsBudgetIsUnresolvedAndStillFollowed(t *testing.
 	<-held
 	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
 	assert.Equal(t, git.ApplyUnresolved, next(t, reports).Outcome)
-	fenced := next(t, reports)
-	assert.Equal(t, git.ApplyUnresolved, fenced.Outcome, "Unresolved holds")
-	require.NotEmpty(t, fenced.FenceToken, "suspended at once")
+	resuspended := next(t, reports)
+	assert.Equal(t, git.ApplyUnresolved, resuspended.Outcome, "Unresolved holds")
+	require.NotEmpty(t, resuspended.SuspendToken, "suspended at once")
 	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)))
 	quiet(t, reports, "an unresolved operation is not closed by time")
 	events := f.events()
@@ -700,7 +703,7 @@ func TestDispatcher_AnApplyPastItsBudgetIsUnresolvedAndStillFollowed(t *testing.
 	f.sim.Release()
 	done := next(t, reports)
 	assert.Equal(t, git.ApplySucceeded, done.Outcome, "it resolves when the suspend's token is handled")
-	assert.Equal(t, fenced.FenceToken, done.FenceToken)
+	assert.Equal(t, resuspended.SuspendToken, done.SuspendToken)
 }
 
 // TestDispatcher_AFailedApplyIsSuspendedAgain: a failed apply is suspended like any other, which is
@@ -716,7 +719,7 @@ func TestDispatcher_AFailedApplyIsSuspendedAgain(t *testing.T) {
 	}
 	assert.Equal(t, git.ApplyFailed, res.Outcome)
 	require.ErrorContains(t, res.Err, "ConfigMap/apps/x dry-run failed")
-	assert.NotEmpty(t, res.FenceToken)
+	assert.NotEmpty(t, res.SuspendToken)
 	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)), "no retryInterval retry can fire")
 }
 
@@ -774,19 +777,19 @@ func TestDispatcher_AnAbandonedOperationIsSuspendedBeforeItIsLetGo(t *testing.T)
 // TestDispatcher_AnUnheldTriggerIsNotResumed is review 4's F: the trigger's reconciler suspends the
 // Kustomization on its own reads (an adoption, an external resume), and a resume between its read
 // and its suspend would be suspended under the apply. So a request resumes only a Kustomization its
-// trigger reports Suspended=True, read uncached; any other is a failed attempt the worker retries.
+// trigger reports Held=True, read uncached; any other is a failed attempt the worker retries.
 func TestDispatcher_AnUnheldTriggerIsNotResumed(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
 	trigger := &v1alpha3.FluxTrigger{}
 	require.NoError(t, f.control.Get(context.Background(), client.ObjectKey{Namespace: targetNS, Name: "checkout"},
 		trigger))
-	trigger.Status.Conditions[0].Status, trigger.Status.Conditions[0].Reason = metav1.ConditionFalse, "Fencing"
+	trigger.Status.Conditions[0].Status, trigger.Status.Conditions[0].Reason = metav1.ConditionFalse, "Suspending"
 	require.NoError(t, f.control.Update(context.Background(), trigger))
 
 	res := f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
 
 	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
-	require.ErrorContains(t, res.Err, "does not hold its Kustomization suspended: it is Suspended=False, Fencing")
+	require.ErrorContains(t, res.Err, "does not hold its Kustomization suspended: it is Held=False, Suspending")
 	for _, write := range f.patches() {
 		assert.NotContains(t, write, "suspend=false", "nothing is resumed")
 	}
@@ -1170,7 +1173,7 @@ func TestDispatcher_ARecoveredOperationIsFollowedAndSuspended(t *testing.T) {
 	}))
 
 	assert.Equal(t, git.ApplySucceeded, res.Outcome)
-	assert.NotEmpty(t, res.FenceToken)
+	assert.NotEmpty(t, res.SuspendToken)
 	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)), "suspended again")
 	for _, write := range f.patches() {
 		assert.NotContains(t, write, "suspend=false", "nothing is resumed for a recovered operation")
@@ -1181,7 +1184,7 @@ func TestDispatcher_ARecoveredOperationIsFollowedAndSuspended(t *testing.T) {
 
 // TestDispatcher_ARecoveredOperationThatNeverResumedFails: the record is written before the resume,
 // so a process can stop between the two. Its token is nowhere on the Kustomization; no outcome can
-// be read, so it ends Failed (after a fence) and the worker decides again.
+// be read, so it ends Failed (after a suspend) and the worker decides again.
 func TestDispatcher_ARecoveredOperationThatNeverResumedFails(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
 
@@ -1195,23 +1198,23 @@ func TestDispatcher_ARecoveredOperationThatNeverResumedFails(t *testing.T) {
 	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)))
 }
 
-// TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsFence: the trigger's reconciler recorded a
-// `flux resume` it suspended again, with the fence token and no request token; following it ends
-// once that fence is handled.
-func TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsFence(t *testing.T) {
+// TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsSuspend: the trigger's reconciler recorded a
+// `flux resume` it suspended again, with the suspend token and no request token; following it ends
+// once that suspend is handled.
+func TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsSuspend(t *testing.T) {
 	objs := resumedSource(t, "F1")
 	_ = unstructured.SetNestedField(objs[0].(*unstructured.Unstructured).Object, true, "spec", "suspend")
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, objs...)
 	f.sim.Requeue(checkoutKey)
 
 	res := f.followToEnd(t, recoveredRequest(&v1alpha3.ApplyOperation{
-		Phase: v1alpha3.ApplyOperationUnresolved, FenceToken: "F1",
+		Phase: v1alpha3.ApplyOperationUnresolved, SuspendToken: "F1",
 	}))
 
 	assert.Equal(t, git.ApplyFailed, res.Outcome,
 		"the Kustomization reports no Ready: nothing of that apply can be read")
-	assert.Equal(t, "F1", res.FenceToken)
+	assert.Equal(t, "F1", res.SuspendToken)
 	for _, write := range f.patches() {
-		assert.NotContains(t, write, "kustomizations", "the fence was the reconciler's; nothing is written")
+		assert.NotContains(t, write, "kustomizations", "the suspend was the reconciler's; nothing is written")
 	}
 }

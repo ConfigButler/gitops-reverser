@@ -279,12 +279,12 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	assert.Equal(t, requested, phase(ApplyResult{Outcome: ApplyRequested}), "published once reported")
 	assert.Equal(t, configv1alpha3.ApplyOperationRunning, phase(ApplyResult{Outcome: ApplyRunning}).Phase)
 	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, phase(ApplyResult{Outcome: ApplyUnresolved}).Phase)
-	settling := phase(ApplyResult{Outcome: ApplySettling, FenceToken: "T2"})
+	settling := phase(ApplyResult{Outcome: ApplySettling, SuspendToken: "T2"})
 	assert.Equal(t, configv1alpha3.ApplyOperationUnresolved, settling.Phase,
 		"Unresolved holds until the operation completes")
-	assert.Equal(t, "T2", settling.FenceToken)
+	assert.Equal(t, "T2", settling.SuspendToken)
 
-	done := phase(ApplyResult{Outcome: ApplySucceeded, FenceToken: "T2", AppliedRevision: "main@sha1:bbb"})
+	done := phase(ApplyResult{Outcome: ApplySucceeded, SuspendToken: "T2", AppliedRevision: "main@sha1:bbb"})
 	assert.Equal(t, configv1alpha3.ApplyOperationSucceeded, done.Phase)
 	require.NotNil(t, done.FinishedAt)
 	assert.Equal(t, "main@sha1:bbb", done.AppliedRevision)

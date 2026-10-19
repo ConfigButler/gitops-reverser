@@ -201,6 +201,13 @@ nothing about what it does to the cluster.
 condition. The trigger is never called the applier: the applier is the object it triggers. Not
 "Argo trigger", which names a trigger of Argo Events.
 
+**Held.** How a `FluxTrigger` reports its `Kustomization`, from the trigger's side: `Suspended`
+(suspended under GitOps Reverser's field manager, the last suspend handled, nothing applies),
+`Applying` (resumed for an apply GitOps Reverser started), `Suspending` (a suspend was sent, and
+Flux has not handled its token yet). A suspend counts as done only once it is handled: by then no
+reconcile that started before it is still running. Not "fenced", and not "resumed", which says what
+happens to the `Kustomization` rather than what the trigger does.
+
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
 (`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`). It asks; the operation it starts is followed
 until the applier's status shows the apply completed.

@@ -61,8 +61,8 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
 		"the recovered apply's late write is not")
 
-	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySettling, FenceToken: "T2"})
-	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySucceeded, FenceToken: "T2",
+	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySettling, SuspendToken: "T2"})
+	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySucceeded, SuspendToken: "T2",
 		AppliedRevision: "main@sha1:bbb"})
 	loop.openWindow = &openWindow{} // busy: the repair the withheld write owes waits
 	loop.serviceAppliers()
@@ -72,7 +72,7 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 	assert.Equal(t, configv1alpha3.ApplyOperationSucceeded, completed.Phase, "the record is completed")
 	assert.Equal(t, "T1", completed.Token, "one operation, one record")
 	assert.Equal(t, recorded.RequestedAt.Unix(), completed.RequestedAt.Unix())
-	assert.Equal(t, "T2", completed.FenceToken)
+	assert.Equal(t, "T2", completed.SuspendToken)
 	assert.Empty(t, requester.taken())
 
 	loop.openWindow, loop.quietSince = nil, time.Time{}
@@ -130,16 +130,16 @@ func TestRecovery_ARecordIsReadOnceButAnApplyStartedElsewhereWhenever(t *testing
 	assert.Empty(t, requester.taken(), "a worker's own record is not read back while it runs")
 
 	external := &configv1alpha3.ApplyOperation{
-		Phase: configv1alpha3.ApplyOperationUnresolved, FenceToken: "F1", RequestedAt: metav1.Now(),
+		Phase: configv1alpha3.ApplyOperationUnresolved, SuspendToken: "F1", RequestedAt: metav1.Now(),
 	}
 	setRecorded(external)
 	loop.serviceAppliers()
 	followed := requester.taken()
 	require.Len(t, followed, 1, "an apply started elsewhere is followed")
-	assert.Equal(t, "F1", followed[0].Recovered.FenceToken)
+	assert.Equal(t, "F1", followed[0].Recovered.SuspendToken)
 	assert.Empty(t, followed[0].Token)
 
-	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySucceeded, FenceToken: "F1"})
+	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySucceeded, SuspendToken: "F1"})
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "once")
 }

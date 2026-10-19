@@ -327,16 +327,16 @@ func (f *Flux) fetch(ctx context.Context, sourceRef types.NamespacedName) (*unst
 //     dependency; and reconciles of one object never overlap. A token someone else stamped over
 //     ours stands in for it: the reconcile that handles it started after the resume.
 //   - Then the outcome is read (verdict), from that reconcile's Ready and lastAppliedRevision, and
-//     the Kustomization is suspended again with a new token, the fence: Settling.
-//   - Succeeded or Failed once the fence is handled. A suspended reconcile handles it without
+//     the Kustomization is suspended again with a new token: Settling.
+//   - Succeeded or Failed once that suspend is handled. A suspended reconcile handles it without
 //     applying, so by then every reconcile that started before the suspend has ended.
 //
 // An Overdue operation (Unresolved) is suspended at once, without waiting for its token: the
-// suspend does not stop an apply already running, but it stops whatever would follow, and the fence
-// still decides when the operation completes. A Kustomization found resumed after the fence (by
-// `flux resume`) is fenced again. A Recovered or Unconfirmed operation whose token is nowhere on the
-// Kustomization was never resumed, or its token was stamped over (a fence of its own the process
-// stopped before reporting, `flux reconcile`): it is suspended, and judged once the fence is
+// suspend does not stop an apply already running, but it stops whatever would follow, and its token
+// still decides when the operation completes. A Kustomization found resumed after that suspend (by
+// `flux resume`) is suspended again. A Recovered or Unconfirmed operation whose token is nowhere on the
+// Kustomization was never resumed, or its token was stamped over (a suspend of its own the process
+// stopped before reporting, `flux reconcile`): it is suspended, and judged once that suspend is
 // handled on what ran since it was asked for. Nothing else is asked: an OutcomeCurrent request is
 // finished.
 func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
@@ -347,7 +347,7 @@ func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Starte
 	if err != nil {
 		return Progress{}, fmt.Errorf("get %s %s: %w", kindKustomization, ref, err)
 	}
-	if s.FenceToken == "" {
+	if s.SuspendToken == "" {
 		if (s.Recovered || s.Unconfirmed != nil) && !carriesToken(ks, s.Token) {
 			s.unseen = true
 		}
@@ -360,25 +360,25 @@ func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Starte
 			s.verdict = &read
 		case s.unseen:
 			// Stamped over before a reconcile handled it, or never written: what ran meanwhile is
-			// judged once the fence is handled.
+			// judged once the suspend is handled.
 		case !s.Overdue:
 			return Progress{Outcome: git.ApplyRunning}, nil
 		}
-		return f.fence(ctx, ref, s)
+		return f.suspendAgain(ctx, ref, s)
 	}
 	return f.settled(ctx, ref, ks, s)
 }
 
-// settled is Progress once the Kustomization was suspended again: fenced again when it was found
-// resumed, Settling until the fence is handled, and then the outcome.
+// settled is Progress once the Kustomization was suspended again: suspended again when it was found
+// resumed, Settling until that suspend is handled, and then the outcome.
 func (f *Flux) settled(
 	ctx context.Context, ref types.NamespacedName, ks *unstructured.Unstructured, s *Started,
 ) (Progress, error) {
 	if !suspended(ks) {
-		return f.fence(ctx, ref, s)
+		return f.suspendAgain(ctx, ref, s)
 	}
-	if !tokenHandled(ks, s.FenceToken) {
-		return Progress{Outcome: git.ApplySettling, FenceToken: s.FenceToken}, nil
+	if !tokenHandled(ks, s.SuspendToken) {
+		return Progress{Outcome: git.ApplySettling, SuspendToken: s.SuspendToken}, nil
 	}
 	if s.verdict == nil {
 		// The resume's own reconcile was not seen to end before the suspend: what the
@@ -392,18 +392,18 @@ func (f *Flux) settled(
 		s.verdict = &read
 	}
 	done := *s.verdict
-	done.FenceToken = s.FenceToken
+	done.SuspendToken = s.SuspendToken
 	return done, nil
 }
 
-// fence suspends the Kustomization with a new token, and reports the operation Settling.
-func (f *Flux) fence(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
+// suspendAgain suspends the Kustomization with a new token, and reports the operation Settling.
+func (f *Flux) suspendAgain(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
 	token, err := f.Suspend(ctx, ref)
 	if err != nil {
 		return Progress{}, err
 	}
-	s.FenceToken = token
-	return Progress{Outcome: git.ApplySettling, FenceToken: token}, nil
+	s.SuspendToken = token
+	return Progress{Outcome: git.ApplySettling, SuspendToken: token}, nil
 }
 
 // verdict reads the outcome of the operation's apply once the reconcile that read its token ended
@@ -445,7 +445,7 @@ func (f *Flux) verdict(ctx context.Context, ks *unstructured.Unstructured, s *St
 func (s *Started) judge(ks *unstructured.Unstructured) (Progress, bool) {
 	read := applyVerdict(ks, s.Commit)
 	if s.Token == "" {
-		// An external resume the trigger's reconciler recorded and fenced: no resume of ours to
+		// An external resume the trigger's reconciler recorded and suspended again: no resume of ours to
 		// have run since. It is judged as the reconciler judges it, on the Kustomization's last
 		// apply, so the two agree whichever completes the record.
 		return read, true
@@ -693,8 +693,8 @@ type Suspension struct {
 	Suspended bool
 	// Held is spec.suspend held by GitOps Reverser's field manager.
 	Held bool
-	// Fenced is the last requestedAt handled: no reconcile that read an earlier one is running.
-	Fenced bool
+	// Handled is the last requestedAt handled: no reconcile that read an earlier one is running.
+	Handled bool
 	// Applied is what the Kustomization's last apply reported, read for an apply GitOps Reverser
 	// did not ask for.
 	Applied Progress
@@ -710,12 +710,12 @@ func (f *Flux) Suspension(ctx context.Context, ref types.NamespacedName) (Suspen
 	return Suspension{
 		Suspended: suspended(ks),
 		Held:      heldByUs(ks),
-		Fenced:    statusString(ks, "lastHandledReconcileAt") == token,
+		Handled:   statusString(ks, "lastHandledReconcileAt") == token,
 		Applied:   applyVerdict(ks, ""),
 	}, nil
 }
 
-// Suspend suspends the Kustomization ref with a new token, the fence, and returns it. Once the
+// Suspend suspends the Kustomization ref with a new token, and returns it. Once the
 // Kustomization reports it handled, nothing that started before the suspend is still running.
 func (f *Flux) Suspend(ctx context.Context, ref types.NamespacedName) (string, error) {
 	token := requestToken(f.Now())

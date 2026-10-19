@@ -129,7 +129,7 @@ type ApplyRequest struct {
 	Report func(ApplyResult)
 	// Recovered, when set, is an operation recorded on the trigger (by an earlier process, or by the
 	// trigger's reconciler for an apply somebody else started) that the attempt follows to its end
-	// instead of asking the applier for anything. Its token and fence token are the ones to read.
+	// instead of asking the applier for anything. Its token and suspend token are the ones to read.
 	Recovered *v1alpha3.ApplyOperation
 	// Abandoned is closed when the worker stops following the attempt: no GitTarget names its
 	// applier any more, or the worker stopped. The requester stops following the operation then,
@@ -203,9 +203,9 @@ func (o ApplyOutcome) Operated() bool { return o == ApplySucceeded || o == Apply
 type ApplyResult struct {
 	ID      uint64
 	Outcome ApplyOutcome
-	// FenceToken is the requestedAt a Flux Kustomization was suspended again with after the apply
+	// SuspendToken is the requestedAt a Flux Kustomization was suspended again with after the apply
 	// (Settling carries it, and so do the reports after it).
-	FenceToken string
+	SuspendToken string
 	// AppliedRevision is the revision the applier reports it applied (Succeeded and Failed carry
 	// it, when the applier reports one).
 	AppliedRevision string

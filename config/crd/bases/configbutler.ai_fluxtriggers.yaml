@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Held")].reason
+      name: Held
+      type: string
     - jsonPath: .spec.kustomizationRef.name
       name: Kustomization
       type: string
@@ -140,7 +143,9 @@ spec:
               conditions:
                 description: |-
                   Conditions are Configured (the Kustomization exists, applies a GitRepository that follows a
-                  branch, may be patched, and no other FluxTrigger holds it) and the kstatus
+                  branch, may be patched, and no other FluxTrigger holds it), Held (Suspended: suspended under
+                  GitOps Reverser with the last suspend handled; Applying: resumed for an apply GitOps Reverser
+                  started; Suspending: a suspend is not handled yet; NotConfigured), and the kstatus
                   Ready/Reconciling/Stalled trio. Of the FluxTriggers naming one Kustomization in one cluster, the
                   one created first holds it; the others are Configured=False (HeldByAnotherTrigger) until it is
                   deleted, and the next in line takes it over.
@@ -222,12 +227,6 @@ spec:
                       Commit is the commit the applier was asked to apply. Empty when the remote did not carry the
                       branch.
                     type: string
-                  fenceToken:
-                    description: |-
-                      FenceToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
-                      Once the Kustomization reports it handled, nothing started before the suspend is still
-                      running. Flux only.
-                    type: string
                   finishedAt:
                     description: FinishedAt is when the operation was seen to complete.
                     format: date-time
@@ -262,6 +261,12 @@ spec:
                   requestedAt:
                     description: RequestedAt is when the applier was asked.
                     format: date-time
+                    type: string
+                  suspendToken:
+                    description: |-
+                      SuspendToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
+                      Once the Kustomization reports it handled, nothing started before the suspend is still
+                      running. Flux only.
                     type: string
                   token:
                     description: |-

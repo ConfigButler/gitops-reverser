@@ -214,12 +214,6 @@ spec:
                       Commit is the commit the applier was asked to apply. Empty when the remote did not carry the
                       branch.
                     type: string
-                  fenceToken:
-                    description: |-
-                      FenceToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
-                      Once the Kustomization reports it handled, nothing started before the suspend is still
-                      running. Flux only.
-                    type: string
                   finishedAt:
                     description: FinishedAt is when the operation was seen to complete.
                     format: date-time
@@ -254,6 +248,12 @@ spec:
                   requestedAt:
                     description: RequestedAt is when the applier was asked.
                     format: date-time
+                    type: string
+                  suspendToken:
+                    description: |-
+                      SuspendToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
+                      Once the Kustomization reports it handled, nothing started before the suspend is still
+                      running. Flux only.
                     type: string
                   token:
                     description: |-
