@@ -778,6 +778,32 @@ func TestDispatcher_AnAbandonedOperationIsSuspendedBeforeItIsLetGo(t *testing.T)
 	assert.False(t, f.dispatcher.Following(checkout.Trigger, "T1"))
 }
 
+// TestDispatcher_AStopMidApplySuspendsTheKustomization is review 7's F1: an apply is in flight, and
+// the operator is stopped (`helm upgrade`, a node drain). Nothing suspended the Kustomization, so it
+// stayed resumed until the next process recovered the operation, and Flux could apply on its own in
+// between. Now the stop suspends it once, without waiting for that to be handled: the next process
+// recovers a suspend of its own it did not report.
+func TestDispatcher_AStopMidApplySuspendsTheKustomization(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	held := f.sim.HoldNextApply()
+	req := request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")
+	req.Token = "T1"
+	ctx, stop := context.WithCancel(context.Background())
+
+	reports := f.carryOut(ctx, req)
+	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
+	<-held
+	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
+	require.False(t, suspended(f.sim.Kustomization(checkoutKey)), "resumed for the apply")
+	stop()
+	_, open := <-reports
+	assert.False(t, open, "nothing more is reported")
+
+	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)), "suspended as the process stops")
+	assert.True(t, heldByUs(f.sim.Kustomization(checkoutKey)), "under GitOps Reverser's field manager")
+	f.sim.Release()
+}
+
 // TestDispatcher_AnUnheldTriggerIsNotResumed is review 4's F: the trigger's reconciler suspends the
 // Kustomization on its own reads (an adoption, an external resume), and a resume between its read
 // and its suspend would be suspended under the apply. So a request resumes only a Kustomization its

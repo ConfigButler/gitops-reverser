@@ -519,10 +519,16 @@ apply on its own. No in-process plugin: it would run with every credential the o
 
 ## What it costs
 
-- **While GitOps Reverser is down, nothing applies.** A Git-side push waits until it is back, or for
-  a manual `flux resume` or sync (after which GitOps Reverser suspends the `Kustomization` again on
-  start). This is the price of exclusivity, and the same trade Argo CD with automated sync off makes.
-  Bi-directional editing already stops in that state.
+- **While GitOps Reverser is down, a `Kustomization` waits suspended.** A Git-side push waits until
+  it is back, or for a manual `flux resume` or sync (after which GitOps Reverser suspends the
+  `Kustomization` again on start). This is the price of exclusivity, and the same trade Argo CD with
+  automated sync off makes. Bi-directional editing already stops in that state. A graceful stop
+  (`helm upgrade`, a node drain) suspends a `Kustomization` it had resumed for an apply, once and
+  without waiting for it to be handled (the dispatcher's `suspendOnStop`), and the next process
+  recovers that suspend as one of its own it did not report. After a crash, the apply that was
+  running finishes and the next process suspends the `Kustomization`; until then Flux may apply on
+  its own. The narrowing is a mitigation, not a guarantee: a crash, a suspend that fails, or an
+  apply already running leave a gap.
 - **Flux tooling shows `Suspended`.** `flux get ks` reports it, and `flux reconcile ks` does nothing.
 - **A dependency that failed stays behind.** A `Kustomization` suspended after a failed apply keeps
   its generation unapplied, and its dependents wait until GitOps Reverser's retry succeeds.

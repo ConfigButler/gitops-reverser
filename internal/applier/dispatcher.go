@@ -435,7 +435,7 @@ func (d *Dispatcher) client(kind string, applierClient dynamic.Interface) Client
 // applier object being gone completes it as Failed, and so does its trigger being deleted: the
 // trigger's own finalizer suspends the Kustomization and hands it back, and a suspend from here
 // would undo that. It returns false, and reports nothing more, when the worker abandons the
-// attempt or the dispatcher stops.
+// attempt or the dispatcher stops; a Flux Kustomization this process resumed is suspended first.
 func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *operation) (git.ApplyResult, bool) {
 	started := d.Now()
 	phase, suspendToken := git.ApplyRequested, ""
@@ -466,14 +466,22 @@ func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *opera
 			interval = min(unresolvedBackoff*interval, max(d.UnresolvedPollMax, d.PollInterval))
 		}
 		if !wait(ctx, req.Abandoned, interval) {
-			abandoned := ctx.Err() == nil
-			if abandoned {
-				d.suspendAbandoned(ctx, req, op)
-			}
-			op.log.V(1).Info("stopped following the requested apply", "abandoned", abandoned)
+			d.letGo(ctx, req, op)
 			return git.ApplyResult{}, false
 		}
 	}
+}
+
+// letGo gives an operation up that follow stops following: the worker abandoned it, or the
+// dispatcher stops. Either way a Flux Kustomization it has resumed is suspended first.
+func (d *Dispatcher) letGo(ctx context.Context, req git.ApplyRequest, op *operation) {
+	abandoned := ctx.Err() == nil
+	if abandoned {
+		d.suspendAbandoned(ctx, req, op)
+	} else {
+		d.suspendOnStop(ctx, req, op)
+	}
+	op.log.V(1).Info("stopped following the requested apply", "abandoned", abandoned)
 }
 
 // suspendAbandoned sees an abandoned Flux operation through to its suspend before the attempt lets it
@@ -503,6 +511,35 @@ func (d *Dispatcher) suspendAbandoned(ctx context.Context, req git.ApplyRequest,
 			return
 		}
 	}
+}
+
+// stopSuspendTimeout bounds the one suspend a stopping dispatcher makes, well inside the pod's
+// termination grace period.
+const stopSuspendTimeout = 5 * time.Second
+
+// suspendOnStop suspends a Flux Kustomization this process resumed and has not suspended again, once,
+// as the dispatcher stops mid-apply: otherwise it stays resumed until the next process recovers the
+// operation, and Flux applies a new artifact, or a drift reconcile reverts live edits, on its own in
+// between. It does not wait for the suspend to be handled; the next process recovers a suspend of
+// its own that this one did not report, as it does after a crash. A trigger being deleted hands
+// its Kustomization back itself, and a suspend from here would undo that.
+func (d *Dispatcher) suspendOnStop(ctx context.Context, req git.ApplyRequest, op *operation) {
+	flux, isFlux := op.applier.(*Flux)
+	if !isFlux || op.started.Outcome != OutcomeResumed || op.started.SuspendToken != "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopSuspendTimeout)
+	defer cancel()
+	if released, err := d.triggerReleased(ctx, req.Applier.Trigger); err != nil || released {
+		return
+	}
+	token, err := flux.Suspend(ctx, op.ref)
+	if err != nil {
+		op.log.Info("stopping mid-apply, and the Kustomization could not be suspended; the next process "+
+			"suspends it when it recovers the operation", "error", err.Error())
+		return
+	}
+	op.log.Info("stopping mid-apply: suspended the Kustomization", "suspendToken", token)
 }
 
 // progress reads an operation's progress once, within pollTimeout. An applier that is gone, or a

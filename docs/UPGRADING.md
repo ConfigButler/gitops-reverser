@@ -61,7 +61,8 @@ A trigger also changes what else applies the folder. A `FluxTrigger` holds its `
 suspended, so Flux applies it only when GitOps Reverser resumes it: when somebody else pushes to the
 branch, after a refusal or a reverted edit, and to catch up with its own pushes once the branch has
 been quiet for the trigger's `quietPeriod`. `flux get ks` shows it `Suspended`, and while the
-operator is down nothing applies it. Remove `spec.suspend` from whatever applies the
+operator is down it waits suspended: a graceful stop suspends one it had resumed, and after a crash
+the next process does. Remove `spec.suspend` from whatever applies the
 `Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
 webhook into a Flux `Receiver` for the repository, as [the Flux guide](bi-directional-flux.md)
 describes. A trigger acts only while an eligible `GitTarget` names it, so create the two in any

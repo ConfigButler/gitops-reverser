@@ -348,8 +348,10 @@ returns to `Ready=True` only after a resync covering the refused scope. The elig
   foreign push, a refusal with `Reapply`, or a Flux catch-up.
 - **A human** running `flux resume` or pressing Sync applies whenever they do. GitOps Reverser
   suspends a resumed `Kustomization` again within a minute.
-- **GitOps Reverser becomes the only path to a deployment.** While it is down, nothing applies the
-  shared folders: a push reaches the cluster only through a manual sync or `flux resume`. Monitor the
+- **GitOps Reverser becomes the only path to a deployment.** While it is down, the shared folders
+  wait: a push reaches the cluster only through a manual sync or `flux resume`. A graceful stop
+  suspends a `Kustomization` it had resumed; after a crash, the apply that was running finishes,
+  and the next process suspends it. Monitor the
   operator the way you monitor the applier.
 - **Pending writes live in worker memory.** They do not survive a restart; recovery is a resync of
   the cluster as it is then.

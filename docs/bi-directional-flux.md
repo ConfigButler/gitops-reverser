@@ -448,9 +448,16 @@ flux get ks checkout -n flux-system
 
 ## While GitOps Reverser is down
 
-**Flux applies nothing while GitOps Reverser is down.** A Git-side push waits until it is back, or
-until somebody runs `flux resume`, after which GitOps Reverser suspends the `Kustomization` again
-when it starts.
+**A `Kustomization` waits suspended while GitOps Reverser is down.** A Git-side push waits until
+it is back, or until somebody runs `flux resume`, after which GitOps Reverser suspends the
+`Kustomization` again when it starts.
+
+- **A graceful stop suspends what it had resumed.** An upgrade or a node drain stops the operator
+  mid-apply; the stop suspends that `Kustomization` before the process exits. The apply already
+  running still finishes, and the next process sees it to its end.
+- **After a crash, the apply that was running finishes, and the next process suspends it.** Until
+  that process starts, the `Kustomization` stays resumed, so Flux may also apply a new artifact on
+  its own in between.
 
 An apply that was running when it stopped is not lost. The operation is recorded on the trigger
 before the `Kustomization` is resumed, so the next process follows it to its end by its tokens, with
