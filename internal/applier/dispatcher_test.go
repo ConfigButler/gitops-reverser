@@ -384,9 +384,15 @@ func TestDispatcher_AsksOnceForEveryTarget(t *testing.T) {
 // namespace and so names one in its own.
 func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
 	own := kustomizationApplier("prod-eu-1", targetNS, "own")
+	// Suspended, as the Kustomization its trigger holds is. A resumed one is reconciled by the
+	// simulated kustomize-controller as soon as the fetch lands a new artifact, and that status write
+	// can move its resourceVersion between the resume's read and its apply: the resume is then
+	// refused with a Conflict and made again, which is correct, but shows up here as two resumes.
+	ks := kustomizationObj(targetNS, "own", gitRepoSourceRef("own-source"))
+	_ = unstructured.SetNestedField(ks.Object, true, "spec", "suspend")
 	f := newDispatcherFixture(t,
 		[]client.Object{gitTarget("c", &fluxmeta.NamespacedObjectReference{Name: "own"}, "prod-eu-1")},
-		kustomizationObj(targetNS, "own", gitRepoSourceRef("own-source")),
+		ks,
 		gitRepositoryObj(targetNS, "own-source", testRepoURL, branchRef(testBranch), ""),
 	)
 
