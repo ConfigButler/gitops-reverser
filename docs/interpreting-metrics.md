@@ -204,6 +204,7 @@ boundary, the commit, the push. Background:
 | `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (repository preparation; **no production caller reaches it today**, so the series stays at zero) / `publication` (the head of a publication cycle) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty that could not be undone locally) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against) / `refresh` (the periodic top-up of an idle branch, or a push receiver delivery on one, and only when the branch had actually moved). See the note below. |
 | `git_queue_refusals_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work refused at enqueue: the queue was full, intake was paused through an outage, or the worker was stopping. `kind` is `write` / `attach` / `resync` / `refresh`. The producer keeps a refused item and offers it again: the watch delivers a write again from its cursor, the controller re-sends a save, a resync is gathered again, and the next reconcile asks for a refresh. What it can cost, when its watch cursor expires before the write comes back, is the write's own commit and, under `prune.mode: OnEvent`, a deleted object's removal from Git. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. An unreachable remote does not count: a decided window waits for the publication retry instead. |
+| `git_writes_dropped_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A live event (`kind="event"`) or atomic write (`kind="atomic"`) the branch worker dropped because its `GitTarget`'s render fidelity was not established. `reason` is `render_fidelity_pending`: a collection of the `GitTarget` has not finished its replay, which closes every collection of that target until it does. Or it is `render_fidelity_diverged`: a rendered value does not match the live object. Nothing replays a dropped write, so each one is an edit missing from Git until the object changes again or its collection replays. The worker logs the first drop under each gate status at Info, naming the collections the gate waits for. |
 | `git_commit_windows_total` | counter | `gittarget_namespace`, `gittarget_name`, `close_reason`, `timer_source` | One per closed commit window, whether or not it then produced a commit. `close_reason` is `idle_timeout` / `max_duration` / `attach_next` / `identity_change` / `buffer_limit` / `resync_before_apply` / `atomic_before_apply` / `foreign_commit` (the branch moved, or a Git host said it may have, so the window is published now) / `shutdown`; `timer_source` is `target` or `commit_request`. See [tuning commit windows](#tuning-commit-windows). |
 | `git_commit_window_duration_seconds` | histogram | `gittarget_namespace`, `gittarget_name` | How long each window collected: from the write that opened it to the start of its finalize. Its count equals `git_commit_windows_total` summed over `close_reason` and `timer_source`. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
@@ -347,7 +348,7 @@ red trains people to ignore it. Four classes:
 | **expected** | `routed`, `unchanged`, `bookmark`, `shutdown`, `written`, `deleted_live`, `deleted_sweep`, `retained`, `cached` | the pipeline working. `unchanged` is a document considered and found identical; `refused` is a document the writer declined to place, which is loss |
 | **degraded** | `author_kind="unresolved"`, `mode="list_fallback"`, `not_object`, `stream_error`, weak attribution tiers | working, on weaker evidence |
 | **recoverable** | `git_pushes_total{outcome="failed"}` (the writes are retained and retried); `route_failed` and any `git_queue_refusals_total` (the producer keeps the refused item and offers it again) | alert on it **sustained**: pushes with no successes, refusals on a branch whose intake is not paused. Never on one occurrence |
-| **loss** | any `git_commit_failures_total`, `placement_refusals_total`, `git_documents_total{outcome="refused"}` | an observed change that did not reach Git |
+| **loss** | any `git_commit_failures_total`, `git_writes_dropped_total`, `placement_refusals_total`, `git_documents_total{outcome="refused"}` | an observed change that did not reach Git |
 
 `route_failed` and a queue refusal **overlap**: a refused enqueue is one of the ways a route fails,
 so one refused event increments both. They are two views of one event, and summing them
@@ -446,14 +447,15 @@ sum by (provider_namespace, provider_name, branch) (
   rate(gitopsreverser_git_pushes_total[5m]))
 ```
 
-**Is work being refused, or thrown away?** Both should be flat zero on a healthy branch. A queue
-refusal is a saturated worker or a paused intake, and the producer offers the work again; a commit
-failure takes a whole window with it, and `reason="refused"` will not clear until someone fixes the
-Git path:
+**Is work being refused, or thrown away?** All three should be flat zero on a healthy branch. A
+queue refusal is a saturated worker or a paused intake, and the producer offers the work again; a
+commit failure takes a whole window with it, and `reason="refused"` will not clear until someone
+fixes the Git path; a dropped write is an edit that met a closed render-fidelity gate:
 
 ```promql
 sum by (kind) (rate(gitopsreverser_git_queue_refusals_total[5m]))
 sum by (kind, reason) (rate(gitopsreverser_git_commit_failures_total[5m]))
+sum by (kind, reason) (rate(gitopsreverser_git_writes_dropped_total[5m]))
 ```
 
 **How much work is a type's ingestion doing?** A stream is single-threaded, so time it spends

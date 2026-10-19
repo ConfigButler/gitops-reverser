@@ -1199,6 +1199,10 @@ type branchWorkerEventLoop struct {
 	// recovery is the open task of writing what a missing parent branch held back, and the probe
 	// that drives it. See parent_recovery.go.
 	recovery parentRecovery
+
+	// fidelityDropsLogged is, per GitTarget, the gate status under which its last drop was logged at
+	// Info, so a closed gate logs its first drop and counts the rest. See render_fidelity_drops.go.
+	fidelityDropsLogged map[string]renderFidelityDropMark
 }
 
 // commitWindowDefaults are a GitTarget's commit window timers when it declares none.
@@ -1351,9 +1355,9 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 	case item.Request == nil:
 	case item.Request.CommitMode == CommitModeAtomic:
 		targetName, targetNamespace := atomicRefusalTarget(item.Request)
-		if !l.w.normalWritesAllowed(targetName, targetNamespace) {
-			l.w.Log.V(1).Info("Dropping atomic write while render fidelity is not established",
-				"gitTarget", targetNamespace+"/"+targetName)
+		if status, closed := l.w.renderFidelityClosed(targetName, targetNamespace); closed {
+			l.dropAtRenderFidelity(itypes.NewResourceReference(targetName, targetNamespace), status,
+				writeDroppedAtomic, "")
 			break
 		}
 		l.handleAtomicRequest(item.Request)
@@ -1367,9 +1371,9 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 // finalizing it as identity, the byte cap or a zero window require.
 func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 	for _, event := range request.Events {
-		if !l.w.normalWritesAllowed(event.GitTargetName, event.GitTargetNamespace) {
-			l.w.Log.V(1).Info("Dropping live event while render fidelity is not established",
-				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
+		if status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace); closed {
+			l.dropAtRenderFidelity(itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace),
+				status, writeDroppedEvent, event.Identifier.String())
 			continue
 		}
 		if l.withholdLateApply(event) {

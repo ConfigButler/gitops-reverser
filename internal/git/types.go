@@ -520,6 +520,10 @@ type ResyncRequest struct {
 	// whole-GitTarget resync, which speaks for no single collection. Diagnostic only: nothing
 	// filters the queue on it. See source_collection.go.
 	SourceCollection types.CollectionKey
+	// RenderFidelityRevision is the render-fidelity revision of the target-watch stream whose
+	// replay this is, for the scope Scope.Collection names. Zero for a resync no stream replayed.
+	// The worker records that scope clean once the resync applies (recordReplayClean).
+	RenderFidelityRevision uint64
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult

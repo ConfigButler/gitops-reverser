@@ -336,6 +336,10 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 	// because a ConfigMap resync succeeding is no evidence about a Deployment that is still refused.
 	l.refusalRecovered(
 		itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace), req.refusalCollection())
+	// Recorded here, on the loop and before the caller hears anything, rather than only by the
+	// caller once it has the answer: the next item off the queue may be a live event, and it must
+	// meet the gate this resync produced. See recordReplayClean.
+	l.recordReplayClean(req)
 	l.w.Log.Info("Resync request applied",
 		"committed", committed,
 		"created", stats.Created,
