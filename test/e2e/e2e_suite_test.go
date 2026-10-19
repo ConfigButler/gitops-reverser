@@ -454,13 +454,14 @@ func prepareE2EClusterOnce() {
 		fmt.Sprintf("NAMESPACE=%s", ns),
 		"prepare-e2e",
 	)
-	output, err := utils.Run(cmd)
+	// Streamed: prepare is the longest command of the run, and the one a suite timeout has killed
+	// with nothing to show for it (CI run 39246816224 sat 28 minutes in it).
+	_, err = utils.RunStreaming(cmd)
 	Expect(err).NotTo(HaveOccurred(), "failed to run task target for e2e prepare")
-	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
 	// Some e2e shell scripts call `kubectl` without an explicit `--context` flag. Ensure `kubectl` is
 	// pointed at the intended cluster context for the remainder of the test run.
-	output, err = kubectlRun("config", "use-context", ctx)
+	output, err := kubectlRun("config", "use-context", ctx)
 	Expect(err).NotTo(HaveOccurred(), "failed to set kubectl context for e2e run")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
