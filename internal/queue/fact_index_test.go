@@ -230,10 +230,14 @@ func TestFactIndex_RewritingOneKeyDoesNotStrandTheEvictionOrder(t *testing.T) {
 	harness.publish(factIndexTestStream("prod-eu-1"), facts...)
 
 	// Waiting on the ORDER rather than on Len is the only barrier available here: Len reaches 2 on
-	// the first fact and stays there, so it cannot say the batch has finished applying.
+	// the first fact and stays there, so it cannot say the batch has finished applying. Its LENGTH,
+	// not its capacity: every rewrite appends one exact and one latest reference, and the follower
+	// stores the batch one fact at a time, so the capacity passes rewrites about halfway through.
+	// A sweep run then compacts what has landed, and the rest of the batch grows the order again.
 	scope := factScope{route: "prod-eu-1", groupResource: groupResourceKey("apps", "deployments")}
-	require.Eventually(t, func() bool { return harness.orderCapacity(scope) > rewrites },
-		factIndexTestGrace, factIndexTestBlock,
+	require.Eventually(t, func() bool { return harness.orderLen(scope) == 2*rewrites },
+		factIndexTestGrace, factIndexTestBlock, "the follower never applied the whole batch")
+	require.Greater(t, harness.orderCapacity(scope), rewrites,
 		"the references are what the sweep has to reclaim, so the test is only meaningful if they piled up")
 	require.Equal(t, 2, harness.index.Len(), "one exact and one latest entry, however many rewrites landed")
 
@@ -257,6 +261,18 @@ func (h *factIndexHarness) orderCapacity(scope factScope) int {
 		return 0
 	}
 	return cap(facts.order)
+}
+
+// orderLen reads how many references one scope's eviction order holds, under the index lock.
+func (h *factIndexHarness) orderLen(scope factScope) int {
+	h.t.Helper()
+	h.index.mu.Lock()
+	defer h.index.mu.Unlock()
+	facts, ok := h.index.scopes[scope]
+	if !ok {
+		return 0
+	}
+	return len(facts.order)
 }
 
 func TestFactIndex_PerTypeCapEvictsOldestFirstAndCountsIt(t *testing.T) {
