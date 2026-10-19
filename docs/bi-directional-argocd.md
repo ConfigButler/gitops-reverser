@@ -268,7 +268,9 @@ writes the `Application` through the Kubernetes API, as `kubectl` would, not thr
 
 `ForeignCommit`, `Refusal` and `Repair` reach an `Application`
 ([the reasons](bi-directional.md#when-gitops-reverser-asks-for-an-apply)); `CatchUp` never does.
-Every request starts a sync: there is no "already current" for Argo CD.
+Every request starts a sync: there is no "already current" for Argo CD. So naming an `ArgoCDTrigger`
+from a `GitTarget` syncs nothing by itself: a commit already on the branch reaches the
+`Application` with the next push, refusal or repair, or a manual sync.
 
 **A request sets the `Application`'s `operation` to the sync automated sync would start**, with
 these differences:

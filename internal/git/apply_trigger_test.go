@@ -400,6 +400,51 @@ func TestServiceAppliers_NoApplierOnTheBranchClearsTheDebt(t *testing.T) {
 	assert.Nil(t, loop.applierTimer)
 }
 
+// TestServiceAppliers_ANewlyNamedApplierIsCaughtUp is review 7's W1: a merge to the branch is
+// observed while no GitTarget names an applier, so the ForeignCommit is taken and dropped; then a
+// GitTarget names a trigger, whose Kustomization was suspended before its GitRepository fetched the
+// merge. The new applier was owed nothing, so the merge was never deployed until some later push.
+// A newly named applier is now owed what a first observation owes, a CatchUp (for Flux free when
+// the commit is already applied); an Application, which gets no CatchUp, waits for the next push.
+func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
+	loop, requester := applyTriggerLoop(t,
+		applierTestTarget("flux", false), fluxTrigger("flux"),
+		applierTestTarget("argo", false))
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	require.Empty(t, requester.taken())
+	require.False(t, loop.w.debt.foreignOwed(), "taken, with no applier to owe it to")
+
+	for name, names := range map[string]func(*configv1alpha3.GitTarget){
+		"flux": func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("flux") },
+		"argo": argoApplier,
+	} {
+		target := &configv1alpha3.GitTarget{}
+		require.NoError(t, loop.w.Client.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: name},
+			target))
+		names(target)
+		require.NoError(t, loop.w.Client.Update(context.Background(), target))
+	}
+	require.NoError(t, loop.w.Client.Create(context.Background(), &configv1alpha3.ArgoCDTrigger{
+		ObjectMeta: metav1.ObjectMeta{Name: "argo", Namespace: "team-a"},
+		Spec: configv1alpha3.ArgoCDTriggerSpec{
+			ClusterProviderRef: &meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
+			ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: "argo"},
+		},
+	}))
+	loop.serviceAppliers()
+	loop.quietSince = time.Now().Add(-time.Hour)
+	loop.serviceAppliers()
+
+	requests := requester.taken()
+	require.Len(t, requests, 1, "one apply, for the newly named Kustomization")
+	assert.Equal(t, applierRef("flux"), requests[0].Applier)
+	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
+	assert.Equal(t, "bbb", requests[0].Commit, "the merge it never fetched")
+	require.Contains(t, loop.appliers, argoApplierRef("argo"), "the Application is listed")
+	assert.False(t, loop.appliers[argoApplierRef("argo")].catchUp, "and waits for the next push")
+}
+
 func TestServiceAppliers_NoRequesterSwitchesTheTriggerOff(t *testing.T) {
 	loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true))
 	loop.w.applyRequester = nil

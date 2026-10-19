@@ -137,7 +137,11 @@ flowchart LR
 - **Observing.** Every observation of the remote passes one point. The first after a start is a
   baseline (owes `CatchUp`, never `ForeignCommit`, because an apply on startup would revert edits
   made while the operator was down). A tip the worker pushed owes `CatchUp`; any other owes
-  `ForeignCommit`. When in doubt it is foreign, which costs one apply on a quiet branch.
+  `ForeignCommit`. When in doubt it is foreign, which costs one apply on a quiet branch. An applier
+  a `GitTarget` names for the first time is owed what a first observation owes, `CatchUp`: a commit
+  observed before it was named was owed to nobody and taken, so it would otherwise not be applied
+  until some later push. For a `Kustomization` already at the tip that costs nothing (`Current`). The
+  worker lists its `GitTarget`s on every pass, cached, so a new name is seen at once.
 - **Deciding.** At the end of every wake, if the branch is quiet, each applier that is owed
   something, has no operation out, shares no source with one that has, and is past its backoff
   (and, for a `CatchUp`, its quiet period) gets one attempt. The attempt carries away what it
@@ -479,7 +483,9 @@ and is never synced. The user guide is [`../bi-directional-argocd.md`](../bi-dir
 Automated sync off is Argo CD's equivalent of a suspended `Kustomization`, and it needs no suspend after an apply: an
 Argo CD operation that has completed is not followed by another one nobody started. **It gets no
 `CatchUp`**: an `ArgoCDTrigger` has no `quietPeriod`, and the worker never owes an `Application`
-one.
+one. So an `Application` a `GitTarget` names for the first time is synced at the next push, a
+refusal or a repair, not at once: a sync on binding would run its hooks for a commit it may already
+have.
 
 Every rule the client relies on is Argo CD's own, read from its source (3.5.0):
 

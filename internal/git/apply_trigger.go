@@ -395,7 +395,11 @@ func (l *branchWorkerEventLoop) appliersOwe() bool {
 
 // syncAppliers makes the applier states match the GitTargets listed now. An applier no GitTarget
 // names any more is forgotten, with whatever it was owed: nobody asks for it, and its operation, if
-// one is out, is abandoned. A refusal owed for a GitTarget that is gone, or is now another
+// one is out, is abandoned. An applier named for the first time is owed what a first observation
+// owes, a CatchUp where its kind catches up: a commit observed before it was named was owed to
+// nobody, and was taken, so without one it would not be applied until some later push. For a
+// Kustomization that already applied the tip it costs nothing (Current); an Application gets no
+// CatchUp, and waits for the next push. A refusal owed for a GitTarget that is gone, or is now another
 // incarnation, is dropped the same way.
 func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	if l.appliers == nil {
@@ -422,7 +426,7 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	for ref, named := range named {
 		state := l.appliers[ref]
 		if state == nil {
-			state = &applierState{ref: ref}
+			state = &applierState{ref: ref, catchUp: ref.CatchesUp()}
 			l.appliers[ref] = state
 		}
 		state.targets = named

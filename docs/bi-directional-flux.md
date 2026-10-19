@@ -338,7 +338,9 @@ grant is cluster-wide for convenience; GitOps Reverser only patches the `Kustomi
 All four [reasons](bi-directional.md#when-gitops-reverser-asks-for-an-apply) reach a
 `Kustomization`. A `ForeignCommit` or `CatchUp` asks nothing when the `Kustomization` has already
 applied the commit; a `Refusal` and a `Repair` always apply, since they ask for an unchanged commit
-to be applied again. On a quiet branch, GitOps Reverser:
+to be applied again. A `Kustomization` a `GitTarget` names for the first time is owed a `CatchUp`,
+so a commit already on the branch reaches it once the branch is quiet. On a quiet branch, GitOps
+Reverser:
 
 1. Makes the `GitRepository`'s artifact hold the commit: when it does not, it stamps
    `reconcile.fluxcd.io/requestedAt` on the `GitRepository` and waits for that fetch. The suspended

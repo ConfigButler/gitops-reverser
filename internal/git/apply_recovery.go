@@ -26,12 +26,13 @@ import (
 // The first observation of the branch is still a baseline that owes a CatchUp: a recovered
 // operation decides nothing about what is owed, and asks the applier for nothing.
 
-// followRecordedOperations reads the triggers' recorded status, on the first pass of this process
-// and on every pass while the branch has appliers, and follows what it finds. A listing that
-// fails on the first pass is tried again on the next.
+// followRecordedOperations reads the triggers' recorded status on every pass, and follows what it
+// finds. Every pass, and not only while the branch has appliers: a GitTarget naming a trigger for
+// the first time is seen here, and owed its first apply (syncAppliers). The listing is cached. A
+// listing that fails is tried again on the next pass.
 func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
 	w := l.w
-	if w.applyRequester == nil || (l.recoveryListed && len(l.appliers) == 0) {
+	if w.applyRequester == nil {
 		return
 	}
 	targets, err := w.appliersOnBranch(w.ctx)
@@ -40,7 +41,6 @@ func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
 		l.resetApplierTimer(applierRetryInterval)
 		return
 	}
-	l.recoveryListed = true
 	l.syncAppliers(targets)
 	for _, ref := range l.sortedAppliers() {
 		l.followRecordedFor(l.appliers[ref], now)

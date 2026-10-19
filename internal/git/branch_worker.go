@@ -1186,9 +1186,6 @@ type branchWorkerEventLoop struct {
 	nextApplyID  uint64
 	quietSince   time.Time
 	applierTimer *time.Timer
-	// recoveryListed is whether the triggers' recorded operations were read once by this process,
-	// which happens before the loop handles its first item (apply_recovery.go).
-	recoveryListed bool
 	// pushHinted records that a Git host reported a push while the branch was busy. The wake closes
 	// the open window so its publication finds the move (closeWindowForForeignCommit).
 	pushHinted bool
