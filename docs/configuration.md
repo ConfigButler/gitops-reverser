@@ -2614,7 +2614,9 @@ present the client certificate the audit listener requires, so the two cannot sh
 
 | Flag | Helm value | Default | What it does |
 | --- | --- | --- | --- |
-| `--receiver-bind-address` | `receiver.bindAddress` | `0` (off); Helm: empty (off) | `host:port` the receiver listens on, such as `:9292`. `0` or empty serves no receiver |
+| (none) | `servers.receiver.enabled` | `false` | Serve the receiver; the chart then passes the flag below |
+| `--receiver-bind-address` | `servers.receiver.bindAddress` | `0` (off); Helm: `:9292` | `host:port` the receiver listens on. `0` or empty serves no receiver |
+| (none) | `servers.receiver.port` | `9292` | The container port; must match the port in `bindAddress` |
 
 The chart creates a `<release>-receiver` Service when the listener is on. Expose it to your
 Git host with an Ingress or a Gateway route of your own that terminates TLS, the way Flux's

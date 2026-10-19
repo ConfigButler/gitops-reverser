@@ -365,7 +365,7 @@ URL normalization is the receiver's (§4.1): case-insensitive host and path, no 
 ### 4.1 The receiver
 
 `GitProvider.spec.receiver` (`type`, `secretRef`), named after Flux's `Receiver`, served on its own
-listener (`--receiver-bind-address`, Helm `receiver.bindAddress`, off by default), on the elected
+listener (`--receiver-bind-address`, Helm `servers.receiver`, off by default), on the elected
 replica only. It cannot share
 the audit listener, which requires a client certificate signed by the audit CA that no Git host can
 present.
@@ -440,7 +440,7 @@ Both are in [interpreting-metrics.md](../interpreting-metrics.md#apply-requests-
 
 ### 4.4 Chart
 
-- `receiver.bindAddress` and a `gitops-reverser-receiver` Service when it is set. Exposing it is the
+- `servers.receiver` and a `gitops-reverser-receiver` Service when it is enabled. Exposing it is the
   installer's Ingress or Gateway route.
 - RBAC for the operator's own cluster: `get` and `patch` on `kustomize.toolkit.fluxcd.io`
   `kustomizations` and `source.toolkit.fluxcd.io` `gitrepositories`; `get` and `update` on

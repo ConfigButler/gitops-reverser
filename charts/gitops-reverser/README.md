@@ -174,13 +174,15 @@ nodeSelector:
 | `servers.audit.timeouts.write` | Audit-server write timeout | `30s` |
 | `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
 | `servers.audit.tls.secretNameOverride` | Override Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
+| `servers.receiver.enabled` | Serve the push receiver, over plain HTTP, for Git hosts' push webhooks to `GitProvider.status.webhookPath`, and add a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `false` |
+| `servers.receiver.bindAddress` | host:port the push receiver binds to (`--receiver-bind-address`) | `:9292` |
+| `servers.receiver.port` | Push receiver container port; must match the port in `bindAddress` | `9292` |
 | `controllerManager.additionalSensitiveResources` | Extra Secret-shaped resource types encrypted as `resource` or `group/resource` | `[]` |
 | `controllerManager.insecureAllowGitHTTP` | Permit credentials with `http://` GitProvider URLs for trusted in-cluster development Git servers | `false` |
 | `controllerManager.branchWorkerQueueDepth` | Event queue depth per branch worker. A full queue refuses the write (`git_queue_refusals_total`) instead of stalling the watch path; the watch delivers it again from its cursor, and only a cursor that expires first loses that write's own commit (and, under `prune.mode: OnEvent`, a delete's removal). Costs queue depth × payload of pod memory, which `branchBufferMaxSize` does **not** cover | `1000` |
 | `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds. While the remote cannot be reached, retained writes that reach it close the worker to new writes, saves and resyncs until they are published; the watch delivers a refused event again | `8Mi` |
 | `controllerManager.commitRequestTTL` | How long a `CommitRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
-| `receiver.bindAddress` | `host:port` the push receiver listens on, over plain HTTP (`--receiver-bind-address`), for Git hosts' push webhooks to `GitProvider.status.webhookPath`. Empty or `"0"` serves no receiver. When set, the chart adds a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `""` |
 | `applierAccess.flux` | Grant the operator `get`, `list` and `patch` on Flux `Kustomizations`, `get` and `patch` on `GitRepositories`, `list` on `HelmReleases` and `HelmCharts` (to find a source's other consumers), and `create` on `SelfSubjectAccessReviews`, so it can hold the `Kustomization` a `FluxTrigger` names suspended and resume it for each apply | `false` |
 | `applierAccess.argocd` | Grant the operator `get` and `update` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can start the syncs of an `Application` an `ArgoCDTrigger` holds | `false` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
@@ -225,7 +227,7 @@ nodeSelector:
 | `servers.metrics.tls.secretNameOverride` | Override Secret name for metrics TLS cert/key | `<release>-metrics-server-cert` |
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
 | `service.ports.audit` | Service port for audit ingress when `attribution.enabled=true` | `9444` |
-| `service.ports.receiver` | Port of the `<release>-receiver` Service when `receiver.bindAddress` is set | `80` |
+| `service.ports.receiver` | Port of the `<release>-receiver` Service when `servers.receiver.enabled=true` | `80` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
 | `servers.admission.port` | Admission webhook container/Service port | `9443` |

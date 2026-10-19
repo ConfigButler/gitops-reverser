@@ -95,12 +95,12 @@ func containerPort(c corev1.Container, name string) (int32, bool) {
 }
 
 // The receiver is off by default and the chart must say nothing about it: no flag (the binary's
-// own default is off), no port, no Service.
+// own default is off), no port, no Service. A bind address alone does not switch it on.
 func TestChartReceiver_OffByDefault(t *testing.T) {
 	for name, setValues := range map[string][]string{
-		"default":        nil,
-		"explicit zero":  {"receiver.bindAddress=0"},
-		"explicit empty": {"receiver.bindAddress="},
+		"default":              nil,
+		"explicit off":         {"servers.receiver.enabled=false"},
+		"bind address but off": {"servers.receiver.bindAddress=0.0.0.0:9393"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			manager := renderManager(t, setValues...)
@@ -118,18 +118,22 @@ func TestChartReceiver_OffByDefault(t *testing.T) {
 	}
 }
 
-// Set, the address reaches the binary unquoted, and the containerPort and the Service's target
-// are the port the binary binds.
+// Enabled, the address reaches the binary unquoted, the containerPort is servers.receiver.port, and
+// the Service targets it by name, as the other servers are wired.
 func TestChartReceiver_BindAddressReachesTheBinaryAndTheService(t *testing.T) {
 	for name, tc := range map[string]struct {
+		setValues   []string
 		bindAddress string
 		wantPort    int32
 	}{
-		"port only":     {":9292", 9292},
-		"host and port": {"0.0.0.0:9393", 9393},
+		"defaults": {nil, ":9292", 9292},
+		"host and port": {
+			[]string{"servers.receiver.bindAddress=0.0.0.0:9393", "servers.receiver.port=9393"},
+			"0.0.0.0:9393", 9393,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			setValues := []string{"receiver.bindAddress=" + tc.bindAddress}
+			setValues := append([]string{"servers.receiver.enabled=true"}, tc.setValues...)
 			manager := renderManager(t, setValues...)
 
 			cfg, err := parseFlagsWithArgs(flag.NewFlagSet("manager", flag.ContinueOnError), manager.Args)
@@ -153,9 +157,10 @@ func TestChartReceiver_BindAddressReachesTheBinaryAndTheService(t *testing.T) {
 
 func TestChartReceiver_MalformedBindAddressFailsTheRender(t *testing.T) {
 	out, err := exec.Command("helm", "template", "gitops-reverser", "../charts/gitops-reverser",
-		"--show-only", "templates/deployment.yaml", "--set", "receiver.bindAddress=localhost").CombinedOutput()
+		"--show-only", "templates/deployment.yaml", "--set", "servers.receiver.enabled=true",
+		"--set", "servers.receiver.bindAddress=localhost").CombinedOutput()
 	require.Error(t, err)
-	assert.Contains(t, string(out), "receiver")
+	assert.Contains(t, string(out), "/servers/receiver/bindAddress")
 }
 
 // applierAccess.flux is off by default, and on it grants exactly what holding a Flux Kustomization

@@ -131,20 +131,6 @@
       }
     },
 
-    "receiver": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "bindAddress": {
-          "anyOf": [
-            { "type": "string", "pattern": "^(|0|[^\\s]*:[1-9][0-9]{0,4})$" },
-            { "const": 0 }
-          ],
-          "description": "host:port the push receiver listens on, over plain HTTP (--receiver-bind-address). Empty or \"0\" serves no receiver. When set, the chart also renders a <release>-receiver Service; expose it with an Ingress or Gateway route that terminates TLS."
-        }
-      }
-    },
-
     "applierAccess": {
       "type": "object",
       "additionalProperties": false,
@@ -185,6 +171,22 @@
         "enableHTTP2": {
           "type": "boolean",
           "description": "Serve HTTP/2 on the TLS servers. Off by default: it mitigates the HTTP/2 Rapid-Reset CVE class."
+        },
+        "receiver": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Serve the push receiver, over plain HTTP, for Git hosts' push webhooks to GitProvider.status.webhookPath, and render a <release>-receiver Service; expose it with an Ingress or Gateway route that terminates TLS."
+            },
+            "bindAddress": {
+              "type": "string",
+              "pattern": "^[^\\s]*:[1-9][0-9]{0,4}$",
+              "description": "host:port the push receiver binds to (--receiver-bind-address)."
+            },
+            "port": { "$ref": "#/$defs/port" }
+          }
         },
         "healthProbe": {
           "type": "object",

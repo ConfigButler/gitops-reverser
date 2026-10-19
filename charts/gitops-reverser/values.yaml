@@ -112,18 +112,6 @@ git:
   # "every tick". gitopsreverser_git_fetches_total{reason="refresh"} is what it costs.
   refreshInterval: 10m
 
-# The push receiver: the endpoint a Git host's push webhook points at, so GitOps Reverser learns in
-# seconds, instead of at the next refresh, that somebody else pushed. A GitProvider opts in with
-# spec.receiver and publishes its path as status.webhookPath (/git-push/<digest of the token>).
-receiver:
-  # host:port the receiver listens on (passed as --receiver-bind-address), e.g. ":9292". Empty (the
-  # default) serves no receiver: a foreign push is then still found, by the next rejected push or by
-  # git.refreshInterval. When set, the chart adds a containerPort and a <release>-receiver Service
-  # (port service.ports.receiver). The listener is plain HTTP, because a Git host cannot present the
-  # client certificate the audit listener requires: expose the Service to your Git host with an
-  # Ingress or Gateway route of your own that terminates TLS, the way Flux's webhook-receiver is
-  # exposed. Every request must still carry a valid signature for the route it names.
-  bindAddress: ""
 
 # Optional RBAC that lets GitOps Reverser hold the applier an apply trigger names in this cluster:
 # a FluxTrigger's Kustomization, suspended and resumed for each apply, or an ArgoCDTrigger's
@@ -247,6 +235,22 @@ servers:
         renewBefore: "720h"
         # Leave empty to use the chart-generated Secret name.
         secretNameOverride: ""
+
+  # The push receiver: the endpoint a Git host's push webhook points at, so GitOps Reverser learns in
+  # seconds, instead of at the next refresh, that somebody else pushed. A GitProvider opts in with
+  # spec.receiver and publishes its path as status.webhookPath (/git-push/<digest of the token>).
+  # Off by default: a foreign push is then still found, by the next rejected push or by
+  # git.refreshInterval. Enabled, the chart adds a containerPort and a <release>-receiver Service
+  # (port service.ports.receiver). The listener is plain HTTP, because a Git host cannot present the
+  # client certificate the audit listener requires: expose the Service to your Git host with an
+  # Ingress or Gateway route of your own that terminates TLS, the way Flux's webhook-receiver is
+  # exposed. Every request must still carry a valid signature for the route it names.
+  receiver:
+    enabled: false
+    # host:port the receiver binds to (passed as --receiver-bind-address).
+    bindAddress: ":9292"
+    # Container/Service target port; must match the port in bindAddress above.
+    port: 9292
 
 # Redis/Valkey holds each GitTarget's watch resume cursors (warm restart) and, when attribution is
 # enabled, the audit attribution facts. Empty by default: the chart runs in configured-author mode with
@@ -441,8 +445,8 @@ service:
   ports:
     audit: 9444
     metrics: 8080
-    # Port of the <release>-receiver Service, rendered only when receiver.bindAddress is set. It
-    # forwards to the port in receiver.bindAddress.
+    # Port of the <release>-receiver Service, rendered only when servers.receiver.enabled. Port 80,
+    # like Flux's webhook-receiver Service, since an Ingress or Gateway route sits in front of it.
     receiver: 80
 
 auditService:
