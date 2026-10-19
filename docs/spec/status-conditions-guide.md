@@ -112,11 +112,10 @@ a precedence stated in one place. Gates do not set them; gates *contribute* to a
 This is not a style preference. When each gate wrote the trio itself, the trio said whatever the last
 gate said — so a GitTarget whose Git path had been refused (terminal) was then handed to the
 source/provider projection, which stamped `Stalled=False, Reconciling=True` over the refusal because
-a provider happened to be mid-check. To a human reading `Ready` little changed. To kstatus — which
-reads the abnormal-true pair first, and `Ready` only as a fallback when neither decides — the object
-flipped from `Failed` to `InProgress`,
-so `kubectl wait` and every CI gate built on it waited out its timeout on an object that was never
-going to converge.
+a provider happened to be mid-check. To a human reading `Ready` little changed. kstatus reads the
+abnormal-true pair first, and `Ready` only as a fallback when neither decides, so to it the object
+flipped from `Failed` to `InProgress`, and `kubectl wait` and every CI gate built on it waited out
+its timeout on an object that was never going to converge.
 
 ### Status writes are suppressed when nothing changed
 
