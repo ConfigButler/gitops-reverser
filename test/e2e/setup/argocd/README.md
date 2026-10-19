@@ -73,6 +73,10 @@ Also re-check that the **chart** did not start pinning
 `configs.cm.application.resourceTrackingMethod` or enabling server-side apply by
 default — `values.yaml` relies on both staying unset.
 
+`values.yaml` also pins the redis image to `mirror.gcr.io`, by digest, because ECR Public
+rate-limits the chart's default pull from shared CI runners. On a bump, set its tag and
+digest to the chart's new `redis.image.tag`.
+
 If any of those move, the specs fail loudly. That is intended.
 
 ## Config

@@ -37,6 +37,17 @@ dex:
 notifications:
   enabled: false
 
+# The chart pulls redis from ECR Public (ecr-public.aws.com/docker/library/redis), which throttles
+# anonymous pulls by source IP. GitHub's shared runner IPs hit that limit often enough that the
+# bi-directional leg failed in `_argocd-installed` on 8 CI runs between 2026-09-30 and 2026-10-19,
+# every one with argocd-redis in ImagePullBackOff on "429 Too Many Requests". mirror.gcr.io is
+# Google's Docker Hub cache and serves the same image: the digest pinned here is the one ECR
+# refused (sha256:08ad0b1d…, the chart's 8.2.3-alpine). Re-pin both on an Argo CD chart bump.
+redis:
+  image:
+    repository: mirror.gcr.io/library/redis
+    tag: 8.2.3-alpine@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba
+
 # Prometheus metrics + ServiceMonitors for every running component. The corner's
 # cluster runs the Prometheus operator; its shared instance selects ServiceMonitors
 # by `monitoring.configbutler.ai/instance: gitops-reverser`
