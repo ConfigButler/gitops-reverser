@@ -166,10 +166,8 @@ type branchTarget struct {
 	recorded      *v1alpha3.ApplyOperation
 	repairPending bool
 	// group names the GitRepository a Flux trigger's Kustomization applies, in its cluster; empty
-	// for an Argo CD Application or a source not read yet. prefetch is the trigger's
-	// status.source.prefetch (apply_groups.go).
-	group    string
-	prefetch bool
+	// for an Argo CD Application or a source not read yet (apply_groups.go).
+	group string
 }
 
 // appliersOnBranch lists the GitTargets on this worker's (provider, branch) that name an apply
@@ -205,7 +203,6 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 			recorded:      trigger.Operation(),
 			repairPending: trigger.RepairPending(),
 			group:         sourceGroup(trigger),
-			prefetch:      trigger.Prefetches(),
 		})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ref.String() < listed[j].ref.String() })

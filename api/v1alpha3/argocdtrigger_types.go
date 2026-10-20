@@ -185,9 +185,6 @@ func (t *ArgoCDTrigger) SharedSource() (types.NamespacedName, bool) {
 	return types.NamespacedName{}, false
 }
 
-// Prefetches is false: an Application has no source object to fetch ahead.
-func (t *ArgoCDTrigger) Prefetches() bool { return false }
-
 // Operation is status.operation.
 func (t *ArgoCDTrigger) Operation() *ApplyOperation { return t.Status.Operation }
 

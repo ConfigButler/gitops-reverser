@@ -150,11 +150,10 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "the trigger holds its Kustomization")
-		prefetch, err := kubectlRunInNamespace(testNs, "get", fluxTriggerResource, fluxName,
-			"-o", "jsonpath={.status.source.prefetch}|{.status.source.otherConsumers}")
+		others, err := kubectlRunInNamespace(testNs, "get", fluxTriggerResource, fluxName,
+			"-o", "jsonpath={.status.source.otherConsumers}")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(strings.TrimSpace(prefetch)).To(Equal("true|"),
-			"its Kustomization is the GitRepository's only consumer, so the source is prefetched")
+		Expect(strings.TrimSpace(others)).To(BeEmpty(), "its Kustomization is the GitRepository's only consumer")
 
 		By("dropping the reference: the trigger hands the Kustomization back, and is idle again")
 		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", destName, "--type=merge", "-p",

@@ -17,11 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier/fluxsim"
-	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 // helmReleaseObj is a HelmRelease whose chart comes from the GitRepository "platform", in its namespace
@@ -191,149 +189,6 @@ func TestFluxProbe_ASharedSourceAppliesOnlyTheConsumerAsked(t *testing.T) {
 	assert.Equal(t, []string{"flux-system/checkout main@sha1:" + testCommit}, sim.Applied(),
 		"B ignored the artifact A's request fetched")
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
-}
-
-// prefetchFixture is a dispatcher whose FluxTrigger "checkout" publishes source flux-system/platform
-// with prefetch, over a cluster whose GitRepository is behind and whose Kustomization it holds.
-func prefetchFixture(t *testing.T, prefetch bool, extra ...client.Object) *dispatcherFixture {
-	t.Helper()
-	return prefetchFixtureOver(t, prefetch, heldSource(t), extra...)
-}
-
-// prefetchFixtureOver is prefetchFixture over the source cluster objects source.
-func prefetchFixtureOver(t *testing.T, prefetch bool, source []runtime.Object,
-	extra ...client.Object) *dispatcherFixture {
-	t.Helper()
-	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, source...)
-	setTriggerSource(t, f, "checkout", prefetch, nil)
-	for _, obj := range extra {
-		require.NoError(t, f.control.Create(context.Background(), obj))
-	}
-	return f
-}
-
-// setTriggerSource writes a FluxTrigger's published source, and its operation.
-func setTriggerSource(t *testing.T, f *dispatcherFixture, name string, prefetch bool,
-	operation *v1alpha3.ApplyOperation) {
-	t.Helper()
-	trigger := &v1alpha3.FluxTrigger{}
-	require.NoError(t, f.control.Get(context.Background(), client.ObjectKey{Namespace: targetNS, Name: name}, trigger))
-	trigger.Status.Source = &v1alpha3.FluxTriggerSource{
-		GitRepository: fluxmeta.NamespacedObjectReference{Namespace: fluxSystemNS, Name: "platform"},
-		URL:           testRepoURL, Branch: testBranch, Prefetch: prefetch,
-	}
-	trigger.Status.Operation = operation
-	require.NoError(t, f.control.Update(context.Background(), trigger))
-}
-
-func prefetchRequest(commit string) git.PrefetchRequest {
-	return git.PrefetchRequest{Applier: checkout, Commit: commit}
-}
-
-// TestDispatcher_PrefetchFetchesTheSourceOnlyWhenItMay: the source is stamped when every consumer is
-// held and nothing on it is in flight, and left alone otherwise.
-func TestDispatcher_PrefetchFetchesTheSourceOnlyWhenItMay(t *testing.T) {
-	f := prefetchFixture(t, true)
-	require.NoError(t, f.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)))
-	assert.Equal(t, []string{"gitrepositories " + fluxSystemNS}, f.patches(), "fetched; nothing applied")
-
-	held := prefetchFixture(t, false)
-	require.ErrorIs(t, held.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)), errPrefetchHeld,
-		"a source another consumer applies on its own is never prefetched")
-	assert.Empty(t, held.patches())
-
-	busy := prefetchFixture(t, true, &v1alpha3.FluxTrigger{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "team-b", Name: "infra"},
-		Spec: v1alpha3.FluxTriggerSpec{
-			ClusterProviderRef: &fluxmeta.LocalObjectReference{Name: v1alpha3.DefaultClusterProviderName},
-			KustomizationRef:   fluxmeta.NamespacedObjectReference{Namespace: fluxSystemNS, Name: "infra"},
-		},
-		Status: v1alpha3.FluxTriggerStatus{
-			Source: &v1alpha3.FluxTriggerSource{
-				GitRepository: fluxmeta.NamespacedObjectReference{Namespace: fluxSystemNS, Name: "platform"},
-			},
-			Operation: &v1alpha3.ApplyOperation{Phase: v1alpha3.ApplyOperationRunning, Token: "T1"},
-		},
-	})
-	require.ErrorIs(t, busy.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)), errPrefetchHeld,
-		"not while a consumer of the source is resumed")
-	assert.Empty(t, busy.patches())
-
-	current := prefetchFixture(t, true)
-	require.ErrorIs(t, current.dispatcher.prefetch(context.Background(), prefetchRequest(olderCommit)),
-		errNotPrefetched, "the artifact already holds it")
-	assert.Empty(t, current.patches())
-}
-
-// heldSource is behindSource with flux-system/checkout held by GitOps Reverser, and extra.
-func heldSource(t *testing.T, extra ...runtime.Object) []runtime.Object {
-	t.Helper()
-	source := behindSource()
-	source[0] = fluxsim.OwnSuspend(t, source[0].(*unstructured.Unstructured), true, SuspendFieldManager,
-		metav1.ManagedFieldsOperationApply)
-	return append(source, extra...)
-}
-
-// TestDispatcher_PrefetchChecksTheConsumersAsTheyAreNow is the fourth review's finding C: the
-// trigger's status.source.prefetch is up to a minute old, so the consumers are read again before
-// the source is stamped. A consumer that appeared since, or one Flux applies on its own, would apply
-// the prefetched artifact over live edits not pushed yet.
-func TestDispatcher_PrefetchChecksTheConsumersAsTheyAreNow(t *testing.T) {
-	infraTrigger := func() *v1alpha3.FluxTrigger {
-		return &v1alpha3.FluxTrigger{
-			ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: "infra"},
-			Spec: v1alpha3.FluxTriggerSpec{
-				ClusterProviderRef: &fluxmeta.LocalObjectReference{Name: v1alpha3.DefaultClusterProviderName},
-				KustomizationRef:   fluxmeta.NamespacedObjectReference{Namespace: fluxSystemNS, Name: "infra"},
-			},
-		}
-	}
-	infra := func(held bool) *unstructured.Unstructured {
-		ks := kustomizationObj(fluxSystemNS, "infra", gitRepoSourceRef("platform"))
-		if held {
-			return fluxsim.OwnSuspend(t, ks, true, SuspendFieldManager, metav1.ManagedFieldsOperationApply)
-		}
-		return ks
-	}
-	resumed := heldSource(t)
-	require.NoError(t, unstructured.SetNestedField(resumed[0].(*unstructured.Unstructured).Object, false,
-		"spec", "suspend"))
-
-	for name, f := range map[string]*dispatcherFixture{
-		"a Kustomization no trigger names": prefetchFixtureOver(t, true, heldSource(t, infra(true))),
-		"a Kustomization Flux applies on its own": prefetchFixtureOver(t, true, heldSource(t, infra(false)),
-			infraTrigger()),
-		"a HelmRelease": prefetchFixtureOver(t, true,
-			heldSource(t, helmReleaseObj("apps", "podinfo", fluxSystemNS))),
-		"its own Kustomization, resumed": prefetchFixtureOver(t, true, resumed),
-	} {
-		t.Run(name, func(t *testing.T) {
-			require.ErrorIs(t, f.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)),
-				errPrefetchHeld)
-			assert.Empty(t, f.patches(), "nothing is fetched")
-		})
-	}
-
-	f := prefetchFixtureOver(t, true, heldSource(t, infra(true)), infraTrigger())
-	require.NoError(t, f.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)))
-	assert.Equal(t, []string{"gitrepositories " + fluxSystemNS}, f.patches(), "every consumer is held")
-}
-
-// TestDispatcher_PrefetchStampsOnlyTheSourceItChecked: the trigger's status.source is up to a minute
-// old, and the Kustomization was repointed since, to a second GitRepository over the same repository
-// and branch, which a Kustomization Flux applies on its own consumes too. The checks pass for the old
-// source, which nothing consumes now, so stamping the Kustomization's new one would have that consumer
-// apply the commit at once, over live edits not pushed yet.
-func TestDispatcher_PrefetchStampsOnlyTheSourceItChecked(t *testing.T) {
-	source := heldSource(t,
-		gitRepositoryObj(fluxSystemNS, "platform-next", testRepoURL, branchRef(testBranch), "main@sha1:"+olderCommit),
-		kustomizationObj(fluxSystemNS, "billing", gitRepoSourceRef("platform-next")))
-	require.NoError(t, unstructured.SetNestedStringMap(source[0].(*unstructured.Unstructured).Object,
-		map[string]string{"kind": kindGitRepository, "name": "platform-next"}, "spec", "sourceRef"))
-	f := prefetchFixtureOver(t, true, source)
-
-	require.ErrorIs(t, f.dispatcher.prefetch(context.Background(), prefetchRequest(testCommit)), errPrefetchHeld)
-	assert.Empty(t, f.patches(), "neither source is fetched")
 }
 
 var _ runtime.Object = (*unstructured.Unstructured)(nil)

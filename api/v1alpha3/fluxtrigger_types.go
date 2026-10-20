@@ -123,13 +123,6 @@ type FluxTriggerSource struct {
 	// +optional
 	// +listType=atomic
 	OtherConsumers []meta.NamespacedObjectKindReference `json:"otherConsumers,omitempty"`
-
-	// Prefetch is true while GitOps Reverser fetches the GitRepository as soon as it learns of a push,
-	// before the apply: every consumer of it was listed and is held by a FluxTrigger, so a new
-	// artifact applies nothing on its own. False when otherConsumers is not empty, or the consumers
-	// could not be listed (the identity needs list on kustomizations, helmreleases and helmcharts).
-	// +optional
-	Prefetch bool `json:"prefetch,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -223,9 +216,6 @@ func (t *FluxTrigger) SharedSource() (types.NamespacedName, bool) {
 	source := t.Status.Source.GitRepository
 	return types.NamespacedName{Namespace: source.Namespace, Name: source.Name}, true
 }
-
-// Prefetches is status.source.prefetch.
-func (t *FluxTrigger) Prefetches() bool { return t.Status.Source != nil && t.Status.Source.Prefetch }
 
 // Operation is status.operation.
 func (t *FluxTrigger) Operation() *ApplyOperation { return t.Status.Operation }

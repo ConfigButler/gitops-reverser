@@ -243,20 +243,10 @@ type ApplyTriggerStatusWriter interface {
 	RecordApplyOperation(ctx context.Context, trigger TriggerRef, operation *v1alpha3.ApplyOperation) error
 }
 
-// ApplyRequester carries out apply requests. RequestApply and PrefetchSource must not block: they
-// are called on the branch worker's loop goroutine.
+// ApplyRequester carries out apply requests. RequestApply must not block: it is called on the branch
+// worker's loop goroutine.
 type ApplyRequester interface {
 	RequestApply(req ApplyRequest)
-	// PrefetchSource asks the source req.Applier applies to fetch req.Commit now, ahead of an apply,
-	// when its trigger says it may and no operation on that source is in flight. It applies nothing
-	// and reports nothing.
-	PrefetchSource(req PrefetchRequest)
-}
-
-// PrefetchRequest asks the source an applier applies to fetch a commit ahead of its apply.
-type PrefetchRequest struct {
-	Applier ApplierRef
-	Commit  string
 }
 
 // StrongerApplyReason is the reason a target is asked for when two reasons are pending for it. A

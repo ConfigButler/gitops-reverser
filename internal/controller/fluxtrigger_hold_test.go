@@ -457,8 +457,7 @@ func kustomizationManagers(ks *unstructured.Unstructured) []string {
 }
 
 // TestFluxTrigger_PublishesTheSourcesOtherConsumers is decision 2: the consumers of the
-// GitRepository that no FluxTrigger holds are listed, information only, and the source is prefetched
-// only when there are none.
+// GitRepository that no FluxTrigger holds are listed, information only.
 func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	objs := applierFluxObjects()
 	infra := objs[0].(*unstructured.Unstructured).DeepCopy()
@@ -480,7 +479,6 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 		{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"},
 		{Kind: "Kustomization", Namespace: "flux-system", Name: "infra"},
 	}, source.OtherConsumers, "itself is not another consumer")
-	assert.False(t, source.Prefetch)
 	assert.True(t, conditionIsTrue(f.trigger(t).Status.Conditions, ConditionTypeReady), "information only")
 
 	// The fourth review's finding C: a trigger holds its Kustomization only once it says so
@@ -517,15 +515,7 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	}).Namespace("apps").Delete(context.Background(), "podinfo", metav1.DeleteOptions{}))
 	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
 	require.NoError(t, err)
-	got := f.trigger(t).Status.Source
-	assert.Empty(t, got.OtherConsumers)
-	assert.True(t, got.Prefetch, "every consumer is held: the source is prefetched")
-
-	trigger := f.trigger(t)
-	f.r.publishConsumers(context.Background(), trigger,
-		conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending})
-	assert.Empty(t, trigger.Status.Source.OtherConsumers)
-	assert.False(t, trigger.Status.Source.Prefetch, "nor while its own Kustomization is not held yet")
+	assert.Empty(t, f.trigger(t).Status.Source.OtherConsumers, "every consumer is held")
 }
 
 // setTriggerCondition publishes a condition on the FluxTrigger team-a/name.

@@ -18,11 +18,11 @@ import (
 )
 
 // applying gives a trigger the source its reconciler published.
-func applying(gitRepository string, prefetch bool) func(*configv1alpha3.FluxTrigger) {
+func applying(gitRepository string) func(*configv1alpha3.FluxTrigger) {
 	return func(trigger *configv1alpha3.FluxTrigger) {
 		trigger.Status.Source = &configv1alpha3.FluxTriggerSource{
 			GitRepository: meta.NamespacedObjectReference{Namespace: "flux-system", Name: gitRepository},
-			URL:           "https://example.com/repo", Branch: "main", Prefetch: prefetch,
+			URL:           "https://example.com/repo", Branch: "main",
 		}
 	}
 }
@@ -31,9 +31,9 @@ func applying(gitRepository string, prefetch bool) func(*configv1alpha3.FluxTrig
 // after the other, and two on different GitRepositories at once.
 func TestGroups_OneOperationAtATimePerSource(t *testing.T) {
 	loop, requester := manualLoop(t,
-		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", false)),
-		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform", false)),
-		applierTestTarget("charlie", true), fluxTrigger("charlie", applying("other", false)),
+		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform")),
+		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform")),
+		applierTestTarget("charlie", true), fluxTrigger("charlie", applying("other")),
 	)
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -58,8 +58,8 @@ func TestGroups_OneOperationAtATimePerSource(t *testing.T) {
 // turn waits for its siblings instead of going again.
 func TestGroups_TheSourceIsSharedInTurn(t *testing.T) {
 	loop, requester := manualLoop(t,
-		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", false)),
-		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform", false)),
+		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform")),
+		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform")),
 	)
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -83,9 +83,9 @@ func siblingLoops(t *testing.T) (
 ) {
 	t.Helper()
 	first, firstRequests := manualLoop(t,
-		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", true)))
+		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform")))
 	second, secondRequests := manualLoop(t,
-		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform", true)))
+		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform")))
 	siblings := newBranchSiblings()
 	for _, loop := range []*branchWorkerEventLoop{first, second} {
 		loop.w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}

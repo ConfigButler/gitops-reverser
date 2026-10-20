@@ -169,9 +169,6 @@ type ApplyTrigger interface {
 	// false when the applier has none it shares this way or the trigger has not read it. Appliers
 	// sharing one have one operation at a time.
 	SharedSource() (source types.NamespacedName, known bool)
-	// Prefetches reports whether a push may be fetched into the shared source ahead of the apply:
-	// every other reader of it is held, so a new artifact applies nothing on its own.
-	Prefetches() bool
 	// Operation is status.operation, and SetOperation replaces it and status.repairPending.
 	Operation() *ApplyOperation
 	RepairPending() bool

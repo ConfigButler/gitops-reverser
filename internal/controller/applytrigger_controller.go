@@ -223,7 +223,7 @@ func (r *ApplyTriggerReconciler) commitTrigger(
 
 // holdFlux returns a FluxTrigger's Held condition. A Configured trigger holds its Kustomization,
 // with its finalizer put in place before the first adoption write, and then publishes its source
-// consumers: prefetch also needs the Kustomization held. One that is not Configured holds nothing,
+// consumers. One that is not Configured holds nothing,
 // and one in line behind another holder lets go of a finalizer it carries, handing nothing back.
 func (r *ApplyTriggerReconciler) holdFlux(
 	ctx context.Context, st *reconcileStatus, trigger *configbutleraiv1alpha3.FluxTrigger, check triggerCheck,
@@ -237,7 +237,7 @@ func (r *ApplyTriggerReconciler) holdFlux(
 		}
 		held := r.holdKustomization(ctx, trigger)
 		if check.checked {
-			r.publishConsumers(ctx, trigger, held)
+			r.publishConsumers(ctx, trigger)
 		}
 		return held, nil
 	case configured.Reason == applier.ReasonNotReferenced:

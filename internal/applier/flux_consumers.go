@@ -4,7 +4,6 @@ package applier
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 
@@ -17,10 +16,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// A GitRepository's consumers, and prefetching it (docs/design/apply-trigger.md, "Shared sources and prefetch").
-// A suspended Kustomization ignores a new artifact, so a GitRepository whose every consumer is held
-// suspended by a FluxTrigger can fetch on every push without applying anything. One consumer that is
-// not held applies each new artifact the moment it arrives, so then the source is never prefetched.
+// A GitRepository's consumers (docs/design/apply-trigger.md, "Shared sources"). A suspended
+// Kustomization ignores a new artifact; one consumer that is not held applies each new artifact the
+// moment it arrives, so a FluxTrigger lists the ones no trigger holds in its status.
 
 // A HelmRelease applies a GitRepository through a HelmChart that source-controller builds from it:
 // one helm-controller creates from the release's spec.chart, or one the release names in
@@ -204,37 +202,4 @@ func consumes(obj *unstructured.Unstructured, path []string, source types.Namesp
 		namespace = obj.GetNamespace()
 	}
 	return namespace == source.Namespace
-}
-
-// errNotPrefetched is a prefetch that was not made, because the artifact already holds the commit.
-var errNotPrefetched = errors.New("the artifact already holds the commit")
-
-// Prefetch stamps checked, the GitRepository of the Kustomization ref whose consumers were checked,
-// so it fetches now, unless its artifact already holds commit (errNotPrefetched). A Kustomization
-// that applies another GitRepository now was repointed since its trigger published checked: that
-// source's consumers were never checked, so nothing is stamped (errPrefetchHeld). It waits for
-// nothing: the operation that applies the commit reads the artifact again before it resumes.
-func (f *Flux) Prefetch(ctx context.Context, ref, checked types.NamespacedName, commit string) error {
-	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("get %s %s: %w", kindKustomization, ref, err)
-	}
-	sourceRef, err := gitRepositoryRef(ks)
-	if err != nil {
-		return err
-	}
-	if sourceRef != checked {
-		return fmt.Errorf("%w: %s %s applies %s %s now, not %s", errPrefetchHeld, kindKustomization, ref,
-			kindGitRepository, sourceRef, checked)
-	}
-	source, err := f.client.Resource(gitRepositoryGVR()).Namespace(sourceRef.Namespace).
-		Get(ctx, sourceRef.Name, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("get %s %s: %w", kindGitRepository, sourceRef, err)
-	}
-	if artifactHolds(source, commit) {
-		return errNotPrefetched
-	}
-	_, err = f.stampSource(ctx, sourceRef)
-	return err
 }
