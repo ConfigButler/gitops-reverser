@@ -61,7 +61,9 @@ const (
 	// ApplyReasonRepair puts back an API edit that an earlier apply reverted on the cluster after
 	// the edit was made. Git kept the edit; the cluster runs the older value until the repair.
 	ApplyReasonRepair ApplyReason = "Repair"
-	// ApplyReasonCatchUp keeps the applier current with GitOps Reverser's own pushes.
+	// ApplyReasonCatchUp adopts what the API created in the applier's folders, so the applier owns
+	// and can later prune it, and converges the applier once at startup and when a GitTarget first
+	// names its trigger.
 	ApplyReasonCatchUp ApplyReason = "CatchUp"
 )
 

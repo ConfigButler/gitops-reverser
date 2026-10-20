@@ -81,7 +81,7 @@ type FluxTriggerStatus struct {
 	Operation *ApplyOperation `json:"operation,omitempty"`
 
 	// RepairPending is true while a Repair apply is pending for the Kustomization: an apply reverted
-	// an API edit made after it was asked for, so the cluster runs an older value than Git until the
+	// an API edit made after its flush, so the cluster runs an older value than Git until the
 	// next apply.
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
@@ -126,10 +126,10 @@ type FluxTriggerSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// FluxTrigger holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes:
-// only on a branch with nothing live missing from the commit, after a commit GitOps Reverser did
-// not push, after a refused edit, after a reverted edit, and to catch up with its own pushes.
-// GitTargets name it with spec.applyTriggerRef.
+// FluxTrigger holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes,
+// each after publishing the edits pending on the branch: after a commit GitOps Reverser did not
+// push, after a refused edit, after a reverted edit, and to adopt what the API created or converge
+// the Kustomization (CatchUp). GitTargets name it with spec.applyTriggerRef.
 type FluxTrigger struct {
 	metav1.TypeMeta `json:",inline"`
 

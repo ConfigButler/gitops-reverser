@@ -617,9 +617,9 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"decides how often the precise path is taken; drops are counted on "+
 			"attribution_collection_without_uidset_total{reason}.")
 	fs.DurationVar(&cfg.attributionGrace, "author-attribution-grace", watch.DefaultAttributionGraceWindow,
-		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
-			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
-			"at the cost of commit latency.")
+		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships unresolved, "+
+			"authored \"unknown (attribution unresolved)\" (duration string; default 3s). Larger values "+
+			"raise attribution hit-rate at the cost of commit latency.")
 	fs.DurationVar(&cfg.commitRequestTTL, "commit-request-ttl", controller.DefaultCommitRequestTTL,
 		"How long a CommitRequest is kept once it finishes (duration string; default 48h, 0 keeps "+
 			"them). The deletion time is written onto the request as the "+

@@ -110,8 +110,8 @@ type GitTargetSpec struct {
 	// "Ignore", the default, records the refusal in conditions and events and does nothing else.
 	//
 	// "Reapply" asks this target's applier (through spec.applyTriggerRef, which it requires) to
-	// apply the current tip once the branch holds no open window and no pending writes, which
-	// reverts the refused edit and nothing that is still waiting to be published. Only this
+	// apply the current tip after publishing the edits pending on the branch, which reverts the
+	// refused edit and nothing that was waiting to be published. Only this
 	// target's applier is asked. If its GitRepository has to fetch to reach the tip, the
 	// Kustomizations a FluxTrigger holds stay suspended and ignore the new artifact; only the
 	// consumers no trigger holds, listed in the trigger's status.source.otherConsumers, apply it, as
