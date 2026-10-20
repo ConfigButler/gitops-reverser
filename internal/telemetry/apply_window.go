@@ -21,3 +21,18 @@ import "go.opentelemetry.io/otel/metric"
 //
 // Registered in registerCounters (exporter.go) with every other counter.
 var ApplyWindowCollisionsTotal metric.Int64Counter
+
+// ApplyEchoesTotal counts the applier's own writes the apply window judged: an apply GitOps Reverser
+// asked for landing, object by object. Labelled by {provider_namespace, provider_name, branch,
+// outcome}. outcome is a frozen enum:
+//
+//	not_mirrored — the applier's managers alone wrote the object last, at or after the earliest send
+//	               of the apply windows still open, and nobody edited it in the window: the apply
+//	               itself. Its content is the commit's, which Git holds, so it is not mirrored.
+//	late         — the applier's managers alone wrote the object last with no apply window open: an
+//	               echo arriving after the window's grace, or an apply somebody else started. It is
+//	               mirrored as an edit. A steady rate means applies keep landing outside the windows,
+//	               and such a write can revert a newer Git-side change to the object.
+//
+// Registered in registerCounters (exporter.go) with every other counter.
+var ApplyEchoesTotal metric.Int64Counter

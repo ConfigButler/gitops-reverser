@@ -21,14 +21,14 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// windowClock is when the managedFields entries of the next windowEvent were written: a second
-// after the previous one, as the API server stamps them.
-var windowClock = time.Unix(1_700_000_000, 0)
+// windowClock is when the managedFields entries of the last windowEvent were written.
+var windowClock time.Time
 
 // windowEvent is a live UPDATE to the Deployment "api" in target's folder, written last by managers,
-// a second after the previous one.
+// a second after the previous one and never before now, as the API server stamps them: an applier's
+// entry older than the attempt's send is an earlier apply's (apply_window.go).
 func windowEvent(target, replicas string, managers ...string) Event {
-	windowClock = windowClock.Add(time.Second)
+	windowClock = latest(windowClock, time.Now().Truncate(time.Second)).Add(time.Second)
 	return windowEventAt(target, replicas, windowClock, managers...)
 }
 
@@ -60,6 +60,13 @@ func sentAttempt(t *testing.T) (*branchWorkerEventLoop, ApplyRequest) {
 	out := requester.taken()
 	require.Len(t, out, 1)
 	return loop, out[0]
+}
+
+func echoes(t *testing.T, reader *sdkmetric.ManualReader, outcome string) int64 {
+	t.Helper()
+	got, _ := telemetry.CollectInt64Sum(reader, "gitopsreverser_apply_echoes_total",
+		map[string]string{"outcome": outcome})
+	return got
 }
 
 func collisions(t *testing.T, reader *sdkmetric.ManualReader, outcome string) int64 {
@@ -125,16 +132,19 @@ func TestApplyWindow_OnlyAWithheldWriteIsKeptFromTheCommitWindow(t *testing.T) {
 	}
 }
 
-// TestApplyWindow_WhatIsNeverWithheld: the applier's write is mirrored as ever when it could be
-// the edit itself, when nobody edited the object since the attempt, when it is a delete, and for a
-// folder another applier (or none) applies.
+// TestApplyWindow_WhatIsNeverWithheld: the applier's write is mirrored when it could be the edit
+// itself, when it is a delete, and for a folder another applier (or none) applies. Its write to an
+// object nobody edited since the attempt is not mirrored, and leaves no Repair: it is the apply
+// itself, writing what Git holds (F1).
 func TestApplyWindow_WhatIsNeverWithheld(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	loop, _ := sentAttempt(t)
 
-	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
-		"an object nobody edited since the attempt: the apply writes what Git holds")
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
+		"an object nobody edited since the attempt: the apply writes what Git holds, and is not mirrored")
+	assert.False(t, loop.appliers[applierRef("alpha")].repair, "nothing to put back")
+	assert.Equal(t, int64(1), echoes(t, reader, echoNotMirrored))
 
 	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")))
 	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager, "kubectl-edit")),
@@ -185,6 +195,12 @@ func TestApplyWindow_AnAttemptThatAppliedNothingHasNoWindow(t *testing.T) {
 			assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")))
 			report(req, outcome)
 			loop.serviceAppliers()
+			state := loop.appliers[applierRef("alpha")]
+			if state.window != nil {
+				// A stale attempt is decided again at once: the window is the next attempt's.
+				require.NotEqual(t, req.ID, state.window.attempt, "the attempt that applied nothing has none")
+				return
+			}
 			assert.False(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)))
 		})
 	}
@@ -303,8 +319,9 @@ func TestApplyWindow_TheCarriedGraceEndsWhenTheEarlierWindowWouldHave(t *testing
 	require.False(t, window.carriedUntil.IsZero())
 	window.carriedUntil = time.Now().Add(-time.Millisecond)
 
-	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", FluxFieldManager)),
-		"A's grace is over: the applier's write is B's apply")
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "3", FluxFieldManager)),
+		"A's grace is over: the applier's write is B's apply landing, which is not mirrored")
+	assert.False(t, onlyApplier(t, loop).repair, "and leaves nothing to put back")
 	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "4", "kubectl-edit")))
 	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "3", FluxFieldManager)),
 		"an edit made while B runs is B's own")
@@ -336,4 +353,56 @@ func TestApplyWindow_ConsecutiveOperationsOnOneApplier(t *testing.T) {
 	assert.Empty(t, requester.taken(), "the Repair is sent once")
 	assert.False(t, state.repairPending())
 	assert.WithinDuration(t, time.Now().Add(applyWindowGrace), state.window.closesAt, time.Second)
+}
+
+// TestApplyWindow_AnApplierEntryOlderThanTheSendIsAnEdit is F1's lower bound: an entry of the
+// applier's older than every send still open was written by an earlier apply, and is newest only
+// because an update removed every field the editor owned. It is the undo of an edit, mirrored, and
+// it counts as one, so the apply landing over it afterwards is withheld.
+func TestApplyWindow_AnApplierEntryOlderThanTheSendIsAnEdit(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	loop, _ := sentAttempt(t)
+	beforeSend := time.Now().Add(-time.Hour).Truncate(time.Second)
+
+	assert.False(t, loop.withholdLateApply(windowEventAt("alpha", "3", beforeSend, FluxFieldManager)),
+		"an earlier apply's entry is an edit, and is mirrored")
+	assert.Equal(t, int64(0), echoes(t, reader, echoNotMirrored))
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
+		"the apply landing over it is withheld")
+	assert.True(t, loop.appliers[applierRef("alpha")].repair)
+}
+
+// TestApplyWindow_ADelayedEchoOfTheAttemptBeforeIsNotMirrored: B is sent within A's grace, and A's
+// apply of an object nobody edited arrives after B was sent. Its entry is older than B's send, but
+// not than A's, which is still carried: it is A's apply landing, and is not mirrored.
+func TestApplyWindow_ADelayedEchoOfTheAttemptBeforeIsNotMirrored(t *testing.T) {
+	loop, _, _ := completedThenNext(t)
+	window := onlyApplier(t, loop).window
+	require.False(t, window.carriedSentAt.IsZero())
+	window.sentAt = time.Now().Add(time.Hour) // B was sent after A's write
+	betweenSends := window.carriedSentAt.Add(time.Second)
+
+	echo := windowEventAt("alpha", "2", betweenSends, FluxFieldManager)
+	echo.Identifier.Name = "nobody-edited"
+	assert.True(t, loop.withholdLateApply(echo), "A's echo, inside A's grace")
+	assert.False(t, onlyApplier(t, loop).repair)
+
+	window.carriedUntil = time.Now().Add(-time.Millisecond)
+	assert.False(t, loop.withholdLateApply(echo), "once A's grace is over the entry is older than every send")
+}
+
+// TestApplyWindow_AnApplierWriteWithNoWindowIsLate: with no apply window open, the applier's
+// managers alone are mirrored as an edit, and counted late (C3).
+func TestApplyWindow_AnApplierWriteWithNoWindowIsLate(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	loop, _ := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", false))
+	loop.followRecordedOperations(time.Now())
+	require.Len(t, loop.appliers, 1)
+
+	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)))
+	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "2", "kubectl-edit")))
+	assert.False(t, loop.withholdLateApply(windowEvent("bravo", "2", FluxFieldManager)), "no applier covers bravo")
+	assert.Equal(t, int64(1), echoes(t, reader, echoLate))
 }

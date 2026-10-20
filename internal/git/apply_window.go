@@ -27,6 +27,13 @@ import (
 // is withheld. Git keeps the edit, and the cluster runs the reverted value until an apply puts it
 // back, so the withheld write leaves a Repair pending for its applier (apply_trigger.go).
 //
+// The applier's write to an object nobody edited is the apply itself, landing: its content is the
+// commit's, which Git already holds. It is not mirrored either (docs/design/applier-echoes.md, F1).
+// Mirrored, it became a pending write planned from the live object, and a replay of that write onto
+// a newer tip reverted the newer tip's change to the object. The window recognizes it by the
+// applier's managers alone on an entry written at or after the earliest send of the windows still
+// open or carried; an older one is an earlier apply's entry left newest by an undo, and an edit.
+//
 // What the rule must never do is withhold an API edit, which would lose it outright. So it acts
 // only on proof: the object's latest managedFields entries are the applier's managers alone, and
 // they are newer than the edit. Alone is not enough: an update that removes every field a manager
@@ -86,6 +93,15 @@ const (
 	collisionAmbiguous = "ambiguous"
 )
 
+// Applier echo outcomes, the outcome label of apply_echoes_total.
+const (
+	// echoNotMirrored is the applier's own write in its apply window, to an object nobody edited.
+	echoNotMirrored = "not_mirrored"
+	// echoLate is a write by the applier's managers alone with no window open: an echo that arrived
+	// after the grace, or an apply nobody asked for. It is mirrored as an edit (C3).
+	echoLate = "late"
+)
+
 // applyWindow is one applier's open apply window: from sending an attempt until its operation
 // completed, plus applyWindowGrace, and never before the window it replaced would have closed. An
 // Unresolved operation holds it open.
@@ -100,9 +116,25 @@ type applyWindow struct {
 	edited map[string]time.Time
 	// carried holds the objects the window before this one had seen edited, when that window was
 	// still open as this attempt was sent, and carriedUntil is when it would have closed: the
-	// earlier apply's writes can arrive until then (openApplyWindow).
-	carried      map[string]time.Time
-	carriedUntil time.Time
+	// earlier apply's writes can arrive until then (openApplyWindow). carriedSentAt is the earliest
+	// send of the windows carried, zero when none is.
+	carried       map[string]time.Time
+	carriedUntil  time.Time
+	carriedSentAt time.Time
+	// echoes counts the applier's writes the window kept out of Git: the apply landing, object by
+	// object. reported is set once that count was logged (reportApplyWindows).
+	echoes   int
+	reported bool
+}
+
+// earliestSend is the lower bound of the applier's own writes at now: the earliest send of this
+// window and of the windows it still carries. A delayed echo of the attempt before, arriving after
+// this one was sent and inside that one's grace, is still that apply.
+func (a *applyWindow) earliestSend(now time.Time) time.Time {
+	if !a.carriedSentAt.IsZero() && now.Before(a.carriedUntil) {
+		return a.carriedSentAt
+	}
+	return a.sentAt
 }
 
 // open reports whether the window is open at now.
@@ -144,6 +176,7 @@ func (state *applierState) openApplyWindow(attempt uint64, commit string, now ti
 			maps.Copy(next.carried, before.carried)
 		}
 		next.carriedUntil = before.closesAt
+		next.carriedSentAt = before.earliestSend(now)
 	}
 	state.window = next
 }
@@ -173,56 +206,122 @@ func (state *applierState) covers(event Event) bool {
 	})
 }
 
-// withholdLateApply reports whether a live event is an applier's apply arriving late over a newer
-// API edit, and must not be mirrored. Every other event is recorded as an API-side edit in the
-// windows of the appliers that cover it. It is called for each live event before it reaches the
-// commit window.
+// withholdLateApply reports whether a live event is the applier's own write in its apply window,
+// and must not be mirrored: the apply itself landing on an object nobody edited (F1), or the apply
+// arriving late over a newer API edit (withheld, with a Repair pending). Every other event is
+// recorded as an API-side edit in the windows of the appliers that cover it. It is called for each
+// live event before it reaches the commit window.
 func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 	if len(l.appliers) == 0 {
 		return false
 	}
 	now := time.Now()
-	key := objectKey(event.Identifier)
 	for _, ref := range l.sortedAppliers() {
 		applier := l.appliers[ref]
-		window := applier.window
-		if !window.open(now) || !applier.covers(event) {
+		if !applier.covers(event) {
 			continue
 		}
-		byApplier, byApplierAlone := ref.writtenBy(event.LastFieldManagers)
-		editedAt, editedSince := window.editedSince(key, now)
-		written := event.LastFieldManagedAt
-		switch {
-		case !byApplier || event.Operation == string(itypes.OperationDelete):
-			window.recordEdit(key, written)
-		case !byApplierAlone:
-			// It may be the API edit itself, written in the same second: mirroring it is the
-			// choice that cannot lose an edit. It counts as one, too, even as the first write in the
-			// window, so the applier's write alone after it is still seen as late. It collides only
-			// with an edit made before it.
-			if editedSince {
-				l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
+		if !applier.window.open(now) {
+			if _, alone := ref.writtenBy(event.LastFieldManagers); alone &&
+				event.Operation != string(itypes.OperationDelete) {
+				// No apply this worker asked for is landing: an echo after the grace, or an apply
+				// somebody else started. It is mirrored as an edit, and counted (C3).
+				l.recordApplyEcho(echoLate)
 			}
-			window.recordEdit(key, written)
-		case !editedSince:
-			// The applier applying an object nobody edited since the attempt: its content is the
-			// commit's, which Git already holds. Mirrored as ever.
-		case written.Equal(editedAt):
-			// The applier's entry and the edit in the same second: it could be either.
-			l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
-			window.recordEdit(key, written)
-		case written.Before(editedAt):
-			// The applier's entry is older than the edit, so the applier did not write this: an API
-			// update that removed every field its manager owned took that entry with it, and left
-			// the applier's from an earlier apply as the newest. It is an edit, the undo of one.
-			window.recordEdit(key, written)
-		default:
-			l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
-			applier.repair = true
+			continue
+		}
+		if l.judgeInWindow(applier, event, now) {
 			return true
 		}
 	}
 	return false
+}
+
+// judgeInWindow judges one live event against the open apply window of an applier that covers it,
+// recording it as an edit unless it is the applier's own write, and reports whether it is not to
+// be mirrored.
+func (l *branchWorkerEventLoop) judgeInWindow(applier *applierState, event Event, now time.Time) bool {
+	window := applier.window
+	key := objectKey(event.Identifier)
+	byApplier, byApplierAlone := applier.ref.writtenBy(event.LastFieldManagers)
+	editedAt, editedSince := window.editedSince(key, now)
+	written := event.LastFieldManagedAt
+	switch {
+	case !byApplier || event.Operation == string(itypes.OperationDelete):
+		window.recordEdit(key, written)
+	case !byApplierAlone:
+		// It may be the API edit itself, written in the same second: mirroring it is the
+		// choice that cannot lose an edit. It counts as one, too, even as the first write in the
+		// window, so the applier's write alone after it is still seen as late. It collides only
+		// with an edit made before it.
+		if editedSince {
+			l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
+		}
+		window.recordEdit(key, written)
+	case written.Before(window.earliestSend(now).Truncate(time.Second)):
+		// Older than every send still open: an earlier apply's entry, left newest by an update
+		// that removed every field the editor owned. It is an edit, the undo of one.
+		window.recordEdit(key, written)
+	case !editedSince:
+		// The apply itself, on an object nobody edited since the attempt: its content is the
+		// commit's, which Git already holds. Not mirrored.
+		window.echoes++
+		l.recordApplyEcho(echoNotMirrored)
+		return true
+	case written.Equal(editedAt):
+		// The applier's entry and the edit in the same second: it could be either.
+		l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
+		window.recordEdit(key, written)
+	case written.Before(editedAt):
+		// The applier's entry is older than the edit, so the applier did not write this: an API
+		// update that removed every field its manager owned took that entry with it, and left
+		// the applier's from an earlier apply as the newest. It is an edit, the undo of one.
+		window.recordEdit(key, written)
+	default:
+		l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
+		applier.repair = true
+		return true
+	}
+	return false
+}
+
+// recordApplyEcho counts one write of an applier's own that the apply window judged, by outcome.
+func (l *branchWorkerEventLoop) recordApplyEcho(outcome string) {
+	if telemetry.ApplyEchoesTotal == nil {
+		return
+	}
+	telemetry.ApplyEchoesTotal.Add(context.WithoutCancel(l.w.ctx), 1,
+		metric.WithAttributes(l.w.providerAttrs(attribute.String("outcome", outcome))...))
+}
+
+// reportApplyWindow logs, once, how many of the applier's writes its window kept out of Git: what it
+// saw of the apply landing. It runs when the window is about to be replaced, or is found closed.
+func (l *branchWorkerEventLoop) reportApplyWindow(state *applierState) {
+	window := state.window
+	if window == nil || window.reported {
+		return
+	}
+	window.reported = true
+	l.w.Log.Info("Observed the applier's apply", "branch", l.w.Branch, "applier", state.ref.String(),
+		"commit", window.commit, "objects", window.echoes)
+}
+
+// reportApplyWindows reports every window that has closed, and returns when the earliest one still
+// open closes, zero when none will.
+func (l *branchWorkerEventLoop) reportApplyWindows(now time.Time) time.Time {
+	var next time.Time
+	for _, ref := range l.sortedAppliers() {
+		state := l.appliers[ref]
+		window := state.window
+		switch {
+		case window == nil || window.reported:
+		case !window.open(now):
+			l.reportApplyWindow(state)
+		case !window.closesAt.IsZero() && (next.IsZero() || window.closesAt.Before(next)):
+			next = window.closesAt
+		}
+	}
+	return next
 }
 
 // recordApplyWindowCollision logs and counts one write by an applier, inside its apply window, to

@@ -335,6 +335,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
+	l.reportApplyWindows(now)
 	if !l.branchQuiet(now) || l.workWaiting() {
 		// Queued work, here or on a sibling: the next wake looks again, and a sibling's loop wakes
 		// this one once it has handled its last item. The branch is still quiet until that work
@@ -545,6 +546,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	}
 	state.foreign, state.catchUp, state.repair, state.inflight = false, false, false, attempt
 	state.lastTurn = attempt.id
+	l.reportApplyWindow(state)
 	state.openApplyWindow(attempt.id, tip, sentAt)
 	for key := range refusals {
 		delete(l.unsentRefusals, key)
