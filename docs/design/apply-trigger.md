@@ -194,8 +194,10 @@ flowchart LR
   those still out, and the trigger is `Ready=False` (`OperationUnresolved`) until its operation
   completes.
 - **Learning about pushes.** A push webhook into GitOps Reverser's receiver (seconds), a rejected
-  compare-and-swap push (at the next publication), or the periodic refresh (minutes). All three
-  feed the same observation point.
+  compare-and-swap push (at the next publication), the periodic refresh (minutes), or a Flux
+  attempt whose `GitRepository` fetched another commit than the one asked for (`RequestFailed`),
+  which is looked at as a push notice is: a hint, never a fact. All of them feed the same
+  observation point.
 
 ### Flush, then apply
 
@@ -251,12 +253,18 @@ deletes its file the applier leaves it on the cluster, and a later resync writes
   operation's report and, after a restart, from the trigger's `status.operation`. A converge of that
   commit asks nothing.
 - **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
-  reason, until every collection of every `GitTarget` it covers has delivered its snapshot (its
-  watch is `Streaming`) and the worker has published or settled every resync it holds for that
-  `GitTarget`; a refused or failed initial snapshot counts as settled. At startup that is when the
-  edits made while the operator was down are in Git; for a `GitTarget` that newly names the
-  trigger, when its folder holds the cluster. A `GitTarget` whose watch is `Blocked` holds its
-  applier's requests until it is `Streaming`. A reason that comes due before stays pending.
+  reason, until every collection of every `GitTarget` it covers has a settled snapshot (applied,
+  refused or failed; tracked per collection on the watch side) and the worker has published every
+  resync it holds for that `GitTarget`. At startup that is when the edits made while the operator
+  was down are in Git; for a `GitTarget` that newly names the trigger, when its folder holds the
+  cluster. A `GitTarget` with no planned collection (its `WatchRule` not resolved yet, a CRD not
+  discovered) and one whose watch is `Blocked` hold their applier's requests the same way. A reason
+  that comes due before stays pending.
+- **The folder exists before it is applied.** A resync of a `GitTarget` that names a trigger, into
+  a folder the branch does not hold yet, commits the folder's bootstrap files (`README.md`,
+  `.gittargetignore`, and `.sops.yaml` with encryption) even when it has no object to write. Argo CD
+  retries a sync of a missing path for minutes, and Flux fails it; the bootstrap files are never
+  deleted, so the folder outlives its last resource.
 - **An empty tip asks nothing.** When the remote does not carry the branch, nothing is sent, and the
   reason stays pending until there is a commit to apply.
 - **Batched by itself.** A pending `CatchUp` is one flag, and one attempt per applier is out at a

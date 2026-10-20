@@ -449,13 +449,16 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 		})
 		Expect(run.commitAllAndPush("bi-directional: a Git-side change to the first order")).To(Succeed())
 
+		// Cone, because the spec before leaves the second order at Cup in Git and on the cluster: an
+		// edit to the value Git already holds changes nothing, so it is no write (F2 in
+		// docs/design/applier-echoes.md), nothing is pushed, and nothing finds the Git-side push.
 		By("and editing the second order through the API before GitOps Reverser has heard of that push")
 		_, err := kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
-			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"Cup"}}`)
+			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"Cone"}}`)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("its push is rejected, replayed onto the Git-side change, and Flux applies the result")
-		run.waitForCommittedOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
+		run.waitForCommittedOrderSpec(run.secondOrderName, "Cone", "Strawberry", "WhippedCream")
 		run.waitForCommittedOrderSpec(run.firstOrderName, "Cup", run.reverseFlavor, run.reverseTopping)
 		Expect(run.gitPull()).To(Succeed())
 		run.waitForFluxKustomizationRevision(run.fluxLiveName, run.gitHEAD())
@@ -463,7 +466,7 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 
 		By("and the API edit is not reverted by it")
 		Consistently(func(g Gomega) {
-			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("Cup"))
+			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("Cone"))
 		}, 20*time.Second, 2*time.Second).Should(Succeed())
 	})
 })

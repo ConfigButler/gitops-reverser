@@ -606,7 +606,7 @@ mirrors and the applier applies.
 
 ## Decided while building
 
-The build departs from the plan above in seven places, decided on 2026-10-20:
+The build departs from the plan above in ten places, decided on 2026-10-20:
 
 1. **Siblings do not count for F3.** Whether Git is ahead, and the apply epoch, are per worker: an
    apply due on another worker writing the same branch does not hold this worker's resyncs. This
@@ -644,6 +644,20 @@ The build departs from the plan above in seven places, decided on 2026-10-20:
    is C4's: an undo in that second, left with an applier entry of that second as the newest, is
    withheld and the `Repair` puts the edit back. A tie with another manager is still mirrored: it may
    be the edit itself.
+8. **A folder an applier applies is created before it is applied.** The plan's converge on first
+   naming asked Argo CD to sync a folder nothing had been mirrored into yet; Argo CD retried the
+   missing path for minutes, which held every later apply of that `Application`. A resync of a
+   `GitTarget` naming a trigger, into a folder the branch does not hold, commits the bootstrap
+   files even with no object. Whether the folder exists is read from HEAD's tree; nothing parses
+   its content.
+9. **A `GitTarget` with no planned collection has not settled its initial snapshots.** It counted as
+   settled with nothing to deliver, so a converge went out before its `WatchRule`'s collection was
+   planned (a CRD not discovered yet). It now holds its applier, as a `Blocked` watch does.
+10. **A Flux source that fetched another commit is a hint to look.** With no receiver, a converge
+    decided before a Git-side push kept asking for a commit the `GitRepository` no longer served,
+    backing off, until the worker's own push or the refresher found the move. The `RequestFailed`
+    now carries the revision the source holds, and the worker looks at the remote as at a push
+    notice.
 
 ## References
 
