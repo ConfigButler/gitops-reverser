@@ -25,20 +25,23 @@ func (m *Manager) applyStateAtCollectionStart(ctx context.Context, gitDest types
 }
 
 // InitialSnapshotsSettled reports whether every collection the GitTarget's current plan watches has
-// a settled snapshot: the branch worker applied, refused or failed one of it (markSnapshotSettled). A
-// GitTarget declared with no collection has none to settle. One not declared yet, or whose plan
-// holds a collection with no settled snapshot, has not settled them. The worker adds that it holds
-// no resync of the GitTarget still to publish.
+// a settled snapshot: the branch worker applied, refused or failed one of it (markSnapshotSettled).
+// The worker adds that it holds no resync of the GitTarget still to publish.
+//
+// A GitTarget with no planned collection has not settled them: its WatchRule may not be resolved
+// yet (a CRD not discovered, a rule not reconciled), and its folder holds nothing of the cluster. It
+// holds its applier back as a Blocked watch does, rather than let it apply a folder nothing has
+// mirrored into.
 //
 // It is tracked per collection, not read from the stream's state: a stream streams once the worker
-// took its snapshot, which may still be discarded, and a GitTarget declared before its WatchRule's
-// collection is planned would answer for a collection it does not know of yet.
+// took its snapshot, which may still be discarded.
 func (m *Manager) InitialSnapshotsSettled(gitDest types.ResourceReference) bool {
 	table, ok := m.watchedTypeTableForGitDest(gitDest)
 	if !ok {
-		return m.declared(gitDest)
+		return false
 	}
-	return m.snapshotsSettled(gitDest, collectionsForWatchKeys(targetWatchKeys(table)))
+	collections := collectionsForWatchKeys(targetWatchKeys(table))
+	return len(collections) > 0 && m.snapshotsSettled(gitDest, collections)
 }
 
 // markSnapshotSettled records that a snapshot of the collection settled: a later one of it is no
@@ -76,13 +79,4 @@ func (m *Manager) forgetSettledSnapshots(gitDest types.ResourceReference) {
 	m.snapshotsMu.Lock()
 	defer m.snapshotsMu.Unlock()
 	delete(m.settledSnapshots, gitDest.Key())
-}
-
-// declared reports whether the GitTarget has declared itself to the watch plane.
-func (m *Manager) declared(gitDest types.ResourceReference) bool {
-	t := m.triggers()
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	_, declared := t.declares[gitDest.Key()]
-	return declared
 }
