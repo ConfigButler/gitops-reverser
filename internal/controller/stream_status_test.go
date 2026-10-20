@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/applier"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
@@ -43,12 +44,71 @@ func TestRuleReadiness_GitTargetReadyStalledBlocksRule(t *testing.T) {
 			Message: "1/1 streams running",
 		},
 	}
-	trio := ruleReadiness(conditions, "WatchRule", "rule ready").trio()
+	trio := ruleReadiness(conditions, true, "WatchRule", "rule ready").trio()
 
 	assert.Equal(t, metav1.ConditionFalse, trio.Ready.Status)
 	assert.Equal(t, metav1.ConditionFalse, trio.Reconciling.Status)
 	assert.Equal(t, metav1.ConditionTrue, trio.Stalled.Status)
 	assert.Equal(t, GitTargetReasonUnsupportedContent, trio.Stalled.Reason)
+}
+
+// TestRuleReadiness_StallsOnTheGitTargetsVerdictWhateverItsReason runs the path a rule reconcile
+// takes, from the GitTarget object to the rule's trio. A rule used to stall only on reasons it kept a
+// list of, and the list fell behind: AmbiguousLayout, ParentBranchNotFound and SourceMismatch all
+// stall a GitTarget, and a rule on such a target read as progressing for as long as it stayed broken.
+func TestRuleReadiness_StallsOnTheGitTargetsVerdictWhateverItsReason(t *testing.T) {
+	stalledTarget := func(reason string) configbutleraiv1alpha3.GitTarget {
+		return configbutleraiv1alpha3.GitTarget{Status: configbutleraiv1alpha3.GitTargetStatus{
+			Conditions: []metav1.Condition{
+				{Type: GitTargetConditionReady, Status: metav1.ConditionFalse, Reason: reason, Message: "broken"},
+				{Type: GitTargetConditionReconciling, Status: metav1.ConditionFalse, Reason: reason},
+				{Type: GitTargetConditionStalled, Status: metav1.ConditionTrue, Reason: reason, Message: "broken"},
+			},
+		}}
+	}
+	rechecking := GitTargetReasonRenderRechecking
+	progressingTarget := configbutleraiv1alpha3.GitTarget{Status: configbutleraiv1alpha3.GitTargetStatus{
+		Conditions: []metav1.Condition{
+			{Type: GitTargetConditionReady, Status: metav1.ConditionFalse, Reason: rechecking},
+			{Type: GitTargetConditionReconciling, Status: metav1.ConditionTrue, Reason: rechecking},
+			{Type: GitTargetConditionStalled, Status: metav1.ConditionFalse, Reason: ReasonProgressing},
+		},
+	}}
+
+	tests := []struct {
+		name        string
+		target      configbutleraiv1alpha3.GitTarget
+		wantStalled metav1.ConditionStatus
+		wantReason  string
+	}{
+		{"refused folder", stalledTarget(GitTargetReasonAmbiguousLayout),
+			metav1.ConditionTrue, GitTargetReasonAmbiguousLayout},
+		{"no parent branch", stalledTarget(GitTargetReasonParentBranchNotFound),
+			metav1.ConditionTrue, GitTargetReasonParentBranchNotFound},
+		{"apply trigger on another source", stalledTarget(applier.ReasonSourceMismatch),
+			metav1.ConditionTrue, applier.ReasonSourceMismatch},
+		{"a reason this package has never heard of", stalledTarget("SomeFutureReason"),
+			metav1.ConditionTrue, "SomeFutureReason"},
+		{"a target still converging", progressingTarget,
+			metav1.ConditionFalse, GitTargetReasonRenderRechecking},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ready := gitTargetReadyCondition(tt.target)
+			streaming := watch.StreamReasonAllStreamsReady
+			conditions := []metav1.Condition{
+				{Type: ConditionTypeResourcesResolved, Status: metav1.ConditionTrue, Reason: ReasonSucceeded},
+				{Type: ConditionTypeGitTargetReady, Status: ready.Status, Reason: ready.Reason, Message: ready.Message},
+				{Type: ConditionTypeStreamsRunning, Status: metav1.ConditionTrue, Reason: streaming},
+			}
+
+			trio := ruleReadiness(conditions, gitTargetStalled(tt.target), "WatchRule", "rule ready").trio()
+
+			assert.Equal(t, metav1.ConditionFalse, trio.Ready.Status, "Ready")
+			assert.Equal(t, tt.wantStalled, trio.Stalled.Status, "Stalled")
+			assert.Equal(t, tt.wantReason, trio.Ready.Reason, "Ready reason")
+		})
+	}
 }
 
 // TestCommitRule_LostWriteBeatsTheConvergingLoop covers the path a rule takes while it is still

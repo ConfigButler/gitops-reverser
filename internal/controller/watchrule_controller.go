@@ -220,7 +220,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 		targetNS,
 		watchRule.Spec.GitTargetRef.Name,
 	)
-	return commitRule(ctx, st, ruleReadiness(watchRule.Status.Conditions, "WatchRule", msg))
+	return commitRule(ctx, st, ruleReadiness(watchRule.Status.Conditions, gitTargetStalled(target), "WatchRule", msg))
 }
 
 // stallRule publishes a terminal WatchRule outcome and ends the reconcile.

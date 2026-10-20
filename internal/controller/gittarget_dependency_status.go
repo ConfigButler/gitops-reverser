@@ -12,6 +12,19 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
+// gitTargetStalled is the GitTarget's own verdict that it will not converge without a human: Ready
+// is published and not True, and Stalled is True. A rule stalls on this verdict rather than on a
+// list of the reasons behind it, so a reason the GitTarget learns to stall on reaches its rules
+// without a second edit here.
+func gitTargetStalled(target configbutleraiv1alpha3.GitTarget) bool {
+	ready := findCondition(target.Status.Conditions, GitTargetConditionReady)
+	if ready == nil || ready.Status == metav1.ConditionTrue {
+		return false
+	}
+	stalled := findCondition(target.Status.Conditions, GitTargetConditionStalled)
+	return stalled != nil && stalled.Status == metav1.ConditionTrue
+}
+
 func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionValue {
 	if ready := findCondition(target.Status.Conditions, GitTargetConditionReady); ready != nil {
 		if ready.Status == metav1.ConditionTrue {
@@ -21,8 +34,8 @@ func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionV
 				Message: fmt.Sprintf("GitTarget %s/%s is ready", target.Namespace, target.Name),
 			}
 		}
-		if stalled := findCondition(target.Status.Conditions, GitTargetConditionStalled); stalled != nil &&
-			stalled.Status == metav1.ConditionTrue {
+		if gitTargetStalled(target) {
+			stalled := findCondition(target.Status.Conditions, GitTargetConditionStalled)
 			reason, message := conditionReasonMessage(stalled, ReasonFailed, "GitTarget is stalled")
 			return conditionValue{Status: metav1.ConditionFalse, Reason: reason, Message: message}
 		}
@@ -52,10 +65,14 @@ func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionV
 // object that contradicts itself for minutes, with StreamsRunning already back to True because the
 // stream-state channel told it so directly. That made the mirrored condition unusable for alerting.
 //
-// Only Status and Reason are compared. Both are low-cardinality and are what a printer column or an
-// alert keys on, whereas the mirrored Message is free-form and moves with transient stream detail;
-// including it would re-enqueue every rule of a target on churn that changes no verdict. A
-// message-only drift self-corrects on the next Status or Reason move.
+// Only Status, Reason and the Stalled verdict are compared. All three are low-cardinality and are
+// what a printer column or an alert keys on, whereas the mirrored Message is free-form and moves
+// with transient stream detail; including it would re-enqueue every rule of a target on churn that
+// changes no verdict. A message-only drift self-corrects on the next move of any of the three.
+//
+// The verdict is compared on its own because one reason can be either: the apply-trigger gate
+// reports the same reason as a stall or as progress, so a target can flip Stalled while its mirrored
+// Status and Reason stay put, and the rule judges its stall from that verdict (see ruleReadiness).
 func gitTargetReadyProjectionChanged() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc:  func(event.CreateEvent) bool { return true },
@@ -72,7 +89,8 @@ func gitTargetReadyProjectionChanged() predicate.Predicate {
 			}
 			before := gitTargetReadyCondition(*oldTarget)
 			after := gitTargetReadyCondition(*newTarget)
-			return before.Status != after.Status || before.Reason != after.Reason
+			return before.Status != after.Status || before.Reason != after.Reason ||
+				gitTargetStalled(*oldTarget) != gitTargetStalled(*newTarget)
 		},
 	}
 }

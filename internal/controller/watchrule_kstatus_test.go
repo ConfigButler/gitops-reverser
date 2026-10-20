@@ -145,7 +145,7 @@ func TestRuleReadiness_SourceAuthorizationIsAPrerequisite(t *testing.T) {
 				conditions = append(conditions, *tt.sourceNS)
 			}
 
-			trio := ruleReadiness(conditions, "WatchRule", "ready").trio()
+			trio := ruleReadiness(conditions, false, "WatchRule", "ready").trio()
 
 			assert.Equal(t, tt.wantReady, trio.Ready.Status, "Ready")
 			assert.Equal(t, tt.wantStalled, trio.Stalled.Status, "Stalled")

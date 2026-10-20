@@ -52,8 +52,13 @@ func newRuleReadiness(kind, readyMessage string) *readiness {
 // source namespace is authorized. ClusterWatchRule simply carries no SourceNamespaceAuthorized
 // condition, so that gate is absent rather than special-cased.
 //
+// gitTargetStalled is the GitTarget's own Stalled verdict (see gitTargetStalled). The mirrored
+// GitTargetReady condition carries only the reason, and judging a stall from a list of reasons kept
+// here fell behind every time the GitTarget learned a new one: a rule on a target stalled with
+// AmbiguousLayout or ParentBranchNotFound read as progressing for as long as it stayed broken.
+//
 // The order of the contributions below IS the precedence; see readiness.
-func ruleReadiness(conditions []metav1.Condition, kind, readyMessage string) *readiness {
+func ruleReadiness(conditions []metav1.Condition, gitTargetStalled bool, kind, readyMessage string) *readiness {
 	rd := newRuleReadiness(kind, readyMessage)
 
 	resources := findCondition(conditions, ConditionTypeResourcesResolved)
@@ -68,7 +73,7 @@ func ruleReadiness(conditions []metav1.Condition, kind, readyMessage string) *re
 	// deliberately non-terminal "cannot say yet", handled among the progressing gates below.
 	contributeStalled(rd, sourceNS)
 	contributeStalled(rd, resources)
-	if gitTarget != nil && gitTargetReadyReasonIsStalled(gitTarget.Reason) {
+	if gitTarget != nil && gitTargetStalled {
 		contributeStalled(rd, gitTarget)
 	}
 	if streams != nil && streamReasonIsStalled(streams.Reason) {
@@ -110,31 +115,6 @@ func contributeProgressing(rd *readiness, condition *metav1.Condition, reason, m
 
 func streamReasonIsStalled(reason string) bool {
 	return reason == watch.StreamReasonWatchError || reason == watch.StreamReasonWatchNotPermitted
-}
-
-func gitTargetReadyReasonIsStalled(reason string) bool {
-	switch reason {
-	case GitTargetReasonProviderNotFound,
-		GitTargetReasonBranchNotAllowed,
-		GitTargetReasonTargetConflict,
-		GitTargetReasonUnsupportedContent,
-		GitTargetReasonIgnoreShadowsManagedPath,
-		GitTargetReasonWriteBoundaryRefused,
-		GitTargetReasonMultipleSourceNamespaces,
-		GitTargetReasonUnrenderedPlacement,
-		GitTargetReasonRenderDoesNotMatchLive,
-		GitTargetReadyReasonValidationFailed,
-		GitTargetReadyReasonEncryptionNotConfigured,
-		GitTargetReadyReasonWorkerUnavailable,
-		WatchRuleReasonGitTargetNotFound,
-		WatchRuleReasonGitProviderNotFound,
-		WatchRuleReasonGitDestinationInvalid,
-		watch.StreamReasonWatchError,
-		watch.StreamReasonWatchNotPermitted:
-		return true
-	default:
-		return false
-	}
 }
 
 // commitRule writes the trio, persists the status, and picks the requeue cadence from the same

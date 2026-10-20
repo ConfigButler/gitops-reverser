@@ -148,8 +148,8 @@ func (e *AcceptanceRefusedError) AllIssuesOfKinds(kinds ...IssueKind) bool {
 // with three comments elsewhere asking callers to keep their strings in sync with it by hand.
 //
 // The strings mirror the controller's GitTargetReason* constants — neither package can import
-// controller without a cycle — and every one of them is a member of the controller's
-// stalled-reason set, so a refusal surfaces as Stalled=True / kstatus Failed whichever it is.
+// controller without a cycle. Whichever one a refusal gets, the GitTarget publishes it as
+// Stalled=True / kstatus Failed, and its rules stall on that verdict, not on the reason.
 func GitPathRefusalReason(refused *AcceptanceRefusedError) string {
 	switch {
 	case refused.AllIssuesOfKinds(IssueIgnoreShadowsManaged):
