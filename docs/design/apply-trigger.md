@@ -611,8 +611,9 @@ from the flush mark. Inside it, **the API wins**, as it does for any object both
 - **Only proof withholds.** `managedFields` times resolve to the second. When the applier ties
   with another manager, the write could be the edit itself, and withholding an edit loses it
   outright; it is mirrored as before. It is also remembered as an edit, even as the first write in
-  the window, so the applier's write alone a second later is still withheld. An applier entry in the
-  same second as the edit is mirrored the same way. One older than the edit is no write of the
+  the window, so the applier's write alone a second later is still withheld. An applier entry alone
+  in the same second as the edit is withheld: the edit arrived first, in `resourceVersion` order, so
+  it was written first, and only an undo in that second is lost. One older than the edit is no write of the
   applier's at all: an update that removes every field a manager owns deletes that manager's entry,
   so undoing an edit (`kubectl label cm/x tmp-` after `tmp=1`) can leave the applier's entry from an
   earlier apply as the newest. A late apply moves the applier's entry forward, so an older one is

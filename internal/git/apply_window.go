@@ -279,16 +279,16 @@ func (l *branchWorkerEventLoop) judgeInWindow(applier *applierState, event Event
 		window.echoes++
 		l.recordApplyEcho(echoNotMirrored)
 		return true
-	case written.Equal(editedAt):
-		// The applier's entry and the edit in the same second: it could be either.
-		l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
-		window.recordEdit(key, written)
 	case written.Before(editedAt):
 		// The applier's entry is older than the edit, so the applier did not write this: an API
 		// update that removed every field its manager owned took that entry with it, and left
 		// the applier's from an earlier apply as the newest. It is an edit, the undo of one.
 		window.recordEdit(key, written)
 	default:
+		// The applier's write alone, at or after the edit. In the same second it is still the
+		// apply over the edit: events arrive in resourceVersion order, so the edit, recorded
+		// already, was written first, and mirroring this would revert it in Git and on the
+		// cluster. Only an undo in that same second is lost (C4 in docs/design/applier-echoes.md).
 		l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
 		applier.repair = true
 		return true

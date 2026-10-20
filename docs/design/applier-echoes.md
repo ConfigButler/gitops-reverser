@@ -159,8 +159,7 @@ flowchart TD
     S -- yes --> R{"an edit to it recorded in the window?"}
     R -- no --> NM["the apply itself: not mirrored (F1)"]
     R -- yes --> C{"the applier's entry against the edit"}
-    C -- newer --> WH["late apply over the edit: withheld, Repair pending"]
-    C -- "same second" --> AM["ambiguous: mirrored"]
+    C -- "newer, or the same second" --> WH["late apply over the edit: withheld, Repair pending"]
     C -- older --> UN["the API's undo of the edit: mirrored"]
 ```
 
@@ -169,8 +168,9 @@ flowchart TD
 - **The lower bound is the earliest send of every window still open or carried.** A delayed echo of
   attempt A, arriving after attempt B was sent and inside A's grace, is still A's apply.
 - **When an edit was recorded, today's comparison decides**, unchanged: an applier entry newer than
-  the edit is a late apply over it (withheld, `Repair`); the same second is ambiguous (mirrored); an
-  older one is the API's undo (mirrored). F1 changes only the case with no edit recorded, which today
+  the edit is a late apply over it (withheld, `Repair`); an older one is the API's undo (mirrored).
+  The same second is withheld too ([decided while building](#decided-while-building), 7): the edit
+  arrived first, so it was written first. F1 changes only the case with no edit recorded, which today
   is mirrored "as ever".
 - **Edits are recorded from the flush mark** (S1), not only from the send.
 
@@ -428,7 +428,7 @@ the two writes must be; the **recovery** is how long the wrong state lasts once 
 | C1 | An API edit to an object while an apply of it runs | the apply | the cluster runs the applied value; Git is right | heals: `Repair`, seconds | `apply_window_collisions_total{withheld}`, `Repair` on the trigger |
 | C2 | An API edit or a save, and a Git-side push to the same object, before the edit is published | until the edit's push | the edit's upsert lands on the push: the API wins for every field of that object, including ones only Git changed | does not heal: the repository's "API wins" rule | the commit |
 | C3 | An echo that arrives more than 10s after its operation completed, after the worker learned of a newer tip | after the grace | mirrored as an edit, reverting that tip's change to the object | does not heal | `apply_echoes_total{outcome="late"}` |
-| C4 | An undo written in the same second as the apply's write to that object | one second | the undo looks like the apply and is not mirrored | does not heal | not distinguishable |
+| C4 | An undo written in the same second as the apply's write to that object, or as the edit it undoes when an apply wrote that object in that second | one second | the undo looks like the apply and is not mirrored, or is withheld and a `Repair` puts the edit back | does not heal | not distinguishable |
 | C5 | A prune by the applier, decided after the worker learned of a newer tip that adds the object back | the apply | the delete is mirrored and applied onto the re-add | does not heal | the commit |
 | C6 | A mutating webhook or defaulting adds fields during an apply that Git does not hold | none | not mirrored (F1); a later resync mirrors them | not needed: the cluster runs them | the resync's commit |
 | C7 | The applier's write and another manager's in the same second, after the worker learned of a newer tip | one second | mirrored as ambiguous; its content can revert that tip's change to the object | does not heal | `apply_window_collisions_total{ambiguous}` |
@@ -606,7 +606,7 @@ mirrors and the applier applies.
 
 ## Decided while building
 
-The build departs from the plan above in six places, decided on 2026-10-20:
+The build departs from the plan above in seven places, decided on 2026-10-20:
 
 1. **Siblings do not count for F3.** Whether Git is ahead, and the apply epoch, are per worker: an
    apply due on another worker writing the same branch does not hold this worker's resyncs. This
@@ -637,6 +637,13 @@ The build departs from the plan above in six places, decided on 2026-10-20:
    current window's send.
 6. **A held `GitTarget` is asked for a fresh snapshot when the 5 minutes run out**, on the applier
    timer, rather than when the next stale snapshot happens to arrive.
+7. **The applier's write alone in the same second as a recorded edit is withheld**, not mirrored as
+   ambiguous. Events arrive in `resourceVersion` order, so the edit, recorded first, was written
+   first, and the applier's write after it is its apply over the edit. Mirrored, it reverted the edit
+   in Git and on the cluster, which E6 caught when Flux applied within the second of an edit. The cost
+   is C4's: an undo in that second, left with an applier entry of that second as the newest, is
+   withheld and the `Repair` puts the edit back. A tie with another manager is still mirrored: it may
+   be the edit itself.
 
 ## References
 

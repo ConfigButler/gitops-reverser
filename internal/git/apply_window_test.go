@@ -95,7 +95,8 @@ func TestApplyWindow_TheAppliersLateWriteOverANewerEditIsWithheld(t *testing.T) 
 // deletes its managedFields entry, so the newest entry left is kustomize-controller's, from an
 // earlier apply. That undo looked like the applier's write alone over a newer edit: it was withheld
 // and a Repair sent, which put tmp=1 back. A real late apply moves the applier's entry forward; an
-// undo does not. So only an applier entry strictly newer than the edit is withheld.
+// undo does not. So only an applier entry at or after the edit is withheld: in the same second the
+// edit, which arrived first, was written first, and the applier's write alone is its apply over it.
 func TestApplyWindow_AnUndoOfAnEditIsMirrored(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -106,12 +107,12 @@ func TestApplyWindow_AnUndoOfAnEditIsMirrored(t *testing.T) {
 	assert.False(t, loop.withholdLateApply(windowEventAt("alpha", "2", earlierApply, FluxFieldManager)),
 		"its undo leaves only an older entry of the applier's, and is mirrored")
 	assert.False(t, loop.appliers[applierRef("alpha")].repair, "so no Repair puts the edit back")
-	assert.False(t, loop.withholdLateApply(windowEventAt("alpha", "2", edit, FluxFieldManager)),
-		"a write of the applier's in the same second as the edit could be either, and is mirrored")
-	assert.Equal(t, int64(1), collisions(t, reader, collisionAmbiguous))
+	assert.True(t, loop.withholdLateApply(windowEventAt("alpha", "2", edit, FluxFieldManager)),
+		"the applier's write alone in the same second as the edit, after it, is its apply over it")
+	assert.Equal(t, int64(0), collisions(t, reader, collisionAmbiguous))
 	assert.True(t, loop.withholdLateApply(windowEventAt("alpha", "2", edit.Add(time.Second), FluxFieldManager)),
 		"an apply arriving after the edit moves the applier's entry forward, and is withheld")
-	assert.Equal(t, int64(1), collisions(t, reader, collisionWithheld))
+	assert.Equal(t, int64(2), collisions(t, reader, collisionWithheld))
 }
 
 // TestApplyWindow_OnlyAWithheldWriteIsKeptFromTheCommitWindow follows both events through the live

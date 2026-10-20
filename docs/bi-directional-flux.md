@@ -411,10 +411,10 @@ nothing watching it.
 a write by `kustomize-controller` alone to an object nobody edited is the apply landing, and is not
 mirrored. A write by `kustomize-controller` over a newer API edit, one made after the flush included,
 is withheld from Git, and GitOps Reverser asks for a `Repair`; the trigger shows `repairPending`
-until that apply succeeds. Only a `kustomize-controller` entry newer than the edit counts: undoing an
-edit can leave an older one as the newest entry, and that undo is mirrored. When
-`kustomize-controller` and another manager, or the edit, wrote in the same second, the write is
-mirrored and counted as `ambiguous`.
+until that apply succeeds. Only a `kustomize-controller` entry as new as the edit or newer counts:
+undoing an edit can leave an older one as the newest entry, and that undo is mirrored. When
+`kustomize-controller` and another manager wrote in the same second, the write is mirrored and
+counted as `ambiguous`.
 
 **Reverting refused edits.** With `onRefusal: Reapply`, the target's `Kustomization` is resumed
 for one apply of the tip; no new commit is needed. If its `GitRepository` has to fetch to reach the
