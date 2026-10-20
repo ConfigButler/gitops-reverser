@@ -88,6 +88,17 @@ func startKcpTunnel() *kcpTunnel {
 	t := &kcpTunnel{cmd: cmd, cancel: cancel, admin: admin, workdir: workdir}
 	t.rootKubeconfig = t.writeDerivedKubeconfig("root",
 		fmt.Sprintf("https://127.0.0.1:%d/clusters/root", kcpLocalPort), kcpFrontProxySNI)
+
+	// A port that accepts connections is not a front-proxy that accepts the admin's credentials.
+	// setup-kcp.sh waits for the Deployments and the admin kubeconfig Secret, and one CI run still
+	// had its first authenticated request refused ("the server has asked for the client to provide
+	// credentials") a minute after both. Wait for an authenticated read through the tunnel, so a
+	// startup that is still settling is not reported as a failing spec.
+	Eventually(func() error {
+		_, err := kubectlWithKubeconfig(t.rootKubeconfig, "", "get", "workspaces")
+		return err
+	}).WithTimeout(90*time.Second).WithPolling(3*time.Second).
+		Should(Succeed(), "kcp never accepted the admin credentials through the front-proxy")
 	return t
 }
 
