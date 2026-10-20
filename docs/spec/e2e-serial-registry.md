@@ -29,17 +29,22 @@ row below.
 
 ## Serial containers
 
+A Serial container runs alone, after every parallel spec of its CI leg has finished, so its whole
+runtime adds to that leg's wall clock. Place it on a leg with time to spare: `CRD Lifecycle`
+carries the `crd-lifecycle` label rather than `manager` for exactly that reason, which puts it in
+the `full-core` leg beside the restart specs instead of at the end of the longest leg.
+
 | File | Container | Shared state it touches | Why name isolation can't fix it |
 |---|---|---|---|
 | [test/e2e/restart_reconcile_e2e_test.go](../../test/e2e/restart_reconcile_e2e_test.go) | `Restart Reconcile Safety` | Rollout-restarts the controller deployment. | The controller is a singleton; restarting it disrupts in-flight reconciles/commits for every other spec. |
 | [test/e2e/flux_restart_recovery_e2e_test.go](../../test/e2e/flux_restart_recovery_e2e_test.go) | `Flux Restart Recovery` | Rollout-restarts the controller deployment while a Flux apply runs, and labels a node so that apply's Deployment can schedule. | The controller is a singleton, as for `Restart Reconcile Safety`; a node label is cluster-wide. |
 | [test/e2e/image_refresh_test.go](../../test/e2e/image_refresh_test.go) | `image refresh dependency chain` | Changes the controller image / redeploys the controller. | Same singleton controller; an image swap perturbs all concurrent specs. |
-| [test/e2e/crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go) | `Manager CRD Lifecycle` | Installs/deletes a cluster-scoped CRD and watches all `customresourcedefinitions` cluster-wide, asserting exact Git file presence/absence. | A concurrent CRD install/delete bumps the global discovery-catalog generation and re-resolves every GitTarget's watched-type tables, delaying this spec's reconcile (CRD file appears late / post-delete sweep lags — the 649↔673 flake). A cluster-wide catalog bump cannot be scoped by name. |
+| [test/e2e/crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go) | `CRD Lifecycle` | Installs/deletes a cluster-scoped CRD and watches all `customresourcedefinitions` cluster-wide, asserting exact Git file presence/absence. | A concurrent CRD install/delete bumps the global discovery-catalog generation and re-resolves every GitTarget's watched-type tables, delaying this spec's reconcile (CRD file appears late / post-delete sweep lags — the 649↔673 flake). A cluster-wide catalog bump cannot be scoped by name. |
 | [test/e2e/tilt_playground_e2e_test.go](../../test/e2e/tilt_playground_e2e_test.go) | `playground` | Reusable manual-playground fixture: fixed (non-randomized) `tilt-playground` namespace and `playground` repo/provider names, preserved across runs. | A singleton by construction — its resource names are intentionally stable so `task playground-*` can re-attach, so per-run name isolation does not apply. |
 
 ### De-serialized
 
-`Manager CRD Lifecycle` ([crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go))
+`CRD Lifecycle` ([crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go))
 **was de-serialized and then re-serialized** — it is in the Serial table above, not
 here. Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191)) —
 resnapshot a target only when its *resolved* plan hash changes — removed the worst

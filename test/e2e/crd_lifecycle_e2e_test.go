@@ -5,7 +5,6 @@ package e2e
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -21,7 +20,12 @@ import (
 // GitTarget's watched-type tables, delaying this spec's reconcile so the CRD file appeared late
 // (verifyFileExists) or its post-delete sweep lagged (verifyFileDeleted) — the 649↔673 flake.
 // Serial pins it to the isolated serial phase, where no other spec churns cluster-scoped CRD state.
-var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, func() {
+//
+// Not labeled manager: a Serial spec runs alone after every parallel spec has finished, so its
+// whole runtime (about 3.5 min) adds to its CI leg's wall clock. The manager leg is the longest,
+// the core leg has minutes to spare, and restart_reconcile's serial phase there is no CRD churn
+// running alongside it.
+var _ = Describe("CRD Lifecycle", Label("crd-lifecycle"), Serial, Ordered, func() {
 	var (
 		testNs           string
 		crdLifecycleRepo *RepoArtifacts
@@ -334,6 +338,10 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		}
 		Eventually(verifyCRDInstanceExists, 15*time.Second, time.Second).Should(Succeed())
 
+		// Read where the branch is BEFORE the patch, from the remote: a status-only change must not
+		// move it. Read after the patch, a status commit that landed fast would be the baseline.
+		headBeforeStatus := remoteHead(Default, crdLifecycleRepo.CheckoutDir)
+
 		By("applying status update to the IceCreamOrder CR")
 		statusPatch := `{"status":{"phase":"Preparing","cost":12.5,"message":"Queued for pickup"}}`
 		statusOutput, statusErr := kubectlRunInNamespace(
@@ -349,41 +357,23 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		Expect(statusErr).NotTo(HaveOccurred(), "Status subresource patch should succeed")
 		By(fmt.Sprintf("status patched successfully: %s", statusOutput))
 
-		By("getting current git commit hash")
-		gitRevCmd := exec.Command("git", "rev-parse", "HEAD")
-		gitRevCmd.Dir = crdLifecycleRepo.CheckoutDir
-		beforeStatusCommit, _ := gitRevCmd.Output()
-
-		By("waiting to ensure no new commit is created from status update")
-		time.Sleep(10 * time.Second)
-
-		By("verifying no new commit was created and status is not in Git")
-		verifyStatusNotCommitted := func(g Gomega) {
-			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
-
-			// Check that commit hash hasn't changed
-			gitRevCmd := exec.Command("git", "rev-parse", "HEAD")
-			gitRevCmd.Dir = crdLifecycleRepo.CheckoutDir
-			afterStatusCommit, err := gitRevCmd.Output()
-			g.Expect(err).NotTo(HaveOccurred())
-
-			By(fmt.Sprintf("Commit before status: %s", string(beforeStatusCommit)))
-			By(fmt.Sprintf("Commit after status:  %s", string(afterStatusCommit)))
-
-			// Read the file again to ensure status is still not present
-			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
-				"e2e/icecream-test",
-				iceCreamInstancePath(crdGroupCRDLifecycle, testNs, crdInstanceName))
-			content, readErr := os.ReadFile(expectedFile)
-			g.Expect(readErr).NotTo(HaveOccurred())
-			g.Expect(string(content)).NotTo(ContainSubstring("status:"),
-				"CRD instance file should still NOT contain status field after status update")
-			g.Expect(string(content)).NotTo(ContainSubstring("phase:"),
-				"CRD instance file should NOT contain status phase content")
-			g.Expect(string(content)).NotTo(ContainSubstring("Queued for pickup"),
-				"CRD instance file should NOT contain status content")
-		}
-		Eventually(verifyStatusNotCommitted).Should(Succeed())
+		By("verifying no new commit is created and status is not in Git")
+		Consistently(func(g Gomega) {
+			g.Expect(remoteHead(g, crdLifecycleRepo.CheckoutDir)).To(Equal(headBeforeStatus),
+				"a status-only update must not produce a commit")
+		}, 10*time.Second, time.Second).Should(Succeed())
+		pullLatestRepoState(Default, crdLifecycleRepo.CheckoutDir)
+		expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
+			"e2e/icecream-test",
+			iceCreamInstancePath(crdGroupCRDLifecycle, testNs, crdInstanceName))
+		content, readErr := os.ReadFile(expectedFile)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(string(content)).NotTo(ContainSubstring("status:"),
+			"CRD instance file should still NOT contain status field after status update")
+		Expect(string(content)).NotTo(ContainSubstring("phase:"),
+			"CRD instance file should NOT contain status phase content")
+		Expect(string(content)).NotTo(ContainSubstring("Queued for pickup"),
+			"CRD instance file should NOT contain status content")
 
 		By("✅ Status update verified - no Git commit created and status not in file")
 
