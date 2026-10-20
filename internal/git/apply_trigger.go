@@ -339,7 +339,7 @@ func (l *branchWorkerEventLoop) closeWindowForPushHint() {
 // appliers' next apply windows will hold are recorded (withholdLateApply). The writes up to the mark
 // are published, at once, and the attempts are sent for the tip that publication produced. Writes
 // decided after the mark do not hold the send, so continuous editing cannot starve an apply: an edit
-// decided after it is recorded, and an apply that overwrites it is withheld over and repaired.
+// decided after it is recorded, and an apply that overwrites it is withheld and repaired.
 func (l *branchWorkerEventLoop) serviceAppliers() {
 	w := l.w
 	if w.applyRequester == nil {
@@ -492,7 +492,9 @@ func (l *branchWorkerEventLoop) flushed(due []*applierState) bool {
 		return false
 	}
 	for _, state := range due {
-		if state.flushEdits == nil {
+		// A new mark publishes every edit recorded before it, so those are in the commit the
+		// attempt applies: carried into its window, they would withhold the apply's own write.
+		if state.flushEdits == nil || !l.flushing {
 			state.flushEdits = map[string]time.Time{}
 		}
 	}

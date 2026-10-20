@@ -420,3 +420,22 @@ func TestApplyAttempt_ASourceElsewhereIsAHintToLook(t *testing.T) {
 	assert.True(t, refreshes[0].PushNotice)
 	assert.Equal(t, "ccc", refreshes[0].After)
 }
+
+// TestApplyAttempt_ANewFlushMarkStartsTheEditsOver: an applier can stay due without being sent (a
+// sibling holds its group), and the next flush takes a newer mark, which publishes the edits recorded
+// before it. Carried into the window, those would withhold the apply's own write of a commit that
+// holds them, with a false collision and an extra Repair. A flush in progress keeps its record.
+func TestApplyAttempt_ANewFlushMarkStartsTheEditsOver(t *testing.T) {
+	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
+	loop.followRecordedOperations(time.Now())
+	state := loop.appliers[applierRef("alpha")]
+	state.flushEdits = map[string]time.Time{"x": time.Now()}
+
+	loop.flushing = true
+	require.True(t, loop.flushed([]*applierState{state}))
+	assert.Len(t, state.flushEdits, 1, "the flush in progress keeps what it recorded")
+
+	loop.flushing = false
+	require.True(t, loop.flushed([]*applierState{state}))
+	assert.Empty(t, state.flushEdits, "a new mark published them")
+}

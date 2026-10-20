@@ -171,6 +171,9 @@ func (l *branchWorkerEventLoop) withoutOwnedElsewhere(
 	return desired, kept
 }
 
+// ownershipLogLimit bounds the objects recordOwnershipConflict remembers having logged.
+const ownershipLogLimit = 1024
+
 // recordOwnershipConflict counts an object another applier owns, kept out of a triggered folder, and
 // logs it once per object.
 func (l *branchWorkerEventLoop) recordOwnershipConflict(target, object string, applier ApplierRef, owner AppliedBy) {
@@ -182,7 +185,9 @@ func (l *branchWorkerEventLoop) recordOwnershipConflict(target, object string, a
 	if _, logged := l.ownershipLogged[key]; logged {
 		return
 	}
-	if l.ownershipLogged == nil {
+	if l.ownershipLogged == nil || len(l.ownershipLogged) >= ownershipLogLimit {
+		// The log only spares recent objects a repeat; the counter records every exclusion.
+		// Objects come and go (an Argo CD hook Job per sync), so it starts over rather than grow.
 		l.ownershipLogged = map[string]struct{}{}
 	}
 	l.ownershipLogged[key] = struct{}{}
