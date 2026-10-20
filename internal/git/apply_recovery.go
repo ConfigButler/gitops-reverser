@@ -30,7 +30,7 @@ import (
 // followRecordedOperations reads the triggers' recorded status on every pass, and follows what it
 // finds. Every pass, and not only while the branch has appliers: a GitTarget naming a trigger for
 // the first time is seen here, and gets its first apply (syncAppliers). The listing is cached. A
-// listing that fails is tried again on the next pass.
+// listing that fails is tried again on the applier timer (listRetryAt), as takeReasons' is.
 func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
 	w := l.w
 	if w.applyRequester == nil {
@@ -39,9 +39,11 @@ func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
 	targets, err := w.appliersOnBranch(w.ctx)
 	if err != nil {
 		w.Log.Error(err, "Cannot read the apply triggers' recorded operations; retrying", "branch", w.Branch)
+		l.listRetryAt = time.Now().Add(applierRetryInterval)
 		l.resetApplierTimer(applierRetryInterval)
 		return
 	}
+	l.listRetryAt = time.Time{}
 	l.syncAppliers(targets)
 	for _, ref := range l.sortedAppliers() {
 		l.followRecordedFor(l.appliers[ref], now)

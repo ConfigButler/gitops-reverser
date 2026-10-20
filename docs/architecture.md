@@ -723,7 +723,8 @@ The flush covers the **sibling** workers too: two `GitProvider`s naming one repo
 branch two workers, and their `GitTarget`s can name one trigger. When an apply comes due, the
 worker asks each sibling to close its window and publish up to a mark of its own at once, and
 sends only once every sibling it asked is done. The workers share what they observe of the
-branch, so a sibling's push moves the tip and asks for nothing, as the worker's own push does.
+branch, so each sends for the tip that holds the others' writes; a sibling's push is foreign to the
+others, as a fetch of it would be, because its appliers may apply another cluster.
 
 Which apply is due lives on the worker, per applier: one attempt out at a time, and its own retry
 clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and

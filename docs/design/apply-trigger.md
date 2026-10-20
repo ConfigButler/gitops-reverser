@@ -235,8 +235,10 @@ revert it on the cluster, and the sibling, which sent nothing and has no apply w
 the revert. When an apply comes due, the worker asks each sibling to flush: it closes its open
 window, takes a mark of its own, and publishes up to it at once. The worker sends once every sibling
 it asked is done. Every worker shares what it observes of the branch with its siblings, so the tip
-the attempt is sent for holds their publications: a sibling's push moves the tip and asks nothing, as
-a worker's own does, and what a sibling fetched is foreign to all of them. A sibling's edit decided
+the attempt is sent for holds their publications. A sibling's push is foreign to the other workers,
+as a fetch of it would be: its appliers may apply another cluster than theirs, so nothing says its
+content is live where their appliers apply, and an echo of content already live is not mirrored. A
+sibling's edit decided
 after its mark does not hold the send, and is not protected while the apply runs, as before.
 
 ### `CatchUp`: adopt and converge

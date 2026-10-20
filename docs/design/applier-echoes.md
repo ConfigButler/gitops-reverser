@@ -667,8 +667,9 @@ The build departs from the plan above in twelve places, decided on 2026-10-20:
     reverted it on the cluster, and mirrored the revert, having sent nothing and holding no apply
     window (found in review). When an apply comes due, the worker asks each sibling to flush up to a
     mark of its own and sends once all have; workers share what they observe of the branch, so the
-    attempt is sent for the tip that holds the siblings' writes. A sibling's edit made while the apply
-    runs stays unprotected, as it was before this change.
+    attempt is sent for the tip that holds the siblings' writes. A sibling's push is foreign to the
+    others, as it was when they found it by a fetch: its appliers may apply another cluster. A
+    sibling's edit made while the apply runs stays unprotected, as it was before this change.
 
 ## References
 

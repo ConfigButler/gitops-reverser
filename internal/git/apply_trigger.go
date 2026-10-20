@@ -390,12 +390,12 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 
 // takeReasons moves the reasons the inbox holds onto the appliers listed now, and reports whether
 // any applier has work. A listing that fails leaves them in the inbox, and sets listRetryAt, when
-// the applier timer looks again.
+// the applier timer looks again; only a listing that succeeds clears it (followRecordedOperations
+// lists the same appliers first, every pass).
 func (l *branchWorkerEventLoop) takeReasons() bool {
 	w := l.w
 	_, foreign, converge := w.inbox.take()
 	if !foreign && !converge && len(l.unsentRefusals) == 0 && !l.appliersHaveWork() {
-		l.listRetryAt = time.Time{}
 		return false
 	}
 	targets, err := w.appliersOnBranch(w.ctx)

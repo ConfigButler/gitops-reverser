@@ -11,7 +11,7 @@ package git
 // So the flush covers the siblings: when an apply comes due, the worker asks each sibling to flush,
 // and each closes its open window, takes a mark of its own, and publishes up to it at once. The
 // worker sends once every sibling it asked is done, for the tip their publications produced, which
-// they shared with it (shareObservation). As in S1, a sibling's writes decided after its mark do not
+// they shared with it (shareObservation), and which is foreign to it. As in S1, a sibling's writes decided after its mark do not
 // hold the send; an edit a sibling makes while the apply runs is not protected, as before.
 
 // askFlush asks every other worker on w's repository and branch to flush, and returns the request's
@@ -96,10 +96,11 @@ func (l *branchWorkerEventLoop) siblingsFlushed() bool {
 }
 
 // shareObservation tells every other worker on w's repository and branch what w observed of the
-// branch, as their own inboxes classify it: w's push moved the tip with content that is live already,
-// as a worker's own push does, and asks nothing; what w fetched, nobody on the branch wrote. Without
-// it a worker learns of a sibling's push only from a fetch of its own, which takes it for somebody
-// else's, and sends an attempt for a tip the sibling has moved.
+// branch, so the tip each one sends an attempt for holds w's publications, and wakes them. To them
+// the commit is somebody else's, as a fetch of it would have told them: w's appliers may apply
+// another cluster than theirs, or their folders, so nothing says its content is live where their
+// appliers apply. Their applier is asked for it, and an echo of content already live there is not
+// mirrored (F1).
 func (s *branchSiblings) shareObservation(w *BranchWorker, observed RemoteObservation) {
 	key, ok := siblingKey(w)
 	if s == nil || !ok {
@@ -113,8 +114,13 @@ func (s *branchSiblings) shareObservation(w *BranchWorker, observed RemoteObserv
 		}
 	}
 	s.mu.Unlock()
+	shared := observed
+	if shared.By == ObservedByPush {
+		shared.By = ObservedByFetch
+	}
 	for _, sibling := range others {
-		sibling.inbox.observe(observed)
+		sibling.inbox.observe(shared)
+		sibling.wakeApplier()
 	}
 }
 

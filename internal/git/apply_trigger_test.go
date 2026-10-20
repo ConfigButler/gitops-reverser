@@ -525,3 +525,29 @@ func TestServiceAppliers_AFailedListingKeepsItsRetry(t *testing.T) {
 	assert.Len(t, requester.taken(), 1, "the retry sends what was pending")
 	assert.True(t, loop.listRetryAt.IsZero())
 }
+
+// TestServiceAppliers_AFailedRecordedListingKeepsItsRetry: the pass's first listing, of the recorded
+// operations, failing while nothing else is pending must leave its retry armed: the same pass found
+// no reason to send, and disarmed the timer.
+func TestServiceAppliers_AFailedRecordedListingKeepsItsRetry(t *testing.T) {
+	loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	loop.serviceAppliers()
+	loop.w.inbox.take()
+	for _, state := range loop.appliers {
+		state.converge = false
+	}
+	reader := loop.w.Client
+	loop.w.Client = interceptor.NewClient(reader.(client.WithWatch), interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errors.New("the API server is away")
+		},
+	})
+
+	loop.serviceAppliers()
+	require.NotNil(t, loop.applierTimer, "the listing is tried again")
+	assert.False(t, loop.listRetryAt.IsZero())
+
+	loop.w.Client = reader
+	loop.serviceAppliers()
+	assert.True(t, loop.listRetryAt.IsZero(), "a listing that succeeds clears it")
+}

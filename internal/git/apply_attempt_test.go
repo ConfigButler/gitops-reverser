@@ -313,20 +313,31 @@ func TestSiblings_AnApplyWaitsForItsSiblingsFlush(t *testing.T) {
 	assert.Len(t, firstRequests.taken(), 1, "a write decided after the mark does not hold the send")
 }
 
-// TestSiblings_ShareWhatTheyObserve: a sibling's push moves the branch with content already live,
-// as a worker's own push does, so it moves the tip every worker on the branch sends for, and asks
-// nothing; a commit a sibling fetched nobody on the branch wrote, and is foreign to all of them.
+// TestSiblings_ShareWhatTheyObserve: what a sibling observes of the branch moves the tip every
+// worker on it sends for, and wakes them. A sibling's push is somebody else's commit here, as a
+// fetch of it would say: the sibling's appliers may apply another cluster, so nothing says its
+// content is live where this worker's appliers apply.
 func TestSiblings_ShareWhatTheyObserve(t *testing.T) {
 	first, _, second, _ := siblingLoops(t)
 	first.w.inbox.take()
+	select {
+	case <-first.w.applyWake:
+	default:
+	}
 
 	second.w.recordRemoteObservation("ccc", ObservedByPush)
 	assert.Equal(t, "ccc", first.w.inbox.lastTip())
-	assert.False(t, first.w.inbox.foreignPending(), "a sibling's push asks nothing")
+	assert.True(t, first.w.inbox.foreignPending(), "a sibling's push is foreign here")
+	select {
+	case <-first.w.applyWake:
+	default:
+		t.Fatal("a shared observation must wake the sibling, so a ForeignCommit is decided at once")
+	}
 
+	first.w.inbox.take()
 	second.w.recordRemoteObservation("ddd", ObservedByFetch)
 	assert.Equal(t, "ddd", first.w.inbox.lastTip())
-	assert.True(t, first.w.inbox.foreignPending(), "what a sibling fetched is foreign here too")
+	assert.True(t, first.w.inbox.foreignPending(), "and so is what a sibling fetched")
 }
 
 func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
