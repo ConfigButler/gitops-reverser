@@ -183,7 +183,7 @@ func main() {
 	workerManager.SetScanAcceptanceReporter(watchMgr.ReportGitPathScan)
 	// A worker discards a snapshot an apply made stale and asks for a fresh one, and asks no applier
 	// for anything before a GitTarget's initial snapshots are in Git: both read the streams.
-	workerManager.SetSnapshotHooks(watchMgr.InitialSnapshotsApplied, watchMgr.RequestRecheckForGitTarget)
+	workerManager.SetSnapshotHooks(watchMgr.InitialSnapshotsSettled, watchMgr.RequestRecheckForGitTarget)
 	// The branch workers decide when a GitTarget's applier may apply; the dispatcher delivers it,
 	// off their queues, to the applier its apply trigger holds, in the trigger's cluster. The status
 	// writer records each operation on the trigger, also off their queues.

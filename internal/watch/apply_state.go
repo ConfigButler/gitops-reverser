@@ -24,58 +24,58 @@ func (m *Manager) applyStateAtCollectionStart(ctx context.Context, gitDest types
 	return m.EventRouter.applyState(ctx, gitDest)
 }
 
-// InitialSnapshotsApplied reports whether every collection the GitTarget's current plan watches has
-// had a snapshot applied by the branch worker (markSnapshotApplied). A GitTarget declared with no
-// collection has none to apply. One not declared yet, or whose plan holds a collection no snapshot
-// was applied for, has not applied them. The worker adds that it holds no resync of the GitTarget
-// still to publish.
+// InitialSnapshotsSettled reports whether every collection the GitTarget's current plan watches has
+// a settled snapshot: the branch worker applied, refused or failed one of it (markSnapshotSettled). A
+// GitTarget declared with no collection has none to settle. One not declared yet, or whose plan
+// holds a collection with no settled snapshot, has not settled them. The worker adds that it holds
+// no resync of the GitTarget still to publish.
 //
 // It is tracked per collection, not read from the stream's state: a stream streams once the worker
 // took its snapshot, which may still be discarded, and a GitTarget declared before its WatchRule's
 // collection is planned would answer for a collection it does not know of yet.
-func (m *Manager) InitialSnapshotsApplied(gitDest types.ResourceReference) bool {
+func (m *Manager) InitialSnapshotsSettled(gitDest types.ResourceReference) bool {
 	table, ok := m.watchedTypeTableForGitDest(gitDest)
 	if !ok {
 		return m.declared(gitDest)
 	}
-	return m.snapshotsApplied(gitDest, collectionsForWatchKeys(targetWatchKeys(table)))
+	return m.snapshotsSettled(gitDest, collectionsForWatchKeys(targetWatchKeys(table)))
 }
 
-// markSnapshotApplied records that the branch worker applied a snapshot of the collection: a later
-// one of it is no longer initial (git.ResyncRequest.Initial).
-func (m *Manager) markSnapshotApplied(gitDest types.ResourceReference, collection types.CollectionKey) {
+// markSnapshotSettled records that a snapshot of the collection settled: a later one of it is no
+// longer initial (git.ResyncRequest.Initial).
+func (m *Manager) markSnapshotSettled(gitDest types.ResourceReference, collection types.CollectionKey) {
 	m.snapshotsMu.Lock()
 	defer m.snapshotsMu.Unlock()
-	if m.appliedSnapshots == nil {
-		m.appliedSnapshots = map[string]map[types.CollectionKey]bool{}
+	if m.settledSnapshots == nil {
+		m.settledSnapshots = map[string]map[types.CollectionKey]bool{}
 	}
-	applied := m.appliedSnapshots[gitDest.Key()]
-	if applied == nil {
-		applied = map[types.CollectionKey]bool{}
-		m.appliedSnapshots[gitDest.Key()] = applied
+	settled := m.settledSnapshots[gitDest.Key()]
+	if settled == nil {
+		settled = map[types.CollectionKey]bool{}
+		m.settledSnapshots[gitDest.Key()] = settled
 	}
-	applied[collection] = true
+	settled[collection] = true
 }
 
-// snapshotsApplied reports whether a snapshot was applied for every one of the collections.
-func (m *Manager) snapshotsApplied(gitDest types.ResourceReference, collections []types.CollectionKey) bool {
+// snapshotsSettled reports whether a snapshot of every one of the collections settled.
+func (m *Manager) snapshotsSettled(gitDest types.ResourceReference, collections []types.CollectionKey) bool {
 	m.snapshotsMu.Lock()
 	defer m.snapshotsMu.Unlock()
-	applied := m.appliedSnapshots[gitDest.Key()]
+	settled := m.settledSnapshots[gitDest.Key()]
 	for _, collection := range collections {
-		if !applied[collection] {
+		if !settled[collection] {
 			return false
 		}
 	}
 	return true
 }
 
-// forgetAppliedSnapshots drops a torn-down GitTarget's record, so a same-name recreation starts with
+// forgetSettledSnapshots drops a torn-down GitTarget's record, so a same-name recreation starts with
 // initial snapshots again.
-func (m *Manager) forgetAppliedSnapshots(gitDest types.ResourceReference) {
+func (m *Manager) forgetSettledSnapshots(gitDest types.ResourceReference) {
 	m.snapshotsMu.Lock()
 	defer m.snapshotsMu.Unlock()
-	delete(m.appliedSnapshots, gitDest.Key())
+	delete(m.settledSnapshots, gitDest.Key())
 }
 
 // declared reports whether the GitTarget has declared itself to the watch plane.

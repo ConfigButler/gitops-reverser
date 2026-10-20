@@ -146,14 +146,14 @@ func TestApplyEpoch_SnapshotsAreHeldNoLongerThanTheLimit(t *testing.T) {
 	assert.Empty(t, loop.snapshotStale(alphaSnapshot(nil)), "held for the limit: used anyway")
 }
 
-// TestApplyEpoch_InitialSnapshotsWaitForTheWorkersResyncs: applied for every collection, as the watch
+// TestApplyEpoch_InitialSnapshotsWaitForTheWorkersResyncs: settled for every collection, as the watch
 // side says, is not enough; the worker must not hold a resync of the GitTarget, queued or pending.
 func TestApplyEpoch_InitialSnapshotsWaitForTheWorkersResyncs(t *testing.T) {
 	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
 	applied := false
 	loop.w.initialSnapshots = func(itypes.ResourceReference) bool { return applied }
 	loop.followRecordedOperations(time.Now())
-	assert.False(t, loop.initialSnapshotsPublished(alphaRef), "the watch side has not applied them")
+	assert.False(t, loop.initialSnapshotsPublished(alphaRef), "the watch side has not settled them")
 
 	applied = true
 	loop.pendingWrites = []PendingWrite{

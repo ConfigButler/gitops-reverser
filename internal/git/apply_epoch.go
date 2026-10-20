@@ -226,8 +226,8 @@ func (l *branchWorkerEventLoop) rerequestSnapshots() {
 }
 
 // initialSnapshotsPublished reports whether a GitTarget's initial snapshots are published: every
-// collection it watches has had a snapshot applied (the watch side says so, initialSnapshots), and
-// the worker holds no resync of it, queued or decided and not yet published.
+// collection it watches has a settled snapshot, applied, refused or failed (the watch side says so,
+// initialSnapshots), and the worker holds no resync of it, queued or decided and not yet published.
 func (l *branchWorkerEventLoop) initialSnapshotsPublished(ref itypes.ResourceReference) bool {
 	if l.w.initialSnapshots != nil && !l.w.initialSnapshots(ref) {
 		return false

@@ -3,6 +3,7 @@
 package watch
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -15,9 +16,10 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// TestInitialSnapshots_TrackedPerCollection: a collection's snapshot is initial until the branch
-// worker applied one of it. A discarded one leaves it initial, so its fresh one is still exempt from
-// F3; tearing the GitTarget down forgets it, so a recreation starts over.
+// TestInitialSnapshots_TrackedPerCollection: a collection's snapshot is initial until one of it
+// settled: the branch worker applied, refused or failed it. A discarded or superseded one leaves it
+// initial, so the one that replaces it is still exempt from F3; tearing the GitTarget down forgets
+// it, so a recreation starts over.
 func TestInitialSnapshots_TrackedPerCollection(t *testing.T) {
 	configmaps := types.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "")
 	secrets := types.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "")
@@ -25,7 +27,7 @@ func TestInitialSnapshots_TrackedPerCollection(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 	router := &EventRouter{WatchManager: m, Log: logr.Discard()}
 
-	assert.True(t, m.snapshotsApplied(gitDest, nil), "a GitTarget with no collection has nothing to apply")
+	assert.True(t, m.snapshotsSettled(gitDest, nil), "a GitTarget with no collection has nothing to settle")
 	assert.True(t, router.initialSnapshot(gitDest, configmaps))
 
 	drain := func(collection types.CollectionKey, result git.ResyncResult) {
@@ -34,17 +36,19 @@ func TestInitialSnapshots_TrackedPerCollection(t *testing.T) {
 		router.drainScopedResync(gitDest, collection, "reconcile", 0, resultCh)
 	}
 	drain(configmaps, git.ResyncResult{Err: git.ErrResyncDiscarded})
-	assert.True(t, router.initialSnapshot(gitDest, configmaps), "a discarded snapshot was not applied")
+	assert.True(t, router.initialSnapshot(gitDest, configmaps), "a discarded snapshot did not settle")
+	drain(configmaps, git.ResyncResult{Err: git.ErrResyncSuperseded})
+	assert.True(t, router.initialSnapshot(gitDest, configmaps), "nor did a superseded one")
 
 	drain(configmaps, git.ResyncResult{})
 	assert.False(t, router.initialSnapshot(gitDest, configmaps))
-	assert.False(t, m.snapshotsApplied(gitDest, []types.CollectionKey{configmaps, secrets}), "secrets has none")
+	assert.False(t, m.snapshotsSettled(gitDest, []types.CollectionKey{configmaps, secrets}), "secrets has none")
 	assert.True(t, router.initialSnapshot(gitDest, secrets))
 
-	drain(secrets, git.ResyncResult{})
-	assert.True(t, m.snapshotsApplied(gitDest, []types.CollectionKey{configmaps, secrets}))
+	drain(secrets, git.ResyncResult{Err: errors.New("push failed")})
+	assert.True(t, m.snapshotsSettled(gitDest, []types.CollectionKey{configmaps, secrets}))
 
-	m.forgetAppliedSnapshots(gitDest)
+	m.forgetSettledSnapshots(gitDest)
 	assert.True(t, router.initialSnapshot(gitDest, configmaps), "a recreation starts over")
 }
 

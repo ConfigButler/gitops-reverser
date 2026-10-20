@@ -162,8 +162,8 @@ type BranchWorker struct {
 	applyEpoch    atomic.Uint64
 	appliersAhead atomic.Bool
 	hasAppliers   atomic.Bool
-	// initialSnapshots reports whether every collection a GitTarget watches has had a snapshot
-	// applied, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
+	// initialSnapshots reports whether every collection a GitTarget watches has a settled
+	// snapshot, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
 	// WorkerManager before Start; nil in the CLI and in tests (apply_epoch.go).
 	initialSnapshots func(target itypes.ResourceReference) bool
 	resyncRecheck    func(target itypes.ResourceReference)

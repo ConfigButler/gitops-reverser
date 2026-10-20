@@ -110,10 +110,10 @@ type Manager struct {
 	// plane, which needs no provider, still works.
 	SourceClusters SourceClusterResolver
 
-	// snapshotsMu guards appliedSnapshots: per GitTarget key, the collections the branch worker has
-	// applied a snapshot of (apply_state.go).
+	// snapshotsMu guards settledSnapshots: per GitTarget key, the collections a snapshot of which
+	// the branch worker applied, refused or failed (apply_state.go).
 	snapshotsMu      sync.Mutex
-	appliedSnapshots map[string]map[types.CollectionKey]bool
+	settledSnapshots map[string]map[types.CollectionKey]bool
 
 	// clusters holds one clusterContext per distinct cluster — its API catalog, type registry,
 	// and clients. configPlaneClusterID is the operator's own cluster (always present, never a

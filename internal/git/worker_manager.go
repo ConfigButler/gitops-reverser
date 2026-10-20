@@ -234,15 +234,15 @@ func (m *WorkerManager) SetClusterMapper(resolver func(clusterID string) typeset
 }
 
 // SetSnapshotHooks injects the watch side's half of docs/design/applier-echoes.md into every worker:
-// applied reports whether every collection of a GitTarget has had a snapshot applied, and recheck
+// settled reports whether every collection of a GitTarget has a settled snapshot, and recheck
 // asks for fresh snapshots of a GitTarget whose snapshot a worker discarded as stale. Like SetMapper,
 // it is called once at startup before any worker is created.
 func (m *WorkerManager) SetSnapshotHooks(
-	applied func(target types.ResourceReference) bool, recheck func(target types.ResourceReference),
+	settled func(target types.ResourceReference) bool, recheck func(target types.ResourceReference),
 ) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.initialSnapshots, m.resyncRecheck = applied, recheck
+	m.initialSnapshots, m.resyncRecheck = settled, recheck
 }
 
 // SetSSHHostKeyConfig injects the SSH host-key resolution config used by every worker's credential

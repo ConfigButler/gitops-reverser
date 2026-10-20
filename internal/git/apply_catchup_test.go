@@ -100,8 +100,8 @@ func TestCatchUp_AnAPICreateIsAdoptedEvenAtTheTip(t *testing.T) {
 }
 
 // TestCatchUp_NothingIsAskedBeforeTheInitialSnapshotsArePublished: every reason waits, a
-// ForeignCommit included, until every collection of every GitTarget the applier covers has had its
-// snapshot applied and the worker published what it made of it; the barrier is looked at again on a
+// ForeignCommit included, until every collection of every GitTarget the applier covers has a settled
+// snapshot and the worker published what it made of it; the barrier is looked at again on a
 // short timer.
 func TestCatchUp_NothingIsAskedBeforeTheInitialSnapshotsArePublished(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
