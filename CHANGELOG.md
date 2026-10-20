@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.52.0...v0.53.0) (2026-10-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **applier:** ClusterProvider.spec.allowAnySourceNamespace is gone, and true is refused on any spec change. Set spec.allowCrossNamespace.sources: true instead; until then, cross-namespace WatchRules stop mirroring. A trigger whose applier is in another namespace needs spec.allowCrossNamespace.appliers: true.
+* spec.onRefusal PushEmptyCommit is replaced by Reapply, which needs an apply trigger: the GitTarget names a FluxTrigger or ArgoCDTrigger in spec.applyTriggerRef, and a refused edit asks that trigger's Kustomization or Application to apply the current tip instead of moving the branch with an empty commit. A stored PushEmptyCommit reads as Ignore. See docs/UPGRADING.md for the upgrade order.
+
+### Features
+
+* **applier:** hold the applier, resuming a suspended Kustomization for each apply ([#420](https://github.com/ConfigButler/gitops-reverser/issues/420)) ([519b483](https://github.com/ConfigButler/gitops-reverser/commit/519b483e4db0aeef96e1f29abbfb65679513d741))
+* GitOps Reverser decides when Flux or Argo CD applies a folder ([#419](https://github.com/ConfigButler/gitops-reverser/issues/419)) ([fd4c601](https://github.com/ConfigButler/gitops-reverser/commit/fd4c60102e6ac61146e22698c608d4be7de9c972))
+
+
+### Bug Fixes
+
+* **controller:** stall a rule on its GitTarget's own Stalled verdict ([#422](https://github.com/ConfigButler/gitops-reverser/issues/422)) ([a4c2e63](https://github.com/ConfigButler/gitops-reverser/commit/a4c2e633fbdb747d953c46ee4082db24fc7a9e1e))
+
 ## [0.52.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.51.0...v0.52.0) (2026-10-06)
 
 
