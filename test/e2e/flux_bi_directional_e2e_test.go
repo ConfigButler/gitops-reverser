@@ -422,52 +422,18 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 
-	// The race GitOps Reverser's apply trigger exists for, from docs/design/apply-trigger.md: two
-	// API edits to one field a few seconds apart. With Flux woken by every push, the first commit is
-	// applied over the second edit and the branch ping-pongs. With the Kustomization named as the GitTarget's applier, Flux is asked to catch up
-	// only once the branch has been quiet, so the later value survives and Flux still ends on the
-	// tip, without anybody reconciling it by hand.
-	It("asks Flux to apply only on a quiet branch, so the later of two quick API edits survives", func() {
-		By("naming a trigger that holds the live Kustomization")
-		createFluxTrigger(testNs, run.fluxLiveName, run.fluxLiveName)
-		nameApplyTrigger(testNs, run.gitTargetName, "FluxTrigger", run.fluxLiveName, "")
-		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
-		run.waitForGitTargetReady()
-
-		Expect(run.gitPull()).To(Succeed())
-		baseline := run.waitForStableRemoteCommitCount(biStableCountMediumWait)
-
-		By("editing the second order through the API, and again seconds after that edit is pushed")
-		_, err := kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
-			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"Cone"}}`)
-		Expect(err).NotTo(HaveOccurred())
-		run.waitForCommittedOrderSpec(run.secondOrderName, "Cone", "Strawberry", "WhippedCream")
-		_, err = kubectlRunInNamespace(testNs, "patch", iceCreamCRDName(crdGroupBiDirectional),
-			run.secondOrderName, "--type=merge", "-p", `{"spec":{"container":"WaffleBowl"}}`)
-		Expect(err).NotTo(HaveOccurred())
-		run.waitForCommittedOrderSpec(run.secondOrderName, "WaffleBowl", "Strawberry", "WhippedCream")
-		head := run.gitHEAD()
-
-		By("Flux catches up with those pushes on its own, once the branch is quiet")
-		run.waitForFluxKustomizationRevision(run.fluxLiveName, head)
-
-		By("and the later value survives, with no commit after it")
-		Consistently(func(g Gomega) {
-			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("WaffleBowl"))
-			g.Expect(run.gitPull()).To(Succeed())
-			count, countErr := run.gitMainCommitCount()
-			g.Expect(countErr).NotTo(HaveOccurred())
-			g.Expect(count).To(Equal(baseline+2),
-				"an apply of the first edit's commit over the second edit would show as more commits")
-		}, 30*time.Second, 2*time.Second).Should(Succeed())
-	})
-
 	// A Git-side push with an API edit on top of it, from
 	// docs/design/apply-trigger.md. Nothing tells GitOps Reverser
 	// about the push here, so it finds it the hard way: its own push is rejected, it replays the API
 	// edit onto the Git-side commit, and only then asks Flux to apply, so the commit Flux applies
 	// already carries the API side's answer. Nobody reconciles Flux by hand.
 	It("applies a Git-side push only after replaying the API edit made on top of it", func() {
+		By("naming a trigger that holds the live Kustomization")
+		createFluxTrigger(testNs, run.fluxLiveName, run.fluxLiveName)
+		nameApplyTrigger(testNs, run.gitTargetName, "FluxTrigger", run.fluxLiveName, "")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
+		run.waitForGitTargetReady()
+
 		Expect(run.gitPull()).To(Succeed())
 
 		By("pushing a Git-side change to the first order")

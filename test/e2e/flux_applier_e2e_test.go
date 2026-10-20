@@ -299,6 +299,12 @@ const fluxApplierFolder = "flux/applier"
 // holds it. The Flux specs share it.
 func applyFluxApplier(testNs string, repo *RepoArtifacts, name, secretName, branch, path string) {
 	GinkgoHelper()
+	applyFluxApplierWithPrune(testNs, repo, name, secretName, branch, path, false)
+}
+
+// applyFluxApplierWithPrune is applyFluxApplier, with the Kustomization's spec.prune set to prune.
+func applyFluxApplierWithPrune(testNs string, repo *RepoArtifacts, name, secretName, branch, path string, prune bool) {
+	GinkgoHelper()
 	// The in-cluster Gitea test credential, read from the cluster at runtime, base64-encoded as the
 	// template's Secret expects.
 	fields := struct {
@@ -318,7 +324,7 @@ func applyFluxApplier(testNs string, repo *RepoArtifacts, name, secretName, bran
 		HasTargetNS                                            bool
 		DecryptionProvider, DecryptionSecretName               string
 	}{
-		Namespace: "flux-system", Name: name, Path: path, SourceName: name, Interval: "24h",
+		Namespace: "flux-system", Name: name, Path: path, SourceName: name, Interval: "24h", Prune: prune,
 	}, "flux-system")).To(Succeed(), "failed to apply the Flux Kustomization")
 	_, err := kubectlRunInNamespace("flux-system", "wait", "--for=condition=Ready",
 		"kustomization/"+name, "--timeout=3m")

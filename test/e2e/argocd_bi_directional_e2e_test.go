@@ -51,7 +51,7 @@ const (
 
 	argoSyncTimeout = 120 * time.Second
 	// A Git-side push reaches GitOps Reverser's receiver, which decides a
-	// ForeignCommit on a quiet branch, and Argo CD then syncs: seconds, far below the
+	// ForeignCommit after a flush, and Argo CD then syncs: seconds, far below the
 	// 10m refresher, so this can only pass through the receiver.
 	argoRequestedSyncTimeout = 90 * time.Second
 	// Long enough for a sync GitOps Reverser should not have asked for to show up.
@@ -164,9 +164,10 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 	})
 
 	// A Git-side push reaches the cluster only through GitOps Reverser: its receiver
-	// hears of the push, the worker decides a ForeignCommit on a quiet branch, and the
+	// hears of the push, the worker decides a ForeignCommit after a flush, and the
 	// sync it starts is pinned to that commit. Nothing GitOps Reverser pushes itself
-	// is synced. And what Argo CD stamps on the objects it applies stays out of Git.
+	// is synced; naming the Application converges it once. And what Argo CD stamps on
+	// the objects it applies stays out of Git.
 	It("syncs a Git-side push through a pinned ForeignCommit, and keeps Argo CD's bookkeeping out of Git", func() {
 		// SetupRepo leaves the Gitea repo EMPTY, so seed the branch first: the
 		// GitTarget needs a main to bootstrap. Argo CD has nothing to sync until the
@@ -178,11 +179,19 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		By("enabling gitops-reverser on the shared live path, naming the Application as the applier")
 		receiverHookID = run.startReverserPipeline()
 
+		By("naming the Application converges it once, after the folder's initial snapshot is in Git")
+		Eventually(func(g Gomega) {
+			operation := run.triggerOperation(g)
+			g.Expect(operation.Reason).To(Equal("CatchUp"))
+			g.Expect(operation.Phase).To(Equal("Succeeded"))
+		}, argoRequestedSyncTimeout, biPollInterval).Should(Succeed())
+		converged := run.triggerOperation(Default)
+
 		// Absorbs the reverser's bootstrap commit, so the counts below measure the
 		// Git-side push and Argo CD's sync, and nothing else.
 		baselineCommitCount := run.waitForStableRemoteCommitCount(biStableCountShortWait)
-		Expect(run.operationFinishedAt()).To(BeEmpty(),
-			"GitOps Reverser's own pushes and its start ask Argo CD for nothing")
+		Expect(run.triggerOperation(Default)).To(Equal(converged),
+			"GitOps Reverser's own pushes ask Argo CD for nothing more")
 
 		By("pushing a clean IceCreamOrder from the Git side, and nothing else")
 		run.writeLiveOrder(iceCreamOrderFile{
@@ -231,9 +240,9 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 	// The race the apply trigger exists for (docs/design/apply-trigger.md): two API
 	// edits to one field a few seconds apart. With automated sync, Argo CD synced the
 	// first edit's commit over the second edit. Under the standard nothing syncs
-	// GitOps Reverser's own commits at all, so the later value survives, Git ends on
-	// it with no further commit, and Argo CD, refreshed by its webhook on each push,
-	// only reports the Application Synced.
+	// GitOps Reverser's own commits at all (an API edit asks for no apply), so the
+	// later value survives, Git ends on it with no further commit, and Argo CD,
+	// refreshed by its webhook on each push, only reports the Application Synced.
 	It("keeps the later of two quick API edits, with no further commit and no sync", func() {
 		By("committing a third IceCreamOrder from the Git side, synced by a ForeignCommit")
 		run.writeLiveOrder(iceCreamOrderFile{
@@ -265,7 +274,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 			g.Expect(count).To(Equal(baseline+2),
 				"a sync of the first edit's commit over the second edit would show as more commits")
 			g.Expect(run.operationFinishedAt()).To(Equal(lastSync),
-				"GitOps Reverser's own commits ask Argo CD for no sync: there is no catch-up")
+				"GitOps Reverser's own commits ask Argo CD for no sync: an API edit asks for no apply")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
 		By("and Argo CD, which only compared, finds Git and the cluster in agreement")

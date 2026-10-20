@@ -14,22 +14,18 @@ import (
 // Two Git-side pushes in quick succession must both reach the cluster, and the later one must stay
 // in Git.
 //
-// The race, found by the Argo CD timing spec in CI: GitOps Reverser asks the applier to apply push
-// A, the applier's own write to the object comes back through the watch inside the apply window,
-// and it is mirrored as a pending write ("its content is the commit's, which Git already holds",
-// apply_window.go). Push B lands before that write is committed. The write is rebuilt on B and
-// says A's value, so the commit it makes reverts B, and the applier is then asked to apply the
-// revert.
+// The race, found by the Argo CD timing spec in CI: GitOps Reverser asked the applier to apply push
+// A, the applier's own write to the object came back through the watch inside the apply window,
+// and it was mirrored as a pending write. Push B landed before that write was committed. The write
+// was rebuilt on B and said A's value, so the commit it made reverted B, and the applier was then
+// asked to apply the revert. The applier's own write in its apply window is not mirrored any more,
+// and a write that changes nothing is no action (F1 and F2 of docs/design/applier-echoes.md).
 //
 // Each round pushes B the moment A is live, which is when A's echo is still pending. Several
 // rounds, because the window is seconds wide and a slow round can miss it.
 //
 // The folder is shared, as in the timing spec: GitOps Reverser mirrors a labeled ConfigMap into
 // the folder the applier applies.
-//
-// Pending until F1 and F2 of docs/design/applier-echoes.md are built: Argo CD fails it today, in
-// round 0, and Flux passes only when its echo happens to land after the push cooldown. The change
-// that builds them removes Pending.
 
 const (
 	pushRaceRounds = 3
@@ -68,7 +64,7 @@ func pushRace(pipeline *timingPipeline) {
 	}
 }
 
-var _ = Describe("Bi Directional push race (Flux)", Label("bi-directional", "flux", "push-race"), Ordered, Pending,
+var _ = Describe("Bi Directional push race (Flux)", Label("bi-directional", "flux", "push-race"), Ordered,
 	func() {
 		var (
 			testNs, fluxName string
@@ -114,7 +110,6 @@ var _ = Describe("Bi Directional push race (Flux)", Label("bi-directional", "flu
 	})
 
 var _ = Describe("Bi Directional push race (Argo CD)", Label("bi-directional", "argocd", "push-race"), Ordered,
-	Pending,
 	func() {
 		var (
 			testNs   string

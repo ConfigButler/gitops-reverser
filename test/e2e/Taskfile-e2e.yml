@@ -321,8 +321,11 @@ tasks:
       # IceCreamOrder CRD groups), and none is Serial, so they run side by side.
       # The provenance spec drives no GitTarget and never patches argocd-secret, so
       # it shares the argocd namespace with the Argo CD spec without racing it.
-      BI_DIRECTIONAL_GINKGO_PROCS: '{{.BI_DIRECTIONAL_GINKGO_PROCS | default "3"}}'
-      BI_DIRECTIONAL_TIMEOUT: '{{.BI_DIRECTIONAL_TIMEOUT | default "25m"}}'
+      # The applier-echo scenarios (bi_directional_echoes_e2e_test.go) are two more long Ordered
+      # specs, and the restart ones run Serial at the end: four procs keep the leg inside the CI
+      # job's 45 minutes.
+      BI_DIRECTIONAL_GINKGO_PROCS: '{{.BI_DIRECTIONAL_GINKGO_PROCS | default "4"}}'
+      BI_DIRECTIONAL_TIMEOUT: '{{.BI_DIRECTIONAL_TIMEOUT | default "35m"}}'
     cmds:
       # Sequential, not deps: _prepare-e2e-ready restarts the k3d server node when
       # it injects the webhook TLS cert, which would break an Argo CD install
