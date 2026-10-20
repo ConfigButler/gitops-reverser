@@ -264,8 +264,9 @@ every end of one. When a snapshot's collection starts, the watch side reads it, 
 is ahead** of the cluster: an applier on the branch has a `ForeignCommit`, `Refusal` or `Repair`
 pending, a converge it may be asked for, or an attempt out. A snapshot collected while Git was
 ahead, or across an epoch change, holds a picture the apply has made stale, so the worker discards
-it and asks for a fresh one once Git is no longer ahead. A `GitTarget`'s initial snapshots are
-exempt, and its snapshots are held off for at most 5 minutes.
+it and asks for a fresh one once Git is no longer ahead. A `GitTarget`'s initial snapshots, the
+first of each collection until one of it settles, are exempt, and its snapshots are held off for at
+most 5 minutes.
 
 **Receiver.** `GitProvider.spec.receiver`, the endpoint a Git host notifies on a push. The word and
 its `type` values are Flux's. A delivery to it is a hint to look, never a fact about the branch.

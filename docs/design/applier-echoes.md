@@ -248,12 +248,13 @@ overlaps an apply holds a mix. Either is a stale picture once the apply has run.
 - **A `CatchUp` to adopt does not count as Git being ahead**: it applies objects the cluster already
   runs.
 - **A branch with no trigger never waits**: nothing applies its commits.
-- **A `GitTarget`'s snapshots are exempt until its initial snapshots are published**, latched per
-  `GitTarget` incarnation. They are the startup baseline, and S2 asks no applier for anything before
-  they are in Git, so holding them for an apply would wait on itself
+- **A `GitTarget`'s initial snapshots are exempt**: the first snapshot of each collection it
+  watches, until one of it settles (applied, refused or failed). They are the startup baseline,
+  and S2 asks no applier for anything before they are in Git, so holding them for an apply would
+  wait on itself
   ([decided while building](#decided-while-building), 3).
-- **A `GitTarget`'s snapshots are held for at most 5 minutes**, from its first discard. Then the
-  next snapshot is used, logged and counted (`stale_snapshots_total{outcome="used"}`), and C2's
+- **A `GitTarget`'s snapshots are held for at most 5 minutes**, from its first discard. Then a fresh
+  snapshot is asked for and used, logged and counted (`stale_snapshots_total{outcome="used"}`), and C2's
   policy applies to what the unapplied commit changed
   ([decided while building](#decided-while-building), 2).
 - **Per worker.** Whether Git is ahead, and the epoch, are this worker's own: the applies due on a
@@ -605,7 +606,7 @@ mirrors and the applier applies.
 
 ## Decided while building
 
-The build departs from the plan above in four places, decided on 2026-10-20:
+The build departs from the plan above in six places, decided on 2026-10-20:
 
 1. **Siblings do not count for F3.** Whether Git is ahead, and the apply epoch, are per worker: an
    apply due on another worker writing the same branch does not hold this worker's resyncs. This
@@ -619,10 +620,23 @@ The build departs from the plan above in four places, decided on 2026-10-20:
    plan counted a pending converge as Git being ahead, while S2's barrier held every apply,
    converge included, until the initial snapshots were published: each waited for the other, at
    startup and when a `GitTarget` first names a trigger. The initial snapshots are the startup
-   baseline, so they are decided as they arrive, and the exemption is latched per `GitTarget`
-   incarnation.
+   baseline, so they are decided as they arrive. The exemption is tracked per collection on the
+   watch side: a snapshot is initial until a snapshot of its collection settles (applied, refused or
+   failed; a discarded or superseded one does not settle), and the barrier is every collection of
+   the `GitTarget` settled with no resync of it left to publish. A latch per `GitTarget`, read from
+   whether its streams were `Streaming`, counted a `GitTarget` declared before its `WatchRule`'s
+   collection was planned as done; its real initial snapshot was then discarded, and never asked
+   for again while the converge it waited on could not complete.
 4. **The prefetch is removed**, with `FluxTrigger` `status.source.prefetch`. The plan kept it only
    if it still shortened the flush; it does not.
+5. **An edit carried from the window before guards only writes made before the next send.** The
+   plan carried a window's edits into the next attempt's window unchanged, so the next attempt's own
+   apply of an object edited in the earlier window was judged a late apply over the edit, withheld,
+   and drew a spurious `Repair`. One attempt is out at a time, so the earlier apply wrote before the
+   next one was sent: a carried edit now counts only against an applier entry written before the
+   current window's send.
+6. **A held `GitTarget` is asked for a fresh snapshot when the 5 minutes run out**, on the applier
+   timer, rather than when the next stale snapshot happens to arrive.
 
 ## References
 

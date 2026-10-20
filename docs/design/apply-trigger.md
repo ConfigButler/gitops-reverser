@@ -604,7 +604,10 @@ from the flush mark. Inside it, **the API wins**, as it does for any object both
   inside the window, to an object in the applier's folders that the API side edited in the window,
   is not mirrored. Git keeps the edit, and the withheld write makes a `Repair` due to its applier:
   an apply of the tip after the next flush, for Flux and Argo CD alike. The cluster runs the
-  reverted value until then, and the trigger shows `repairPending`.
+  reverted value until then, and the trigger shows `repairPending`. An edit carried from the window
+  before guards only against an applier write made before this attempt was sent: one attempt is out
+  at a time, so a write since is this attempt's own apply, of a commit holding every edit published
+  before it.
 - **Only proof withholds.** `managedFields` times resolve to the second. When the applier ties
   with another manager, the write could be the edit itself, and withholding an edit loses it
   outright; it is mirrored as before. It is also remembered as an edit, even as the first write in
@@ -652,11 +655,12 @@ an apply holds a mix. Decided, either reverts the push.
 - **A heal that would close an open commit window** is discarded and asked for again once the window
   is idle. No snapshot is ever parked.
 - **What never waits.** A branch with no trigger, because nothing applies its commits. A
-  `GitTarget`'s snapshots until its initial snapshots are published: they are the startup baseline,
-  and no applier is asked for anything before they are in Git, so holding them for an apply would
-  wait on itself. And a `GitTarget` whose snapshots have been held for 5 minutes from the first
-  discard: the next snapshot is used, logged and counted, because an apply that keeps failing must
-  not leave drift unmirrored for as long as it fails. The "API wins" rule then applies to what the
+  `GitTarget`'s initial snapshots, the first of each collection it watches until one of it settles
+  (applied, refused or failed): they are the startup baseline, and no applier is asked for anything
+  before they are in Git, so holding them for an apply would wait on itself. And a `GitTarget`
+  whose snapshots have been held for 5 minutes from the first discard: a fresh snapshot is asked
+  for then and used, logged and counted, because an apply that keeps failing must not leave drift
+  unmirrored for as long as it fails. The "API wins" rule then applies to what the
   unapplied commit changed.
 - **Per worker.** Whether Git is ahead, and the epoch, are this worker's own; a sibling worker's
   applies are not consulted.
