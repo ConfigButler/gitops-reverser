@@ -1185,6 +1185,9 @@ type branchWorkerEventLoop struct {
 	snapshotHeldSince  map[string]time.Time
 	initialDone        map[string]types.UID
 	snapshotTargets    map[string]itypes.ResourceReference
+	// ownershipLogged is the objects another applier owns already logged as kept out of a folder.
+	// See apply_ownership.go.
+	ownershipLogged map[string]struct{}
 
 	// pendingCRs holds CommitRequests registered (via AttachCommitRequest) but not
 	// yet resolved, keyed by identity. A request is parked here until a same-author
@@ -1402,12 +1405,7 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 // finalizing it as identity, the byte cap or a zero window require.
 func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 	for _, event := range request.Events {
-		if status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace); closed {
-			l.dropAtRenderFidelity(itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace),
-				status, writeDroppedEvent, event.Identifier.String())
-			continue
-		}
-		if l.withholdLateApply(event) {
+		if !l.mirrors(event) {
 			continue
 		}
 		if l.openWindow != nil && !l.openWindow.canAppend(event) {
@@ -1474,6 +1472,22 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 		}
 		l.closeOrArmWindow()
 	}
+}
+
+// mirrors reports whether a live event reaches the commit window. It does not while the target's
+// render fidelity is not established, for an object another applier owns in a folder a trigger
+// applies (F4), and for the applier's own write in its apply window (apply_window.go).
+func (l *branchWorkerEventLoop) mirrors(event Event) bool {
+	if status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace); closed {
+		l.dropAtRenderFidelity(itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace),
+			status, writeDroppedEvent, event.Identifier.String())
+		return false
+	}
+	if l.ownedElsewhere(event.GitTargetName, event.GitTargetNamespace, event.Identifier.String(),
+		event.AppliedBy) {
+		return false
+	}
+	return !l.withholdLateApply(event)
 }
 
 // closeOrArmWindow finalizes the open window when its first deadline has passed, and otherwise

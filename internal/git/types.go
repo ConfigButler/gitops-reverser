@@ -392,6 +392,9 @@ type PendingWrite struct {
 	// resyncActions is what a resync decided on its tree: the upserts that changed it and the
 	// documents its sweep removed. Nil until decided. See actionsDecided.
 	resyncActions *resyncActions
+	// ownedElsewhere names, by objectKey, the snapshot objects another applier owns, which a resync
+	// into a triggered folder neither upserts nor sweeps (apply_ownership.go).
+	ownedElsewhere map[string]bool
 	// committedOnce is set once the loop has committed this write at least once. It stays set after
 	// a reset discards that commit: whether the checkout holds it now is checkoutApplied's to say. A
 	// decided write the loop could not commit yet (the remote was unreachable) stays pending with it
@@ -544,6 +547,10 @@ type ResyncRequest struct {
 	// replay this is, for the scope Scope.Collection names. Zero for a resync no stream replayed.
 	// The worker records that scope clean once the resync applies (recordReplayClean).
 	RenderFidelityRevision uint64
+	// Owners is the applier that owns each snapshot object some applier owns, read from the raw
+	// object (AppliedByOf). An object another applier owns is neither upserted into a triggered
+	// folder nor swept from it (apply_ownership.go).
+	Owners map[types.ResourceIdentifier]AppliedBy
 	// CollectionStart is the worker's ApplyState read when the snapshot's collection started. A
 	// snapshot collected while Git was ahead of the cluster, or across an apply, holds a picture
 	// the apply is about to make stale, and is discarded (docs/design/applier-echoes.md, F3). Nil
@@ -696,6 +703,12 @@ type Event struct {
 	// removes managedFields); empty for a DELETE and for producers that observed no object. The
 	// apply window reads it to tell an applier's write from an API edit (apply_window.go).
 	LastFieldManagers []string
+
+	// AppliedBy is the applier that owns the object, read from its raw labels and annotations
+	// (AppliedByOf). PROVENANCE like LastFieldManagers, stamped by the live watch; zero when no
+	// applier owns it. An object another applier owns is not mirrored into a folder a trigger applies
+	// (apply_ownership.go).
+	AppliedBy AppliedBy
 
 	// LastFieldManagedAt is when those entries were written, to the second; zero with no
 	// LastFieldManagers. The apply window compares it with the time of an API edit: a late apply

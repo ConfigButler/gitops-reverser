@@ -59,6 +59,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		req.reply(ResyncResult{Err: err})
 		return
 	}
+	pendingWrite.Desired, pendingWrite.ownedElsewhere = l.withoutOwnedElsewhere(req)
 	pendingWrite.Committed = new(bool)
 	pendingWrite.origin.resync = req
 	l.decide(*pendingWrite)
@@ -236,7 +237,7 @@ func (w *BranchWorker) decideOrReplayResync(
 		return w.applyResyncActionsToWorktree(ctx, worktree, base, target, pendingWrite.resyncActions)
 	}
 	stats, anyChanges, actions, err := w.planResyncToWorktree(
-		ctx, worktree, base, target, pendingWrite.Desired, pendingWrite.Scope,
+		ctx, worktree, base, target, pendingWrite.Desired, pendingWrite.Scope, pendingWrite.ownedElsewhere,
 	)
 	if err != nil {
 		return ResyncStats{}, false, err
@@ -310,12 +311,13 @@ func (w *BranchWorker) applyResyncToWorktree(
 	desired []manifestanalyzer.DesiredResource,
 	scope *ResyncScope,
 ) (ResyncStats, bool, error) {
-	stats, changed, _, err := w.planResyncToWorktree(ctx, worktree, base, target, desired, scope)
+	stats, changed, _, err := w.planResyncToWorktree(ctx, worktree, base, target, desired, scope, nil)
 	return stats, changed, err
 }
 
 // planResyncToWorktree is applyResyncToWorktree that also returns what the resync decided: the
-// actions a replay applies instead of planning the snapshot again.
+// actions a replay applies instead of planning the snapshot again. keep names, by objectKey, the
+// objects another applier owns: they are not in desired, and their documents are not swept.
 func (w *BranchWorker) planResyncToWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,
@@ -323,6 +325,7 @@ func (w *BranchWorker) planResyncToWorktree(
 	target ResolvedTargetMetadata,
 	desired []manifestanalyzer.DesiredResource,
 	scope *ResyncScope,
+	keep map[string]bool,
 ) (ResyncStats, bool, *resyncActions, error) {
 	// Normalize the prune mode ONCE, here, on this function's own copy of the metadata: everything
 	// below asks the mode a question (may I sweep? what do I report?), and the empty string answers
@@ -338,7 +341,7 @@ func (w *BranchWorker) planResyncToWorktree(
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
 	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
 	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope, target.PruneMode,
-		batch.unrenderedResources())
+		batch.unrenderedResources(), keep)
 	w.reportRetainedOrphans(ctx, plan, target, base, scope)
 
 	stats, actions, err := batch.applyResyncPlan(ctx, desired, plan)
@@ -698,7 +701,8 @@ func eventForDesired(dr manifestanalyzer.DesiredResource) Event {
 //
 // unrendered are the documents the folder holds but does not render (writeBatch.unrenderedResources).
 // They are outside what the target renders, so the sweep neither removes them again nor counts them
-// as retained.
+// as retained. keep, by objectKey, are the objects another applier owns (apply_ownership.go): the
+// sweep leaves their documents alone too.
 func resyncPlan(
 	store *manifestanalyzer.ManifestStore,
 	files []manifestedit.FileContent,
@@ -706,8 +710,11 @@ func resyncPlan(
 	scope *ResyncScope,
 	pruneMode v1alpha3.PruneMode,
 	unrendered map[itypes.ResourceIdentifier]bool,
+	keep map[string]bool,
 ) manifestanalyzer.Plan {
-	inScope := func(ri itypes.ResourceIdentifier) bool { return scope.Matches(ri) && !unrendered[ri] }
+	inScope := func(ri itypes.ResourceIdentifier) bool {
+		return scope.Matches(ri) && !unrendered[ri] && !keep[objectKey(ri)]
+	}
 	return manifestanalyzer.BuildScopedPlan(store, files, desired, resyncPlanPolicy(pruneMode), inScope)
 }
 

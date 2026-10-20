@@ -271,11 +271,10 @@ func (r *EventRouter) enqueueScopedResync(
 	gitDest types.ResourceReference,
 	scope git.ResyncScope,
 	sourceCollection types.CollectionKey,
-	desired []manifestanalyzer.DesiredResource,
+	snapshot replaySnapshot,
 	resourceVersion string,
 	heal bool,
 	renderFidelityRevision uint64,
-	start *git.ApplyState,
 ) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resyncTarget(ctx, gitDest)
 	if err != nil {
@@ -283,7 +282,8 @@ func (r *EventRouter) enqueueScopedResync(
 	}
 	resultCh := make(chan git.ResyncResult, 1)
 	enqueued := worker.EnqueueResync(&git.ResyncRequest{
-		Desired:            desired,
+		Desired:            snapshot.desired,
+		Owners:             snapshot.owners,
 		ResourceVersion:    resourceVersion,
 		GitTargetName:      gitDest.Name,
 		GitTargetNamespace: gitDest.Namespace,
@@ -293,7 +293,7 @@ func (r *EventRouter) enqueueScopedResync(
 		// The worker records the scope clean itself once the resync applies, before the drain
 		// below hears of it, so a live event queued behind the resync meets the gate it produced.
 		RenderFidelityRevision: renderFidelityRevision,
-		CollectionStart:        start,
+		CollectionStart:        snapshot.start,
 		Result:                 resultCh,
 	})
 	return resultCh, enqueued, nil

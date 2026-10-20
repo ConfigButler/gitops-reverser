@@ -1043,8 +1043,8 @@ func (m *Manager) enqueueReplayResync(
 	// A retired stream's snapshot is dropped here, at the producer: see producerGate.
 	if !stream.gate.enqueue(ctx, func() {
 		resultCh, enqueued, err = m.EventRouter.enqueueScopedResync(
-			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), snapshot.desired,
-			resourceVersion, false, stream.revision, snapshot.start)
+			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), snapshot,
+			resourceVersion, false, stream.revision)
 	}) {
 		return nil
 	}
@@ -1336,6 +1336,7 @@ func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstru
 	}
 	if op != string(types.OperationDelete) {
 		event.LastFieldManagers, event.LastFieldManagedAt = lastFieldManagers(u)
+		event.AppliedBy = git.AppliedByOf(u)
 		event.Object = sanitize.Sanitize(u)
 	}
 	return event
