@@ -278,7 +278,10 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 			if !biDirectionalEnabled() {
 				return
 			}
-			pipeline.cleanup()
+			if pipeline != nil {
+				// nil when BeforeAll failed before building it.
+				pipeline.cleanup()
+			}
 			cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
 			cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 			cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
@@ -395,7 +398,10 @@ var _ = Describe("Bi Directional timing (Argo CD)", Label("bi-directional", "arg
 			cleanupNamespacedResource(run.argoNs, "application.argoproj.io", run.appName)
 			cleanupNamespacedResource(run.argoNs, "secret", run.repoSecretName)
 			cleanupNamespacedResource(testNs, argoCDTriggerResource, run.appName)
-			pipeline.cleanup()
+			if pipeline != nil {
+				// nil when BeforeAll failed before building it.
+				pipeline.cleanup()
+			}
 			cleanupNamespace(testNs)
 		})
 
