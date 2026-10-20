@@ -120,10 +120,13 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		pushAppliedColorFromOutside(repo, appliedNs, "green")
 		applyConfigMap(testNs, "applier-second-edit")
 
-		By("the ForeignCommit is refused at the patch, and the source on release is never stamped")
+		// Naming the trigger converges it once (a CatchUp), as soon as the branch has a tip, so that is
+		// the first ask refused; the ForeignCommit joins the same run of failures, and ApplyRequestFailed
+		// is recorded only for a run's first.
+		By("every ask is refused at the patch, and the source on release is never stamped")
 		Eventually(func(g Gomega) {
 			failed := gitTargetEventMessages(g, testNs, destName, "ApplyRequestFailed")
-			g.Expect(failed).To(ContainSubstring("(ForeignCommit)"))
+			g.Expect(failed).To(ContainSubstring("(CatchUp)"))
 			g.Expect(failed).To(ContainSubstring(`fetches branch "release", not main`))
 		}, 3*time.Minute, 2*time.Second).Should(Succeed())
 		Consistently(func(g Gomega) {

@@ -294,14 +294,22 @@ data:
 
 		By("a live event the parent already holds publishes nothing")
 		pushesBefore := pushes()
+		windows := fmt.Sprintf(`sum(gitopsreverser_git_commit_windows_total{gittarget_namespace=%q,`+
+			`gittarget_name=%q}) or vector(0)`, testNs, destName)
+		windowsBefore, err := queryPrometheus(windows)
+		Expect(err).NotTo(HaveOccurred())
 		applyConfigMap("standby-present")
-		// The no-diff window is still pushed, because only the remote can confirm "already
-		// present". Wait for that push cycle to finish before judging the branch.
-		waitForMetricWithTimeout(branchSeries("gitopsreverser_git_pushes_total", `,outcome="pushed"`),
-			func(v float64) bool { return v > pushesBefore },
-			"the no-diff window reached the remote", 2*time.Minute)
-		Expect(remoteBranchHeadOf(Default, repo.CheckoutDir, writeBranch)).To(BeEmpty(),
-			"a write that commits nothing must not create the write branch")
+		// A write that changes nothing is no write: its window closes, and nothing is committed or
+		// pushed (docs/design/applier-echoes.md, F2). Wait for the window to close before judging.
+		waitForMetricWithTimeout(windows, func(v float64) bool { return v > windowsBefore },
+			"the no-diff window closed", 2*time.Minute)
+		Consistently(func(g Gomega) {
+			g.Expect(remoteBranchHeadOf(g, repo.CheckoutDir, writeBranch)).To(BeEmpty(),
+				"a write that commits nothing must not create the write branch")
+			v, queryErr := queryPrometheus(branchSeries("gitopsreverser_git_pushes_total", `,outcome="pushed"`))
+			g.Expect(queryErr).NotTo(HaveOccurred())
+			g.Expect(v).To(Equal(pushesBefore), "and nothing is pushed")
+		}, 10*time.Second, 2*time.Second).Should(Succeed())
 
 		By(parent + " moves to B from outside, touching the target's folder")
 		hashB := commitFilesToBranchFromOutside(repo, testNs, parent, "e2e: B moves the parent", map[string]string{
