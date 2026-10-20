@@ -606,7 +606,7 @@ mirrors and the applier applies.
 
 ## Decided while building
 
-The build departs from the plan above in eleven places, decided on 2026-10-20:
+The build departs from the plan above in twelve places, decided on 2026-10-20:
 
 1. **Siblings do not count for F3.** Whether Git is ahead, and the apply epoch, are per worker: an
    apply due on another worker writing the same branch does not hold this worker's resyncs. This
@@ -662,6 +662,13 @@ The build departs from the plan above in eleven places, decided on 2026-10-20:
     asked for it again once the window was idle. Nothing produces one: every resync the watch plane
     sends is a replay, which finalizes the window. The `Heal` flag, its discard and its window-idle
     re-request are removed, with the tests that drove a heal by hand.
+12. **The flush covers the sibling workers.** The plan removed sibling quietness, and S1 flushed only
+    the sending worker. A sibling sharing the trigger then kept its unpublished edit while the apply
+    reverted it on the cluster, and mirrored the revert, having sent nothing and holding no apply
+    window (found in review). When an apply comes due, the worker asks each sibling to flush up to a
+    mark of its own and sends once all have; workers share what they observe of the branch, so the
+    attempt is sent for the tip that holds the siblings' writes. A sibling's edit made while the apply
+    runs stays unprotected, as it was before this change.
 
 ## References
 

@@ -274,23 +274,59 @@ func TestApplier_ATargetThatNoLongerNamesAnApplierHasNothingPending(t *testing.T
 	assert.Nil(t, loop.applierTimer)
 }
 
-// TestSiblings_ABusySiblingHoldsNoApply: two GitProviders naming one repository give one branch two
-// workers. A sibling's open window or queued edit no longer holds an apply: every edit is published
-// before the send or recorded in the apply window, on whichever worker sees it (S1).
-func TestSiblings_ABusySiblingHoldsNoApply(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	sibling := newMetricsTestWorker()
-	siblings := newBranchSiblings()
-	for _, w := range []*BranchWorker{loop.w, sibling} {
-		w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
-		w.applyWake = make(chan struct{}, 1)
-		siblings.add(w)
-	}
+// answerFlush is a sibling's wake answering the flush another worker asked of it, with no writes of
+// its own to publish beyond what the test put in its pending writes.
+func answerFlush(loop *branchWorkerEventLoop) {
+	loop.takeSiblingFlush()
+	loop.reportSiblingFlush()
+}
 
-	require.True(t, sibling.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
-	observeForeignCommit(loop.w)
-	loop.serviceAppliers()
-	assert.Len(t, requester.taken(), 1, "the sibling's queued edit holds nothing")
+// TestSiblings_AnApplyWaitsForItsSiblingsFlush: two GitProviders naming one repository give one
+// branch two workers, whose GitTargets can name one trigger. An apply sent while a sibling holds an
+// edit not yet published would revert it on the cluster, and the sibling, with no apply window, would
+// mirror the revert. So the flush covers the siblings: the worker waits until each has published the
+// writes it decided before it was asked, and a write decided after does not hold the send.
+func TestSiblings_AnApplyWaitsForItsSiblingsFlush(t *testing.T) {
+	first, firstRequests, second, _ := siblingLoops(t)
+	second.decisions = 1
+	second.pendingWrites = []PendingWrite{{decision: 1}}
+
+	first.serviceAppliers()
+	assert.Empty(t, firstRequests.taken(), "the sibling has not flushed yet")
+	require.Positive(t, second.w.flushAsked.Load(), "it was asked to")
+
+	answerFlush(second)
+	assert.Equal(t, uint64(1), second.siblingFlushMark, "the mark is the last write it decided")
+	assert.True(t, second.publishesAtOnce(), "what the mark covers is pushed at once, cooldown or not")
+	first.serviceAppliers()
+	assert.Empty(t, firstRequests.taken(), "its write up to the mark is not published yet")
+
+	second.decisions = 2
+	second.pendingWrites = []PendingWrite{{decision: 2}} // published the first, decided another
+	second.reportSiblingFlush()
+	select {
+	case <-first.w.applyWake:
+	default:
+		t.Fatal("a sibling done flushing must wake the worker waiting for it")
+	}
+	first.serviceAppliers()
+	assert.Len(t, firstRequests.taken(), 1, "a write decided after the mark does not hold the send")
+}
+
+// TestSiblings_ShareWhatTheyObserve: a sibling's push moves the branch with content already live,
+// as a worker's own push does, so it moves the tip every worker on the branch sends for, and asks
+// nothing; a commit a sibling fetched nobody on the branch wrote, and is foreign to all of them.
+func TestSiblings_ShareWhatTheyObserve(t *testing.T) {
+	first, _, second, _ := siblingLoops(t)
+	first.w.inbox.take()
+
+	second.w.recordRemoteObservation("ccc", ObservedByPush)
+	assert.Equal(t, "ccc", first.w.inbox.lastTip())
+	assert.False(t, first.w.inbox.foreignPending(), "a sibling's push asks nothing")
+
+	second.w.recordRemoteObservation("ddd", ObservedByFetch)
+	assert.Equal(t, "ddd", first.w.inbox.lastTip())
+	assert.True(t, first.w.inbox.foreignPending(), "what a sibling fetched is foreign here too")
 }
 
 func TestApplierRetryDelay_DoublesToACap(t *testing.T) {

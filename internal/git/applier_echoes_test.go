@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -428,4 +429,60 @@ func TestApplierEchoes_AnAppliedFolderIsCreatedByItsResync(t *testing.T) {
 	emptyResync(plain)
 	assert.Equal(t, before, main(plain), "no applier applies it: an empty resync commits nothing")
 	assert.Empty(t, plain.onMain(echoTarget+"/README.md"))
+}
+
+// siblingOf is a second worker on the fixture's repository and branch, under a GitProvider of its
+// own, whose GitTarget team-b names team-a's trigger; both are registered as siblings. Its loop's
+// commit window is an hour, so a window stays open until something closes it. It sends no apply
+// itself (no requester), so what publishes its writes is the flush the fixture's worker asks of it.
+func (f *echoFixture) siblingOf() *branchWorkerEventLoop {
+	f.t.Helper()
+	provider := &configv1alpha3.GitProvider{Spec: configv1alpha3.GitProviderSpec{URL: f.sim.RepoURL}}
+	provider.Name, provider.Namespace = f.worker.GitProviderRef+"-b", "default"
+	require.NoError(f.t, f.worker.Client.Create(f.worker.ctx, provider))
+	worker := NewBranchWorker(f.worker.Client, logr.Discard(), provider.Name, "default", f.worker.Branch,
+		RepoIdentity{URL: f.sim.RepoURL}, nil, BranchWorkerLimits{})
+	worker.ctx, worker.mapper = f.worker.ctx, configMapMapper()
+	f.t.Cleanup(func() { _ = os.RemoveAll(worker.repoRootPath()) })
+	createPlainGitTarget(f.t, worker, "team-b", "team-b")
+	var target configv1alpha3.GitTarget
+	require.NoError(f.t, worker.Client.Get(worker.ctx, keyOf("team-b"), &target))
+	target.Spec.ApplyTriggerRef = testApplier(echoTarget)
+	require.NoError(f.t, worker.Client.Update(worker.ctx, &target))
+	require.NoError(f.t, worker.ensureRepositoryInitialized(worker.ctx))
+
+	siblings := newBranchSiblings()
+	siblings.add(f.worker)
+	siblings.add(worker)
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	f.t.Cleanup(loop.stopTimers)
+	return loop
+}
+
+// TestApplierEchoes_AnApplyWaitsForASiblingsEdit is S1 across the workers writing one branch: two
+// GitProviders on one repository, whose GitTargets name one trigger. The sibling holds an edit in an
+// open window when the apply comes due. Sent then, the apply would revert it on the cluster, and the
+// sibling, with no apply window of its own, would mirror the revert. The worker asks the sibling to
+// flush, and sends only once it has, for the tip that holds the edit.
+func TestApplierEchoes_AnApplyWaitsForASiblingsEdit(t *testing.T) {
+	f := newEchoFixture(t, "echo-sibling", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
+	requester := f.withTrigger()
+	sibling := f.siblingOf()
+	edit := configMapTargetEvent("z", "bob", "team-b")
+	sibling.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{edit}, CommitMode: CommitModePerEvent}})
+	require.NotNil(t, sibling.openWindow, "the sibling's edit is in its open window")
+
+	f.echoApplier().repair = true
+	f.loop.endWake(0)
+	assert.Empty(t, requester.taken(), "the sibling has not published its edit")
+
+	sibling.endWake(0)
+	assert.Nil(t, sibling.openWindow, "the sibling closed its window for the flush")
+	assert.NotEmpty(t, f.onMain("team-b/default/configmaps/z.yaml"), "and published the edit at once")
+
+	f.loop.endWake(0)
+	sent := requester.taken()
+	require.Len(t, sent, 1, "the sibling flushed: the apply goes")
+	assert.Equal(t, gitIn(t, f.repoDir, "rev-parse", "main"), sent[0].Commit,
+		"for the tip that holds the sibling's edit, which the sibling shared")
 }

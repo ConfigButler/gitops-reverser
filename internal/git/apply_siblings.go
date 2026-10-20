@@ -17,6 +17,8 @@ import (
 type branchSiblings struct {
 	mu    sync.Mutex
 	byKey map[string]map[*BranchWorker]struct{}
+	// flushGen numbers the flushes workers ask of their siblings (apply_sibling_flush.go).
+	flushGen uint64
 }
 
 func newBranchSiblings() *branchSiblings {

@@ -162,6 +162,10 @@ type BranchWorker struct {
 	applyEpoch    atomic.Uint64
 	appliersAhead atomic.Bool
 	hasAppliers   atomic.Bool
+	// flushAsked is the latest flush a sibling asked of this worker, and flushDone the latest it
+	// published up to its mark for (apply_sibling_flush.go).
+	flushAsked atomic.Uint64
+	flushDone  atomic.Uint64
 	// initialSnapshots reports whether every collection a GitTarget watches has a settled
 	// snapshot, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
 	// WorkerManager before Start; nil in the CLI and in tests (apply_epoch.go).
@@ -1225,6 +1229,12 @@ type branchWorkerEventLoop struct {
 	decisions uint64
 	flushing  bool
 	flushMark uint64
+	// siblingAsk is the generation this worker's flush asked its siblings for, zero with none.
+	// siblingFlushGen and siblingFlushMark are the last flush a sibling asked of this worker, and its
+	// mark. See apply_sibling_flush.go.
+	siblingAsk       uint64
+	siblingFlushGen  uint64
+	siblingFlushMark uint64
 
 	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
@@ -1325,7 +1335,9 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 func (l *branchWorkerEventLoop) endWake(released int64) {
 	l.serviceCommitRequests()
 	l.closeWindowForPushHint()
+	l.takeSiblingFlush()
 	l.advance()
+	l.reportSiblingFlush()
 	l.serviceAppliers()
 	l.rerequestSnapshots()
 	l.publishApplyState()
@@ -1731,7 +1743,7 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	if len(l.pendingWrites) == 0 || l.awaitingRetry() {
 		return
 	}
-	if l.lastPushAt.IsZero() || (l.flushing && l.pendingUpToMark()) {
+	if l.lastPushAt.IsZero() || l.publishesAtOnce() {
 		// An apply waits for this publication: it is made at once, cooldown or not.
 		l.pushPending()
 		return
@@ -3168,6 +3180,7 @@ func (w *BranchWorker) publishObservation(observed RemoteObservation) {
 	// still describes the repository the GitTarget points at. See RemoteObservation.Repo.
 	w.lastObservation.Store(&observed)
 	w.inbox.observe(observed)
+	w.siblings.shareObservation(w, observed)
 	// Delivered here, at the one point where an observation is made, rather than by each caller
 	// against whichever GitTargets it happened to be holding. The fact is about the BRANCH, so it
 	// goes to the branch, and every target on it reads the same answer with the time it was

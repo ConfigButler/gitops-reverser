@@ -369,7 +369,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	}
 	if !l.flushed(due) {
 		// The publication wakes the loop when it lands (a push, or its retry); a save, a parent
-		// recovery or a dirty checkout end with a wake of their own.
+		// recovery or a dirty checkout end with a wake of their own, and so does a sibling's flush.
 		l.armApplierTimer(now, wait)
 		return
 	}
@@ -507,19 +507,21 @@ func (l *branchWorkerEventLoop) flushed(due []*applierState) bool {
 	if !l.flushing {
 		l.finalizeOpenWindowWithReason(windowFinalizeReasonApplyDue)
 		l.flushing, l.flushMark = true, l.decisions
-		if l.pendingUpToMark() {
+		// The siblings writing this branch flush too (apply_sibling_flush.go).
+		l.siblingAsk = l.w.siblings.askFlush(l.w)
+		if l.pendingUpTo(l.flushMark) {
 			l.w.Log.Info("An apply is due; publishing the pending writes first", "branch", l.w.Branch,
 				"pendingWrites", len(l.pendingWrites))
 			l.advance()
 		}
 	}
-	return !l.pendingUpToMark()
+	return !l.pendingUpTo(l.flushMark) && l.siblingsFlushed()
 }
 
-// pendingUpToMark reports whether a write decided up to the flush mark is still pending.
-func (l *branchWorkerEventLoop) pendingUpToMark() bool {
+// pendingUpTo reports whether a write decided up to mark is still pending.
+func (l *branchWorkerEventLoop) pendingUpTo(mark uint64) bool {
 	for i := range l.pendingWrites {
-		if l.pendingWrites[i].decision <= l.flushMark {
+		if l.pendingWrites[i].decision <= mark {
 			return true
 		}
 	}
@@ -529,7 +531,7 @@ func (l *branchWorkerEventLoop) pendingUpToMark() bool {
 // endFlush ends the flush once nothing is due: the edits recorded for an applier that has nothing
 // pending any more are dropped with it.
 func (l *branchWorkerEventLoop) endFlush() {
-	l.flushing = false
+	l.flushing, l.siblingAsk = false, 0
 	for _, state := range l.appliers {
 		if state.inflight == nil && !state.hasReason(l.unsentRefusalsFor(state)) {
 			state.flushEdits = nil

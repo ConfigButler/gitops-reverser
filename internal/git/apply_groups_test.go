@@ -102,8 +102,12 @@ func TestGroups_OneOperationAtATimePerSourceAcrossWorkers(t *testing.T) {
 	first, firstRequests, second, secondRequests := siblingLoops(t)
 
 	first.serviceAppliers()
+	answerFlush(second)
+	first.serviceAppliers()
 	sent := firstRequests.taken()
 	require.Len(t, sent, 1)
+	second.serviceAppliers()
+	answerFlush(first)
 	second.serviceAppliers()
 	assert.Empty(t, secondRequests.taken(), "the other worker's operation on the shared source is out")
 
@@ -114,6 +118,8 @@ func TestGroups_OneOperationAtATimePerSourceAcrossWorkers(t *testing.T) {
 	default:
 		t.Fatal("the group going idle must wake the worker it held back")
 	}
+	second.serviceAppliers() // its flush asks the first again
+	answerFlush(first)
 	second.serviceAppliers()
 	next := secondRequests.taken()
 	require.Len(t, next, 1)
