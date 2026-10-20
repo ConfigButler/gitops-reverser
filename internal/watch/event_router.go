@@ -262,8 +262,7 @@ func (r *EventRouter) resolveWorkerForGitDest(
 // the buffered reply channel and whether the resync actually entered the FIFO. The scope
 // restricts the worker's mark-and-sweep to one type, and to one namespace when it names one, so
 // desired MUST carry exactly that scope's objects (empty for a sweep) — passing a scope wider
-// than the gather deletes managed documents outside it. heal marks a drift-correcting resync the
-// worker defers while a commit window is open. enqueued is false when the worker's queue was full
+// than the gather deletes managed documents outside it. enqueued is false when the worker's queue was full
 // and dropped the request (its failure is still delivered on resultCh for the drain to record).
 // resourceVersion is the LIST's collection version the desired set is pinned to.
 func (r *EventRouter) enqueueScopedResync(
@@ -273,7 +272,6 @@ func (r *EventRouter) enqueueScopedResync(
 	sourceCollection types.CollectionKey,
 	snapshot replaySnapshot,
 	resourceVersion string,
-	heal bool,
 	renderFidelityRevision uint64,
 ) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resyncTarget(ctx, gitDest)
@@ -289,7 +287,6 @@ func (r *EventRouter) enqueueScopedResync(
 		GitTargetNamespace: gitDest.Namespace,
 		Scope:              &scope,
 		SourceCollection:   sourceCollection,
-		Heal:               heal,
 		// The worker records the scope clean itself once the resync applies, before the drain
 		// below hears of it, so a live event queued behind the resync meets the gate it produced.
 		RenderFidelityRevision: renderFidelityRevision,

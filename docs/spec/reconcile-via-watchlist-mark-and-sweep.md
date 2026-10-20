@@ -340,9 +340,8 @@ which is not a failure and is not counted in `git_resync_failures_total`. Once G
 is no longer ahead, the worker asks the watch plane to re-anchor that
 `GitTarget`'s streams, which collect a fresh snapshot after the apply. Until it
 lands, the `GitTarget`'s render-fidelity scope stays pending: its live writes are
-held back by the render-fidelity gate, and the fresh snapshot recovers them. A
-heal resync that would close an open commit window is discarded the same way and
-asked for again once the window is idle, so no snapshot is ever parked.
+held back by the render-fidelity gate, and the fresh snapshot recovers them. No
+snapshot is ever parked.
 
 Three rules keep this from holding a resync forever:
 

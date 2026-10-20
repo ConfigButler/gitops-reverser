@@ -46,19 +46,11 @@ const (
 
 // Why a snapshot was discarded, for the log.
 const (
-	snapshotAheadAtStart     = "collected while Git was ahead of the cluster"
-	snapshotAcrossApply      = "collected across an apply"
-	snapshotAheadOnArrival   = "arrived while Git is ahead of the cluster"
-	snapshotForeignFetch     = "its fetch found a commit the cluster does not run yet"
-	snapshotWouldCloseWindow = "a heal arrived while a commit window is open"
+	snapshotAheadAtStart   = "collected while Git was ahead of the cluster"
+	snapshotAcrossApply    = "collected across an apply"
+	snapshotAheadOnArrival = "arrived while Git is ahead of the cluster"
+	snapshotForeignFetch   = "its fetch found a commit the cluster does not run yet"
 )
-
-// snapshotRerequest is a GitTarget whose snapshot was discarded, waiting to be asked for again.
-type snapshotRerequest struct {
-	target itypes.ResourceReference
-	// windowIdle is set for a discarded heal, which is asked for again once no commit window is open.
-	windowIdle bool
-}
 
 // ApplyState reports where this worker's appliers stand, for the watch side to read when a
 // snapshot's collection starts. It is safe from any goroutine.
@@ -104,7 +96,7 @@ func (l *branchWorkerEventLoop) publishApplyState() {
 // snapshot is stale (snapshotStale), in which case it is discarded and asked for again.
 func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
 	if reason := l.snapshotStale(req); reason != "" {
-		l.discardSnapshot(req, reason, req.Heal && l.openWindow != nil)
+		l.discardSnapshot(req, reason)
 		return
 	}
 	l.applyResync(req)
@@ -112,11 +104,6 @@ func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
 
 // snapshotStale says why a resync's snapshot must not be decided, or "" when it may be.
 func (l *branchWorkerEventLoop) snapshotStale(req *ResyncRequest) string {
-	if req.Heal && l.openWindow != nil {
-		// A heal never finalizes a window: one worker serves N GitTargets, and the window could hold
-		// a sibling's save. It is asked for again once the window is idle.
-		return snapshotWouldCloseWindow
-	}
 	if !l.snapshotsWait(req) {
 		return ""
 	}
@@ -152,23 +139,17 @@ func (l *branchWorkerEventLoop) snapshotsWait(req *ResyncRequest) bool {
 }
 
 // discardSnapshot answers a resync whose snapshot is stale, and asks for a fresh one of its GitTarget
-// once Git is no longer ahead, or, for a heal, once no window is open.
-func (l *branchWorkerEventLoop) discardSnapshot(req *ResyncRequest, reason string, windowIdle bool) {
+// once Git is no longer ahead.
+func (l *branchWorkerEventLoop) discardSnapshot(req *ResyncRequest, reason string) {
 	key := resyncTargetKey(req)
 	l.w.Log.Info("Discarding a resync snapshot; a fresh one is asked for once the apply is done",
 		"gitTarget", key, "scope", req.Scope.String(), "reason", reason)
 	req.reply(ResyncResult{Err: fmt.Errorf("%w: %s", ErrResyncDiscarded, reason)})
 	l.recordStaleSnapshot(staleSnapshotDiscarded)
 	if l.snapshotRerequests == nil {
-		l.snapshotRerequests = map[string]snapshotRerequest{}
+		l.snapshotRerequests = map[string]itypes.ResourceReference{}
 	}
-	pending := l.snapshotRerequests[key]
-	pending.target = itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace)
-	pending.windowIdle = pending.windowIdle || windowIdle
-	l.snapshotRerequests[key] = pending
-	if windowIdle {
-		return
-	}
+	l.snapshotRerequests[key] = itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace)
 	if l.snapshotHeldSince == nil {
 		l.snapshotHeldSince = map[string]time.Time{}
 	}
@@ -188,8 +169,8 @@ func (l *branchWorkerEventLoop) heldForTheLimit(key string) bool {
 // waits for it: the applier timer wakes the loop then, to ask for its snapshot.
 func (l *branchWorkerEventLoop) snapshotHoldDeadline() time.Time {
 	var deadline time.Time
-	for key, pending := range l.snapshotRerequests {
-		if since, held := l.snapshotHeldSince[key]; held && !pending.windowIdle {
+	for key := range l.snapshotRerequests {
+		if since, held := l.snapshotHeldSince[key]; held {
 			deadline = earliest(deadline, since.Add(snapshotHoldLimit))
 		}
 	}
@@ -208,11 +189,8 @@ func (l *branchWorkerEventLoop) rerequestSnapshots() {
 		return
 	}
 	ahead := l.gitAhead()
-	for key, pending := range l.snapshotRerequests {
-		if pending.windowIdle && l.openWindow != nil {
-			continue
-		}
-		if !pending.windowIdle && ahead && !l.heldForTheLimit(key) {
+	for key, target := range l.snapshotRerequests {
+		if ahead && !l.heldForTheLimit(key) {
 			continue
 		}
 		delete(l.snapshotRerequests, key)
@@ -221,7 +199,7 @@ func (l *branchWorkerEventLoop) rerequestSnapshots() {
 		}
 		l.w.Log.Info("Asking for a fresh snapshot of a GitTarget whose snapshot was discarded",
 			"gitTarget", key)
-		l.w.resyncRecheck(pending.target)
+		l.w.resyncRecheck(target)
 	}
 }
 

@@ -1178,7 +1178,7 @@ type branchWorkerEventLoop struct {
 	// snapshotRerequests are the GitTargets whose snapshot was discarded as stale, until a fresh one
 	// is asked for; snapshotHeldSince is when each GitTarget's first one was, until one is used. See
 	// apply_epoch.go.
-	snapshotRerequests map[string]snapshotRerequest
+	snapshotRerequests map[string]itypes.ResourceReference
 	snapshotHeldSince  map[string]time.Time
 	// ownershipLogged is the objects another applier owns already logged as kept out of a folder.
 	// See apply_ownership.go.

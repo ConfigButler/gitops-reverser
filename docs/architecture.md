@@ -1369,14 +1369,12 @@ pair at a time:
 
 The window finalizes when its `idleTimeout` passes with no new matching event, its `maxDuration` runs
 out, the retained buffer reaches `--branch-buffer-max-size` (default `8Mi`), an `attach: Next`
-`CommitRequest` closes it, a resync request that is not a heal or shutdown arrives, or an apply comes
+`CommitRequest` closes it, a resync request or shutdown arrives, or an apply comes
 due for an applier on the branch. The timers
 are the GitTarget's `spec.commit.window` until a `CommitRequest` attaches and replaces them. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
 bursts. The one exception is an apply's flush: the writes decided before the apply came due are
-pushed at once, cooldown or not, because the apply waits for them. A heal resync never closes a
-window, since the window could hold a sibling target's save: one that arrives while a window is open
-is discarded and asked for again once the window is idle.
+pushed at once, cooldown or not, because the apply waits for them.
 
 ### Local clones and conflict retry
 

@@ -661,8 +661,6 @@ an apply holds a mix. Decided, either reverts the push.
   a fresh snapshot after the apply. Until it lands, the `GitTarget`'s render-fidelity scope stays
   pending: the render-fidelity gate holds its live writes back, and the fresh snapshot recovers
   them.
-- **A heal that would close an open commit window** is discarded and asked for again once the window
-  is idle. No snapshot is ever parked.
 - **What never waits.** A branch with no trigger, because nothing applies its commits. A
   `GitTarget`'s initial snapshots, the first of each collection it watches until one of it settles
   (applied, refused or failed): they are the startup baseline, and no applier is asked for anything

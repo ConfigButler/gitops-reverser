@@ -486,7 +486,7 @@ func (s *ResyncScope) GVR() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: s.Collection.Group, Version: s.Version, Resource: s.Collection.Resource}
 }
 
-// String renders the scope for logs and for the deferred-heal key. It is nil-safe: a nil
+// String renders the scope for logs and status messages. It is nil-safe: a nil
 // scope is the whole-GitTarget resync and renders empty.
 func (s *ResyncScope) String() string {
 	if s == nil {
@@ -541,12 +541,6 @@ type ResyncRequest struct {
 	// removed type). Nil is a whole-GitTarget resync. See ResyncScope for the invariant
 	// binding this to Desired.
 	Scope *ResyncScope
-	// Heal marks a non-urgent drift-correcting resync that never closes an open commit window. One
-	// worker serves N GitTargets and the window is a worker singleton, so a force-finalizing heal
-	// could steal a DIFFERENT GitTarget's held CommitRequest window. A heal that arrives while a
-	// window is open is discarded, and a fresh snapshot is asked for once the window is idle
-	// (apply_epoch.go). A first-sync backfill is NOT a heal: it must establish initial state promptly.
-	Heal bool
 	// SourceCollection names the target-watch collection that gathered this snapshot. Zero for a
 	// whole-GitTarget resync, which speaks for no single collection. Diagnostic only: nothing
 	// filters the queue on it. See source_collection.go.

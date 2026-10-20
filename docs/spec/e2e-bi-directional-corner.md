@@ -186,10 +186,10 @@ The other specs prove what the loop does and only bound how long it may take.
 Kustomization or an Argo CD Application applies, then times each sample from the stimulus
 (an API edit, or a Git-side push landing on Gitea) to the effect an operator would look for:
 
-- the commit on the branch;
-- Flux applying it after the default 30s quiet period;
-- the trigger holding its applier again;
-- the live object changing after a Git-side push through the receiver.
+- the commit on the branch, for an API edit and for an API create;
+- the create adopted by the applier (a `CatchUp`);
+- the live object changing after a Git-side push through the receiver;
+- the applier done with that push: an Argo CD sync finished, or Flux applied it and is held again.
 
 Each duration goes into a `gmeasure` experiment, which Ginkgo prints as an N/min/median/max
 table and writes into the JSON report. `task allure-e2e-report` attaches it to the spec as

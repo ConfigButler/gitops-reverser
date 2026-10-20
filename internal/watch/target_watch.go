@@ -1044,7 +1044,7 @@ func (m *Manager) enqueueReplayResync(
 	if !stream.gate.enqueue(ctx, func() {
 		resultCh, enqueued, err = m.EventRouter.enqueueScopedResync(
 			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), snapshot,
-			resourceVersion, false, stream.revision)
+			resourceVersion, stream.revision)
 	}) {
 		return nil
 	}

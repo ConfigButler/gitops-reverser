@@ -104,7 +104,7 @@ func TestResyncScope_StringIsNilSafeAndNamesTheNamespace(t *testing.T) {
 	allNamespaces := resyncScopePtr(configmapsGVRForScope, "")
 	assert.Equal(t, "configmaps", allNamespaces.String(),
 		"the scope renders its collection, which carries no served version: a version bump must not "+
-			"split the deferred-heal key or the coalescing key for one sweep boundary")
+			"render one sweep boundary two ways")
 
 	scoped := resyncScopePtr(configmapsGVRForScope, "team-a")
 	assert.Contains(t, scoped.String(), "team-a",
@@ -203,7 +203,7 @@ func TestResync_ClusterWideScopeStillSweepsEveryNamespace(t *testing.T) {
 
 // A scope's identity must round-trip to the boundary it sweeps. It did not: the scope carried
 // a full GVR while Matches compared group, resource and namespace only, so two served versions
-// of one resource were two coalescing keys, two deferred-heal keys and two render-fidelity
+// of one resource were two coalescing keys and two render-fidelity
 // scopes — over one sweep boundary. The version is now data on the scope, and the collection is the
 // identity.
 func TestResyncScope_ServedVersionIsDataNotIdentity(t *testing.T) {

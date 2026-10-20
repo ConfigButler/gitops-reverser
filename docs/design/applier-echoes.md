@@ -606,7 +606,7 @@ mirrors and the applier applies.
 
 ## Decided while building
 
-The build departs from the plan above in ten places, decided on 2026-10-20:
+The build departs from the plan above in eleven places, decided on 2026-10-20:
 
 1. **Siblings do not count for F3.** Whether Git is ahead, and the apply epoch, are per worker: an
    apply due on another worker writing the same branch does not hold this worker's resyncs. This
@@ -658,6 +658,10 @@ The build departs from the plan above in ten places, decided on 2026-10-20:
     backing off, until the worker's own push or the refresher found the move. The `RequestFailed`
     now carries the revision the source holds, and the worker looks at the remote as at a push
     notice.
+11. **There is no heal resync.** The plan discarded a heal that would close an open window, and
+    asked for it again once the window was idle. Nothing produces one: every resync the watch plane
+    sends is a replay, which finalizes the window. The `Heal` flag, its discard and its window-idle
+    re-request are removed, with the tests that drove a heal by hand.
 
 ## References
 

@@ -27,7 +27,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// flushEventsToWorktree is the plan-then-flush write path: model the subtree once, resolve each
+// planEventsToWorktree is the plan-then-flush write path: model the subtree once, resolve each
 // event to a single-identity action, apply to commit-scoped buffers, flush only what changed.
 //
 // Every event is a single-identity intent and the writer NEVER mark-and-sweeps a batch.
@@ -56,21 +56,9 @@ func clusterIDForEvents(events []Event) string {
 	return ""
 }
 
-func (w *BranchWorker) flushEventsToWorktree(
-	ctx context.Context,
-	worktree *gogit.Worktree,
-	base string,
-	events []Event,
-	policy *manifestanalyzer.PlacementPolicy,
-	namespaces namespacePolicy,
-	pruneMode v1alpha3.PruneMode,
-) (bool, error) {
-	changed, _, err := w.planEventsToWorktree(ctx, worktree, base, events, policy, namespaces, pruneMode)
-	return changed, err
-}
-
-// planEventsToWorktree is flushEventsToWorktree that also reports, per event and in order, whether
-// that event changed the tree: the write's actions (docs/design/applier-echoes.md, F2).
+// planEventsToWorktree flushes one GitTarget base's events into the worktree, and reports whether
+// the tree changed and, per event and in order, whether that event changed it: the write's actions
+// (docs/design/applier-echoes.md, F2).
 func (w *BranchWorker) planEventsToWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,
@@ -2016,16 +2004,10 @@ func loadWorktreeGitTargetIgnore(absBase string) (*manifestanalyzer.IgnoreMatche
 	return manifestanalyzer.LoadGitTargetIgnore(content)
 }
 
-// groupEventsByBase buckets events by their sanitized GitTarget base path, preserving
-// arrival order within each bucket. A grouped commit window is single-target (one
-// base) by construction; the grouping stays correct for any future multi-target batch.
-func groupEventsByBase(events []Event) map[string][]Event {
-	byBase, _ := groupEventsByBaseWithIndex(events)
-	return byBase
-}
-
-// groupEventsByBaseWithIndex is groupEventsByBase that also returns, per base, each event's index in
-// events, so a result per event can be put back in order.
+// groupEventsByBaseWithIndex buckets events by their sanitized GitTarget base path, preserving
+// arrival order within each bucket, and returns, per base, each event's index in events, so a
+// result per event can be put back in order. A grouped commit window is single-target (one base) by
+// construction; the grouping stays correct for any future multi-target batch.
 func groupEventsByBaseWithIndex(events []Event) (map[string][]Event, map[string][]int) {
 	byBase := map[string][]Event{}
 	indexes := map[string][]int{}

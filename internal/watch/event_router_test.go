@@ -106,7 +106,6 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 		types.CollectionKey{},
 		replaySnapshot{},
 		"12",
-		false,
 		0,
 	)
 
@@ -140,7 +139,6 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 		types.CollectionKey{},
 		replaySnapshot{},
 		"12",
-		false,
 		0,
 	)
 

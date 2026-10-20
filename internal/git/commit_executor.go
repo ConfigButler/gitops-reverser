@@ -457,19 +457,9 @@ func eventsThatChanged(events []Event, changedBy []bool) []Event {
 	return kept
 }
 
-func (w *BranchWorker) applyPendingWriteEvents(
-	ctx context.Context,
-	repo *gogit.Repository,
-	worktree *gogit.Worktree,
-	events []Event,
-	targets map[pendingTargetKey]ResolvedTargetMetadata,
-) (bool, error) {
-	changed, _, err := w.planPendingWriteEvents(ctx, repo, worktree, events, targets)
-	return changed, err
-}
-
-// planPendingWriteEvents is applyPendingWriteEvents that also reports, per event and in order,
-// whether that event changed the tree. An event of a suspended target changes nothing.
+// planPendingWriteEvents plans a write's events onto the worktree, one GitTarget base at a time, and
+// reports whether the tree changed and, per event and in order, whether that event changed it. An
+// event of a suspended target changes nothing.
 func (w *BranchWorker) planPendingWriteEvents(
 	ctx context.Context,
 	repo *gogit.Repository,

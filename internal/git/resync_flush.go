@@ -23,8 +23,7 @@ import (
 )
 
 // applyResync decides one revision-pinned resync in order on the worker goroutine. It mirrors the
-// atomic-commit path: for a non-heal resync any open live window is finalized first so arrival order
-// is preserved (a heal reaches here only when no window is open, so it finalizes nothing); the
+// atomic-commit path: any open live window is finalized first so arrival order is preserved; the
 // resync is then decided like every other write, and its caller answered when its commit is made
 // or fails (settleResyncApplied, settleFailed), or as soon as the remote holds it back
 // (replyToDeferredResyncs). A resync that commits nothing stops being pending at once, so it never
@@ -45,15 +44,11 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		"resources", len(req.Desired),
 		"resourceVersion", req.ResourceVersion,
 		"scope", req.Scope.String(),
-		"heal", req.Heal,
 		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
 		"openWindow", l.openWindow != nil,
 		"pendingWrites", len(l.pendingWrites))
-	// A heal never finalizes a window (handleResyncRequest discards one that would); a non-heal
-	// resync force-finalizes the open window to preserve arrival order before its mark-and-sweep.
-	if !req.Heal {
-		l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
-	}
+	// A resync force-finalizes the open window to preserve arrival order before its mark-and-sweep.
+	l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
 
 	pendingWrite, err := l.w.buildResyncPendingWrite(l.w.ctx, req, &ResyncStats{})
 	if err != nil {
@@ -334,7 +329,7 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 	return nil
 }
 
-// applyResyncToWorktree is the streaming mark-and-sweep resync apply (M8), described
+// planResyncToWorktree is the streaming mark-and-sweep resync apply (M8), described
 // in docs/spec/reconcile-via-watchlist-mark-and-sweep.md ("Two Paths, One
 // Plan Type" — the Resync path). It folds the COMPLETE desired snapshot over the
 // content-derived store of the GitTarget subtree:
@@ -360,21 +355,10 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 // set is narrowed by a bad scope, an outage, or a controller that does not understand a newer
 // scope field updates and creates but removes nothing. `always` is the opt-in that restores
 // the full convergence described above.
-func (w *BranchWorker) applyResyncToWorktree(
-	ctx context.Context,
-	worktree *gogit.Worktree,
-	base string,
-	target ResolvedTargetMetadata,
-	desired []manifestanalyzer.DesiredResource,
-	scope *ResyncScope,
-) (ResyncStats, bool, error) {
-	stats, changed, _, err := w.planResyncToWorktree(ctx, worktree, base, target, desired, scope, nil)
-	return stats, changed, err
-}
-
-// planResyncToWorktree is applyResyncToWorktree that also returns what the resync decided: the
-// actions a replay applies instead of planning the snapshot again. keep names, by objectKey, the
-// objects another applier owns: they are not in desired, and their documents are not swept.
+//
+// It also returns what the resync decided: the actions a replay applies instead of planning the
+// snapshot again. keep names, by objectKey, the objects another applier owns: they are not in
+// desired, and their documents are not swept.
 func (w *BranchWorker) planResyncToWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,

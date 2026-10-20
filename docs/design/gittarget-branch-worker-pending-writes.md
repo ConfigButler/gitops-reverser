@@ -380,8 +380,7 @@ producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
 - **One budget, bytes and count.** While a failed attempt waits for its retry, `--branch-buffer-max-size`
   bounds everything accepted and not yet published: payload on the FIFO, charged at enqueue so
   producers cannot fill the FIFO between two loop iterations; the open window; the pending writes;
-  and saves waiting for a window. (Deferred heals were charged too, until they were removed: no
-  snapshot is parked any more.) Every item is charged `pendingWriteOverheadBytes` (1 KiB)
+  and saves waiting for a window. Every item is charged `pendingWriteOverheadBytes` (1 KiB)
   beyond its payload and message, so the byte budget also bounds the item count, empty records
   included. The producer sizes each event and snapshot once, off the loop, and the loop reuses the
   size. The charge is serialized YAML, not heap: a queued object is held as an unstructured map of
@@ -517,10 +516,7 @@ page is marked built.
 
 ## What stays
 
-The open window and its timers, FIFO admission and resync coalescing at enqueue, the rule that a
-heal never closes a commit window (one could hold a sibling target's save; a heal that arrives while
-a window is open is discarded and asked for again once the window is idle, so no snapshot is
-parked), the attach loop, the
+The open window and its timers, FIFO admission and resync coalescing at enqueue, the attach loop, the
 refusal-touch schedule, `baseTrusted`, the standby state (`newBranchParent`), and the push's
 compare-and-swap with the parent-change admission check.
 

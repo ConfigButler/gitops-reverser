@@ -209,7 +209,7 @@ func (l *branchWorkerEventLoop) discardIfFetchFoundForeign(i int, tipBefore stri
 		req = &ResyncRequest{GitTargetName: req.GitTargetName, GitTargetNamespace: req.GitTargetNamespace,
 			Scope: req.Scope}
 	}
-	l.discardSnapshot(req, snapshotForeignFetch, false)
+	l.discardSnapshot(req, snapshotForeignFetch)
 	return true
 }
 
