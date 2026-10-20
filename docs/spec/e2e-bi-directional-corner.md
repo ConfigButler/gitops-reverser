@@ -178,6 +178,25 @@ dedicated CI leg:
 | Task | `task test-e2e-bi-directional` |
 | CI leg | `bi-directional` |
 
+### The timing spec: `bi_directional_timing_e2e_test.go`
+
+The other specs prove what the loop does and only bound how long it may take.
+[`bi_directional_timing_e2e_test.go`](../../test/e2e/bi_directional_timing_e2e_test.go)
+(label `timing`) measures it. It mirrors a labeled ConfigMap into the folder a Flux
+Kustomization or an Argo CD Application applies, then times each sample from the stimulus
+(an API edit, or a Git-side push landing on Gitea) to the effect an operator would look for:
+
+- the commit on the branch;
+- Flux applying it after the default 30s quiet period;
+- the trigger holding its applier again;
+- the live object changing after a Git-side push through the receiver.
+
+Each duration goes into a `gmeasure` experiment, which Ginkgo prints as an N/min/median/max
+table and writes into the JSON report. `task allure-e2e-report` attaches it to the spec as
+"Measurements". Every sample also has a budget, and a sample over it fails the spec. The
+budgets catch a path that fell back to the 5-minute steady tick, not a slow runner.
+`E2E_TIMING_SAMPLES` sets the sample count (default 3).
+
 ### The third spec: `provenance_markers_e2e_test.go`
 
 The corner hosts a third spec, and it is the reason the corner is worth more than the
@@ -605,4 +624,6 @@ namespaces and resource names, and none is `Serial`.
 - [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and
   [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go):
   the two specs in this corner
+- [`test/e2e/bi_directional_timing_e2e_test.go`](../../test/e2e/bi_directional_timing_e2e_test.go):
+  the loop's latency, as numbers
 - [`internal/sanitize/types.go`](../../internal/sanitize/types.go): the strip lists

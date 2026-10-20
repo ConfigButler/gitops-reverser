@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -116,7 +117,10 @@ func convertReports(outputDir, path string, reports []types.Report) (int, error)
 				continue
 			}
 			result := convertSpec(path, reportIndex, specIndex, report, spec)
-			if err := writeResult(outputDir, result, spec.CombinedOutput()); err != nil {
+			if err := writeResult(outputDir, result,
+				textAttachment{name: "Ginkgo output", suffix: "attachment", body: spec.CombinedOutput()},
+				textAttachment{name: "Measurements", suffix: "measurements", body: measurements(spec)},
+			); err != nil {
 				return count, err
 			}
 			count++
@@ -169,14 +173,50 @@ func convertSpec(path string, reportIndex, specIndex int, report types.Report, s
 	return result
 }
 
-func writeResult(outputDir string, result allureResult, combinedOutput string) error {
-	if strings.TrimSpace(combinedOutput) != "" {
-		source := result.UUID + "-attachment.txt"
-		if err := os.WriteFile(filepath.Join(outputDir, source), []byte(combinedOutput), 0o600); err != nil {
+// textAttachment is a plain-text file attached to an Allure result; an empty body attaches nothing.
+type textAttachment struct {
+	name   string
+	suffix string
+	body   string
+}
+
+// ginkgoStyle matches the {{bold}}-style console markup Ginkgo keeps in a report entry's text.
+var ginkgoStyle = regexp.MustCompile(`\{\{[^}]*\}\}`)
+
+// measurements renders a spec's report entries (AddReportEntry, such as a gmeasure experiment's
+// table) as plain text, so the numbers a spec records sit beside its result in Allure.
+func measurements(spec types.SpecReport) string {
+	var out strings.Builder
+	for _, entry := range spec.ReportEntries {
+		// A report read back from JSON keeps the text Ginkgo rendered when it wrote the file in
+		// Representation; StringRepresentation is the in-process fallback.
+		text := entry.Value.Representation
+		if text == "" {
+			text = entry.StringRepresentation()
+		}
+		text = strings.TrimSpace(ginkgoStyle.ReplaceAllString(text, ""))
+		if text == "" {
+			continue
+		}
+		if !strings.HasPrefix(text, entry.Name) {
+			out.WriteString(entry.Name + "\n")
+		}
+		out.WriteString(text + "\n\n")
+	}
+	return out.String()
+}
+
+func writeResult(outputDir string, result allureResult, attachments ...textAttachment) error {
+	for _, attachment := range attachments {
+		if strings.TrimSpace(attachment.body) == "" {
+			continue
+		}
+		source := result.UUID + "-" + attachment.suffix + ".txt"
+		if err := os.WriteFile(filepath.Join(outputDir, source), []byte(attachment.body), 0o600); err != nil {
 			return fmt.Errorf("write attachment %s: %w", source, err)
 		}
 		result.Attachments = append(result.Attachments, allureAttachment{
-			Name:   "Ginkgo output",
+			Name:   attachment.name,
 			Source: source,
 			Type:   "text/plain",
 		})
