@@ -369,3 +369,21 @@ func TestApplierEchoes_AResyncThatAddsAnObjectAdoptsIt(t *testing.T) {
 	resync(echoDesired("x", "x2"), echoDesired("new", "n1"))
 	assert.True(t, f.echoApplier().adopt, "the object the resync added is adopted")
 }
+
+// TestApplierEchoes_ASuspendedResyncIsNotRetained: a suspended target's resync scans and writes
+// nothing, so it decides nothing: it settles at once, and is neither retained nor pushed.
+func TestApplierEchoes_ASuspendedResyncIsNotRetained(t *testing.T) {
+	f := newEchoFixture(t, "echo-resync-suspended", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
+	var target configv1alpha3.GitTarget
+	require.NoError(t, f.worker.Client.Get(f.worker.ctx, keyOf(echoTarget), &target))
+	target.Spec.Suspend = true
+	require.NoError(t, f.worker.Client.Update(f.worker.ctx, &target))
+
+	req := &ResyncRequest{Desired: []manifestanalyzer.DesiredResource{echoDesired("x", "x2")},
+		GitTargetName: echoTarget, GitTargetNamespace: "default", Result: make(chan ResyncResult, 1)}
+	f.loop.applyResync(req)
+	f.loop.advance()
+	require.NoError(t, (<-req.Result).Err)
+	assert.Empty(t, f.loop.pendingWrites, "nothing to publish")
+	assert.True(t, f.loop.lastPushAt.IsZero(), "so nothing was pushed")
+}

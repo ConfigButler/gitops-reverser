@@ -162,6 +162,10 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	if target.Suspend {
 		log.FromContext(ctx).V(1).Info("resync suppressed: GitTarget is suspended",
 			"gitTarget", target.Namespace+"/"+target.Name, "path", base)
+		if !pendingWrite.actionsDecided {
+			// It decides nothing, so it is neither retained nor pushed.
+			pendingWrite.actionsDecided, pendingWrite.resyncActions = true, &resyncActions{}
+		}
 		return 0, nil
 	}
 
