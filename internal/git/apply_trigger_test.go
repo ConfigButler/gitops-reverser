@@ -38,7 +38,7 @@ func targetRefs(req ApplyRequest) []itypes.ResourceReference {
 	return refs
 }
 
-func TestApplyDebt_FirstObservationIsABaseline(t *testing.T) {
+func TestApplyInbox_FirstObservationIsABaseline(t *testing.T) {
 	var inbox applyInbox
 	inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
 
@@ -48,7 +48,7 @@ func TestApplyDebt_FirstObservationIsABaseline(t *testing.T) {
 	assert.True(t, catchUp, "but nothing says it has, so a catch-up is pending")
 }
 
-func TestApplyDebt_ClassifiesEachMove(t *testing.T) {
+func TestApplyInbox_ClassifiesEachMove(t *testing.T) {
 	cases := []struct {
 		name        string
 		next        RemoteObservation
@@ -76,7 +76,7 @@ func TestApplyDebt_ClassifiesEachMove(t *testing.T) {
 	}
 }
 
-func TestApplyDebt_RestorePutsBackWhatWasTaken(t *testing.T) {
+func TestApplyInbox_RestorePutsBackWhatWasTaken(t *testing.T) {
 	var inbox applyInbox
 	inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
 	inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch})

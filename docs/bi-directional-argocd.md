@@ -37,18 +37,21 @@ for each of these, and for the settings that look like a fix and are not.
 An `Application` with automated sync on makes its trigger report `Configured=False` with
 `AutomatedSyncEnabled`, and GitOps Reverser never syncs it.
 
-**There is no catch-up.** With automated sync off, Argo CD applies nothing on its own, so nothing it
-holds goes stale. GitOps Reverser's own commits are already live, and after the next refresh the
-`Application` reports them `Synced`. So an `ArgoCDTrigger` has no `quietPeriod`. A commit that
-reached the branch before a `GitTarget` named the trigger is synced with the next push, refusal or
-repair ([one sync](#one-sync)).
+**A catch-up is about ownership.** With automated sync off, Argo CD applies nothing on its own.
+GitOps Reverser's own commits hold values it read from the cluster, so they are already live, and
+after the next refresh the `Application` reports them `Synced`: an API edit asks for no sync. An
+object the API creates is different. Argo CD prunes only objects that carry its tracking annotation,
+and only a sync stamps it, so an object created through the API in the folder would survive the
+deletion of its file in Git. An `Application` therefore gets a `CatchUp` exactly as a Flux
+`Kustomization` does: to adopt an object the API created, and to converge, once when the operator
+starts and once when a `GitTarget` first names the trigger ([one sync](#one-sync)).
 
 ## Requirements
 
 | Requirement | Why | When it is not met |
 | --- | --- | --- |
 | Argo CD 3.1 or later | `spec.syncPolicy.automated.enabled` exists from 3.1.0, and is the only way to switch automated sync off and keep `prune` | Before 3.1 the API server drops `enabled`, the block reads as on, and the trigger reports `AutomatedSyncEnabled`. Remove the `automated` block instead, and accept that a file deleted in Git leaves its object running |
-| Automated sync off | GitOps Reverser starts every sync, on a quiet branch | `AutomatedSyncEnabled`; the `Application` is never synced by GitOps Reverser |
+| Automated sync off | GitOps Reverser starts every sync, after a flush | `AutomatedSyncEnabled`; the `Application` is never synced by GitOps Reverser |
 | A single Git source, `spec.source`, on the `GitProvider`'s repository | A sync is pinned to one commit of one repository | `UnsupportedSource` for `spec.sources` or `spec.sourceHydrator`; `SourceMismatch` for another repository |
 | `targetRevision` is the `GitTarget`'s branch (`main` or `refs/heads/main`) | The tip GitOps Reverser checks is the tip of that branch | `SourceMismatch` for `HEAD`, an empty `targetRevision`, a tag or a commit |
 | The source renders the folder GitOps Reverser writes: `directory.recurse: true` for a plain directory, or a kustomization at the path | GitOps Reverser writes `<path>/<namespace>/<group>/<plural>/<name>.yaml` | A non-recursive directory sees no files, and the sync applies nothing |
@@ -185,6 +188,12 @@ it. Without an `automated` block, its syncs do not prune: a file removed from Gi
 running. `selfHeal` means nothing with automated sync off. `syncOptions` and `retry` apply as they
 would to an automated sync.
 
+**Objects another applier owns.** An object whose `argocd.argoproj.io/tracking-id` names another
+`Application`, or whose `kustomize.toolkit.fluxcd.io/name` and `kustomize.toolkit.fluxcd.io/namespace`
+labels name a Flux `Kustomization`, is not mirrored into the folder: a live change to it is not
+mirrored, and a resync neither writes it nor removes its document. Two appliers applying one object
+fight each other. See [objects another applier owns](bi-directional.md#objects-another-applier-owns).
+
 ## The `ArgoCDTrigger`
 
 ```yaml
@@ -287,11 +296,14 @@ writes the `Application` through the Kubernetes API, as `kubectl` would, not thr
 
 ## One sync
 
-`ForeignCommit`, `Refusal` and `Repair` reach an `Application`
-([the reasons](bi-directional.md#when-gitops-reverser-asks-for-an-apply)); `CatchUp` never does.
-Every request starts a sync: there is no "already current" for Argo CD. So naming an `ArgoCDTrigger`
-from a `GitTarget` syncs nothing by itself: a commit already on the branch reaches the
-`Application` with the next push, refusal or repair, or a manual sync.
+All four [reasons](bi-directional.md#when-gitops-reverser-asks-for-an-apply) reach an
+`Application`, `CatchUp` included, as they reach a Flux `Kustomization`. Every request starts a sync;
+the branch worker decides beforehand which ones are needed. A `CatchUp` that only converges asks
+nothing when the `Application`'s last successful sync applied the tip. A `CatchUp` that adopts syncs
+even then, because that sync is what stamps the tracking annotation on the objects the API created.
+An `Application` a `GitTarget` names for the first time converges once that `GitTarget`'s initial
+snapshots are published, so a commit already on the branch reaches it without waiting for the next
+push.
 
 **A request sets the `Application`'s `operation` to the sync automated sync would start**, with
 these differences:
@@ -336,16 +348,19 @@ starts in between makes it fail instead of being overwritten. A failed sync wait
 retry still counts as running: Argo CD keeps its `operation` set until it completed.
 
 **Hooks run on every sync**, as they would on an automated one: every `ForeignCommit` asks every
-applier on the branch, whether or not the push touched its folder.
+applier on the branch, whether or not the push touched its folder, and a `CatchUp` syncs after an API
+create in the folder and when a `GitTarget` first names the trigger.
 
-**The apply window.** Until the sync's operation completes, however long that takes, an API edit to
-a field the `Application` sets can be reverted on the cluster by the sync. GitOps Reverser recognizes
-that write by Argo CD's field manager (`argocd-controller`, for a client-side and a server-side
-apply alike, or `argocd-application-controller` for a `Replace=true` sync), withholds it from Git,
-and asks for a `Repair` sync pinned to the tip that holds the edit, but only when Argo CD's entry is
-newer than the edit: undoing an edit can leave an older entry of Argo CD's as the newest, and that
-undo is mirrored. When Argo CD and another manager, or the edit, wrote in the same second, the write
-is mirrored and counted as `ambiguous`.
+**The apply window.** Until 10 seconds after the sync's operation completes, however long that
+takes, Argo CD's own write to an object nobody edited is the sync landing, and is not mirrored. An
+API edit to a field the `Application` sets, one made after the flush included, can be reverted on
+the cluster by the sync. GitOps Reverser recognizes that write by Argo CD's field manager
+(`argocd-controller`, for a client-side and a server-side apply alike, or
+`argocd-application-controller` for a `Replace=true` sync), withholds it from Git, and asks for a
+`Repair` sync pinned to the tip that holds the edit, but only when Argo CD's entry is newer than the
+edit: undoing an edit can leave an older entry of Argo CD's as the newest, and that undo is
+mirrored. When Argo CD and another manager, or the edit, wrote in the same second, the write is
+mirrored and counted as `ambiguous`.
 
 A request that fails, and a sync that ends `Failed` or `Error`, is decided again from scratch, after
 that `Application`'s own backoff. A sync still running after 5 minutes is `Unresolved`: GitOps
@@ -443,19 +458,23 @@ it.
 | Trigger `Configured=False`, `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger, such as `argocd` | Set `allowCrossNamespace.appliers: true` on the trigger's `ClusterProvider` (Helm: `clusterProvider.default.allowCrossNamespace.appliers`), or move the trigger and `GitTarget` to the `Application`'s namespace |
 | Trigger `Configured=Unknown`, `NotBound` | A `GitTarget` names the trigger, but cannot be judged yet: its `GitProvider` or `ClusterProvider` does not exist | Create the missing object; the message names it |
 | Trigger `Configured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.argocd: true` |
-| A Warning `ApplyRequestFailed` Event | A request could not be delivered, such as a sync somebody else started that did not end within 5 minutes | GitOps Reverser keeps asking on a quiet branch, at most every five minutes |
-| A Warning `ApplyFailed` Event | The sync ended `Failed` or `Error`; the message carries Argo CD's | Fix what the message names; GitOps Reverser asks again on a quiet branch |
+| A Warning `ApplyRequestFailed` Event | A request could not be delivered, such as a sync somebody else started that did not end within 5 minutes | GitOps Reverser keeps asking after its backoff, at most every five minutes |
+| A Warning `ApplyFailed` Event | The sync ended `Failed` or `Error`; the message carries Argo CD's | Fix what the message names; GitOps Reverser asks again after its backoff |
 | A Warning `ApplyUnresolved` Event, trigger `OperationUnresolved` | The sync has not completed in 5 minutes: hooks, waves, or Argo CD's own retries | Nothing is asked of the `Application` until it completes; look at its operation state |
 | A file deleted in Git leaves its object running | The `Application` has no `automated.prune: true` | Add `automated: {enabled: false, prune: true}` |
 | The last sync stays `Running`: `Sync operation blocked by sync window` | A sync window blocks automated syncs | Remove the window from the `AppProject`; see [sync windows](#sync-windows-that-block-automated-syncs) |
 | A commit appears on every sync, adding or removing a `Job` | A `WatchRule` covers the objects a hook creates | Keep hook kinds out of the `WatchRule`s; see [hooks](#watching-the-objects-your-hooks-create) |
+| An object in the folder is never mirrored, and the log says `Not mirroring an object another applier owns` | Another `Application` or a Flux `Kustomization` applies it; `apply_ownership_conflicts_total` counts it | Let one applier own it: take it out of the other applier's source, or stop watching it from this `GitTarget` |
 
 ## While GitOps Reverser is down
 
 GitOps Reverser becomes the only path to a deployment. While it is down, a Git-side push reaches the
 cluster through a manual sync (`argocd app sync`, or the UI), which is safe then because nothing is
-publishing. When it starts again, its first look at the remote asks for no `ForeignCommit`: a sync
-on startup could revert edits made while it was down, before its watches caught them.
+publishing. When it starts again, its first look at the remote asks for no `ForeignCommit`. A
+`CatchUp` that converges is pending instead, and is asked only once every initial snapshot of the
+`GitTarget`s naming the trigger is published: a sync before that could revert edits made while the
+operator was down, before its watches caught them. An `Application` whose last successful sync
+applied the tip is asked nothing.
 
 ## What the tests prove
 
@@ -463,7 +482,8 @@ on startup could revert edits made while it was down, before its watches caught 
 | --- | --- |
 | The [complete example](#a-complete-example) decodes strictly, reports `Configured=True`, binds the `GitTarget`, and its request sets a sync pinned to the commit | [`argocd_guide_test.go`](../internal/applier/argocd_guide_test.go) |
 | The operation is the one automated sync builds, but for the pinned revision, the initiator and a pinned retry; a running sync is waited for and never replaced; a sync started between the read and the update makes it fail; an unanswered update is settled by a guarded write; every `Configured` reason; when a sync counts as finished | [`argocd_test.go`](../internal/applier/argocd_test.go) |
-| An `Application` is never asked for a `CatchUp`, not even once a `GitTarget` first names its trigger, and is asked on a `ForeignCommit` and a `Refusal`; Argo CD's late write over a newer edit is withheld, by its own field managers | [`apply_trigger_test.go`](../internal/git/apply_trigger_test.go), [`apply_window_test.go`](../internal/git/apply_window_test.go) |
+| An `Application` converges once a `GitTarget` first names its trigger, is asked on a `ForeignCommit` and a `Refusal`, and adopts an API create even at the tip; Argo CD's late write over a newer edit is withheld, by its own field managers | [`apply_trigger_test.go`](../internal/git/apply_trigger_test.go), [`apply_catchup_test.go`](../internal/git/apply_catchup_test.go), [`apply_window_test.go`](../internal/git/apply_window_test.go) |
+| An object another applier owns, read from its tracking annotation, is neither mirrored nor swept | [`apply_ownership_test.go`](../internal/git/apply_ownership_test.go) |
 | A trigger nothing names reads nothing and is `Ready`; the binding over several `GitTarget`s; `ApplierNamespaceNotAllowed`; a sync whose `.operation` was removed while it ran ends | [`applytrigger_rule_test.go`](../internal/controller/applytrigger_rule_test.go), [`argocd_test.go`](../internal/applier/argocd_test.go) |
 | Two API edits seconds apart keep the later value, with no further commit | [Bi-directional (Argo CD)](../test/e2e/argocd_bi_directional_e2e_test.go) |
 | A Git-side push is synced by a `ForeignCommit` request, pinned to that commit | Bi-directional (Argo CD) |

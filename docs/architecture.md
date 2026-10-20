@@ -115,25 +115,31 @@ advertisement, and what the remote says decides whether the branch moved. It nev
 cluster snapshot: the cluster still holds the values from before the push, so a snapshot would
 publish them over the incoming change.
 
-**GitOps Reverser decides when Git is applied to the cluster.** An apply is safe only when nothing
-live is missing from the commit being applied, and only the workers writing the branch can see the
-edits that are live and not yet pushed. So a `GitTarget` names an **apply trigger**, which holds
-its **applier** so that it applies nothing on its own (a Flux `Kustomization` is held suspended, an
-Argo CD `Application` has automated sync off), and the branch worker sends **apply requests**
-instead. A request is sent only on a **quiet branch**, with no open commit window and no pending
-writes on any worker writing that repository and branch:
+**GitOps Reverser decides when Git is applied to the cluster.** An apply must not revert an edit
+that is live and not yet in Git, and only the worker writing the branch can see those edits. So a
+`GitTarget` names an **apply trigger**, which holds its **applier** so that it applies nothing on
+its own (a Flux `Kustomization` is held suspended, an Argo CD `Application` has automated sync off),
+and the branch worker sends **apply requests** instead. A request is sent only **after a flush**:
+when an apply comes due, the worker closes the open commit window, publishes every write decided so
+far at once, and sends the request for the tip that publication produced. An edit decided after
+that is recorded in the apply window, so an apply that overwrites it is withheld and repaired.
+Continuous editing therefore never holds an apply back. A request goes out:
 
-- for a commit somebody else pushed, after closing open windows and replaying the pending writes
-  onto it, so the applied commit carries the API side's answer;
+- for a commit somebody else pushed, after replaying the pending writes onto it, so the applied
+  commit carries the API side's answer;
 - for a refused edit the target opted to revert;
 - for an API edit that an apply reverted on the cluster after the edit was made, to put it back;
-- for Flux only, to catch up with GitOps Reverser's own pushes once the branch has been quiet for
-  the trigger's `quietPeriod`, because Flux's inventory learns of an object only from an apply of a
-  commit that holds it. Argo CD is never asked to apply GitOps Reverser's own commits: with automated
-  sync off it applies nothing on its own, and a sync is pinned to the commit the worker checked.
+- to catch up (`CatchUp`), for a Flux `Kustomization` and an Argo CD `Application` alike: to adopt
+  an object the API created in the folder, because an applier prunes only what it applied and a
+  later Git-side delete would otherwise leave the object running; and to converge, once when the
+  worker starts and once when a `GitTarget` first names the trigger, unless the applier already
+  applied the tip. A push of GitOps Reverser's own asks for nothing: the cluster already runs the
+  edits it holds.
 
-The worker keeps each reason pending until an apply operation answers it, and decides every retry
-the same way. A request runs off the publication path and cannot fail a publication; the trigger's
+No applier is asked for anything before every initial snapshot of the `GitTarget`s it covers is
+published, so the edits made while the operator was down reach Git before any apply. The worker
+keeps each reason pending until an apply operation answers it, and decides every retry the same
+way. A request runs off the publication path and cannot fail a publication; the trigger's
 `status.operation` records the operation it started. **Built:**
 the Flux `Kustomization` applier and the Argo CD `Application` applier, with automated sync off.
 **The aim:** a webhook for any other tool. See [the apply trigger design](design/apply-trigger.md).
@@ -409,9 +415,10 @@ Key fields:
 - `spec.commit.window`: when this target's commit windows close: `idleTimeout` (default `5s`) of
   silence, or `maxDuration` (default `1m`) after the window opened.
 - `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
-- `spec.applyTriggerRef`: optional; the `FluxTrigger` (a Flux `Kustomization` GitOps Reverser asks
-  to apply, with its `quietPeriod`, default `30s`) or `ArgoCDTrigger` (an Argo CD `Application`,
-  automated sync off, whose syncs GitOps Reverser starts) in this namespace.
+- `spec.applyTriggerRef`: optional; the `FluxTrigger` (a Flux `Kustomization` GitOps Reverser holds
+  suspended and asks to apply) or `ArgoCDTrigger` (an Argo CD `Application`, automated sync off,
+  whose syncs GitOps Reverser starts) in this namespace. In a folder a trigger applies, an object
+  another applier owns (by Flux's owner labels or Argo CD's tracking annotation) is not mirrored.
 - `spec.onRefusal`: `Ignore` (default) or `Reapply`, which asks the applier to reapply the tip when
   an edit to an existing document is refused. `Reapply` requires `spec.applyTriggerRef`.
 
@@ -642,7 +649,7 @@ flowchart TD
 
     MATCH -->|no| FETCH[Fetch latest remote tip]
     FETCH --> RESET[Hard reset local clone to remote]
-    RESET --> REPLAY[Replay retained pending writes<br/>from sanitized API state]
+    RESET --> REPLAY[Apply each retained pending write's<br/>decided actions onto the new tip]
     REPLAY --> REFRESH[Create fresh commit hashes]
     REFRESH --> CHECK
 
@@ -658,7 +665,7 @@ local commit from before the retry.
 A rejected push is one of three ways the branch worker learns the branch gained a commit it did
 not push. The other two are a push-receiver delivery and the periodic refresh. All three set the
 same piece of worker state, **the applier is behind**, and the worker clears it by sending an apply
-request once the branch is quiet.
+request after a flush.
 
 ```mermaid
 flowchart TD
@@ -668,11 +675,11 @@ flowchart TD
     ADV --> OURS{"Tip is a commit<br/>we pushed?"}
     OURS -->|yes| DROP["Nothing to do"]
     OURS -->|"no, or cannot tell"| SEEN["Applier is behind"]
-    SEEN --> PENDING{"Open windows or<br/>pending writes?"}
-    PENDING -->|yes| FLUSH["Close the windows, fetch,<br/>replay onto the foreign commit, push"]
-    FLUSH --> QUIET
-    PENDING -->|no| QUIET["Branch is quiet"]
-    QUIET --> REQ["Apply request to every applier on the branch,<br/>naming the tip, reason ForeignCommit"]
+    SEEN --> PENDING{"Open window or<br/>pending writes?"}
+    PENDING -->|yes| FLUSH["Close the window, publish the pending writes at once:<br/>a rejected push fetches and replays them onto the foreign commit"]
+    FLUSH --> FLUSHED
+    PENDING -->|no| FLUSHED["Flushed: every write decided<br/>before the apply came due is published"]
+    FLUSHED --> REQ["Apply request to every applier on the branch,<br/>naming the tip, reason ForeignCommit"]
 
     style DROP fill:#eeeeee,stroke:#9e9e9e
     style REQ fill:#fff3e0,stroke:#ff9800
@@ -681,12 +688,30 @@ flowchart TD
 A delivery is handled on the worker's own queue, so it is never judged while a push is in flight:
 the push has recorded its commit before the delivery is read. A rollback onto one of the worker's
 older commits is foreign, because the advertisement names a tip other than the last one observed.
+A delivery also closes the open commit window, unless a `CommitRequest` holds it, so its
+publication finds the move.
 
-The same quiet-branch rule sends three other requests: `Refusal`, to the refusing target's applier
+A Git-side push usually reaches the worker through the flush itself: the push of the pending writes
+is rejected, the fetch finds a commit the worker did not push, the pending writes' decided actions
+are applied onto it, and the applier is asked once, for the tip that holds both sides. Applying the
+foreign commit on its own first would revert the pending API edits on the cluster and need a second
+apply to put them back.
+
+The same flush comes before three other requests: `Refusal`, to the refusing target's applier
 when `spec.onRefusal: Reapply` is set; `Repair`, to an applier whose late write over a newer API
-edit the apply window withheld; and `CatchUp`, to every Flux `Kustomization` on the branch once it
-has been quiet for the trigger's `quietPeriod` after the worker's own pushes, or after a `GitTarget`
-first names the trigger.
+edit the apply window withheld; and `CatchUp`, to a `Kustomization` or an `Application` alike, to
+adopt an object the API created in a folder that applier applies (a live `ADDED` event whose newest
+managers are not an applier's, or an object a resync added to Git) and to converge, once when the
+worker starts and once when a `GitTarget` first names the trigger. A converge of the commit the
+applier last applied asks nothing; an adopt is sent even then, because applying the same commit
+again is what stamps the owner labels or tracking annotation on the new object. A push of the
+worker's own leaves nothing pending.
+
+Three states still hold an apply back, because in them no flush can be made: a registered
+`CommitRequest` (a save defines its own commit boundary, and the apply waits for it), a parent
+recovery, and a checkout a failed write left dirty. An apply also waits until every initial
+snapshot of the `GitTarget`s its applier covers is published, and an empty tip (a remote that
+does not carry the branch) asks nothing until there is a commit to apply.
 
 Which apply is due lives on the worker, per applier: one attempt out at a time, and its own retry
 clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
@@ -694,13 +719,13 @@ reports back. It reads each `GitTarget` again first (the same incarnation by uid
 applier through its trigger on this branch, still admitted, still consenting to a `Refusal`), checks that the
 `Kustomization`'s source fetches this repository and branch, has the `GitRepository` fetch the
 commit when its artifact lacks it, asks the worker whether its decision still holds (the commit is
-still the tip and nothing is waiting to be published), writes the operation through to the trigger's
+still the tip), writes the operation through to the trigger's
 `status.operation`, and only then resumes the `Kustomization` the trigger holds suspended, with a
 `requestedAt` token. It follows the apply until that token is handled, suspends the `Kustomization`
 again with a second token, and reports the operation complete once that one is handled
 ([`apply-trigger.md`](design/apply-trigger.md#the-flux-applier-suspended)). It never retries:
 an attempt that does not deliver gives the worker back what it carried, a refusal only while it still
-stands, and the worker decides the retry on a quiet branch after that applier's backoff. A delivered
+stands, and the worker decides the retry after a flush, once that applier's backoff has run out. A delivered
 request records an `ApplyRequested` Event, and the worker records the operation on the trigger's
 `status.operation`. A failed request never reaches back
 into the publication that caused it.
@@ -1235,7 +1260,11 @@ write side is shared with live writes):
   the whole apply is **refused**: nothing is committed, `GitPathAccepted=False`, `Stalled=True`, and
   `Ready=False` with reason `UnsupportedContent` until a human cleans the path;
 - desired resources are upserted through the same content derived path as live writes;
-- existing managed documents that are watched but absent from the desired set are deleted;
+- existing managed documents that are watched but absent from the desired set are deleted, under
+  `spec.prune.mode: Always` only;
+- in a folder an apply trigger applies, an object another applier owns (by Flux's owner labels or
+  Argo CD's tracking annotation, read before sanitize strips them) is neither upserted nor treated
+  as missing, so its document is left alone and counted in `apply_ownership_conflicts_total`;
 - the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary
   YAML are retained, not materialised and not refused;
 - nothing is committed if the apply cannot complete safely.
@@ -1257,6 +1286,15 @@ A reconcile is **type scoped** (`ScopeGVR`): the sweep is restricted to one `(gr
 anchoring one type again never disturbs another's manifests. The desired set for the sweep is the
 `sendInitialEvents` replay (everything marked `ADDED` up to `initial-events-end`), so a delete is
 reconciled only after the replay completes.
+
+The snapshot decides once. The upserts and deletes its first commit decided are what a replay
+onto a newer tip applies, and the sweep never runs again there. On a branch an applier applies, a
+snapshot collected while Git was ahead of the cluster (a commit pushed and not applied yet),
+collected across an apply, or arriving while Git is ahead is discarded instead of decided, and a
+fresh one is asked for once the apply is done; it would otherwise revert the unapplied commit. A
+`GitTarget`'s initial snapshots are exempt, and after 5 minutes of discards the next snapshot is
+used anyway. See
+[stale snapshots](spec/reconcile-via-watchlist-mark-and-sweep.md#stale-snapshots-are-discarded).
 
 ***
 
@@ -1306,9 +1344,9 @@ the newest revision beside a stale clock.
 
 Reading or writing a branch's repository state is the branch worker's job, and the worker does it on
 one FIFO queue, on one goroutine. Live events, resyncs, `CommitRequest` attaches, periodic
-refreshes and push-receiver deliveries all enter the same queue and are served in order. Whether
-the branch is quiet is therefore a fact one goroutine holds, which is what lets the worker decide
-when an apply request may go out. Nothing else opens a connection on a
+refreshes and push-receiver deliveries all enter the same queue and are served in order. Which
+writes are decided and which of them are published is therefore a fact one goroutine holds, which
+is what lets the worker flush before an apply request goes out. Nothing else opens a connection on a
 branch's behalf, and nothing else touches its clone. That is what makes "the base is trusted" a
 statement one goroutine can hold.
 
@@ -1331,10 +1369,14 @@ pair at a time:
 
 The window finalizes when its `idleTimeout` passes with no new matching event, its `maxDuration` runs
 out, the retained buffer reaches `--branch-buffer-max-size` (default `8Mi`), an `attach: Next`
-`CommitRequest` closes it, or a resync request that is not a heal or shutdown arrives. The timers
+`CommitRequest` closes it, a resync request that is not a heal or shutdown arrives, or an apply comes
+due for an applier on the branch. The timers
 are the GitTarget's `spec.commit.window` until a `CommitRequest` attaches and replaces them. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
-bursts. Heal resyncs that arrive during a window are deferred and drained at the next idle boundary.
+bursts. The one exception is an apply's flush: the writes decided before the apply came due are
+pushed at once, cooldown or not, because the apply waits for them. A heal resync never closes a
+window, since the window could hold a sibling target's save: one that arrives while a window is open
+is discarded and asked for again once the window is idle.
 
 ### Local clones and conflict retry
 
@@ -1354,6 +1396,14 @@ its own tree. [PushAtomic](../internal/git/git_atomic_push.go) checks the remote
 remote diverged it smart fetches the latest tip, hard resets the local clone, replays the retained pending
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.
+A write carries the actions its first commit decided, and a replay applies those and plans nothing
+else. An object whose plan changed nothing is no action, so its old content can never revert what
+the newer tip changed, and a write with no action left settles at once without a push. A resync
+keeps the upserts that changed the tree and the documents its sweep removed: a replay plans each
+upsert onto the new tree and removes each document if it is still there and the prune mode still
+sweeps, and never sweeps again, so a document the newer tip added survives. A save is the exception:
+a write carrying a `CommitRequest` keeps every object it captured, and the push decides its outcome.
+See [the pending-writes design](design/gittarget-branch-worker-pending-writes.md#a-write-carries-the-actions-decided-on-its-tree).
 
 A branch whose remote has been **deleted** takes the same path. The advertisement does not carry the
 branch at all, which is reported as a moved remote with a zero hash, so the replay re-roots on the remote's
@@ -1380,8 +1430,8 @@ with no refresher.
 is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans
 straight onto its own last push. Once writes are retained the guard flips off entirely, because a
 reset would destroy the local commits those writes already produced. Anything that needs a fresh
-tree with work in hand therefore resets **and replays** rather than resetting alone, re-planning the
-retained writes onto the new tip. One function on the event loop does that,
+tree with work in hand therefore resets **and replays** rather than resetting alone, applying the
+retained writes' decided actions onto the new tip. One function on the event loop does that,
 [`materialize`](../internal/git/branch_worker.go): every commit and push the loop makes runs it
 first, and the loop's commit refuses a checkout that is not the projection of the retained writes.
 A worktree a failed write left dirty, retained writes whose commits a reset discarded, a parent
@@ -1409,7 +1459,7 @@ the branch.
 
 The kept work is bounded at intake ([`intake.go`](../internal/git/intake.go)). While a retry is
 pending, `--branch-buffer-max-size` counts everything accepted and not yet published: queued items,
-the open window, the pending writes, deferred snapshots and waiting saves, each with a 1 KiB per-item charge.
+the open window, the pending writes and waiting saves, each with a 1 KiB per-item charge.
 The first payload that does not fit pauses the branch's intake until a push lands; room under the
 budget again, or a remote that can be read but refuses the push, keeps it paused. A paused branch's
 watch streams wait to be woken instead of reconnecting, and their cursors stay where the last
@@ -1684,13 +1734,17 @@ as one funnel and its loss paths as one selector:
 attempt the worker decided to send (`applier_kind` is `kustomization` or `application`; `reason` is
 `ForeignCommit`, `Refusal`, `Repair` or `CatchUp`), with `outcome` separating
 `sent` from `failed` (the worker decides the retry), `dropped` (no target may still ask for that
-reason) and `stale` (the decision no longer held at the patch). It counts attempts, not
-the requests still due.
+reason) and `stale` (the tip moved before the patch). It counts attempts, not
+the requests still due. `apply_echoes_total{outcome}` counts the applier's own writes the apply
+window kept out of Git (`not_mirrored`) or mirrored because no window was open (`late`);
+`apply_ownership_conflicts_total` counts objects another applier owns that were kept out of a
+triggered folder; and `stale_snapshots_total{outcome}` counts resync snapshots discarded because an
+apply made them stale, or used after the 5-minute bound.
 `receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`, `unmatched`,
 `ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
 The receiver cannot tell a foreign push from an own one; the worker decides that from the
-advertisement, which is why a `notified` delivery on an otherwise quiet branch is followed by a
-`CatchUp` and only a genuinely foreign one by a `ForeignCommit`. See
+advertisement, which is why a `notified` delivery of the worker's own push is followed by no
+request and only a foreign one by a `ForeignCommit`. See
 [Interpreting metrics](interpreting-metrics.md#apply-requests-and-the-push-receiver).
 
 **Authorship**, when `--author-attribution` is on:

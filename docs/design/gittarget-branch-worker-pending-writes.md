@@ -111,12 +111,14 @@ termination keep their explicit shutdown behavior; they cannot be described as p
 
 1. Replay **accepted decisions** from the pending writes onto the remote when the checkout requires
    rebuilding. Preserve order, messages, attribution, and save boundaries. A terminal refusal
-   settles only its entry, as step 4 establishes. Each decision is judged against the tree the one
-   before it left, so commit count and SHAs can change, and a decision that changes nothing there
-   makes no commit. Two decisions to one object onto a remote that already holds the second one's
-   content replay as a revert and a reapply: the final tree is right, and each decision keeps its
-   commit and its save. This is accepted as is; collapsing it would cost a save on the first
-   decision its commit (`TestDecidedWrite_SameObjectEditsReplayAsDecidedOntoARemoteHoldingTheLast`).
+   settles only its entry, as step 4 establishes. A replay applies the actions each write decided
+   on its first commit and plans nothing else (see
+   [a write carries the actions decided on its tree](#a-write-carries-the-actions-decided-on-its-tree)).
+   Each decision is judged against the tree the one before it left, so commit count and SHAs can
+   change, and a decision whose actions change nothing there makes no commit. Two decisions to one
+   object onto a remote that already holds the second one's content replay as a revert and a
+   reapply: the final tree is right, and each decision keeps its commit and its save. This is
+   accepted as is; collapsing it would cost a save on the first decision its commit (`TestDecidedWrite_SameObjectEditsReplayAsDecidedOntoARemoteHoldingTheLast`).
 2. Resume **unaccepted observations** from the last safely admitted watch cursor after intake
    reopens. While paused, close the affected sessions and wait for branch capacity, with a
    cancellation-safe wakeup and a bounded fallback recheck. Do not reconnect and collect rejected
@@ -377,8 +379,9 @@ producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
 
 - **One budget, bytes and count.** While a failed attempt waits for its retry, `--branch-buffer-max-size`
   bounds everything accepted and not yet published: payload on the FIFO, charged at enqueue so
-  producers cannot fill the FIFO between two loop iterations; the open window; the pending writes; deferred
-  heals; and saves waiting for a window. Every item is charged `pendingWriteOverheadBytes` (1 KiB)
+  producers cannot fill the FIFO between two loop iterations; the open window; the pending writes;
+  and saves waiting for a window. (Deferred heals were charged too, until they were removed: no
+  snapshot is parked any more.) Every item is charged `pendingWriteOverheadBytes` (1 KiB)
   beyond its payload and message, so the byte budget also bounds the item count, empty records
   included. The producer sizes each event and snapshot once, off the loop, and the loop reuses the
   size. The charge is serialized YAML, not heap: a queued object is held as an unstructured map of
@@ -514,8 +517,10 @@ page is marked built.
 
 ## What stays
 
-The open window and its timers, FIFO admission and resync coalescing at enqueue, deferred heals
-(still needed so a heal never closes a sibling target's window), the attach loop, the
+The open window and its timers, FIFO admission and resync coalescing at enqueue, the rule that a
+heal never closes a commit window (one could hold a sibling target's save; a heal that arrives while
+a window is open is discarded and asked for again once the window is idle, so no snapshot is
+parked), the attach loop, the
 refusal-touch schedule, `baseTrusted`, the standby state (`newBranchParent`), and the push's
 compare-and-swap with the parent-change admission check.
 
@@ -546,7 +551,48 @@ separate jobs, and only one of them can wait:
   tree, and the caller waits at most five minutes. So a resync that cannot be materialized now
   still replies with the error, as today, and the scope stays unproven, which is the conservative
   direction. If the deferred write is refused when it finally materializes, step 4 reports that
-  refusal on the target's status.
+  refusal on the target's status. A snapshot the worker finds stale (collected while Git was ahead
+  of the cluster, or across an apply) is answered as discarded, which is no failure, and a fresh one
+  is asked for; see
+  [stale snapshots](../spec/reconcile-via-watchlist-mark-and-sweep.md#stale-snapshots-are-discarded).
+
+## A write carries the actions decided on its tree
+
+Built with [applier echoes](applier-echoes.md#f2-a-write-is-a-list-of-actions-decided-once-on-its-tree)
+(F2). A pending write keeps what its first commit decided, and the picture of the cluster it was
+decided from is used once:
+
+- **Decided once.** The first time a write is committed (`executePendingWrite`), its plan decides
+  its actions on that tree and records them on the write (`actionsDecided`). A window or an atomic
+  write keeps only the events whose plan changed the tree, compared per object
+  (`eventsThatChanged`). A resync keeps the upserts that changed the tree and the documents its
+  sweep removed, by identity (`resyncActions`).
+- **An unchanged object is no action.** It is dropped from the write then. A write with no action
+  left settles at once (`settleCommitted`, `PendingWrite.retained`): it is neither retained nor
+  pushed, so no replay can plan it onto a newer tip, where its old content would revert what that
+  tip changed. A suspended target's resync decides nothing and settles the same way.
+- **Replay applies those actions and nothing else.** Onto a newer tip, each kept event or upsert is
+  planned onto the new tree. A resync's delete removes its document if the new tree still holds it,
+  and only while the target's prune mode, read again before the replay, still sweeps, so a policy
+  tightened since is obeyed. The sweep never runs again, so a document the newer tip added survives
+  the replay, under `prune.mode: Always` too.
+- **A save keeps every object.** A write carrying a `CommitRequest` is never trimmed: it keeps each
+  object it captured, unchanged ones included, and the push decides its outcome (`AlreadyPresent`
+  or `Committed`), as the [CommitRequest contract](../spec/commitrequest-design.md) says.
+
+Pinned by [`applier_echoes_test.go`](../../internal/git/applier_echoes_test.go): an unchanged object
+is no action, a resync replay applies its decided actions, a replayed resync obeys a tightened prune
+mode, and a suspended target's resync is not retained.
+
+### An apply's flush skips the push cooldown
+
+The push cooldown (`PushCooldown`, `5s`) still paces ordinary publication, with one exception. When
+an apply comes due for an applier on the branch, the worker closes the open commit window
+(`git_commit_windows_total{close_reason="apply_due"}`), takes the flush mark (the last write decided
+so far), and publishes the writes up to that mark at once, cooldown or not (`maybeSchedulePush`).
+The apply waits for that publication and is sent for the tip it produced. Writes decided after the
+mark do not hold the send and wait for the cooldown as before. See
+[S1 in applier echoes](applier-echoes.md#s1-flush-then-apply).
 
 ## Decisions
 

@@ -89,7 +89,7 @@ The two appliers get the same contract by different means:
 | Held by | A `FluxTrigger` | An `ArgoCDTrigger` |
 | Kept from applying on its own by | `spec.suspend`, which the trigger owns | Automated sync off, which you set on the `Application` |
 | One apply is | A resume for one reconcile, then a suspend | A sync operation pinned to the commit |
-| Catches up with GitOps Reverser's own pushes | Yes, once the branch is quiet for `quietPeriod` | No: nothing it holds goes stale |
+| When it is asked to apply | [The same four reasons](#when-gitops-reverser-asks-for-an-apply), `CatchUp` included | The same four reasons |
 | The tool's own push webhook | Removed: GitOps Reverser's receiver replaces it | May stay: with automated sync off it only compares |
 | A human override | `flux resume` applies once; it is suspended again within a minute | Sync applies; GitOps Reverser waits for it to end |
 | Handing it back | Delete the trigger, or stop naming it from every `GitTarget`: the `Kustomization` is resumed | Delete the trigger, or stop naming it, then switch automated sync on |
@@ -117,27 +117,42 @@ apply nobody checked:
 None of these can be filtered from outside. They are switched off, and GitOps Reverser makes the
 requests instead.
 
-## The quiet branch
+## Flush, then apply
 
-Every apply GitOps Reverser asks for waits for a **quiet branch**: no open commit window and no
-pending writes, on this branch worker or on any other worker writing the same repository and branch
-through another `GitProvider`. That is the moment nothing live is missing from the tip.
+Every apply GitOps Reverser asks for goes out after a **flush**. When an apply comes due, the branch
+worker closes the open commit window, so its edits become a decided write, and takes the **flush
+mark**: the last write decided so far. It publishes the writes up to the mark at once, without
+waiting for the push cooldown, and asks for the tip that publication produced. Every edit decided
+before the apply is therefore in the commit it applies.
+
+An edit decided after the mark does not hold the apply back. It is recorded in the applier's apply
+window from the mark on, so an apply that writes over it is withheld from Git and repaired
+([the life of an apply](#the-life-of-an-apply)). A user who keeps editing therefore never holds a
+Git-side change back for as long as they type.
 
 ```mermaid
 stateDiagram-v2
     direction LR
-    Quiet --> Busy: an API edit opens a commit window
-    Busy --> Busy: more edits, commits and pushes
-    Busy --> Quiet: every window closed, every write pushed
-    note right of Quiet
-        An apply starts only here,
-        after the decision is checked again
+    [*] --> Due: a reason is pending, past its backoff
+    Due --> Flushing: the open commit window is closed, the flush mark taken
+    Flushing --> Sent: the writes up to the mark are published
+    Sent --> [*]: the operation is followed to its end
+    note right of Flushing
+        An edit decided after the mark is recorded
+        in the apply window; it does not hold the send
     end note
 ```
 
-A foreign commit does not wait for open windows to close on their own. GitOps Reverser closes them,
-replays the pending writes onto the foreign commit, pushes, and asks for the commit it just pushed.
-The applied commit holds the API side's values, so applying it reverts nothing:
+Three states still hold an apply back, because in them no flush can be made: a commit window a
+[`CommitRequest`](configuration.md#commitrequest) holds (a save defines its own commit boundary, and
+the apply waits for it), a missing parent branch being recovered, and a checkout a failed write left
+dirty. In the last two the branch worker cannot say what is published.
+
+A foreign commit is applied after the same flush. A push webhook closes the open window at once;
+without one, the flush's own push is rejected and its fetch finds the commit. Either way the pending
+writes are applied onto the foreign commit and pushed, and the applier is asked once, for the commit
+that holds both sides. It is never asked for the foreign commit on its own first. The applied commit
+holds the API side's values, so applying it reverts nothing:
 
 ```mermaid
 sequenceDiagram
@@ -163,17 +178,54 @@ sequenceDiagram
 | --- | --- | --- |
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push | Every applier declared on the branch |
 | `Refusal` | An edit was refused and the target has `onRefusal: Reapply` | The refusing target's applier |
-| `Repair` | An apply reverted an API edit made while it ran; Git kept the edit | That applier |
-| `CatchUp` | The branch has been quiet for the `FluxTrigger`'s `quietPeriod` after GitOps Reverser's own pushes, since the operator started, or since a `GitTarget` first named the trigger | Every Flux `Kustomization` on the branch |
+| `Repair` | An apply reverted an API edit made after the flush; Git kept the edit | That applier |
+| `CatchUp` | To **adopt**: the API created an object in a folder the applier applies, or a resync added an object to Git. To **converge**: once when the operator starts, and once when a `GitTarget` first names the trigger | To adopt, that folder's applier; to converge, every applier on the branch at start, and the newly named one |
 
-GitOps Reverser's own commits hold values it read from the cluster, so applying them changes
-nothing, and only Flux is asked to catch up with them: its inventory learns of an object only from
-an apply of a commit that holds it, and an object it never applied is not pruned when Git later
-deletes it. An `Application` with automated sync off applies nothing by itself, so nothing it holds
-goes stale.
+The same rule holds for a Flux `Kustomization` and an Argo CD `Application`. The two differ only in
+how an apply is carried out, never in when one is asked for.
+
+**An API edit asks for no apply.** The cluster already runs the edit, and the object keeps the owner
+labels or tracking annotation an earlier apply stamped on it. GitOps Reverser's own pushes leave
+nothing pending either.
+
+**A create is adopted.** An applier prunes only what it applied: Flux deletes only objects that
+carry its owner labels and are in its inventory, and Argo CD prunes only objects that carry its
+tracking annotation. Only an apply stamps them. An object the API created carries neither, even when
+its content equals what Git holds, so when Git later deletes its file the applier leaves it running,
+and a later resync writes it back into Git. A live create (an `ADDED` event whose newest field
+managers are not an applier's) in a folder an applier applies therefore leaves a `CatchUp` pending,
+and so does deleting an object and creating it again under the same name. An adopt is never skipped
+as already applied, because applying the same commit again is what stamps the object. A burst of
+creates is one apply: a pending `CatchUp` is one flag, and one attempt per applier is out at a time.
+
+**A converge asks nothing when it is already done.** The branch worker keeps, for each applier, the
+commit its last successful operation applied, and recovers it on restart from the trigger's
+`status.operation`. A converge of that commit asks nothing.
+
+**No apply before every initial snapshot is published.** An applier is asked for nothing, for any
+reason, until every resource collection of every `GitTarget` it covers has delivered its initial
+snapshot and the branch worker has published or settled it. At startup that is the moment the edits
+made while the operator was down are in Git; for a `GitTarget` that newly names the trigger, the
+moment its folder holds the cluster. An earlier apply would revert what is not mirrored yet. A
+reason that comes due before stays pending, and so does one while the remote does not carry the
+branch, because there is no commit to apply.
 
 Several `GitTarget`s may name one trigger, for a `Kustomization` or `Application` whose path covers
 several folders: the applier is asked once for all of them.
+
+## Objects another applier owns
+
+A folder a trigger applies belongs to that trigger's applier. An object that another applier owns
+is not mirrored into it: a live change to it is not mirrored, and a resync neither writes it nor
+removes its document, even under `prune.mode: Always`. Mirrored, it would be applied by this applier
+too, and two appliers applying one object fight each other.
+
+The owner is read from the object before its bookkeeping is stripped: Flux's
+`kustomize.toolkit.fluxcd.io/name` and `kustomize.toolkit.fluxcd.io/namespace` labels, or else Argo
+CD's `argocd.argoproj.io/tracking-id` annotation. Each excluded object is logged once and counted in
+`apply_ownership_conflicts_total`. An object no applier owns, or one the folder's own applier owns,
+is mirrored as usual. A folder with no trigger excludes nothing: mirroring another applier's objects
+one way is what such a folder can exist for.
 
 ## The life of an apply
 
@@ -183,8 +235,8 @@ asked, so a restarted operator finds it and follows it to its end:
 ```mermaid
 stateDiagram-v2
     [*] --> Due: ForeignCommit, Refusal, Repair or CatchUp
-    Due --> Due: tip moved or an edit is pending, decide again later
-    Due --> Requested: quiet branch, decision still holds, operation recorded
+    Due --> Due: held back, or the tip moved before the request, decide again
+    Due --> Requested: flushed, decision still holds, operation recorded
     Requested --> Running: the applier is seen working on it
     Running --> Settling: Flux only, applied and suspended again
     Running --> Succeeded
@@ -202,23 +254,31 @@ stateDiagram-v2
 ```
 
 `Due` lives only in the branch worker's memory: an apply it means to ask for, and nothing shows it
-until it is asked. Every other state is `status.operation.phase`. While an operation is in flight
-(`Requested`, `Running`, `Settling` or `Unresolved`), the applier is asked nothing else.
+until it is asked. It is held back by the applier's backoff, by the
+[initial-snapshot rule](#when-gitops-reverser-asks-for-an-apply), and by the three states in which
+[no flush can be made](#flush-then-apply). Every other state is `status.operation.phase`. While an
+operation is in flight (`Requested`, `Running`, `Settling` or `Unresolved`), the applier is asked
+nothing else.
 
 - **Just before it asks, GitOps Reverser checks the decision again**: the commit is still the branch
-  tip, no edit waits to be published, and each `GitTarget` still names this trigger on this branch,
-  is still admitted by its `ClusterProvider`s, and, for a `Refusal`, still consents; and the trigger
-  still holds the applier. When any of that
-  changed, it asks nothing and decides again at the next quiet moment. It never asks for something
-  weaker than what it was told.
-- **An edit made while the apply runs keeps its value in Git.** The apply writes the older commit
-  over it on the cluster. GitOps Reverser recognizes that write by the applier's field manager,
-  withholds it from Git, and asks for a `Repair`, which applies the tip that holds the edit. Only a
-  write proven to be the applier's is withheld: its field manager alone, with an entry newer than the
+  tip, each `GitTarget` still names this trigger on this branch, is still admitted by its
+  `ClusterProvider`s, and, for a `Refusal`, still consents; and the trigger still holds the applier.
+  When any of that changed, it asks nothing and decides again, after a new flush. It never asks for
+  something weaker than what it was told.
+- **The apply's own writes are not mirrored.** Inside the apply window, a write whose newest field
+  managers are the applier's alone, made since the request was sent, to an object nobody edited in
+  the window, is the apply landing. It is kept out of Git and counted in
+  `apply_echoes_total{outcome="not_mirrored"}`: mirrored, it would carry the applied commit's values
+  onto a newer tip and revert a Git-side push. The applier's managers alone with no window open are
+  mirrored as an edit and counted as `late`.
+- **An edit made after the flush keeps its value in Git.** The apply writes the older commit over it
+  on the cluster. GitOps Reverser recognizes that write by the applier's field manager, withholds
+  it from Git, and asks for a `Repair`, which applies the tip that holds the edit. Only a write
+  proven to be the applier's is withheld: its field manager alone, with an entry newer than the
   edit. One that ties with the edit is mirrored, and a delete never is withheld. Each such write is
   counted in `apply_window_collisions_total`.
 - **A failed operation is decided again from scratch**, after that applier's own backoff (2 seconds
-  doubling to 5 minutes), on a quiet branch, at the tip as it is then.
+  doubling to 5 minutes), after a flush, at the tip as it is then.
 - **An operation still in flight after 5 minutes is `Unresolved`.** It is still followed, nothing
   ends it by timer, and nothing more is asked of that applier until it completes.
 
@@ -269,11 +329,13 @@ push, so a snapshot would publish them over the incoming change.
 ## When both sides edit the same object
 
 The API side wins. When a push is rejected because somebody else pushed first, the branch worker
-fetches the new tip, re-plans every pending write against it, and pushes again. Each pending write
-carries the whole object as the watch captured it, so writing it onto the new tree either changes
-nothing (the other writer made the same change) or writes the API side's value over the other
-writer's. There is no merge: a watch event has no baseline that says which fields changed on each
-side. [API-first publication](api-first-publication.md) has the replay in detail.
+fetches the new tip, applies every pending write onto it again, and pushes. A pending write carries
+the objects whose plan changed the tree when it was decided, each whole as the watch captured it, so
+writing one onto the new tree either changes nothing (the other writer made the same change) or
+writes the API side's value over the other writer's. An object that changed nothing was dropped when
+the write was decided, so it never overwrites the push. There is no merge: a watch event has no
+baseline that says which fields changed on each side.
+[API-first publication](api-first-publication.md) has the replay in detail.
 
 ### What a write does to the file
 
@@ -340,7 +402,7 @@ until something applies Git over it.
 | Policy | Response to a refused edit | Trade |
 | --- | --- | --- |
 | `Ignore` (default) | Report the refusal | Recovery is left to a human or a later apply |
-| `Reapply` | Ask the target's applier to apply the tip, once the branch is quiet | The refused edit is reverted; nothing still waiting to be published is |
+| `Reapply` | Ask the target's applier to apply the tip, after a flush | The refused edit is reverted; nothing still waiting to be published is |
 
 `Reapply` needs an apply trigger. It fires only for an edit to a document the folder already holds,
 never for a write that removes one, and a reverted edit does not clear the refusal: the target
@@ -349,9 +411,9 @@ returns to `Ready=True` only after a resync covering the refused scope. The elig
 
 ## What is still exposed, and what it costs
 
-- **An edit made while a requested apply runs** is reverted on the cluster until the `Repair`. It
-  keeps its value in Git. It can happen only during an apply GitOps Reverser asked for: after a
-  foreign push, a refusal with `Reapply`, or a Flux catch-up.
+- **An edit made after the flush, while a requested apply runs,** is reverted on the cluster until
+  the `Repair`. It keeps its value in Git. It can happen only during an apply GitOps Reverser asked
+  for: after a foreign push, a refusal with `Reapply`, a `Repair`, or a `CatchUp`.
 - **A human** running `flux resume` or pressing Sync applies whenever they do. GitOps Reverser
   suspends a resumed `Kustomization` again within a minute.
 - **GitOps Reverser becomes the only path to a deployment.** While it is down, the shared folders

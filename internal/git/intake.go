@@ -19,7 +19,7 @@ import (
 //
 // What the budget counts is everything accepted and not yet published: the payload on the FIFO the
 // loop has not handled yet (charged at enqueue, so producers cannot fill the FIFO between two loop
-// iterations), and what the loop holds (the open window, the pending writes, deferred heals, saves waiting for
+// iterations), and what the loop holds (the open window, the pending writes, saves waiting for
 // a window). Every item is charged a fixed overhead beyond its payload, so the budget bounds how
 // many items are kept as well as their bytes. The charge is an estimate of the serialized YAML, not
 // of the heap: an object's in-memory form is several times larger.

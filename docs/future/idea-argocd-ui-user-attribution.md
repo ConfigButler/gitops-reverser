@@ -75,8 +75,9 @@ Line numbers refer to
 | Sync ([L2212](https://github.com/argoproj/argo-cd/blob/4e682980460d2ebbaac20cf78f4795ce44c3cf34/server/application/application.go#L2212)) | `OperationStarted` | `initiated sync to <revision>` | Application | The new one, after the operation was set |
 | Terminate operation ([L2548](https://github.com/argoproj/argo-cd/blob/4e682980460d2ebbaac20cf78f4795ce44c3cf34/server/application/application.go#L2548)) | `ResourceUpdated` | `terminated running operation` | Application | The old one |
 
-All of these are written **after** the write to the cluster succeeded. A write that fails produces no
-Event.
+All of these are written **after** argocd-server's own write succeeded. A write that fails produces
+no Event. For a sync that write only sets the `Application`'s `operation`: `OperationStarted` says a
+sync was started, not that any resource was written, and the sync itself can still fail.
 
 A Lua action can also **create** resources. Those creates are named in no Event at all.
 

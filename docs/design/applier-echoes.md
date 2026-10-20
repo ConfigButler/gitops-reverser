@@ -1,8 +1,11 @@
 # Applier echoes: the applier's own writes, and applying while editing
 
-> **design**: proposed 2026-10-20; not built, and built as one change. Index:
-> [`../INDEX.md`](../INDEX.md). Builds on [`apply-trigger.md`](apply-trigger.md) (the apply window,
-> `Repair`, `CatchUp`, the quiet-branch rule),
+> **design**: proposed and built 2026-10-20, on the `design-applier-echoes` branch (PR #425), and
+> released as one change. The plan below is kept as it was argued, in the present tense of the code
+> it was read from; where the build departs from it, [Decided while
+> building](#decided-while-building) says how. Index: [`../INDEX.md`](../INDEX.md). Builds on
+> [`apply-trigger.md`](apply-trigger.md) (the apply window, `Repair`, `CatchUp`, and the
+> quiet-branch rule this replaces), which now describes the built system,
 > [`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md) (decide,
 > `advance`, materialize, replay) and
 > [`../spec/reconcile-via-watchlist-mark-and-sweep.md`](../spec/reconcile-via-watchlist-mark-and-sweep.md)
@@ -226,7 +229,8 @@ snapshot holds the old state of every object that commit changes. A snapshot who
 overlaps an apply holds a mix. Either is a stale picture once the apply has run.
 
 - **Git is ahead of the cluster** while an applier on the branch has a `ForeignCommit`, `Repair` or
-  `Refusal` pending, a `CatchUp` that converges, or an attempt out.
+  `Refusal` pending, a converge it may be asked for (past S2's initial-snapshot barrier), or an
+  attempt out.
 - **The apply epoch** is a counter on the branch worker, raised at every send of an attempt and at
   every completion of one.
 - **When the watch side starts collecting a snapshot**, it reads both from the worker: whether Git is
@@ -244,6 +248,17 @@ overlaps an apply holds a mix. Either is a stale picture once the apply has run.
 - **A `CatchUp` to adopt does not count as Git being ahead**: it applies objects the cluster already
   runs.
 - **A branch with no trigger never waits**: nothing applies its commits.
+- **A `GitTarget`'s snapshots are exempt until its initial snapshots are published**, latched per
+  `GitTarget` incarnation. They are the startup baseline, and S2 asks no applier for anything before
+  they are in Git, so holding them for an apply would wait on itself
+  ([decided while building](#decided-while-building), 3).
+- **A `GitTarget`'s snapshots are held for at most 5 minutes**, from its first discard. Then the
+  next snapshot is used, logged and counted (`stale_snapshots_total{outcome="used"}`), and C2's
+  policy applies to what the unapplied commit changed
+  ([decided while building](#decided-while-building), 2).
+- **Per worker.** Whether Git is ahead, and the epoch, are this worker's own: the applies due on a
+  sibling writing the same branch are not consulted
+  ([decided while building](#decided-while-building), 1).
 
 A resync is reconciliation, not latency-critical, and with S1 Git is ahead of the cluster for seconds
 at a time.
@@ -366,20 +381,23 @@ it back into Git.
   applier owns. An object a resync adds to Git (an existing object a new `WatchRule` starts mirroring)
   counts too.
 - **Converge.** A `CatchUp` is pending once when the worker starts, and once when a `GitTarget` first
-  names the trigger.
+  names the trigger (per `GitTarget` incarnation, by uid).
 - **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
   reason (`ForeignCommit`, `Refusal`, `Repair` or `CatchUp`), until every resource collection of
   every `GitTarget` it covers has completed its initial events and the resync they produced is
-  published. At startup that is the moment the edits made while the operator was down are in Git;
-  for a `GitTarget` that newly names the trigger it is the moment its folder holds the cluster. An
-  earlier apply would destroy what is not yet mirrored. A reason that comes due before stays pending.
+  published or settled (a refused or failed initial snapshot counts as settled). At startup that is
+  the moment the edits made while the operator was down are in Git; for a `GitTarget` that newly
+  names the trigger it is the moment its folder holds the cluster. An earlier apply would destroy
+  what is not yet mirrored. A `GitTarget` whose watch is `Blocked` holds its applier's requests
+  until it is `Streaming`. A reason that comes due before stays pending.
 - **Already applied, from the worker's own record.** The worker follows every operation and keeps,
   per applier, the commit the last one that succeeded applied (`status.operation.appliedRevision`,
   recovered on restart). A converge of that commit asks nothing. **An adopt is never skipped** that
   way: the applier may be at the tip and still not own the new object, and re-applying the same commit
   is what stamps it.
 - **An empty tip asks nothing**: when the remote does not carry the branch there is no commit to
-  apply, and the source reports the missing branch itself.
+  apply, and the source reports the missing branch itself. The reason stays pending until there is
+  one.
 - **Batched by itself.** A pending `CatchUp` is one flag, and one attempt per applier is out at a
   time, so a burst of creates is one apply. `quietPeriod` goes.
 
@@ -444,8 +462,11 @@ F1 sees each apply land, object by object: every write it keeps out is the appli
 request. One new counter,
 `apply_echoes_total{provider_namespace, provider_name, branch, outcome}`, has `not_mirrored` (F1)
 and `late` (C3: the applier's managers alone, no window open, mirrored as an edit), and one line is
-logged per attempt: "Observed the applier's apply of C: N objects". Objects F4 excludes are counted in
-`apply_ownership_conflicts_total{provider_namespace, provider_name, branch}`.
+logged per window, when it closes or is replaced: "Observed the applier's apply", with the commit
+and the number of objects kept out. Objects F4 excludes are counted in
+`apply_ownership_conflicts_total{provider_namespace, provider_name, branch}`, and the snapshots F3
+holds off in `stale_snapshots_total{provider_namespace, provider_name, branch, outcome}`, as
+`discarded` or `used` (let through by the 5-minute bound).
 
 ## The code plan
 
@@ -459,13 +480,14 @@ Read from the code at `47b171b9`.
 | `workWaiting` | `apply_trigger.go` | queued work items, here or on a sibling, no longer hold an apply |
 | The "nothing pending" half of `decisionHolds` (`busyWriting`, `inflightItems`, `siblingBusy`) | `apply_trigger.go` | `ApplyRequest.Current` checks only that the remote is still at the commit asked for |
 | `branchSiblings.othersBusy`, `BranchWorker.siblingBusy`, `publishWriteBusy`, the `busyWriting` atomic, and the `wakeOthers` calls for quietness | [`apply_siblings.go`](../../internal/git/apply_siblings.go), [`branch_worker.go`](../../internal/git/branch_worker.go) | quietness across siblings existed only for the quiet branch; the claims for source groups stay |
-| `stashDeferredHeal`, `applyDeferredHeals`, `deferredHeals` | [`resync_flush.go`](../../internal/git/resync_flush.go), `branch_worker.go` | no snapshot is parked any more (F3) |
+| `stashDeferredHeal`, `applyDeferredHeals`, `deferredHeals` | [`resync_flush.go`](../../internal/git/resync_flush.go), `branch_worker.go` | no snapshot is parked anymore (F3) |
 | The re-run of the mark-and-sweep on replay | `resync_flush.go` (`applyResyncToWorktree`), [`commit_executor.go`](../../internal/git/commit_executor.go) | a replayed resync applies its decided actions (F2) |
 | `ApplierRef.CatchesUp` | [`apply_request.go`](../../internal/git/apply_request.go) | both appliers catch up (S2) |
 | `FluxTrigger.spec.quietPeriod`, `EffectiveQuietPeriod` on both trigger types and the `ApplyTrigger` interface, `DefaultApplierQuietPeriod` | [`api/v1alpha3`](../../api/v1alpha3/applytrigger_types.go) | nothing waits for time to pass before a `CatchUp`; the CRDs are regenerated |
 | `branchTarget.quietPeriod`, `applierState.quietPeriod`, `quietSince`, the quiet term of `dueAt`, the reset of `quietSince` in `decide` | `apply_trigger.go`, `branch_worker.go`, [`pending_writes_loop.go`](../../internal/git/pending_writes_loop.go) | they only timed the quiet period |
 | The `OutcomeCurrent` of a `ForeignCommit` or `CatchUp` for a suspended `Kustomization` already at the commit | [`internal/applier/flux.go`](../../internal/applier/flux.go) | the worker decides from what each applier last applied |
 | The `OutcomeCurrent` for an empty commit, with the stamp of the source | `flux.go`, [`internal/applier/argocd.go`](../../internal/applier/argocd.go) | the worker sends nothing for an empty tip |
+| `prefetchSources` and the inbox's prefetch, and `FluxTrigger` `status.source.prefetch` | [`apply_groups.go`](../../internal/git/apply_groups.go), `apply_trigger.go`, `api/v1alpha3` | it overlapped the quiet-branch wait, which is gone, and does not shorten the flush ([decided while building](#decided-while-building), 4) |
 
 ### Changed
 
@@ -493,7 +515,6 @@ Read from the code at `47b171b9`.
 | `handleLiveEvents`, adopt | `branch_worker.go` | an `ADDED` event whose newest managers are not an applier's, owned by no other applier, for a target an applier covers, leaves an adopt pending (S2) |
 | `applierState` | `apply_trigger.go` | adds the adopt and converge flags, the commit the last succeeded operation applied, and which covered collections have published their initial snapshot (S2) |
 | `syncAppliers` | `apply_trigger.go` | a newly named applier starts with a converge pending, for both kinds, behind its `GitTarget`'s initial snapshot (S2) |
-| `prefetchSources` and the inbox's prefetch | [`apply_groups.go`](../../internal/git/apply_groups.go), `apply_trigger.go` | it overlapped the quiet-branch wait, which is gone; kept only if it still shortens the flush |
 
 ### Stays as built
 
@@ -517,7 +538,7 @@ queue-depth gauge.
 - [`../spec/reconcile-via-watchlist-mark-and-sweep.md`](../spec/reconcile-via-watchlist-mark-and-sweep.md):
   a resync decides its upserts and deletes once, and a replay never sweeps again (F2).
 - [`../interpreting-metrics.md`](../interpreting-metrics.md): `apply_requests_total`'s `stale`
-  outcome and its "never `CatchUp` for an `application`", and the two new counters.
+  outcome and its "never `CatchUp` for an `application`", and the three new counters.
 - [`../bi-directional.md`](../bi-directional.md) (the quiet branch, the reasons table, the state
   diagram), [`../bi-directional-flux.md`](../bi-directional-flux.md),
   [`../bi-directional-argocd.md`](../bi-directional-argocd.md),
@@ -582,13 +603,26 @@ mirrors and the applier applies.
   `apply_recovery_test.go`, `refusal_reapply_test.go`, `applytrigger_schema_test.go`,
   `flux_guide_test.go` and `helpers_test.go`, and the resync tests that replay a sweep.
 
-## Decisions still open
+## Decided while building
 
-1. **Siblings and F3**: should a resync also count applies due on the other workers writing the same
-   branch as "Git is ahead"?
-2. **How long F3 may hold off a resync** when an apply keeps failing: a resync re-requested forever
-   leaves drift unmirrored. A bound, after which the resync runs and C2's policy applies, is the
-   likely answer.
+The build departs from the plan above in four places, decided on 2026-10-20:
+
+1. **Siblings do not count for F3.** Whether Git is ahead, and the apply epoch, are per worker: an
+   apply due on another worker writing the same branch does not hold this worker's resyncs. This
+   settles the first question the plan left open.
+2. **F3 holds off a `GitTarget`'s resyncs for at most 5 minutes**, from the first snapshot it
+   discarded. Then the next snapshot is used, logged and counted
+   (`stale_snapshots_total{outcome="used"}`), and C2's policy, API wins, applies to what the
+   unapplied commit changed. A resync asked for again forever would leave drift unmirrored for as
+   long as an apply fails. This settles the second open question.
+3. **A `GitTarget`'s snapshots are exempt from F3 until its initial snapshots are published.** The
+   plan counted a pending converge as Git being ahead, while S2's barrier held every apply,
+   converge included, until the initial snapshots were published: each waited for the other, at
+   startup and when a `GitTarget` first names a trigger. The initial snapshots are the startup
+   baseline, so they are decided as they arrive, and the exemption is latched per `GitTarget`
+   incarnation.
+4. **The prefetch is removed**, with `FluxTrigger` `status.source.prefetch`. The plan kept it only
+   if it still shortened the flush; it does not.
 
 ## References
 

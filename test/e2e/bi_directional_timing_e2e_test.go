@@ -303,7 +303,7 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 		})
 
 		// The Git side: another writer pushes, Gitea tells the receiver, and the trigger asks Flux to
-		// apply that commit. A ForeignCommit waits for no quiet period.
+		// apply that commit. A ForeignCommit goes out after a flush.
 		It("times a Git-side push through the receiver to the live object", func() {
 			experiment := gmeasure.NewExperiment("Flux: Git-side push")
 			AddReportEntry(experiment.Name, experiment)

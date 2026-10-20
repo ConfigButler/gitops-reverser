@@ -43,7 +43,7 @@ import (
 //     starts, and once when a GitTarget first names the trigger; that one asks nothing of an applier
 //     that already applied the tip (S2 in docs/design/applier-echoes.md).
 //   - Repair: the apply window withheld a late apply over a newer API edit (apply_window.go), so
-//     the cluster runs an older value than Git. Asked like a Refusal, with no quiet period, and of
+//     the cluster runs an older value than Git. Asked like a Refusal, and of
 //     either kind of applier, because nothing else would put the edit back on an Argo CD
 //     Application.
 //

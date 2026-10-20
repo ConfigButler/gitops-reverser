@@ -536,11 +536,11 @@ type ResyncRequest struct {
 	// removed type). Nil is a whole-GitTarget resync. See ResyncScope for the invariant
 	// binding this to Desired.
 	Scope *ResyncScope
-	// Heal marks a non-urgent drift-correcting resync the worker DEFERS while a commit window is
-	// open. One worker serves N GitTargets and the window is a worker singleton, so a
-	// force-finalizing heal can steal a DIFFERENT GitTarget's held CommitRequest window. Waiting
-	// for idle recurs on every silence timeout, so it never starves. A first-sync backfill is NOT
-	// a heal: it must establish initial state promptly.
+	// Heal marks a non-urgent drift-correcting resync that never closes an open commit window. One
+	// worker serves N GitTargets and the window is a worker singleton, so a force-finalizing heal
+	// could steal a DIFFERENT GitTarget's held CommitRequest window. A heal that arrives while a
+	// window is open is discarded, and a fresh snapshot is asked for once the window is idle
+	// (apply_epoch.go). A first-sync backfill is NOT a heal: it must establish initial state promptly.
 	Heal bool
 	// SourceCollection names the target-watch collection that gathered this snapshot. Zero for a
 	// whole-GitTarget resync, which speaks for no single collection. Diagnostic only: nothing

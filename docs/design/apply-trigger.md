@@ -1,10 +1,13 @@
 # The apply trigger
 
-> **design**: decided 2026-10-16, extended 2026-10-17 and 2026-10-19; built: the Flux applier (its
-> `Kustomization` held suspended), the Argo CD applier (automated sync off), the trigger kinds that
-> hold them and act only while an eligible `GitTarget` references them, the cross-namespace grant
-> for appliers, the push receiver, `onRefusal: Reapply` and the apply window. The webhook applier is
-> the aim. Index: [`../INDEX.md`](../INDEX.md).
+> **design**: decided 2026-10-16, extended 2026-10-17, 2026-10-19 and 2026-10-20; built: the Flux
+> applier (its `Kustomization` held suspended), the Argo CD applier (automated sync off), the
+> trigger kinds that hold them and act only while an eligible `GitTarget` references them, the
+> cross-namespace grant for appliers, the push receiver, `onRefusal: Reapply`, the apply window,
+> and, since 2026-10-20, flush then apply, the applier's own writes kept out of Git, and `CatchUp`
+> as adopt and converge for both appliers. The argument for the 2026-10-20 change is
+> [`applier-echoes.md`](applier-echoes.md). The webhook applier is the aim. Index:
+> [`../INDEX.md`](../INDEX.md).
 > How to use it: [`../bi-directional.md`](../bi-directional.md),
 > [`../bi-directional-flux.md`](../bi-directional-flux.md) and
 > [`../bi-directional-argocd.md`](../bi-directional-argocd.md).
@@ -34,20 +37,27 @@ The cause is not a bug in either tool. Each apply was correct; it ran at the wro
 
 ## The principle
 
-**An apply is safe only when nothing live is missing from the commit being applied.** Between an
-edit and its push, the edit is live and absent from Git: in an open commit window, or in the
-writes waiting to be pushed. Only the branch worker can see those. So only it can say when an apply
-is safe, and every trigger the applier runs by itself fires without that knowledge.
+**An apply is safe only when every live edit is in the commit being applied, or known to the
+worker so it can be put back.** Between an edit and its push, the edit is live and absent from Git:
+in an open commit window, or in the writes waiting to be pushed. Only the branch worker can see
+those. So only it can say when an apply is safe, and every trigger the applier runs by itself fires
+without that knowledge.
 
-An apply is started only on a **quiet branch**: no open commit window and no pending writes. Four
-reasons make one due:
+An apply is started only after a **flush** ([below](#flush-then-apply)): the open commit window is
+closed, the writes decided so far are published, and the apply is sent for the tip that
+publication produced. An edit decided after that is recorded in the apply window, so an apply that
+overwrites it is withheld and repaired. Four reasons make one due:
 
 | Reason | When | Applied by |
 | --- | --- | --- |
-| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed early and pending writes replayed onto it and pushed first, so the applied commit carries the API side's answer | Every applier on the branch |
+| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. The flush replays the pending writes onto it and pushes them first, so the applied commit carries the API side's answer | Every applier on the branch |
 | `Refusal` | An edit to a document the folder holds was refused at the write boundary, and the target opted in with `onRefusal: Reapply` and is not suspended. At most one request a minute per target; a refusal inside that minute is carried by a trailing one | The refusing target's applier |
 | `Repair` | The apply window withheld a late apply over a newer API edit, so the cluster runs an older value than Git | The applier that wrote it |
-| `CatchUp` | The branch has been quiet for `quietPeriod` after GitOps Reverser's own pushes, since it started, or since a `GitTarget` first named the trigger | Every Flux applier on the branch |
+| `CatchUp` | Ownership, not safety ([below](#catchup-adopt-and-converge)). An **adopt**: the API created an object in the folder, or a resync added one to Git, and an apply stamps it as the applier's, so a later Git-side delete prunes it. A **converge**: once when the worker starts, and once when a `GitTarget` first names the trigger, unless the applier already applied the tip | The folder's applier for an adopt; for a converge, every applier on the branch at start, and the named one on first naming. Flux and Argo CD alike |
+
+No applier is asked for anything before every initial snapshot of the `GitTarget`s it covers is
+published, and a push of GitOps Reverser's own leaves nothing pending: the cluster already runs the
+edits it carries.
 
 ## What we learned
 
@@ -63,7 +73,7 @@ unsuspended on a 24h interval and asked it to reconcile. Flux still applied when
 fired, when kustomize-controller restarted (from whatever artifact it held, which is why `CatchUp`
 was once a safety rule), when a failed apply retried, when the `Kustomization`'s own spec changed,
 and on every new artifact of its `GitRepository`, including one another consumer's request fetched.
-None of those waits for a quiet branch. The third review called it best-effort coordination, and it
+None of those waits for the worker. The third review called it best-effort coordination, and it
 was. A suspended `Kustomization` does none of them, so it is held suspended, and resumed for one
 apply at a time ([below](#the-flux-applier-suspended)).
 
@@ -87,11 +97,11 @@ write that starts the apply.
 
 **A retry is a decision too, so only the worker may make one.** The second review found every
 remaining problem in the hand-off between the worker's decisions and the deliverer's retries: a
-retry skipped the quiet check, outlived a refusal that had recovered, ran for a recreated target, or
-waited on another applier's backoff. The fix was structural rather than four patches. The worker
+retry skipped the worker's check, outlived a refusal that had recovered, ran for a recreated target,
+or waited on another applier's backoff. The fix was structural rather than four patches. The worker
 keeps every reason pending until an operation that succeeded answers it. The dispatcher carries out one
 attempt and reports back; it never retries, and never asks for something weaker than it was told. A
-retry is decided like a first attempt: on a quiet branch, at the tip as it is then.
+retry is decided like a first attempt: after a flush, at the tip as it is then.
 
 **An apply is an operation, and its end is observed, never guessed.** The third review found the
 apply window closing early in three ways: kustomize-controller writes `lastAttemptedRevision`
@@ -108,10 +118,10 @@ the right unit is what makes the 1:n cases fall out:
 
 | Unit | Owns | Why |
 | --- | --- | --- |
-| The **branch** (repository and branch) | Quietness | A `Kustomization` applies the tip whichever folder an edit is in. Two `GitProvider`s naming one repository give one branch two workers, so a worker is quiet only when its siblings are too |
-| The **applier**, held by its trigger | Pending reasons, retries, the operation | One operation at a time, its own backoff, one for every `GitTarget` naming the trigger. The trigger's status records it, and its `quietPeriod` is declared once |
+| The **branch** (repository and branch), per worker | The flush, and whether Git is ahead (the apply epoch) | A `Kustomization` applies the tip whichever folder an edit is in, so a flush publishes every pending write of the worker. Two `GitProvider`s naming one repository give one branch two workers: each flushes and keeps its epoch for itself, and they share only the source claims |
+| The **applier**, held by its trigger | Pending reasons, retries, the operation, the commit it last applied | One operation at a time, its own backoff, one for every `GitTarget` naming the trigger. The trigger's status records it |
 | The **source** (cluster and `GitRepository`) | One operation at a time across its appliers | The artifact is shared: a sibling's fetch landing between an operation's recheck and its reconcile would apply another commit |
-| The **`GitTarget`**, by uid | Configuration, consent and eligibility | Consent to a `Refusal` is per target, and a target deleted and recreated under the same name inherits nothing due to the old one. A trigger acts only while an eligible `GitTarget` references it |
+| The **`GitTarget`**, by uid | Configuration, consent, eligibility and its initial snapshots | Consent to a `Refusal` is per target, and a target deleted and recreated under the same name inherits nothing due to the old one. A trigger acts only while an eligible `GitTarget` references it, and its applier is asked for nothing until each `GitTarget` it covers has published its initial snapshots |
 
 ## The design, as built
 
@@ -120,33 +130,36 @@ flowchart LR
     subgraph WORKER["Branch worker (one per GitProvider and branch)"]
         OBS["Observations<br/>push · fetch · notification"]
         DUE["Due, per applier<br/>ForeignCommit · Refusal · Repair · CatchUp"]
-        QUIET{"Quiet branch?<br/>this worker and its siblings"}
+        FLUSH{"Flush<br/>close the window, publish up to the mark"}
     end
     EXEC["Dispatcher<br/>one attempt, no retries"]
     TRIG["Trigger status<br/>operation · repairPending"]
     FLUX["Flux<br/>GitRepository · Kustomization"]
     ARGO["Argo CD<br/>Application"]
 
-    OBS --> DUE --> QUIET
-    QUIET -- "yes, and due" --> EXEC
+    OBS --> DUE --> FLUSH
+    FLUSH -- "published, past the barrier" --> EXEC
     EXEC -- "record before the write" --> TRIG
     EXEC -- "recheck, fetch, resume with a token,<br/>follow, suspend again" --> FLUX
     EXEC -- "recheck, set a pinned sync,<br/>follow its token" --> ARGO
-    EXEC -. "report: Requested · Running · Settling ·<br/>Unresolved · Succeeded · Failed · Current ·<br/>RequestFailed · Rejected · Dropped · Stale" .-> DUE
+    EXEC -. "report: Requested · Running · Settling ·<br/>Unresolved · Succeeded · Failed ·<br/>RequestFailed · Rejected · Dropped · Stale" .-> DUE
 ```
 
 - **Observing.** Every observation of the remote passes one point. The first after a start is a
-  baseline (a `CatchUp` is due, never a `ForeignCommit`, because an apply on startup would revert
-  edits made while the operator was down). A tip the worker pushed makes a `CatchUp` due; any other
-  a `ForeignCommit`. When in doubt it is foreign, which costs one apply on a quiet branch. An
-  applier a `GitTarget` names for the first time gets what a first observation gives, a `CatchUp`:
-  a commit observed before it was named was due to nobody, and was taken, so it would otherwise not
-  be applied until some later push. For a `Kustomization` already at the tip that costs nothing
-  (`Current`). The worker lists its `GitTarget`s on every pass, cached, so a new name is seen at
-  once.
-- **Deciding.** At the end of every wake, if the branch is quiet, each applier with an apply due,
-  no operation out, shares no source with one that has, and is past its backoff
-  (and, for a `CatchUp`, its quiet period) gets one attempt. The attempt carries away what it
+  baseline: a converge is pending, never a `ForeignCommit`, because an apply on startup would revert
+  edits made while the operator was down. A tip the worker pushed leaves nothing pending; any other
+  is a `ForeignCommit`. When in doubt it is foreign, which costs one apply of the tip. An applier a
+  `GitTarget` names for the first time (per `GitTarget` incarnation, by uid) gets a converge too: a
+  commit observed before it was named was pending for nobody, and was taken, so it would otherwise
+  not be applied until some later push. The worker lists its `GitTarget`s on every pass, cached, so
+  a new name is seen at once. An API create in a folder an applier applies, and an object a resync
+  adds to Git, leave an adopt pending ([below](#catchup-adopt-and-converge)).
+- **Deciding.** At the end of every wake, an applier is due when it has a reason pending, no
+  operation out, shares no source with one that has, and is past its backoff and the
+  initial-snapshot barrier. An empty tip asks nothing, and a converge alone of the commit the
+  applier last applied asks nothing and is answered. When one is due the worker flushes
+  ([below](#flush-then-apply)), and once the writes up to the flush mark are published, each due
+  applier gets one attempt, for the tip that publication produced. The attempt carries away what it
   covers; each target in it carries its uid and its own reason. The worker takes the operation's
   token; nothing is on the trigger yet.
 - **Attempting.** The dispatcher re-reads each target. It asks only for those that are still the
@@ -163,26 +176,100 @@ flowchart LR
   `Held=True` (still adopting, releasing, or being deleted) is not resumed (`RequestFailed`). A source
   on another repository or branch, a `Kustomization` whose `spec.suspend` another manager applies,
   or an `Application` with automated sync on, is `Rejected`. A decision that no longer holds when
-  the write is due (the commit is no longer the tip, or something is waiting to be published) asks
-  nothing (`Stale`, no failure).
+  the write is due (the commit is no longer the tip) asks nothing (`Stale`, no failure).
 - **Following.** The dispatcher follows the operation and reports each move, so the attempt is out
   for exactly the apply window. Flux: `Running`, `Settling` once suspended again, then `Succeeded`
   or `Failed` ([below](#the-flux-applier-suspended)). Argo CD: the operation state carrying the
   request's token ([below](#the-argo-cd-applier)). One not completed after 5 minutes is
   `Unresolved`: a Flux `Kustomization` is suspended at once, and the operation is followed on, at an
   interval doubling to a minute. The applier object being deleted, or its trigger being deleted,
-  completes it as `Failed`; no `GitTarget` naming the trigger any more abandons it, and a Flux
+  completes it as `Failed`; no `GitTarget` naming the trigger anymore abandons it, and a Flux
   `Kustomization` is suspended, and that suspend handled, before it is let go.
 - **Settling.** An operation that succeeded is done. A stale attempt gives back what it carried and
-  is decided again at the next quiet moment. Any other outcome, a failed operation included, gives
-  back what the attempt carried, a refusal only if it still stands, and starts that applier's
-  backoff (2s doubling to 5m, at least 15s after a rejection). `ApplyRequestFailed` or
-  `ApplyFailed` is recorded for the first failure of a run, and `ApplyUnresolved` when an operation
-  becomes `Unresolved`; `apply_operations_unresolved` counts those still out, and the trigger is
-  `Ready=False` (`OperationUnresolved`) until its operation completes.
+  is decided again at once, at the tip as it is then, with no backoff. Any other outcome, a failed
+  operation included, gives back what the attempt carried, a refusal only if it still stands, and
+  starts that applier's backoff (2s doubling to 5m, at least 15s after a rejection).
+  `ApplyRequestFailed` or `ApplyFailed` is recorded for the first failure of a run, and
+  `ApplyUnresolved` when an operation becomes `Unresolved`; `apply_operations_unresolved` counts
+  those still out, and the trigger is `Ready=False` (`OperationUnresolved`) until its operation
+  completes.
 - **Learning about pushes.** A push webhook into GitOps Reverser's receiver (seconds), a rejected
   compare-and-swap push (at the next publication), or the periodic refresh (minutes). All three
   feed the same observation point.
+
+### Flush, then apply
+
+When an apply comes due for any applier, the worker flushes before it sends:
+
+1. **The open commit window is closed**, so its edits become a decided write
+   (`git_commit_windows_total{close_reason="apply_due"}`).
+2. **The worker takes the flush mark**: the last write decided so far.
+3. **From the mark, the due applier records the API edits decided after it**, and its next apply
+   window holds them from the start ([below](#the-apply-window)).
+4. **The writes up to the mark are published at once**, without waiting for the 5-second push
+   cooldown. Writes decided after the mark do not hold the send, so continuous editing cannot
+   starve an apply.
+5. **The attempt is sent for the tip that publication produced.** It is `Stale` only when that tip
+   moved: `ApplyRequest.Current` checks nothing else.
+
+Every edit is therefore published before the send, so the apply includes it, or recorded in the
+window, so an apply that overwrites it is withheld over and a `Repair` puts it back.
+
+Three states still hold an apply back: a registered `CommitRequest` (a save defines its own commit
+boundary, and the apply waits for it), a parent-branch recovery, and a checkout a failed write left
+dirty. In the last two the worker cannot say what is published.
+
+A Git-side push usually reaches the worker through the flush itself. Say somebody pushed `B`: the
+worker's push is rejected, the fetch finds `B`, a commit the worker did not push (a `ForeignCommit`
+is pending), the pending writes' actions are applied onto it, and the push lands `B+1`. The
+applier is then asked once, with `ForeignCommit`, for `B+1`, which holds both sides. Applying `B` on
+its own first would revert the pending API edits on the cluster and need a second apply to put them
+back. A push notice from the Git host (the receiver) still closes an open window, unless a
+`CommitRequest` holds it, so its publication finds the move.
+
+Each worker flushes for itself. A sibling worker (another `GitProvider` on the same repository and
+branch) neither holds an apply back nor is held by one; the two share only the source claims
+([below](#shared-sources)).
+
+### `CatchUp`: adopt and converge
+
+With the flush guarding the cluster, an apply after every push of the worker's own protects
+nothing, so such a push leaves nothing pending, and an API edit asks for no apply at all. What is
+left is ownership: **an applier prunes only what it applied.** Flux deletes only objects that carry
+its owner labels and are in its inventory; Argo CD prunes only objects that carry its tracking
+annotation. An apply stamps both. An object the API creates carries neither, so when Git later
+deletes its file the applier leaves it on the cluster, and a later resync writes it back.
+
+- **Adopt.** A `CatchUp` is pending for an applier when the worker observes a live create (an
+  `ADDED` event) in a folder that applier applies, whose newest managers are not an applier's and
+  that no other applier owns ([below](#another-appliers-objects)), and when a resync adds an object
+  to Git. It is never skipped as already applied: applying the same commit again is what stamps the
+  owner labels or the tracking annotation.
+- **Converge.** A `CatchUp` is pending once when the worker starts (its first observation of the
+  branch), and once when a `GitTarget` first names the trigger, per `GitTarget` incarnation, by
+  uid. The worker keeps, per applier, the commit the last succeeded operation applied, from the
+  operation's report and, after a restart, from the trigger's `status.operation`. A converge of that
+  commit asks nothing.
+- **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
+  reason, until every collection of every `GitTarget` it covers has delivered its snapshot (its
+  watch is `Streaming`) and the worker has published or settled every resync it holds for that
+  `GitTarget`; a refused or failed initial snapshot counts as settled. At startup that is when the
+  edits made while the operator was down are in Git; for a `GitTarget` that newly names the
+  trigger, when its folder holds the cluster. A `GitTarget` whose watch is `Blocked` holds its
+  applier's requests until it is `Streaming`. A reason that comes due before stays pending.
+- **An empty tip asks nothing.** When the remote does not carry the branch, nothing is sent, and the
+  reason stays pending until there is a commit to apply.
+- **Batched by itself.** A pending `CatchUp` is one flag, and one attempt per applier is out at a
+  time, so a burst of creates is one apply.
+- **One reason per target in an attempt**, by precedence: `ForeignCommit`, then `Repair`, then
+  `Refusal`, then `CatchUp`. Any succeeded operation applies the tip and answers every pending
+  reason.
+
+This reverses two earlier decisions ([2026-10-20, decision 3](#decisions)). An Argo CD
+`Application` now gets a `CatchUp`, adopt and converge alike, where it was never asked for one. And
+a newly bound `Application` converges once its `GitTarget`'s initial snapshots are published, where
+it waited for the next push. A sync on an API create or on binding runs the `Application`'s hooks;
+such a sync is rare, and one rule for both appliers is worth it.
 
 ## The Flux applier, suspended
 
@@ -249,19 +336,20 @@ drifted object with no new commit):
    resumed again before T2 is handled, the `Kustomization` is suspended again.
 7. **Complete** once T2 is handled, and keep the window open 10 s more.
 
-A `ForeignCommit` or `CatchUp` asks nothing (`Current`) when the `Kustomization` is suspended and
-both its artifact and `lastAppliedRevision` hold the commit: nothing applied since, and nothing will
-until it is resumed. A `Refusal` and a `Repair` always run the operation. A failed apply is suspended
-like any other, which is what stops Flux's own `retryInterval` retry; the worker owns the retry.
+Every reason that reaches the client runs the operation. The worker decides what needs no apply
+before it sends (a converge of the commit the applier last applied, an empty tip), so the client
+never answers for it, and an adopt runs even at the tip, because the apply is what stamps the
+object. A failed apply is suspended like any other, which is what stops Flux's own `retryInterval`
+retry; the worker owns the retry.
 
 An `Unresolved` operation is suspended at once (the suspend does not stop the running apply, but it
 stops whatever would follow), and that suspend's token then decides when it completes. There is no
 automatic cancellation.
 
-`CatchUp` stays, as convergence rather than safety: a suspended `Kustomization` never applies a
-stale artifact, but Flux's inventory learns of an object only from an apply of a commit that holds
-it, and an object created through the API and never applied by Flux would not be pruned when Git
-later deletes it.
+`CatchUp` is ownership rather than safety ([above](#catchup-adopt-and-converge)): a suspended
+`Kustomization` never applies a stale artifact, but Flux's inventory learns of an object only from
+an apply of a commit that holds it, and an object created through the API and never applied by Flux
+would not be pruned when Git later deletes it.
 
 ### Who owns `spec.suspend`
 
@@ -324,7 +412,7 @@ later deletes it.
   first adoption write until it has handed the `Kustomization` back or over, also while its
   configuration is invalid (then `Held=Unknown`, `NotConfigured`, and the message says the
   `Kustomization` is left suspended under `gitops-reverser`). It hands it back when it is deleted,
-  and when no eligible `GitTarget` references it any more, conclusively: a reference that cannot be
+  and when no eligible `GitTarget` references it anymore, conclusively: a reference that cannot be
   judged yet keeps the hold, since a release is not undone. Until the hand-back is done the trigger
   is `Held=False`, `Releasing`, and stays the holder in line. It suspends the `Kustomization` with a
   token if an apply has it resumed, waits until that is handled, then releases `spec.suspend` with
@@ -343,7 +431,7 @@ later deletes it.
   `Kustomization`; the dispatcher reads the trigger uncached before every step that may suspend. A
   `Kustomization` that is gone lets the trigger go. A `ClusterProvider` that is gone does not end the
   hand-back: it goes on through whatever client still reaches the cluster, which for a provider
-  without `kubeConfig` is the operator's own. A cluster no client reaches any more, a suspend or
+  without `kubeConfig` is the operator's own. A cluster no client reaches anymore, a suspend or
   release the identity may not make, or a hand-back still unfinished 10 minutes after `Held` turned
   `Releasing` (each a `Warning` `ReleaseFailed` Event, which says where the `Kustomization` was left)
   lets the trigger go.
@@ -367,31 +455,28 @@ live event is mirrored before the windows of what it finds are open:
   suspended) is followed whenever it is listed, once per suspend token, so its window opens while the
   process runs too.
 
-The first observation is still a baseline that makes a `CatchUp` due, so a recovered operation
-decides nothing about which apply is due.
+The first observation is still a baseline that leaves a converge pending, so a recovered operation
+decides nothing about which apply is due. The commit each applier last applied is read back from its
+trigger's `status.operation`, so that converge asks nothing of an applier already at the tip.
 
-### Shared sources and prefetch
+### Shared sources
 
 - The trigger lists the consumers of its `GitRepository` in the applier's cluster:
   `Kustomization`s with that `sourceRef`, and `HelmRelease`s whose chart comes from it, directly or
   through a `HelmChart` their `chartRef` names (at whichever `HelmRelease` version the cluster
-  serves; consumers that cannot be determined are an error, so no prefetch). Those no `FluxTrigger`
-  on the same `ClusterProvider` holds, that is reports `Held=True`, are
-  `status.source.otherConsumers`, information only: it never affects `Ready`, and no `Warning` is
-  sent, because one `GitRepository` for `apps` and `infra` is a normal setup.
-- `status.source.prefetch` is true only when that list was read and is empty, and the trigger holds
-  its own `Kustomization`. The dispatcher checks once more, on the cluster, that every consumer is
-  held just before it stamps the source, and stamps only the `GitRepository` whose consumers it
-  checked: the `Kustomization`'s live `sourceRef` must still name it. Then a push somebody else
-  made, observed while the branch is busy, has the source fetch at once, so the artifact is
-  ready when the apply is due. On a quiet branch the attempt sent at once fetches for itself. No
-  prefetch while any `FluxTrigger` on that source has an operation in flight, because a resumed
-  consumer applies whatever the artifact becomes. A listing that is forbidden counts as not holding.
+  serves; a listing that fails is logged and publishes nothing). Those no `FluxTrigger` on the same
+  `ClusterProvider` holds, that is reports `Held=True`, are `status.source.otherConsumers`,
+  information only: it never affects `Ready`, and no `Warning` is sent, because one `GitRepository`
+  for `apps` and `infra` is a normal setup. Each of them applies a new artifact the moment it
+  arrives.
 - Appliers that share a source have one operation at a time, and take turns: the one whose last
   turn is oldest goes first, so a busy sibling cannot starve another. This holds across the
   workers of GitProviders that name the same repository and branch: a worker claims the source's
-  group before it sends, under the siblings' lock, and a sibling's operation of that source holds
-  a prefetch back too.
+  group before it sends, under the siblings' lock. These claims are all that sibling workers share.
+- The source is stamped only inside an operation, to make its artifact hold the commit (step 1
+  [above](#one-operation-every-reason)). Nothing fetches a push into a shared `GitRepository` ahead
+  of the apply: that prefetch overlapped the wait for a quiet branch, which is gone, and a flush
+  leaves it nothing to shorten. `status.source.prefetch` went with it.
 
 ### What the measurement found
 
@@ -420,11 +505,12 @@ Taken 2026-10-17:
 
 1. **Suspension is the only Flux mode,** as automated sync off is the only Argo CD mode. A second,
    request-based mode would keep every hole of the 24h setup alive, and two completion protocols.
-2. **A shared source is information only:** `status.source.otherConsumers`, prefetch off while it is
-   not empty, no `SharedSource` condition.
+2. **A shared source is information only:** `status.source.otherConsumers`, no `SharedSource`
+   condition. It also held the prefetch off while it was not empty; the prefetch is removed
+   (2026-10-20, decision 7).
 3. **An external resume is always suspended again,** with a `Normal` Event each time.
 4. **`CatchUp` stays for Flux,** as convergence. The same inventory question exists for Argo CD,
-   which was decided without `CatchUp`.
+   which was decided without `CatchUp`. Reversed 2026-10-20 (decision 3): Argo CD catches up too.
 5. **The resources are triggers,** with long kind names: `FluxTrigger` (`spec.kustomizationRef`)
    and `ArgoCDTrigger` (`spec.applicationRef`), named by `GitTarget.spec.applyTriggerRef` in the
    same namespace. Each is its own kind because suspension needs one owner object with a finalizer,
@@ -454,6 +540,30 @@ Taken 2026-10-19, after the seventh review:
    mid-release.
 6. **A newly bound `Application` waits for the next push.** A first sync on binding would run its
    hooks for a commit it may already have, which is why an `Application` gets no `CatchUp`.
+   Reversed 2026-10-20 (decision 3): it converges on first naming.
+
+Taken 2026-10-20, with [`applier-echoes.md`](applier-echoes.md), which carries the argument:
+
+1. **Flush, then apply** ([above](#flush-then-apply)). No apply waits for a quiet branch, on this
+   worker or a sibling: the flush publishes what is pending, and the apply goes. Sibling workers
+   share only the source claims.
+2. **The applier's own write in its apply window is not mirrored** ([below](#the-apply-window)).
+3. **`CatchUp` only adopts and converges, decided in the branch worker, the same for Flux and Argo
+   CD** ([above](#catchup-adopt-and-converge)). This reverses decision 4 of 2026-10-17, so an
+   Argo CD `Application` now catches up, and decision 6 of 2026-10-19, so a newly bound
+   `Application` converges on first naming instead of waiting for the next push. A push of the
+   worker's own leaves nothing pending, and `FluxTrigger` `spec.quietPeriod` is removed from the
+   API.
+4. **No apply before every initial snapshot is published**, for any reason.
+5. **A resync never decides from a snapshot collected while Git was ahead, or across an apply**
+   ([below](#resyncs-while-git-is-ahead)). Per worker, so siblings are not consulted, and a
+   `GitTarget`'s snapshots are held off for at most 5 minutes.
+6. **An object another applier owns is not mirrored into a triggered folder**
+   ([below](#another-appliers-objects)).
+7. **The prefetch is removed**, with `status.source.prefetch`: it overlapped the quiet-branch wait,
+   and does not shorten the flush.
+8. **The worker decides what needs no apply, and never sends an empty commit**, so the clients'
+   `Current` outcome is gone.
 
 ## The apply window
 
@@ -463,10 +573,9 @@ the edit yet. Making the request synchronous would not help: waiting for the app
 user from editing during it, and refusing edits would halt the API for everyone to protect a few
 seconds.
 
-The quiet-branch rule confines the window to three moments: right after somebody else's push, right
-after a refusal the target asked to have reverted, and after `quietPeriod` of silence on a branch
-GitOps Reverser pushed to, or that a `GitTarget` newly names a trigger for. Inside it, **the API
-wins**, as it does for any object both sides changed:
+The flush confines the window to what it cannot avoid ([above](#flush-then-apply)): every edit is
+either published before the attempt is sent, so the apply includes it, or recorded in the window
+from the flush mark. Inside it, **the API wins**, as it does for any object both sides changed:
 
 - **The window is known.** It opens when the attempt is sent and stays open until its operation
   completed: for Flux, the resume's token and the suspend after it handled; for Argo CD, the operation
@@ -477,12 +586,24 @@ wins**, as it does for any object both sides changed:
   attempt that asked for nothing does not end the earlier grace. A write of the new apply to an
   object edited during the earlier one is then withheld too, since the managers cannot tell the two
   applies apart: that costs one redundant `Repair`, never an edit.
-- **The late apply is withheld.** A write whose latest `managedFields` entries are the applier's
-  own managers alone (`kustomize-controller`; `argocd-controller` or
-  `argocd-application-controller`) and newer than the API edit, inside the window, to an object in
-  the applier's folders that the API side edited after the attempt was sent, is not mirrored. Git
-  keeps the edit, and the withheld write makes a `Repair` due to its applier: an apply of the tip at
-  the next quiet moment, with no quiet period, for Flux and Argo CD alike. The cluster runs the
+- **Edits are recorded from the flush mark.** An edit decided after the mark is not in the commit
+  the attempt applies, so the due applier records it before the attempt is sent, and the window the
+  attempt opens holds it from the start.
+- **The apply itself is not mirrored.** A write whose newest `managedFields` entries are the
+  applier's own managers alone (`kustomize-controller`; `argocd-controller` or
+  `argocd-application-controller`), written at or after the earliest send of every window still
+  open or carried, to an object nobody edited in the window, is the apply landing: its content is
+  the commit's, which Git already holds. It is not mirrored, makes nothing due, and is counted in
+  `apply_echoes_total{outcome="not_mirrored"}`. Mirrored, it would become a pending write planned
+  from the live object, and a replay of that write onto a newer tip would revert that tip's change
+  to the object. The bound is the earliest send of every window still open or carried, so a
+  delayed echo of one attempt, arriving after the next was sent and inside the first one's grace,
+  is still that apply. When a window closes or is replaced, one line is logged,
+  `Observed the applier's apply`, with the commit and the number of objects kept out.
+- **The late apply is withheld.** A write by the applier's managers alone, newer than the API edit,
+  inside the window, to an object in the applier's folders that the API side edited in the window,
+  is not mirrored. Git keeps the edit, and the withheld write makes a `Repair` due to its applier:
+  an apply of the tip after the next flush, for Flux and Argo CD alike. The cluster runs the
   reverted value until then, and the trigger shows `repairPending`.
 - **Only proof withholds.** `managedFields` times resolve to the second. When the applier ties
   with another manager, the write could be the edit itself, and withholding an edit loses it
@@ -492,13 +613,77 @@ wins**, as it does for any object both sides changed:
   applier's at all: an update that removes every field a manager owns deletes that manager's entry,
   so undoing an edit (`kubectl label cm/x tmp-` after `tmp=1`) can leave the applier's entry from an
   earlier apply as the newest. A late apply moves the applier's entry forward, so an older one is
-  the API's undo, mirrored as an edit. A DELETE carries nothing about its deleter and is never
-  withheld. All are logged.
+  the API's undo, mirrored as an edit. For the same reason an applier entry older than the earliest
+  send, on an object nobody edited in the window, is an edit and is mirrored. A DELETE carries
+  nothing about its deleter: it is always an edit, which a pending write drops only when it changes
+  nothing in Git. All are logged.
+- **With no window open, the applier's write is late.** The applier's managers alone on an object
+  with no window open are mirrored as an edit and counted in `apply_echoes_total{outcome="late"}`:
+  an echo that arrived after the grace, or an apply somebody else started.
 
 Every collision is logged with the object, the applier and the requested commit, and counted in
 `apply_window_collisions_total` (`withheld` or `ambiguous`). What remains: an edit reverted on the
 cluster until the repair, an ambiguous tie mirrored as the applier's commit, and an applier's write
-that reaches the watch more than 10 seconds after its operation completed.
+that reaches the watch more than 10 seconds after its operation completed, mirrored and counted as
+`late`.
+
+## Resyncs while Git is ahead
+
+**A resync never decides from a snapshot collected while Git was ahead of the cluster, or across an
+apply.** A resync mirrors a snapshot of live state. While a commit is pushed and not yet applied, a
+snapshot holds the old state of every object that commit changes, and one whose collection overlaps
+an apply holds a mix. Decided, either reverts the push.
+
+- **Git is ahead** while an applier on the branch has a `ForeignCommit`, `Repair` or `Refusal`
+  pending, a converge it may be asked for (past the initial-snapshot barrier), or an attempt out.
+  An adopt does not count: it applies objects the cluster already runs.
+- **The apply epoch** is a counter on the worker, raised at every send of an attempt and at every
+  end of one.
+- **The watch side reads both when a snapshot's collection starts**, just before the watch that
+  delivers its initial events opens, or before the LIST fallback. The resync request carries them.
+- **The worker discards** a snapshot collected while Git was ahead, across an epoch change, or
+  arriving while Git is ahead, and one whose own pre-resync fetch finds a commit the worker did not
+  push. A discarded snapshot is answered as discarded, which is no failure and is not counted as a
+  failed background resync. Once Git is no longer ahead, the worker asks the watch plane to
+  re-anchor that `GitTarget`'s watches (the forced recheck a refused Git path uses), which collects
+  a fresh snapshot after the apply. Until it lands, the `GitTarget`'s render-fidelity scope stays
+  pending: the render-fidelity gate holds its live writes back, and the fresh snapshot recovers
+  them.
+- **A heal that would close an open commit window** is discarded and asked for again once the window
+  is idle. No snapshot is ever parked.
+- **What never waits.** A branch with no trigger, because nothing applies its commits. A
+  `GitTarget`'s snapshots until its initial snapshots are published: they are the startup baseline,
+  and no applier is asked for anything before they are in Git, so holding them for an apply would
+  wait on itself. And a `GitTarget` whose snapshots have been held for 5 minutes from the first
+  discard: the next snapshot is used, logged and counted, because an apply that keeps failing must
+  not leave drift unmirrored for as long as it fails. The "API wins" rule then applies to what the
+  unapplied commit changed.
+- **Per worker.** Whether Git is ahead, and the epoch, are this worker's own; a sibling worker's
+  applies are not consulted.
+
+`stale_snapshots_total` counts each stale snapshot as `discarded`, or `used` when the 5-minute
+bound let it through.
+
+## Another applier's objects
+
+**A folder a trigger applies belongs to that trigger's applier.** An object another applier applies
+(another `Kustomization`, another `Application`), mirrored into the folder, would be applied by this
+applier too, and two appliers applying one object fight each other.
+
+- The watch side reads the owner from the raw object, before sanitize strips it: Flux's owner labels
+  `kustomize.toolkit.fluxcd.io/name` and `/namespace` (a `Kustomization`), else Argo CD's tracking
+  annotation `argocd.argoproj.io/tracking-id` (`<app>:<group>/<kind>:<namespace>/<name>`, where
+  `<app>` is `<namespace>_<name>` for an `Application` outside Argo CD's own namespace). It stamps
+  the owner on live events and on snapshot entries.
+- The worker compares it with the applier of the event's `GitTarget`'s trigger. An object owned by
+  another applier is excluded: a live event is not mirrored, and a snapshot entry is neither
+  upserted nor treated as missing, so the sweep leaves its document alone, under
+  `prune.mode: Always` too.
+- An object owned by nobody, or by the folder's own applier, is mirrored as before. A folder with no
+  trigger excludes nothing: mirroring another applier's objects one way is what such a folder can
+  exist for.
+- Each excluded object is logged once and counted in `apply_ownership_conflicts_total`, so the
+  misconfiguration is seen.
 
 ## The Argo CD applier
 
@@ -512,10 +697,12 @@ and is never synced. The user guide is [`../bi-directional-argocd.md`](../bi-dir
 
 Automated sync off is Argo CD's equivalent of a suspended `Kustomization`, and it needs no suspend
 after an apply: an Argo CD operation that has completed is not followed by another one nobody
-started. **It gets no `CatchUp`**: an `ArgoCDTrigger` has no `quietPeriod`, and the worker never
-asks an `Application` for one. So an `Application` a `GitTarget` names for the first time is synced at the next push, a
-refusal or a repair, not at once: a sync on binding would run its hooks for a commit it may already
-have.
+started. **It gets every reason, `CatchUp` included,** by the same rules as Flux
+([above](#catchup-adopt-and-converge)): Argo CD prunes only objects that carry its tracking
+annotation, and a sync is what stamps it on an object the API created. An `Application` a
+`GitTarget` names for the first time converges once that `GitTarget`'s initial snapshots are
+published, unless it already synced the tip, so a sync on binding runs its hooks. Both reverse
+earlier decisions ([2026-10-20, decision 3](#decisions)).
 
 Every rule the client relies on is Argo CD's own, read from its source (3.5.0):
 
@@ -540,7 +727,8 @@ Three choices were decided (2026-10-17):
 2. **The initiator** is `InitiatedBy{Username: "gitops-reverser", Automated: true}`. GitOps Reverser
    replaces automated sync, so a sync window that blocks automated syncs blocks its syncs too.
 3. **Hooks run on every sync**, so on every `ForeignCommit`, which asks every applier on the
-   branch. Narrowing it by changed paths waits for a measured complaint.
+   branch, and, since 2026-10-20, on every adopt and converge. Narrowing it by changed paths waits
+   for a measured complaint.
 
 A hub Argo CD keeps `Application`s in a management cluster: the trigger's `spec.clusterProviderRef`
 reaches it as it reaches a Flux in another cluster. Out of scope: multi-source `Application`s (and
@@ -551,8 +739,8 @@ reaches it as it reaches a Flux in another cluster. Out of scope: multi-source `
 
 **A webhook applier** for any other tool: a third trigger kind that POSTs `{"repository", "branch",
 "commit", "reason"}`, signed `X-Signature: sha256=<hex HMAC>` the way Flux's `generic-hmac`
-`Receiver` checks. It gets every reason, `CatchUp` included, since nothing says the tool does not
-apply on its own. No in-process plugin: it would run with every credential the operator holds.
+`Receiver` checks. It gets every reason, `CatchUp` included, as Flux and Argo CD do. No in-process
+plugin: it would run with every credential the operator holds.
 
 ## What it costs
 
@@ -571,9 +759,9 @@ apply on its own. No in-process plugin: it would run with every credential the o
   its generation unapplied, and its dependents wait until GitOps Reverser's retry succeeds.
 - **The `Kustomization`'s manifest must omit `suspend`.** This is checked, not just documented.
 - **The residual race.** Between the artifact recheck and the reconcile reading the artifact,
-  somebody can stamp the `GitRepository`. With prefetch held off during operations, that is a person
-  or the source's own interval. The outcome table catches it, and the apply window still withholds
-  a late write over a newer edit.
+  somebody can stamp the `GitRepository`. GitOps Reverser stamps a source only inside an operation,
+  one operation per source at a time, so that is a person or the source's own interval. The outcome
+  table catches it, and the apply window still withholds a late write over a newer edit.
 - **One replica.** The receiver, the branch workers and the dispatcher run in one pod, and the chart
   refuses more than one replica. Leader election is not switched on; more than one replica needs
   ownership coordination first, and deliveries routed to the pod that owns the branch.
@@ -583,6 +771,9 @@ apply on its own. No in-process plugin: it would run with every credential the o
 - **Every applier on the branch applies on a `ForeignCommit`**, whether or not the push touched its
   folder. Harmless for Flux; for Argo CD it runs hooks. Narrowing it needs the applier's own source
   paths, so it waits for a measured complaint.
+- **An Argo CD `Application` also syncs, hooks included, to adopt and to converge**: on an API
+  create in its folder, once when the operator starts unless it already synced the tip, and when a
+  `GitTarget` first names its trigger.
 - **A sync somebody else started holds an Argo CD request**, for up to 5 minutes, and then fails
   it; the worker asks again after its backoff.
 - **A trigger may hold any applier its `ClusterProvider` reaches**, with
@@ -605,21 +796,24 @@ suspended. Next, in order, each one pull request:
 Test gaps to close along the way: a remote source cluster and an applier in another cluster (a hub
 Argo CD among them) in e2e, `Forbidden` against real RBAC, the receiver and applier roles installed
 by the Helm chart, two `GitTarget`s sharing one `Kustomization` in e2e, an apply-window collision in
-e2e, a prefetch observed end to end, a `Replace=true` Argo CD sync's field manager measured rather
+e2e, a `Replace=true` Argo CD sync's field manager measured rather
 than read from the source, and `-race` in CI.
 
 **What adopting it changes for gitops-api.** Its gate shrinks to "one save, one window", which
 protects commit messages and has nothing to do with Flux. Its push handler relays each push to the
-`GitProvider`'s receiver instead of stamping Flux. And publications trail an editing session by at
-least `quietPeriod`, since Flux applies GitOps Reverser's own commits only after the branch has
-been quiet; `quietPeriod` is the knob for that trade.
+`GitProvider`'s receiver instead of stamping Flux. And GitOps Reverser's own commits ask for no
+apply, since the cluster already runs the edits they carry; an object created through the API is
+adopted by one apply.
 
 ## What proves it
 
 | Claim | Test |
 | --- | --- |
-| The decision: quiet branch, reasons, quiet period, baseline | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go) |
-| Retries are decided by the worker; recovered refusals, withdrawn consent and recreated targets are not retried; each applier keeps its own clock; one attempt for a shared applier; a busy sibling worker holds the branch | [`apply_attempt_test.go`](../../internal/git/apply_attempt_test.go) |
+| The decision: the baseline, the reasons, a `ForeignCommit` asking every applier and answering everything else pending, nothing sent while no flush can be made, a push notice closing the window | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go) |
+| `CatchUp`: the startup converge asks nothing of an applier at the tip, an API create is adopted even at the tip, a first naming converges once, nothing is asked before the initial snapshots are published, an empty tip asks nothing | [`apply_catchup_test.go`](../../internal/git/apply_catchup_test.go) |
+| A snapshot collected across an apply, or arriving while Git is ahead, is discarded; initial snapshots are exempt; a branch with no trigger never waits; snapshots are held no longer than the limit | [`apply_epoch_test.go`](../../internal/git/apply_epoch_test.go) |
+| Another applier's object is not mirrored from a live write, and a snapshot of it is neither upserted nor swept | [`apply_ownership_test.go`](../../internal/git/apply_ownership_test.go) |
+| Retries are decided by the worker; recovered refusals, withdrawn consent and recreated targets are not retried; each applier keeps its own clock; one attempt for a shared applier; a busy sibling worker holds no apply; a stale attempt is decided again without backoff | [`apply_attempt_test.go`](../../internal/git/apply_attempt_test.go) |
 | The operation is recorded before the write that starts it, moves through its phases on the trigger's status, an attempt that asked nothing restores the record before it, and a withheld rollback makes a `Repair` due | [`apply_operation_test.go`](../../internal/git/apply_operation_test.go), [`status_writer_test.go`](../../internal/applier/status_writer_test.go) |
 | Every attempt rechecks targets, asks for nothing weaker than it was told, and resumes no `Kustomization` on another branch; a stop mid-apply suspends the `Kustomization` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`flux_test.go`](../../internal/applier/flux_test.go) |
 | The suspended lifecycle against the source facts: an apply is not finished when attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../../internal/applier/flux_lifecycle_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go), [`fluxsim`](../../internal/applier/fluxsim/fluxsim_test.go) |
@@ -627,10 +821,10 @@ been quiet; `quietPeriod` is the knob for that trade.
 | The rule: a trigger nothing names reads nothing and is `Ready`; the first eligible reference adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; a re-created `GitTarget` releases and re-adopts; the binding over several `GitTarget`s; an older trigger not in line keeps none out, and a retiring holder stays first until its release is done; a holder left unconfigured says the `Kustomization` is suspended; `ApplierNamespaceNotAllowed` for both kinds | [`applytrigger_rule_test.go`](../../internal/controller/applytrigger_rule_test.go) |
 | `allowAnySourceNamespace: true` is refused on create and on any spec change, a stored one included; `false` and its removal are accepted; a `WatchRule` that relied on it is refused naming the new field | [`removed_allow_any_source_namespace_test.go`](../../internal/controller/removed_allow_any_source_namespace_test.go), [`watchrule_source_namespace_test.go`](../../internal/controller/watchrule_source_namespace_test.go) |
 | A restarted worker follows an operation left in flight with its window open, restores `repairPending`, and follows an apply started elsewhere; one recorded but never resumed ends `Failed` | [`apply_recovery_test.go`](../../internal/git/apply_recovery_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
-| Appliers sharing a source have one operation at a time; a push is prefetched only while the branch is busy and no operation of the source is in flight | [`apply_groups_test.go`](../../internal/git/apply_groups_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go) |
+| Appliers sharing a source have one operation at a time and take turns, across workers too; a shared source applies only the consumer asked | [`apply_groups_test.go`](../../internal/git/apply_groups_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go) |
 | An applier in another cluster is reached through its own `ClusterProvider`, behind that provider's `accessFrom` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`clusterprovider_admission_test.go`](../../internal/authz/clusterprovider_admission_test.go), [`applytrigger_controller_test.go`](../../internal/controller/applytrigger_controller_test.go) |
-| The applier's late write over a newer edit is withheld, and nothing that could be the edit is: a tie, and an undo that leaves an older applier entry, are mirrored | [`apply_window_test.go`](../../internal/git/apply_window_test.go), [`last_field_managers_test.go`](../../internal/watch/last_field_managers_test.go) |
-| A newly named `Kustomization` gets a `CatchUp`, and a newly named `Application` none | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go) |
+| The applier's late write over a newer edit is withheld, and nothing that could be the edit is: a tie, and an undo that leaves an older applier entry, are mirrored; the apply itself is not mirrored, a delayed echo of the attempt before included; an applier entry older than the send is an edit; an applier write with no window open is late | [`apply_window_test.go`](../../internal/git/apply_window_test.go), [`last_field_managers_test.go`](../../internal/watch/last_field_managers_test.go) |
+| A newly named applier is caught up | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go) |
 | The receiver's path names no provider, and every miss answers the same | [`receiver_test.go`](../../internal/webhook/receiver_test.go) |
 | The original race: two API edits end at the later value with no extra commit | [bi-directional Flux corner](../../test/e2e/flux_bi_directional_e2e_test.go) |
 | A trigger nothing names is `Ready` and holds nothing; `SourceMismatch` adopts nothing and never stamps the other branch's source; fixed, the `Kustomization` is adopted and Flux reaches the tip; dropping the reference hands it back and naming the trigger again adopts it; a Gitea webhook and the refresh alone each get a push applied; a failed apply is suspended and retried by the worker; a `flux resume` is suspended again; deleting the trigger hands the `Kustomization` back | [Manager Flux Applier](../../test/e2e/flux_applier_e2e_test.go) |
@@ -638,8 +832,8 @@ been quiet; `quietPeriod` is the knob for that trade.
 | A refused edit is reverted by a resume of its `Kustomization` | [Refusal reapply](../../test/e2e/refusal_reapply_e2e_test.go) |
 | The Flux guide's example is accepted by the code | [`flux_guide_test.go`](../../internal/applier/flux_guide_test.go) |
 | An Argo CD sync is the one automated sync builds, pinned to the commit, with a pinned retry; a running operation is waited out and never replaced; an operation set between the read and the update makes it fail; one whose `.operation` was removed while it ran ends; every `Configured` reason, `AutomatedSyncEnabled` among them; when a sync counts as finished | [`argocd_test.go`](../../internal/applier/argocd_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
-| An `Application` is never asked for a `CatchUp`; Argo CD's late write over a newer edit is withheld by its own managers | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go), [`apply_window_test.go`](../../internal/git/apply_window_test.go) |
-| Each trigger kind holds one applier in one cluster, immutably; `quietPeriod` is bounded and defaulted on a `FluxTrigger` alone; a trigger nothing names is `Ready` with no finalizer, and a `GitTarget` naming it re-runs its check | [`applytrigger_schema_test.go`](../../internal/controller/applytrigger_schema_test.go) |
+| An `Application` is asked on a `ForeignCommit` and on a `Refusal`; Argo CD's late write over a newer edit is withheld by its own managers | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go), [`apply_window_test.go`](../../internal/git/apply_window_test.go) |
+| Each trigger kind holds one applier in one cluster, immutably; a trigger nothing names is `Ready` with no finalizer, and a `GitTarget` naming it re-runs its check | [`applytrigger_schema_test.go`](../../internal/controller/applytrigger_schema_test.go) |
 | With Argo CD: two API edits keep the later value with no extra commit; a Git-side push is synced by a pinned `ForeignCommit`; a refused edit is reverted by a sync; an `Application` with automated sync on is `AutomatedSyncEnabled` and never synced | [bi-directional Argo CD corner](../../test/e2e/argocd_bi_directional_e2e_test.go) |
 | The Argo CD guide's example is accepted by the code | [`argocd_guide_test.go`](../../internal/applier/argocd_guide_test.go) |
 

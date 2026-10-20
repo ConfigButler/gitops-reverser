@@ -1133,8 +1133,8 @@ tick". [`gitopsreverser_git_fetches_total{reason="refresh"}`](interpreting-metri
 is what it costs.
 
 A refresh that finds a commit GitOps Reverser did not push is a foreign commit like any other: the
-target's [applier](#who-applies-this-folder-specapplytriggerref) is asked to apply it once the branch is
-quiet. That makes the refresh the backstop for deployments when no push webhook reaches the
+target's [applier](#who-applies-this-folder-specapplytriggerref) is asked to apply it after a flush.
+That makes the refresh the backstop for deployments when no push webhook reaches the
 operator. It is not a latency mechanism: it buys bounded staleness with no inbound surface and no
 Git-host configuration. Seconds-fresh is the job of the
 [push receiver](#receiving-push-notifications-specreceiver).
@@ -1173,7 +1173,6 @@ spec:
   kustomizationRef:
     namespace: flux-system     # default: the trigger's namespace
     name: checkout
-  quietPeriod: 30s
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
@@ -1191,7 +1190,6 @@ spec:
 | --- | --- | --- |
 | `FluxTrigger.spec.clusterProviderRef`, `ArgoCDTrigger.spec.clusterProviderRef` | `{name: default}` | The `ClusterProvider` whose cluster holds the applier, defaulted as a `GitTarget`'s is. Immutable |
 | `FluxTrigger.spec.kustomizationRef` | required | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` that follows a branch. Immutable |
-| `FluxTrigger.spec.quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes, or after a `GitTarget` first names the trigger, before a `CatchUp` request. At most `1h` |
 | `ArgoCDTrigger.spec.applicationRef` | required | An Argo CD `Application` on a single source whose `targetRevision` names a branch, with automated sync off. Immutable |
 | `GitTarget.spec.applyTriggerRef` | none | The trigger, by `kind` and `name`, in the `GitTarget`'s namespace |
 
@@ -1228,16 +1226,39 @@ spec:
     name: prod-eu-1-apps
 ```
 
-**When a request is made.** Only on a quiet branch: no open commit window and no pending writes on
-the branch worker, or on any other worker writing the same repository and branch through another
-`GitProvider`.
+**When a request is made.** After a [flush](bi-directional.md#flush-then-apply): when an apply comes
+due, the branch worker closes the open commit window, publishes the writes decided up to that
+moment at once, and asks for the tip that publication produced. An edit decided after that is
+recorded in the apply window, so an apply that writes over it is withheld from Git and repaired. A
+commit window a `CommitRequest` holds, a parent branch being recovered, or a checkout a failed write
+left dirty holds the request back. No applier is asked for anything until every initial snapshot of
+every `GitTarget` naming its trigger is published, and nothing is asked while the remote does not
+carry the branch. The rule is the same for a `Kustomization` and an `Application`.
 
 | `reason` | When | Sent to |
 | --- | --- | --- |
-| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed and pending writes replayed and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per applier |
+| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. The pending writes are replayed onto it and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per applier |
 | `Refusal` | An eligible refused edit, with `spec.onRefusal: Reapply` | This target's applier |
-| `Repair` | An apply reverted an API edit made after it was asked for; Git kept the edit | That applier |
-| `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes, since the operator started, or since a `GitTarget` first named the trigger | Every `Kustomization` declared on the branch; never an `Application` |
+| `Repair` | An apply reverted an API edit made after the flush; Git kept the edit | That applier |
+| `CatchUp` | To adopt: the API created an object in the folder, or a resync added an object to Git. To converge: once when the operator starts, and once when a `GitTarget` first names the trigger | To adopt, that folder's applier; to converge, every applier declared on the branch at start, and the newly named one |
+
+An API edit asks for no apply, and neither does a push of GitOps Reverser's own: the cluster already
+runs what they hold. A create is different, because an applier prunes only what it applied: an
+object the API created (an `ADDED` event whose newest field managers are not an applier's) carries
+neither Flux's owner labels nor Argo CD's tracking annotation, so a later Git-side delete of its
+file would leave it running. An adopt is therefore applied even at the commit the applier last
+applied, since that apply is what stamps the object. A converge asks nothing when the applier's last
+successful operation, as `status.operation` records it, applied the tip.
+
+**An object another applier owns is not mirrored into the folder.** When a `GitTarget` names a
+trigger, an object whose Flux owner labels (`kustomize.toolkit.fluxcd.io/name` and
+`kustomize.toolkit.fluxcd.io/namespace`) or Argo CD tracking annotation
+(`argocd.argoproj.io/tracking-id`) name an applier other than the trigger's is excluded: a live
+change to it is not mirrored, and a resync neither writes it nor removes its document, even under
+`prune.mode: Always`. Two appliers applying one object fight each other. Each excluded object is
+logged once and counted in `gitopsreverser_apply_ownership_conflicts_total`. A `GitTarget` without
+`spec.applyTriggerRef` excludes nothing: mirroring another applier's objects one way is what such a
+folder can exist for.
 
 **What it reports.** The trigger reports its applier and the operation it is running. The branch
 worker writes `status.operation` and `status.repairPending` at every move of the operation, so they are
@@ -1262,7 +1283,6 @@ status:
     branch: main
     otherConsumers:            # what else applies this GitRepository, held by no FluxTrigger
       - {kind: HelmRelease, namespace: platform, name: ingress}
-    prefetch: false
   operation:
     phase: Succeeded           # Requested | Running | Settling | Unresolved | Succeeded | Failed
     reason: ForeignCommit      # ForeignCommit | Refusal | Repair | CatchUp
@@ -1283,7 +1303,6 @@ status:
 | `operation.appliedRevision` | The revision the applier reports it applied. It can differ from `commit` when the branch moved between the check and the apply |
 | `repairPending` | `true` while an apply reverted an API edit made after it was asked for: Git kept the edit, and the cluster runs the older value until the `Repair` |
 | `source.otherConsumers` | Flux only: the `Kustomization`s and `HelmRelease`s that apply the same `GitRepository` and that no `FluxTrigger` holds. Information only; it never affects `Ready` |
-| `source.prefetch` | Flux only: `true` while every consumer of the source is held, so GitOps Reverser may fetch the `GitRepository` ahead of the apply |
 
 A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is suspended again and recorded as
 an `Unresolved` operation with no `reason` and no `commit`, which completes once the suspend is
@@ -1337,10 +1356,10 @@ spec:
 | Value | What happens |
 | --- | --- |
 | `Ignore` (default) | The refusal is reported and nothing else happens |
-| `Reapply` | Once the branch is quiet, this target's [applier](#who-applies-this-folder-specapplytriggerref) is asked to apply the current tip, with reason `Refusal`. The refused edit is reverted when the applier applies it; the request asks, and the applier's own status says whether it did |
+| `Reapply` | After a flush, this target's [applier](#who-applies-this-folder-specapplytriggerref) is asked to apply the current tip, with reason `Refusal`. The refused edit is reverted when the applier applies it; the request asks, and the applier's own status says whether it did |
 
 `Reapply` requires `spec.applyTriggerRef`; a target without one is rejected at admission. The request goes
-to this target's applier alone, and it waits for a quiet branch, so an allowed edit still in a
+to this target's applier alone, and it goes out after a flush, so an allowed edit still in a
 commit window is published before the apply and is not reverted with the refused one. An
 `Application` is asked to sync the tip. When a `Kustomization`'s `GitRepository` has to fetch to
 reach the tip, the `Kustomization`s a `FluxTrigger` holds stay suspended and ignore the new artifact;
