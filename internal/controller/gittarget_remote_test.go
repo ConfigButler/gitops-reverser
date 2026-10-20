@@ -417,10 +417,53 @@ func TestPublishRemote_ADeletedTargetReleasesItsLedgerEntry(t *testing.T) {
 // it, or an idle one spends a connection every interval and publishes what it learned a whole tick
 // late. A target that asked nothing keeps its own cadence.
 func TestRequeueForRemoteAnswer_ShortensOnlyWhenSomethingWasAsked(t *testing.T) {
-	assert.Equal(t, RemotePublicationInterval, requeueForRemoteAnswer(RequeueSteadyInterval, true))
-	assert.Equal(t, RequeueSteadyInterval, requeueForRemoteAnswer(RequeueSteadyInterval, false))
-	assert.Equal(t, time.Second, requeueForRemoteAnswer(time.Second, true),
+	assert.Equal(t, RemotePublicationInterval,
+		requeueForRemoteAnswer(RequeueSteadyInterval, remoteWake{asked: true}))
+	assert.Equal(t, RequeueSteadyInterval, requeueForRemoteAnswer(RequeueSteadyInterval, remoteWake{}))
+	assert.Equal(t, time.Second, requeueForRemoteAnswer(time.Second, remoteWake{asked: true}),
 		"a target already on a faster loop is not slowed down to the publication interval")
+}
+
+// TestRequeueForRemoteAnswer_ComesBackWhenTheFloorLifts is the reconcile after a lost requeue. The
+// asking reconcile's one-minute requeue is folded away when the refresh's answer re-enqueues the
+// target while it runs; the reconcile that follows holds that answer fresh, asks nothing, and is
+// stopped by the floor. It must come back when the floor lifts, not a whole steady tick later.
+func TestRequeueForRemoteAnswer_ComesBackWhenTheFloorLifts(t *testing.T) {
+	held := 59 * time.Second
+	assert.Equal(t, held, requeueForRemoteAnswer(RequeueSteadyInterval, remoteWake{heldFor: held}))
+	assert.Equal(t, held, requeueForRemoteAnswer(RequeueSteadyInterval, remoteWake{asked: true, heldFor: held}),
+		"the earlier of the two wakes wins")
+	assert.Equal(t, time.Second, requeueForRemoteAnswer(time.Second, remoteWake{heldFor: held}),
+		"a target already on a faster loop is not slowed down to the floor")
+}
+
+// TestPublishRemote_ReportsHowLongTheFloorHoldsAnAnswer: the floor delays news, and says for how
+// long, so the reconcile can come back for it. What is not news, and what is published, holds
+// nothing back.
+func TestPublishRemote_ReportsHowLongTheFloorHoldsAnAnswer(t *testing.T) {
+	r := &GitTargetReconciler{}
+	target := remoteTestTarget()
+	start := time.Now()
+	previous := r.clock
+	r.clock = func() time.Time { return start }
+	defer func() { r.clock = previous }()
+
+	none := git.RepoIdentity{}
+	later := start.Add(2 * time.Second)
+
+	st := &reconcileStatus{}
+	first := observation("aaaa", start, git.ObservedByPush, none)
+	assert.Zero(t, r.publishRemote(st, target, first, true, none, start),
+		"the first observation is published, so nothing is held")
+	st.runPersisted()
+
+	moved := observation("bbbb", later, git.ObservedByFetch, none)
+	assert.Equal(t, 58*time.Second, r.publishRemote(&reconcileStatus{}, target, moved, true, none, later),
+		"news two seconds after a write waits out the rest of the floor")
+	assert.Equal(t, "aaaa", target.Status.Remote.Commit)
+
+	assert.Zero(t, r.publishRemote(&reconcileStatus{}, target, first, true, none, later),
+		"what is already published is not news, so the floor holds nothing back")
 }
 
 // remoteLedgerFixture drives publishRemote through the REAL status session, so what advances the
