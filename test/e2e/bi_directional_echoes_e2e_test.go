@@ -348,9 +348,16 @@ func echoScenarios(run func() *echoRun) {
 	It("does not mirror or adopt an object another applier owns (E11)", func() {
 		r := run()
 		folder := "other/" + r.testNs
-		pushFileFromOutside(r.repo, folder+"/owned-elsewhere.yaml", echoConfigMap(r.testNs, "owned-elsewhere", "e1"),
-			"e2e: another applier's folder")
-		before := r.applier.operation(Default)
+		head := pushFileFromOutside(r.repo, folder+"/owned-elsewhere.yaml",
+			echoConfigMap(r.testNs, "owned-elsewhere", "e1"), "e2e: another applier's folder")
+		// The push is a foreign commit to the trigger's repository too, so it is applied first; what
+		// must not follow is an apply of the object the other applier creates.
+		var before triggerOperation
+		Eventually(func(g Gomega) {
+			before = r.applier.operation(g)
+			g.Expect(before.Commit).To(Equal(head), "the push is applied")
+			g.Expect(before.Phase).To(Equal("Succeeded"))
+		}, echoApplyBudget, 2*time.Second).Should(Succeed())
 		stopOther := r.applier.startOther(folder)
 		DeferCleanup(stopOther)
 
