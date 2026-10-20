@@ -448,9 +448,9 @@ type GitTargetStatus struct {
 
 // GitTargetRemoteStatus is the answer to "where is my branch, and when did we last prove it".
 //
-// It is written whenever the commit changes — including one we pushed ourselves — and otherwise
-// only when the published timestamp is older than one refresh interval: the commit has to move
-// with the fact it dates.
+// It is sampled when the GitTarget reconciles, from what its branch worker last proved about the
+// branch, and written at most once a minute. The first observation, and a correction after the
+// repository changed under the target, are written at once.
 type GitTargetRemoteStatus struct {
 	// Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
 	// the remote at all, which is not an error: a branch does not exist without a commit, and a

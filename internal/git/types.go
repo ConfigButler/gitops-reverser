@@ -227,7 +227,7 @@ type CommitMode string
 const (
 	// CommitModePerEvent streams request events through the live commit window.
 	// With commitWindow=0 each event finalizes immediately; otherwise events
-	// coalesce by author, target, and quiet-window boundaries.
+	// coalesce by author and target until the window's idle timeout or maximum duration.
 	CommitModePerEvent CommitMode = "per_event"
 	// CommitModeAtomic creates one commit for all events in the request.
 	CommitModeAtomic CommitMode = "atomic"
