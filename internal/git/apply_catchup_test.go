@@ -100,13 +100,13 @@ func TestCatchUp_AnAPICreateIsAdoptedEvenAtTheTip(t *testing.T) {
 }
 
 // TestCatchUp_NothingIsAskedBeforeTheInitialSnapshotsArePublished: every reason waits, a
-// ForeignCommit included, until every collection of every GitTarget the applier covers has delivered
-// its snapshot and the worker published what it made of it; the barrier is looked at again on a
+// ForeignCommit included, until every collection of every GitTarget the applier covers has had its
+// snapshot applied and the worker published what it made of it; the barrier is looked at again on a
 // short timer.
 func TestCatchUp_NothingIsAskedBeforeTheInitialSnapshotsArePublished(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
-	delivered := false
-	loop.w.initialSnapshots = func(itypes.ResourceReference) bool { return delivered }
+	applied := false
+	loop.w.initialSnapshots = func(itypes.ResourceReference) bool { return applied }
 	observeForeignCommit(loop.w)
 
 	loop.serviceAppliers()
@@ -114,7 +114,7 @@ func TestCatchUp_NothingIsAskedBeforeTheInitialSnapshotsArePublished(t *testing.
 	assert.NotNil(t, loop.applierTimer, "the barrier is looked at again")
 	assert.True(t, loop.appliers[applierRef("alpha")].foreign, "the reason stays pending")
 
-	delivered = true
+	applied = true
 	loop.serviceAppliers()
 	requests := requester.taken()
 	require.Len(t, requests, 1)

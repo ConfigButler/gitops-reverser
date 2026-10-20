@@ -350,8 +350,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
-	l.refreshInitialSnapshots()
-	closing := l.reportApplyWindows(now)
+	closing := earliest(l.reportApplyWindows(now), l.snapshotHoldDeadline())
 
 	if !l.takeReasons() {
 		l.endFlush()
@@ -456,12 +455,12 @@ func (l *branchWorkerEventLoop) alreadyConverged(
 }
 
 // pastBarrier reports whether every initial snapshot of every GitTarget the applier covers is
-// published (refreshInitialSnapshots), so it may be asked for something. Before, an apply would
+// published (initialSnapshotsPublished), so it may be asked for something. Before, an apply would
 // destroy what is not mirrored yet: at startup the edits made while the operator was down, and for a
 // GitTarget that newly names the trigger, what its folder does not hold yet.
 func (l *branchWorkerEventLoop) pastBarrier(state *applierState) bool {
 	for _, target := range state.targets {
-		if !l.initialSnapshotsPublished(target.ref.String()) {
+		if !l.initialSnapshotsPublished(target.ref) {
 			return false
 		}
 	}

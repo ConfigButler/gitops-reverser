@@ -162,8 +162,8 @@ type BranchWorker struct {
 	applyEpoch    atomic.Uint64
 	appliersAhead atomic.Bool
 	hasAppliers   atomic.Bool
-	// initialSnapshots reports whether every collection a GitTarget watches has delivered its
-	// snapshot, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
+	// initialSnapshots reports whether every collection a GitTarget watches has had a snapshot
+	// applied, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
 	// WorkerManager before Start; nil in the CLI and in tests (apply_epoch.go).
 	initialSnapshots func(target itypes.ResourceReference) bool
 	resyncRecheck    func(target itypes.ResourceReference)
@@ -1176,13 +1176,10 @@ type branchWorkerEventLoop struct {
 	retry retrySchedule
 
 	// snapshotRerequests are the GitTargets whose snapshot was discarded as stale, until a fresh one
-	// is asked for; snapshotHeldSince is when each GitTarget's first one was, until one is used;
-	// initialDone latches the GitTargets whose initial snapshots are published, with the incarnation
-	// an applier covers, and snapshotTargets are the ones followed until then. See apply_epoch.go.
+	// is asked for; snapshotHeldSince is when each GitTarget's first one was, until one is used. See
+	// apply_epoch.go.
 	snapshotRerequests map[string]snapshotRerequest
 	snapshotHeldSince  map[string]time.Time
-	initialDone        map[string]types.UID
-	snapshotTargets    map[string]itypes.ResourceReference
 	// ownershipLogged is the objects another applier owns already logged as kept out of a folder.
 	// See apply_ownership.go.
 	ownershipLogged map[string]struct{}

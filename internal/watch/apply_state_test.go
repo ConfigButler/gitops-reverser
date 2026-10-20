@@ -5,6 +5,7 @@ package watch
 import (
 	"testing"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -14,26 +15,37 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// TestSnapshotsDelivered_EveryCollectionMustBeStreaming: a GitTarget's initial snapshots are
-// delivered once every collection it watches streams, which a stream reaches only once the worker
-// took its snapshot. One still replaying, blocked, or not started yet holds the answer back.
-func TestSnapshotsDelivered_EveryCollectionMustBeStreaming(t *testing.T) {
-	configmaps := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
-	secrets := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-	expected := []types.CollectionKey{types.CollectionKeyFor(configmaps, ""), types.CollectionKeyFor(secrets, "")}
+// TestInitialSnapshots_TrackedPerCollection: a collection's snapshot is initial until the branch
+// worker applied one of it. A discarded one leaves it initial, so its fresh one is still exempt from
+// F3; tearing the GitTarget down forgets it, so a recreation starts over.
+func TestInitialSnapshots_TrackedPerCollection(t *testing.T) {
+	configmaps := types.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "")
+	secrets := types.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "")
+	gitDest := types.NewResourceReference("alpha", "team-a")
+	m := &Manager{Log: logr.Discard()}
+	router := &EventRouter{WatchManager: m, Log: logr.Discard()}
 
-	assert.True(t, snapshotsDelivered(nil, nil), "a GitTarget with no collection has nothing to deliver")
-	assert.False(t, snapshotsDelivered(expected, nil), "no stream started")
-	for _, state := range []StreamState{StreamStateReplaying, StreamStateBlocked} {
-		assert.False(t, snapshotsDelivered(expected, map[types.CollectionKey]targetStreamStatus{
-			types.CollectionKeyFor(configmaps, ""): {state: StreamStateStreaming},
-			types.CollectionKeyFor(secrets, ""):    {state: state},
-		}), state)
+	assert.True(t, m.snapshotsApplied(gitDest, nil), "a GitTarget with no collection has nothing to apply")
+	assert.True(t, router.initialSnapshot(gitDest, configmaps))
+
+	drain := func(collection types.CollectionKey, result git.ResyncResult) {
+		resultCh := make(chan git.ResyncResult, 1)
+		resultCh <- result
+		router.drainScopedResync(gitDest, collection, "reconcile", 0, resultCh)
 	}
-	assert.True(t, snapshotsDelivered(expected, map[types.CollectionKey]targetStreamStatus{
-		types.CollectionKeyFor(configmaps, ""): {state: StreamStateStreaming},
-		types.CollectionKeyFor(secrets, ""):    {state: StreamStateStreaming},
-	}))
+	drain(configmaps, git.ResyncResult{Err: git.ErrResyncDiscarded})
+	assert.True(t, router.initialSnapshot(gitDest, configmaps), "a discarded snapshot was not applied")
+
+	drain(configmaps, git.ResyncResult{})
+	assert.False(t, router.initialSnapshot(gitDest, configmaps))
+	assert.False(t, m.snapshotsApplied(gitDest, []types.CollectionKey{configmaps, secrets}), "secrets has none")
+	assert.True(t, router.initialSnapshot(gitDest, secrets))
+
+	drain(secrets, git.ResyncResult{})
+	assert.True(t, m.snapshotsApplied(gitDest, []types.CollectionKey{configmaps, secrets}))
+
+	m.forgetAppliedSnapshots(gitDest)
+	assert.True(t, router.initialSnapshot(gitDest, configmaps), "a recreation starts over")
 }
 
 // TestOwnerIsReadBeforeSanitize: the applier that owns an object is stamped on its live event and on

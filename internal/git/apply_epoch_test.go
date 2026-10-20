@@ -24,10 +24,12 @@ func epochLoop(t *testing.T) (*branchWorkerEventLoop, *recordingRequester, *[]it
 	asked := &[]itypes.ResourceReference{}
 	loop.w.resyncRecheck = func(target itypes.ResourceReference) { *asked = append(*asked, target) }
 	loop.followRecordedOperations(time.Now())
-	loop.refreshInitialSnapshots()
-	require.True(t, loop.initialSnapshotsPublished("team-a/alpha"))
+	require.True(t, loop.initialSnapshotsPublished(alphaRef))
 	return loop, requester, asked
 }
+
+// alphaRef is the GitTarget alpha.
+var alphaRef = itypes.NewResourceReference("alpha", "team-a")
 
 // alphaSnapshot is a snapshot of alpha whose collection started at start.
 func alphaSnapshot(start *ApplyState) *ResyncRequest {
@@ -105,22 +107,18 @@ func TestApplyEpoch_ASnapshotArrivingWhileGitIsAheadWaitsForTheApply(t *testing.
 	assert.Len(t, *asked, 1, "asked for again once the apply completed")
 }
 
-// TestApplyEpoch_InitialSnapshotsAreExempt: a GitTarget's snapshots before its initial snapshots are
-// published are its baseline, and are never held for an apply: S2 asks for no apply before they
-// are in Git, so holding them would wait on itself.
+// TestApplyEpoch_InitialSnapshotsAreExempt: the first snapshot of a collection is its baseline, and
+// is never held for an apply: S2 asks for no apply before it is in Git, so holding it would wait on
+// itself. A later one of the same collection is judged by F3.
 func TestApplyEpoch_InitialSnapshotsAreExempt(t *testing.T) {
-	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
-	delivered := false
-	loop.w.initialSnapshots = func(itypes.ResourceReference) bool { return delivered }
-	loop.followRecordedOperations(time.Now())
+	loop, _, _ := epochLoop(t)
 	observeForeignCommit(loop.w)
 
-	req := alphaSnapshot(&ApplyState{GitAhead: true})
-	assert.Empty(t, loop.snapshotStale(req), "not published yet: exempt")
-
-	delivered = true
-	loop.refreshInitialSnapshots()
-	assert.Equal(t, snapshotAheadAtStart, loop.snapshotStale(req), "published: F3 applies")
+	initial := alphaSnapshot(&ApplyState{GitAhead: true})
+	initial.Initial = true
+	assert.Empty(t, loop.snapshotStale(initial), "the collection's first snapshot: exempt")
+	assert.Equal(t, snapshotAheadAtStart, loop.snapshotStale(alphaSnapshot(&ApplyState{GitAhead: true})),
+		"a later one: F3 applies")
 }
 
 // TestApplyEpoch_ABranchWithNoTriggerNeverWaits: nothing applies its commits.
@@ -148,18 +146,42 @@ func TestApplyEpoch_SnapshotsAreHeldNoLongerThanTheLimit(t *testing.T) {
 	assert.Empty(t, loop.snapshotStale(alphaSnapshot(nil)), "held for the limit: used anyway")
 }
 
-// TestApplyEpoch_InitialSnapshotsWaitForTheWorkersResyncs: delivered by the streams is not enough; the
-// worker must not hold a resync of the GitTarget, queued or pending.
+// TestApplyEpoch_InitialSnapshotsWaitForTheWorkersResyncs: applied for every collection, as the watch
+// side says, is not enough; the worker must not hold a resync of the GitTarget, queued or pending.
 func TestApplyEpoch_InitialSnapshotsWaitForTheWorkersResyncs(t *testing.T) {
 	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
+	applied := false
+	loop.w.initialSnapshots = func(itypes.ResourceReference) bool { return applied }
 	loop.followRecordedOperations(time.Now())
+	assert.False(t, loop.initialSnapshotsPublished(alphaRef), "the watch side has not applied them")
+
+	applied = true
 	loop.pendingWrites = []PendingWrite{
 		{Kind: PendingWriteResync, GitTargetName: "alpha", GitTargetNamespace: "team-a"},
 	}
-	loop.refreshInitialSnapshots()
-	assert.False(t, loop.initialSnapshotsPublished("team-a/alpha"), "a resync of it is not published yet")
+	assert.False(t, loop.initialSnapshotsPublished(alphaRef), "a resync of it is not published yet")
 
 	loop.pendingWrites = nil
-	loop.refreshInitialSnapshots()
-	assert.True(t, loop.initialSnapshotsPublished("team-a/alpha"))
+	assert.True(t, loop.initialSnapshotsPublished(alphaRef))
+}
+
+// TestApplyEpoch_AHeldGitTargetIsAskedAgainAtTheLimit: while an apply keeps failing, a discarded
+// snapshot is not asked for again until the hold reaches snapshotHoldLimit; the applier timer is set
+// for that moment, and then the fresh snapshot is asked for although Git is still ahead.
+func TestApplyEpoch_AHeldGitTargetIsAskedAgainAtTheLimit(t *testing.T) {
+	loop, _, asked := epochLoop(t)
+	now := time.Now()
+	loop.w.clock = func() time.Time { return now }
+	observeForeignCommit(loop.w)
+
+	loop.handleResyncRequest(alphaSnapshot(nil))
+	assert.Equal(t, now.Add(snapshotHoldLimit), loop.snapshotHoldDeadline())
+	loop.rerequestSnapshots()
+	assert.Empty(t, *asked, "Git is ahead, and the limit is not reached")
+
+	now = now.Add(snapshotHoldLimit)
+	assert.True(t, loop.heldForTheLimit("team-a/alpha"))
+	loop.rerequestSnapshots()
+	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference("alpha", "team-a")}, *asked)
+	assert.True(t, loop.snapshotHoldDeadline().IsZero(), "nothing is waiting any more")
 }

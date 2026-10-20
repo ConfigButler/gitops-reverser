@@ -554,6 +554,10 @@ type ResyncRequest struct {
 	// object (AppliedByOf). An object another applier owns is neither upserted into a triggered
 	// folder nor swept from it (apply_ownership.go).
 	Owners map[types.ResourceIdentifier]AppliedBy
+	// Initial marks the first snapshot of its collection for this GitTarget: none was applied for it
+	// before. It is the baseline the worker decides whatever Git holds, never held for an apply (F3
+	// in docs/design/applier-echoes.md).
+	Initial bool
 	// CollectionStart is the worker's ApplyState read when the snapshot's collection started. A
 	// snapshot collected while Git was ahead of the cluster, or across an apply, holds a picture
 	// the apply is about to make stale, and is discarded (docs/design/applier-echoes.md, F3). Nil

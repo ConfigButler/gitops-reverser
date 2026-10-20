@@ -294,9 +294,16 @@ func (r *EventRouter) enqueueScopedResync(
 		// below hears of it, so a live event queued behind the resync meets the gate it produced.
 		RenderFidelityRevision: renderFidelityRevision,
 		CollectionStart:        snapshot.start,
+		Initial:                r.initialSnapshot(gitDest, scope.Collection),
 		Result:                 resultCh,
 	})
 	return resultCh, enqueued, nil
+}
+
+// initialSnapshot reports whether no snapshot of the collection was applied yet: the worker then
+// uses it whatever its appliers are doing, since it is what an apply waits for (git.ResyncRequest.Initial).
+func (r *EventRouter) initialSnapshot(gitDest types.ResourceReference, collection types.CollectionKey) bool {
+	return r.WatchManager != nil && !r.WatchManager.snapshotsApplied(gitDest, []types.CollectionKey{collection})
 }
 
 // applyStateReader is the part of a branch worker that says where its appliers stand. See
@@ -380,6 +387,7 @@ func (r *EventRouter) drainScopedResync(
 			"gitDest", gitDest.String(), "collection", collection.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		if r.WatchManager != nil {
+			r.WatchManager.markSnapshotApplied(gitDest, collection)
 			r.WatchManager.MarkTargetGitPathScopeAccepted(gitDest, collection)
 			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, collection)
 			// Recorded for every applied resync, including the ones that retained nothing: zero

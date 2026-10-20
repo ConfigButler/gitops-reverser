@@ -9,7 +9,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -28,9 +27,9 @@ import (
 // Three exceptions keep that from holding anything forever:
 //
 //   - A branch with no trigger never waits: nothing applies its commits.
-//   - A GitTarget's snapshots are exempt until its initial snapshots are published. They are the
-//     startup baseline, and S2 asks no applier for anything before they are in Git, so holding them
-//     for an apply would wait on itself.
+//   - A collection's initial snapshot (the first one applied for it, ResyncRequest.Initial) is
+//     exempt. It is the startup baseline, and S2 asks no applier for anything before it is in Git,
+//     so holding it for an apply would wait on itself.
 //   - A GitTarget whose snapshots were held for snapshotHoldLimit uses the next one anyway: an
 //     apply that keeps failing must not leave drift unmirrored for as long as it fails. The C2
 //     policy, API wins, then applies to whatever the push changed.
@@ -104,7 +103,6 @@ func (l *branchWorkerEventLoop) publishApplyState() {
 // handleResyncRequest decides one revision-pinned resync in order on the worker goroutine, unless its
 // snapshot is stale (snapshotStale), in which case it is discarded and asked for again.
 func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
-	l.noteSnapshotTarget(req)
 	if reason := l.snapshotStale(req); reason != "" {
 		l.discardSnapshot(req, reason, req.Heal && l.openWindow != nil)
 		return
@@ -133,11 +131,11 @@ func (l *branchWorkerEventLoop) snapshotStale(req *ResyncRequest) string {
 	return ""
 }
 
-// snapshotsWait reports whether F3 applies to a resync: the branch has an applier, the GitTarget's
-// initial snapshots are published, and its snapshots have not been held for snapshotHoldLimit
-// already. A snapshot let through by the limit is logged and counted as used.
+// snapshotsWait reports whether F3 applies to a resync: the branch has an applier, the snapshot is
+// not its collection's initial one, and the GitTarget's snapshots have not been held for
+// snapshotHoldLimit already. A snapshot let through by the limit is logged and counted as used.
 func (l *branchWorkerEventLoop) snapshotsWait(req *ResyncRequest) bool {
-	if len(l.appliers) == 0 || !l.initialSnapshotsPublished(resyncTargetKey(req)) {
+	if len(l.appliers) == 0 || req.Initial {
 		return false
 	}
 	since, held := l.snapshotHeldSince[resyncTargetKey(req)]
@@ -179,6 +177,25 @@ func (l *branchWorkerEventLoop) discardSnapshot(req *ResyncRequest, reason strin
 	}
 }
 
+// heldForTheLimit reports whether a GitTarget's snapshots have been held for snapshotHoldLimit: its
+// next one is asked for, and used, whatever is ahead.
+func (l *branchWorkerEventLoop) heldForTheLimit(key string) bool {
+	since, held := l.snapshotHeldSince[key]
+	return held && l.w.now().Sub(since) >= snapshotHoldLimit
+}
+
+// snapshotHoldDeadline is when the earliest held GitTarget reaches snapshotHoldLimit, zero when none
+// waits for it: the applier timer wakes the loop then, to ask for its snapshot.
+func (l *branchWorkerEventLoop) snapshotHoldDeadline() time.Time {
+	var deadline time.Time
+	for key, pending := range l.snapshotRerequests {
+		if since, held := l.snapshotHeldSince[key]; held && !pending.windowIdle {
+			deadline = earliest(deadline, since.Add(snapshotHoldLimit))
+		}
+	}
+	return deadline
+}
+
 // snapshotUsed records that a GitTarget's snapshot was decided: its hold is over.
 func (l *branchWorkerEventLoop) snapshotUsed(req *ResyncRequest) {
 	delete(l.snapshotHeldSince, resyncTargetKey(req))
@@ -192,7 +209,10 @@ func (l *branchWorkerEventLoop) rerequestSnapshots() {
 	}
 	ahead := l.gitAhead()
 	for key, pending := range l.snapshotRerequests {
-		if (pending.windowIdle && l.openWindow != nil) || (!pending.windowIdle && ahead) {
+		if pending.windowIdle && l.openWindow != nil {
+			continue
+		}
+		if !pending.windowIdle && ahead && !l.heldForTheLimit(key) {
 			continue
 		}
 		delete(l.snapshotRerequests, key)
@@ -205,70 +225,14 @@ func (l *branchWorkerEventLoop) rerequestSnapshots() {
 	}
 }
 
-// noteSnapshotTarget remembers a GitTarget a resync arrived for, so its initial snapshots are
-// followed until they are published (refreshInitialSnapshots).
-func (l *branchWorkerEventLoop) noteSnapshotTarget(req *ResyncRequest) {
-	key := resyncTargetKey(req)
-	if _, done := l.initialDone[key]; done {
-		return
-	}
-	if l.snapshotTargets == nil {
-		l.snapshotTargets = map[string]itypes.ResourceReference{}
-	}
-	l.snapshotTargets[key] = itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace)
-}
-
-// initialSnapshotsPublished reports whether a GitTarget's initial snapshots are published: latched
-// by refreshInitialSnapshots, once every collection it watches delivered its snapshot and the worker
-// holds no resync of it, queued or pending.
-func (l *branchWorkerEventLoop) initialSnapshotsPublished(target string) bool {
-	_, done := l.initialDone[target]
-	return done
-}
-
-// refreshInitialSnapshots latches the GitTargets whose initial snapshots are now published: the
-// ones a resync arrived for, and the ones an applier covers. A GitTarget an applier now covers under
-// another incarnation starts over. It runs at the end of every wake.
-func (l *branchWorkerEventLoop) refreshInitialSnapshots() {
-	candidates := map[string]itypes.ResourceReference{}
-	uids := map[string]k8stypes.UID{}
-	for key, ref := range l.snapshotTargets {
-		candidates[key] = ref
-	}
-	for _, state := range l.appliers {
-		for _, target := range state.targets {
-			key := target.ref.String()
-			uids[key] = target.uid
-			if uid, done := l.initialDone[key]; done && uid != "" && uid != target.uid {
-				delete(l.initialDone, key)
-			}
-			candidates[key] = target.ref
-		}
-	}
-	for key, ref := range candidates {
-		if _, done := l.initialDone[key]; done {
-			delete(l.snapshotTargets, key)
-			continue
-		}
-		if !l.snapshotsSettled(key, ref) {
-			continue
-		}
-		if l.initialDone == nil {
-			l.initialDone = map[string]k8stypes.UID{}
-		}
-		l.initialDone[key] = uids[key]
-		delete(l.snapshotTargets, key)
-		l.w.Log.Info("The GitTarget's initial snapshots are published", "gitTarget", key)
-	}
-}
-
-// snapshotsSettled reports whether every collection a GitTarget watches has delivered its snapshot,
-// and the worker holds no resync of it: none queued, and none decided and not yet published. A
-// snapshot refused or failed is settled too: it holds nothing back.
-func (l *branchWorkerEventLoop) snapshotsSettled(key string, ref itypes.ResourceReference) bool {
+// initialSnapshotsPublished reports whether a GitTarget's initial snapshots are published: every
+// collection it watches has had a snapshot applied (the watch side says so, initialSnapshots), and
+// the worker holds no resync of it, queued or decided and not yet published.
+func (l *branchWorkerEventLoop) initialSnapshotsPublished(ref itypes.ResourceReference) bool {
 	if l.w.initialSnapshots != nil && !l.w.initialSnapshots(ref) {
 		return false
 	}
+	key := ref.String()
 	if l.w.queuedResyncsFor(key) {
 		return false
 	}
