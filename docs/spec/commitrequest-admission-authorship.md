@@ -52,8 +52,8 @@ its message in a pushed empty commit (`Pushed=True`). A `WindowMismatch` never f
 | `Ready` | a pushed commit or benign no-commit | progress or a finalize failure |
 
 `Reconciling=True` is the normal in-progress state, with the phase the branch worker reports as its
-reason: `Progressing` until the worker registers the request, then `WaitingForWindow`,
-`CollectingWindow` and `WaitingForPush`.
+reason: `Progressing` until the worker registers the request (`WaitingForWorker` while the GitTarget
+has no branch worker yet), then `WaitingForWindow`, `CollectingWindow` and `WaitingForPush`.
 
 ## Wiring
 
@@ -64,5 +64,5 @@ An installation may therefore have either, both, or neither source of author inf
 Related live contracts:
 
 - [architecture: CommitRequest Finalize](../architecture.md#commitrequest-finalize)
-- [configuration: CommitRequest conditions](../configuration.md#commitrequest-finalize)
+- [configuration: CommitRequest conditions](../configuration.md#when-there-is-nothing-to-commit)
 - [status conditions guide](status-conditions-guide.md)

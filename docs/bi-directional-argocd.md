@@ -490,6 +490,9 @@ applied the tip is asked nothing.
 | A refused edit with `onRefusal: Reapply` is reverted by an Argo CD sync | Bi-directional (Argo CD) |
 | An `Application` with automated sync on is `AutomatedSyncEnabled` and is never synced | Bi-directional (Argo CD) |
 | Argo CD's bookkeeping never reaches Git, asserted as zero commits during a sync | Bi-directional (Argo CD) |
+| An API create, and a delete and create with the same content, are adopted, so a Git-side delete prunes them; an edit made during an apply is in Git at once and back on the cluster after the `Repair`; a Git-side push is applied while edits keep arriving, and every edit is kept; a Git-side push survives a resync forced before its apply, and a Git-side addition survives one under `prune.mode: Always`; an API edit asks for no apply; another applier's object is neither mirrored nor adopted; a save made across a Git-side change resolves from the push | [Bi-directional applier echoes (Argo CD)](../test/e2e/bi_directional_echoes_e2e_test.go) |
+| A Git-side push made while the previous one is being applied stays in Git and on the cluster | [Bi-directional push race (Argo CD)](../test/e2e/bi_directional_push_race_e2e_test.go) |
+| After a restart, an API edit and an API create made while the operator was down end in Git and on the cluster, nothing reverts the edit, a Git-side push made meanwhile is applied, and the create is adopted | [Bi-directional restart (Argo CD)](../test/e2e/bi_directional_restart_e2e_test.go) |
 
 `task test-e2e-bi-directional` runs the Argo CD specs. Not covered end to end yet: a hub Argo CD in
 another cluster, `Forbidden` against cluster RBAC, and a `Replace=true` sync's field manager, which

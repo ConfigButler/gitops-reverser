@@ -12,7 +12,7 @@ refactor was in flight; the implementation has now landed.
 
 ## Goals
 
-The git writer turns Kubernetes audit events and reconcile snapshots into Git
+The branch worker turns live watch events and snapshot resyncs into Git
 commits. The design has three main goals:
 
 - Keep Git history readable during bursty operations such as `kubectl apply -k`,
@@ -34,14 +34,14 @@ second cooldown in the branch worker.
 A short burst from one logical operation should usually become one commit per
 author and target, not one commit per Kubernetes object. For example, one
 `kubectl apply -k` that creates four ConfigMaps for the same `GitTarget` and
-same user becomes one grouped commit after the commit window goes quiet.
+same user becomes one grouped commit once the window's `idleTimeout` passes with no write.
 
 ### Honest authorship
 
-Grouped audit commits are authored by the event user. The operator remains the
-committer because it physically writes the Git commit. Atomic reconcile writes
-are authored by the operator because they represent a controller snapshot, not a
-single human action.
+A window's commit is authored by its events' author, from author attribution. The
+operator remains the committer because it physically writes the Git commit. Resync
+writes are authored by the configured committer because they represent a snapshot
+of the cluster, not a single human action.
 
 ### Target isolation
 
@@ -55,83 +55,106 @@ same burst.
 If the remote branch moves before our push lands, unpublished local commits are
 discarded and rebuilt on top of the new remote tip. Replay uses the metadata
 resolved when the work entered the pending lifecycle, so a deleted or changed
-`GitTarget` does not change how already-pending work is written.
+`GitTarget` does not change how already-pending work is written. The one exception
+is the prune mode, which is re-read before a replay and only ever tightened. Replay
+also applies the actions each write decided when it was first committed, rather
+than planning the cluster's picture again onto the new tip.
 
 ## Current Flow
 
 ```mermaid
 flowchart TD
-    A[WriteRequest or audit event] --> B{Commit mode}
-    B -->|PerEvent| C[Open window: same author and target]
+    A[Live watch event or resync] --> B{Kind}
+    B -->|live event| C[Open window: same author and target]
     C --> E{Finalize trigger}
     E -->|author or target change| F[PendingWriteCommit]
     E -->|idleTimeout silence| F
     E -->|maxDuration| F
     E -->|byte cap| F
     E -->|attach: Next| F
+    E -->|apply due: flush| F
+    E -->|Git host push notice| F
     E -->|shutdown| F
-    B -->|Atomic| Q[Finalize open window if present]
+    B -->|resync| Q[Finalize open window if present]
     Q -.-> F
-    Q -->|then| D[PendingWriteAtomic]
+    Q -->|then| D[PendingWriteResync]
     F --> G[pendingWrites]
     D --> G
-    G --> H[CommitPlanner projects 1:1]
-    H --> I[CommitExecutor writes local commits]
+    G --> I[First commit decides each write's actions on its tree]
+    I -->|no action left| S[settled: not retained, not pushed]
     I --> J{Push}
     J -->|success| K[clear pendingWrites and advance lastPushAt]
-    J -->|remote moved| L[sync to remote tip]
-    L --> M[rebuild from pendingWrites]
-    M --> I
+    J -->|remote moved| L[reset to remote tip]
+    L --> M[apply the decided actions onto the new tip]
+    M --> J
     J -->|transient failure| N[keep local commits and pendingWrites for retry]
 ```
 
 `BranchWorker` owns the live open window, timers, repository preparation, push
 cooldowns, and retry scheduling. It retains `[]PendingWrite` until a push
-succeeds. Local commit creation does not clear pending work.
+succeeds. Local commit creation does not clear pending work. A write whose first
+commit changes nothing in Git is the exception: it settles at once and is neither
+retained nor pushed. A save (a write carrying a `CommitRequest`) is always
+retained, and the push decides its outcome.
 
 Per-event writes are processed as a stream. The branch worker keeps one open
 window at a time, and that window contains only one author and one target. The
 window finalizes on its idle timeout or its maximum duration, and immediately on
-author change, target change, the byte cap, an `attach: Next` request, or shutdown.
+author change, target change, the byte cap, an `attach: Next` request, a resync,
+shutdown, an apply coming due, or a Git host's push notice. An apply coming due
+closes the window so its edits are published before the apply request is sent
+([the flush](../design/apply-trigger.md#flush-then-apply), `close_reason="apply_due"`);
+the same holds when a sibling worker on the same repository and branch flushes. A push notice closes it so its writes are
+published, and replayed onto the move, at once. Neither applies while a
+`CommitRequest` holds the window: no flush is made while a request is registered,
+and a push notice leaves an attached window to its save.
 A timer of `0s` closes the window in the same step that collected the write. Repeated writes to the same
 Git path inside the open window are last-write-wins while preserving first-seen
 path order.
 
-Atomic writes are different: they bypass the live-event window, but they do not
-jump ahead of already-windowed live events. If an atomic write arrives while the
+Resyncs and atomic writes are different: they bypass the live-event window, but
+they do not jump ahead of already-windowed live events. If one arrives while the
 branch worker has an open event window, the worker finalizes that window into a
-commit pending write first, then appends the atomic pending write. This
-preserves arrival order while keeping atomic writes as one caller-defined batch.
+commit pending write first, then appends its own pending write. This preserves
+arrival order while keeping a resync or an atomic write as one batch.
 
 ## Core Types
 
 `WriteRequest` is the external input contract for Git writes. Callers choose
 between:
 
-- `CommitModePerEvent`, used for live audit events that may be windowed. With
+- `CommitModePerEvent`, used for live watch events that may be windowed. With
   `idleTimeout: 0s`, each event finalizes immediately.
-- `CommitModeAtomic`, used for reconcile snapshots that must land as one commit.
+- `CommitModeAtomic`, one commit for all events in the request. No production
+  caller sends one today: a snapshot arrives as a resync (`ResyncRequest`).
 
 `PendingWrite` is the durability unit retained until push succeeds:
 
 - `PendingWriteCommit` represents one finalized commit-shaped event window.
 - `PendingWriteAtomic` represents one caller-defined atomic write.
+- `PendingWriteResync` represents one GitTarget's snapshot, applied by
+  mark-and-sweep.
+- `PendingWriteRequestRecord` records a `CommitRequest`'s message in an empty
+  commit when no window reached the request and it asked for
+  `whenNothingToCommit: CommitEmpty`.
 
-Pending writes carry resolved target metadata: target identity, destination
-path, bootstrap options, and encryption configuration. That metadata is the
-replay contract.
+Pending writes carry resolved target metadata (`ResolvedTargetMetadata`): target
+identity, destination path, bootstrap options, encryption configuration, and
+prune mode. That metadata is the replay contract.
 
-`CommitPlan` is the planner output. It contains ordered `CommitUnit`s. Each
-`PendingWrite` maps to exactly one `CommitUnit`, and each unit maps to at most
-one local Git commit.
-
-`CommitExecutor` executes commit units. It applies files, stages bootstrap
-templates, configures encryption from the unit, skips no-op units, renders the
-message, chooses commit metadata, and creates the local commit.
+[`commit_executor.go`](../../internal/git/commit_executor.go) commits the pending
+writes in order, at most one local Git commit per write. A write's first commit
+decides its actions on that tree: a window or atomic write keeps only the events
+whose plan changed the tree, a resync keeps the upserts that changed it and the
+documents its sweep removed, and a save keeps every object it captured. A replay
+(`replayPendingWrites`) applies those actions onto the newer tip. The executor
+stages bootstrap templates, configures encryption from the write's metadata,
+skips a write that changes nothing, renders the message, chooses commit metadata,
+and creates the local commit.
 
 ## Window Rules
 
-The branch worker is the only owner of commit grouping for live audit events.
+The branch worker is the only owner of commit grouping for live events.
 It appends to or finalizes the open window on event arrival.
 
 Rules:
@@ -151,7 +174,9 @@ planner-time regrouping pass.
 
 Message precedence is a non-empty literal override, then `commit.message.liveTemplate` for live
 windows or `commit.message.reconcileTemplate` for atomic snapshots and resyncs. Every live window
-uses the same context, including singleton and `0s` windows. Literal text never changes authorship.
+uses the same context, including singleton and `0s` windows. A `CommitRequest`'s message is the
+literal override, and `commit.message.requestTemplate` can frame it (see
+[`commitrequest-design.md`](commitrequest-design.md)). Literal text never changes authorship.
 Resolved templates and literal overrides travel with pending writes through retries and conflict
 replay, so editing a target does not change an already finalized write's message configuration.
 
@@ -162,6 +187,7 @@ The live template receives `LiveCommitMessageData`:
 - `Count`
 - `Operations`
 - `Resources`
+- `RequestMessage`
 
 `Resources` is deduplicated by Git path and rendered in first-seen order.
 
@@ -180,13 +206,14 @@ Push outcomes:
   push retries the same commits.
 - Push error plus failed remote-state fetch: treat it like transient. Preserve
   state and surface the original push error.
-- Conflict: if the remote tip differs, sync to the latest remote tip, rebuild
-  commits from retained pending writes, and retry in the same call.
+- Conflict: if the remote tip differs, reset onto the latest remote tip, apply
+  the retained writes' decided actions onto it, and retry in the same call.
 
 Replay correctness is defined by final tree correctness and a successful push,
 not by preserving unpublished local commit objects. If replay finds that the new
-remote tree already contains the desired content, the no-op unit is skipped and
-no replacement commit is created.
+remote tree already contains the desired content, the write is skipped and no
+replacement commit is created. A write the new tree refuses is skipped and
+settled as a refusal, and the writes after it are still replayed.
 
 ## Operational Controls
 
@@ -205,21 +232,24 @@ finalizes the moment the target changes. An unreadable target, or one declaring
 no window, takes the `5s` and `1m` defaults. A `CommitRequest` that attaches
 replaces both timers for that window.
 
-The byte cap is an operator startup setting, `--branch-buffer-max-bytes`,
-because it protects pod memory rather than describing user-facing Git history.
+The byte cap is an operator startup setting, `--branch-buffer-max-size`
+(default `8Mi`), because it protects pod memory rather than describing
+user-facing Git history.
 
 The push cooldown is fixed at 5 seconds. It keeps fast local commits from
 spamming the remote while still keeping ordinary single-change latency close to
-`idleTimeout + push RTT`.
+`idleTimeout + push RTT`. A flush skips it: when an apply comes due, the writes up
+to the flush mark are published at once.
 
 ## Tests
 
 The implementation is covered at three useful levels:
 
-- Planner tests assert 1:1 projection, atomic plan shape, arrival order, and
-  one-resolution-per-target encryption lookup.
+- Pending-write tests assert metadata derivation, arrival order,
+  one-resolution-per-target encryption lookup, prune-mode tightening, and that a
+  decided write replays as decided.
 - Executor tests assert message-kind routing, no-op skipping, and encryption
-  coming from `CommitUnit` metadata.
+  coming from the pending write's metadata.
 - Branch-worker tests assert open-window finalize triggers, retained pending
   writes, transient vs conflict push handling, replay with deleted target
   metadata, atomic/commit interleave order, and no-op replay behavior.

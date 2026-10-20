@@ -1,10 +1,16 @@
 # Audit-pipeline readiness probe: improvement plan
 
-> **Status (2026-06-12): implemented** — `/readyz` now gates on the audit listener serving, the
-> TLS cert being loaded, and a startup-only Redis connection; `/healthz` stays a bare `Ping`. The
-> e2e harness's live-pipeline gate (`a133137`) is intentionally **kept** for now: it proves the
-> apiserver→manager path, which `/readyz` cannot assert (readiness only checks local
-> preconditions). §7's e2e simplification remains a future follow-up.
+> **Status: implemented; this page is the plan it was built from.** The code is
+> [`cmd/readiness.go`](../../cmd/readiness.go). `/readyz` gates on the audit listener serving, the
+> audit TLS cert being loaded, and, when Redis is configured (`--redis-addr`), a startup-only Redis
+> connection: the first successful `PING`, which latches. `/healthz` stays a bare `Ping`. The body
+> below describes the code as it was before the change, so its "today" and its line references are
+> from then. It differs from what was built in three ways. The audit pipeline no longer enqueues
+> audit events in Redis (Redis holds watch cursors and, with the Redis transport, attribution
+> facts), so the gate pings the shared Redis connection (`RedisStore.Ping`) rather than a by-type
+> queue. The `redis_up`-style gauge (§5, step 5) was not built. §7's e2e simplification was not made:
+> the harness's live-pipeline gate (`warmup_audit_path` in `hack/e2e/inject-webhook-tls.sh`) is
+> kept, because it proves the kube-apiserver to manager path, which `/readyz` cannot assert.
 
 ## Summary
 

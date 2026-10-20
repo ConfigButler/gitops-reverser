@@ -3,9 +3,8 @@
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
 >
 > Status: decided
-> Related: [manifestedit-abstraction-plan.md](manifest-system.md)
-> (step 5), [manifest-inventory-file-agnostic-placement.md](manifest-system.md),
-> [bi-directional.md](../bi-directional.md),
+> Related: [manifest-system.md](manifest-system.md), which replaced the abstraction plan and the
+> file-agnostic-placement plan this page answered, [bi-directional.md](../bi-directional.md),
 > POC decision record: `internal/git/manifestedit/DECISION.md`
 
 The abstraction plan flagged field ownership — "does the reverser own the whole
@@ -38,7 +37,7 @@ now it genuinely *is* part of the API object.
 So the loop closes:
 
 - Edit a field in the cluster → the reverser writes it to Git.
-- Edit a field in Git → the bi-directional reconciler applies it to the cluster →
+- Edit a field in Git → the applier (Flux or Argo CD) applies it to the cluster →
   the reverser keeps it in Git.
 - A field that is in Git but in neither the cluster nor a pending Git-to-cluster
   apply is, by definition, orphaned state. Deleting it is correct.
@@ -78,7 +77,9 @@ they fight the API-first model:
 - **Server-Side-Apply `managedFields`-driven ownership.** Principled in theory,
   but `fieldsV1` set-encoding, shared ownership across managers, and apply-vs-update
   semantics make a faithful predicate expensive to build and brittle to maintain —
-  for a guarantee bi-directional GitOps already provides more simply. No.
+  for a guarantee bi-directional GitOps already provides without any predicate. No. (The
+  branch worker does read an object's newest `managedFields` entries, but only to
+  recognize the applier's own write, an echo; never to decide which fields Git keeps.)
 
 If a real, concrete need for partial ownership ever appears, it must come back
 through its own proposal with a worked use case that bi-directional GitOps cannot

@@ -179,7 +179,7 @@ there.
 
 ## `GitProvider`
 
-`GitProvider` defines the Git remote, credentials, allowed branches, push strategy, and commit
+`GitProvider` defines the Git remote, credentials, allowed branches, push receiver, and commit
 behavior.
 
 The important fields are:
@@ -211,7 +211,7 @@ spec:
 
 ### What this repository is being used for (`status.branches`)
 
-`status.branches` lists the branches the `GitTarget`s in this namespace are configured to write,
+`status.branches` lists the branches the `GitTarget`s naming this provider are configured to write,
 with how many reference each:
 
 ```yaml
@@ -818,9 +818,11 @@ editing them affects windows that open afterward, never one already running. A
 for that window.
 
 One branch worker holds one live window, bound to an author and target. Interleaved authors or
-targets split a burst. Atomic writes, buffer limits, shutdown, and an `attach: Next` request can
-close a window early. Push cooldown is independent: a zero timer does not promise an immediate
-remote push. See the [complete trigger rules](spec/commit-window-refactor.md).
+targets split a burst. Atomic writes, a resync, buffer limits, shutdown, an `attach: Next` request,
+a push notice from the [receiver](#receiving-push-notifications-specreceiver), and the
+[flush](bi-directional.md#flush-then-apply) before an apply can close a window early. Push cooldown
+is independent: a zero timer does not promise an immediate remote push. See the
+[complete trigger rules](spec/commit-window-refactor.md).
 
 Both values are **Go duration strings with a mandatory unit**, at most `24h`, checked by the API
 server: `"750ms"`, `"1.5m"` and `"1m30s"` are accepted, while `"30"`, `".5s"`, `"5 seconds"` and
@@ -1229,11 +1231,13 @@ spec:
 **When a request is made.** After a [flush](bi-directional.md#flush-then-apply): when an apply comes
 due, the branch worker closes the open commit window, publishes the writes decided up to that
 moment at once, and asks for the tip that publication produced. An edit decided after that is
-recorded in the apply window, so an apply that writes over it is withheld from Git and repaired. A
-commit window a `CommitRequest` holds, a parent branch being recovered, or a checkout a failed write
-left dirty holds the request back. No applier is asked for anything until every initial snapshot of
-every `GitTarget` naming its trigger is published, and nothing is asked while the remote does not
-carry the branch. The rule is the same for a `Kustomization` and an `Application`.
+recorded in the apply window, so an apply that writes over it is withheld from Git and repaired. The
+branch workers of other `GitProvider`s writing the same repository and branch flush too, and the
+request waits until they have. A registered `CommitRequest` (a save sets its own commit boundary), a
+parent branch being recovered, or a checkout a failed write left dirty holds the request back. No
+applier is asked for anything until every initial snapshot of every `GitTarget` naming its trigger
+is published, and nothing is asked while the remote does not carry the branch. The rule is the same
+for a `Kustomization` and an `Application`.
 
 | `reason` | When | Sent to |
 | --- | --- | --- |
@@ -1301,7 +1305,7 @@ status:
 | `operation.token` | Identifies the request in the applier's own status: the `reconcile.fluxcd.io/requestedAt` value of the resume, or the `gitops-reverser request` entry in an Argo CD operation's `info` |
 | `operation.suspendToken` | Flux only: the token of the suspend after the apply. Once it is handled, nothing that started before the suspend is still running |
 | `operation.appliedRevision` | The revision the applier reports it applied. It can differ from `commit` when the branch moved between the check and the apply |
-| `repairPending` | `true` while an apply reverted an API edit made after it was asked for: Git kept the edit, and the cluster runs the older value until the `Repair` |
+| `repairPending` | `true` while an apply reverted an API edit made after its flush: Git kept the edit, and the cluster runs the older value until the `Repair` |
 | `source.otherConsumers` | Flux only: the `Kustomization`s and `HelmRelease`s that apply the same `GitRepository` and that no `FluxTrigger` holds. Information only; it never affects `Ready` |
 
 A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is suspended again and recorded as
@@ -1378,7 +1382,7 @@ from here, so both are excluded.
 Establishing that takes more than the refusal's kind, and more than the file. A render refusal fires
 for a brand-new resource an `images:` entry would override; removing one document from a file that
 holds two leaves the file in place, which looks exactly like an edit. Eligibility is therefore
-decided per document, and a write that removes one anywhere in the same flush is excluded whole.
+decided per document, and a write that removes one anywhere is excluded whole.
 Folder-level refusals, such as invalid YAML or unsupported content, never trigger it: they need a
 correction to the folder.
 
@@ -2592,10 +2596,10 @@ When attribution is enabled, these flags tune the join:
   directly.
 
   **Watching a type your audit policy excludes costs more than attribution.** Every removal on such
-  a type spends the full grace before shipping as the committer, because the fact it is waiting for
-  was never recorded. If a watched type's commits are consistently committer-authored, check the
-  audit policy before anything else: a type in the policy's `level: None` list can never be
-  attributed, and no operator-side setting changes that.
+  a type spends the full grace before shipping unresolved, because the fact it is waiting for was
+  never recorded. If a watched type's commits are consistently authored
+  `unknown (attribution unresolved)`, check the audit policy before anything else: a type in the
+  policy's `level: None` list can never be attributed, and no operator-side setting changes that.
 - `--author-attribution-max-facts-per-type` (default `4096`) and `--author-attribution-max-facts`
   (default `65536`): how many facts the in-memory index holds, per type and in total, evicted
   oldest-first. Per-type is the fair cap: a burst on one noisy type must not evict every other type's

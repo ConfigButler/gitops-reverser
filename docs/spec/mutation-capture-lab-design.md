@@ -8,9 +8,10 @@ webhooks** — at every interesting moment — and commits those structures as a
 **corpus**. It is not a second implementation of GitOps Reverser; it is reference material and a
 regression harness.
 
-The corpus is captured against **k8s v1.36.1+k3s1** (recorded in
-`test/mutationlab/corpus/CLUSTER.md`). **All seventeen** catalogued scenarios are captured today — see
-the [Difficult Cases Catalog](#difficult-cases-catalog).
+The corpus is captured against **k8s v1.36.4+k3s1** (recorded in
+`test/mutationlab/corpus/CLUSTER.md`). **All seventeen** catalogued scenarios are captured today (see
+the [Difficult Cases Catalog](#difficult-cases-catalog)), plus the rows that extend it, which
+`test/mutationlab/README.md` indexes.
 
 The lab reuses the product's webhook URLs (`/validate-all`, `/audit-webhook`) on the same ports and
 TLS mounts, so capturing is just an **image swap** on an already-prepared e2e cluster — no new audit
@@ -102,7 +103,7 @@ visible rather than silent.
 
 ## Findings
 
-These are conclusions drawn from the captured corpus on v1.36.1. They are versioned facts: the regen-
+These are conclusions drawn from the captured corpus on v1.36.4. They are versioned facts: the regen-
 and-diff workflow re-checks them on a Kubernetes bump.
 
 ### 1. The watch carries the full object exactly where the audit body goes shallow
@@ -111,8 +112,8 @@ This is the headline product result. Two captured data points sit side by side i
 
 - **Deletecollection (Row 9).** One user request: the audit *request* body is only `DeleteOptions` and
   name-less, yet each of the N per-object watch `DELETED` events carries the full removed object. (On
-  v1.36.1 the audit *response* body additionally carries a `List` of the removed objects — so the
-  shallow-body concern is real for the request and narrower for the response — but a name-less request
+  v1.36.4 the audit *response* body additionally carries a `List` of the removed objects, so the
+  shallow-body concern is real for the request and narrower for the response, but a name-less request
   still cannot be relied on for per-object identity across versions or audit levels.)
 - **Aggregated API (Row 15).** The official kube-apiserver audit event carries **no `requestObject`
   and no `responseObject`** (the apiserver proxies the aggregated request and has no schema to render
@@ -180,7 +181,7 @@ are not equal — there is no shared native join key. The admission recorder's
 This is the dominant GitOps write path (Flux/Argo write by apply), so its shape across the mechanisms
 is load-bearing for watch mode.
 
-- **Server-side apply (Row 3).** An apply that *changes* the object is, on v1.36.1, audited as
+- **Server-side apply (Row 3).** An apply that *changes* the object is, on v1.36.4, audited as
   `verb: patch` (the apply rides a `?fieldManager=…&force=true` PATCH, not an `apply` verb), reaches
   admission as `UPDATE` carrying the apply field manager in `options`, and surfaces on the watch as a
   single `MODIFIED` whose `managedFields` shows one `manager: …, operation: Apply` entry. So for the
@@ -228,7 +229,7 @@ with `automountServiceAccountToken: false` so no random volume name churns the c
 | 12 | Rejected during validation | ✅ | **no** watch event | failed response (`code` 4xx) | recorder is **always called** (parallel validation) and record-and-rejects | admission saw a write that never persisted |
 | 13 | Optimistic-concurrency conflict | ✅ | no watch event, no final change | failed response, `code: 409`, `Status` body | **none** — rejected at storage before admission | failure carries a Status, not the object |
 | 14 | Multi-version CRD conversion | ✅ | `ADDED`/`MODIFIED` in the v2 storage version (`size` string) | bodies in the submitted v1 (`sizeBytes`); +`conversion` source both ways | submitted v1 (the `Equivalent`+`*` webhook delivers it) | three different shapes for one write |
-| 15 | Aggregated API write | ✅ | **full object** (`ADDED`, spec included) | official: **empty** request/response body; proxy-enriched: full body | validating webhook **observed** firing on this version | the body-quality cliff — and watch fills it |
+| 15 | Aggregated API write | ✅ | **full object** (`ADDED`, spec included) | **empty** request/response body | validating webhook **observed** firing on this version | the body-quality cliff, and watch fills it |
 | 16 | Watch resync (`410 Gone`) | ✅ | `ERROR` (`Status` 410); driver verifies relist recovery | n/a | n/a | proves watch needs a list backstop |
 | 17 | Bookmark | ✅ | `BOOKMARK` with resourceVersion | n/a | n/a | the safe resume anchor |
 
@@ -342,6 +343,10 @@ test/mutationlab/corpus/
   flunder/                        # the aggregated API (Row 15)
     aggregated-api-write/         # watch.added (full) · audit.create (empty)
 ```
+
+The rows that extend the catalog (8a, 15a, 15b, 18, 19 in `test/mutationlab/README.md`) add their
+own directories beside these, such as `configmap/selector-membership/` and
+`flunder/aggregated-api-delete/`.
 
 `CLUSTER.md` is load-bearing: a captured shape is only meaningful against a known apiserver version.
 

@@ -119,7 +119,7 @@ write to that branch goes through its single event loop.
 
 | Component | Path | Role |
 |---|---|---|
-| `WorkerManager` and `BranchWorker` | [`internal/git/`](../internal/git/) | clone, plan, commit window, atomic push, conflict replay |
+| `WorkerManager` and `BranchWorker` | [`internal/git/`](../internal/git/) | clone, plan, commit window, atomic push, conflict replay, and when to ask an applier: the flush, the apply window, adopt and converge |
 | Manifest analyzer | [`internal/manifestanalyzer/`](../internal/manifestanalyzer/) | folder inventory, the structure-only acceptance gate, and resync planning |
 | Document editor | [`internal/git/manifestedit/`](../internal/git/manifestedit/) | edits one YAML document in place inside a multi-document file |
 | Manifest report | [`internal/manifestreport/`](../internal/manifestreport/) | projects a live object into a comparable manifest |
@@ -183,10 +183,10 @@ flowchart LR
 
 | Observer | Observes | Cluster | Mechanism |
 |---|---|---|---|
-| Controller cache | the operator's own custom resources, plus `Namespace` (label changes only) | config plane | controller-runtime informers ([`cmd/main.go:1130`](../cmd/main.go#L1130)) |
-| API-surface triggers | **types**: `CustomResourceDefinition` and `APIService` objects | config plane only | one private `dynamicinformer` per resource ([`internal/watch/manager_catalog.go:458`](../internal/watch/manager_catalog.go#L458)) |
-| Catalog refresh | **types**: the served API surface | every cluster, including remote | polled every 30s, plus rule changes and the trigger above ([`internal/watch/manager.go:288`](../internal/watch/manager.go#L288)) |
-| Target watches | **objects** of claimed types | source cluster | raw `dynamic ... Watch()`, no informer and no cache ([`internal/watch/target_watch.go:969`](../internal/watch/target_watch.go#L969)) |
+| Controller cache | the operator's own custom resources, plus `Namespace` (label changes only) | config plane | controller-runtime informers ([`cmd/main.go:1223`](../cmd/main.go#L1223)) |
+| API-surface triggers | **types**: `CustomResourceDefinition` and `APIService` objects | config plane only | one private `dynamicinformer` per resource ([`internal/watch/manager_catalog.go:447`](../internal/watch/manager_catalog.go#L447)) |
+| Catalog refresh | **types**: the served API surface | every cluster, including remote | polled every 30s, plus rule changes and the trigger above ([`internal/watch/owner.go:389`](../internal/watch/owner.go#L389)) |
+| Target watches | **objects** of claimed types | source cluster | raw `dynamic ... Watch()`, no informer and no cache ([`internal/watch/target_watch.go:1420`](../internal/watch/target_watch.go#L1420)) |
 
 Two more paths reach the operator without being watches at all. The audit webhook is a **push** from
 kube-apiserver, and the admission webhooks are synchronous requests. Neither observes state. The
@@ -212,8 +212,8 @@ stopped on `Forbidden` could then never be re-armed.
 Not in the observers. Three places currently recompute a GitTarget's watch set from the same
 watched-type table:
 
-- the runner, at [`target_watch.go:105`](../internal/watch/target_watch.go#L105);
-- the status roll-up, at [`stream_readiness.go:125`](../internal/watch/stream_readiness.go#L125);
+- the runner, at [`target_watch.go:286`](../internal/watch/target_watch.go#L286);
+- the status roll-up, at [`stream_readiness.go:145`](../internal/watch/stream_readiness.go#L145);
 - the resident table store itself, in [`watched_type_resolver.go`](../internal/watch/watched_type_resolver.go).
 
 They agree today only because each re-derives the same answer from the same inputs, and the runner

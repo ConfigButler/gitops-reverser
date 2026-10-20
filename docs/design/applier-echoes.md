@@ -616,7 +616,7 @@ The build departs from the plan above in twelve places, decided on 2026-10-20:
    (`stale_snapshots_total{outcome="used"}`), and C2's policy, API wins, applies to what the
    unapplied commit changed. A resync asked for again forever would leave drift unmirrored for as
    long as an apply fails. This settles the second open question.
-3. **A `GitTarget`'s snapshots are exempt from F3 until its initial snapshots are published.** The
+3. **A collection's initial snapshot is exempt from F3.** The
    plan counted a pending converge as Git being ahead, while S2's barrier held every apply,
    converge included, until the initial snapshots were published: each waited for the other, at
    startup and when a `GitTarget` first names a trigger. The initial snapshots are the startup
@@ -672,8 +672,8 @@ The build departs from the plan above in twelve places, decided on 2026-10-20:
 
 ## References
 
-- [`apply-trigger.md`](apply-trigger.md): the apply window, `Repair`, `CatchUp`, the quiet branch,
-  and the startup baseline.
+- [`apply-trigger.md`](apply-trigger.md): the apply window, `Repair`, `CatchUp`, the flush, and the
+  startup baseline.
 - [`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md): decide,
   `advance`, materialize, and replay.
 - [`../spec/commitrequest-design.md`](../spec/commitrequest-design.md): the save contract F2 keeps.
@@ -681,10 +681,11 @@ The build departs from the plan above in twelve places, decided on 2026-10-20:
   the resync and its sweep.
 - [`internal/git/apply_window.go`](../../internal/git/apply_window.go): `withholdLateApply`.
 - [`internal/git/commit_executor.go`](../../internal/git/commit_executor.go): planning a write.
-- [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go): the resync and the parked
-  heals.
-- [`internal/git/apply_trigger.go`](../../internal/git/apply_trigger.go): the quiet branch and
-  `CatchUp`.
+- [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go): the resync.
+- [`internal/git/apply_trigger.go`](../../internal/git/apply_trigger.go): the flush and `CatchUp`.
+- [`internal/git/apply_epoch.go`](../../internal/git/apply_epoch.go): stale snapshots (F3).
+- [`internal/git/apply_ownership.go`](../../internal/git/apply_ownership.go): another applier's
+  objects (F4), and adopt.
 - [`internal/git/branch_worker.go`](../../internal/git/branch_worker.go): `PushCooldown`,
   `afterFailedPush`, `replayOntoRemote`.
 - [`test/e2e/bi_directional_push_race_e2e_test.go`](../../test/e2e/bi_directional_push_race_e2e_test.go):

@@ -34,9 +34,9 @@ default stored on every provider, is accepted.
 **Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
 GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
 `Reapply` it asks the target's applier to apply the current tip, after closing the open commit
-window and publishing the writes pending on the branch. The applier is the Flux `Kustomization` a `FluxTrigger` holds,
-or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget` names the trigger in the
-new `spec.applyTriggerRef`. Only that applier applies, rather than every applier watching the
+window and publishing the writes pending on the branch. The applier is the Flux `Kustomization` a
+`FluxTrigger` holds, or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget`
+names the trigger in the new `spec.applyTriggerRef`. Only that applier applies, rather than every applier watching the
 branch; a `GitRepository` that has to fetch the tip wakes only the consumers no trigger holds. An
 allowed edit still in a commit window is published before the apply instead of being
 reverted with the refused one. The API rejects `Reapply` without `spec.applyTriggerRef`.
@@ -66,8 +66,11 @@ branch, after a refusal or a reverted edit, to adopt an object created through t
 file in Git), and to converge, once when the operator starts and once when a `GitTarget` first names
 the trigger. An API edit asks for no apply. Each apply goes out once the writes pending on the
 branch are published, and none before every initial snapshot of the `GitTarget`s naming the trigger
-is published. `flux get ks` shows it `Suspended`, and while the operator is down it waits suspended:
-a graceful stop suspends one it had resumed, and after a crash the next process does. Remove
+is published. A `GitTarget` that names a trigger has its folder created before it is applied: a
+resync into a folder the branch does not hold yet commits the folder's bootstrap files (`README.md`,
+`.gittargetignore`, and `.sops.yaml` with encryption) even when there is nothing to mirror.
+`flux get ks` shows it `Suspended`, and while the operator is down it waits suspended: a graceful
+stop suspends one it had resumed, and after a crash the next process does. Remove
 `spec.suspend` from whatever applies the `Kustomization`'s manifest (the trigger reports
 `SuspendOwnedElsewhere` otherwise) and any Git-host webhook into a Flux `Receiver` for the
 repository, as [the Flux guide](bi-directional-flux.md) describes. A trigger acts only while an

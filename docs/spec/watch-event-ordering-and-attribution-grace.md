@@ -3,7 +3,7 @@
 > **contract:** current watch processing and ordering boundaries. Index: [`../INDEX.md`](../INDEX.md)
 >
 > Status: **implementation explainer**
-> Checked: 2026-09-28
+> Checked: 2026-10-20
 > Related: [Kubernetes watch options](../facts/kubernetes-watch-options.md),
 > [Watch-first ingestion architecture](../finished/watch-first-ingestion-architecture.md),
 > [Attribution contract](attribution.md),
@@ -76,11 +76,12 @@ also authors the change. A fact arriving after a commit is written does not rewr
 The index determines what counts as a resolution. For a removal query, even an exact UID/RV
 PATCH match is held while [`FactIndex.Await`](../../internal/queue/fact_index.go) waits for deletion
 evidence, up to the grace deadline. `ExactCapable=false` does not disable the exact lookup.
-When the exact fact is missing, an earlier writer's fallback can be returned at expiry; ordered
-delivery does not establish that this author caused a label-exit mutation. The proposed
+When the exact fact is missing, an earlier writer's fallback can be returned at expiry. A removal
+from a label-selected collection is the exception: under the
 [filtered-removal attribution policy](../design/watches-labels-simplification.md#attribution-for-filtered-removals)
-requires stricter evidence and releases eligible exact matches immediately, preserving the same
-inline ordering. That policy is not built.
+it reads only the fact at the object's exact UID/RV, returns as soon as that fact arrives, and is
+unresolved without it, so no earlier writer can author a label exit. Both paths keep the same
+inline ordering.
 
 ### Preserve ordered release if attribution becomes concurrent
 
@@ -161,12 +162,14 @@ test today.
   queue checks live in [`resync_push_test.go`](../../internal/git/resync_push_test.go).
 - Refuse an event because the worker queue is full. The routing error must leave its watch
   cursor unadvanced; queue admission is the boundary asserted by this check.
-- For the proposed selector replacement, pause the retired producer immediately before enqueue and
+- For a selector replacement, pause the retired producer immediately before enqueue and
   initialize the replacement. The retired work must enter ahead of the replacement snapshot or
   be canceled. It cannot arrive behind that snapshot and restore an excluded object. The
   [label-selection design](../design/watches-labels-simplification.md#scope-integration-and-queue-ordering)
-  requires a producer handoff for this case; the current cancellation checks alone do not
-  establish it.
+  requires a producer handoff for this case, and `producerGate` in
+  [`target_watch.go`](../../internal/watch/target_watch.go) provides it: retiring a stream waits
+  out an enqueue in flight and admits none after. The check lives in
+  [`producer_gate_test.go`](../../internal/watch/producer_gate_test.go).
 - Exercise overlapping watches with delayed attribution on one. Assert each watch's own order;
   do not infer a global mutation order from their combined arrivals. The label-selection design
   refuses conflicting selectors but retains the existing same-selector namespace overlap.

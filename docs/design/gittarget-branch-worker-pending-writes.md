@@ -56,7 +56,7 @@ message, and save were still intact. Step 2 fixes it.
 Three pieces of loop-owned state:
 
 - **`pendingWrites`**: decided entries, in order, that are not yet published. Entry kinds are the existing
-  `PendingWrite` kinds (window, atomic, resync, request record, refusal touch). Accepted entries
+  `PendingWrite` kinds (window, atomic, resync, request record). Accepted entries
   survive saturation. There is no `owedSnapshot` entry (a placeholder that would request a snapshot
   again) replacing discarded accepted work.
 - **`checkout`**: `{root, rootGen, applied}`. The checkout equals `root` plus the commits of
@@ -144,7 +144,7 @@ Source review at `373bf8d7` confirms the pending-writes path and step 4 refusal 
   `skipUnchangedLiveUpdate` stored the content hash before enqueue, so a refused UPDATE was skipped
   on cursor resume, which then advanced the cursor.
 - **The byte budget was incomplete** (fixed in step 5b). `syncAdmission` used `pendingWritesBytes`
-  and a pending retry. `buildRequestRecordWrite` and `buildRefusalTouchWrite` leave `ByteSize` at
+  and a pending retry. `buildRequestRecordWrite` and `buildRefusalTouchWrite` left `ByteSize` at
   zero, so repeated empty saves grew the pending writes without reaching the byte threshold, and payload on the
   FIFO was not counted at all.
 - **Retry pacing had an exception** (fixed after the 2026-10-04 review). `decide` let resyncs
@@ -516,8 +516,8 @@ page is marked built.
 
 ## What stays
 
-The open window and its timers, FIFO admission and resync coalescing at enqueue, the attach loop, the
-refusal-touch schedule, `baseTrusted`, the standby state (`newBranchParent`), and the push's
+The open window and its timers, FIFO admission and resync coalescing at enqueue, the attach loop,
+`baseTrusted`, the standby state (`newBranchParent`), and the push's
 compare-and-swap with the parent-change admission check.
 
 ## Invariants to keep

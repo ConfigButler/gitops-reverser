@@ -22,14 +22,28 @@
 >   [plan_flush.go](../../internal/git/plan_flush.go), enforced at the top of `flush`.
 > - **Bootstrap** — a fully-commented
 >   [.gittargetignore](../../internal/git/bootstrapped-repo-template/.gittargetignore) staged
->   alongside README.md / .sops.yaml.
-> - **Status reason** — `IgnoreShadowsManagedPath` ([gittarget_controller.go](../../internal/controller/gittarget_controller.go),
->   wired in [event_router.go](../../internal/watch/event_router.go), kept in the stalled set in
->   [stream_status.go](../../internal/controller/stream_status.go)).
+>   alongside README.md / .sops.yaml. A resync into a folder an apply trigger applies, which the
+>   branch does not hold yet, commits these files even with no object, so the applier is never
+>   asked to apply a missing path (`stageResyncFolder` in
+>   [resync_flush.go](../../internal/git/resync_flush.go)).
+> - **Status reason:** `IgnoreShadowsManagedPath` ([gittarget_controller.go](../../internal/controller/gittarget_controller.go)),
+>   picked by `GitPathRefusalReason` in
+>   [acceptance_refusal.go](../../internal/manifestanalyzer/acceptance_refusal.go). Every
+>   `GitPathAccepted=False` is `Stalled=True`, whatever its reason (`gitTargetReadinessGates` in
+>   gittarget_controller.go).
 > - **Tests** — unit ([gittargetignore_test.go](../../internal/manifestanalyzer/gittargetignore_test.go)),
 >   writer-integration ([gittargetignore_writer_test.go](../../internal/git/gittargetignore_writer_test.go)),
 >   and e2e ([foreign_content_e2e_test.go](../../test/e2e/foreign_content_e2e_test.go)). Gitlink/submodule
 >   detection and the manually-moved-file residual edge remain the noted later hardening.
+>
+> The body below is the design as argued on 2026-06-27. §2 and §5 describe the scanner before
+> this landed (the discarded non-YAML list, the skipped symlinks), so their `analyzer.go` line
+> links, other than the one to `collectFiles`, no longer point at that code. As built, the code
+> differs from the body in three details: the `.gitignore` parser is go-git v6's
+> (`github.com/go-git/go-git/v6/plumbing/format/gitignore`); the parse-time denylist also holds
+> `*.yml`, `**/*`, `**/*.yaml`, and `**/*.yml` (`isCatastrophicIgnorePattern`); and the
+> benign-passenger set also accepts `LICENSE.txt`, `LICENCE.txt`, `COPYING.txt`, and
+> `NOTICE.txt`.
 >
 > Companion to
 > [unsupported-folder-refusal-plan.md](unsupported-folder-refusal-plan.md). That doc settled *how* a
@@ -75,7 +89,7 @@ permits.
 
 The gate ([acceptance.go](../../internal/manifestanalyzer/acceptance.go)) is strict and well-tested about
 **YAML it parses**. Structure-only refusals (the live + resync path via `AcceptStructureOnly`,
-[acceptance.go:191](../../internal/manifestanalyzer/acceptance.go#L191)):
+[acceptance.go:229](../../internal/manifestanalyzer/acceptance.go#L229)):
 
 | Refusal | IssueKind |
 |---|---|
@@ -341,7 +355,7 @@ This is a **structural** refusal — it depends only on the bytes/entries in the
 discovery or followability. That places it in exactly the same safe class as the existing Tier-1 refusals,
 so it inherits their guarantees and their seam:
 
-- It runs in `AcceptStructureOnly` ([acceptance.go:191](../../internal/manifestanalyzer/acceptance.go#L191)),
+- It runs in `AcceptStructureOnly` ([acceptance.go:229](../../internal/manifestanalyzer/acceptance.go#L229)),
   so it gates **both** the resync apply and the live write path, and it **cannot false-refuse on a
   discovery wobble** (the property the unsupported-folder plan guards so carefully). A foreign file is a
   fact about the disk, not about the API.
@@ -352,7 +366,7 @@ so it inherits their guarantees and their seam:
   status plumbing.** It reuses everything `unsupported-folder-refusal-plan.md` already built.
 
 There are two real changes, both upstream of `Accept`, both in `collectFiles`
-([analyzer.go:281](../../internal/manifestanalyzer/analyzer.go#L281)) — the single walk that already
+([analyzer.go:288](../../internal/manifestanalyzer/analyzer.go#L288)), the single walk that already
 classifies every entry:
 
 1. **Apply the root `.gittargetignore` first (the filter).** Read **exactly** `<spec.path>/.gittargetignore`
@@ -406,7 +420,7 @@ semantics rather than reinventing glob handling.
 - **Empty directories:** ignore. Git does not track them; refusing them buys nothing and annoys users.
 - **The operator's own bootstrap output must self-accept.** `README.md`, `.sops.yaml`, and `.gittargetignore`
   must be in the effective allowlist or we refuse our own writes. `.sops.yaml` already is
-  ([acceptance.go:149](../../internal/manifestanalyzer/acceptance.go#L149) `WriterAllowlist`); `README.md`
+  ([acceptance.go:191](../../internal/manifestanalyzer/acceptance.go#L191) `WriterAllowlist`); `README.md`
   and `.gittargetignore` must be added. Audit the full bootstrap template
   ([bootstrapped_repo_template.go](../../internal/git/bootstrapped_repo_template.go)) for any other
   non-KRM file it stages and allowlist each one explicitly.

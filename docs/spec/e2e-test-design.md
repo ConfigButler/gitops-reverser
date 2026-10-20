@@ -40,7 +40,8 @@ This shape won because it gave a good trade-off between isolation and practicali
 
 What it does not promise:
 
-- full `ginkgo -p` safety for the whole package yet
+- `ginkgo -p` safety for every spec: the specs that touch cluster-wide state run `Serial`
+  (see [e2e-serial-registry.md](e2e-serial-registry.md))
 - removal of all remaining shell from the harness
 - total independence from shared cluster-side services
 
@@ -114,8 +115,11 @@ These are the canonical Task entry points on the current worktree:
 
 | Command | Purpose |
 |---|---|
-| `task test-e2e` | Standard e2e package, excluding CI-only workflow checks and the bi-directional corner |
+| `task test-e2e` | Standard e2e package, excluding the `image-refresh` workflow check and the opt-in corners |
 | `task test-e2e-bi-directional` | Bi-directional corner (Flux + Argo CD); the only lane that installs Argo CD |
+| `task test-e2e-source-cluster` | Source-cluster corner: kcp workspaces as remote source clusters; the only lane that installs kcp |
+| `task test-e2e-ado` | Mirror into a hosted Azure DevOps repository (needs `E2E_ADO_REPO_URL` and `E2E_ADO_PAT`) |
+| `task test-e2e-aggregated-api` | Aggregated API server specs only |
 | `task test-image-refresh` | Image rebuild / reload invalidation chain |
 | `task test-e2e-quickstart-helm` | Quickstart framework with Helm install |
 | `task test-e2e-quickstart-manifest` | Quickstart framework with manifest install |
@@ -132,9 +136,10 @@ The intended interpretation of these entry points is:
   than as part of the normal `task test-e2e` path
 - `task test-e2e-quickstart-helm` is the important validation for the Helm install path
 - `task test-e2e-quickstart-manifest` is the important validation for the single-file manifest install path
-- `task test-e2e` is a broad spec run but **excludes** the bi-directional corner (its label filter
-  defaults to `!image-refresh && !bi-directional`), because that corner needs an Argo CD install
-  `task prepare-e2e` does not perform — run it with `task test-e2e-bi-directional`
+- `task test-e2e` is a broad spec run but **excludes** the opt-in corners (its label filter
+  defaults to `!image-refresh && !bi-directional && !source-cluster && !ado`), because they need
+  what `task prepare-e2e` does not provide (Argo CD, kcp, an Azure DevOps repository): run them
+  with their own tasks
 
 ## Lifecycle Layers
 
@@ -147,9 +152,9 @@ These are shared across runs until you explicitly tear down the cluster:
 - Flux-managed support services
   - Gitea
   - Valkey
-  - Prometheus stack
+  - Prometheus operator
   - Cert-manager
-  - Traefik
+  - Reflector
 - Gitea organization bootstrap
 - port-forwards
 - age key material under the cluster stamp directory
@@ -187,20 +192,17 @@ the cluster as having one active install variant for the current run.
 
 These belong to the current e2e run, not to the controller install:
 
-- active repo name
-- checkout path
-- HTTP token
-- SSH keypair
-- generated `secrets.yaml`
-- webhook metadata
-- checkout readiness marker
+- repo name, clone URLs, Secret names and receiver webhook metadata, in the `RepoArtifacts` that
+  `SetupRepo` returns
+- HTTP token and SSH keypair, written into the generated `secrets.yaml`
+- the local checkout
 
-On the current worktree, these live under:
+These live under:
 
-- `.stamps/cluster/<ctx>/<namespace>/git-<repo>/...`
+- `.stamps/e2e-repo-artifacts/<test-namespace>/<repo>/secrets.yaml`
+- `.stamps/repos/<repo>/` (the checkout)
 
-This is intentionally conservative and keeps the Task migration closer to the earlier layout, even though these
-artifacts are conceptually more run-scoped than install-scoped.
+Both are outside the cluster stamp tree, so an install refresh does not touch them.
 
 ### Layer 4: Per-suite Kubernetes resources
 
@@ -209,9 +211,9 @@ Secrets, CRDs, or Flux resources.
 
 These namespaces are typically named:
 
-- `<ginkgo-seed>-test-manager`
+- `<ginkgo-seed>-test-manager-watchrule`
 - `<ginkgo-seed>-test-signing`
-- `<ginkgo-seed>-test-audit-consumer`
+- `<ginkgo-seed>-test-commit-request`
 - and so on
 
 Those namespaces are created in `BeforeAll` and removed in `AfterAll` for the suite.
@@ -229,11 +231,15 @@ has already copied into the target namespace.
 
 The central setup happens in [test/e2e/e2e_suite_test.go](../../test/e2e/e2e_suite_test.go).
 
-`ensureE2EPrepared()` is intentionally narrow:
+It is a `SynchronizedBeforeSuite`, and intentionally narrow:
 
-1. Runs `task prepare-e2e` (cluster, controller install, webhook TLS, age key, port-forwards)
-2. Sets the kubectl context
-3. Ensures `E2E_AGE_KEY_FILE` points at the prepared age key
+1. On parallel process #1 only: takes the per-cluster run lock, runs `task prepare-e2e` (cluster,
+   controller install, webhook TLS, age key, port-forwards), sets the kubectl context, removes
+   every `IceCreamOrder` CRD group, ensures the shared Gitea organization
+   (`prepareE2EClusterOnce`), waits out the namespaces of an earlier run with the same seed, and
+   resets the observability counters
+2. In every process: points `E2E_AGE_KEY_FILE` at the prepared age key when it is unset
+   (`configureE2EProcess`)
 
 `BeforeSuite` does **not** bootstrap any Gitea repo. Per-file repo setup is the responsibility of each
 repo-using test file via `SetupRepo(...)`.
@@ -245,19 +251,19 @@ The only cluster-level variable still consumed across files is:
 Repo state (names, checkout paths, Secret names, optional receiver webhook info) flows through a typed
 `RepoArtifacts` struct returned by `SetupRepo`, not through package-global env vars.
 
-One important current detail is that the remaining audit-consumer specs share a lazy repo
-helper in `audit_helpers_test.go`, so `Commit Window Batching` and `Commit Request` can
-run first without hidden ordering assumptions.
+The audit-consumer specs (`Commit Window Batching`, `Commit Request`) each provision their own repo
+via `SetupRepo`, like every other file.
 
 ## Repo Model: One Repo Per E2E Test File
 
-Each repo-using e2e file owns its own repo:
+Each repo-using e2e file owns its own repo, for example:
 
 | File | Test namespace | Repo |
 |---|---|---|
-| `e2e_test.go` | `testNamespaceFor("manager")` | `e2e-manager-<seed>` |
+| `watchrule_configmap_secret_e2e_test.go` (one of the `manager` files) | `testNamespaceFor("manager-watchrule")` | `e2e-manager-watchrule-<seed>` |
 | `signing_e2e_test.go` | `testNamespaceFor("signing")` | `e2e-signing-<seed>` |
-| `commit_window_batching_e2e_test.go` / `commit_request_e2e_test.go` | `testNamespaceFor("audit-consumer")` via shared helper; per-spec producer namespaces | `e2e-audit-consumer-<seed>` |
+| `commit_window_batching_e2e_test.go` | `testNamespaceFor("commit-window-batching")` | `e2e-commit-window-<seed>` |
+| `commit_request_e2e_test.go` | `testNamespaceFor("commit-request")`, and `commit-request-bundle` for the bundle describe | `e2e-commit-request-<seed>`, `e2e-commit-request-bundle-<seed>` |
 | `commit_author_attribution_e2e_test.go` | `testNamespaceFor("commit-author")` | `e2e-commit-author-<seed>` |
 | `quickstart_framework_e2e_test.go` | `testNamespaceFor("quickstart-framework")` | `e2e-quickstart-framework-<seed>` |
 | `flux_bi_directional_e2e_test.go` | `testNamespaceFor("bi-directional")` | `e2e-bi-directional-<seed>` |
@@ -268,17 +274,17 @@ Each repo-using e2e file owns its own repo:
 Each file calls `SetupRepo(ctx, testNamespace, repoName)` once in `BeforeAll`, stores the returned
 `*RepoArtifacts` in a file-local variable, and applies `artifacts.SecretsYAML` to the test namespace.
 
-Repo stamps live under:
+Repo artifacts live under:
 
-- `.stamps/cluster/<ctx>/<test-namespace>/git-<repo>/`
+- `.stamps/e2e-repo-artifacts/<test-namespace>/<repo>/`
+- `.stamps/repos/<repo>/` (the checkout)
 
-not under the install namespace.
-
-The `audit_helpers_test.go` file additionally uses a `sync.Once`-backed
-`ensureAuditConsumerRepo()` helper so either audit-consumer container can initialize the shared
-repo first without cross-container ordering coupling.
+not under the cluster stamp tree.
 
 ## Why CI Could Pass Even If This Was Fragile
+
+This section is history: it explains a failure from when the repo fixtures lived under the install
+namespace's stamp tree. They now live under `.stamps/e2e-repo-artifacts/`, outside it.
 
 Two reasons can both be true at once:
 
@@ -298,15 +304,16 @@ That is exactly why the issue surfaced around `image_refresh_test.go`: it repeat
 
 Current CI e2e matrix in .github/workflows/ci.yml:
 
-- `quickstart-helm-and-makefile-image-refresh`
-- `quickstart-manifest`
-- `full`
+- `full-manager`
+- `full-core`
+- `bi-directional`
+- `source-cluster`
+- `quickstart-install`
+- `image-refresh`
 
-The `full` job currently runs:
+The `full-manager` and `full-core` legs both run `task test-e2e`, each with its own label filter.
 
-- `task test-e2e`
-
-`task test-e2e` runs the entire e2e package (there is no longer a smoke-only subset).
+`task test-e2e` runs the e2e package minus the opt-in corners (there is no smoke-only subset).
 
 So "CI ran before" does not prove the fixture boundaries were healthy. It only proves the exercised combination of:
 
@@ -323,15 +330,19 @@ Yes.
 
 That happens in hack/cleanup-installs.sh.
 
-Specifically, for each namespace with an install stamp it does:
+Specifically, for each namespace with an install stamp it deletes the namespace, then runs:
+
+```bash
+find "${base}/${ns}" -mindepth 1 -maxdepth 1 ! -name 'git-*' -exec rm -rf {} +
+```
 
 where:
 
 - `base=.stamps/cluster/${CTX}`
 - `ns` is the install namespace, usually `gitops-reverser`
 
-The script still cleans install-scoped data under that namespace tree, but it now preserves `git-*` directories so the
-shared repo fixtures survive an install refresh during the same e2e run.
+The script cleans install-scoped data under that namespace tree and still preserves `git-*` directories, from when
+the repo fixtures lived there. `SetupRepo` now writes them outside that tree.
 
 ## Current Stamp Layout
 
@@ -343,7 +354,7 @@ On the current worktree, the important paths are:
 - `.stamps/cluster/<ctx>/flux.installed`
 - `.stamps/cluster/<ctx>/flux-setup.ready`
 - `.stamps/cluster/<ctx>/services.ready`
-- `.stamps/cluster/<ctx>/gitea/bootstrap/...`
+- `.stamps/cluster/<ctx>/age-key.txt`
 
 ### Install namespace
 
@@ -358,11 +369,7 @@ On the current worktree, the important paths are:
 
 ### Run-scoped Gitea artifacts
 
-- `.stamps/cluster/<ctx>/<namespace>/git-<repo>/active-repo.txt`
-- `.stamps/cluster/<ctx>/<namespace>/git-<repo>/checkout-path.txt`
-- `.stamps/cluster/<ctx>/<namespace>/git-<repo>/token.txt`
-- `.stamps/cluster/<ctx>/<namespace>/git-<repo>/secrets.yaml`
-- `.stamps/cluster/<ctx>/<namespace>/git-<repo>/checkout.ready`
+- `.stamps/e2e-repo-artifacts/<test-namespace>/<repo>/secrets.yaml`
 
 ### Local Git checkout
 
@@ -370,26 +377,27 @@ On the current worktree, the important paths are:
 
 ## Suite Inventory
 
-The e2e package currently contains:
+The e2e package includes, among others:
 
 | Suite | Label(s) | Purpose |
 |---|---|---|
-| `e2e_test.go` | `manager` | Main reconciliation and GitOps behavior |
+| `controller_basics_e2e_test.go` and the other `manager` files | `manager` | Main reconciliation and GitOps behavior |
 | `signing_e2e_test.go` | `signing` | Commit signing behavior |
-| `commit_window_batching_e2e_test.go` | `audit-consumer` | Commit-window batching through the audit pipeline |
-| `commit_request_e2e_test.go` | `audit-consumer` | CommitRequest finalization through the audit pipeline |
+| `commit_window_batching_e2e_test.go` | `commit-window-batching`, `audit-consumer` | Commit-window batching through the audit pipeline |
+| `commit_request_e2e_test.go` | `commit-request`, `audit-consumer` | CommitRequest finalization through the audit pipeline |
 | `commit_author_attribution_e2e_test.go` | `manager` | OIDC claim to Git author attribution |
 | `image_refresh_test.go` | `image-refresh` | Build/load/restart invalidation chain |
 | `quickstart_framework_e2e_test.go` | `quickstart-framework` | Installer-level quickstart flow |
 | `flux_bi_directional_e2e_test.go` | `bi-directional`, `flux` | Flux plus gitops-reverser shared ownership |
 | `argocd_bi_directional_e2e_test.go` | `bi-directional`, `argocd` | Argo CD plus gitops-reverser shared ownership |
+| the other bi-directional corner files | `bi-directional` and a sub-label | See [e2e-bi-directional-corner.md](e2e-bi-directional-corner.md) |
 | `demo_e2e_test.go` | `demo` | Demo repo preparation, intentionally leaves resources |
 
 ## Suite Definition
 
 `task test-e2e` runs the standard e2e package, excluding the rebuild-heavy `image-refresh`
-workflow check. There is no smoke-only subset and no `Label("smoke")`. The `smoke` label was
-removed from every spec.
+workflow check and the opt-in corners (`bi-directional`, `source-cluster`, `ado`). There is no
+smoke-only subset and no `Label("smoke")`. The `smoke` label was removed from every spec.
 
 It stays anchored to the standard `config-dir` install. The default run is not meant to
 prove all install methods on every invocation; the dedicated `quickstart-*` tasks cover
@@ -470,26 +478,11 @@ The real question is where they should live:
 - under the install namespace stamp tree
 - or under a dedicated run-scoped Gitea tree
 
-This worktree currently keeps them under the install namespace stamp tree and relies on cleanup preserving `git-*`
-directories during reinstall flows.
+Resolved: `SetupRepo` writes them under a dedicated tree, `.stamps/e2e-repo-artifacts/<test-namespace>/<repo>/`,
+with the checkout under `.stamps/repos/<repo>/`, so an install refresh cannot remove them.
 
 ## Current Preference
 
-The current preference is to keep this migration conservative and avoid changing the storage model more than needed.
-
-That means the following perspective is valid and intentional:
-
-- the generated secrets, SSH keys, and similar helper artifacts are coupled to the specific e2e run
-- they are also coupled to the specific install state that exists in that cluster at that moment
-- the long-lived local Git checkout is already tracked separately under `.stamps/repos/<repo>`
-- because of that, it is reasonable to keep them under `.stamps/cluster/<ctx>/<namespace>/git-<repo>/` for now
-
-In other words:
-
-- the checkout itself is clearly reusable across runs
-- some of the generated credentials and helper manifests are much more ephemeral
-- preserving the namespace-scoped layout may be preferable in the short term if it keeps the Task
-  migration closer to the old behavior
-
-So the document should not treat a separated `gitea/runs/` layout as the only correct answer. It is one clean option,
-but not the only defensible one.
+Superseded by the resolution above. The earlier preference kept the generated secrets and SSH keys
+under `.stamps/cluster/<ctx>/<namespace>/git-<repo>/`, coupled to the install state. They now live
+under `.stamps/e2e-repo-artifacts/`, and the long-lived checkout stays under `.stamps/repos/<repo>`.

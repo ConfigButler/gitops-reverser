@@ -222,7 +222,7 @@ flowchart TD
 Replay applies, against the fetched tree, the actions each write decided when it was first
 committed. A write keeps only the objects whose plan changed its tree then, so an object that
 changed nothing is never planned onto R, where its old content would revert what R changed; a
-write with no action left settled at once and is not replayed at all. A resync keeps its upserts and
+write with no action left settles at once and is never replayed. A resync keeps its upserts and
 the documents its sweep removed, and never sweeps again on R. A save keeps every object it
 captured. Replay can change unpublished commit SHAs or turn a write into a no-op. It retains the
 captured author, target, and resolved write configuration; prune permissions can tighten before

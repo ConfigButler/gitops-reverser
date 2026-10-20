@@ -1,17 +1,22 @@
 # Subresource Audit Resolution
 
-> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+> **History**, kept in `spec/` because [`internal/git/types.go`](../../internal/git/types.go) cites
+> it for `FieldPatch`. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: design proposal, captured 2026-06-08, revised 2026-06-08.
->
-> Trigger: `kubectl scale deployment` updates the live Deployment through the
-> `deployments/scale` subresource, but the committed Deployment manifest is not
-> updated today.
->
-> Scope update: see
-> [subresource-scope-reduction.md](scale-subresource-audit-rehydration.md). Future work
-> should narrow this from generic subresource translation to built-in and CRD
-> `/scale` only.
+> Status: superseded. This page was the design (captured 2026-06-08) for mirroring
+> `kubectl scale` from the `/scale` audit event as a field patch, and records the scale-only
+> reduction that followed. Neither is how it works now. Since watch-first ingestion, the audit
+> pipeline produces attribution facts only, and object state comes from the watch: a
+> `kubectl scale` reaches Git as the parent's `MODIFIED` watch event, carrying the new
+> `spec.replicas`, and is mirrored like any other edit. The audit handler keeps a mutating `/scale`
+> event only to name who scaled the parent, and drops every other subresource before recording
+> (`shouldForwardSubresource` in
+> [`audit_handler.go`](../../internal/webhook/audit_handler.go)). The translator
+> (`translateScaleToAssignments`), `IsScaleSubresource`, `auditutil.BuiltinScaleReplicasPath`, the
+> Redis stream, the consumer and its outcomes below are gone. The writer half remains:
+> `git.FieldPatch` and `manifestedit.PatchFields` still apply a bounded patch to an existing parent
+> document, but nothing in production produces a field patch today. The scope-reduction page the
+> body links is no longer kept; those links point at this page.
 
 ## Problem
 

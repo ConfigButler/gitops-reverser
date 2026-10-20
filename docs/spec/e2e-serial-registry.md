@@ -47,10 +47,10 @@ the `full-core` leg beside the restart specs instead of at the end of the longes
 
 `CRD Lifecycle` ([crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go))
 **was de-serialized and then re-serialized** — it is in the Serial table above, not
-here. Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191)) —
-resnapshot a target only when its *resolved* plan hash changes — removed the worst
+here. Finding #2's fix ([`markInvalidatedTargets` in owner.go](../../internal/watch/owner.go)),
+which resnapshots a target only when its *resolved* plan hash changes, removed the worst
 symptom: a catalog refresh no longer drags unrelated targets into `reconcile: sync …`
-resnapshots, and per-file CRD groups ([icecream.go:30](../../test/e2e/icecream.go#L30))
+resnapshots, and per-file CRD groups ([icecream.go](../../test/e2e/icecream.go))
 keep the `IceCreamOrder` CRD name-isolated. But a residual effect remained — a
 concurrent CRD install/delete still bumps the cluster-wide discovery-catalog
 generation and re-resolves every GitTarget's watched-type tables, delaying this
@@ -90,22 +90,22 @@ was de-serialized too. It already owned a dedicated repo and per-file CRD group;
 its historical "+2 commits only under parallelism" came from cluster-wide GVR
 catalog churn (another spec installing/deleting a CRD) dragging unrelated targets
 into a resnapshot whose `reconcile: sync …` commits inflated its exact count.
-Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191)) —
-a target only resnapshots when its *resolved* plan hash changes — removed that
+Finding #2's fix ([`markInvalidatedTargets` in owner.go](../../internal/watch/owner.go)),
+under which a target only resnapshots when its *resolved* plan hash changes, removed that
 mechanism, the same fix that unblocked `crd_lifecycle`.
 
 `Aggregated API server` ([aggregated_apiserver_e2e_test.go](../../test/e2e/aggregated_apiserver_e2e_test.go))
 was de-serialized after its `Serial` justification proved **stale**. The note
 claimed it "installs/removes a cluster-scoped `APIService` while it is in flight",
 but the wardle APIService (`v1alpha1.wardle.example.com`) is installed once at
-cluster setup by the apiservice-audit-proxy HelmRelease
-(setup/flux/releases/aggregated-api.yaml)
-and stays Available for the whole suite. The spec only *reads* it — it never
-registers or removes it — so there is no in-flight discovery perturbation to
+cluster setup from `test/e2e/setup/manifests/sample-apiserver/`
+and stays Available for the whole suite. The spec only *reads* it (it never
+registers or removes it), so there is no in-flight discovery perturbation to
 serialize against. Everything the spec mutates is name-isolated (own namespace,
-own repo, namespace-scoped flunder WatchRule, namespaced Flunders), and its one
-cluster-wide assertion (`sum(gitopsreverser_audit_events_total{category="error"}) == 0`)
-is a global zero-invariant that is parallel-safe by design.
+own repo, namespace-scoped flunder WatchRule, namespaced Flunders). The global
+zero-invariant on `gitopsreverser_audit_events_total{category="error"}` runs once
+for the whole suite (`assertNoAnomalousAuditOutcomes` in
+[e2e_suite_test.go](../../test/e2e/e2e_suite_test.go)), not in this spec.
 
 ## Triage list (watch during stability runs)
 

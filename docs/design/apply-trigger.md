@@ -118,7 +118,7 @@ the right unit is what makes the 1:n cases fall out:
 
 | Unit | Owns | Why |
 | --- | --- | --- |
-| The **branch** (repository and branch), per worker | The flush, and whether Git is ahead (the apply epoch) | A `Kustomization` applies the tip whichever folder an edit is in, so a flush publishes every pending write of the worker. Two `GitProvider`s naming one repository give one branch two workers: each flushes and keeps its epoch for itself, and they share only the source claims |
+| The **branch** (repository and branch), per worker | The flush, and whether Git is ahead (the apply epoch) | A `Kustomization` applies the tip whichever folder an edit is in, so a flush publishes every pending write of the worker. Two `GitProvider`s naming one repository give one branch two workers: a flush covers both, they share what they observe of the branch and the source claims, and each keeps its epoch for itself |
 | The **applier**, held by its trigger | Pending reasons, retries, the operation, the commit it last applied | One operation at a time, its own backoff, one for every `GitTarget` naming the trigger. The trigger's status records it |
 | The **source** (cluster and `GitRepository`) | One operation at a time across its appliers | The artifact is shared: a sibling's fetch landing between an operation's recheck and its reconcile would apply another commit |
 | The **`GitTarget`**, by uid | Configuration, consent, eligibility and its initial snapshots | Consent to a `Refusal` is per target, and a target deleted and recreated under the same name inherits nothing due to the old one. A trigger acts only while an eligible `GitTarget` references it, and its applier is asked for nothing until each `GitTarget` it covers has published its initial snapshots |
@@ -634,7 +634,7 @@ from the flush mark. Inside it, **the API wins**, as it does for any object both
   the API's undo, mirrored as an edit. For the same reason an applier entry older than the earliest
   send, on an object nobody edited in the window, is an edit and is mirrored. A DELETE carries
   nothing about its deleter: it is always an edit, which a pending write drops only when it changes
-  nothing in Git. All are logged.
+  nothing in Git.
 - **With no window open, the applier's write is late.** The applier's managers alone on an object
   with no window open are mirrored as an edit and counted in `apply_echoes_total{outcome="late"}`:
   an echo that arrived after the grace, or an apply somebody else started.

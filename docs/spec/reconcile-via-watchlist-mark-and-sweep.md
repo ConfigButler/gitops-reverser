@@ -2,7 +2,12 @@
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: design direction, captured 2026-06-04.
+> Status: implemented. Captured 2026-06-04 as the design direction, and the sections up to
+> "Source Code Concepts That Could Be Thrown Away" keep that voice: the code they name for removal
+> (`FolderReconciler`, the path-derived identity, the two-snapshot handshake, the per-event locator,
+> `Manager.GetClusterStateForGitDest`) is gone, and the resync is `planResyncToWorktree` in
+> [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go). The sections from "Decided
+> once, replayed as decided" to "Stale snapshots are discarded" describe current behavior.
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),
 > [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
@@ -278,7 +283,9 @@ first committed. The plan above decides two things on that tree: the upserts tha
 changed it, and the documents the sweep removed (by identity, under the target's
 `prune.mode`). The write then carries only those actions. An object whose upsert
 changed nothing is no action, and a resync that decided nothing settles at once
-and is never pushed.
+and is never pushed. A resync into a folder an apply trigger applies that the
+branch does not hold yet also decides the folder's bootstrap files, with or
+without objects, so the applier is never asked to apply a missing path.
 
 A replay onto a newer tip, after a rejected push, applies exactly those actions:
 
@@ -346,11 +353,15 @@ snapshot is ever parked.
 Three rules keep this from holding a resync forever:
 
 - A branch with no trigger never waits: nothing applies its commits.
-- A `GitTarget`'s snapshots are exempt until its initial snapshots are published.
-  They are the startup baseline, and no applier is asked for anything before they
-  are in Git, so holding them for an apply would wait on itself.
+- A collection's initial snapshot is exempt: the first snapshot of each collection
+  a `GitTarget` watches, until one of them settles (applied, refused or failed; a
+  discarded or superseded one does not settle). The watch side tracks this per
+  collection. Initial snapshots are the startup baseline, and no applier is asked
+  for anything before they are in Git, so holding them for an apply would wait on
+  itself.
 - After a `GitTarget`'s snapshots have been held for 5 minutes, counted from its
-  first discard, the next snapshot is used anyway and logged. An apply that keeps
+  first discard, a fresh snapshot is asked for at that moment and used anyway,
+  logged and counted. An apply that keeps
   failing must not leave drift unmirrored for as long as it fails; whatever the
   unapplied commit changed in those objects is then reverted, by the API-wins rule.
 

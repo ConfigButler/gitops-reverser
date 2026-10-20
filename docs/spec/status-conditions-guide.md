@@ -10,7 +10,7 @@ Controllers write it, users don't. It's a separate subresource (`/status`) — `
 persist changes to it, and RBAC for it is granted separately from the main resource:
 
 ```yaml
-- resources: ["gitdestinations/status"]
+- resources: ["gittargets/status"]
   verbs: ["get", "patch", "update"]
 ```
 
@@ -30,9 +30,10 @@ A field that fails this is not merely expensive. It is wrong three ways, and onl
 
 1. Every status write is an etcd write and a `resourceVersion` bump, which invalidates the cached
    copy held by every watcher of that type, not just ours.
-2. It is a **feedback loop**. A status write fires an Update event that the controller's own `For()`
-   turns back into a queued request, which is the self-triggering edge the section below exists to
-   suppress. A field that moves on every pass defeats that suppression by construction.
+2. It is a **feedback loop**. A status write fires an Update event that every controller watching
+   the object turns back into a queued request (a WatchRule watches its GitTarget's status, for
+   one), which is the edge the section below exists to suppress. A field that moves on every pass
+   defeats that suppression by construction.
 3. It destroys the field's own readability. A value that changes constantly cannot be read as a
    statement about convergence, because there is no steady state to compare against.
 
@@ -74,15 +75,15 @@ in the same shape:
   Distributing a fact is not re-proving it, and it costs nothing.
 - **Publication** is the status write, and it is sampled: each target writes what it holds WHEN IT
   RECONCILES, on its own cadence, with a floor of one write per minute measured from the last
-  write. Nothing in the data plane wakes a target because a branch moved. The one exception is a
-  reconcile that has just ASKED the remote something, which comes back for the answer rather than
-  leaving it undelivered for a tick.
+  write. Nothing in the data plane wakes a target because a branch moved. The exceptions are a
+  reconcile that has ASKED the remote something, and one holding an answer the floor has not
+  let out yet: each comes back for the answer rather than leaving it undelivered for a tick.
 - **The tuple stays internally consistent**: one observation from one moment, never the newest
-  revision beside a stale clock. That is what makes a sampled value readable, and it is why
-  `revision` and `lastVerifiedAt` are published together or not at all.
+  commit beside a stale clock. That is what makes a sampled value readable, and it is why
+  `commit` and `lastVerifiedAt` are published together or not at all.
 
 Two corrections skip the floor, because they are not throughput: the first observation, and taking
-back a revision that names a repository the target no longer points at.
+back a commit proved against a repository the target no longer points at.
 
 The promise that follows is worth stating wherever such a field is documented: it can lag the
 latest observation, and it says nothing at all about the subject when nothing has observed it.
@@ -121,26 +122,28 @@ its timeout on an object that was never going to converge.
 
 `reconcileStatus.commit` computes the difference between the status as read and the status as
 written, and sends **nothing** when they are equal. A status write bumps `resourceVersion`, which
-fires an Update watch event, which the controller's own `For()` turns straight back into a queued
-request — so an unconditional write makes every reconcile cost roughly two. Status fields that move
+fires an Update watch event, which every controller watching the object turns back into a queued
+request, so an unconditional write makes every reconcile cost more reconciles. Status fields that move
 on every pass (a "last reconcile attempt" timestamp) defeat this by construction and were removed;
 `lastTransitionTime` plus `controller_runtime_reconcile_total` answer the same question without
 making every object mutable on read.
 
-The write is a status **patch with optimistic concurrency**, and a conflict is dropped rather than
-retried: a conflict means the object moved under this reconcile, so the status just computed
-describes a generation that is no longer current, and publishing it would publish a stale
-observation. Convergence is deferred, not guaranteed to be immediate. A conflict caused by a *spec*
-edit re-enqueues at once; one caused by a metadata- or status-only write does **not**, because every
-`For()` in this project carries `GenerationChangedPredicate`. That case converges on the next
-dependency event or the requeue cadence `commitRule`/`requeueFor` already picked from the same
-verdict — which is why that cadence, and not a retry loop here, is the backstop.
+The write is a status **patch with optimistic concurrency**, and a conflict drops the write rather
+than retrying it: a conflict means the object moved under this reconcile, so the status it
+computed describes a `resourceVersion` that is no longer current, and publishing it would publish a
+stale observation. The conflict is cache lag (one status writer per kind, and controller-runtime
+never reconciles one key twice at once), and nothing else re-enqueues the object, because the
+`For()` of every controller using `reconcileStatus` filters status-only updates
+(`GenerationChangedPredicate`, or a variant of it that also admits a reconcile request). So the loss is
+recorded, and the reconcile comes back after `RequeueWriteLostInterval` (100ms) instead of on its
+normal cadence, and recomputes from fresh data. `CommitRequest` does not use this helper: its
+`For()` has no such filter, and it retries its terminal status write in place.
 
 ### Reason vocabulary
 
 Generic reasons are aliases of [`github.com/fluxcd/pkg/apis/meta`](https://pkg.go.dev/github.com/fluxcd/pkg/apis/meta)
-— `Succeeded`, `Failed`, `Progressing`, `DependencyNotReady` — a module this project already depends
-on. Sharing the vocabulary means one alerting rule works across every kind here *and* across every
+(`Succeeded`, `Failed`, `Progressing`, `Suspended`), a module this project already depends on.
+Sharing the vocabulary means one alerting rule works across every kind here *and* across every
 Flux kind in the same cluster. A reason that restates the condition type (`Ready=True, reason=Ready`)
 answers nothing and is not used.
 
@@ -209,12 +212,26 @@ GitTarget adds domain conditions that explain the summary:
 
 ```go
 const (
-    TypeValidated            = "Validated"
-    TypeEncryptionConfigured = "EncryptionConfigured"
-    TypeStreamsRunning       = "StreamsRunning"
-    TypeGitPathAccepted       = "GitPathAccepted"
-    TypeGitTargetReady       = "GitTargetReady"
-    TypeLayoutResolved       = "LayoutResolved"
+    TypeValidated              = "Validated"
+    TypeEncryptionConfigured   = "EncryptionConfigured"
+    TypeSourceClusterReachable = "SourceClusterReachable"
+    TypeGitProviderReady       = "GitProviderReady"
+    TypeClusterProviderReady   = "ClusterProviderReady"
+    TypeStreamsRunning         = "StreamsRunning"
+    TypeGitPathAccepted        = "GitPathAccepted"
+    TypeRenderMatchesLive      = "RenderMatchesLive"
+    TypeLayoutResolved         = "LayoutResolved"
+    TypeApplyTriggerReady      = "ApplyTriggerReady" // only when spec names an apply trigger
+)
+```
+
+WatchRule and ClusterWatchRule add their own:
+
+```go
+const (
+    TypeResourcesResolved = "ResourcesResolved"
+    TypeStreamsRunning    = "StreamsRunning"
+    TypeGitTargetReady    = "GitTargetReady"
 
     // WatchRule only: whether every rule item's RESOLVED source-namespace scope is authorized.
     TypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
@@ -319,7 +336,7 @@ trio; the bounded "did the work actually happen" signal lives on the `Pushed` do
 ```go
 const (
     TypeReady            = "Ready"            // True at a non-error terminal outcome
-    TypeReconciling      = "Reconciling"      // True while the close delay/finalize is in progress
+    TypeReconciling      = "Reconciling"      // True until the request reaches a terminal outcome
     TypeStalled          = "Stalled"          // True when the finalize failed (kstatus Failed)
     TypeAuthorAttributed = "AuthorAttributed" // Whether admission captured the command submitter
     TypePushed           = "Pushed"           // True once the commit is in the remote repository
@@ -337,7 +354,10 @@ Canonical reads:
   `Pushed=Unknown` → kstatus InProgress
 - committed: `Ready=True`, `Pushed=True`, `Stalled=False`, reason `Committed` → kstatus Current
 - benign no-commit (nothing to save / already present / foreign open window): `Ready=True`, `Pushed=False`,
-  `Stalled=False`, with the specific reason on `Ready` → kstatus Current (a correct, non-error outcome)
+  `Stalled=False`, with the specific reason on `Ready` (`NoWindow`, `AlreadyPresent`, `WindowMismatch`)
+  → kstatus Current (a correct, non-error outcome). With `whenNothingToCommit: CommitEmpty`, nothing to
+  save or already present records an empty commit instead: `Pushed=True`, the reason still naming the
+  cause
 - failed finalize: `Ready=False`, `Stalled=True`, reason `FinalizeFailed` → kstatus Failed
 
 `AuthorAttributed=True` (`AttributedFromAdmission`) means the command submitter was captured. `False`

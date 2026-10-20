@@ -1,8 +1,10 @@
 # Event pipeline overview: from a watch event to a Git commit
 
 > **Snapshot, 2026-10-04, at the end of #413.** A picture-first tour of how a change
-> in the cluster becomes a commit today, with the replay paths drawn out and an honest list of
-> what is still missing. It describes behavior that exists. The plan that changes it is
+> in the cluster becomes a commit, with the replay paths drawn out and an honest list of what is
+> still missing. What was removed since is taken out; the apply trigger, which came later, is not
+> drawn here (its timer, and the flush that closes a window when an apply comes due): see
+> [`apply-trigger.md`](apply-trigger.md). The plan that changes it is
 > [`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md); the longer-term event model
 > is [`branch-worker-event-model.md`](branch-worker-event-model.md).
 
@@ -231,9 +233,7 @@ the fence (`tailPassed`) forces a new position instead. The payload the old mark
 request swapped into it earlier; since step 5b that request runs, where before it was dropped and
 its caller never answered.
 
-A resync marked `Heal` (a re-anchor that must not close another target's window) is parked until
-the window is idle. No production producer sends one today; the watch replay sends `Heal=false`,
-which closes the open window first to keep arrival order.
+Every resync closes the open window first, to keep arrival order. No snapshot is parked.
 
 ## 4. Inside the branch worker: inputs and the loop
 
@@ -261,7 +261,7 @@ flowchart TB
     TIMERS --> SEL
 
     SEL --> H["handler"]
-    H --> AFTER["after every wake:<br/>service waiting saves,<br/>apply parked heals,<br/>publish held bytes to the intake gate"]
+    H --> AFTER["after every wake:<br/>service waiting saves,<br/>publish held bytes to the intake gate"]
     AFTER --> SEL
 ```
 
@@ -285,7 +285,7 @@ flowchart LR
 ```
 
 Other things that close a window: the idle or maximum-duration timer, an atomic batch or a
-non-heal resync (to keep arrival order), a save with `attach: Next`, and shutdown. A closed window
+resync (to keep arrival order), a save with `attach: Next`, and shutdown. A closed window
 becomes one decided write.
 
 The other write gate, `spec.suspend`, applies later, when the write is committed: a suspended
@@ -393,7 +393,7 @@ The intake gate ([`intake.go`](../../internal/git/intake.go)) applies only while
 pending; a healthy branch never pauses, because its pending writes drain at the next push.
 
 - **What it counts.** Payload on the FIFO, charged at enqueue so producers cannot fill the FIFO
-  between two loop iterations, plus what the loop holds: the open window, the pending writes, parked heals,
+  between two loop iterations, plus what the loop holds: the open window, the pending writes,
   and saves waiting for a window. Every item is charged 1 KiB beyond its payload and message, so
   empty saves and refusal commits count and the budget bounds the item count too. Sizes are
   serialized YAML, estimated once by the producer.
@@ -511,7 +511,7 @@ This is the honest list. Each item names who plans to close it, or says nobody d
 
 ### Bounded memory and pause/resume
 
-Step 5b closed the gaps this section used to list: queued payload, empty records, parked heals,
+Step 5b closed the gaps this section used to list: queued payload, empty records,
 and waiting saves are counted; the pause holds until a push lands; producers wait instead of
 polling; resyncs respect the retry deadline; and an oversized snapshot has an explicit path. What
 remains:
@@ -570,6 +570,6 @@ remains:
 | Pending writes: decide, materialize, settle | [`internal/git/pending_writes_loop.go`](../../internal/git/pending_writes_loop.go) |
 | Retry deadline | [`internal/git/retry.go`](../../internal/git/retry.go) |
 | Publication report and backlog gauges | [`internal/git/publication.go`](../../internal/git/publication.go) |
-| Resyncs and heals | [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go) |
+| Resyncs | [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go) |
 | Saves | [`internal/git/commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go) |
 | Missing parent probe | [`internal/git/parent_recovery.go`](../../internal/git/parent_recovery.go) |

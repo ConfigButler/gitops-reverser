@@ -12,7 +12,7 @@ record made while the render-fidelity gate was closed) are fixed in #411:
 a request on a target that may not be written fails, whatever path ends it
 (`internal/git/write_gate.go`).
 
-Retry progress on quiet branches is fixed: a failed publication schedules its own bounded retry
+Retry progress on idle branches is fixed: a failed publication schedules its own bounded retry
 (`internal/git/retry.go`, [`push-cooldown.md`](design/push-cooldown.md) §7 option C). A window whose
 rebuild fails is no longer dropped: it stays pending for that retry
 ([`gittarget-branch-worker-pending-writes.md`](design/gittarget-branch-worker-pending-writes.md)).

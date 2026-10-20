@@ -11,7 +11,7 @@ Validate at the **first** rung that can express the rule:
 1. **OpenAPI schema** — types, enums, required, min/max, immutability where the shape allows.
 2. **CEL `XValidation`** — anything expressible from the object *itself*, including
    transitions against `oldSelf`. Example: `spec.kubeConfig` immutability on `ClusterProvider`
-   ([`clusterprovider_types.go:68`](../../api/v1alpha3/clusterprovider_types.go#L68)).
+   ([`clusterprovider_types.go:25`](../../api/v1alpha3/clusterprovider_types.go#L25)).
 3. **The reconciler** — everything **cross-object**, because CEL cannot read another object.
    Refusal surfaces as `Validated=False` with a reason, and **returns before** the object
    reaches the data plane.
@@ -40,21 +40,27 @@ Three things, in order of how often they get argued backwards:
 The worked example is `ClusterProvider.spec.accessFrom`. An earlier design proposed
 enforcing it "in two places", one of them a webhook. What shipped enforces it in **one**, on
 every reconcile, before `DeclareForGitTarget`
-([`gittarget_controller.go:311`](../../internal/controller/gittarget_controller.go#L311),
-[`gittarget_source_cluster.go:68`](../../internal/controller/gittarget_source_cluster.go#L68)) —
+([`gittarget_controller.go:473`](../../internal/controller/gittarget_controller.go#L473),
+[`gittarget_source_cluster.go:37`](../../internal/controller/gittarget_source_cluster.go#L37)),
 and that is why the quickstart is a single command again.
 
 ## The one webhook we ship, and why it is not an exception to the rule
 
-[`/validate-operator-types`](../../internal/webhook/validate_operator_types_handler.go#L26)
+[`/validate-operator-types`](../../internal/webhook/validate_operator_types_handler.go#L27)
 is **not a validation gate**. It captures the *submitter's identity* on a command kind
-(`CommitRequest`) so a commit can be authored by a real Kubernetes user, and it **always
-allows**. Identity is the textbook case for admission: it exists in the `AdmissionRequest` and
-on no persisted field, so no reconciler could recover it later. See
+(`CommitRequest`) so a commit can be authored by a real Kubernetes user, and for a command it
+**always allows**. Identity is the textbook case for admission: it exists in the `AdmissionRequest`
+and on no persisted field, so no reconciler could recover it later. See
 [`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md).
 
-(`/validate-all` — [`admission_allow_handler.go`](../../internal/webhook/admission_allow_handler.go#L12)
-— is an always-allow observation surface wired only by the e2e SUT. The chart does not ship it.)
+The same endpoint carries one rejection, and it is feedback, not a gate: a `WatchRule` that would
+bring a second source namespace to a `GitTarget` declaring `spec.serializeNamespace: false` is
+rejected at the moment the mistake is made. The writer refuses the same configuration at the write
+whether or not the webhook ran, which is why its `failurePolicy` is `Ignore`. This is the feedback
+latency trade above, taken where a webhook is installed anyway, and never as the only gate.
+
+(`/validate-all`, in [`admission_allow_handler.go`](../../internal/webhook/admission_allow_handler.go#L17),
+is an always-allow observation surface wired only by the e2e SUT. The chart does not ship it.)
 
 ## Applying this
 

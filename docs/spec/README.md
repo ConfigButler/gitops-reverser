@@ -11,7 +11,8 @@ Three folders, three meanings. This is the one that binds.
 Everything in this folder states **current behaviour that the code relies on**, and
 most of it is cited by path from Go source — that citation is how the next person
 finds out you changed a contract. The handful that are not Go-cited
-(`gvk-gvr-mapping-layer`, `sops-single-file-no-multidoc`, `e2e-test-design`) are
+(`gvk-gvr-mapping-layer`, `sops-single-file-no-multidoc`, `e2e-test-design`,
+`watch-event-ordering-and-attribution-grace`) are
 here because they are the only written record of a rule the code still obeys.
 
 If you change one of these behaviours, change the document in the same commit.
@@ -43,8 +44,17 @@ three lifecycle classes and was unreadable spread across them. The rows below st
 | [`gvk-gvr-mapping-layer.md`](gvk-gvr-mapping-layer.md) | the GVK↔GVR bijection contract |
 | [`where-validation-lives.md`](where-validation-lives.md) | schema → CEL → **the reconciler**; a webhook only for what exists solely at admission |
 | [`sops-single-file-no-multidoc.md`](sops-single-file-no-multidoc.md) | one encrypted file is one document |
-| [`scale-subresource-audit-rehydration.md`](scale-subresource-audit-rehydration.md) | `/scale` → bounded field patch; every other subresource ignored |
+| [`scale-subresource-audit-rehydration.md`](scale-subresource-audit-rehydration.md) | history: the `/scale` field-patch design; a scale is now mirrored from the watch, and the field-patch writer is what remains |
 | [`commit-window-refactor.md`](commit-window-refactor.md) | one grouped commit = one (author, GitTarget) |
 | [`commitrequest-design.md`](commitrequest-design.md) | how a request binds to a same-actor commit window and reports its outcome |
+| [`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md) | a request's submitter comes from admission, present-or-never, apart from audit facts |
+| [`status-conditions-guide.md`](status-conditions-guide.md) | the conditions and reasons every kind reports |
+| [`gitpath-foreign-content-stringency.md`](gitpath-foreign-content-stringency.md) | a `GitTarget` owns its subtree and refuses foreign content; `.gittargetignore` |
+| [`unsupported-folder-refusal-plan.md`](unsupported-folder-refusal-plan.md) | history of the `GitPathAccepted` refusal of unsupported folder content |
+| [`typeset-owns-discovery-grace.md`](typeset-owns-discovery-grace.md) | the typeset owns discovery grace, and the API-resource catalog is thin |
 | [`gittarget-isolation-on-rule-change.md`](gittarget-isolation-on-rule-change.md) | a rule change on target A never touches target B |
 | [`audit-readiness-probe-plan.md`](audit-readiness-probe-plan.md) | why liveness must never depend on Redis |
+| [`mutation-capture-lab-design.md`](mutation-capture-lab-design.md) | the lab and corpus of what watch, audit and admission carry, as recorded |
+| [`e2e-test-design.md`](e2e-test-design.md) | how the e2e suite is structured: one Git repository per test file |
+| [`e2e-serial-registry.md`](e2e-serial-registry.md) | which e2e specs must run `Serial`, and why |
+| [`e2e-bi-directional-corner.md`](e2e-bi-directional-corner.md) | the opt-in e2e category where Argo CD and the bi-directional specs run |

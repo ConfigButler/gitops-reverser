@@ -1,13 +1,19 @@
 # GitTarget Isolation on Rule Changes
 
-> **Status: ✅ Implemented and shipped.** Snapshot selection is now driven purely
-> by a per-target *effective watch plan* hash (resolved GVR + scope +
-> destination); the global `force` flag is gone. Validated by unit
-> tests, a non-Serial e2e regression, and a `--procs=4` smoke run (21/21). See
-> the Rollout Plan below for the per-step landing notes. The sections before it
-> are kept as the original design rationale. Rule `operations` were later removed
-> from both rule kinds ([collection rename](../design/collection-terminology-rename.md)),
-> so the plan no longer carries an operation component.
+> **Status: implemented, then superseded; this page is design history.** The fix
+> shipped as written below: the global `force` flag went away and snapshot
+> selection became a per-target hash of the effective watch plan. The mechanism
+> has since been replaced. There are no shared informers and no rule-set hash:
+> each GitTarget runs one watch stream per resource collection, and a rule change
+> diffs that target's watch plan and starts, restarts, or stops only the
+> collections that changed ([target watch plan](../design/target-watch-plan.md),
+> `internal/watch/target_watch_plan.go`). The functions and tests this page names
+> (`currentRuleSetSnapshots`, `snapshotTargetsNeedingDelivery`,
+> `computeRequestedGVRs`, `rule_change_snapshot_test.go`, and the rest) no longer
+> exist. The isolation guarantee is still pinned end to end by
+> `test/e2e/gittarget_isolation_e2e_test.go` ("Manager GitTarget Isolation",
+> label `manager`). Rule `operations` were later removed from both rule kinds
+> ([collection rename](../design/collection-terminology-rename.md)).
 
 ## Problem
 

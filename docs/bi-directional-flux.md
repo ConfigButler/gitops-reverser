@@ -195,8 +195,9 @@ Appliers on one branch that share a source apply one at a time.
   [what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
 - Several `GitTarget`s may name one `FluxTrigger`, for a `Kustomization` whose `path` covers several
   folders. It is applied once for all of them.
-- Two `GitProvider`s may name one repository. Each of their branch workers flushes its own writes
-  before it asks, and a `GitRepository` they share serves one operation at a time.
+- Two `GitProvider`s may name one repository. Before either branch worker asks, both flush: the
+  other worker publishes the writes it decided so far too, and a `GitRepository` they share serves
+  one operation at a time.
 - **An object another applier owns is not mirrored into the folder.** An object whose
   `kustomize.toolkit.fluxcd.io/name` and `kustomize.toolkit.fluxcd.io/namespace` labels name
   another `Kustomization`, or whose `argocd.argoproj.io/tracking-id` names an Argo CD
@@ -520,6 +521,9 @@ applied the tip is asked nothing.
 | A new `GitRepository` revision from a commit outside the applied folder is enough for the `Kustomization` to apply and revert drift | Bi-directional (Flux) |
 | A Git to cluster to Git round trip settles without a commit loop; a SOPS-encrypted Secret round-trips without a reverse commit; a Git revert removes the live object and the committed file | Bi-directional (Flux) |
 | A refused edit with `onRefusal: Reapply` is reverted by a resume, with no commit, and settles | [Manager Refusal Reapply](../test/e2e/refusal_reapply_e2e_test.go) |
+| An API create, and a delete and create with the same content, are adopted, so a Git-side delete prunes them; an edit made during an apply is in Git at once and back on the cluster after the `Repair`; a Git-side push is applied while edits keep arriving, and every edit is kept; a Git-side push survives a resync forced before its apply, and a Git-side addition survives one under `prune.mode: Always`; an API edit asks for no apply; another applier's object is neither mirrored nor adopted; a save made across a Git-side change resolves from the push | [Bi-directional applier echoes (Flux)](../test/e2e/bi_directional_echoes_e2e_test.go) |
+| A Git-side push made while the previous one is being applied stays in Git and on the cluster | [Bi-directional push race (Flux)](../test/e2e/bi_directional_push_race_e2e_test.go) |
+| After a restart, an API edit and an API create made while the operator was down end in Git and on the cluster, nothing reverts the edit, a Git-side push made meanwhile is applied, and the create is adopted | [Bi-directional restart (Flux)](../test/e2e/bi_directional_restart_e2e_test.go) |
 
 `task test-e2e` runs the Manager specs and Flux Restart Recovery, and
 `task test-e2e-bi-directional` the bi-directional corner. Not covered end to end yet: a remote

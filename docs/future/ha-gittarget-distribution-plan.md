@@ -244,9 +244,9 @@ fresh replay, never loss of the old journal tail.
 Tie every member and completion marker to a snapshot ID and its exact scope. An incomplete
 snapshot cannot authorize deletion; an explicitly complete empty one can authorize a scoped
 sweep. Preserve ordering fences where live writes, overlapping snapshots, or saves prevent
-replacement of an earlier queue position. Persist supersession and deferred-heal state when
-needed to reproduce the worker's decisions. A successful local resync reply does not acknowledge
-remote publication.
+replacement of an earlier queue position. Persist supersession and stale-snapshot state (a
+discarded snapshot asked for again, and since when) when needed to reproduce the worker's
+decisions. A successful local resync reply does not acknowledge remote publication.
 
 ## Publication recovery
 

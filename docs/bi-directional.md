@@ -203,12 +203,20 @@ commit its last successful operation applied, and recovers it on restart from th
 `status.operation`. A converge of that commit asks nothing.
 
 **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
-reason, until every resource collection of every `GitTarget` it covers has delivered its initial
-snapshot and the branch worker has published or settled it. At startup that is the moment the edits
-made while the operator was down are in Git; for a `GitTarget` that newly names the trigger, the
-moment its folder holds the cluster. An earlier apply would revert what is not mirrored yet. A
-reason that comes due before stays pending, and so does one while the remote does not carry the
-branch, because there is no commit to apply.
+reason, until every resource collection of every `GitTarget` it covers has a settled snapshot
+(applied, refused or failed) and the branch worker holds no resync of that `GitTarget` still to
+publish. At startup that is the moment the edits made while the operator was down are in Git; for a
+`GitTarget` that newly names the trigger, the moment its folder holds the cluster. An earlier apply
+would revert what is not mirrored yet. A `GitTarget` with no collection planned yet (its
+`WatchRule` not resolved, or a CRD not discovered) and one whose watch is `Blocked` hold their
+applier back the same way. A reason that comes due before stays pending, and so does one while the
+remote does not carry the branch, because there is no commit to apply.
+
+**The folder exists before it is applied.** A resync of a `GitTarget` that names a trigger, into a
+folder the branch does not hold yet, commits the folder's bootstrap files (`README.md`,
+`.gittargetignore`, and `.sops.yaml` with encryption) even when there is no object to write: Argo CD
+retries a sync of a missing path for minutes, and Flux fails it. The bootstrap files are never
+deleted, so the folder outlives its last resource.
 
 Several `GitTarget`s may name one trigger, for a `Kustomization` or `Application` whose path covers
 several folders: the applier is asked once for all of them.
@@ -289,12 +297,13 @@ it applied.
 
 ## Telling GitOps Reverser that somebody else pushed
 
-GitOps Reverser learns that the branch moved in three ways, and each feeds the same decision:
+GitOps Reverser learns that the branch moved in four ways, and each feeds the same decision:
 
 | Signal | Latency | Configure |
 | --- | --- | --- |
 | A push webhook from the Git host | Seconds | `GitProvider.spec.receiver` |
 | A rejected compare-and-swap push | At the next publication | Nothing: it is how every push works |
+| A Flux `GitRepository` that fetched another commit than the one asked for | At the next apply attempt | Nothing: the branch worker then looks at the remote, as for a push webhook |
 | The periodic refresh | Within `--git-refresh-interval` (`10m`) plus the 5-minute reconcile tick | Nothing: on by default |
 
 To serve the receiver:
@@ -415,6 +424,9 @@ returns to `Ready=True` only after a resync covering the refused scope. The elig
 - **An edit made after the flush, while a requested apply runs,** is reverted on the cluster until
   the `Repair`. It keeps its value in Git. It can happen only during an apply GitOps Reverser asked
   for: after a foreign push, a refusal with `Reapply`, a `Repair`, or a `CatchUp`.
+- **An edit through another `GitProvider` on the same repository and branch, made after the
+  flush,** is not protected. The flush publishes what that worker decided before the apply, but it
+  has no apply window, so it mirrors the apply's revert of a later edit as an edit of its own.
 - **A human** running `flux resume` or pressing Sync applies whenever they do. GitOps Reverser
   suspends a resumed `Kustomization` again within a minute.
 - **GitOps Reverser becomes the only path to a deployment.** While it is down, the shared folders
