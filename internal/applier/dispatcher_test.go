@@ -448,8 +448,8 @@ func TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing(t *testing.T) {
 	assert.Empty(t, f.source.clusters, "the hub's client is never even asked for")
 }
 
-// TestDispatcher_AFailureIsReportedAndNeverRetried: retrying is the branch worker's decision, on a
-// quiet branch. The dispatcher reports the failure, and records ApplyRequestFailed only for the
+// TestDispatcher_AFailureIsReportedAndNeverRetried: retrying is the branch worker's decision, after a
+// flush. The dispatcher reports the failure, and records ApplyRequestFailed only for the
 // first failure of a run.
 func TestDispatcher_AFailureIsReportedAndNeverRetried(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")})
@@ -717,7 +717,7 @@ func TestDispatcher_AnApplyPastItsBudgetIsUnresolvedAndStillFollowed(t *testing.
 }
 
 // TestDispatcher_AFailedApplyIsSuspendedAgain: a failed apply is suspended like any other, which is
-// what stops Flux's own retryInterval retry; the worker decides the retry, on a quiet branch.
+// what stops Flux's own retryInterval retry; the worker decides the retry, after a flush.
 func TestDispatcher_AFailedApplyIsSuspendedAgain(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
 	f.sim.FailApplies("ConfigMap/apps/x dry-run failed")

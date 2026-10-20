@@ -65,10 +65,9 @@ func addAlphaUnsentRefusal(loop *branchWorkerEventLoop) refusalKey {
 	return key
 }
 
-// TestApplier_ARetryIsDecidedAgainOnAQuietBranch: an attempt that failed is not replayed blind. It
-// waits out its backoff, then waits for a quiet branch like a first attempt, and names the tip as
-// it is then.
-func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
+// TestApplier_ARetryIsDecidedAgain: an attempt that failed is not replayed blind. It waits out its
+// backoff, then is decided like a first attempt, after a flush, and names the tip as it is then.
+func TestApplier_ARetryIsDecidedAgain(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -81,11 +80,11 @@ func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
 	assert.NotNil(t, loop.applierTimer, "the backoff is armed")
 
 	dueNow(loop)
-	loop.openWindow = &openWindow{}
+	holdApplies(loop)
 	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "not while the branch is busy")
+	assert.Empty(t, requester.taken(), "not while a save holds the flush")
 
-	loop.openWindow = nil
+	releaseApplies(loop)
 	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	loop.serviceAppliers()
 	retry := requester.taken()
@@ -280,50 +279,10 @@ func TestApplier_ATargetThatNoLongerNamesAnApplierHasNothingPending(t *testing.T
 	assert.Nil(t, loop.applierTimer)
 }
 
-// TestSiblings_ABusyWorkerOnTheSameBranchHoldsTheOther: two GitProviders naming one repository give
-// one branch two workers, and a Kustomization applies the tip whichever of them wrote it. So one
-// worker sends nothing while the other holds an open window, and is woken when it closes.
-func TestSiblings_ABusyWorkerOnTheSameBranchHoldsTheOther(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	loop.w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
-	loop.w.applyWake = make(chan struct{}, 1)
-	sibling := newMetricsTestWorker()
-	sibling.repo = RepoIdentity{URL: "git@github.com:acme/platform.git"}
-	sibling.applyWake = make(chan struct{}, 1)
-	other := newMetricsTestWorker()
-	other.repo = RepoIdentity{URL: "https://github.com/acme/elsewhere"}
-	siblings := newBranchSiblings()
-	for _, w := range []*BranchWorker{loop.w, sibling, other} {
-		siblings.add(w)
-	}
-
-	other.publishWriteBusy(true)
-	sibling.publishWriteBusy(true)
-	observeForeignCommit(loop.w)
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the sibling's open window is on this branch too")
-	assert.True(t, loop.quietSince.IsZero())
-
-	sibling.publishWriteBusy(false)
-	select {
-	case <-loop.w.applyWake:
-	default:
-		t.Fatal("a sibling going quiet must wake the worker it held back")
-	}
-	loop.serviceAppliers()
-	assert.Len(t, requester.taken(), 1, "a worker on another repository never held it")
-
-	siblings.remove(sibling)
-	writing, working := loop.w.siblingBusy()
-	assert.False(t, writing)
-	assert.False(t, working)
-}
-
-// TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod: a sibling's queued or
-// in-hand item holds the attempt back the way this worker's own queued work does. It keeps
-// quietSince, because the branch is busy only once that work opens a window, and the sibling's
-// loop wakes this one as it releases its last item.
-func TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod(t *testing.T) {
+// TestSiblings_ABusySiblingHoldsNoApply: two GitProviders naming one repository give one branch two
+// workers. A sibling's open window or queued edit no longer holds an apply: every edit is published
+// before the send or recorded in the apply window, on whichever worker sees it (S1).
+func TestSiblings_ABusySiblingHoldsNoApply(t *testing.T) {
 	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
 	sibling := newMetricsTestWorker()
 	siblings := newBranchSiblings()
@@ -336,18 +295,7 @@ func TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod(t *testing
 	require.True(t, sibling.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the sibling's item is a live edit not yet decided")
-	assert.False(t, loop.quietSince.IsZero(), "the quiet period runs on")
-
-	<-sibling.eventQueue // its loop takes the item, and then releases it, as run does
-	sibling.releaseInflightItem()
-	select {
-	case <-loop.w.applyWake:
-	default:
-		t.Fatal("a sibling releasing its last item must wake the worker it held back")
-	}
-	loop.serviceAppliers()
-	assert.Len(t, requester.taken(), 1)
+	assert.Len(t, requester.taken(), 1, "the sibling's queued edit holds nothing")
 }
 
 func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
@@ -362,15 +310,15 @@ func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
 }
 
 // TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff: an attempt whose decision no longer held
-// at the patch (the branch moved on, or became busy) asked nothing, and that is no failure. What it
-// carried comes back, and the next quiet moment decides again at the new tip.
+// at the patch (the branch moved on) asked nothing, and that is no failure. What it carried comes
+// back, and the next wake decides again at the new tip.
 func TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
-	require.True(t, out[0].Current(), "decided at the tip on a quiet branch")
+	require.True(t, out[0].Current(), "decided at the tip")
 
 	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	assert.False(t, out[0].Current(), "the branch moved on")
@@ -384,62 +332,16 @@ func TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff(t *testing.T) {
 	assert.Zero(t, retry[0].PriorFailures)
 }
 
-// TestDecisionHolds_OnlyAtTheTipOnAQuietBranch: the check the requester makes before it patches.
-func TestDecisionHolds_OnlyAtTheTipOnAQuietBranch(t *testing.T) {
+// TestDecisionHolds_OnlyAtTheTip: the check the requester makes before it patches. Only a moved tip
+// makes a decision stale: an edit is published before the send, or recorded in the apply window.
+func TestDecisionHolds_OnlyAtTheTip(t *testing.T) {
 	w := newMetricsTestWorker()
 	w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
 	assert.True(t, w.decisionHolds("aaa"))
 	assert.False(t, w.decisionHolds("older"), "another commit is not the tip")
 
-	w.publishWriteBusy(true)
-	assert.False(t, w.decisionHolds("aaa"), "a window open since")
-	w.publishWriteBusy(false)
-
 	require.True(t, w.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
-	assert.False(t, w.decisionHolds("aaa"), "a queued event is a live edit not yet decided")
-}
-
-// TestDecisionHolds_NotWhileTheLoopHandlesAnItem is the fifth review's second finding. The check
-// read the queue's length, and busyWriting, which a wake publishes only as it ends: once the loop
-// had taken its last item both said quiet, for as long as that item took to commit and push. The
-// item counts until its wake has published what it left behind, for this worker's attempts and for
-// a sibling's. The loop runs for real here, held inside the item by the render fidelity gate.
-func TestDecisionHolds_NotWhileTheLoopHandlesAnItem(t *testing.T) {
-	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
-	w := loop.w
-	sibling := newMetricsTestWorker()
-	siblings := newBranchSiblings()
-	for _, worker := range []*BranchWorker{w, sibling} {
-		worker.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
-		worker.applyWake = make(chan struct{}, 1)
-		worker.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
-		siblings.add(worker)
-	}
-	gate := NewRenderFidelityGate()
-	w.renderFidelityGate = gate
-	ctx, cancel := context.WithCancel(context.Background())
-	w.ctx = ctx
-	done := make(chan struct{})
-
-	gate.mu.Lock() // the loop's write check waits here
-	go func() {
-		defer close(done)
-		loop.run()
-	}()
-	require.True(t, w.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
-	require.Eventually(t, func() bool { return len(w.eventQueue) == 0 }, 5*time.Second, time.Millisecond)
-	assert.False(t, w.busyWriting.Load(), "the wake has published nothing yet")
-	assert.False(t, w.decisionHolds("aaa"), "the item the loop is handling is a live edit")
-	assert.False(t, sibling.decisionHolds("aaa"), "for a sibling too")
-	gate.mu.Unlock()
-
-	require.Eventually(t, func() bool { return w.inflightItems.Load() == 0 }, 5*time.Second, time.Millisecond)
-	assert.True(t, w.busyWriting.Load(), "the window it opened is published before the item is released")
-	assert.False(t, sibling.decisionHolds("aaa"))
-
-	restartAll(gate, itypes.NewResourceReference("alpha", "team-a"), fidelityScope("apps", "deployments"))
-	cancel()
-	<-done
+	assert.True(t, w.decisionHolds("aaa"), "a queued edit holds nothing")
 }
 
 // TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow is the customer review's third blocker: the

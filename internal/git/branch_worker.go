@@ -145,15 +145,12 @@ type BranchWorker struct {
 	triggerStatus ApplyTriggerStatusWriter
 	inbox         applyInbox
 	// applyWake wakes the loop to service the appliers without queueing a work item: an attempt
-	// reported back, or another worker writing this repository and branch went quiet.
+	// reported back, or another worker writing this repository and branch released a source group.
 	applyWake chan struct{}
 	// siblings are the workers writing the same repository and branch as this one, under another
-	// GitProvider; their open windows, pending writes and work items make the branch busy too.
-	// busyWriting is this worker's own, published for them at the end of every wake; inflightItems
-	// below covers the wake in between. Nil siblings (the CLI, tests) means this worker is alone.
-	// See apply_siblings.go.
-	siblings    *branchSiblings
-	busyWriting atomic.Bool
+	// GitProvider; they take turns on the source groups their appliers share. Nil siblings (the CLI,
+	// tests) means this worker is alone. See apply_siblings.go.
+	siblings *branchSiblings
 	// groupsOut are the source groups this worker has an attempt out for, so a sibling sends none
 	// for the same GitRepository meanwhile; guarded by the siblings' lock (apply_groups.go).
 	groupsOut map[string]struct{}
@@ -400,6 +397,7 @@ const (
 	windowFinalizeReasonBufferLimit       windowFinalizeReason = "buffer-limit"
 	windowFinalizeReasonShutdown          windowFinalizeReason = "shutdown"
 	windowFinalizeReasonForeignCommit     windowFinalizeReason = "foreign-commit"
+	windowFinalizeReasonApplyDue          windowFinalizeReason = "apply-due"
 )
 
 // NewBranchWorker creates a worker for a (provider, branch) combination. A zero
@@ -1207,7 +1205,7 @@ type branchWorkerEventLoop struct {
 	// authorized request is gone with nothing to report it.
 	refusalPending map[refusalKey]pendingRefusalReapply
 	// unsentRefusals holds the refusals the worker decided to send their target's applier a Refusal
-	// request for, until an attempt carries them on a quiet branch. It is keyed like refusalPending,
+	// request for, until an attempt carries them after a flush. It is keyed like refusalPending,
 	// by target AND collection, so a collection that recovers cancels its own request and no other
 	// (refusalRecovered). See apply_trigger.go.
 	unsentRefusals map[refusalKey]unsentRefusal
@@ -1221,8 +1219,14 @@ type branchWorkerEventLoop struct {
 	quietSince   time.Time
 	applierTimer *time.Timer
 	// pushHinted records that a Git host reported a push while the branch was busy. The wake closes
-	// the open window so its publication finds the move (closeWindowForForeignCommit).
+	// the open window so its publication finds the move (closeWindowForPushHint).
 	pushHinted bool
+	// decisions numbers the decided writes (PendingWrite.decision). flushing is set while an apply is
+	// due and waits for the writes up to flushMark, the last decision when it came due, to be
+	// published (serviceAppliers).
+	decisions uint64
+	flushing  bool
+	flushMark uint64
 
 	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
@@ -1296,7 +1300,7 @@ func (l *branchWorkerEventLoop) run() {
 			l.applierTimer = nil
 			// serviceAppliers, at the end of the wake, sends what has come due.
 		case <-l.w.applyWake:
-			// An attempt reported back, or a sibling worker on this branch went quiet;
+			// An attempt reported back, or a sibling released a source group;
 			// serviceAppliers settles and sends.
 		}
 		l.endWake(0)
@@ -1313,15 +1317,15 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 //
 //   - Bind any waiting CommitRequest to an open window, resolve any whose attach deadline has
 //     passed, and re-arm the deadline timer.
-//   - Close the open window early if the branch moved under it (closeWindowForForeignCommit).
+//   - Close the open window early if a Git host reported a push (closeWindowForPushHint).
 //   - Drive the pending writes: commit what the wake decided, schedule its push (advance).
-//   - Send the pending apply requests, if the wake left the branch quiet (serviceAppliers).
+//   - Send the apply requests that are due, after a flush (serviceAppliers).
 //   - Latch the GitTargets whose initial snapshots are now published, ask again for the snapshots
 //     discarded as stale once Git is no longer ahead, and publish the ApplyState (apply_epoch.go).
 //   - Publish the result, moving the handled item's charge to what the loop holds.
 func (l *branchWorkerEventLoop) endWake(released int64) {
 	l.serviceCommitRequests()
-	l.closeWindowForForeignCommit()
+	l.closeWindowForPushHint()
 	l.advance()
 	l.serviceAppliers()
 	l.refreshInitialSnapshots()
@@ -1723,7 +1727,8 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	if len(l.pendingWrites) == 0 || l.awaitingRetry() {
 		return
 	}
-	if l.lastPushAt.IsZero() {
+	if l.lastPushAt.IsZero() || (l.flushing && l.pendingUpToMark()) {
+		// An apply waits for this publication: it is made at once, cooldown or not.
 		l.pushPending()
 		return
 	}
@@ -2976,6 +2981,8 @@ func (r windowFinalizeReason) metricLabel() string {
 		return "shutdown"
 	case windowFinalizeReasonForeignCommit:
 		return "foreign_commit"
+	case windowFinalizeReasonApplyDue:
+		return "apply_due"
 	case windowFinalizeReasonUnspecified:
 		return "unspecified"
 	default:

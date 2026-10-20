@@ -33,10 +33,10 @@ const (
 	// EventReasonApplyRequested is a request that reached the applier.
 	EventReasonApplyRequested = "ApplyRequested"
 	// EventReasonApplyRequestFailed is the first failed attempt of a run of them. The branch worker
-	// keeps the reason pending and asks again on a quiet branch; the Event is not repeated for its retries.
+	// keeps the reason pending and asks again after a flush; the Event is not repeated for its retries.
 	EventReasonApplyRequestFailed = "ApplyRequestFailed"
 	// EventReasonApplyFailed is a requested apply the applier ran and did not complete, the first of
-	// a run of failed attempts. The branch worker asks again on a quiet branch.
+	// a run of failed attempts. The branch worker asks again after a flush.
 	EventReasonApplyFailed = "ApplyFailed"
 	// EventReasonApplyUnresolved is a requested apply that did not complete within
 	// UnresolvedAfter. It is still followed, and its apply window stays open until it completes.
@@ -96,7 +96,7 @@ const pollTimeout = 10 * time.Second
 // carried out on its own goroutine and reported back to the worker that decided it: the request,
 // then the operation it started as it moves, until it completes or the worker abandons it. The
 // worker keeps the reason pending until an operation answers it, and decides every retry on a quiet
-// branch. So nothing goes out that a worker did not check on a quiet branch, and nothing here can
+// branch. So nothing goes out that a worker did not check after a flush, and nothing here can
 // turn a delayed decision into an apply nobody checked.
 //
 // What it does check is what can change between the worker's decision and the write. It reads each
@@ -673,7 +673,7 @@ func (d *Dispatcher) completed(
 		"after", took.String(), "message", progress.Message, "priorFailures", req.PriorFailures)
 	if req.PriorFailures == 0 {
 		d.event(ctx, req, corev1.EventTypeWarning, EventReasonApplyFailed,
-			"%s did not complete the apply of %s (%s), and will be asked again once the branch is quiet: %v",
+			"%s did not complete the apply of %s (%s), and will be asked again after its backoff: %v",
 			describeApplier(req.Applier), DescribeCommit(req.Commit), req.Reason, err)
 	}
 	result.Err = err
@@ -734,7 +734,7 @@ func (d *Dispatcher) failure(
 	if req.PriorFailures == 0 && d.recorder != nil {
 		for _, e := range eligible {
 			d.recorder.Eventf(e.target, corev1.EventTypeWarning, EventReasonApplyRequestFailed,
-				"could not ask %s to apply %s (%s), and will ask again once the branch is quiet: %v",
+				"could not ask %s to apply %s (%s), and will ask again after its backoff: %v",
 				describeApplier(req.Applier), DescribeCommit(req.Commit), e.reason, res.Err)
 		}
 	}

@@ -31,7 +31,7 @@ import (
 //     waiting resync callers an answer (replyToDeferredResyncs).
 //
 // Settling an outcome never decides more work directly: a refused write leaves a reapply request
-// due to its applier (reapplyForRefusal), which is sent once the branch is quiet, outside the
+// due to its applier (reapplyForRefusal), which is sent after a flush, outside the
 // pending writes.
 
 // errWriteFailed marks a failure of the write itself, as opposed to reaching the remote or reading
@@ -91,6 +91,8 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
 	// quiet period of the wakes before it and ask the applier to catch up at once, over the next
 	// edit. See serviceAppliers.
 	l.quietSince = time.Time{}
+	l.decisions++
+	pendingWrite.decision = l.decisions
 	pendingWrite.charge = retainedCharge(&pendingWrite)
 	pendingWrite.decidedAt = l.w.now()
 	l.pendingWrites = append(l.pendingWrites, pendingWrite)

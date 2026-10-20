@@ -294,7 +294,7 @@ func TestApplyWindow_AnAttemptThatAppliedNothingKeepsTheGraceBeforeIt(t *testing
 		t.Run(string(outcome), func(t *testing.T) {
 			loop, _, next := completedThenNext(t)
 			report(next, outcome)
-			loop.openWindow = &openWindow{} // a busy branch: a stale B is not sent again yet
+			holdApplies(loop) // a stale B is not sent again yet
 			loop.serviceAppliers()
 			state := onlyApplier(t, loop)
 			require.Nil(t, state.inflight)
@@ -329,7 +329,7 @@ func TestApplyWindow_TheCarriedGraceEndsWhenTheEarlierWindowWouldHave(t *testing
 
 // TestApplyWindow_ConsecutiveOperationsOnOneApplier composes the steps: A completes, B is sent within
 // A's grace, A's late write over the edit is withheld, B completes, and the Repair that write left
-// pending goes out once, on the quiet branch, at the tip. Each window closes a grace after its own attempt.
+// pending goes out once, after a flush, at the tip. Each window closes a grace after its own attempt.
 func TestApplyWindow_ConsecutiveOperationsOnOneApplier(t *testing.T) {
 	loop, requester, second := completedThenNext(t)
 	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, second.Reason)

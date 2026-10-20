@@ -76,50 +76,6 @@ func TestGroups_TheSourceIsSharedInTurn(t *testing.T) {
 	}
 }
 
-// TestPrefetch_APushIsFetchedAheadWhileTheBranchIsBusy: a push somebody else made, observed while the
-// branch is busy, has the source fetch now, once per source, so its artifact is ready when the
-// branch is quiet; a quiet branch asks the applier at once, which fetches for itself.
-func TestPrefetch_APushIsFetchedAheadWhileTheBranchIsBusy(t *testing.T) {
-	loop, requester := manualLoop(t,
-		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", true)),
-		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform", true)),
-		applierTestTarget("held", true), fluxTrigger("held", applying("shared", false)),
-	)
-	loop.serviceAppliers() // lists the appliers
-	loop.openWindow = &openWindow{}
-	observeForeignCommit(loop.w)
-
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "nothing is applied on a busy branch")
-	require.Len(t, requester.prefetches, 1, "one fetch for the shared source; none for a shared one")
-	assert.Equal(t, applierRef("alpha"), requester.prefetches[0].Applier)
-	assert.Equal(t, "bbb", requester.prefetches[0].Commit)
-
-	loop.serviceAppliers()
-	assert.Len(t, requester.prefetches, 1, "once per push")
-
-	loop.openWindow = nil
-	loop.serviceAppliers()
-	assert.Len(t, requester.taken(), 2, "the apply is asked once the branch is quiet")
-	assert.Len(t, requester.prefetches, 1)
-}
-
-// TestPrefetch_NotWhileAnOperationOfTheSourceIsInFlight: a resumed Kustomization applies whatever the
-// artifact becomes, so no fetch is asked for while one of its group is out.
-func TestPrefetch_NotWhileAnOperationOfTheSourceIsInFlight(t *testing.T) {
-	loop, requester := manualLoop(t,
-		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform", true)),
-	)
-	observeForeignCommit(loop.w)
-	loop.serviceAppliers()
-	require.Len(t, requester.taken(), 1)
-
-	loop.openWindow = &openWindow{}
-	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
-	loop.serviceAppliers()
-	assert.Empty(t, requester.prefetches)
-}
-
 // siblingLoops is two workers on one repository and branch, under two GitProviders, whose
 // FluxTriggers alpha and bravo apply the GitRepository platform, each with a ForeignCommit pending.
 func siblingLoops(t *testing.T) (
@@ -189,17 +145,4 @@ func TestGroups_AClaimIsCheckedAndRecordedAtOnce(t *testing.T) {
 		t.Fatal("releasing a group must wake the sibling")
 	}
 	assert.True(t, second.w.claimGroup(group))
-}
-
-// TestPrefetch_NotWhileASiblingsOperationOfTheSourceIsInFlight: a resumed Kustomization applies
-// whatever the artifact becomes, whichever worker resumed it.
-func TestPrefetch_NotWhileASiblingsOperationOfTheSourceIsInFlight(t *testing.T) {
-	first, firstRequests, second, secondRequests := siblingLoops(t)
-	first.serviceAppliers()
-	require.Len(t, firstRequests.taken(), 1)
-
-	second.openWindow = &openWindow{}
-	second.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByFetch})
-	second.serviceAppliers()
-	assert.Empty(t, secondRequests.prefetches)
 }

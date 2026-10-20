@@ -149,6 +149,14 @@ func applyTriggerLoop(t *testing.T, targets ...client.Object) (*branchWorkerEven
 }
 
 // observeForeignCommit makes the worker's inbox hold a ForeignCommit at commit "bbb".
+// holdApplies puts the loop in a state in which no flush can be made, so no apply is sent: a save is
+// registered, and it defines its own commit boundary (writeBusy). releaseApplies ends it.
+func holdApplies(l *branchWorkerEventLoop) {
+	l.pendingCRs = map[commitRequestID]*pendingCommitRequest{{Namespace: "team-a", Name: "save"}: {}}
+}
+
+func releaseApplies(l *branchWorkerEventLoop) { l.pendingCRs = nil }
+
 func observeForeignCommit(w *BranchWorker) {
 	w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
 	w.inbox.take()
@@ -182,13 +190,16 @@ func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) 
 	}
 }
 
-func TestServiceAppliers_NothingIsSentWhileAnythingLiveIsUnpublished(t *testing.T) {
+// TestServiceAppliers_NothingIsSentWhileNoFlushCanBeMade: an apply waits only for the states in
+// which no flush can be made: a registered save, a parent recovery, a checkout a failed write left
+// dirty. Its reason stays pending.
+func TestServiceAppliers_NothingIsSentWhileNoFlushCanBeMade(t *testing.T) {
 	cases := []struct {
 		name string
 		busy func(l *branchWorkerEventLoop)
 	}{
-		{name: "an open commit window", busy: func(l *branchWorkerEventLoop) { l.openWindow = &openWindow{} }},
-		{name: "a pending write", busy: func(l *branchWorkerEventLoop) { l.pendingWrites = []PendingWrite{{}} }},
+		{name: "a registered save", busy: holdApplies},
+		{name: "a parent recovery", busy: func(l *branchWorkerEventLoop) { l.recovery.active = true }},
 		{name: "a worktree a failed write left dirty", busy: func(l *branchWorkerEventLoop) {
 			l.w.markWorktreeDirty("test")
 		}},
@@ -202,8 +213,7 @@ func TestServiceAppliers_NothingIsSentWhileAnythingLiveIsUnpublished(t *testing.
 			loop.serviceAppliers()
 
 			assert.Empty(t, requester.taken())
-			assert.True(t, loop.quietSince.IsZero(), "a busy branch is not quiet")
-			assert.True(t, loop.w.inbox.foreignPending(), "and the pending ForeignCommit waits for it")
+			assert.True(t, loop.appliers[applierRef("alpha")].foreign, "the pending ForeignCommit waits")
 		})
 	}
 }
@@ -454,40 +464,27 @@ func TestServiceAppliers_NoRequesterSwitchesTheTriggerOff(t *testing.T) {
 	assert.True(t, loop.w.inbox.foreignPending(), "nothing took the pending ForeignCommit")
 }
 
-// TestCloseWindowForForeignCommit_PublishesTheOpenWindowNow: a window closes on silence, so a user
-// who keeps editing would hold a foreign commit back for as long as they type. It is closed instead,
-// and its write published and replayed onto the move.
-func TestCloseWindowForForeignCommit_PublishesTheOpenWindowNow(t *testing.T) {
-	cases := []struct {
-		name  string
-		cause func(l *branchWorkerEventLoop)
-	}{
-		{name: "a foreign commit observed", cause: func(l *branchWorkerEventLoop) { observeForeignCommit(l.w) }},
-		{name: "a Git host's push notice on a busy branch", cause: func(l *branchWorkerEventLoop) {
-			l.handleRefreshRequest(&RefreshRequest{PushNotice: true})
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			worker, _, _ := setupCommitPushSplitWorker(t)
-			createPlainGitTarget(t, worker, "team-a", "team-a")
-			worker.applyRequester = &recordingRequester{}
-			loop := newBranchWorkerEventLoop(worker, time.Hour)
-			t.Cleanup(loop.stopTimers)
+// TestCloseWindowForPushHint_PublishesTheOpenWindowNow: a Git host said the branch may have moved,
+// so the open window is closed and its write published, and replayed onto the move, now. An apply
+// that comes due closes it the same way, as the flush (TestFlush_*).
+func TestCloseWindowForPushHint_PublishesTheOpenWindowNow(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+	worker.applyRequester = &recordingRequester{}
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	t.Cleanup(loop.stopTimers)
 
-			loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-				Events:     []Event{configMapTargetEvent("edited", "alice", "team-a")},
-				CommitMode: CommitModePerEvent,
-			}})
-			require.NotNil(t, loop.openWindow, "an hour-long window is still open")
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("edited", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow, "an hour-long window is still open")
 
-			tc.cause(loop)
-			loop.closeWindowForForeignCommit()
+	loop.handleRefreshRequest(&RefreshRequest{PushNotice: true})
+	loop.closeWindowForPushHint()
 
-			assert.Nil(t, loop.openWindow)
-			assert.Len(t, loop.pendingWrites, 1, "the window's write is decided, to be published")
-		})
-	}
+	assert.Nil(t, loop.openWindow)
+	assert.Len(t, loop.pendingWrites, 1, "the window's write is decided, to be published")
 }
 
 // applierLedgerFixture is a real Git server, a GitTarget naming an applier, and an event loop whose

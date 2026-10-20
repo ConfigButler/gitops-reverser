@@ -269,3 +269,74 @@ func TestApplierEchoes_AReplayedResyncObeysATightenedPruneMode(t *testing.T) {
 
 // keyOf is the key of a GitTarget in the default namespace.
 func keyOf(name string) client.ObjectKey { return client.ObjectKey{Namespace: "default", Name: name} }
+
+// withTrigger names a FluxTrigger on team-a and gives the worker a requester that reports nothing,
+// so the test reports for it. The loop's commit window is an hour, so a window stays open until
+// something closes it.
+func (f *echoFixture) withTrigger() *recordingRequester {
+	f.t.Helper()
+	var target configv1alpha3.GitTarget
+	require.NoError(f.t, f.worker.Client.Get(f.worker.ctx, keyOf(echoTarget), &target))
+	target.Spec.ApplyTriggerRef = testApplier(echoTarget)
+	require.NoError(f.t, f.worker.Client.Update(f.worker.ctx, &target))
+	createTestTrigger(f.t, f.worker.Client, &target)
+	requester := &recordingRequester{manual: true}
+	f.worker.applyRequester = requester
+	f.loop.stopTimers()
+	f.loop = newBranchWorkerEventLoop(f.worker, time.Hour)
+	f.t.Cleanup(f.loop.stopTimers)
+	f.loop.followRecordedOperations(time.Now())
+	return requester
+}
+
+// echoApplier is the applier team-a's trigger holds.
+func (f *echoFixture) echoApplier() *applierState {
+	f.t.Helper()
+	require.Len(f.t, f.loop.appliers, 1)
+	for _, state := range f.loop.appliers {
+		return state
+	}
+	return nil
+}
+
+// TestApplierEchoes_FlushThenApply is S1, driven in the worker: when an apply comes due, the open
+// window is closed and the writes up to the flush mark are published before the send, cooldown or
+// not, so the apply holds them. An edit decided after the mark does not hold the send: it is recorded
+// in the apply window, and the apply landing over it is withheld, with a Repair pending.
+func TestApplierEchoes_FlushThenApply(t *testing.T) {
+	f := newEchoFixture(t, "echo-flush", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1", "y": "y1"})
+	requester := f.withTrigger()
+	f.loop.lastPushAt = time.Now() // the push cooldown runs: a flush does not wait for it
+
+	f.writeWindow(echoEvent("x", "x2")) // E0, in the open window when the apply comes due
+	require.NotNil(t, f.loop.openWindow)
+	restore := failPushes(t, f.worker)
+	f.echoApplier().repair = true
+	f.loop.endWake(0)
+
+	assert.Nil(t, f.loop.openWindow, "the apply closed the open window")
+	assert.Empty(t, requester.taken(), "the writes up to the mark are not published yet")
+	require.NotNil(t, f.echoApplier().flushEdits, "edits are recorded from the mark")
+
+	f.writeWindow(echoEvent("y", "y2")) // E1, decided after the mark
+	require.NotNil(t, f.loop.openWindow, "it opens a window of its own")
+
+	restore()
+	f.loop.retry.due = time.Now().Add(-time.Second)
+	f.loop.runRetry()
+	f.loop.endWake(0)
+
+	sent := requester.taken()
+	require.Len(t, sent, 1, "the writes up to the mark are published, and E1's open window does not hold the send")
+	assert.Equal(t, configv1alpha3.ApplyReasonRepair, sent[0].Reason)
+	assert.Equal(t, echoDocument("x", "x2"), f.onMain(echoFile("x")), "the apply holds E0")
+	assert.Equal(t, gitIn(t, f.repoDir, "rev-parse", "main"), sent[0].Commit, "for the tip the flush produced")
+	assert.Equal(t, echoDocument("y", "y1"), f.onMain(echoFile("y")), "E1 is not published yet")
+
+	// The apply writes the commit over E1, the applier's manager alone and newer than the edit.
+	late := echoEvent("y", "y1")
+	late.LastFieldManagers = []string{FluxFieldManager}
+	late.LastFieldManagedAt = time.Now().Add(time.Hour)
+	assert.True(t, f.loop.withholdLateApply(late), "E1 was recorded in the window: the apply over it is withheld")
+	assert.True(t, f.echoApplier().repair, "and a Repair puts E1 back once it is published")
+}

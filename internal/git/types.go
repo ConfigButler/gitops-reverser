@@ -410,6 +410,9 @@ type PendingWrite struct {
 	// decidedAt is when the write was decided, which dates the oldest kept write. Loop-goroutine
 	// only.
 	decidedAt time.Time
+	// decision numbers the write in the order the loop decided it: the flush an apply waits for is the
+	// writes up to a mark (serviceAppliers). Loop-goroutine only.
+	decision uint64
 	// origin is what the write's outcome is settled against. See writeOrigin.
 	origin writeOrigin
 

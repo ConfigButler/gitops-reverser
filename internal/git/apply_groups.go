@@ -18,11 +18,6 @@ import (
 // workers, and their triggers can apply one GitRepository, so a worker claims the group before it
 // sends, and publishes the groups it has attempts out for.
 //
-// When every consumer of the GitRepository is held suspended by a FluxTrigger, a new artifact
-// applies nothing, so a push somebody else made is fetched as soon as it is observed (prefetch)
-// rather than when the branch is next quiet: the artifact is then ready when the apply is due. It
-// is asked only while the branch is busy, because on a quiet branch the attempt sent at once fetches
-// for itself, and never while an operation of the group is in flight.
 
 // sourceGroup is the group a trigger's applier belongs to: its cluster and GitRepository, or "" for
 // an applier that shares nothing this way.
@@ -88,44 +83,4 @@ func (l *branchWorkerEventLoop) turnOrder() []ApplierRef {
 		return l.appliers[refs[i]].lastTurn < l.appliers[refs[j]].lastTurn
 	})
 	return refs
-}
-
-// prefetchSources asks each group whose trigger may prefetch, and that has no attempt out, to fetch
-// a push somebody else made. One request per group: its appliers share the GitRepository.
-func (l *branchWorkerEventLoop) prefetchSources() {
-	w := l.w
-	tip, due := w.inbox.takePrefetch()
-	if !due || w.applyRequester == nil {
-		return
-	}
-	busy := map[string]bool{}
-	first := map[string]*applierState{}
-	for _, ref := range l.sortedAppliers() {
-		state := l.appliers[ref]
-		group := state.group()
-		if group == "" {
-			continue
-		}
-		busy[group] = busy[group] || state.inflight != nil
-		if _, seen := first[group]; !seen && state.targets[0].prefetch {
-			first[group] = state
-		}
-	}
-	groups := make([]string, 0, len(first))
-	for group := range first {
-		groups = append(groups, group)
-	}
-	sort.Strings(groups)
-	for _, group := range groups {
-		if busy[group] || w.groupOutOnSibling(group) {
-			continue
-		}
-		state := first[group]
-		w.Log.V(1).Info("Fetching a push ahead of its apply", "branch", w.Branch,
-			"applier", state.ref.String(), "commit", tip)
-		w.applyRequester.PrefetchSource(PrefetchRequest{
-			Applier: state.ref,
-			Commit:  tip,
-		})
-	}
 }

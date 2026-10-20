@@ -83,10 +83,10 @@ func ResolveApplyTrigger(
 	return trigger, nil
 }
 
-// ApplyRequest is one attempt, decided by a branch worker on a quiet branch, to have one applier
+// ApplyRequest is one attempt, decided by a branch worker after a flush, to have one applier
 // apply a commit. The worker decides every attempt, retries included; the requester only carries it
 // out, once, off the worker's goroutine, and reports how it went. So nothing is ever sent that the
-// worker did not check on a quiet branch, against the GitTargets as they were at that moment.
+// worker did not check after a flush, against the GitTargets as they were at that moment.
 type ApplyRequest struct {
 	// ID identifies the attempt, so its report can be matched to it.
 	ID uint64
@@ -109,11 +109,11 @@ type ApplyRequest struct {
 	// requester reports a failure only for an attempt at zero, so a standing failure is reported
 	// once rather than on every retry.
 	PriorFailures int
-	// Current reports whether the decision still holds: Commit is still the branch tip, and nothing
-	// live is waiting to be published on this worker or a sibling. The requester asks it just before
-	// the write that starts the apply, and asks nothing when it is false (ApplyStale): an apply of an
-	// older commit, or over an edit not yet pushed, is exactly what the quiet-branch rule exists to
-	// prevent. Nil is always current. It does not block.
+	// Current reports whether the decision still holds: Commit is still the branch tip. The requester
+	// asks it just before the write that starts the apply, and asks nothing when it is false
+	// (ApplyStale): an apply of an older commit would revert what the newer one holds. An edit not
+	// yet pushed does not make it stale: the flush published every edit decided before the attempt,
+	// and the apply window holds the rest. Nil is always current. It does not block.
 	Current func() bool
 	// Record writes the operation this attempt starts on its trigger's status, and returns once it
 	// is written: the only way the operation reaches the trigger before the requester reports it.
@@ -181,8 +181,8 @@ const (
 	// consent to a Refusal. The worker decides again from what the targets are now.
 	ApplyDropped ApplyOutcome = "Dropped"
 	// ApplyStale asked nothing, because the decision no longer held when the write was due: the
-	// branch moved on, or became busy (ApplyRequest.Current). It is no failure; the worker decides
-	// again at the next quiet moment, at the tip as it is then.
+	// branch moved on (ApplyRequest.Current). It is no failure; the worker decides again at once, at
+	// the tip as it is then.
 	ApplyStale ApplyOutcome = "Stale"
 )
 
