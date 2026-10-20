@@ -215,7 +215,7 @@ When an apply comes due for any applier, the worker flushes before it sends:
    moved: `ApplyRequest.Current` checks nothing else.
 
 Every edit is therefore published before the send, so the apply includes it, or recorded in the
-window, so an apply that overwrites it is withheld over and a `Repair` puts it back.
+window, so an apply that overwrites it is withheld and a `Repair` puts it back.
 
 Three states still hold an apply back: a registered `CommitRequest` (a save defines its own commit
 boundary, and the apply waits for it), a parent-branch recovery, and a checkout a failed write left

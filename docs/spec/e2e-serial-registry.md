@@ -11,7 +11,7 @@ under bounded Ginkgo parallelism (Phase 2.5 of
 > The two audit-consumer specs, `bi_directional`, and `aggregated_apiserver` have
 > all been de-serialized (see the "De-serialized" section). `crd_lifecycle` was
 > de-serialized and then **re-serialized** (commit `3d249e3`) when a residual
-> cluster-wide CRD-discovery churn re-flaked it. The current Serial set is the three
+> cluster-wide CRD-discovery churn re-flaked it. The current Serial set is the four
 > singleton-controller specs, `crd_lifecycle`, and `playground`.
 
 ## Rule

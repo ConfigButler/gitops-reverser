@@ -388,7 +388,7 @@ func TestApplyWindow_AnApplierEntryOlderThanTheSendIsAnEdit(t *testing.T) {
 // TestApplyWindow_ACarriedEditDoesNotWithholdTheNextApply: B is sent within A's grace, carrying the
 // edit made while A ran. B applies a commit that holds every edit published before it was sent, so
 // B's own write over that object, made after B's send, is B's apply landing: not withheld, and no
-// Repair. Only A's late write, made before B was sent, is withheld over the carried edit.
+// Repair. Only A's late write, made before B was sent, is withheld because of the carried edit.
 func TestApplyWindow_ACarriedEditDoesNotWithholdTheNextApply(t *testing.T) {
 	loop, _, _ := completedThenNext(t)
 	window := onlyApplier(t, loop).window

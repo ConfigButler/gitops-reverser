@@ -274,8 +274,9 @@ nothing else.
 - **An edit made after the flush keeps its value in Git.** The apply writes the older commit over it
   on the cluster. GitOps Reverser recognizes that write by the applier's field manager, withholds
   it from Git, and asks for a `Repair`, which applies the tip that holds the edit. Only a write
-  proven to be the applier's is withheld: its field manager alone, with an entry newer than the
-  edit. One that ties with the edit is mirrored, and a delete never is withheld. Each such write is
+  proven to be the applier's is withheld: its field manager alone, with an entry as new as the edit
+  or newer (in the same second, the edit arrived first). One that ties with another field manager
+  is mirrored, and a delete never is withheld. Each such write is
   counted in `apply_window_collisions_total`.
 - **A failed operation is decided again from scratch**, after that applier's own backoff (2 seconds
   doubling to 5 minutes), after a flush, at the tip as it is then.

@@ -293,7 +293,7 @@ they type. S1 replaces the wait with a flush:
 2. **Then the worker takes the flush mark**: the last write decided so far, which now includes the
    window's.
 3. **From the mark, the applier's next apply window records edits**, before the attempt is sent. An
-   edit decided after the mark is therefore one the apply can be withheld over (F1), and `Repair`
+   edit decided after the mark is therefore one whose overwrite by the apply is withheld (F1), and `Repair`
    puts it back.
 4. **The writes up to the mark are published.** Writes decided after it do not hold the send, so
    continuous editing cannot starve an apply.
@@ -301,7 +301,7 @@ they type. S1 replaces the wait with a flush:
    remote is still at that commit.
 
 Every edit is therefore either published before the send, so the apply includes it, or recorded in
-the window, so an apply that overwrites it is withheld over and repaired.
+the window, so an apply that overwrites it is withheld and repaired.
 
 Two states still hold an apply back, as they do today: a commit window held by a `CommitRequest` is
 never closed early (a save defines its own commit boundary, and the apply waits for it), and the
@@ -588,7 +588,7 @@ mirrors and the applier applies.
   apply, the apply completes, the snapshot arrives with nothing pending. It is discarded and
   re-requested; so is one that started while Git was ahead. (F3)
 - **An edit in the open window when an apply comes due, and one decided after the mark**, driven in
-  the worker: the first is published before the send, the second is recorded and withheld over, and
+  the worker: the first is published before the send, the second is recorded and the apply over it is withheld, and
   `Repair` is pending. (S1)
 - **Unit tests of F1**: alone after the earliest send (not mirrored); after a recorded edit (withheld,
   ambiguous or undo, as today); an older entry (an edit); a delayed echo of an earlier attempt inside

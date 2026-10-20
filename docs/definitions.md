@@ -237,7 +237,7 @@ window, takes the **flush mark** (the last write decided so far), and publishes 
 the mark at once, without waiting for the push cooldown. The request is sent for the tip that
 publication produced. An edit decided after the mark does not hold the request back: the applier's
 [apply window](design/apply-trigger.md#the-apply-window) records it from the mark, so an apply that
-overwrites it is withheld over and a `Repair` puts it back. Each branch worker flushes for itself.
+overwrites it is withheld and a `Repair` puts it back. Each branch worker flushes for itself.
 
 **Echo.** The applier's own write landing: the watch event of an object the applier wrote while
 applying a commit GitOps Reverser asked for. The branch worker knows one by its newest
