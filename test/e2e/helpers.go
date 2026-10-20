@@ -356,7 +356,9 @@ func cleanupNamespace(name string) {
 		return
 	}
 	By(fmt.Sprintf("deleting test namespace '%s'", name))
-	_, _ = kubectlRun("delete", "namespace", name, "--ignore-not-found=true")
+	// --wait=false: finalizing a namespace takes 5-10s and nothing reads it again, since every
+	// test namespace is named for this run's seed. Waiting held the spec's process for it.
+	_, _ = kubectlRun("delete", "namespace", name, "--ignore-not-found=true", "--wait=false")
 }
 
 func cleanupNamespacedResource(namespace, resource, name string) {

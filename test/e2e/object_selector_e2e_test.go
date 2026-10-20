@@ -22,7 +22,7 @@ import (
 // Two targets watch the same ConfigMaps with the same selector: one Always, one on the default
 // (OnEvent). Each retention claim is made only after the Always target has visibly acted on the
 // same snapshot, so "still present" means "decided to keep", not "not processed yet".
-var _ = Describe("Manager WatchRule objectSelector", Label("manager"), Ordered, func() {
+var _ = Describe("Manager WatchRule objectSelector", Label("manager"), Ordered, SpecPriority(50), func() {
 	const (
 		providerName  = "gitprovider-selector"
 		alwaysTarget  = "selector-always-target"

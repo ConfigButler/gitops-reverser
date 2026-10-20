@@ -37,7 +37,7 @@ import (
 //
 // No reconcile-request annotation is used anywhere in this spec: an operator asking by hand is
 // precisely the case this feature exists to remove.
-var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered, func() {
+var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered, SpecPriority(100), func() {
 	var (
 		testNs       string
 		repo         *RepoArtifacts

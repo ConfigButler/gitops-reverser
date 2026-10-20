@@ -23,7 +23,7 @@ import (
 // spec's API edit or this spec's Git-side push. Once the trigger holds it, the Kustomization is
 // suspended, and no Flux Receiver is wired to the repository, so any apply inside the spec is one
 // GitOps Reverser started.
-var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Ordered, func() {
+var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Ordered, SpecPriority(90), func() {
 	const (
 		providerName = "flux-applier-provider"
 		destName     = "flux-applier-dest"
