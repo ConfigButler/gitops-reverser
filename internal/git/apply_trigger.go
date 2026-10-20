@@ -473,11 +473,15 @@ func revisionNamesCommit(revision, commit string) bool {
 	if revision == "" || commit == "" {
 		return false
 	}
-	hash := revision
-	if i := strings.LastIndexAny(hash, ":/"); i >= 0 {
-		hash = hash[i+1:]
+	return strings.EqualFold(revisionCommit(revision), commit)
+}
+
+// revisionCommit is the commit an applier's revision names: the hash after its last ':' or '/'.
+func revisionCommit(revision string) string {
+	if i := strings.LastIndexAny(revision, ":/"); i >= 0 {
+		return revision[i+1:]
 	}
-	return strings.EqualFold(hash, commit)
+	return revision
 }
 
 // flushed makes the flush an apply needs (see serviceAppliers), and reports whether the writes up to
@@ -764,6 +768,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 		state.failures++
 		state.retryAt = now.Add(applierRetryDelay(state.failures, res.Outcome == ApplyRejected))
 		l.restoreAttempt(state, attempt)
+		l.lookIfSourceMoved(state, res)
 		message := "An apply attempt did not deliver; deciding it again after its backoff"
 		if res.Outcome == ApplyFailed {
 			message = "The applier did not complete the apply; deciding it again after its backoff"
@@ -772,6 +777,19 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 			"branch", l.w.Branch, "applier", state.ref.String(), "outcome", string(res.Outcome),
 			"failures", state.failures, "retryIn", state.retryAt.Sub(now), "error", errString(res.Err))
 	}
+}
+
+// lookIfSourceMoved takes an applier's source holding another commit than the tip the worker knows
+// as a hint that the branch moved, and looks at the remote, as a Git host's push notice is looked at.
+// A worker with no receiver otherwise learns of a Git-side push only through its own rejected push,
+// or the refresher, and asks again for a commit the source no longer serves until then.
+func (l *branchWorkerEventLoop) lookIfSourceMoved(state *applierState, res ApplyResult) {
+	if res.SourceRevision == "" || revisionNamesCommit(res.SourceRevision, l.w.inbox.lastTip()) {
+		return
+	}
+	l.w.Log.Info("The applier's source holds another commit than the tip known here; looking at the remote",
+		"branch", l.w.Branch, "applier", state.ref.String(), "sourceRevision", res.SourceRevision)
+	l.w.EnqueuePushNotification(revisionCommit(res.SourceRevision))
 }
 
 // advanceOperation records where an attempt's operation stands. Unresolved is said once, and stays

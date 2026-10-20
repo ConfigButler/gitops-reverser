@@ -448,6 +448,22 @@ func TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing(t *testing.T) {
 	assert.Empty(t, f.source.clusters, "the hub's client is never even asked for")
 }
 
+// TestDispatcher_ASourceElsewhereIsReportedWithItsRevision: a GitRepository that fetched and holds
+// another commit than the one asked for fails the attempt, and the report carries the revision it
+// holds, which the branch worker takes as a hint that the branch moved.
+func TestDispatcher_ASourceElsewhereIsReportedWithItsRevision(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	f.sim.Fetches(platformKey, "main@sha1:"+olderCommit)
+
+	res := f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
+	assert.Equal(t, "main@sha1:"+olderCommit, res.SourceRevision)
+
+	f.sim.Fetches(platformKey, "main@sha1:"+testCommit)
+	assert.Empty(t, f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")).SourceRevision,
+		"a source that brings the commit says nothing")
+}
+
 // TestDispatcher_AFailureIsReportedAndNeverRetried: retrying is the branch worker's decision, after a
 // flush. The dispatcher reports the failure, and records ApplyRequestFailed only for the
 // first failure of a run.

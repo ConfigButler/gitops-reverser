@@ -384,7 +384,12 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	case isPermanent(err):
 		return d.failure(ctx, req, eligible, report(git.ApplyRejected, err), log), nil
 	case err != nil:
-		return d.failure(ctx, req, eligible, report(git.ApplyRequestFailed, err), log), nil
+		res := report(git.ApplyRequestFailed, err)
+		var elsewhere *sourceElsewhereError
+		if errors.As(err, &elsewhere) {
+			res.SourceRevision = elsewhere.revision
+		}
+		return d.failure(ctx, req, eligible, res, log), nil
 	}
 
 	d.count(ctx, req, outcomeSent)

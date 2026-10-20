@@ -203,6 +203,10 @@ type ApplyResult struct {
 	AppliedRevision string
 	// Message says what a Succeeded operation applied instead of the commit.
 	Message string
+	// SourceRevision is the revision the applier's source fetched when it holds another commit than
+	// the one asked for (a RequestFailed carries it). It is a hint that the branch moved, never a
+	// fact: the worker looks at the remote itself (settleApplyResults).
+	SourceRevision string
 	// Err is the cause of a RequestFailed, Rejected or Failed attempt.
 	Err error
 }

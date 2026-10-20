@@ -9,6 +9,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -374,4 +375,48 @@ func TestWriteBusy_ASaveAnnouncedBeforeItsWrites(t *testing.T) {
 	assert.False(t, loop.writeBusy())
 	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{{}: {}}
 	assert.True(t, loop.writeBusy())
+}
+
+// queuedRefreshes takes the refreshes the worker queued for its loop.
+func queuedRefreshes(w *BranchWorker) []*RefreshRequest {
+	var refreshes []*RefreshRequest
+	for {
+		select {
+		case item := <-w.eventQueue:
+			if item.Refresh != nil {
+				refreshes = append(refreshes, item.Refresh)
+			}
+		default:
+			return refreshes
+		}
+	}
+}
+
+// TestApplyAttempt_ASourceElsewhereIsAHintToLook: an applier's source that fetched another commit
+// than the one asked for says the branch may have moved, past a decision made before the worker heard
+// of it. With no receiver, the worker would otherwise ask again for a commit the source no longer
+// serves, until its own push or the refresher found the move; it looks, as at a push notice. A source
+// at the tip known here says nothing new.
+func TestApplyAttempt_ASourceElsewhereIsAHintToLook(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+	observeForeignCommit(loop.w)
+	failWith := func(revision string) {
+		t.Helper()
+		loop.serviceAppliers()
+		sent := requester.taken()
+		require.Len(t, sent, 1)
+		sent[0].Report(ApplyResult{ID: sent[0].ID, Outcome: ApplyRequestFailed,
+			Err: errors.New("the source fetched another commit"), SourceRevision: revision})
+		loop.serviceAppliers()
+		dueNow(loop)
+	}
+
+	failWith("main@sha1:bbb")
+	assert.Empty(t, queuedRefreshes(loop.w), "the source holds the tip known here")
+
+	failWith("main@sha1:ccc")
+	refreshes := queuedRefreshes(loop.w)
+	require.Len(t, refreshes, 1, "the worker looks at the remote")
+	assert.True(t, refreshes[0].PushNotice)
+	assert.Equal(t, "ccc", refreshes[0].After)
 }

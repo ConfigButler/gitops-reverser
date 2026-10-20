@@ -150,8 +150,22 @@ func (f *Flux) fetchCommit(
 	if !ask.holds() {
 		return errStale
 	}
-	return fmt.Errorf("%s %s fetched %s, not commit %s", kindGitRepository, sourceRef,
-		statusString(source, "artifact", "revision"), ask.Commit)
+	return &sourceElsewhereError{
+		source: sourceRef, revision: statusString(source, "artifact", "revision"), commit: ask.Commit,
+	}
+}
+
+// sourceElsewhereError is a GitRepository that fetched, and holds another commit than the one asked
+// for: usually the branch moved on, past a decision the branch worker made before it heard of the
+// move. The dispatcher hands the revision to the worker (git.ApplyResult.SourceRevision), which looks
+// at the remote instead of asking again for a commit the source may no longer serve.
+type sourceElsewhereError struct {
+	source           types.NamespacedName
+	revision, commit string
+}
+
+func (e *sourceElsewhereError) Error() string {
+	return fmt.Sprintf("%s %s fetched %s, not commit %s", kindGitRepository, e.source, e.revision, e.commit)
 }
 
 // maxResumeConflicts bounds how often one request reads the Kustomization again after its resume

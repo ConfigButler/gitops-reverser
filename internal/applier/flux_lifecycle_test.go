@@ -461,6 +461,9 @@ func TestFluxRequest_AFetchThatEndsElsewhere(t *testing.T) {
 	require.ErrorContains(t, err, "fetched main@sha1:"+olderCommit+", not commit "+testCommit)
 	assert.False(t, isPermanent(err))
 	require.NotErrorIs(t, err, errStale)
+	var elsewhere *sourceElsewhereError
+	require.ErrorAs(t, err, &elsewhere)
+	assert.Equal(t, "main@sha1:"+olderCommit, elsewhere.revision, "the revision the source holds")
 
 	a := ask(v1alpha3.ApplyReasonForeignCommit)
 	a.Current = func() bool { return false }
