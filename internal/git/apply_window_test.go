@@ -271,6 +271,14 @@ func completedThenNext(t *testing.T) (*branchWorkerEventLoop, *recordingRequeste
 	return loop, requester, next[0]
 }
 
+// sentAfterTheEarlierApply dates the applier's current window's send an hour on, so the writes the
+// next windowEvents date come before it: one attempt is out at a time, so the earlier apply's late
+// writes were made before the next attempt was sent. A carried edit guards only those.
+func sentAfterTheEarlierApply(t *testing.T, loop *branchWorkerEventLoop) {
+	t.Helper()
+	onlyApplier(t, loop).window.sentAt = time.Now().Add(time.Hour)
+}
+
 // TestApplyWindow_ANewAttemptKeepsTheGraceOfTheOneBefore is the fifth review's third finding. A new
 // attempt replaced its applier's window, and the edits the one before had seen went with it, while
 // that earlier apply's writes could still arrive within its grace. Its late write over the edit was
@@ -279,6 +287,7 @@ func TestApplyWindow_ANewAttemptKeepsTheGraceOfTheOneBefore(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	loop, _, _ := completedThenNext(t)
+	sentAfterTheEarlierApply(t, loop)
 
 	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
 		"A's late write over the edit is withheld while B is out")
@@ -298,6 +307,7 @@ func TestApplyWindow_AnAttemptThatAppliedNothingKeepsTheGraceBeforeIt(t *testing
 			loop.serviceAppliers()
 			state := onlyApplier(t, loop)
 			require.Nil(t, state.inflight)
+			sentAfterTheEarlierApply(t, loop)
 
 			assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
 				"A's late write is withheld within A's grace")
@@ -333,6 +343,7 @@ func TestApplyWindow_TheCarriedGraceEndsWhenTheEarlierWindowWouldHave(t *testing
 func TestApplyWindow_ConsecutiveOperationsOnOneApplier(t *testing.T) {
 	loop, requester, second := completedThenNext(t)
 	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, second.Reason)
+	sentAfterTheEarlierApply(t, loop)
 
 	require.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)))
 	loop.serviceAppliers()
@@ -371,6 +382,20 @@ func TestApplyWindow_AnApplierEntryOlderThanTheSendIsAnEdit(t *testing.T) {
 	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
 		"the apply landing over it is withheld")
 	assert.True(t, loop.appliers[applierRef("alpha")].repair)
+}
+
+// TestApplyWindow_ACarriedEditDoesNotWithholdTheNextApply: B is sent within A's grace, carrying the
+// edit made while A ran. B applies a commit that holds every edit published before it was sent, so
+// B's own write over that object, made after B's send, is B's apply landing: not withheld, and no
+// Repair. Only A's late write, made before B was sent, is withheld over the carried edit.
+func TestApplyWindow_ACarriedEditDoesNotWithholdTheNextApply(t *testing.T) {
+	loop, _, _ := completedThenNext(t)
+	window := onlyApplier(t, loop).window
+	window.sentAt = time.Now().Add(-time.Hour) // B's send, before every write windowEvent dates
+
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
+		"B's write is its apply landing, not mirrored")
+	assert.False(t, onlyApplier(t, loop).repair, "and B is not repaired over an edit its commit holds")
 }
 
 // TestApplyWindow_ADelayedEchoOfTheAttemptBeforeIsNotMirrored: B is sent within A's grace, and A's

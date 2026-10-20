@@ -149,10 +149,14 @@ func objectKey(id itypes.ResourceIdentifier) string {
 }
 
 // editedSince reports whether the API side wrote an object since the attempt was sent, or, until
-// the window before it would have closed, since that one was, and when it last did.
-func (a *applyWindow) editedSince(key string, now time.Time) (time.Time, bool) {
+// the window before it would have closed, since that one was, and when it last did. An edit carried
+// from the window before guards only against an applier write made before this attempt was sent:
+// one attempt is out at a time, so the earlier apply wrote before then, and a write since is this
+// attempt's apply of a commit that holds every edit published before it (S1).
+func (a *applyWindow) editedSince(key string, now, written time.Time) (time.Time, bool) {
 	at, edited := a.edited[key]
-	if carriedAt, carried := a.carried[key]; carried && now.Before(a.carriedUntil) {
+	if carriedAt, carried := a.carried[key]; carried && now.Before(a.carriedUntil) &&
+		written.Before(a.sentAt.Truncate(time.Second)) {
 		return latest(at, carriedAt), true
 	}
 	return at, edited
@@ -251,8 +255,8 @@ func (l *branchWorkerEventLoop) judgeInWindow(applier *applierState, event Event
 	window := applier.window
 	key := objectKey(event.Identifier)
 	byApplier, byApplierAlone := applier.ref.writtenBy(event.LastFieldManagers)
-	editedAt, editedSince := window.editedSince(key, now)
 	written := event.LastFieldManagedAt
+	editedAt, editedSince := window.editedSince(key, now, written)
 	switch {
 	case !byApplier || event.Operation == string(itypes.OperationDelete):
 		window.recordEdit(key, written)
