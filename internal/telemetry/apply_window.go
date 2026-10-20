@@ -16,8 +16,8 @@ import "go.opentelemetry.io/otel/metric"
 //	             the API edit itself. It was mirrored as ever, which cannot lose an edit; if it was the
 //	             apply, the revert is in Git as the applier's commit.
 //
-// Any non-zero rate means edits are landing while an apply runs. A long quietPeriod makes the
-// CatchUp windows rarer; the ForeignCommit and Refusal windows follow other people's pushes.
+// Any non-zero rate means edits are landing while an apply runs: a withheld one is repaired, and the
+// apply windows follow other people's pushes, refusals, repairs and API creates.
 //
 // Registered in registerCounters (exporter.go) with every other counter.
 var ApplyWindowCollisionsTotal metric.Int64Counter

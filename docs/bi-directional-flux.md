@@ -135,7 +135,6 @@ spec:
   kustomizationRef:
     namespace: flux-system
     name: checkout
-  quietPeriod: 30s
 ```
 
 No Flux `Receiver` for `acme/platform` appears, on purpose: remove yours if you have one, and point

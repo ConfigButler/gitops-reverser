@@ -183,6 +183,7 @@ func TestRefusalReapply_TheRequestWaitsForAFlush(t *testing.T) {
 	loop := newBranchWorkerEventLoop(w, time.Minute)
 	t.Cleanup(loop.stopTimers)
 
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
 	holdApplies(loop)
 	loop.addUnsentRefusal(editingKey(), unsentRefusal{detail: "a base-owned field", uid: editingUID}, "observation-1")
 	loop.serviceAppliers()
@@ -493,11 +494,6 @@ func fluxTrigger(name string, mutate ...func(*configv1alpha3.FluxTrigger)) *conf
 		m(trigger)
 	}
 	return trigger
-}
-
-// quietFor sets a FluxTrigger's quietPeriod.
-func quietFor(d time.Duration) func(*configv1alpha3.FluxTrigger) {
-	return func(t *configv1alpha3.FluxTrigger) { t.Spec.QuietPeriod = &metav1.Duration{Duration: d} }
 }
 
 // testTriggersFor adds to objects the trigger each GitTarget among them names that objects does not

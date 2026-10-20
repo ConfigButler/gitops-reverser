@@ -137,7 +137,6 @@ The references are immutable: to hold another `Kustomization`, delete the trigge
 |---|---|---|
 | `clusterProviderRef` | `{"name":"default"}` | The `ClusterProvider` whose cluster holds the `Kustomization`. Its `accessFrom` must admit the trigger's namespace |
 | `kustomizationRef` | **required** | The `Kustomization` that applies the folders of the `GitTarget`s naming this trigger. See [who applies this folder](#who-applies-this-folder-specapplytriggerref) |
-| `quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` |
 
 ### `ArgoCDTrigger` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync
 

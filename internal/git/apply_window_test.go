@@ -189,7 +189,7 @@ func TestApplyWindow_ClosesAGraceAfterFluxFinished(t *testing.T) {
 // TestApplyWindow_AnAttemptThatAppliedNothingHasNoWindow: a stale, failed or dropped attempt
 // stamped nothing, so nothing the applier writes afterwards is the apply it asked for.
 func TestApplyWindow_AnAttemptThatAppliedNothingHasNoWindow(t *testing.T) {
-	for _, outcome := range []ApplyOutcome{ApplyStale, ApplyRequestFailed, ApplyRejected, ApplyDropped, ApplyCurrent} {
+	for _, outcome := range []ApplyOutcome{ApplyStale, ApplyRequestFailed, ApplyRejected, ApplyDropped} {
 		t.Run(string(outcome), func(t *testing.T) {
 			loop, req := sentAttempt(t)
 			assert.False(t, loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit")))
@@ -290,7 +290,7 @@ func TestApplyWindow_ANewAttemptKeepsTheGraceOfTheOneBefore(t *testing.T) {
 // window of its own, but A's grace still runs, so A's late write is withheld until it ends, and
 // mirrored after.
 func TestApplyWindow_AnAttemptThatAppliedNothingKeepsTheGraceBeforeIt(t *testing.T) {
-	for _, outcome := range []ApplyOutcome{ApplyCurrent, ApplyStale} {
+	for _, outcome := range []ApplyOutcome{ApplyStale, ApplyDropped} {
 		t.Run(string(outcome), func(t *testing.T) {
 			loop, _, next := completedThenNext(t)
 			report(next, outcome)

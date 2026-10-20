@@ -182,11 +182,6 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 			want: OutcomeResumed, wantFetch: true,
 		},
 		{
-			name: "a branch absent on the remote fetches, and resumes nothing", artifact: "main@sha1:" + testCommit,
-			suspended: true, commit: "", reason: v1alpha3.ApplyReasonForeignCommit,
-			want: OutcomeCurrent, wantFetch: true,
-		},
-		{
 			name: "a refusal at the applied commit resumes", artifact: "main@sha1:" + testCommit,
 			applied: "main@sha1:" + testCommit, suspended: true,
 			commit: testCommit, reason: v1alpha3.ApplyReasonRefusal, want: OutcomeResumed,
@@ -197,14 +192,16 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 			commit: testCommit, reason: v1alpha3.ApplyReasonRepair, want: OutcomeResumed,
 		},
 		{
-			name: "a foreign commit applied while suspended asks nothing", artifact: "main/" + testCommit,
+			// The worker decides what needs no apply; the client applies what it is asked. An adopt
+			// re-applies the same commit on purpose: that is what stamps the owner labels.
+			name: "a foreign commit applied while suspended resumes", artifact: "main/" + testCommit,
 			applied: "main@sha1:" + testCommit, suspended: true,
-			commit: testCommit, reason: v1alpha3.ApplyReasonForeignCommit, want: OutcomeCurrent,
+			commit: testCommit, reason: v1alpha3.ApplyReasonForeignCommit, want: OutcomeResumed,
 		},
 		{
-			name: "a catch-up applied while suspended asks nothing", artifact: "sha1:" + testCommit,
+			name: "a catch-up applied while suspended resumes", artifact: "sha1:" + testCommit,
 			applied: "main@sha1:" + testCommit, suspended: true,
-			commit: testCommit, reason: v1alpha3.ApplyReasonCatchUp, want: OutcomeCurrent,
+			commit: testCommit, reason: v1alpha3.ApplyReasonCatchUp, want: OutcomeResumed,
 		},
 		{
 			// Not suspended yet (the trigger has not adopted it): it may apply on its own, so the

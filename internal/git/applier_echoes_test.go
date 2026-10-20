@@ -15,6 +15,7 @@ import (
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // The tests here pin docs/design/applier-echoes.md below end to end. The Git ones run on a real Git
@@ -61,9 +62,10 @@ func echoDocument(name, value string) string {
 		"\n  namespace: default\ndata:\n  key: " + value + "\n"
 }
 
-// echoEvent is a live write of the ConfigMap name holding value, by alice, for team-a.
+// echoEvent is a live update of the ConfigMap name to value, by alice, for team-a.
 func echoEvent(name, value string) Event {
 	event := configMapTargetEvent(name, "alice", echoTarget)
+	event.Operation = string(itypes.OperationUpdate)
 	event.Object.Object["data"] = map[string]interface{}{"key": value}
 	return event
 }
@@ -286,6 +288,12 @@ func (f *echoFixture) withTrigger() *recordingRequester {
 	f.loop = newBranchWorkerEventLoop(f.worker, time.Hour)
 	f.t.Cleanup(f.loop.stopTimers)
 	f.loop.followRecordedOperations(time.Now())
+	// The converges the start and the naming left pending, answered already: these tests drive
+	// other reasons.
+	f.worker.inbox.take()
+	for _, state := range f.loop.appliers {
+		state.converge = false
+	}
 	return requester
 }
 
@@ -339,4 +347,25 @@ func TestApplierEchoes_FlushThenApply(t *testing.T) {
 	late.LastFieldManagedAt = time.Now().Add(time.Hour)
 	assert.True(t, f.loop.withholdLateApply(late), "E1 was recorded in the window: the apply over it is withheld")
 	assert.True(t, f.echoApplier().repair, "and a Repair puts E1 back once it is published")
+}
+
+// TestApplierEchoes_AResyncThatAddsAnObjectAdoptsIt is S2: an object a resync adds to Git runs on
+// the cluster already, and its applier never applied it, so a later Git-side delete would leave it
+// there. It is adopted; a resync that only updates adopts nothing.
+func TestApplierEchoes_AResyncThatAddsAnObjectAdoptsIt(t *testing.T) {
+	f := newEchoFixture(t, "echo-resync-adopt", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
+	f.withTrigger()
+
+	resync := func(desired ...manifestanalyzer.DesiredResource) {
+		req := &ResyncRequest{Desired: desired, GitTargetName: echoTarget, GitTargetNamespace: "default",
+			Result: make(chan ResyncResult, 1)}
+		f.loop.applyResync(req)
+		f.loop.advance()
+		require.NoError(t, (<-req.Result).Err)
+	}
+	resync(echoDesired("x", "x2"))
+	assert.False(t, f.echoApplier().adopt, "an update adopts nothing")
+
+	resync(echoDesired("x", "x2"), echoDesired("new", "n1"))
+	assert.True(t, f.echoApplier().adopt, "the object the resync added is adopted")
 }

@@ -98,11 +98,10 @@ func TestApplier_ARetryIsDecidedAgain(t *testing.T) {
 // The requester used to turn a Refusal whose target withdrew consent into a CatchUp and send it at
 // once, skipping the quiet period, so a behind artifact was fetched over an unpublished edit. Now
 // the requester only reports that the reason no longer holds, and the worker decides: no Refusal,
-// and a CatchUp only after the quiet period.
+// only the converge the first naming left pending, as a CatchUp.
 func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
-	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying),
-		fluxTrigger("alpha", quietFor(time.Hour)))
-	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // leaves a CatchUp pending
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying))
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // leaves a converge pending
 	addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
@@ -120,15 +119,18 @@ func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
 	dueNow(loop)
 	loop.serviceAppliers()
 
-	assert.Empty(t, requester.taken(), "the catch-up waits out the hour-long quiet period")
-	assert.Empty(t, loop.unsentRefusals, "and the Refusal is gone with the consent")
-	assert.True(t, loop.appliers[applierRef("alpha")].catchUp)
+	next := requester.taken()
+	require.Len(t, next, 1)
+	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, next[0].Reason, "the converge, never the Refusal")
+	assert.Empty(t, loop.unsentRefusals, "the Refusal is gone with the consent")
 }
 
 // TestApplier_ARecoveredRefusalIsNotRetried is the second review's second finding: a refusal that
 // recovered while its attempt was out came back with the failed attempt and was requested again.
 func TestApplier_ARecoveredRefusalIsNotRetried(t *testing.T) {
-	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying))
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying),
+		fluxTrigger("alpha", recording(recordedOperation(configv1alpha3.ApplyOperationSucceeded), false)))
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch}) // the tip it applied
 	key := addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
@@ -201,23 +203,15 @@ func TestApplier_EachApplierRetriesOnItsOwnClock(t *testing.T) {
 }
 
 // TestApplier_OneAttemptForEveryTargetNamingIt: GitTargets that share a trigger are asked for
-// together, each with its own reason, and wait for the trigger's quiet period, because its apply
-// reaches every one of their folders.
+// together, each with its own reason, because its apply reaches every one of their folders.
 func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
 	shared := func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("shared") }
 	loop, requester := applyTriggerLoop(t,
 		applierTestTarget("alpha", true, shared, reapplying),
 		applierTestTarget("bravo", true, shared),
-		fluxTrigger("shared", quietFor(time.Hour)),
+		fluxTrigger("shared"),
 	)
-	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
-	loop.serviceAppliers()
-	assert.Equal(t, time.Hour, loop.appliers[applierRef("shared")].quietPeriod())
-
-	loop.quietSince = time.Now().Add(-2 * time.Minute)
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "past alpha's quiet period, not bravo's")
-
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush}) // the startup converge
 	addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
@@ -234,8 +228,8 @@ func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
 			UID:    "uid-bravo",
 			Reason: configv1alpha3.ApplyReasonCatchUp,
 		},
-	}, out[0].Targets, "a Refusal applies the tip, so it answers bravo's pending CatchUp as well")
-	assert.False(t, loop.appliers[applierRef("shared")].catchUp)
+	}, out[0].Targets, "a Refusal applies the tip, so it answers the pending converge as well")
+	assert.False(t, loop.appliers[applierRef("shared")].converge)
 }
 
 // TestApplier_AnAttemptOutHoldsTheNext: one attempt per applier at a time. A reason that becomes pending

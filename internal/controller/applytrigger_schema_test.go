@@ -18,7 +18,7 @@ import (
 )
 
 // The API server holds the trigger kinds to their contract: each names one applier and its
-// cluster, neither can be pointed elsewhere once created, quietPeriod is bounded and defaulted, and
+// cluster, neither can be pointed elsewhere once created, and
 // a GitTarget names a trigger by a kind this release serves.
 var _ = Describe("Apply trigger schema", func() {
 	ctx := context.Background()
@@ -47,17 +47,6 @@ var _ = Describe("Apply trigger schema", func() {
 			},
 		}
 	}
-
-	It("defaults a FluxTrigger's quiet period, and bounds it", func() {
-		trigger := flux("flux-default")
-		Expect(create(trigger)).To(Succeed())
-		Expect(trigger.Spec.QuietPeriod).NotTo(BeNil())
-		Expect(trigger.Spec.QuietPeriod.Duration).To(Equal(configbutleraiv1alpha3.DefaultApplierQuietPeriod))
-
-		long := flux("flux-long")
-		long.Spec.QuietPeriod = &metav1.Duration{Duration: 2 * time.Hour}
-		Expect(create(long)).To(MatchError(ContainSubstring("spec.quietPeriod must be a Go duration of at most 1h")))
-	})
 
 	It("defaults the cluster to the default ClusterProvider, as a GitTarget does, and requires names", func() {
 		omitted := argo("argo-default-cluster")
@@ -116,9 +105,6 @@ var _ = Describe("Apply trigger schema", func() {
 			To(MatchError(ContainSubstring("spec.kustomizationRef is immutable")))
 		Expect(update(fluxTrigger, func() { fluxTrigger.Spec.ClusterProviderRef.Name = "other" })).
 			To(MatchError(ContainSubstring("spec.clusterProviderRef is immutable")))
-		Expect(update(fluxTrigger, func() {
-			fluxTrigger.Spec.QuietPeriod = &metav1.Duration{Duration: time.Minute}
-		})).To(Succeed(), "the quiet period is not what it holds")
 
 		argoTrigger := argo("argo-immutable")
 		Expect(create(argoTrigger)).To(Succeed())

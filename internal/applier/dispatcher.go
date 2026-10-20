@@ -388,10 +388,6 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	}
 
 	d.count(ctx, req, outcomeSent)
-	if started.Outcome == OutcomeCurrent {
-		log.V(1).Info("the applier needs no request for this commit; asking nothing")
-		return report(git.ApplyCurrent, nil), nil
-	}
 	log.Info("apply requested", "outcome", started.Outcome)
 	if started.Unconfirmed != nil {
 		log.Info("the request may not have reached the applier; following it by its token",

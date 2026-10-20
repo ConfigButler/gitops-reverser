@@ -3,8 +3,6 @@
 package v1alpha3
 
 import (
-	"time"
-
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -43,16 +41,6 @@ type FluxTriggerSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kustomizationRef is immutable; delete and recreate the FluxTrigger to hold another Kustomization"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kustomizationRef.name must not be empty"
 	KustomizationRef meta.NamespacedObjectReference `json:"kustomizationRef"`
-
-	// QuietPeriod is how long the branch must hold no open commit window and no pending writes,
-	// after GitOps Reverser's own pushes, before the Kustomization is asked to catch up with them.
-	// Every new write restarts the wait. A Go duration of at most "1h".
-	// +optional
-	// +kubebuilder:default="30s"
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
-	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('1h')",message="spec.quietPeriod must be a Go duration of at most 1h"
-	QuietPeriod *metav1.Duration `json:"quietPeriod,omitempty"`
 }
 
 // FluxTriggerStatus is what the trigger knows about its Kustomization, and the apply it started.
@@ -190,14 +178,6 @@ func (t *FluxTrigger) Applier() types.NamespacedName {
 		Namespace: defaultedNamespace(t.Spec.KustomizationRef.Namespace, t.Namespace),
 		Name:      t.Spec.KustomizationRef.Name,
 	}
-}
-
-// EffectiveQuietPeriod is spec.quietPeriod, resolving an omitted field to the default.
-func (t *FluxTrigger) EffectiveQuietPeriod() time.Duration {
-	if t.Spec.QuietPeriod == nil {
-		return DefaultApplierQuietPeriod
-	}
-	return t.Spec.QuietPeriod.Duration
 }
 
 // SourceBinding is status.source's url and branch.

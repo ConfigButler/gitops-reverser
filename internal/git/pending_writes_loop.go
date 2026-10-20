@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -85,12 +84,6 @@ func retainedCharge(pendingWrite *PendingWrite) int64 {
 // A request riding it is held from here on, so the controller never fails a save whose write can
 // still land. Committing it is advance's job, at the end of the wake.
 func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
-	// Every decided write restarts the quiet period the apply trigger waits out, wherever in the
-	// wake it is decided. A wake can open a window, close it, commit and push before it ends, and
-	// end quiet; reading "busy" only from the state a wake ends in would let that wake inherit the
-	// quiet period of the wakes before it and ask the applier to catch up at once, over the next
-	// edit. See serviceAppliers.
-	l.quietSince = time.Time{}
 	l.decisions++
 	pendingWrite.decision = l.decisions
 	pendingWrite.charge = retainedCharge(&pendingWrite)
@@ -356,6 +349,11 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 	answered := l.pendingWrites[i].origin.answered
 	stats := l.pendingWrites[i].ResyncStats
 	committed := l.pendingWrites[i].retained()
+	if stats.Created > 0 {
+		// An object a resync adds to Git runs on the cluster already, and its applier never applied
+		// it: it is adopted (S2 in docs/design/applier-echoes.md).
+		l.adopt(req.GitTargetName, req.GitTargetNamespace, fmt.Sprintf("%d objects", stats.Created))
+	}
 	if !committed {
 		l.removeAt(i)
 	}

@@ -116,11 +116,12 @@ spec:
                 description: |-
                   ApplyTriggerRef names the apply trigger, in this GitTarget's namespace, that holds the applier
                   of this folder: a FluxTrigger (a Flux Kustomization) or an ArgoCDTrigger (an Argo CD
-                  Application). With it set, GitOps Reverser decides when that applier applies: only when the
-                  branch holds no open commit window and no pending writes, after a commit it did not push,
-                  after a refused edit (spec.onRefusal: Reapply), after an apply reverted a newer API edit, and,
-                  for a Kustomization, once the branch has been quiet for the trigger's quietPeriod, to keep it
-                  current with its own pushes. The trigger's applier must apply this target's repository and
+                  Application). With it set, GitOps Reverser decides when that applier applies, always after
+                  publishing the edits it holds: after a commit it did not push, after a refused edit
+                  (spec.onRefusal: Reapply), after an apply reverted a newer API edit, after the API created an
+                  object in the folder (so the applier owns it and prunes it later), and once when the operator
+                  starts or the trigger is first named, after the folder's initial snapshots are in Git. Objects
+                  another applier owns are not mirrored into the folder. The trigger's applier must apply this target's repository and
                   branch; the ApplyTriggerReady condition says whether it does. Several GitTargets may name one
                   trigger, and it is asked once for all of them.
                 properties:

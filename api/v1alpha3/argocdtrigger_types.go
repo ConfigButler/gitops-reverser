@@ -4,15 +4,11 @@ package v1alpha3
 
 import (
 	"strings"
-	"time"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
-
-// Why no quietPeriod: it times a CatchUp, and an Application is never asked to catch up. With
-// automated sync off it applies nothing on its own, so it holds no stale state to correct.
 
 // ArgoCDTriggerSpec names the Argo CD Application the trigger holds, and the cluster it is in.
 type ArgoCDTriggerSpec struct {
@@ -162,9 +158,6 @@ func (t *ArgoCDTrigger) Applier() types.NamespacedName {
 		Name:      t.Spec.ApplicationRef.Name,
 	}
 }
-
-// EffectiveQuietPeriod is the default: it only times a CatchUp, which an Application is never asked.
-func (t *ArgoCDTrigger) EffectiveQuietPeriod() time.Duration { return DefaultApplierQuietPeriod }
 
 // SourceBinding is status.source's repoURL, and the branch its targetRevision names ("HEAD" for an
 // empty one, which follows no branch GitOps Reverser writes).

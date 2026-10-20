@@ -67,7 +67,7 @@ var _ = Describe("Flux Restart Recovery", Label("flux-restart-recovery"), Serial
 			`{"spec":{"wait":true,"timeout":"5m"}}`)
 		Expect(err).NotTo(HaveOccurred(), "the Kustomization waits for what it applies to be ready")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		createFluxTrigger(testNs, fluxName, fluxName, "")
+		createFluxTrigger(testNs, fluxName, fluxName)
 		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "")
 		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 		Expect(applyFromTemplate("test/e2e/templates/manager/watchrule-resources.tmpl", struct {

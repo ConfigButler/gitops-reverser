@@ -67,7 +67,6 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 		*target.Spec.ApplyTriggerRef)
 	assert.Equal(t, target.Namespace, trigger.Namespace, "a GitTarget names a trigger in its own namespace")
 	assert.Equal(t, v1alpha3.RefusalActionReapply, target.Spec.OnRefusal)
-	assert.LessOrEqual(t, trigger.EffectiveQuietPeriod(), time.Hour)
 
 	// The Flux objects follow the guide's advice.
 	interval, _, _ := unstructured.NestedString(repository.Object, "spec", "interval")

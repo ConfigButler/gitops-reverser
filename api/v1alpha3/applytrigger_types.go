@@ -3,8 +3,6 @@
 package v1alpha3
 
 import (
-	"time"
-
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -142,9 +140,6 @@ type ApplyOperation struct {
 	Message string `json:"message,omitempty"`
 }
 
-// DefaultApplierQuietPeriod is FluxTrigger.spec.quietPeriod when it is omitted.
-const DefaultApplierQuietPeriod = 30 * time.Second
-
 // ApplyTrigger is what every trigger kind answers, so the controllers, the branch workers and the
 // dispatcher handle a FluxTrigger and an ArgoCDTrigger alike.
 // +kubebuilder:object:generate=false
@@ -160,8 +155,6 @@ type ApplyTrigger interface {
 	ApplierKind() string
 	// Applier is the object the trigger holds, its namespace defaulted to the trigger's own.
 	Applier() types.NamespacedName
-	// EffectiveQuietPeriod is how long the branch must be quiet before a CatchUp.
-	EffectiveQuietPeriod() time.Duration
 	// SourceBinding is the repository and branch the applier applies, as the trigger last read
 	// them, and false when it has not read them.
 	SourceBinding() (repositoryURL, branch string, known bool)

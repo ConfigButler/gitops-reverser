@@ -3,8 +3,6 @@
 package v1alpha3
 
 import (
-	"time"
-
 	"testing"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
@@ -336,7 +334,6 @@ func TestApplyTrigger_AppliersDefaultToTheTriggersNamespace(t *testing.T) {
 	}
 	assert.Equal(t, "team-a/apps", flux.Applier().String())
 	assert.Equal(t, "hub", flux.ClusterProvider())
-	assert.Equal(t, DefaultApplierQuietPeriod, flux.EffectiveQuietPeriod())
 
 	argo := &ArgoCDTrigger{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
@@ -393,8 +390,7 @@ func TestNewApplyTrigger_KnowsBothKinds(t *testing.T) {
 // and SetOperation replaces the operation and repairPending together.
 func TestApplyTrigger_StatusAccessors(t *testing.T) {
 	operation := &ApplyOperation{Phase: ApplyOperationRunning, Commit: "abc"}
-	quiet := &metav1.Duration{Duration: time.Minute}
-	flux := &FluxTrigger{Spec: FluxTriggerSpec{QuietPeriod: quiet}}
+	flux := &FluxTrigger{}
 	argo := &ArgoCDTrigger{}
 	for _, trigger := range []ApplyTrigger{flux, argo} {
 		assert.Nil(t, trigger.Operation())
@@ -410,10 +406,8 @@ func TestApplyTrigger_StatusAccessors(t *testing.T) {
 
 	assert.Equal(t, ApplyTriggerKindFlux, flux.TriggerKind())
 	assert.Equal(t, ApplierKindKustomization, flux.ApplierKind())
-	assert.Equal(t, time.Minute, flux.EffectiveQuietPeriod())
 	assert.Equal(t, ApplyTriggerKindArgoCD, argo.TriggerKind())
 	assert.Equal(t, ApplierKindApplication, argo.ApplierKind())
-	assert.Equal(t, DefaultApplierQuietPeriod, argo.EffectiveQuietPeriod())
 	assert.Equal(t, DefaultClusterProviderName, argo.ClusterProvider(),
 		"an omitted clusterProviderRef is the default provider, as for a GitTarget")
 	argo.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: "hub"}

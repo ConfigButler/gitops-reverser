@@ -5,6 +5,7 @@ package applier
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -139,9 +140,8 @@ func NewArgoCD(client dynamic.Interface) *ArgoCD {
 // it returns an Unconfirmed operation rather than an error, which Progress follows by its token,
 // so the apply window stays open until it is known to have run or never to run (settleUnseen).
 //
-// An empty commit (the remote does not carry the branch) has nothing to pin, and asks nothing
-// (OutcomeCurrent): Argo CD reports the missing branch itself on its next refresh, and the branch
-// coming back is an observation that leaves a new request pending.
+// The worker never asks for an empty commit: when the remote does not carry the branch there is
+// nothing to pin, and Argo CD reports the missing branch itself on its next refresh.
 func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Started, error) {
 	var waitUntil time.Time
 	var abandonedState string
@@ -152,7 +152,7 @@ func (a *ArgoCD) Request(ctx context.Context, ref types.NamespacedName, ask Ask)
 			return Started{}, err
 		}
 		if ask.Commit == "" {
-			return Started{Outcome: OutcomeCurrent}, nil
+			return Started{}, permanentError{errors.New("no commit to apply: the remote does not carry the branch")}
 		}
 		if mustWait(app, abandonedState) {
 			if abandonedState, err = a.awaitOperation(ctx, ref, app, &waitUntil); err != nil {

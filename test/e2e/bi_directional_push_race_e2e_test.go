@@ -87,7 +87,7 @@ var _ = Describe("Bi Directional push race (Flux)", Label("bi-directional", "flu
 			pipeline.start()
 
 			applyFluxApplier(testNs, repo, fluxName, fluxName+"-git", "main", "./"+pipeline.gitPath)
-			createFluxTrigger(testNs, fluxName, fluxName, "")
+			createFluxTrigger(testNs, fluxName, fluxName)
 			nameApplyTrigger(testNs, pipeline.targetName, "FluxTrigger", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
 				"ApplyTriggerReady", "True", "Succeeded", "")

@@ -8,13 +8,13 @@ import "go.opentelemetry.io/otel/metric"
 // object, labelled by {applier_kind, reason, outcome}.
 //
 // applier_kind names the applier: "kustomization" (a Flux Kustomization) or "application" (an Argo
-// CD Application). reason is the attempt's ApplyReason (ForeignCommit, Refusal, Repair, CatchUp;
-// never CatchUp for an application). outcome is a frozen enum:
+// CD Application). reason is the attempt's ApplyReason (ForeignCommit, Refusal, Repair, CatchUp),
+// for either kind. outcome is a frozen enum:
 //
 //	sent     — the applier was asked and the ask landed: a Kustomization was resumed with a
-//	           requestedAt token or a sync operation set. Or it needed no request: a ForeignCommit or
-//	           a CatchUp found the Kustomization suspended with the commit applied already, or the
-//	           remote no longer carries the branch, so there is no commit to apply.
+//	           requestedAt token or a sync operation set. What needs no apply (a converge of the commit
+//	           the applier last applied, an empty tip) the branch worker never sends, so it is not
+//	           counted.
 //	failed   — the attempt could not ask, including an applier that applies another repository or
 //	           branch. The branch worker keeps the reason pending and decides a retry after a flush,
 //	           with a backoff of its own, so a failure that persists keeps counting. An

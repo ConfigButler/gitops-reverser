@@ -44,6 +44,7 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 		fluxTrigger("alpha", recording(recorded, false)))
 	writer := &recordingStatusWriter{}
 	loop.w.triggerStatus = writer
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch}) // the tip it applies
 
 	loop.followRecordedOperations(time.Now())
 
@@ -87,6 +88,7 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 func TestRecovery_APendingRepairIsRestored(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true),
 		fluxTrigger("alpha", recording(recordedOperation(configv1alpha3.ApplyOperationSucceeded), true)))
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch}) // the tip it applied
 	loop.followRecordedOperations(time.Now())
 	assert.True(t, onlyApplier(t, loop).repair)
 	loop.serviceAppliers()

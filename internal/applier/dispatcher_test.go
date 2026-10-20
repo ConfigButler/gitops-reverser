@@ -576,10 +576,11 @@ func TestDispatcher_AStaleDecisionAsksNothing(t *testing.T) {
 	assert.Equal(t, int64(1), f.count(v1alpha3.ApplyReasonRefusal, outcomeStale))
 }
 
-// TestDispatcher_CatchUpAlreadyCurrent: a CatchUp the applier already satisfies (suspended, with
-// the commit in its artifact and applied) counts as sent and records nothing, since nothing was
-// asked of it.
-func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {
+// TestDispatcher_ACatchUpOfTheAppliedCommitIsAsked: the branch worker decides what needs no apply
+// (it sends no converge of the commit an applier last applied), so a CatchUp the dispatcher carries
+// is asked even of a Kustomization suspended with the commit applied: an adopt re-applies it on
+// purpose, which is what stamps Flux's owner labels on an object the API created.
+func TestDispatcher_ACatchUpOfTheAppliedCommitIsAsked(t *testing.T) {
 	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
 	_ = unstructured.SetNestedField(ks.Object, true, "spec", "suspend")
 	_ = unstructured.SetNestedField(ks.Object, "main@sha1:"+testCommit, "status", "lastAppliedRevision")
@@ -590,9 +591,8 @@ func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {
 
 	res := f.attempt(request(checkout, v1alpha3.ApplyReasonCatchUp, "a"))
 
-	assert.Equal(t, git.ApplyCurrent, res.Outcome)
-	assert.Empty(t, f.patches())
-	assert.Empty(t, f.events())
+	assert.Equal(t, git.ApplyRequested, res.Outcome)
+	assert.NotEmpty(t, f.patches(), "the Kustomization was resumed")
 }
 
 // TestDispatcher_RequestApplyReportsFromItsOwnGoroutine: RequestApply returns at once and the

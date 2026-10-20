@@ -140,9 +140,6 @@ func selfSubjectAccessReviewGVR() schema.GroupVersionResource {
 // Outcome is what one request did.
 type Outcome string
 
-// OutcomeCurrent asked for nothing: the applier needed no request (see each client's Request).
-const OutcomeCurrent Outcome = "Current"
-
 // Configured and ApplyTriggerReady reasons (docs/configuration.md, "Who applies this folder").
 // Succeeded and Failed are the generic reasons, aliased from Flux's meta package as the conditions
 // guide asks.
@@ -198,7 +195,7 @@ type Source struct {
 }
 
 // Started is the operation one Request started, may have started (Unconfirmed), or read back from
-// the trigger's record (Recovered), for Progress to follow; with Outcome Current, nothing was asked.
+// the trigger's record (Recovered), for Progress to follow.
 type Started struct {
 	// Outcome is what was asked, if anything.
 	Outcome Outcome

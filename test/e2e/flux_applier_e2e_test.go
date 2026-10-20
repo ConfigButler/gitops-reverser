@@ -88,7 +88,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 
 		By("creating a trigger no GitTarget names: it is Ready, and does nothing")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		createFluxTrigger(testNs, fluxName, fluxName, "")
+		createFluxTrigger(testNs, fluxName, fluxName)
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "NotReferenced", "")
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "False", "NotReferenced", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeFalse(), "Flux applies it on its own")

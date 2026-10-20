@@ -107,6 +107,46 @@ func (l *branchWorkerEventLoop) ownedElsewhere(name, namespace, object string, o
 	return true
 }
 
+// noteCreated leaves an adopt pending for the applier of the folder an API create landed in (S2 in
+// docs/design/applier-echoes.md). An applier prunes only what it applied, and an object the API
+// created carries neither Flux's owner labels nor Argo CD's tracking annotation, even when its
+// content equals what Git holds, so a later Git-side delete would leave it on the cluster. A create
+// whose newest managers are an applier's is that applier's own apply, and adopts nothing; one another
+// applier owns never reaches here (ownedElsewhere).
+func (l *branchWorkerEventLoop) noteCreated(event Event) {
+	if writtenByAnApplier(event.LastFieldManagers) {
+		return
+	}
+	l.adopt(event.GitTargetName, event.GitTargetNamespace, event.Identifier.String())
+}
+
+// adopt leaves an adopt pending for the applier of a GitTarget's folder, when its trigger names one.
+func (l *branchWorkerEventLoop) adopt(name, namespace, object string) {
+	applier := l.applierOf(name, namespace)
+	if applier == nil {
+		return
+	}
+	if !applier.adopt {
+		l.w.Log.Info("An object the API created is in a folder an applier applies; it is adopted at the "+
+			"next apply, so a later Git-side delete prunes it", "gitTarget", namespace+"/"+name,
+			"object", object, "applier", applier.ref.String())
+	}
+	applier.adopt = true
+}
+
+// writtenByAnApplier reports whether every one of managers is a field manager of an applier kind.
+func writtenByAnApplier(managers []string) bool {
+	if len(managers) == 0 {
+		return false
+	}
+	for _, kind := range []string{v1alpha3.ApplierKindKustomization, v1alpha3.ApplierKindApplication} {
+		if _, alone := (ApplierRef{Kind: kind}).writtenBy(managers); alone {
+			return true
+		}
+	}
+	return false
+}
+
 // withoutOwnedElsewhere is a resync's snapshot without the objects another applier owns, and those
 // objects by objectKey, for the sweep to leave alone.
 func (l *branchWorkerEventLoop) withoutOwnedElsewhere(

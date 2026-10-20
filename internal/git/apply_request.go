@@ -36,11 +36,6 @@ func (a ApplierRef) String() string {
 	return a.Cluster + "/" + a.Kind + "/" + a.Namespace + "/" + a.Name
 }
 
-// CatchesUp reports whether the applier is sent a CatchUp after GitOps Reverser's own pushes. An
-// Argo CD Application is not: with automated sync off it applies nothing on its own, so it holds no
-// stale state for a catch-up to correct.
-func (a ApplierRef) CatchesUp() bool { return a.Kind != v1alpha3.ApplierKindApplication }
-
 // TriggerRef is one apply trigger: its kind (v1alpha3.ApplyTriggerKind*), namespace and name.
 type TriggerRef struct {
 	Kind      string
@@ -168,9 +163,6 @@ const (
 	// ApplyFailed is an operation that completed without applying the commit: the applier reported
 	// a failure, or the operation is gone. It may have applied part of it.
 	ApplyFailed ApplyOutcome = "Failed"
-	// ApplyCurrent asked nothing: a CatchUp or ForeignCommit found the applier already at the
-	// commit (a suspended Kustomization that applied it), or the remote does not carry the branch.
-	ApplyCurrent ApplyOutcome = "Current"
 	// ApplyRequestFailed could not ask; a later attempt may.
 	ApplyRequestFailed ApplyOutcome = "RequestFailed"
 	// ApplyRejected could not ask, and asking again will not help until the applier's
@@ -191,7 +183,7 @@ func (o ApplyOutcome) Ends() bool {
 	switch o {
 	case ApplyRequested, ApplyRunning, ApplySettling, ApplyUnresolved:
 		return false
-	case ApplySucceeded, ApplyFailed, ApplyCurrent, ApplyRequestFailed, ApplyRejected, ApplyDropped, ApplyStale:
+	case ApplySucceeded, ApplyFailed, ApplyRequestFailed, ApplyRejected, ApplyDropped, ApplyStale:
 	}
 	return true
 }

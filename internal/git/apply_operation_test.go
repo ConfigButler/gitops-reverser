@@ -74,7 +74,6 @@ func TestApplier_ARepairWaitsForTheAttemptOut(t *testing.T) {
 	assert.Empty(t, requester.taken(), "not while a save holds the flush")
 
 	releaseApplies(loop)
-	loop.quietSince = time.Time{}
 	loop.serviceAppliers()
 	repair := requester.taken()
 	require.Len(t, repair, 1, "the moment a flush can be made")
@@ -304,7 +303,7 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 // Record, the trigger is told nothing about it.
 func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T) {
 	for _, outcome := range []ApplyOutcome{
-		ApplyRejected, ApplyDropped, ApplyStale, ApplyRequestFailed, ApplyCurrent,
+		ApplyRejected, ApplyDropped, ApplyStale, ApplyRequestFailed,
 	} {
 		t.Run(string(outcome), func(t *testing.T) {
 			loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))

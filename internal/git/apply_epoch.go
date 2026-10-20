@@ -72,8 +72,9 @@ func (w *BranchWorker) ApplyState() ApplyState {
 func (w *BranchWorker) raiseApplyEpoch() { w.applyEpoch.Add(1) }
 
 // gitAhead reports whether Git may hold a commit the cluster does not run yet: an applier on the
-// branch has a reason pending that applies the tip, or an attempt out. A branch with no applier is
-// never ahead.
+// branch has a reason pending that applies the tip, or an attempt out. A converge counts once the
+// applier may be asked for it; an adopt does not count, because it applies objects the cluster
+// already runs. A branch with no applier is never ahead.
 func (l *branchWorkerEventLoop) gitAhead() bool {
 	if len(l.appliers) == 0 {
 		return false
@@ -87,7 +88,7 @@ func (l *branchWorkerEventLoop) appliersAhead() bool {
 		return true
 	}
 	for _, state := range l.appliers {
-		if state.inflight != nil || state.foreign || state.repair {
+		if state.inflight != nil || state.foreign || state.repair || (state.converge && l.pastBarrier(state)) {
 			return true
 		}
 	}

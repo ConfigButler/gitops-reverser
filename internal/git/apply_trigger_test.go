@@ -53,11 +53,9 @@ func TestApplyDebt_ClassifiesEachMove(t *testing.T) {
 		name        string
 		next        RemoteObservation
 		wantForeign bool
-		wantCatchUp bool
 	}{
 		{name: "an unchanged tip leaves nothing pending", next: RemoteObservation{Commit: "aaa", By: ObservedByFetch}},
-		{name: "our own push leaves a catch-up pending", next: RemoteObservation{Commit: "bbb", By: ObservedByPush},
-			wantCatchUp: true},
+		{name: "our own push leaves nothing pending", next: RemoteObservation{Commit: "bbb", By: ObservedByPush}},
 		{name: "a fetch that found the branch moved leaves a ForeignCommit pending",
 			next: RemoteObservation{Commit: "bbb", By: ObservedByFetch}, wantForeign: true},
 		{name: "a deleted branch is a move like any other",
@@ -70,10 +68,10 @@ func TestApplyDebt_ClassifiesEachMove(t *testing.T) {
 			inbox.take()
 
 			inbox.observe(tc.next)
-			tip, foreign, catchUp := inbox.take()
+			tip, foreign, converge := inbox.take()
 			assert.Equal(t, tc.next.Commit, tip)
 			assert.Equal(t, tc.wantForeign, foreign)
-			assert.Equal(t, tc.wantCatchUp, catchUp)
+			assert.False(t, converge, "only the first observation converges")
 		})
 	}
 }
@@ -82,10 +80,10 @@ func TestApplyDebt_RestorePutsBackWhatWasTaken(t *testing.T) {
 	var inbox applyInbox
 	inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
 	inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch})
-	_, foreign, catchUp := inbox.take()
+	_, foreign, converge := inbox.take()
 	require.True(t, foreign)
 
-	inbox.restore(foreign, catchUp)
+	inbox.restore(foreign, converge)
 	assert.True(t, inbox.foreignPending())
 }
 
@@ -218,62 +216,12 @@ func TestServiceAppliers_NothingIsSentWhileNoFlushCanBeMade(t *testing.T) {
 	}
 }
 
-func TestServiceAppliers_CatchUpWaitsForTheQuietPeriod(t *testing.T) {
-	loop, requester := applyTriggerLoop(t,
-		applierTestTarget("soon", true), fluxTrigger("soon", quietFor(time.Minute)),
-		applierTestTarget("late", true), fluxTrigger("late", quietFor(time.Hour)),
-	)
-	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
-
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the branch has only just become quiet")
-	require.NotNil(t, loop.applierTimer, "the earliest catch-up is armed")
-	require.Len(t, loop.appliers, 2)
-
-	// Two minutes of quiet: the one-minute applier is due, the one-hour one is not.
-	loop.quietSince = time.Now().Add(-2 * time.Minute)
-	loop.serviceAppliers()
-	requests := requester.taken()
-	require.Len(t, requests, 1)
-	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
-	assert.Equal(t, "aaa", requests[0].Commit)
-	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference("soon", "team-a")},
-		targetRefs(requests[0]))
-	assert.True(t, loop.appliers[applierRef("late")].catchUp, "the one-hour applier still waits")
-	assert.NotNil(t, loop.applierTimer)
-}
-
 // argoApplier makes a GitTarget name the ArgoCDTrigger of its own name, which holds the Application
 // argocd/<name>.
 func argoApplier(g *configv1alpha3.GitTarget) {
 	g.Spec.ApplyTriggerRef = &configv1alpha3.ApplyTriggerReference{
 		Kind: configv1alpha3.ApplyTriggerKindArgoCD, Name: g.Name,
 	}
-}
-
-// TestServiceAppliers_AnApplicationIsNeverSentACatchUp: with automated sync off Argo CD applies
-// nothing on its own, so GitOps Reverser's own pushes (and the baseline after a start) ask an
-// Application for nothing, however long the branch stays quiet; a Kustomization beside it on the same
-// branch is still caught up.
-func TestServiceAppliers_AnApplicationIsNeverSentACatchUp(t *testing.T) {
-	loop, requester := applyTriggerLoop(t,
-		applierTestTarget("argo", true, argoApplier),
-		applierTestTarget("flux", true),
-	)
-	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // the baseline
-	loop.serviceAppliers()
-	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
-	loop.serviceAppliers()
-	loop.quietSince = time.Now().Add(-time.Hour)
-	loop.serviceAppliers()
-
-	requests := requester.taken()
-	require.Len(t, requests, 1, "only the Kustomization catches up")
-	assert.Equal(t, applierRef("flux"), requests[0].Applier)
-	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
-	argo := argoApplierRef("argo")
-	require.Contains(t, loop.appliers, argo)
-	assert.False(t, loop.appliers[argo].catchUp)
 }
 
 // TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal: the two reasons that are
@@ -306,81 +254,6 @@ func TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal(t *test
 	})
 }
 
-func TestServiceAppliers_AWriteRestartsTheQuietPeriod(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
-	loop.serviceAppliers()
-	loop.quietSince = time.Now().Add(-time.Hour)
-
-	loop.openWindow = &openWindow{}
-	loop.serviceAppliers()
-	assert.True(t, loop.quietSince.IsZero())
-	assert.Nil(t, loop.applierTimer)
-
-	loop.openWindow = nil
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the quiet period restarted when the write arrived")
-	assert.WithinDuration(t, time.Now(), loop.quietSince, time.Second)
-}
-
-// TestServiceAppliers_AWriteDecidedAndPushedInOneWakeRestartsTheQuietPeriod is the regression the
-// bi-directional e2e found. A window with a zero idle timeout opens, closes, commits and pushes in a
-// single wake that ends quiet, so a quiet period read only from how wakes END was inherited from
-// the quiet wakes before it: the catch-up went out at once, Flux applied that commit over the next
-// API edit, and the revert was mirrored as Flux's commit.
-func TestServiceAppliers_AWriteDecidedAndPushedInOneWakeRestartsTheQuietPeriod(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	loop.serviceAppliers()
-	loop.quietSince = time.Now().Add(-time.Hour)
-
-	loop.decide(PendingWrite{})
-	loop.pendingWrites, loop.pendingWritesBytes = nil, 0 // the same wake pushed it
-	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
-	loop.serviceAppliers()
-
-	assert.Empty(t, requester.taken(), "the catch-up waits a quiet period from the push, not from before it")
-	assert.WithinDuration(t, time.Now(), loop.quietSince, time.Second)
-	assert.NotNil(t, loop.applierTimer)
-}
-
-// TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt is the other half of the race the
-// bi-directional e2e spec covers with real timers: two API edits a few seconds apart, each decided
-// and pushed in one wake. The catch-up pending for the first push must not go out between them, and
-// when it goes out it names the second push.
-func TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt(t *testing.T) {
-	loop, requester := applyTriggerLoop(
-		t,
-		applierTestTarget("alpha", true),
-		fluxTrigger("alpha", quietFor(time.Minute)),
-	)
-	loop.w.inbox.observe(RemoteObservation{Commit: "base", By: ObservedByFetch})
-	loop.w.inbox.take()
-
-	pushInOneWake := func(commit string) {
-		loop.decide(PendingWrite{})
-		loop.pendingWrites, loop.pendingWritesBytes = nil, 0
-		loop.w.inbox.observe(RemoteObservation{Commit: commit, By: ObservedByPush})
-		loop.serviceAppliers()
-	}
-
-	pushInOneWake("first")
-	loop.quietSince = time.Now().Add(-50 * time.Second) // ten seconds short of the quiet period
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the first push's catch-up is not due yet")
-
-	pushInOneWake("second")
-	loop.quietSince = time.Now().Add(-50 * time.Second) // past the first push's period, not the second's
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the second write restarted the quiet period")
-
-	loop.quietSince = time.Now().Add(-time.Minute)
-	loop.serviceAppliers()
-	requests := requester.taken()
-	require.Len(t, requests, 1)
-	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
-	assert.Equal(t, "second", requests[0].Commit, "the catch-up names the later push, never the earlier")
-}
-
 func TestServiceAppliers_AForeignCommitAnswersEverythingElsePending(t *testing.T) {
 	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
 	loop.addUnsentRefusal(refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments"),
@@ -390,10 +263,10 @@ func TestServiceAppliers_AForeignCommitAnswersEverythingElsePending(t *testing.T
 	loop.serviceAppliers()
 
 	requests := requester.taken()
-	require.Len(t, requests, 1, "one apply of the tip covers the refusal and the catch-up")
+	require.Len(t, requests, 1, "one apply of the tip covers the refusal and the converge")
 	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requests[0].Reason)
 	assert.Empty(t, loop.unsentRefusals)
-	assert.False(t, loop.appliers[applierRef("alpha")].catchUp)
+	assert.False(t, loop.appliers[applierRef("alpha")].converge)
 }
 
 func TestServiceAppliers_NoApplierOnTheBranchClearsThePendingReasons(t *testing.T) {
@@ -413,8 +286,8 @@ func TestServiceAppliers_NoApplierOnTheBranchClearsThePendingReasons(t *testing.
 // observed while no GitTarget names an applier, so the ForeignCommit is taken and dropped; then a
 // GitTarget names a trigger, whose Kustomization was suspended before its GitRepository fetched the
 // merge. The new applier had nothing pending, so the merge was never deployed until some later push.
-// A newly named applier now starts where a first observation does, with a CatchUp pending (for
-// Flux free when the commit is already applied); an Application, which gets no CatchUp, waits for the next push.
+// A GitTarget that names an applier for the first time leaves a converge pending, for a Kustomization
+// and an Application alike (S2).
 func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
 	loop, requester := applyTriggerLoop(t,
 		applierTestTarget("flux", false), fluxTrigger("flux"),
@@ -442,16 +315,15 @@ func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
 		},
 	}))
 	loop.serviceAppliers()
-	loop.quietSince = time.Now().Add(-time.Hour)
-	loop.serviceAppliers()
 
 	requests := requester.taken()
-	require.Len(t, requests, 1, "one apply, for the newly named Kustomization")
-	assert.Equal(t, applierRef("flux"), requests[0].Applier)
-	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
-	assert.Equal(t, "bbb", requests[0].Commit, "the merge it never fetched")
-	require.Contains(t, loop.appliers, argoApplierRef("argo"), "the Application is listed")
-	assert.False(t, loop.appliers[argoApplierRef("argo")].catchUp, "and waits for the next push")
+	require.Len(t, requests, 2, "one apply for each newly named applier")
+	for _, req := range requests {
+		assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, req.Reason)
+		assert.Equal(t, "bbb", req.Commit, "the merge it never fetched")
+	}
+	assert.ElementsMatch(t, []ApplierRef{applierRef("flux"), argoApplierRef("argo")},
+		[]ApplierRef{requests[0].Applier, requests[1].Applier})
 }
 
 func TestServiceAppliers_NoRequesterSwitchesTheTriggerOff(t *testing.T) {
@@ -582,9 +454,7 @@ func TestApplierOf_KeysTheApplierByItsTriggerClusterAndKind(t *testing.T) {
 	argo := testTrigger("team-a", &configv1alpha3.ApplyTriggerReference{
 		Kind: configv1alpha3.ApplyTriggerKindArgoCD, Name: "apps",
 	}).(configv1alpha3.ApplyTrigger)
-	app := ApplierOf(argo)
-	assert.Equal(t, argoApplierRef("apps"), app)
-	assert.False(t, app.CatchesUp(), "an Application is never asked to catch up")
+	assert.Equal(t, argoApplierRef("apps"), ApplierOf(argo))
 }
 
 // TestResolveApplyTrigger_NamesNothingItCannotFind: a GitTarget that names no trigger, a kind this

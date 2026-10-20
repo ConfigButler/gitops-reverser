@@ -429,7 +429,7 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 	// tip, without anybody reconciling it by hand.
 	It("asks Flux to apply only on a quiet branch, so the later of two quick API edits survives", func() {
 		By("naming a trigger that holds the live Kustomization")
-		createFluxTrigger(testNs, run.fluxLiveName, run.fluxLiveName, "5s")
+		createFluxTrigger(testNs, run.fluxLiveName, run.fluxLiveName)
 		nameApplyTrigger(testNs, run.gitTargetName, "FluxTrigger", run.fluxLiveName, "")
 		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 		run.waitForGitTargetReady()

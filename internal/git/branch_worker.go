@@ -1211,12 +1211,10 @@ type branchWorkerEventLoop struct {
 	unsentRefusals map[refusalKey]unsentRefusal
 
 	// appliers holds the reasons pending for each applier named on this branch and how its attempts
-	// are going, and nextApplyID numbers the attempts. quietSince is when the branch last became quiet (zero
-	// while it is busy), and applierTimer fires when the earliest waiting attempt comes due. See
-	// apply_trigger.go.
+	// are going, and nextApplyID numbers the attempts. applierTimer fires when the earliest waiting
+	// attempt comes due. See apply_trigger.go.
 	appliers     map[ApplierRef]*applierState
 	nextApplyID  uint64
-	quietSince   time.Time
 	applierTimer *time.Timer
 	// pushHinted records that a Git host reported a push while the branch was busy. The wake closes
 	// the open window so its publication finds the move (closeWindowForPushHint).
@@ -1319,16 +1317,16 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 //     passed, and re-arm the deadline timer.
 //   - Close the open window early if a Git host reported a push (closeWindowForPushHint).
 //   - Drive the pending writes: commit what the wake decided, schedule its push (advance).
-//   - Send the apply requests that are due, after a flush (serviceAppliers).
-//   - Latch the GitTargets whose initial snapshots are now published, ask again for the snapshots
-//     discarded as stale once Git is no longer ahead, and publish the ApplyState (apply_epoch.go).
+//   - Send the apply requests that are due, after a flush, once the GitTargets they cover have
+//     their initial snapshots published (serviceAppliers).
+//   - Ask again for the snapshots discarded as stale once Git is no longer ahead, and publish the
+//     ApplyState (apply_epoch.go).
 //   - Publish the result, moving the handled item's charge to what the loop holds.
 func (l *branchWorkerEventLoop) endWake(released int64) {
 	l.serviceCommitRequests()
 	l.closeWindowForPushHint()
 	l.advance()
 	l.serviceAppliers()
-	l.refreshInitialSnapshots()
 	l.rerequestSnapshots()
 	l.publishApplyState()
 	l.publishLoopState(released)
@@ -1491,7 +1489,13 @@ func (l *branchWorkerEventLoop) mirrors(event Event) bool {
 		event.AppliedBy) {
 		return false
 	}
-	return !l.withholdLateApply(event)
+	if l.withholdLateApply(event) {
+		return false
+	}
+	if event.Operation == string(itypes.OperationCreate) {
+		l.noteCreated(event)
+	}
+	return true
 }
 
 // closeOrArmWindow finalizes the open window when its first deadline has passed, and otherwise
