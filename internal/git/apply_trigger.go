@@ -350,9 +350,12 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
-	closing := earliest(l.reportApplyWindows(now), l.snapshotHoldDeadline())
+	work := l.takeReasons()
+	// A listing that failed is retried on the applier timer (listRetryAt), which every arming below
+	// keeps.
+	closing := earliest(earliest(l.reportApplyWindows(now), l.snapshotHoldDeadline()), l.listRetryAt)
 
-	if !l.takeReasons() {
+	if !work {
 		l.endFlush()
 		l.armApplierTimer(now, closing)
 		return
@@ -386,20 +389,23 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 }
 
 // takeReasons moves the reasons the inbox holds onto the appliers listed now, and reports whether
-// any applier has work. A listing that fails leaves them in the inbox and retries.
+// any applier has work. A listing that fails leaves them in the inbox, and sets listRetryAt, when
+// the applier timer looks again.
 func (l *branchWorkerEventLoop) takeReasons() bool {
 	w := l.w
 	_, foreign, converge := w.inbox.take()
 	if !foreign && !converge && len(l.unsentRefusals) == 0 && !l.appliersHaveWork() {
+		l.listRetryAt = time.Time{}
 		return false
 	}
 	targets, err := w.appliersOnBranch(w.ctx)
 	if err != nil {
 		w.inbox.restore(foreign, converge)
 		w.Log.Error(err, "Cannot list the appliers on this branch; retrying", "branch", w.Branch)
-		l.resetApplierTimer(applierRetryInterval)
+		l.listRetryAt = time.Now().Add(applierRetryInterval)
 		return false
 	}
+	l.listRetryAt = time.Time{}
 	l.syncAppliers(targets)
 	for _, state := range l.appliers {
 		state.foreign = state.foreign || foreign

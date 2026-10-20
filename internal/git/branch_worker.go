@@ -1213,6 +1213,9 @@ type branchWorkerEventLoop struct {
 	appliers     map[ApplierRef]*applierState
 	nextApplyID  uint64
 	applierTimer *time.Timer
+	// listRetryAt is when a failed listing of the branch's appliers is tried again, zero when the
+	// last one succeeded (takeReasons).
+	listRetryAt time.Time
 	// pushHinted records that a Git host reported a push while the branch was busy. The wake closes
 	// the open window so its publication finds the move (closeWindowForPushHint).
 	pushHinted bool

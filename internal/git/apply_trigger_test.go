@@ -500,3 +500,28 @@ func TestResolveApplyTrigger_NamesNothingItCannotFind(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "read FluxTrigger team-a/apps")
 }
+
+// TestServiceAppliers_AFailedListingKeepsItsRetry: a listing of the branch's appliers that fails
+// leaves the reasons pending and is tried again on the applier timer. The wake that found the failure
+// armed that timer and then disarmed it, with nothing else to wait for, so the apply waited on some
+// unrelated activity to wake the loop.
+func TestServiceAppliers_AFailedListingKeepsItsRetry(t *testing.T) {
+	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	reader := loop.w.Client
+	loop.w.Client = interceptor.NewClient(reader.(client.WithWatch), interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errors.New("the API server is away")
+		},
+	})
+	observeForeignCommit(loop.w)
+
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken())
+	require.NotNil(t, loop.applierTimer, "the listing is tried again")
+	assert.WithinDuration(t, time.Now().Add(applierRetryInterval), loop.listRetryAt, time.Second)
+
+	loop.w.Client = reader
+	loop.serviceAppliers()
+	assert.Len(t, requester.taken(), 1, "the retry sends what was pending")
+	assert.True(t, loop.listRetryAt.IsZero())
+}
