@@ -387,3 +387,45 @@ func TestApplierEchoes_ASuspendedResyncIsNotRetained(t *testing.T) {
 	assert.Empty(t, f.loop.pendingWrites, "nothing to publish")
 	assert.True(t, f.loop.lastPushAt.IsZero(), "so nothing was pushed")
 }
+
+// TestApplierEchoes_AnAppliedFolderIsCreatedByItsResync: a folder an applier applies must exist
+// before the applier is asked to apply it, or Argo CD retries a sync of a missing path for minutes
+// and Flux fails it. A resync of a GitTarget naming a trigger creates the folder with its bootstrap
+// files, with no object to write; once it exists, an empty resync commits nothing. A GitTarget no
+// applier applies keeps the old rule: an empty resync commits nothing.
+func TestApplierEchoes_AnAppliedFolderIsCreatedByItsResync(t *testing.T) {
+	// Initial: the seed below is a foreign commit the resync's own fetch finds, which F3 discards a
+	// later snapshot for; the first one of a collection is the baseline, and is used.
+	emptyResync := func(f *echoFixture) {
+		t.Helper()
+		req := &ResyncRequest{GitTargetName: echoTarget, GitTargetNamespace: "default", Initial: true,
+			Result: make(chan ResyncResult, 1)}
+		f.loop.applyResync(req)
+		f.loop.advance()
+		require.NoError(t, (<-req.Result).Err)
+	}
+	seed := func(f *echoFixture) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(f.clone, "NOTES.md"), []byte("elsewhere\n"), 0o600))
+		gitIn(t, f.clone, "add", "NOTES.md")
+		gitIn(t, f.clone, "commit", "--quiet", "-m", "outside: a file outside the folder")
+		gitIn(t, f.clone, "push", "--quiet", "origin", "HEAD:main")
+	}
+	main := func(f *echoFixture) string { return gitIn(t, f.repoDir, "rev-parse", "main") }
+
+	applied := newEchoFixture(t, "echo-bootstrap-applied", configv1alpha3.PruneOnEvent, nil)
+	seed(applied)
+	applied.withTrigger()
+	emptyResync(applied)
+	assert.NotEmpty(t, applied.onMain(echoTarget+"/README.md"), "the folder exists, with its bootstrap files")
+	created := main(applied)
+	emptyResync(applied)
+	assert.Equal(t, created, main(applied), "a folder that exists needs no commit")
+
+	plain := newEchoFixture(t, "echo-bootstrap-plain", configv1alpha3.PruneOnEvent, nil)
+	seed(plain)
+	before := main(plain)
+	emptyResync(plain)
+	assert.Equal(t, before, main(plain), "no applier applies it: an empty resync commits nothing")
+	assert.Empty(t, plain.onMain(echoTarget+"/README.md"))
+}

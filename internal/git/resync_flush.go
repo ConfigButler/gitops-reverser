@@ -10,6 +10,8 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -169,11 +171,8 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		return 0, nil
 	}
 
-	// Stage the path's bootstrap template (its directory and any .sops.yaml) before
-	// applying, exactly as the per-event path does via ensureBootstrapTemplateInPath.
-	// Without it a first resync into a fresh subtree has no directory for SOPS to chdir
-	// into when it encrypts a Secret.
-	if err := ensureBootstrapTemplateInPath(repo, base, target.BootstrapOptions); err != nil {
+	createsFolder, err := stageResyncFolder(repo, base, target)
+	if err != nil {
 		return 0, err
 	}
 
@@ -189,14 +188,39 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		*pendingWrite.Committed = false
 	}
 
-	stats, anyChanges, err := w.decideOrReplayResync(ctx, worktree, base, target, pendingWrite)
+	stats, anyChanges, err := w.decideOrReplayResync(ctx, worktree, base, target, pendingWrite, createsFolder)
 	if err != nil {
 		return 0, err
 	}
-	if !anyChanges {
+	if !anyChanges && (!createsFolder || !pendingWrite.resyncActions.bootstrap) {
 		return 0, nil
 	}
+	if err := commitResync(ctx, worktree, target, pendingWrite, stats); err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
 
+// stageResyncFolder stages the path's bootstrap template (its directory and any .sops.yaml) before
+// a resync applies, exactly as the per-event path does via ensureBootstrapTemplateInPath. Without it
+// a first resync into a fresh subtree has no directory for SOPS to chdir into when it encrypts a
+// Secret. It reports whether that creates a folder an applier applies: one must exist before the
+// applier is asked to apply it, since Argo CD retries a sync of a missing path for minutes and Flux
+// fails it, so the resync then commits it even with no object (resyncActions.bootstrap).
+func stageResyncFolder(repo *gogit.Repository, base string, target ResolvedTargetMetadata) (bool, error) {
+	// Read before the bootstrap creates the directory.
+	createsFolder := target.Applied && base != "" && !headHasDir(repo, base)
+	if err := ensureBootstrapTemplateInPath(repo, base, target.BootstrapOptions); err != nil {
+		return false, err
+	}
+	return createsFolder, nil
+}
+
+// commitResync commits what a resync changed in the worktree.
+func commitResync(
+	ctx context.Context, worktree *gogit.Worktree, target ResolvedTargetMetadata, pendingWrite *PendingWrite,
+	stats ResyncStats,
+) error {
 	// Render the provider's reconcile commit template (e.g. a custom reconcile message),
 	// counting the resources the resync changed and naming the scoped type + pinned
 	// revision — the resync carries no events, so it cannot reuse the event-count path.
@@ -206,16 +230,16 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	rendered, err := renderReconcileCommitMessage(
 		changed, target.Name, pendingWrite.Scope, pendingWrite.ResourceVersion, pendingWrite.CommitConfig)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	committed := *pendingWrite
 	committed.CommitMessage = rendered
 	message, options, _, err := committed.commitMetadata()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if _, err := worktree.Commit(message, options); err != nil {
-		return 0, fmt.Errorf("failed to create resync commit: %w", err)
+		return fmt.Errorf("failed to create resync commit: %w", err)
 	}
 	if pendingWrite.Committed != nil {
 		*pendingWrite.Committed = true
@@ -224,7 +248,31 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		"created", stats.Created, "updated", stats.Updated,
 		"deleted", stats.Deleted, "skipped", stats.Skipped,
 		"placementSkipped", stats.PlacementSkipped, "resourceVersion", pendingWrite.ResourceVersion)
-	return 1, nil
+	return nil
+}
+
+// headHasDir reports whether the commit HEAD names, local commits included, holds the directory dir:
+// a file under it. The directory on disk is no answer, since a reset can leave an empty one behind,
+// and Git holds none. An unborn HEAD holds nothing. A HEAD that cannot be read says it holds it: the
+// bootstrap commit is then left out, rather than risked as an empty one.
+func headHasDir(repo *gogit.Repository, dir string) bool {
+	head, err := repo.Head()
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return true
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return true
+	}
+	_, err = tree.Tree(dir)
+	return !errors.Is(err, object.ErrDirectoryNotFound)
 }
 
 // decideOrReplayResync folds a resync into the worktree: the first time, it plans the snapshot and
@@ -236,6 +284,7 @@ func (w *BranchWorker) decideOrReplayResync(
 	base string,
 	target ResolvedTargetMetadata,
 	pendingWrite *PendingWrite,
+	createsFolder bool,
 ) (ResyncStats, bool, error) {
 	if pendingWrite.actionsDecided {
 		return w.applyResyncActionsToWorktree(ctx, worktree, base, target, pendingWrite.resyncActions)
@@ -246,6 +295,10 @@ func (w *BranchWorker) decideOrReplayResync(
 	if err != nil {
 		return ResyncStats{}, false, err
 	}
+	if actions == nil {
+		actions = &resyncActions{}
+	}
+	actions.bootstrap = createsFolder
 	pendingWrite.actionsDecided, pendingWrite.resyncActions = true, actions
 	if pendingWrite.ResyncStats != nil {
 		*pendingWrite.ResyncStats = stats
@@ -528,6 +581,9 @@ func (wb *writeBatch) applyResyncPlan(
 type resyncActions struct {
 	upserts []manifestanalyzer.DesiredResource
 	deletes []resyncDelete
+	// bootstrap is a folder an applier applies that did not exist: the resync creates it with its
+	// bootstrap files, objects or not, so the applier is never asked to apply a missing path.
+	bootstrap bool
 }
 
 // resyncDelete is one document a resync's sweep removed: its resource, and the manifest identity it
@@ -538,7 +594,9 @@ type resyncDelete struct {
 }
 
 // empty reports whether the resync decided nothing: it changed nothing in Git, so it does not exist.
-func (a *resyncActions) empty() bool { return len(a.upserts) == 0 && len(a.deletes) == 0 }
+func (a *resyncActions) empty() bool {
+	return len(a.upserts) == 0 && len(a.deletes) == 0 && !a.bootstrap
+}
 
 // applyResyncActions replays a resync's decided actions onto this batch's tree. An upsert is
 // planned onto it as at first; a delete removes its document if the tree still holds it, located

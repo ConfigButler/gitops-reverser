@@ -313,6 +313,11 @@ type ResolvedTargetMetadata struct {
 	// against the right cluster's mapping.
 	SourceCluster string
 
+	// Applied is whether the GitTarget names an apply trigger: an applier applies its folder, which
+	// must then exist before it is asked to. A resync into a folder that does not exist yet commits
+	// the folder's bootstrap files even when it holds no object (executeResyncPendingWrite).
+	Applied bool
+
 	// Suspend suppresses the WRITE only; the scan still runs, which keeps a suspended target's
 	// status fresh. Being CAPTURED defines the cutover: a suspension arriving after this write was
 	// planned does not retract it, and a commit already made locally is still pushed. Reading the

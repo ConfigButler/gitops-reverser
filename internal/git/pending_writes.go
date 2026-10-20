@@ -185,6 +185,7 @@ func (w *BranchWorker) resolveTargetMetadata(
 		Namespaces:       namespacePolicyFor(target.Spec, sourceNamespaces, wildcard),
 		PruneMode:        target.EffectivePruneMode(),
 		SourceCluster:    target.SourceCluster(),
+		Applied:          target.Spec.ApplyTriggerRef != nil,
 		Suspend:          target.Spec.Suspend,
 	}, nil
 }
