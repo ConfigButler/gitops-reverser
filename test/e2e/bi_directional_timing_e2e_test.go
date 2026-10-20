@@ -219,6 +219,25 @@ func (p *timingPipeline) pushFromGitSide(value string) (string, time.Time) {
 	return head, time.Now()
 }
 
+// timingSettle outlasts the apply window's grace after an apply finishes (docs/design/apply-trigger.md),
+// the time the applier's own write to the object can still be on its way back through the mirror.
+const timingSettle = 15 * time.Second
+
+// settled holds, for timingSettle, that the branch is still at head and the live object still
+// holds value: the apply mirrored back as no change. A sample starts only once the previous one
+// has settled, so each times one change through a quiet loop.
+//
+// It is not only pacing. Pushing again while the previous apply's own write is still pending is
+// a race this spec found with Argo CD: that write, replayed onto the newer push, reverted it. Here
+// it would show as a commit after head.
+func (p *timingPipeline) settled(head, value string) {
+	GinkgoHelper()
+	Consistently(func(g Gomega) {
+		g.Expect(p.remoteBranchHead(g)).To(Equal(head), "the apply must mirror back as no change")
+		g.Expect(p.liveValue(g)).To(Equal(value))
+	}, timingSettle, time.Second).Should(Succeed())
+}
+
 // remoteBranchHead is where main is on the server.
 func (p *timingPipeline) remoteBranchHead(g Gomega) string {
 	_, err := gitRun(p.repo.CheckoutDir, "fetch", "origin", "main")
@@ -333,6 +352,7 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 						g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
 						heldAgain(g, head)
 					})
+				pipeline.settled(head, value)
 			}
 		})
 	})
@@ -401,6 +421,7 @@ var _ = Describe("Bi Directional timing (Argo CD)", Label("bi-directional", "arg
 						g.Expect(operation.Commit).To(Equal(head))
 						g.Expect(operation.Phase).To(Equal("Succeeded"))
 					})
+				pipeline.settled(head, value)
 			}
 		})
 	})
