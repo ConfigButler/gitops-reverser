@@ -76,7 +76,7 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 }
 
 // noteBusyPushNotice records a push notice that reached a busy branch, so the wake closes the open
-// window (closeWindowForForeignCommit): the publication it is about to make reads the remote anyway,
+// window (closeWindowForPushHint): the publication it is about to make reads the remote anyway,
 // closing the window makes that happen now, and its rejection, if the branch moved, starts the
 // replay. A notice naming the tip already observed is the late report of a push already seen,
 // usually this worker's own, and is no reason to cut a window short.

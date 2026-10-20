@@ -222,7 +222,7 @@ type BranchWorker struct {
 	// across every error return on the write path, and a lock there would put a second ordering
 	// constraint on code whose only job is to record that something went wrong.
 	//
-	// See the package's design note in docs/design/push-notification-and-reconcile-trigger.md §1.5.
+	// See the package's design note in docs/design/push-notification-and-reconcile-trigger.md, Part 1.
 	baseTrustedState atomic.Bool
 
 	// checkoutApplied is how many of the loop's retained writes the checkout holds: the checkout is
@@ -1991,7 +1991,7 @@ func (w *BranchWorker) stoppingLocked() bool { return w.stoppingState }
 //
 // The push session reads the remote's ref advertisement on a connection the cycle was making
 // anyway, and a cycle that commits nothing still reaches it, so a trusted base needs no fetch to
-// plan against. That is the whole saving. See docs/design/push-notification-and-reconcile-trigger.md §1.3 and §1.5.
+// plan against. That is the whole saving. See docs/design/push-notification-and-reconcile-trigger.md, Part 1.
 //
 // Only a checkout holding no retained writes may fetch here at all: a reset would destroy the
 // local commits those writes produced. With writes retained, the event loop's materialize has

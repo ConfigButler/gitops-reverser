@@ -11,7 +11,7 @@ package git
 // refuses a checkout that is not the projection of the retained writes, so a path that skipped
 // materialize fails rather than committing leftovers.
 //
-// See docs/design/push-notification-and-reconcile-trigger.md §1.5.
+// See docs/design/push-notification-and-reconcile-trigger.md, Part 1.
 
 import (
 	"errors"

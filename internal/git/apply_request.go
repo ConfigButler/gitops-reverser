@@ -246,8 +246,8 @@ type ApplyRequester interface {
 }
 
 // StrongerApplyReason is the reason a target is asked for when two reasons are pending for it. A
-// CatchUp asks for the least: it asks nothing of a Kustomization that is suspended with the commit
-// applied, where the others always run the operation, so it never replaces any of them. A Repair and a ForeignCommit
+// CatchUp asks for the least: any apply of the tip adopts and converges, so it never replaces any
+// of the others. A Repair and a ForeignCommit
 // outrank a Refusal because they need no consent, and a ForeignCommit outranks a Repair because the
 // commit it applies is news to the applier. The empty reason ranks below all four.
 func StrongerApplyReason(a, b v1alpha3.ApplyReason) v1alpha3.ApplyReason {
