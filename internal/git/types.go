@@ -382,6 +382,16 @@ type PendingWrite struct {
 	// render failed at commit time. Zero means "not stamped", so messageSource() recomputes.
 	committedMessageSource messageResolution
 
+	// actionsDecided is set once the write was planned on the tree it was first committed on. A
+	// write carries the actions that plan decided, never a picture of the cluster to plan again
+	// (docs/design/applier-echoes.md, F2): from then on Events holds only the objects whose plan
+	// changed that tree, except in a save (CommitRequest), which keeps every object it captured,
+	// and a resync carries resyncActions instead of its snapshot. A replay applies those actions to
+	// the newer tip, and plans nothing else again. Loop-goroutine only.
+	actionsDecided bool
+	// resyncActions is what a resync decided on its tree: the upserts that changed it and the
+	// documents its sweep removed. Nil until decided. See actionsDecided.
+	resyncActions *resyncActions
 	// committedOnce is set once the loop has committed this write at least once. It stays set after
 	// a reset discards that commit: whether the checkout holds it now is checkoutApplied's to say. A
 	// decided write the loop could not commit yet (the remote was unreachable) stays pending with it

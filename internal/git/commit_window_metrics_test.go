@@ -149,9 +149,9 @@ func TestCommitWindowMetrics_WindowsThatCommitNothingAreCountedToo(t *testing.T)
 	require.True(t, loop.finalizeOpenWindow())
 	loop.pushPending()
 
-	// The same object again: a window with no diff.
+	// The same object again: a window with no diff, which settles at once.
 	writeTo(loop, "present")
-	require.True(t, loop.finalizeOpenWindow())
+	require.False(t, loop.finalizeOpenWindow())
 
 	// A window whose finalize is refused: the render fidelity gate closes while it is open.
 	writeTo(loop, "blocked")

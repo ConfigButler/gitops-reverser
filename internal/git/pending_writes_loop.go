@@ -310,12 +310,17 @@ func (l *branchWorkerEventLoop) settleReplayRefusals(refused []PendingWrite) {
 }
 
 // settleCommitted acts on a write whose commit was made. A resync answers its caller with what it
-// found, and one that committed nothing stops being pending: it is neither retained nor pushed.
+// found. A write whose plan left no action, a resync or a window alike, stops being pending: it is
+// neither retained nor pushed, so a replay can never plan it onto a newer tip
+// (docs/design/applier-echoes.md, F2).
 func (l *branchWorkerEventLoop) settleCommitted(i int) {
 	l.pendingWrites[i].committedOnce = true
 	pendingWrite := l.pendingWrites[i]
-	if pendingWrite.origin.resync != nil {
+	switch {
+	case pendingWrite.origin.resync != nil:
 		l.settleResyncApplied(i)
+	case !pendingWrite.retained():
+		l.removeAt(i)
 	}
 }
 

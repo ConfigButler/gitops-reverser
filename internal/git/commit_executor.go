@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -86,7 +87,7 @@ func (w *BranchWorker) runPendingWrites(
 		// Where this write starts: a refused write is undone back to here, keeping the writes
 		// before it.
 		before := headOr(repo, start)
-		created, hash, source, err := w.executePendingWrite(ctx, repo, worktree, pendingWrites[i])
+		created, hash, source, err := w.executePendingWrite(ctx, repo, worktree, &pendingWrites[i])
 		if err != nil && skipRefused && undoRefusedWrite(repo, before, err) {
 			refusals[i] = err
 			continue
@@ -159,12 +160,25 @@ func restoreWorktree(repo *gogit.Repository, start plumbing.Hash) error {
 	return discardWorktreeLeftovers(repo)
 }
 
-// retained reports whether the loop keeps this write once it is committed: every write does except
-// a resync that changed nothing, which is neither retained nor pushed (see Committed). The checkout
+// retained reports whether the loop keeps this write once it is committed: a write that changes
+// nothing in Git does not exist (docs/design/applier-echoes.md, F2), so a write whose plan left no
+// action, a window or a resync alike, is neither retained nor pushed. A save is the exception: it
+// keeps its objects, and the push decides its outcome (resolvePushedCommitRequests). The checkout
 // counts the same writes (checkoutApplied), so the two can never disagree.
 func (p PendingWrite) retained() bool {
-	return p.Kind != PendingWriteResync || p.Committed == nil || *p.Committed
+	switch {
+	case p.Kind == PendingWriteRequestRecord || p.CommitRequest != nil:
+		return true
+	case p.Kind == PendingWriteResync:
+		return p.resyncActions == nil || !p.resyncActions.empty()
+	default:
+		return len(p.Events) > 0
+	}
 }
+
+// keepsEveryObject reports whether a write keeps the objects whose plan changed nothing: only a
+// save does (docs/design/applier-echoes.md, decision 9).
+func (p PendingWrite) keepsEveryObject() bool { return p.CommitRequest != nil || p.AllowEmpty }
 
 func (p PendingWrite) path() string {
 	if targetPath := p.Target().Path; targetPath != "" {
@@ -338,15 +352,18 @@ func (p PendingWrite) framedRequestMessage() (string, messageResolution) {
 	return framed, messageResolutionRequestTemplate
 }
 
+// executePendingWrite commits one write. Its first execution decides its actions on the tree it is
+// committed on, and records them on the write (actionsDecided); every later one, a replay, applies
+// those actions.
 func (w *BranchWorker) executePendingWrite(
 	ctx context.Context,
 	repo *gogit.Repository,
 	worktree *gogit.Worktree,
-	pendingWrite PendingWrite,
+	pendingWrite *PendingWrite,
 ) (int, plumbing.Hash, messageResolution, error) {
 	switch pendingWrite.Kind {
 	case PendingWriteRequestRecord:
-		return w.executeRequestRecord(ctx, worktree, pendingWrite)
+		return w.executeRequestRecord(ctx, worktree, *pendingWrite)
 	case PendingWriteResync:
 		// Resync writes never carry a CommitRequest, so their commit hash is unused;
 		// report ZeroHash to keep the per-write SHA bookkeeping uniform.
@@ -360,12 +377,15 @@ func (w *BranchWorker) executePendingWrite(
 	}
 }
 
-// executeEventWrite applies a grouped window's or an atomic batch's events and commits them.
+// executeEventWrite applies a grouped window's or an atomic batch's events and commits them. The
+// first time, the write keeps only the events whose plan changed the tree: an object that changed
+// nothing is no action, and a replay must not plan it again onto a newer tip, where it would revert
+// what that tip changed (docs/design/applier-echoes.md, F2). A save keeps every object.
 func (w *BranchWorker) executeEventWrite(
 	ctx context.Context,
 	repo *gogit.Repository,
 	worktree *gogit.Worktree,
-	pendingWrite PendingWrite,
+	pendingWrite *PendingWrite,
 ) (int, plumbing.Hash, messageResolution, error) {
 	if len(pendingWrite.Events) == 0 {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, nil
@@ -382,9 +402,16 @@ func (w *BranchWorker) executeEventWrite(
 			fmt.Errorf("configure secret encryptor: %w", err)
 	}
 
-	anyChanges, err := w.applyPendingWriteEvents(ctx, repo, worktree, pendingWrite.Events, pendingWrite.Targets)
+	anyChanges, changedBy, err := w.planPendingWriteEvents(
+		ctx, repo, worktree, pendingWrite.Events, pendingWrite.Targets)
 	if err != nil {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, err
+	}
+	if !pendingWrite.actionsDecided {
+		pendingWrite.actionsDecided = true
+		if !pendingWrite.keepsEveryObject() {
+			pendingWrite.Events = eventsThatChanged(pendingWrite.Events, changedBy)
+		}
 	}
 	recordEmpty := !anyChanges && pendingWrite.AllowEmpty && !target.Suspend
 	if !anyChanges && !recordEmpty {
@@ -415,6 +442,21 @@ func (w *BranchWorker) executeEventWrite(
 	return 1, hash, source, nil
 }
 
+// eventsThatChanged is the events whose plan changed the tree, in order: events itself when every
+// one did.
+func eventsThatChanged(events []Event, changedBy []bool) []Event {
+	if !slices.Contains(changedBy, false) {
+		return events
+	}
+	kept := make([]Event, 0, len(events))
+	for i := range events {
+		if changedBy[i] {
+			kept = append(kept, events[i])
+		}
+	}
+	return kept
+}
+
 func (w *BranchWorker) applyPendingWriteEvents(
 	ctx context.Context,
 	repo *gogit.Repository,
@@ -422,11 +464,25 @@ func (w *BranchWorker) applyPendingWriteEvents(
 	events []Event,
 	targets map[pendingTargetKey]ResolvedTargetMetadata,
 ) (bool, error) {
+	changed, _, err := w.planPendingWriteEvents(ctx, repo, worktree, events, targets)
+	return changed, err
+}
+
+// planPendingWriteEvents is applyPendingWriteEvents that also reports, per event and in order,
+// whether that event changed the tree. An event of a suspended target changes nothing.
+func (w *BranchWorker) planPendingWriteEvents(
+	ctx context.Context,
+	repo *gogit.Repository,
+	worktree *gogit.Worktree,
+	events []Event,
+	targets map[pendingTargetKey]ResolvedTargetMetadata,
+) (bool, []bool, error) {
 	// Plan-then-flush each GitTarget subtree once: build the structure model, resolve
 	// every event to a single-identity action, apply to hydrated file buffers, and
 	// flush dirty/deleted files. A grouped window is single-target, so this is usually
 	// one base path.
-	byBase := groupEventsByBase(events)
+	byBase, indexes := groupEventsByBaseWithIndex(events)
+	changedBy := make([]bool, len(events))
 	anyChanges := false
 	for _, base := range sortedBaseKeys(byBase) {
 		// A suspended target scans and publishes what it resolved, and writes nothing. The scan
@@ -437,7 +493,7 @@ func (w *BranchWorker) applyPendingWriteEvents(
 		// ones.
 		if md, ok := targetForBase(targets, base); ok && md.Suspend {
 			if err := w.refuseUnsafeWorktree(ctx, worktree, base, md); err != nil {
-				return false, err
+				return false, nil, err
 			}
 			log.FromContext(ctx).V(1).Info("live write suppressed: GitTarget is suspended",
 				"gitTarget", md.Namespace+"/"+md.Name, "path", base, "events", len(byBase[base]))
@@ -454,11 +510,11 @@ func (w *BranchWorker) applyPendingWriteEvents(
 		// including one it did not author. The resync path already had this ordering.
 		for _, event := range byBase[base] {
 			if err := ensureBootstrapTemplateInPath(repo, base, event.BootstrapOptions); err != nil {
-				return false, err
+				return false, nil, err
 			}
 		}
 
-		changed, err := w.flushEventsToWorktree(
+		changed, baseChangedBy, err := w.planEventsToWorktree(
 			ctx,
 			worktree,
 			base,
@@ -468,13 +524,16 @@ func (w *BranchWorker) applyPendingWriteEvents(
 			pruneModeForBase(targets, base),
 		)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		if changed {
 			anyChanges = true
 		}
+		for j, i := range indexes[base] {
+			changedBy[i] = baseChangedBy[j]
+		}
 	}
-	return anyChanges, nil
+	return anyChanges, changedBy, nil
 }
 
 // executeRequestRecord commits a CommitRequest's message with an untouched tree: the record a

@@ -143,7 +143,8 @@ func TestBranchWorker_AnEmptyRepositoryThatGainsABranchIsNotOrphaned(t *testing.
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
 }
 
-// §4.2 test 2. The same with a write that changes nothing: the branch stays absent.
+// §4.2 test 2. The same with a write that changes nothing: the branch stays absent. A write that
+// changes nothing does not exist, so it settles before the remote is asked anything.
 func TestBranchWorker_AnEmptyRepositoryThatGainsABranchKeepsANoOpAbsent(t *testing.T) {
 	f := newRealServerNewBranch(t, "empty-gains-main-noop", nil)
 
@@ -152,7 +153,7 @@ func TestBranchWorker_AnEmptyRepositoryThatGainsABranchKeepsANoOpAbsent(t *testi
 	deleted.Operation = "DELETE"
 	deleted.Object = nil
 	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{deleted}, CommitMode: CommitModePerEvent}})
-	require.Len(t, f.loop.pendingWrites, 1)
+	require.Empty(t, f.loop.pendingWrites, "settled at once, even in the cooldown")
 
 	simulateClientCommitOnDisk(t, f.repoDir, "main", "README.md", "main appeared\n")
 	f.loop.pushPending()
@@ -267,8 +268,11 @@ func TestBranchWorker_ADetachedRemoteHeadFollowsGoGitsResolution(t *testing.T) {
 	}
 }
 
-// noOpWrite sends a live write that changes nothing: the delete of an object Git never had.
+// noOpWrite saves a live write that changes nothing: the delete of an object Git never had. A
+// save keeps it (a plain write that changes nothing settles without a push), so it is published,
+// and its push observes the remote.
 func noOpWrite(loop *branchWorkerEventLoop) {
+	serviceAttach(loop, standbyRequest())
 	deleted := configMapTargetEvent("never-written", "alice", newBranchTarget)
 	deleted.Operation = "DELETE"
 	deleted.Object = nil

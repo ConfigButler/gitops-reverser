@@ -406,14 +406,14 @@ func TestExecuteResyncPendingWrite_ResetsCommittedWhenNothingChanges(t *testing.
 	}
 
 	// First execution writes and commits.
-	commits, err := w.executeResyncPendingWrite(t.Context(), repo, worktree, pendingWrite)
+	commits, err := w.executeResyncPendingWrite(t.Context(), repo, worktree, &pendingWrite)
 	require.NoError(t, err)
 	require.Equal(t, 1, commits)
 	require.True(t, committed, "the first execution committed")
 
 	// Second execution is the replay shape: the worktree already holds the desired state, so
 	// nothing changes and no commit is made. The flag must come back down.
-	commits, err = w.executeResyncPendingWrite(t.Context(), repo, worktree, pendingWrite)
+	commits, err = w.executeResyncPendingWrite(t.Context(), repo, worktree, &pendingWrite)
 	require.NoError(t, err)
 	require.Equal(t, 0, commits)
 	assert.False(t, committed,

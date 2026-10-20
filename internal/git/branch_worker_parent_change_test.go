@@ -137,7 +137,7 @@ func TestBranchWorker_AParentChangeDuringANoOpPushIsTakenByTheNextWrite(t *testi
 	defer loop.stopTimers()
 	roots := pushRoots(t, func() { f.worker.SetParentBranch("release") })
 
-	liveWrite(loop, "cm1") // already in Git: settles without creating the branch
+	noOpSave(loop) // already in Git: settles without creating the branch
 	_, onRemote := f.featureOnRemote()
 	require.False(t, onRemote)
 	require.Len(t, *roots, 1)
