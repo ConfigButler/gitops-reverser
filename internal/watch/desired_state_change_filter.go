@@ -119,6 +119,9 @@ func desiredStateHash(obj *unstructured.Unstructured) (string, bool) {
 type replaySnapshot struct {
 	desired   []manifestanalyzer.DesiredResource
 	baselines map[k8stypes.UID]string
+	// start is the branch worker's ApplyState read when the collection started, nil when it could
+	// not be read. The worker discards a snapshot an apply made stale (git.ResyncRequest).
+	start *git.ApplyState
 }
 
 // add folds one observed object into the snapshot. An object desiredFromObject excludes (a

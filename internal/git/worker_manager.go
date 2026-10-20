@@ -168,6 +168,12 @@ type WorkerManager struct {
 	// for an apply while another worker on the same branch is busy writing. See apply_siblings.go.
 	siblings *branchSiblings
 
+	// initialSnapshots and resyncRecheck are the watch side's half of the applier-echo rules every
+	// worker follows (apply_epoch.go). Set once at startup (SetSnapshotHooks); nil in the CLI and in
+	// tests.
+	initialSnapshots func(target types.ResourceReference) bool
+	resyncRecheck    func(target types.ResourceReference)
+
 	// applyRequester delivers every worker's apply requests. Set once at startup
 	// (SetApplyRequester) before any worker is created; nil in the CLI and in tests, which switches
 	// the apply trigger off.
@@ -225,6 +231,18 @@ func (m *WorkerManager) SetClusterMapper(resolver func(clusterID string) typeset
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.clusterMapper = resolver
+}
+
+// SetSnapshotHooks injects the watch side's half of docs/design/applier-echoes.md into every worker:
+// delivered reports whether a GitTarget's collections have all delivered their snapshot, and recheck
+// asks for fresh snapshots of a GitTarget whose snapshot a worker discarded as stale. Like SetMapper,
+// it is called once at startup before any worker is created.
+func (m *WorkerManager) SetSnapshotHooks(
+	delivered func(target types.ResourceReference) bool, recheck func(target types.ResourceReference),
+) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.initialSnapshots, m.resyncRecheck = delivered, recheck
 }
 
 // SetSSHHostKeyConfig injects the SSH host-key resolution config used by every worker's credential
@@ -405,6 +423,8 @@ func (m *WorkerManager) EnsureWorker(
 		worker.scanAcceptance = m.scanAcceptance
 		worker.applyRequester = m.applyRequester
 		worker.triggerStatus = m.triggerStatus
+		worker.initialSnapshots = m.initialSnapshots
+		worker.resyncRecheck = m.resyncRecheck
 		m.siblings.add(worker)
 		worker.renderFidelityGate = m.renderFidelityGate
 		worker.crOwners = m.commitRequests

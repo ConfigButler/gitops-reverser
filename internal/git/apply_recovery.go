@@ -82,6 +82,7 @@ func recordedStatus(state *applierState) (*v1alpha3.ApplyOperation, bool) {
 func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1alpha3.ApplyOperation, now time.Time) {
 	w := l.w
 	l.nextApplyID++
+	w.raiseApplyEpoch()
 	abandoned, abandon := context.WithCancel(w.ctx)
 	attempt := &inflightAttempt{
 		id: l.nextApplyID, abandon: abandon, recovered: true,

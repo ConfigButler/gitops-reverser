@@ -163,6 +163,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 		if i < len(l.pendingWrites) && l.pendingWrites[i].Kind == PendingWriteResync {
 			refetch = fetchReasonForcedRecheck
 		}
+		tipBefore := l.w.inbox.lastTip()
 		if err := l.materializePrefix(refetch); err != nil {
 			l.replyToDeferredResyncs(err)
 			l.w.recordMaterializationFailure(err)
@@ -172,6 +173,9 @@ func (l *branchWorkerEventLoop) materialize() error {
 		i = l.materializedPrefix()
 		if i == len(l.pendingWrites) {
 			return nil
+		}
+		if refetch != "" && l.discardIfFetchFoundForeign(i, tipBefore) {
+			continue
 		}
 		// A write is planned under the policy in force when it is committed, exactly as a replay is:
 		// an operator who tightened pruning since it was decided is obeyed.
@@ -192,6 +196,26 @@ func (l *branchWorkerEventLoop) materialize() error {
 			return err
 		}
 	}
+}
+
+// discardIfFetchFoundForeign discards the resync at i when the fetch it was planned behind found a
+// commit the worker did not push: the cluster does not run it yet, and it holds what the snapshot is
+// about to be judged against (docs/design/applier-echoes.md, F3). tipBefore is the tip observed before
+// that fetch. The resync is decided and not committed, so nothing is committed on it.
+func (l *branchWorkerEventLoop) discardIfFetchFoundForeign(i int, tipBefore string) bool {
+	req := l.pendingWrites[i].origin.resync
+	if req == nil || l.w.inbox.lastTip() == tipBefore || !l.w.inbox.foreignPending() || !l.snapshotsWait(req) {
+		return false
+	}
+	answered := l.pendingWrites[i].origin.answered
+	l.removeAt(i)
+	if answered {
+		// Its caller heard already that the remote held it back; it is only asked for again.
+		req = &ResyncRequest{GitTargetName: req.GitTargetName, GitTargetNamespace: req.GitTargetNamespace,
+			Scope: req.Scope}
+	}
+	l.discardSnapshot(req, snapshotForeignFetch, false)
+	return true
 }
 
 // materializePrefix rebuilds the writes committed before when the checkout is behind them: a write

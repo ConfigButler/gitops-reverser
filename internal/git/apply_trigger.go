@@ -134,6 +134,14 @@ func (d *applyInbox) foreignPending() bool {
 	return d.foreign
 }
 
+// lastTip is the last commit observed, empty before the first observation or when the remote does
+// not carry the branch.
+func (d *applyInbox) lastTip() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.tip
+}
+
 // tipIs reports whether the last commit observed is commit.
 func (d *applyInbox) tipIs(commit string) bool {
 	d.mu.Lock()
@@ -301,7 +309,7 @@ func (s *applierState) quietPeriod() time.Duration {
 // counts: a save is announced before its writes arrive, and an apply landing between the two would
 // revert the save's first edits before they reach Git.
 func (l *branchWorkerEventLoop) writeBusy() bool {
-	return l.openWindow != nil || len(l.pendingWrites) > 0 || len(l.deferredHeals) > 0 ||
+	return l.openWindow != nil || len(l.pendingWrites) > 0 ||
 		len(l.pendingCRs) > 0 || l.recovery.active || l.w.worktreeDirty()
 }
 
@@ -537,6 +545,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	}
 
 	l.nextApplyID++
+	l.w.raiseApplyEpoch()
 	abandoned, abandon := context.WithCancel(l.w.ctx)
 	sentAt := time.Now()
 	attempt := &inflightAttempt{
@@ -602,6 +611,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 		}
 		state.inflight = nil
 		attempt.abandon()
+		l.w.raiseApplyEpoch()
 		state.settleApplyWindow(attempt.id, res.Outcome.Operated(), now)
 		if attempt.phase == ApplyUnresolved {
 			l.w.Log.Info("An unresolved apply completed; its apply window closes after the grace",

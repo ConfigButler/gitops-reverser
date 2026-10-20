@@ -189,7 +189,6 @@ func TestServiceAppliers_NothingIsSentWhileAnythingLiveIsUnpublished(t *testing.
 	}{
 		{name: "an open commit window", busy: func(l *branchWorkerEventLoop) { l.openWindow = &openWindow{} }},
 		{name: "a pending write", busy: func(l *branchWorkerEventLoop) { l.pendingWrites = []PendingWrite{{}} }},
-		{name: "a parked heal", busy: func(l *branchWorkerEventLoop) { l.deferredHeals = []*ResyncRequest{{}} }},
 		{name: "a worktree a failed write left dirty", busy: func(l *branchWorkerEventLoop) {
 			l.w.markWorktreeDirty("test")
 		}},

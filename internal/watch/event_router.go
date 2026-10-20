@@ -275,6 +275,7 @@ func (r *EventRouter) enqueueScopedResync(
 	resourceVersion string,
 	heal bool,
 	renderFidelityRevision uint64,
+	start *git.ApplyState,
 ) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resyncTarget(ctx, gitDest)
 	if err != nil {
@@ -292,9 +293,31 @@ func (r *EventRouter) enqueueScopedResync(
 		// The worker records the scope clean itself once the resync applies, before the drain
 		// below hears of it, so a live event queued behind the resync meets the gate it produced.
 		RenderFidelityRevision: renderFidelityRevision,
+		CollectionStart:        start,
 		Result:                 resultCh,
 	})
 	return resultCh, enqueued, nil
+}
+
+// applyStateReader is the part of a branch worker that says where its appliers stand. See
+// git.BranchWorker.ApplyState.
+type applyStateReader interface {
+	ApplyState() git.ApplyState
+}
+
+// applyState reads the ApplyState of a GitTarget's branch worker, or nil when the worker cannot be
+// resolved or reports none.
+func (r *EventRouter) applyState(ctx context.Context, gitDest types.ResourceReference) *git.ApplyState {
+	worker, err := r.resyncTarget(ctx, gitDest)
+	if err != nil {
+		return nil
+	}
+	reader, ok := worker.(applyStateReader)
+	if !ok {
+		return nil
+	}
+	state := reader.ApplyState()
+	return &state
 }
 
 // resyncTarget is the branch worker a GitTarget's scoped resyncs enter.
@@ -411,6 +434,14 @@ func (r *EventRouter) handleScopedResyncError(
 			r.WatchManager.MarkTargetGitPathScopeRefused(
 				gitDest, collection, gitPathRefusalReason(refused), refused.BlockMessage())
 		}
+		return
+	}
+	if errors.Is(err, git.ErrResyncDiscarded) {
+		// An apply made the snapshot stale before the worker could use it. Nothing failed: the
+		// worker asks for a fresh snapshot of the GitTarget once the apply is done, and that one
+		// reports. See docs/design/applier-echoes.md, F3.
+		r.Log.Info("per-type "+kind+" discarded as stale; a fresh snapshot is asked for",
+			"gitDest", gitDest.String(), "collection", collection.String(), "detail", err.Error())
 		return
 	}
 	if errors.Is(err, git.ErrResyncSuperseded) {

@@ -108,29 +108,9 @@ func TestResyncScope_StringIsNilSafeAndNamesTheNamespace(t *testing.T) {
 
 	scoped := resyncScopePtr(configmapsGVRForScope, "team-a")
 	assert.Contains(t, scoped.String(), "team-a",
-		"the namespace must appear in the scope string: it keys deferred heals, so two "+
-			"namespaces of one type sharing a key would silently drop one heal")
+		"the namespace must appear in the scope string: it keys coalescing, so two "+
+			"namespaces of one type sharing a key would silently drop one snapshot")
 	assert.NotEqual(t, allNamespaces.String(), scoped.String())
-}
-
-// Deferred heals are keyed by (GitTarget, scope). Once one GitTarget can watch a type in
-// several namespaces, the key must separate them — otherwise stashing team-b's heal
-// replaces team-a's parked one and team-a's drift is never corrected.
-func TestResyncHealKey_SeparatesNamespacesOfTheSameType(t *testing.T) {
-	req := func(ns string) *ResyncRequest {
-		return &ResyncRequest{
-			GitTargetName:      "team-a-config",
-			GitTargetNamespace: "default",
-			Scope:              resyncScopePtr(configmapsGVRForScope, ns),
-		}
-	}
-	assert.NotEqual(t, resyncHealKey(req("team-a")), resyncHealKey(req("team-b")),
-		"two namespaces of one type must key separately")
-	assert.Equal(t, healKey{
-		name: "team-a-config", namespace: "default",
-		scope: (resyncScopePtr(configmapsGVRForScope, "team-a")).String(),
-	}, resyncHealKey(req("team-a")),
-		"the key is stable for the same scope, so a re-stashed heal replaces rather than duplicates")
 }
 
 // THE test for this change. A replay covers one namespace, so its desired set names only
@@ -244,6 +224,4 @@ func TestResyncScope_ServedVersionIsDataNotIdentity(t *testing.T) {
 	}
 	assert.Equal(t, resyncKeyFor(request(v1)), resyncKeyFor(request(v1beta1)),
 		"two snapshots of one boundary must coalesce, not queue two sweeps of each other's documents")
-	assert.Equal(t, resyncHealKey(request(v1)), resyncHealKey(request(v1beta1)),
-		"and park as one deferred heal")
 }

@@ -609,6 +609,7 @@ func registerCounters() error {
 		{"gitopsreverser_apply_revision_mismatches_total", &ApplyRevisionMismatchesTotal},
 		{"gitopsreverser_apply_window_collisions_total", &ApplyWindowCollisionsTotal},
 		{"gitopsreverser_apply_echoes_total", &ApplyEchoesTotal},
+		{"gitopsreverser_stale_snapshots_total", &StaleSnapshotsTotal},
 		{"gitopsreverser_receiver_deliveries_total", &ReceiverDeliveriesTotal},
 	}
 	for _, s := range counters {

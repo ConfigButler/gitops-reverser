@@ -503,6 +503,16 @@ func (s *ResyncScope) Overlaps(other *ResyncScope) bool {
 	return s.Collection.Overlaps(other.Collection)
 }
 
+// ApplyState is where a branch worker's appliers stand, as a snapshot's collection reads it when it
+// starts (docs/design/applier-echoes.md, F3).
+type ApplyState struct {
+	// Epoch is raised at every send of an apply attempt and at every end of one.
+	Epoch uint64
+	// GitAhead is whether Git holds a commit the cluster may not run yet: an applier on the branch
+	// has a ForeignCommit, Repair or Refusal pending, a converge due, or an attempt out.
+	GitAhead bool
+}
+
 // ResyncRequest is a synchronous resync of one GitTarget against a complete,
 // version-pinned desired snapshot (M8). It rides the worker queue so the single
 // git-mutating goroutine applies it in order with live events, and replies on
@@ -534,6 +544,11 @@ type ResyncRequest struct {
 	// replay this is, for the scope Scope.Collection names. Zero for a resync no stream replayed.
 	// The worker records that scope clean once the resync applies (recordReplayClean).
 	RenderFidelityRevision uint64
+	// CollectionStart is the worker's ApplyState read when the snapshot's collection started. A
+	// snapshot collected while Git was ahead of the cluster, or across an apply, holds a picture
+	// the apply is about to make stale, and is discarded (docs/design/applier-echoes.md, F3). Nil
+	// when the producer read none: only the worker's state on arrival is then checked.
+	CollectionStart *ApplyState
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult

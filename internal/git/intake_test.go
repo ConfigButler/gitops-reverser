@@ -84,16 +84,6 @@ func TestIntake_EveryKindOfHeldWorkCounts(t *testing.T) {
 		"a registered save is charged for what it keeps")
 	held = loop.heldBytes()
 
-	heal := &ResyncRequest{GitTargetName: ledgerTargetName, GitTargetNamespace: "default", Heal: true,
-		Desired: []manifestanalyzer.DesiredResource{{Object: bigConfigMap("deferred", 4096)}},
-		Result:  make(chan ResyncResult, 1)}
-	loop.openWindow = &openWindow{} // a heal waits for the window to close
-	loop.handleResyncRequest(heal)
-	loop.endWake(0)
-	require.Len(t, loop.deferredHeals, 1)
-	assert.GreaterOrEqual(t, loop.heldBytes()-held, int64(4096), "a deferred heal's snapshot is held")
-	held = loop.heldBytes()
-
 	loop.windowBytes = 2048
 	assert.Equal(t, held+2048, loop.heldBytes(), "and so is the open window")
 }

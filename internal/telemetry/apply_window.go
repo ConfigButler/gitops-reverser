@@ -36,3 +36,18 @@ var ApplyWindowCollisionsTotal metric.Int64Counter
 //
 // Registered in registerCounters (exporter.go) with every other counter.
 var ApplyEchoesTotal metric.Int64Counter
+
+// StaleSnapshotsTotal counts resync snapshots a branch worker found stale: collected while Git was
+// ahead of the cluster, across an apply, or arriving while Git is ahead, so an apply was about to make
+// the picture they hold wrong (docs/design/applier-echoes.md, F3). Labelled by {provider_namespace,
+// provider_name, branch, outcome}. outcome is a frozen enum:
+//
+//	discarded — the snapshot was not decided, and a fresh one of its GitTarget is asked for once Git
+//	            is no longer ahead.
+//	used      — the GitTarget's snapshots had been held for the limit (five minutes) while an apply
+//	            kept failing, so this one was decided anyway. Whatever the unapplied commit changed
+//	            in the objects it holds is reverted, as the API-wins rule says. A non-zero rate means
+//	            an applier is failing for minutes at a time.
+//
+// Registered in registerCounters (exporter.go) with every other counter.
+var StaleSnapshotsTotal metric.Int64Counter

@@ -160,6 +160,16 @@ type BranchWorker struct {
 	// unresolvedOperations is how many of this branch's apply operations are Unresolved, as the
 	// loop last published it, for the apply_operations_unresolved gauge.
 	unresolvedOperations atomic.Int64
+	// applyEpoch, appliersAhead and hasAppliers are the loop's ApplyState for the watch side, which
+	// reads it when a snapshot's collection starts (apply_epoch.go).
+	applyEpoch    atomic.Uint64
+	appliersAhead atomic.Bool
+	hasAppliers   atomic.Bool
+	// initialSnapshots reports whether every collection a GitTarget watches has delivered its
+	// snapshot, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
+	// WorkerManager before Start; nil in the CLI and in tests (apply_epoch.go).
+	initialSnapshots func(target itypes.ResourceReference) bool
+	resyncRecheck    func(target itypes.ResourceReference)
 
 	// Event processing
 	eventQueue chan WorkItem
@@ -328,6 +338,9 @@ type BranchWorker struct {
 	// records that boundary.
 	pendingResyncsMu sync.Mutex
 	pendingResyncs   map[resyncKey]*resyncMarker
+	// queuedResyncs counts, per GitTarget, the resync markers on the FIFO the loop has not taken.
+	// Guarded by pendingResyncsMu. See queuedResyncsFor.
+	queuedResyncs map[string]int
 
 	// crOutcomes holds resolved CommitRequest outcomes for the controller to poll
 	// via LookupCommitRequestOutcome. The event loop is the only writer (on its
@@ -372,14 +385,6 @@ type BranchWorker struct {
 type branchWorkerLogFirsts struct {
 	commit sync.Once
 	push   sync.Once
-}
-
-// healKey identifies a deferred heal by the (GitTarget, scope) it corrects, so re-stashing a heal
-// for the same target+type replaces the parked one rather than queuing a duplicate.
-type healKey struct {
-	name      string
-	namespace string
-	scope     string
 }
 
 type windowFinalizeReason string
@@ -768,6 +773,10 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Resync: marker}:
+		if w.queuedResyncs == nil {
+			w.queuedResyncs = map[string]int{}
+		}
+		w.queuedResyncs[resyncTargetKey(request)]++
 		w.pendingResyncsMu.Unlock()
 		w.Log.V(1).Info("Resync request enqueued",
 			"resources", len(request.Desired),
@@ -880,7 +889,25 @@ func (w *BranchWorker) takePendingResync(marker *resyncMarker) (*ResyncRequest, 
 	if w.pendingResyncs[key] == marker {
 		delete(w.pendingResyncs, key)
 	}
+	target := resyncTargetKey(marker.request)
+	if queued, counted := w.queuedResyncs[target]; counted && queued > 1 {
+		w.queuedResyncs[target] = queued - 1
+	} else {
+		delete(w.queuedResyncs, target)
+	}
 	return marker.request, marker.charge
+}
+
+// queuedResyncsFor reports whether a resync of the GitTarget is on the FIFO, not taken yet.
+func (w *BranchWorker) queuedResyncsFor(target string) bool {
+	w.pendingResyncsMu.Lock()
+	defer w.pendingResyncsMu.Unlock()
+	return w.queuedResyncs[target] > 0
+}
+
+// resyncTargetKey is the GitTarget a resync is for, as namespace/name.
+func resyncTargetKey(request *ResyncRequest) string {
+	return request.GitTargetNamespace + "/" + request.GitTargetName
 }
 
 // enqueueRequest places a write request on the FIFO and reports whether it was
@@ -1150,11 +1177,14 @@ type branchWorkerEventLoop struct {
 	// retry.go.
 	retry retrySchedule
 
-	// deferredHeals holds heal resyncs (periodic re-anchors, removed-type sweeps) parked while a
-	// commit window is open, so a heal never force-finalizes (steals) that window — including a
-	// sibling GitTarget's held CommitRequest window on this shared worker (Rec 1 / 8f2ad84). They
-	// are drained by applyDeferredHeals at every idle boundary. Loop-goroutine only.
-	deferredHeals []*ResyncRequest
+	// snapshotRerequests are the GitTargets whose snapshot was discarded as stale, until a fresh one
+	// is asked for; snapshotHeldSince is when each GitTarget's first one was, until one is used;
+	// initialDone latches the GitTargets whose initial snapshots are published, with the incarnation
+	// an applier covers, and snapshotTargets are the ones followed until then. See apply_epoch.go.
+	snapshotRerequests map[string]snapshotRerequest
+	snapshotHeldSince  map[string]time.Time
+	initialDone        map[string]types.UID
+	snapshotTargets    map[string]itypes.ResourceReference
 
 	// pendingCRs holds CommitRequests registered (via AttachCommitRequest) but not
 	// yet resolved, keyed by identity. A request is parked here until a same-author
@@ -1280,19 +1310,20 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 //
 //   - Bind any waiting CommitRequest to an open window, resolve any whose attach deadline has
 //     passed, and re-arm the deadline timer.
-//   - Drain any heal resync parked while a window was open, now that this wake may have finalized
-//     it (a silence timeout, a CommitRequest finalize). A no-op while a window is still open or
-//     nothing is parked.
 //   - Close the open window early if the branch moved under it (closeWindowForForeignCommit).
 //   - Drive the pending writes: commit what the wake decided, schedule its push (advance).
 //   - Send the pending apply requests, if the wake left the branch quiet (serviceAppliers).
+//   - Latch the GitTargets whose initial snapshots are now published, ask again for the snapshots
+//     discarded as stale once Git is no longer ahead, and publish the ApplyState (apply_epoch.go).
 //   - Publish the result, moving the handled item's charge to what the loop holds.
 func (l *branchWorkerEventLoop) endWake(released int64) {
 	l.serviceCommitRequests()
-	l.applyDeferredHeals()
 	l.closeWindowForForeignCommit()
 	l.advance()
 	l.serviceAppliers()
+	l.refreshInitialSnapshots()
+	l.rerequestSnapshots()
+	l.publishApplyState()
 	l.publishLoopState(released)
 }
 
@@ -1393,10 +1424,6 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 				"resource", event.Identifier.String(),
 				"eventTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonIdentityChange)
-			// The window just closed and a new one for this event has not opened yet: an idle
-			// boundary. Drain any parked heal here so it gets a turn even under sustained,
-			// author-alternating load that never lets the silence timer fire (Rec 1 non-starvation).
-			l.applyDeferredHeals()
 		}
 
 		opened := false
@@ -1471,10 +1498,6 @@ func (l *branchWorkerEventLoop) closeOrArmWindow() {
 // the atomic write joins the pending writes behind it.
 func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonAtomicBeforeApply)
-	// Finalizing the window opened an idle boundary: a heal parked behind that window
-	// arrived BEFORE this atomic, so drain it here to keep arrival order (window, then heal,
-	// then atomic) rather than letting the atomic overtake it.
-	l.applyDeferredHeals()
 
 	pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, request)
 	if err != nil {
@@ -1489,9 +1512,6 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 func (l *branchWorkerEventLoop) handleShutdown() {
 	l.w.Log.Info("Handling shutdown, finalizing open window and pushing pending commits")
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonShutdown)
-	// The window is closed: drain any parked heal so its drift commits (and pushes below) on a
-	// clean shutdown rather than leaking its caller's reply channel.
-	l.applyDeferredHeals()
 	if len(l.pendingWrites) > 0 {
 		// Shutdown bypasses the cooldown and the retry: pending work needs to land before the
 		// worker exits, even if a push was just sent. The push commits what was just decided.
