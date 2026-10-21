@@ -199,11 +199,11 @@ func TestPublishRemote_AReProvedRevisionRefreshesTheClock(t *testing.T) {
 // reason, and this layer now agrees.
 func TestRemoteStatusIsNews_TheSameAnswerProvedASecondWayIsNot(t *testing.T) {
 	at := metav1.NewTime(time.Now())
-	published := &configbutleraiv1alpha3.GitTargetRemoteStatus{
+	published := &configbutleraiv1alpha3.GitBranchRemoteStatus{
 		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Push",
 	}
 
-	assert.False(t, remoteStatusIsNews(published, &configbutleraiv1alpha3.GitTargetRemoteStatus{
+	assert.False(t, remoteStatusIsNews(published, &configbutleraiv1alpha3.GitBranchRemoteStatus{
 		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
 	}))
 }
@@ -213,10 +213,10 @@ func TestRemoteStatusIsNews_TheSameAnswerProvedASecondWayIsNot(t *testing.T) {
 // age off at all.
 func TestRemoteStatusIsNews_AMissingTimestampIsAlwaysNews(t *testing.T) {
 	at := metav1.NewTime(time.Now())
-	withClock := &configbutleraiv1alpha3.GitTargetRemoteStatus{
+	withClock := &configbutleraiv1alpha3.GitBranchRemoteStatus{
 		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
 	}
-	without := &configbutleraiv1alpha3.GitTargetRemoteStatus{Commit: "aaaa", VerifiedBy: "Fetch"}
+	without := &configbutleraiv1alpha3.GitBranchRemoteStatus{Commit: "aaaa", VerifiedBy: "Fetch"}
 
 	assert.True(t, remoteStatusIsNews(without, withClock))
 	assert.True(t, remoteStatusIsNews(withClock, without))
@@ -312,7 +312,7 @@ func TestPublishRemote_TheNewRepositoryRepopulatesTheStanza(t *testing.T) {
 func TestPublishRemote_ARestartPublishesAgainstTheObservationAlone(t *testing.T) {
 	target := remoteTestTarget()
 	at := metav1.NewTime(time.Now())
-	target.Status.Remote = &configbutleraiv1alpha3.GitTargetRemoteStatus{
+	target.Status.Remote = &configbutleraiv1alpha3.GitBranchRemoteStatus{
 		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Push",
 	}
 	fresh := &GitTargetReconciler{}

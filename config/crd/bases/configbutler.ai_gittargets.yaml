@@ -144,7 +144,6 @@ spec:
                   Branch to use for this target.
                   Must be one of the allowed branches in the provider.
                   Immutable: delete and recreate the GitTarget to change its destination.
-                minLength: 1
                 type: string
               clusterProviderRef:
                 default:
@@ -321,6 +320,27 @@ spec:
                 required:
                 - provider
                 type: object
+              gitBranchRef:
+                description: |-
+                  GitBranchRef names the GitBranch this target writes: the repository branch, and the credential
+                  it is written with. Namespace omitted means this GitTarget's own namespace. A GitBranch in
+                  another namespace is used only while its GitProvider's spec.accessFrom admits this GitTarget's
+                  namespace. Many GitTargets may reference one GitBranch; they share its branch worker.
+                  Immutable: delete and recreate the GitTarget to change its destination.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.gitBranchRef.name must not be empty
+                  rule: self.name != ''
               gitProviderRef:
                 description: |-
                   GitProviderRef names the GitProvider that backs this target. Namespace omitted means this
@@ -339,9 +359,6 @@ spec:
                 required:
                 - name
                 type: object
-                x-kubernetes-validations:
-                - message: spec.gitProviderRef.name must not be empty
-                  rule: self.name != ''
               onRefusal:
                 default: Ignore
                 description: |-
@@ -541,17 +558,20 @@ spec:
                   resync; the writes suppressed while suspended are not replayed.
                 type: boolean
             required:
-            - branch
-            - gitProviderRef
             - path
             type: object
             x-kubernetes-validations:
+            - message: spec.gitBranchRef is immutable; delete and recreate the GitTarget
+                to change its destination
+              rule: has(self.gitBranchRef) == has(oldSelf.gitBranchRef) && (!has(self.gitBranchRef)
+                || self.gitBranchRef == oldSelf.gitBranchRef)
             - message: spec.gitProviderRef is immutable; delete and recreate the GitTarget
                 to change its destination
               rule: '!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef'
             - message: spec.branch is immutable; delete and recreate the GitTarget
                 to change its destination
-              rule: self.branch == oldSelf.branch
+              rule: has(self.branch) == has(oldSelf.branch) && (!has(self.branch)
+                || self.branch == oldSelf.branch)
             - message: spec.path is immutable; delete and recreate the GitTarget to
                 change its destination
               rule: self.path == oldSelf.path
@@ -714,20 +734,17 @@ spec:
                     description: |-
                       Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
                       the remote at all, which is not an error: a branch does not exist without a commit, and a
-                      target that has never written has nothing there yet.
+                      branch nothing has written to has nothing there yet.
                     type: string
                   lastVerifiedAt:
-                    description: |-
-                      LastVerifiedAt is when the remote was last observed. It answers "has anything looked",
-                      which placement.resolvedAtCommit deliberately does not: that one dates the resolution, so
-                      an old value there means the layout has not changed rather than that nothing has looked.
+                    description: LastVerifiedAt is when the remote was last observed.
                     format: date-time
                     type: string
                   parent:
                     description: |-
-                      Parent is what the write branch would be created from, observed with it: present only
-                      while the remote does not carry the write branch. Once the branch exists its parent is not
-                      followed, so this is omitted.
+                      Parent is what the branch would be created from, observed with it: present only while the
+                      remote does not carry the branch. Once the branch exists its parent is not followed, so this
+                      is omitted.
                     properties:
                       branch:
                         description: |-
@@ -736,14 +753,14 @@ spec:
                         type: string
                       commit:
                         description: |-
-                          Commit is the commit hash the parent branch is at on the remote: the commit the write
-                          branch's first commit would build on. Set only when State is Found.
+                          Commit is the commit hash the parent branch is at on the remote: the commit the branch's
+                          first commit would build on. Set only when State is Found.
                         type: string
                       state:
                         description: |-
-                          State is what the write branch would be created from: Found (the parent's tip), Missing
-                          (the parent is not on the remote; nothing is written) or Unborn (an empty repository, with no
-                          refs at all, and no parent configured; the first commit has no history).
+                          State is what the branch would be created from: Found (the parent's tip), Missing (the parent
+                          is not on the remote; nothing is written) or Unborn (an empty repository, with no refs at
+                          all, and no parent configured; the first commit has no history).
                         enum:
                         - Found
                         - Missing

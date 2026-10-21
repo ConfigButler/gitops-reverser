@@ -61,6 +61,24 @@ kinds:
           Push webhook endpoint, so the Git host can say somebody pushed. See
           [receiving push notifications](#receiving-push-notifications-specreceiver)
 
+  - kind: GitBranch
+    title: "`GitBranch` (namespaced): one branch of the repository"
+    intro: "Every field is immutable: to change one, delete the `GitBranch` and create a new one."
+    fields:
+      - path: gitProviderRef
+        doc: >-
+          The `GitProvider`, in this namespace, whose repository and credential write this branch
+      - path: branch
+        doc: >-
+          Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a
+          repository branch
+      - path: parentBranch
+        default: the remote's default branch
+        doc: >-
+          Branch a `branch` the remote does not have yet is created from. Only read, so it need not
+          be allowed. See
+          [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch)
+
   - kind: ClusterProvider
     title: "`ClusterProvider` (cluster-scoped): the source cluster"
     fields:
@@ -104,11 +122,18 @@ kinds:
     title: "`GitTarget` (namespaced): which branch and folder"
     intro: "The destination fields are immutable: to move a target, delete it and create a new one."
     fields:
+      - path: gitBranchRef
+        default: "`gitProviderRef` and `branch` instead"
+        doc: >-
+          The `GitBranch` this target writes: its own namespace, or `namespace` names one whose
+          `GitProvider`'s `accessFrom` admits it
       - path: gitProviderRef
+        default: "`gitBranchRef` instead"
         doc: >-
           The `GitProvider` backing this target: its own namespace, or `namespace` names one whose
           `accessFrom` admits it. Every target on one repository branch names the same one
       - path: branch
+        default: "`gitBranchRef` instead"
         doc: Branch to write. Must be in the provider's `allowedBranches`
       - path: parentBranch
         default: the remote's default branch

@@ -6,6 +6,7 @@ resources:
   - bases/configbutler.ai_clusterwatchrules.yaml
   - bases/configbutler.ai_commitrequests.yaml
   - bases/configbutler.ai_fluxtriggers.yaml
+  - bases/configbutler.ai_gitbranches.yaml
   - bases/configbutler.ai_gitproviders.yaml
   - bases/configbutler.ai_gittargets.yaml
   - bases/configbutler.ai_watchrules.yaml

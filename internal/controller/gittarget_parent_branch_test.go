@@ -280,21 +280,21 @@ func TestParentBranchReadiness_IgnoresAnotherRepository(t *testing.T) {
 // a parent was named, and a moved parent is news even when the write branch is still absent.
 func TestParentStatusOf(t *testing.T) {
 	absent := git.RemoteObservation{ParentState: git.ParentFound, ParentBranch: "main", ParentCommit: "aaaa"}
-	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{
-		State: configbutleraiv1alpha3.GitTargetParentFound, Branch: "main", Commit: "aaaa",
+	assert.Equal(t, &configbutleraiv1alpha3.GitBranchParentStatus{
+		State: configbutleraiv1alpha3.GitBranchParentFound, Branch: "main", Commit: "aaaa",
 	}, parentStatusOf(absent))
 	assert.Nil(t, parentStatusOf(git.RemoteObservation{Commit: "bbbb"}),
 		"an existing write branch does not follow its parent")
 	assert.Nil(t, parentStatusOf(git.RemoteObservation{}), "an observation that names no parent state")
-	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{State: configbutleraiv1alpha3.GitTargetParentUnborn},
+	assert.Equal(t, &configbutleraiv1alpha3.GitBranchParentStatus{State: configbutleraiv1alpha3.GitBranchParentUnborn},
 		parentStatusOf(git.RemoteObservation{ParentState: git.ParentUnborn}), "an empty repository")
-	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{
-		State: configbutleraiv1alpha3.GitTargetParentMissing, Branch: "release",
+	assert.Equal(t, &configbutleraiv1alpha3.GitBranchParentStatus{
+		State: configbutleraiv1alpha3.GitBranchParentMissing, Branch: "release",
 	}, parentStatusOf(git.RemoteObservation{ParentState: git.ParentMissing, ParentBranch: "release"}),
 		"a missing parent is named with no commit")
 
 	at := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	published := &configbutleraiv1alpha3.GitTargetRemoteStatus{LastVerifiedAt: &at, Parent: parentStatusOf(absent)}
+	published := &configbutleraiv1alpha3.GitBranchRemoteStatus{LastVerifiedAt: &at, Parent: parentStatusOf(absent)}
 	moved := published.DeepCopy()
 	moved.Parent.Commit = "cccc"
 	assert.True(t, remoteStatusIsNews(published, moved), "the parent moved")

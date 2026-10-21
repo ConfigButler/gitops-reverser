@@ -143,7 +143,7 @@ func (r *GitTargetReconciler) publishRemote(
 		// last thing anyone proved about it, and there is nothing better to replace it with.
 		return 0
 	}
-	next := &configbutleraiv1alpha3.GitTargetRemoteStatus{
+	next := &configbutleraiv1alpha3.GitBranchRemoteStatus{
 		Commit:         observed.Commit,
 		LastVerifiedAt: &metav1.Time{Time: observed.At},
 		VerifiedBy:     string(observed.By),
@@ -200,7 +200,7 @@ func differentRepository(a, b git.RepoIdentity) bool {
 //
 // News is not permission to write. It is the first of two tests; publishRemote applies the write
 // floor to whatever passes here.
-func remoteStatusIsNews(published, next *configbutleraiv1alpha3.GitTargetRemoteStatus) bool {
+func remoteStatusIsNews(published, next *configbutleraiv1alpha3.GitBranchRemoteStatus) bool {
 	if published == nil || published.LastVerifiedAt == nil || next.LastVerifiedAt == nil {
 		return true
 	}
@@ -214,18 +214,18 @@ func remoteStatusIsNews(published, next *configbutleraiv1alpha3.GitTargetRemoteS
 
 // parentStatusOf is the parent stanza of status.remote: present only while the observation found
 // the write branch absent, which is when it says what the branch would be created from.
-func parentStatusOf(observed git.RemoteObservation) *configbutleraiv1alpha3.GitTargetParentStatus {
+func parentStatusOf(observed git.RemoteObservation) *configbutleraiv1alpha3.GitBranchParentStatus {
 	if observed.Commit != "" || observed.ParentState == "" {
 		return nil
 	}
-	return &configbutleraiv1alpha3.GitTargetParentStatus{
-		State:  configbutleraiv1alpha3.GitTargetParentState(observed.ParentState),
+	return &configbutleraiv1alpha3.GitBranchParentStatus{
+		State:  configbutleraiv1alpha3.GitBranchParentState(observed.ParentState),
 		Branch: observed.ParentBranch,
 		Commit: observed.ParentCommit,
 	}
 }
 
-func equalParentStatus(a, b *configbutleraiv1alpha3.GitTargetParentStatus) bool {
+func equalParentStatus(a, b *configbutleraiv1alpha3.GitBranchParentStatus) bool {
 	if a == nil || b == nil {
 		return a == b
 	}

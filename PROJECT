@@ -30,6 +30,14 @@ resources:
     namespaced: true
   controller: true
   domain: configbutler.ai
+  kind: GitBranch
+  path: github.com/ConfigButler/gitops-reverser/api/v1alpha3
+  version: v1alpha3
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: configbutler.ai
   kind: WatchRule
   path: github.com/ConfigButler/gitops-reverser/api/v1alpha3
   version: v1alpha3

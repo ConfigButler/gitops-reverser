@@ -1,0 +1,280 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: gitbranches.configbutler.ai
+spec:
+  group: configbutler.ai
+  names:
+    kind: GitBranch
+    listKind: GitBranchList
+    plural: gitbranches
+    singular: gitbranch
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.gitProviderRef.name
+      name: Provider
+      type: string
+    - jsonPath: .spec.branch
+      name: Branch
+      type: string
+    - jsonPath: .status.remote.commit
+      name: Commit
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      priority: 1
+      type: string
+    - jsonPath: .status.repository
+      name: Repository
+      priority: 1
+      type: string
+    - jsonPath: .status.gitTargetCount
+      name: Targets
+      priority: 1
+      type: integer
+    - jsonPath: .status.remote.lastVerifiedAt
+      name: Verified
+      priority: 1
+      type: date
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha3
+    schema:
+      openAPIV3Schema:
+        description: |-
+          GitBranch is one branch of a Git repository, written through a GitProvider's credential. It holds
+          the branch for every GitTarget that references it: one branch worker, one credential, one
+          checkout. Only one GitBranch may hold a repository branch at a time.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of GitBranch
+            properties:
+              branch:
+                description: |-
+                  Branch is the branch on the remote that this GitBranch writes. It must match one of the
+                  GitProvider's allowedBranches. Only one GitBranch writes a repository branch: the oldest one
+                  whose credential proves it can open a push session holds it, and any other GitBranch for the
+                  same repository and branch reports Stalled with reason BranchConflict.
+                  Immutable: delete and recreate the GitBranch to change it.
+                minLength: 1
+                type: string
+              gitProviderRef:
+                description: |-
+                  GitProviderRef names the GitProvider, in this GitBranch's namespace, whose repository and
+                  credential this branch is written with. GitTargets in other namespaces may reference this
+                  GitBranch while that GitProvider's spec.accessFrom admits their namespace.
+                  Immutable: delete and recreate the GitBranch to change it.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.gitProviderRef.name must not be empty
+                  rule: self.name != ''
+              parentBranch:
+                description: |-
+                  ParentBranch is the branch spec.branch is created from, and the branch compared against while
+                  spec.branch does not exist on the remote. Omitted: the branch the remote's HEAD points at (its
+                  default branch), or a branch with no history when the repository is empty. When set, it must
+                  exist on the remote for spec.branch to be created; otherwise this GitBranch reports
+                  ParentBranchNotFound and nothing is written. Once spec.branch exists, it is used as it is and
+                  the parent is not followed. It is only read, so it does not need to be in the GitProvider's
+                  allowedBranches.
+                  Immutable, including adding or removing it: delete and recreate the GitBranch to change it.
+                minLength: 1
+                type: string
+            required:
+            - branch
+            - gitProviderRef
+            type: object
+            x-kubernetes-validations:
+            - message: spec.gitProviderRef is immutable; delete and recreate the GitBranch
+                to change it
+              rule: self.gitProviderRef == oldSelf.gitProviderRef
+            - message: spec.branch is immutable; delete and recreate the GitBranch
+                to change it
+              rule: self.branch == oldSelf.branch
+            - message: spec.parentBranch is immutable; delete and recreate the GitBranch
+                to change it
+              rule: has(self.parentBranch) == has(oldSelf.parentBranch) && (!has(self.parentBranch)
+                || self.parentBranch == oldSelf.parentBranch)
+          status:
+            description: status defines the observed state of GitBranch
+            properties:
+              conditions:
+                description: |-
+                  Conditions report whether this GitBranch holds its repository branch and can write it: the
+                  Ready summary plus the kstatus Reconciling/Stalled pair.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              gitTargetCount:
+                description: |-
+                  GitTargetCount is how many GitTargets reference this GitBranch, from any namespace. More than
+                  one means they share its branch worker; each reports its own folder's health on its own
+                  conditions.
+                format: int32
+                type: integer
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              remote:
+                description: |-
+                  Remote is where this branch is on the Git remote, and when that was last proved. It is
+                  renewed by every confirmed look: a successful push as well as a fetch. Absent means nothing
+                  has proved anything yet: nothing has looked, or the GitProvider was recreated against a
+                  different repository and what was published no longer describes the one it names.
+                properties:
+                  commit:
+                    description: |-
+                      Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
+                      the remote at all, which is not an error: a branch does not exist without a commit, and a
+                      branch nothing has written to has nothing there yet.
+                    type: string
+                  lastVerifiedAt:
+                    description: LastVerifiedAt is when the remote was last observed.
+                    format: date-time
+                    type: string
+                  parent:
+                    description: |-
+                      Parent is what the branch would be created from, observed with it: present only while the
+                      remote does not carry the branch. Once the branch exists its parent is not followed, so this
+                      is omitted.
+                    properties:
+                      branch:
+                        description: |-
+                          Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
+                          that is omitted. Empty when State is Unborn, and when the remote names no default branch.
+                        type: string
+                      commit:
+                        description: |-
+                          Commit is the commit hash the parent branch is at on the remote: the commit the branch's
+                          first commit would build on. Set only when State is Found.
+                        type: string
+                      state:
+                        description: |-
+                          State is what the branch would be created from: Found (the parent's tip), Missing (the parent
+                          is not on the remote; nothing is written) or Unborn (an empty repository, with no refs at
+                          all, and no parent configured; the first commit has no history).
+                        enum:
+                        - Found
+                        - Missing
+                        - Unborn
+                        type: string
+                    required:
+                    - state
+                    type: object
+                  verifiedBy:
+                    description: |-
+                      VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
+                      this commit is our own work; `Fetch` means we went and looked, and this is what was
+                      there. A `Fetch` next to a commit no publication of yours produced is how a foreign push
+                      to the branch is read off kubectl.
+                    enum:
+                    - Push
+                    - Fetch
+                    type: string
+                type: object
+              repository:
+                description: |-
+                  Repository is the GitProvider's repository URL, normalized: host and path, with no scheme,
+                  user or ".git" suffix. Together with spec.branch it is the key only one GitBranch may hold, so
+                  two GitProviders spelling one repository differently still conflict.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

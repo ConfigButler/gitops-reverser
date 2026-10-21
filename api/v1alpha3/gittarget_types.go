@@ -10,7 +10,7 @@ import (
 
 // GitTargetSpec defines the desired state of GitTarget.
 //
-// The destination fields — gitProviderRef, branch, and path — are immutable. A
+// The destination fields — gitBranchRef and path — are immutable. A
 // GitTarget materializes the watched resources at exactly one (provider, branch,
 // folder); changing where it writes would orphan the old materialization and require
 // migrating manifests between repositories/branches/folders. Instead of reconciling
@@ -19,15 +19,9 @@ import (
 // simple — a successful snapshot can never be silently invalidated by a destination
 // change.
 //
-// The gitProviderRef rule is guarded on oldSelf rather than written as a plain equality, and the
-// guard is a one-way migration door rather than a loosening. A GitTarget stored before this field
-// was named gitProviderRef serves NO value for it (a field outside the structural schema is not
-// served, measured in TestRenamedRequiredField_StoredObjectCanAdoptIt), so a plain equality would
-// reject the very apply that migrates it and force a delete-and-recreate. Because the field is
-// REQUIRED, it can never be absent on an object created from this release on, so the door is shut
-// for everything except the objects it exists for.
+// +kubebuilder:validation:XValidation:rule="has(self.gitBranchRef) == has(oldSelf.gitBranchRef) && (!has(self.gitBranchRef) || self.gitBranchRef == oldSelf.gitBranchRef)",message="spec.gitBranchRef is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef",message="spec.gitProviderRef is immutable; delete and recreate the GitTarget to change its destination"
-// +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
+// +kubebuilder:validation:XValidation:rule="has(self.branch) == has(oldSelf.branch) && (!has(self.branch) || self.branch == oldSelf.branch)",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.path == oldSelf.path",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="has(self.parentBranch) == has(oldSelf.parentBranch) && (!has(self.parentBranch) || self.parentBranch == oldSelf.parentBranch)",message="spec.parentBranch is immutable; delete and recreate the GitTarget to change it"
 //
@@ -38,21 +32,28 @@ import (
 // +kubebuilder:validation:XValidation:rule="self.clusterProviderRef == oldSelf.clusterProviderRef",message="spec.clusterProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
 // +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applyTriggerRef)",message="spec.onRefusal: Reapply needs spec.applyTriggerRef, the trigger asked to reapply"
 type GitTargetSpec struct {
+	// GitBranchRef names the GitBranch this target writes: the repository branch, and the credential
+	// it is written with. Namespace omitted means this GitTarget's own namespace. A GitBranch in
+	// another namespace is used only while its GitProvider's spec.accessFrom admits this GitTarget's
+	// namespace. Many GitTargets may reference one GitBranch; they share its branch worker.
+	// Immutable: delete and recreate the GitTarget to change its destination.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitBranchRef.name must not be empty"
+	GitBranchRef *meta.NamespacedObjectReference `json:"gitBranchRef,omitempty"`
+
 	// GitProviderRef names the GitProvider that backs this target. Namespace omitted means this
 	// GitTarget's own namespace. A GitProvider in another namespace is used only while its
 	// spec.accessFrom admits this GitTarget's namespace. Many GitTargets may name the same
 	// GitProvider, and every GitTarget writing one repository branch must name the same one.
 	// Immutable: delete and recreate the GitTarget to change its destination.
-	// +required
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitProviderRef.name must not be empty"
-	GitProviderRef meta.NamespacedObjectReference `json:"gitProviderRef"`
+	// +optional
+	GitProviderRef meta.NamespacedObjectReference `json:"gitProviderRef,omitzero"`
 
 	// Branch to use for this target.
 	// Must be one of the allowed branches in the provider.
 	// Immutable: delete and recreate the GitTarget to change its destination.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Branch string `json:"branch"`
+	// +optional
+	Branch string `json:"branch,omitempty"`
 
 	// Why "parent" and not base/source/revision: docs/definitions.md reserves those words, and the
 	// field is flat because it is one fact. It is immutable like branch and path: it decides what
@@ -446,76 +447,7 @@ type GitTargetStatus struct {
 	// recreated against a different repository and what was published no longer describes the
 	// one this target points at.
 	// +optional
-	Remote *GitTargetRemoteStatus `json:"remote,omitempty"`
-}
-
-// GitTargetRemoteStatus is the answer to "where is my branch, and when did we last prove it".
-//
-// It is sampled when the GitTarget reconciles, from what its branch worker last proved about the
-// branch, and written at most once a minute. The first observation, and a correction after the
-// repository changed under the target, are written at once.
-type GitTargetRemoteStatus struct {
-	// Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
-	// the remote at all, which is not an error: a branch does not exist without a commit, and a
-	// target that has never written has nothing there yet.
-	// +optional
-	Commit string `json:"commit,omitempty"`
-
-	// LastVerifiedAt is when the remote was last observed. It answers "has anything looked",
-	// which placement.resolvedAtCommit deliberately does not: that one dates the resolution, so
-	// an old value there means the layout has not changed rather than that nothing has looked.
-	// +optional
-	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
-
-	// VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
-	// this commit is our own work; `Fetch` means we went and looked, and this is what was
-	// there. A `Fetch` next to a commit no publication of yours produced is how a foreign push
-	// to the branch is read off kubectl.
-	// +optional
-	// +kubebuilder:validation:Enum=Push;Fetch
-	VerifiedBy string `json:"verifiedBy,omitempty"`
-
-	// Parent is what the write branch would be created from, observed with it: present only
-	// while the remote does not carry the write branch. Once the branch exists its parent is not
-	// followed, so this is omitted.
-	// +optional
-	Parent *GitTargetParentStatus `json:"parent,omitempty"`
-}
-
-// GitTargetParentState is what a write branch that does not exist yet would be created from.
-// +kubebuilder:validation:Enum=Found;Missing;Unborn
-type GitTargetParentState string
-
-const (
-	// GitTargetParentFound means the parent branch exists; the first commit builds on its tip.
-	GitTargetParentFound GitTargetParentState = "Found"
-	// GitTargetParentMissing means the parent is not on the remote either, so the write branch
-	// cannot be created; the GitTarget reports ParentBranchNotFound. The parent is spec.parentBranch,
-	// or, when that is omitted, the default branch of a repository that is not empty but whose HEAD
-	// names no branch it carries.
-	GitTargetParentMissing GitTargetParentState = "Missing"
-	// GitTargetParentUnborn means the repository is empty, with no refs at all (tags included), and
-	// no parent is configured, so the first commit starts the write branch with no history.
-	GitTargetParentUnborn GitTargetParentState = "Unborn"
-)
-
-// GitTargetParentStatus is the parent branch of a write branch that does not exist yet.
-type GitTargetParentStatus struct {
-	// State is what the write branch would be created from: Found (the parent's tip), Missing
-	// (the parent is not on the remote; nothing is written) or Unborn (an empty repository, with no
-	// refs at all, and no parent configured; the first commit has no history).
-	// +required
-	State GitTargetParentState `json:"state"`
-
-	// Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
-	// that is omitted. Empty when State is Unborn, and when the remote names no default branch.
-	// +optional
-	Branch string `json:"branch,omitempty"`
-
-	// Commit is the commit hash the parent branch is at on the remote: the commit the write
-	// branch's first commit would build on. Set only when State is Found.
-	// +optional
-	Commit string `json:"commit,omitempty"`
+	Remote *GitBranchRemoteStatus `json:"remote,omitempty"`
 }
 
 // Two rules for anything added here. A field earns its place only if a reader cannot get it from
@@ -682,6 +614,20 @@ func (g *GitTarget) GitProviderKey() types.NamespacedName {
 		namespace = g.Namespace
 	}
 	return types.NamespacedName{Namespace: namespace, Name: g.Spec.GitProviderRef.Name}
+}
+
+// GitBranchKey is the GitBranch this GitTarget writes: spec.gitBranchRef, in this GitTarget's own
+// namespace unless the reference names another one. An unset reference names nothing, and the zero
+// key says exactly that.
+func (g *GitTarget) GitBranchKey() types.NamespacedName {
+	if g.Spec.GitBranchRef == nil {
+		return types.NamespacedName{}
+	}
+	namespace := g.Spec.GitBranchRef.Namespace
+	if namespace == "" {
+		namespace = g.Namespace
+	}
+	return types.NamespacedName{Namespace: namespace, Name: g.Spec.GitBranchRef.Name}
 }
 
 // IsLocalSource reports whether this GitTarget references the "default" ClusterProvider, which the

@@ -26,6 +26,12 @@ func (t *GitTarget) SetObservedGeneration(generation int64) { t.Status.ObservedG
 func (t *GitTarget) StatusConditions() *[]metav1.Condition { return &t.Status.Conditions }
 
 // SetObservedGeneration records the generation this object's status describes.
+func (b *GitBranch) SetObservedGeneration(generation int64) { b.Status.ObservedGeneration = generation }
+
+// StatusConditions returns the condition set to write through.
+func (b *GitBranch) StatusConditions() *[]metav1.Condition { return &b.Status.Conditions }
+
+// SetObservedGeneration records the generation this object's status describes.
 func (p *GitProvider) SetObservedGeneration(generation int64) {
 	p.Status.ObservedGeneration = generation
 }
