@@ -52,8 +52,8 @@ omitted means "the control cluster, acting as a source".
 and a verb for the act. The operator mirrors; it does not "sync", "export" or "back up", and those
 three words are not used.
 
-**Folder.** The Git directory one `GitTarget` owns, at `spec.path` on `spec.branch`. A folder has
-exactly one `GitTarget`, and one `GitTarget` has exactly one folder.
+**Folder.** The Git directory one `GitTarget` owns, at `spec.path` on its `GitBranch`'s branch. A
+folder has exactly one `GitTarget`, and one `GitTarget` has exactly one folder.
 
 The two directions, which share the word "source" and must not share anything else:
 
@@ -129,16 +129,21 @@ Observation failure supplies no evidence of absence. The code calls this write-s
 
 **Branch worker.** The single event loop that owns one repository branch: the repository's URL, as
 `internal/repourl` normalizes it, and the branch. Every write to that branch goes through it, with
-the credential of the one `GitProvider` that owns the branch, the `GitProvider` of the oldest
-`GitTarget` writing it. Two words, lowercase in prose, `BranchWorker` as the Go type.
+the credential of the `GitProvider` named by the `GitBranch` that holds the branch. Two words,
+lowercase in prose, `BranchWorker` as the Go type.
 
-**Write branch.** The branch a `GitTarget` writes to: `spec.branch`. It must be in the
-`GitProvider`'s `allowedBranches`.
+**Branch claim.** Which `GitBranch` holds a repository branch: the oldest one whose credential opened
+a push session on the remote. Only the holder gets a branch worker; another `GitBranch` for the same
+repository branch reports `BranchConflict`. Say "branch claim", or that a `GitBranch` "holds" its
+branch; never a bare "claim", which names a rule's demand on the read side. `BranchClaims` in Go.
+
+**Write branch.** The branch a `GitTarget` writes to: its `GitBranch`'s `spec.branch`. It must be in
+the `GitProvider`'s `allowedBranches`.
 
 **Parent branch.** The branch a write branch is created from, and compared against while the write
-branch does not exist on the remote: `spec.parentBranch`, or the remote's default branch when that
-is omitted. Say "parent branch"; a bare "parent" is fine where the subject is already a branch, such
-as the `status.remote.parent` stanza or a sentence that has just named the parent branch. Use the
+branch does not exist on the remote: the `GitBranch`'s `spec.parentBranch`, or the remote's default
+branch when that is omitted. Say "parent branch"; a bare "parent" is fine where the subject is
+already a branch, such as the `status.remote.parent` stanza or a sentence that has just named the parent branch. Use the
 full term wherever a parent *resource* could be meant. Not "base", which names a kustomize read-only
 base and base trust, and not "source", which names the source cluster. Once the write branch exists,
 the parent branch is not followed.
@@ -164,7 +169,7 @@ applies those actions to the newer tip instead of planning the cluster's picture
 `PendingWrite` and `pendingWrites` in Go. Not "log", which also names diagnostic logs and suggests
 a durable journal, which this is not.
 
-**Publication.** One commit-and-push cycle by a branch worker. The thing a `GitTarget` reports in
+**Publication.** One commit-and-push cycle by a branch worker. The thing a `GitBranch` reports in
 `status.remote`.
 
 **Commit.** A bare Git commit hash, wherever one appears in the API: `status.remote.commit`,
@@ -314,7 +319,7 @@ fault. `AuditFactsReceived` is the only one.
 
 **Observation.** A status field that reports what was measured rather than asserting health:
 `status.streams`, `status.retention`, `status.placement`, `status.remote`,
-`GitProvider.status.branches`. Observations are bounded (counts and capped samples, never a list
+`GitBranch.status.gitTargetCount`. Observations are bounded (counts and capped samples, never a list
 that grows with the cluster) and never drive a condition on their own.
 
 **Reason.** The short answer to "why is this condition in this state". It is not a restatement of

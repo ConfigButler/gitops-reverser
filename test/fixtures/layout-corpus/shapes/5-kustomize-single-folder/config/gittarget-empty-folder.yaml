@@ -1,3 +1,13 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: app-repository-main
+  namespace: shop
+spec:
+  gitProviderRef:
+    name: app-repository
+  branch: main
+---
 # The same folder, when it does not exist yet. This is the ONLY difference
 # between adopting a kustomize folder and creating one.
 apiVersion: configbutler.ai/v1alpha3
@@ -6,9 +16,8 @@ metadata:
   name: checkout
   namespace: shop
 spec:
-  gitProviderRef:
-    name: app-repository
-  branch: main
+  gitBranchRef:
+    name: app-repository-main
   path: apps/checkout
   # There is nothing to infer from, so both halves are declared. useKustomize
   # writes the root; serializeNamespace: false is honest BECAUSE the operator owns

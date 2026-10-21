@@ -1,12 +1,21 @@
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: flux-sources
+  name: homelab-repository-main
   namespace: flux-system
 spec:
   gitProviderRef:
     name: homelab-repository
   branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: flux-sources
+  namespace: flux-system
+spec:
+  gitBranchRef:
+    name: homelab-repository-main
   # Not clusters/home/flux-system. That directory belongs to `flux bootstrap`, and a
   # GitTarget must not point at a path another controller writes.
   path: infrastructure/home/sources

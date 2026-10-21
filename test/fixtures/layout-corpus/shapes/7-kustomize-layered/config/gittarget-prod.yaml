@@ -1,12 +1,21 @@
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: checkout-prod
+  name: app-repository-main
   namespace: shop-prod
 spec:
   gitProviderRef:
     name: app-repository
   branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout-prod
+  namespace: shop-prod
+spec:
+  gitBranchRef:
+    name: app-repository-main
   # The leaf again, and here it is not a preference. envs/prod and envs/test both
   # include layers/observability, so every file in that layer has fan-in 2 and is
   # refused as a write target (L2). The leaf is the only folder in this tree with a

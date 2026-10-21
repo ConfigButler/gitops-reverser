@@ -71,7 +71,7 @@ kinds:
       - path: branch
         doc: >-
           Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a
-          repository branch
+          repository branch; see [who writes a repository branch](#who-writes-a-repository-branch)
       - path: parentBranch
         default: the remote's default branch
         doc: >-

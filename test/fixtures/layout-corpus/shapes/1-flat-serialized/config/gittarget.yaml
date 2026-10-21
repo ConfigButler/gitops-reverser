@@ -1,14 +1,23 @@
 apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: mirror-repository-main
+  namespace: homelab-config
+spec:
+  gitProviderRef:
+    name: mirror-repository
+  branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: prod-mirror
   namespace: homelab-config
 spec:
-  gitProviderRef:
-    name: mirror-repository
+  gitBranchRef:
+    name: mirror-repository-main
   clusterProviderRef:
     name: prod
-  branch: main
   path: mirror/prod
   # The WatchRule beside this file names source namespaces other than its own. The
   # ClusterProvider's allowCrossNamespace.sources is the only grant that needs, and the

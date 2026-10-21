@@ -1,12 +1,21 @@
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: argocd-applications
+  name: homelab-repository-main
   namespace: argocd
 spec:
   gitProviderRef:
     name: homelab-repository
   branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: argocd-applications
+  namespace: argocd
+spec:
+  gitBranchRef:
+    name: homelab-repository-main
   path: bootstrap/argocd-applications
   # Safe here only because the folder's kustomization.yaml supplies
   # namespace: argocd — and that file belongs to the repository owner, not to us.

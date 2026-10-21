@@ -86,11 +86,19 @@ per-type policy explicit:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
+metadata:
+  name: platform-main
 spec:
   gitProviderRef:
     name: platform
   branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+spec:
+  gitBranchRef:
+    name: platform-main
   path: clusters/prod
   placement:
     byType:
@@ -119,8 +127,8 @@ escape hatch if users later need scope-wide or metadata-aware placement.
 
 ## Current implementation, as reviewed
 
-The current `GitTargetSpec` has `gitProviderRef`, `branch`, `path`, and optional
-`encryption`; it has no placement policy yet
+The `GitTargetSpec` reviewed here had `gitProviderRef`, `branch`, `path`, and optional
+`encryption` (the first two are on `GitBranch` now); it had no placement policy yet
 ([api/v1alpha3/gittarget_types.go](../../api/v1alpha3/gittarget_types.go)).
 
 The writer already uses the materialized-model direction described in

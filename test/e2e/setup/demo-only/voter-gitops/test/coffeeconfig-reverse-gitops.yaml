@@ -11,13 +11,21 @@ spec:
     name: git-creds-demo
 ---
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: demo-coffeeconfig
+  name: demo-coffeeconfig-demo-test
 spec:
   gitProviderRef:
     name: demo-coffeeconfig
   branch: demo-test
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: demo-coffeeconfig
+spec:
+  gitBranchRef:
+    name: demo-coffeeconfig-demo-test
   path: voter-coffee
   commit:
     window:

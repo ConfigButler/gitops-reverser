@@ -37,6 +37,7 @@ What the chart did for you:
 {{- end }}
 - created quickstart resources in namespace `{{ .Values.quickstart.namespace }}`
   - GitProvider: `{{ .Values.quickstart.gitProvider.name }}`
+  - GitBranch: `{{ .Values.quickstart.gitBranch.name }}`
   - GitTarget: `{{ .Values.quickstart.gitTarget.name }}`
   - WatchRule: `{{ .Values.quickstart.watchRule.name }}`
 {{- end }}

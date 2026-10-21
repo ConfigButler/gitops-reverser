@@ -197,7 +197,32 @@ const e2eCommitWindow = "0s"
 // cap would be exactly such a timer.
 const e2eCommitMaxDuration = "24h"
 
-// createGitTarget creates a GitTarget that binds a GitProvider, branch and path.
+// gitBranchName is the GitBranch the e2e helpers create for a GitProvider's branch: one per
+// provider and branch, in the provider's namespace, so every GitTarget the helpers create on that
+// branch shares it.
+func gitBranchName(providerName, branch string) string {
+	return providerName + "-" + strings.ReplaceAll(strings.ToLower(branch), "/", "-")
+}
+
+// gitBranchManifest is the GitBranch gitBranchName(providerName, "main") in namespace, as a YAML
+// document followed by a separator, for a spec that applies its GitTarget as an inline manifest.
+func gitBranchManifest(namespace, providerName string) string {
+	const branch = "main"
+	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  gitProviderRef:
+    name: %s
+  branch: %s
+---
+`, gitBranchName(providerName, branch), namespace, providerName, branch)
+}
+
+// createGitTarget creates a GitTarget on the GitBranch of a GitProvider's branch, creating that
+// GitBranch too (applying it again is a no-op), with a path.
 func createGitTarget(name, namespace, providerName, path, branch string) {
 	createGitTargetWithCommitWindow(name, namespace, providerName, path, branch, e2eCommitWindow)
 }
@@ -256,7 +281,8 @@ func createGitTargetWithOptions(
 	applyGitTarget(name, namespace, providerName, path, branch, "", encryptionSecretName, generateWhenMissing, commit)
 }
 
-// createGitTargetWithParentBranch is createGitTarget with spec.parentBranch; empty omits it.
+// createGitTargetWithParentBranch is createGitTarget whose GitBranch has spec.parentBranch; empty
+// omits it.
 func createGitTargetWithParentBranch(name, namespace, providerName, path, branch, parentBranch string) {
 	applyGitTarget(name, namespace, providerName, path, branch, parentBranch,
 		e2eEncryptionRefName, false, gitTargetCommitOptions{Window: e2eCommitWindow})
@@ -273,12 +299,13 @@ func applyGitTarget(
 	generateWhenMissing bool,
 	commit gitTargetCommitOptions,
 ) {
-	By(fmt.Sprintf("creating GitTarget '%s' in ns '%s' for GitProvider '%s' with path '%s'",
-		name, namespace, providerName, path))
+	By(fmt.Sprintf("creating GitTarget '%s' in ns '%s' on GitBranch '%s' with path '%s'",
+		name, namespace, gitBranchName(providerName, branch), path))
 
 	data := struct {
 		Name                 string
 		Namespace            string
+		GitBranchName        string
 		ProviderName         string
 		Branch               string
 		ParentBranch         string
@@ -292,6 +319,7 @@ func applyGitTarget(
 	}{
 		Name:                 name,
 		Namespace:            namespace,
+		GitBranchName:        gitBranchName(providerName, branch),
 		ProviderName:         providerName,
 		Branch:               branch,
 		ParentBranch:         parentBranch,

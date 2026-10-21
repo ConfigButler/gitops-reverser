@@ -153,8 +153,12 @@ func describeMissingParentRecoverySpec() {
 
 		By("an edit made while release does not exist is not written")
 		applyParentConfigMap(testNs, "made-while-missing")
+		branchName := gitBranchName(providerName, writeBranch)
 		Eventually(func(g Gomega) {
-			g.Expect(readyReasonOf(g, destName, testNs)).To(Equal("ParentBranchNotFound"))
+			g.Expect(gitBranchReadyReasonOf(g, branchName, testNs)).To(Equal("ParentBranchNotFound"),
+				"the GitBranch reports the missing parent")
+			g.Expect(readyReasonOf(g, destName, testNs)).To(Equal("GitBranchNotReady"),
+				"and its GitTarget waits for it")
 		}, 3*time.Minute, 3*time.Second).Should(Succeed())
 		Expect(remoteBranchHeadOf(Default, repo.CheckoutDir, writeBranch)).To(BeEmpty(), "no orphan branch")
 
@@ -183,8 +187,9 @@ func describeMissingParentRecoverySpec() {
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 		Eventually(func(g Gomega) {
-			g.Expect(readyReasonOf(g, destName, testNs)).NotTo(
+			g.Expect(gitBranchReadyReasonOf(g, branchName, testNs)).NotTo(
 				BeElementOf("ParentBranchNotFound", "RecoveringParentBranch"))
+			g.Expect(readyReasonOf(g, destName, testNs)).NotTo(Equal("GitBranchNotReady"))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 	})
 }
@@ -277,13 +282,14 @@ data:
 			func(v float64) bool { return v > 0 },
 			"the worker for the write branch checked out the parent", 2*time.Minute)
 
-		By("status.remote names the parent the write branch would be created from")
+		By("the GitBranch's status.remote names the parent the write branch would be created from")
+		branchName := gitBranchName(providerName, writeBranch)
 		Eventually(func(g Gomega) {
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "commit")).To(BeEmpty(), "the write branch is absent")
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "parent.state")).To(Equal("Found"))
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "parent.branch")).To(Equal(parent),
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "commit")).To(BeEmpty(), "the write branch is absent")
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "parent.state")).To(Equal("Found"))
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "parent.branch")).To(Equal(parent),
 				"with spec.parentBranch omitted this is the default branch the remote resolved")
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "parent.commit")).To(Equal(hashA))
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "parent.commit")).To(Equal(hashA))
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("an idle, in-sync target creates no branch")
@@ -404,4 +410,13 @@ func checkoutRemoteTipOf(repo *RepoArtifacts, branch string, runGit func(...stri
 	}
 	_, _ = gitRun(repo.CheckoutDir, "rm", "-rf", ".")
 	return nil
+}
+
+// gitBranchReadyReasonOf reads a GitBranch's Ready reason.
+func gitBranchReadyReasonOf(g Gomega, name, namespace string) string {
+	GinkgoHelper()
+	out, err := kubectlRunInNamespace(namespace, "get", "gitbranch", name,
+		"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].reason}`)
+	g.Expect(err).NotTo(HaveOccurred(), "failed to read Ready reason of GitBranch %q", name)
+	return strings.TrimSpace(out)
 }

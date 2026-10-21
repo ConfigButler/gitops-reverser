@@ -1,7 +1,7 @@
 # Quick start
 
 Point this at a disposable repository: the demo commits real cluster state, and the fastest way to
-throw it away afterwards is to delete the repo. It creates a starter `GitProvider`,
+throw it away afterwards is to delete the repo. It creates a starter `GitProvider`, `GitBranch`,
 `GitTarget`, and `WatchRule` in the `gitops-reverser-quickstart-demo` namespace, watching ConfigMaps
 there and writing them to
 `<your-repo>/live-cluster` on `main`. It runs in `configured-author` mode (no Redis) by default. The
@@ -104,10 +104,12 @@ kubectl rollout status deployment/gitops-reverser -n gitops-reverser --timeout=3
 Then check the starter resources:
 
 ```bash
-kubectl get gitprovider,gittarget,watchrule -n gitops-reverser-quickstart-demo
+kubectl get gitprovider,gitbranch,gittarget,watchrule -n gitops-reverser-quickstart-demo
 ```
 
-The `GitProvider` and `WatchRule` should report `Ready=True`. The `GitTarget`'s aggregate `Ready`
+The `GitProvider`, `GitBranch` and `WatchRule` should report `Ready=True`. A `GitBranch` holds `main`
+once the credential can open a push session on the repository; if it reports `PushSessionFailed`,
+the Secret is missing, wrong, or may not push. The `GitTarget`'s aggregate `Ready`
 stays `Unknown` until its first source discovery, which is the expected state and not a fault, so
 the condition to check on it is `Validated`. It is not a printed column, so ask for it directly:
 

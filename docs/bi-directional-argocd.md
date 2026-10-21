@@ -187,7 +187,7 @@ against them.
 | Rule | Reported when broken |
 | --- | --- |
 | `spec.source.repoURL` is the `GitProvider`'s repository. The forms compare as one repository: `https://` and `ssh://`, `git@host:org/repo` (SCP style), a trailing `.git` or `/`, letter case, and the default port | `SourceMismatch`: `the applier of ArgoCDTrigger checkout applies <url>, not <url>`, on the `GitTarget`, and on the trigger when no `GitTarget` naming it matches |
-| `spec.source.targetRevision` is the `GitTarget`'s `spec.branch`, as the name or as `refs/heads/<name>`. `HEAD` (and an empty `targetRevision`), a tag and a commit never follow the branch | `SourceMismatch`: `the applier of ArgoCDTrigger checkout applies branch "HEAD", not main`, on the same objects |
+| `spec.source.targetRevision` is the `spec.branch` of the `GitTarget`'s `GitBranch`, as the name or as `refs/heads/<name>`. `HEAD` (and an empty `targetRevision`), a tag and a commit never follow the branch | `SourceMismatch`: `the applier of ArgoCDTrigger checkout applies branch "HEAD", not main`, on the same objects |
 | A single `spec.source`: no `spec.sources`, no `spec.sourceHydrator` | trigger `UnsupportedSource`: `syncs only a single-source Application` |
 | Automated sync is off: `spec.syncPolicy.automated` is absent, or has `enabled: false`. This is Argo CD's own rule; an `automated` block with no `enabled` is on | trigger `AutomatedSyncEnabled` |
 

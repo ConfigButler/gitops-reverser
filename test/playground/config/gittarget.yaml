@@ -1,12 +1,21 @@
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: playground-target
+  name: playground-provider-main
   namespace: tilt-playground
 spec:
   gitProviderRef:
     name: playground-provider
   branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: playground-target
+  namespace: tilt-playground
+spec:
+  gitBranchRef:
+    name: playground-provider-main
   # Keep playground writes under a folder. Use "." only when testing repo-root ownership.
   path: live-cluster
   # Every event is its own commit, so a playground change shows up in Git immediately.

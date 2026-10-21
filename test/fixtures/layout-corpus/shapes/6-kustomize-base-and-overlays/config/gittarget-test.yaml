@@ -1,3 +1,13 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: app-repository-main
+  namespace: shop-test
+spec:
+  gitProviderRef:
+    name: app-repository
+  branch: main
+---
 # The second and third targets are the same object with the environment swapped.
 # Nothing is shared between them except the byType map, if one were declared.
 apiVersion: configbutler.ai/v1alpha3
@@ -6,7 +16,6 @@ metadata:
   name: checkout-test
   namespace: shop-test
 spec:
-  gitProviderRef:
-    name: app-repository
-  branch: main
+  gitBranchRef:
+    name: app-repository-main
   path: apps/checkout/overlays/test

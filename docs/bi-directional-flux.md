@@ -161,7 +161,7 @@ of them are checked again before every apply.
 | Rule | Reported when broken |
 | --- | --- |
 | `spec.url` is the `GitProvider`'s repository. The forms compare as one repository: `https://` and `ssh://`, `git@host:org/repo` (SCP style), a trailing `.git` or `/`, letter case, and the default port | `SourceMismatch`: `the applier of FluxTrigger checkout applies <url>, not <url>`, on the `GitTarget`, and on the trigger when no `GitTarget` naming it matches |
-| `spec.ref.branch` is exactly the `GitTarget`'s `spec.branch` | `SourceMismatch`: `the applier of FluxTrigger checkout applies branch "release", not main`, on the same objects |
+| `spec.ref.branch` is exactly the `spec.branch` of the `GitTarget`'s `GitBranch` | `SourceMismatch`: `the applier of FluxTrigger checkout applies branch "release", not main`, on the same objects |
 | `spec.ref` pins nothing stronger: no `commit`, `name`, `semver` or `tag`, even alongside the branch. Flux resolves those before the branch, so the artifact would never follow it | trigger `UnsupportedSource`: `pins spec.ref.tag "v1.0.0", so it never follows a branch` |
 | `spec.ref.branch` is set | trigger `UnsupportedSource`: `names no spec.ref.branch` |
 
