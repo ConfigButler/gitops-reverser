@@ -28,10 +28,6 @@ spec:
       name: Suspended
       priority: 1
       type: boolean
-    - jsonPath: .status.remote.lastVerifiedAt
-      name: Verified
-      priority: 1
-      type: date
     - jsonPath: .status.placement.mode
       name: Layout
       priority: 1
@@ -68,12 +64,8 @@ spec:
       name: Encryption
       priority: 1
       type: string
-    - jsonPath: .spec.gitProviderRef.name
-      name: Provider
-      priority: 1
-      type: string
-    - jsonPath: .spec.branch
-      name: Branch
+    - jsonPath: .spec.gitBranchRef.name
+      name: GitBranch
       priority: 1
       type: string
     - jsonPath: .spec.path
@@ -141,10 +133,8 @@ spec:
                 type: object
               branch:
                 description: |-
-                  Branch to use for this target.
-                  Must be one of the allowed branches in the provider.
-                  Immutable: delete and recreate the GitTarget to change its destination.
-                minLength: 1
+                  RemovedBranch is the old place of GitBranch.spec.branch. It is never read; setting it is
+                  refused.
                 type: string
               clusterProviderRef:
                 default:
@@ -321,12 +311,12 @@ spec:
                 required:
                 - provider
                 type: object
-              gitProviderRef:
+              gitBranchRef:
                 description: |-
-                  GitProviderRef names the GitProvider that backs this target. Namespace omitted means this
-                  GitTarget's own namespace. A GitProvider in another namespace is used only while its
-                  spec.accessFrom admits this GitTarget's namespace. Many GitTargets may name the same
-                  GitProvider, and every GitTarget writing one repository branch must name the same one.
+                  GitBranchRef names the GitBranch this target writes: the repository branch, and the credential
+                  it is written with. Namespace omitted means this GitTarget's own namespace. A GitBranch in
+                  another namespace is used only while its GitProvider's spec.accessFrom admits this GitTarget's
+                  namespace. Many GitTargets may reference one GitBranch; they share its branch worker.
                   Immutable: delete and recreate the GitTarget to change its destination.
                 properties:
                   name:
@@ -340,8 +330,23 @@ spec:
                 - name
                 type: object
                 x-kubernetes-validations:
-                - message: spec.gitProviderRef.name must not be empty
+                - message: spec.gitBranchRef.name must not be empty
                   rule: self.name != ''
+              gitProviderRef:
+                description: |-
+                  RemovedGitProviderRef is the old place of GitBranch.spec.gitProviderRef. It is never read;
+                  setting it is refused.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
+                    type: string
+                required:
+                - name
+                type: object
               onRefusal:
                 default: Ignore
                 description: |-
@@ -371,16 +376,8 @@ spec:
                 type: string
               parentBranch:
                 description: |-
-                  ParentBranch is the branch the write branch (spec.branch) is created from, and the branch the
-                  target compares against while the write branch does not exist on the remote. Omitted: the
-                  branch the remote's HEAD points at (its default branch), or a branch with no history when
-                  the repository is empty. When set, it must exist on the remote for the write branch to be
-                  created; otherwise the GitTarget reports ParentBranchNotFound and writes nothing. Once the
-                  write branch exists, it is used as it is and the parent is not followed. It is only read, so
-                  it does not need to be in the GitProvider's allowedBranches. All GitTargets on one GitProvider
-                  and branch must name the same parent branch (omitted counts as its own value).
-                  Immutable, including adding or removing it: delete and recreate the GitTarget to change it.
-                minLength: 1
+                  RemovedParentBranch is the old place of GitBranch.spec.parentBranch. It is never read;
+                  setting it is refused.
                 type: string
               path:
                 description: |-
@@ -541,24 +538,19 @@ spec:
                   resync; the writes suppressed while suspended are not replayed.
                 type: boolean
             required:
-            - branch
-            - gitProviderRef
+            - gitBranchRef
             - path
             type: object
             x-kubernetes-validations:
-            - message: spec.gitProviderRef is immutable; delete and recreate the GitTarget
+            - message: spec.gitBranchRef is immutable; delete and recreate the GitTarget
                 to change its destination
-              rule: '!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef'
-            - message: spec.branch is immutable; delete and recreate the GitTarget
-                to change its destination
-              rule: self.branch == oldSelf.branch
+              rule: self.gitBranchRef == oldSelf.gitBranchRef
             - message: spec.path is immutable; delete and recreate the GitTarget to
                 change its destination
               rule: self.path == oldSelf.path
-            - message: spec.parentBranch is immutable; delete and recreate the GitTarget
-                to change it
-              rule: has(self.parentBranch) == has(oldSelf.parentBranch) && (!has(self.parentBranch)
-                || self.parentBranch == oldSelf.parentBranch)
+            - message: spec.gitProviderRef, spec.branch and spec.parentBranch moved
+                to a GitBranch; set spec.gitBranchRef to it
+              rule: '!has(self.gitProviderRef) && !has(self.branch) && !has(self.parentBranch)'
             - message: spec.clusterProviderRef is immutable; delete and recreate the
                 GitTarget to change the cluster it mirrors
               rule: self.clusterProviderRef == oldSelf.clusterProviderRef
@@ -700,67 +692,6 @@ spec:
 
                       It is empty when the branch had no commit at the time (a folder nothing has written to yet)
                       and is filled in by the first scan that finds one.
-                    type: string
-                type: object
-              remote:
-                description: |-
-                  Remote is where this target's branch is on the Git remote, and when that was last proved.
-                  It is renewed by every confirmed look: a successful push as well as a fetch. Absent means
-                  nothing has proved anything yet — either nothing has looked, or the GitProvider was
-                  recreated against a different repository and what was published no longer describes the
-                  one this target points at.
-                properties:
-                  commit:
-                    description: |-
-                      Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
-                      the remote at all, which is not an error: a branch does not exist without a commit, and a
-                      target that has never written has nothing there yet.
-                    type: string
-                  lastVerifiedAt:
-                    description: |-
-                      LastVerifiedAt is when the remote was last observed. It answers "has anything looked",
-                      which placement.resolvedAtCommit deliberately does not: that one dates the resolution, so
-                      an old value there means the layout has not changed rather than that nothing has looked.
-                    format: date-time
-                    type: string
-                  parent:
-                    description: |-
-                      Parent is what the write branch would be created from, observed with it: present only
-                      while the remote does not carry the write branch. Once the branch exists its parent is not
-                      followed, so this is omitted.
-                    properties:
-                      branch:
-                        description: |-
-                          Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
-                          that is omitted. Empty when State is Unborn, and when the remote names no default branch.
-                        type: string
-                      commit:
-                        description: |-
-                          Commit is the commit hash the parent branch is at on the remote: the commit the write
-                          branch's first commit would build on. Set only when State is Found.
-                        type: string
-                      state:
-                        description: |-
-                          State is what the write branch would be created from: Found (the parent's tip), Missing
-                          (the parent is not on the remote; nothing is written) or Unborn (an empty repository, with no
-                          refs at all, and no parent configured; the first commit has no history).
-                        enum:
-                        - Found
-                        - Missing
-                        - Unborn
-                        type: string
-                    required:
-                    - state
-                    type: object
-                  verifiedBy:
-                    description: |-
-                      VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
-                      this commit is our own work; `Fetch` means we went and looked, and this is what was
-                      there. A `Fetch` next to a commit no publication of yours produced is how a foreign push
-                      to the branch is read off kubectl.
-                    enum:
-                    - Push
-                    - Fetch
                     type: string
                 type: object
               retention:

@@ -268,9 +268,8 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: ns},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "provider-a"},
-			Branch:         "main",
-			Path:           "apps",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("provider-a", "main")},
+			Path:         "apps",
 			Placement: &configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "{bogus}/all.yaml",
 			},
@@ -281,7 +280,11 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 	reconciler := &GitTargetReconciler{Client: client}
 	st := beginStatus(client, nil, target)
 
-	validated, msg, err := reconciler.evaluateValidatedGate(context.Background(), st, target, ns, provider)
+	branch := &configbutleraiv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{Name: gitBranchNameForTest("provider-a", "main"), Namespace: ns},
+	}
+	dest := gitDestination{key: target.GitBranchKey(), branch: branch, provider: provider}
+	validated, msg, err := reconciler.evaluateValidatedGate(context.Background(), st, target, dest)
 
 	require.NoError(t, err)
 	assert.False(t, validated)

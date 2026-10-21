@@ -176,7 +176,7 @@ func TestApplyTriggerRule_ARecreatedGitTargetReleasesAndReadopts(t *testing.T) {
 func TestApplyTriggerRule_TheBindingAggregatesItsGitTargets(t *testing.T) {
 	onBranch := func(name, branch string) *configbutleraiv1alpha3.GitTarget {
 		target := referencingTarget(name, configbutleraiv1alpha3.ApplyTriggerKindFlux)
-		target.Spec.Branch = branch
+		target.Spec.GitBranchRef.Name = gitBranchNameForTest("platform", branch)
 		return target
 	}
 	elsewhere := onBranch("elsewhere", "main")
@@ -195,7 +195,7 @@ func TestApplyTriggerRule_TheBindingAggregatesItsGitTargets(t *testing.T) {
 			wantReason: applier.ReasonNotBound, wantNames: []string{"team-a/unprovided"},
 			objects: []ctrlclient.Object{func() ctrlclient.Object {
 				target := onBranch("unprovided", "main")
-				target.Spec.GitProviderRef.Name = "absent"
+				target.Spec.GitBranchRef.Name = "absent"
 				return target
 			}(), onBranch("release", "release")}},
 		{name: "every one mismatched is stalled, with the shared reason", wantStatus: metav1.ConditionFalse,
@@ -215,7 +215,8 @@ func TestApplyTriggerRule_TheBindingAggregatesItsGitTargets(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			objects := append([]ctrlclient.Object{testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)},
+			objects := append([]ctrlclient.Object{testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName),
+				gitBranchOn("platform", "team-a", "release"), gitBranchOn("platform", "team-a", "staging")},
 				tc.objects...)
 			f := ruleFixture(t, objects...)
 
@@ -242,8 +243,9 @@ func TestApplyTriggerRule_TheBindingAggregatesItsGitTargets(t *testing.T) {
 // holding the Kustomization.
 func TestApplyTriggerRule_AnOlderTriggerNotInLineKeepsNoneOut(t *testing.T) {
 	for name, older := range map[string]func(*configbutleraiv1alpha3.GitTarget, *[]ctrlclient.Object){
-		"bound to another branch": func(target *configbutleraiv1alpha3.GitTarget, _ *[]ctrlclient.Object) {
-			target.Spec.Branch = "release"
+		"bound to another branch": func(target *configbutleraiv1alpha3.GitTarget, objects *[]ctrlclient.Object) {
+			target.Spec.GitBranchRef.Name = gitBranchNameForTest("platform", "release")
+			*objects = append(*objects, gitBranchOn("platform", target.Namespace, "release"))
 		},
 		"not admitted": func(target *configbutleraiv1alpha3.GitTarget, objects *[]ctrlclient.Object) {
 			target.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: "closed"}
@@ -431,12 +433,12 @@ func TestApplyTriggerRule_AGitTargetEventRerunsTheTriggersItNames(t *testing.T) 
 	c := triggerTestClient(t, fluxTarget(), platformProvider())
 	r := &ApplyTriggerReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplyTriggerKindFlux}
 
-	requests := r.gitProviderToTriggers(context.Background(), platformProvider())
+	requests := r.gitDestinationToTriggers(context.Background(), platformProvider())
 	require.Len(t, requests, 1)
 	assert.Equal(t, triggerKey, requests[0].NamespacedName)
 
 	argo := &ApplyTriggerReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplyTriggerKindArgoCD}
-	assert.Empty(t, argo.gitProviderToTriggers(context.Background(), platformProvider()), "another kind's")
+	assert.Empty(t, argo.gitDestinationToTriggers(context.Background(), platformProvider()), "another kind's")
 }
 
 // TestApplyTriggerRule_AnApplierInAnotherNamespaceNeedsTheOptIn is B1: a namespace a ClusterProvider

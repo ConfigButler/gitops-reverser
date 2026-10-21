@@ -33,7 +33,7 @@ func convergedObservation() dataPlaneObservation {
 
 func publicationGates(observed dataPlaneObservation, publication git.PublicationStatus) kstatusTrio {
 	rd := newGitTargetReadiness()
-	gitTargetReadinessGates(rd, observed, healthyDependency(), healthyDependency(), healthyDependency(),
+	gitTargetReadinessGates(rd, observed, healthyDependency(), healthyDependency(),
 		healthyDependency(), publicationCondition(publication))
 	return rd.trio()
 }

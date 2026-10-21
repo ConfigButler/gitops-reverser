@@ -51,7 +51,7 @@ multiple watch rules.
 
 ## Field overview
 
-Ready-made manifests for all eight objects live in [`config/samples/`](../config/samples/). They
+Ready-made manifests for all nine objects live in [`config/samples/`](../config/samples/). They
 cross-reference the same `example-provider` / `example-target` names, so the set can be applied
 together and edited down, rather than assembled from the fragments below.
 
@@ -71,6 +71,16 @@ fields that need more than a line.
 | `commit.signing` | off | SSH commit signing. See [commit signing](#commit-signing) |
 | `receiver` | off | Push webhook endpoint, so the Git host can say somebody pushed. See [receiving push notifications](#receiving-push-notifications-specreceiver) |
 
+### `GitBranch` (namespaced): one branch of the repository
+
+Every field is immutable: to change one, delete the `GitBranch` and create a new one.
+
+| Field | Default | What it does |
+|---|---|---|
+| `gitProviderRef` | **required** | The `GitProvider`, in this namespace, whose repository and credential write this branch |
+| `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
+| `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
+
 ### `ClusterProvider` (cluster-scoped): the source cluster
 
 | Field | Default | What it does |
@@ -89,9 +99,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 
 | Field | Default | What it does |
 |---|---|---|
-| `gitProviderRef` | **required** | The `GitProvider` backing this target: its own namespace, or `namespace` names one whose `accessFrom` admits it. Every target on one repository branch names the same one |
-| `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches` |
-| `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Immutable. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
+| `gitBranchRef` | **required** | The `GitBranch` this target writes: its own namespace, or `namespace` names one whose `GitProvider`'s `accessFrom` admits it |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
 | `clusterProviderRef` | `{"name":"default"}` | Source cluster to mirror from. The default names a `ClusterProvider` called `default` |
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
@@ -209,36 +217,6 @@ spec:
   allowedBranches:
     - main
 ```
-
-### What this repository is being used for (`status.branches`)
-
-`status.branches` lists the branches the `GitTarget`s naming this provider are configured to write,
-with how many reference each:
-
-```yaml
-status:
-  branches:
-    - name: main
-      gitTargetCount: 2
-    - name: release
-      gitTargetCount: 1
-```
-
-An absent `branches` is a third state, and a different one: nothing has read the `GitTarget`s yet,
-so nothing here has been measured. An empty list is a measurement.
-
-It is a statement about **configuration**, not about the remote and not about what is running: a
-suspended or blocked `GitTarget` still says what the repository is for, and a branch that exists on
-the remote but nothing writes never appears. It is re-derived on the provider's own reconcile tick,
-so a `GitTarget` edit reaches it within one steady interval.
-
-`Ready=True` beside `branches: []` is the state it exists to make readable: **configured and
-unused**, which looks nothing like broken, and which otherwise takes a `GitTarget` listing to tell
-apart.
-
-A `gitTargetCount` above one means that many folders share one branch worker, one clone and one
-queue. They still report their own health on their own conditions: one folder being refused
-says nothing about its siblings.
 
 ### `GitProvider.spec.secretRef`: the credentials Secret
 
@@ -648,18 +626,115 @@ when audit attribution is enabled, for joining an audit event to the correspondi
 Changing a target's source cluster changes what its folder means, so `clusterProviderRef` is
 immutable.
 
+## `GitBranch`
+
+`GitBranch` is one branch of the repository a `GitProvider` names. It holds that branch for every
+`GitTarget` that references it: one branch worker, one clone, one queue, and the `GitProvider`'s
+credential, commit identity and signing key.
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: example-branch
+  namespace: default
+spec:
+  gitProviderRef:
+    name: example-provider   # a GitProvider in this namespace
+  branch: main               # must match the provider's allowedBranches
+  parentBranch: develop      # optional; only used to create a missing branch
+```
+
+- `spec.gitProviderRef` names a `GitProvider` in the `GitBranch`'s own namespace, never another one.
+  Creating a `GitBranch` therefore takes the right to create objects where the credential lives.
+- `spec.branch` must match one of the provider's `allowedBranches`, or the `GitBranch` reports
+  `Stalled=True` with reason `BranchNotAllowed`.
+- `spec.parentBranch` is what the branch is created from while the remote does not have it. See
+  [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch).
+- Every field is immutable. To write another branch, or through another `GitProvider`, create a new
+  `GitBranch` and delete the old one.
+
+### Who writes a repository branch
+
+Only one `GitBranch` writes a repository branch. The key is the provider's repository URL,
+normalized (so `https://github.com/acme/platform.git` and `git@github.com:acme/platform` are one
+repository), plus the branch.
+
+1. A `GitBranch` becomes a **candidate** once its `GitProvider`'s credential opens a push
+   (receive-pack) session on the remote. Nothing is pushed: the session is opened and closed. A
+   `GitBranch` whose credential cannot open one reports `Ready=False` with reason
+   `PushSessionFailed` and claims nothing, so creating it first blocks nobody.
+2. Among the candidates for one repository branch, the **oldest** (by `creationTimestamp`) holds it
+   and gets the branch worker. Every other one reports `Stalled=True` with reason `BranchConflict`
+   and a message naming the holder. Reference the holder from your `GitTarget`s, or delete it first.
+3. The holder keeps the branch through a later credential or network failure. It reports
+   `Ready=False` (`PushSessionFailed`) and keeps its pending writes, and the branch does not pass to
+   another `GitBranch` while it is down.
+4. The claim lives in the operator's memory. After a restart it is decided again by 1 and 2.
+
+What the push session proves depends on the Git host:
+
+| Host | What opening a push session takes |
+|---|---|
+| GitHub, GitLab | Push permission on the repository |
+| Gitea, Forgejo | A valid credential that can read the repository (Gitea's AGit flow accepts pushes to `refs/for/*` from readers; branch writes are checked when they arrive) |
+| A host that offers push sessions anonymously | Nothing: the proof is only that the repository is reachable |
+
+Nothing refuses a second `GitBranch` at admission: references are checked in status, so a folder of
+manifests can be applied in any order.
+
+### `GitBranch` status
+
+```yaml
+status:
+  repository: github.com/acme/platform   # normalized: half of the key only one GitBranch holds
+  remote:
+    commit: 4f1c...
+    lastVerifiedAt: "2026-10-21T09:12:00Z"
+    verifiedBy: Push
+  gitTargetCount: 2
+```
+
+`status.remote` is where the branch is on the remote; see
+[where the branch is](#where-the-branch-is-and-when-that-was-last-proved-statusremote).
+`status.gitTargetCount` is how many `GitTarget`s reference this `GitBranch`, from any namespace. More
+than one means they share its branch worker; each still reports its own folder's health on its own
+conditions.
+
+`kubectl get gitbranch` shows the provider, the branch, the commit the branch is at, and `Ready`;
+`-o wide` adds the reason, the repository, the target count and when the remote was last verified.
+
+| Reason | What it means |
+|---|---|
+| `GitProviderNotFound` | No `GitProvider` of that name in this namespace (`Stalled=True`) |
+| `GitProviderNotReady` | The `GitProvider` exists and is not `Ready` |
+| `BranchNotAllowed` | `spec.branch` is outside the provider's `allowedBranches` (`Stalled=True`) |
+| `PushSessionFailed` | The credential cannot open a push session; a holder keeps the branch meanwhile |
+| `BranchConflict` | Another `GitBranch` holds this repository branch (`Stalled=True`) |
+| `ParentBranchNotFound` | Neither the branch nor its parent is on the remote (`Stalled=True`) |
+| `RecoveringParentBranch` | The parent is back and the worker is publishing what it held |
+
+### Deleting a `GitBranch`
+
+A `GitBranch` carries a finalizer. Deleting it stops new intake for every `GitTarget` on the
+branch, pushes or refuses each pending write, gives each attached `CommitRequest` its outcome, and
+only then removes the finalizer and lets another `GitBranch` hold the branch. **Nothing deletes the
+branch on the remote.**
+
+Deleting a `GitBranch` that `GitTarget`s still reference is allowed; they report `Validated=False`
+with reason `GitBranchNotFound` afterwards. A new `GitBranch` with the same name is a new object and
+does not pick up the old one's pending work.
+
 ## `GitTarget`
 
 `GitTarget` decides where inside the repository resources are written.
 
 The important fields are:
 
-- `spec.gitProviderRef`: which `GitProvider` backs this target
+- `spec.gitBranchRef`: which `GitBranch` this target writes, and so which repository branch and
+  credential
 - `spec.clusterProviderRef`: which `ClusterProvider` supplies resources; omit it to reference the
   user-created `default` provider
-- `spec.branch`: which allowed branch to write to
-- `spec.parentBranch`: which branch `spec.branch` is created from while it does not exist yet; omit it
-  for the remote's default branch
 - `spec.path`: required relative path inside the repository; use `.` only when you deliberately
   want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
@@ -685,16 +760,25 @@ Example:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: example-branch
+  namespace: default
+spec:
+  gitProviderRef:
+    name: example-provider
+  branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: example-target
   namespace: default
 spec:
-  gitProviderRef:
-    name: example-provider
+  gitBranchRef:
+    name: example-branch
   # Omit clusterProviderRef to reference the user-created ClusterProvider named "default".
   # clusterProviderRef: {name: prod-eu-1} selects a different source provider.
-  branch: main
   path: live-cluster
 ```
 
@@ -709,16 +793,23 @@ dedicated to this target.
 If you enable `spec.encryption`, that applies to `Secret` resource writes for this target. For SOPS
 and age details, see [sops-age-guide.md](sops-age-guide.md).
 
-`spec.gitProviderRef` references a `GitProvider` by `name`, in the `GitTarget`'s own namespace. Set
-`namespace` to write through a `GitProvider` in another namespace; that `GitProvider`'s
-`spec.accessFrom` must admit this `GitTarget`'s namespace, or the `GitTarget` is refused with
-`Validated=False` (`NamespaceNotAuthorized`). Every `GitTarget` writing one repository branch must
-name the same `GitProvider`, because one branch worker writes it with one credential. One that
-writes the branch through another `GitProvider` than the oldest `GitTarget` there is refused with
-`TargetConflict`, and the message names the `GitProvider` to share instead.
+`spec.gitBranchRef` references a `GitBranch` by `name`, in the `GitTarget`'s own namespace, and is
+required and immutable. Set `namespace` to write through a `GitBranch` in another namespace; the
+`GitProvider` that `GitBranch` names must admit this `GitTarget`'s namespace in its
+`spec.accessFrom`, or the `GitTarget` is refused with `Validated=False` (`NamespaceNotAuthorized`).
+One policy governs both hops. A `GitBranch` that does not exist is `Validated=False`
+(`GitBranchNotFound`), and one that does not hold its branch, or is not `Ready`, keeps the target at
+`Ready=False` with reason `GitBranchNotReady` until it does. Either clears on its own once the
+`GitBranch` appears or proves itself, so manifests can be applied in any order.
+
+`spec.gitProviderRef`, `spec.branch` and `spec.parentBranch` are no longer `GitTarget` fields:
+setting one is refused at admission with a message naming `spec.gitBranchRef`.
+
+Two `GitTarget`s on one `GitBranch` must not write the same or nested paths: the later-created one
+reports `Validated=False` with reason `TargetConflict`.
 
 `spec.clusterProviderRef` references a cluster-scoped `ClusterProvider`. It defaults to
-`{name: default}` when omitted. That is intentionally different from `gitProviderRef`: a source cluster
+`{name: default}` when omitted. That is intentionally different from `gitBranchRef`: a source cluster
 is a shared physical identity, while a Git destination and its credential normally belong to the
 target's namespace. The default name can represent either an in-cluster or remote source according
 to the `ClusterProvider` the user created.
@@ -760,9 +851,9 @@ summary reason, while the domain conditions name the axis to fix:
 
 | Condition | What to check |
 |---|---|
-| `Validated=False` | The referenced `GitProvider`, branch policy, `ClusterProvider`, and namespace authorization. |
+| `Validated=False` | The referenced `GitBranch`, path conflicts, `ClusterProvider`, and namespace authorization. |
 | `EncryptionConfigured=False` | The age/SOPS Secret and whether key generation is allowed. |
-| `GitProviderReady=False` | Repository URL, credential Secret, host keys, and push permissions. |
+| `GitBranchReady=False` | The `GitBranch`: whether it holds its branch, and its `GitProvider`'s URL, credential Secret, host keys, and push permissions. |
 | `ClusterProviderReady=False` or `SourceClusterReachable=False` | Source-cluster credentials and access. |
 | `GitPathAccepted=False` | Repository files under `spec.path`; the message includes the issue kind, path, and actor when known. |
 | `RenderMatchesLive=False` | Fields that no longer match the rendered source, often transformer-owned values. |
@@ -864,23 +955,30 @@ validation a bad template fails.
 **Point one at a scratch branch.**
 
 ```yaml
+kind: GitBranch
+metadata: {name: gitops-preview}
 spec:
   gitProviderRef: {name: homelab}
   branch: gitops-preview          # not main
+---
+kind: GitTarget
+spec:
+  gitBranchRef: {name: gitops-preview}
   path: apps/checkout
 ```
 
 It commits, and you read the commits: the real files, the real `resources:` registrations, the real
 deletes, in a diff you can review. Nothing is simulated, so nothing can be wrong about it. When you
-are happy, delete the preview target and declare the real one. `spec.branch` is immutable, so the
-two are always separate objects, and deleting the preview cannot disturb the real folder.
+are happy, delete the preview target and declare the real one. `spec.gitBranchRef` is immutable, so
+the two are always separate objects, and deleting the preview cannot disturb the real folder.
 
 For inspecting a repository without a cluster at all, use the `manifest-analyzer` CLI.
 
 ### Starting the write branch from another branch (`spec.parentBranch`)
 
-A target whose `spec.branch` does not exist on the remote waits on standby: it compares the cluster
-against the **parent branch** and creates nothing while they agree. The first write that has
+`spec.parentBranch` is a `GitBranch` field. A `GitTarget` on a `GitBranch` whose `spec.branch` does
+not exist on the remote waits on standby: it compares the cluster against the **parent branch** and
+creates nothing while they agree. The first write that has
 something to commit creates the branch from the parent's current tip, checked when it pushes, so a
 target that waited a week does not publish onto a week-old checkout. A write that finds nothing to
 change creates no branch at all.
@@ -888,20 +986,22 @@ change creates no branch at all.
 The parent is the remote's default branch unless you name one:
 
 ```yaml
+kind: GitBranch
 spec:
   gitProviderRef: {name: homelab}
   branch: reverser/prod-edits     # the write branch: created on the first commit
   parentBranch: env/prod          # what it is created from
-  path: apps/checkout
 ```
 
-- An explicit parent must exist when the write branch is created. Otherwise the target reports
-  `Ready=False` with reason `ParentBranchNotFound` and writes nothing.
+- An explicit parent must exist when the write branch is created. Otherwise the `GitBranch` reports
+  `Ready=False` with reason `ParentBranchNotFound`, its `GitTarget`s report `GitBranchNotReady`, and
+  nothing is written.
 - It recovers on its own once the parent is pushed, with no edit to the cluster and with periodic
   refresh on or off. The branch worker looks for the parent with one ref advertisement after 10s,
   then after twice as long each time, up to every 5 minutes, shared by every target on the branch.
   When the parent is back it publishes the writes it held, with their own authors and messages;
-  until those are published the target reports `Ready=False` with reason `RecoveringParentBranch`.
+  until those are published the `GitBranch` reports `Ready=False` with reason
+  `RecoveringParentBranch`.
 - An omitted parent is the remote's default branch, as last discovered. In an empty repository (no
   refs at all, tags included) the first commit starts a branch with no history. A repository that
   is not empty but whose `HEAD` names no branch it carries also reports `ParentBranchNotFound`, and
@@ -914,14 +1014,12 @@ spec:
   from the previous default branch until then.
 - Once the write branch exists, it is used as it is: new commits on the parent do not reach it.
   Delete the write branch after its changes are merged, and the next edit starts a fresh one.
-- `parentBranch` is immutable, including adding or removing it: delete and recreate the target to
-  change it, which loses nothing because the destination is unchanged. It is only read, so it does
-  not need to be in `allowedBranches`.
-- While the write branch is absent, `status.remote.parent` shows the parent, whether it was
-  `Found`, `Missing` or `Unborn`, and the commit the first commit would build on. With
+- `parentBranch` is immutable, including adding or removing it: delete and recreate the `GitBranch`
+  to change it. It is only read, so it does not need to be in `allowedBranches`.
+- While the write branch is absent, the `GitBranch`'s `status.remote.parent` shows the parent,
+  whether it was `Found`, `Missing` or `Unborn`, and the commit the first commit would build on. With
   `parentBranch` omitted, that is how you see which default branch the remote resolved.
-- All `GitTarget` objects on one `GitProvider` and branch must name the same parent branch; omitted
-  counts as its own value. The later-created one reports `TargetConflict`.
+- One `GitBranch` holds a repository branch, so every `GitTarget` on it has the same parent.
 
 `spec.suspend` is **not** this. It is the next section.
 
@@ -1039,9 +1137,9 @@ one target is one environment is one write partition.
 
 ### Where the branch is, and when that was last proved (`status.remote`)
 
-`status.remote` is what the target last **proved** about its branch on the Git remote. Like
-`status.placement` it is an observation rather than a record of work, so it is there before the
-target has written anything:
+`status.remote` is on the `GitBranch`: what its branch worker last **proved** about the branch on
+the Git remote. It is an observation rather than a record of work, so it is there before anything
+has been written:
 
 ```yaml
 status:
@@ -1067,11 +1165,12 @@ status:
 - `parent` appears only while the branch is not on the remote: it says what the branch would be
   created from, observed together with the branch's absence. `state` is `Found` (the first commit
   builds on `commit`, the parent's tip), `Missing` (the parent is not on the remote either; the
-  target reports `ParentBranchNotFound` and writes nothing) or `Unborn` (an empty repository, with
+  `GitBranch` reports `ParentBranchNotFound` and nothing is written) or `Unborn` (an empty repository, with
   no refs at all, and no parent configured; the first commit starts the branch with no history). See
   [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch).
 
-`kubectl get gittarget -o wide` shows `lastVerifiedAt` as an age, in the `Verified` column.
+`kubectl get gitbranch` shows `commit` in the `Commit` column, and `-o wide` shows
+`lastVerifiedAt` as an age, in the `Verified` column.
 
 Two things renew it. A **push** does, for free: the push session reads the remote's advertisement
 and the server names the hash it accepted, on the connection the push was making anyway. So a
@@ -1079,17 +1178,15 @@ target that is publishing never needs anything else. An **idle** target is asked
 its reconcile tick; see
 [`--git-refresh-interval`](#keeping-an-idle-target-fresh---git-refresh-interval) below.
 
-**What is proved and what is published are two different rates.** An observation of a branch is
-one fact, and it reaches every `GitTarget` on that branch the moment it is proved, in memory and
-for nothing. Writing it to status is not free: ten folders sharing a branch would turn one commit
-into ten status writes, each invalidating every watcher's cached copy of the type. So each target
-publishes what it holds **when it reconciles** (no commit wakes anybody), and writes this stanza
-at most once a minute however often it reconciles. Push and read status immediately, and you may
-see the previous commit until that target's next tick.
+**What is proved and what is published are two different rates.** Every push and every fetch
+proves where the branch is, and the worker wakes the `GitBranch` each time. Writing status on every
+push would invalidate every watcher's cached copy of the type at the pace the branch moves, so the
+`GitBranch` writes this stanza at most once a minute, and comes back when that floor lifts. Push and
+read status immediately, and you may see the previous commit for up to a minute.
 
-Two corrections skip the once-a-minute floor, though not the reconcile that carries them: the
-**first** observation, and **taking back** a commit that names a repository the target no
-longer points at (a recreated `GitProvider` with a different URL). And none of this promises
+Two corrections skip the once-a-minute floor: the **first** observation, and **taking back** a
+commit that names a repository the `GitBranch` no longer points at (a recreated `GitProvider` with
+a different URL). And none of this promises
 anything about the branch itself: an unreachable remote yields no observation at all, which is
 exactly what the pair `commit` + `lastVerifiedAt` is there to say.
 
@@ -1188,7 +1285,7 @@ metadata:
   name: checkout
   namespace: team-a
 spec:
-  # gitProviderRef, branch, path ...
+  # gitBranchRef, path ...
   applyTriggerRef:
     kind: FluxTrigger          # or ArgoCDTrigger
     name: checkout
@@ -1492,7 +1589,7 @@ For "are resyncs still running", read `gitopsreverser_git_resync_failures_total`
 evaluated and found something, but a flat one proves nothing: a healthy resync retaining zero
 produces no increment either.
 
-`spec.prune` is mutable (unlike `gitProviderRef`, `branch`, and `path`), so a target can be moved to
+`spec.prune` is mutable (unlike `gitBranchRef` and `path`), so a target can be moved to
 `Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists
 the target's watched scopes, so the cleanup runs on the edit instead of waiting for the next replay.
 Tightening it applies to the next write and leaves the streams alone, which is what makes it usable

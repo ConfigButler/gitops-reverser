@@ -28,14 +28,12 @@ import (
 // Timing. The refresh rides the GitTarget reconcile, and a converged target requeues on the
 // 5-minute steady interval, so the bound on noticing the move is one steady tick plus the refresh
 // itself — not the 90s --git-refresh-interval config/deployment.yaml sets, which only decides how
-// old an observation may be when that tick arrives. What the refresh learns is published in the
-// same round: the reconcile that asked comes back for the answer, and one the publication floor
-// stops comes back when it lifts (requeueForRemoteAnswer).
+// old an observation may be when that tick arrives. What the refresh learns wakes the GitBranch,
+// whose status.remote publishes it, or comes back for it when the publication floor lifts.
 //
-// status.remote is SAMPLED: proving where the branch is and publishing it are two different
-// rates, and nothing in the data plane wakes a target because a branch moved. Our OWN push is
-// published once RemotePublicationInterval has passed since the last write, which was the unborn
-// branch moments before; a minute, not a tick. That is the contract, not slack: see
+// status.remote is on the GitBranch, and written at most once a minute: our OWN push is published
+// once RemotePublicationInterval has passed since the last write, which was the unborn branch
+// moments before; a minute, not a tick. That is the contract, not slack: see
 // docs/spec/status-conditions-guide.md.
 //
 // No reconcile-request annotation is used anywhere in this spec: an operator asking by hand is
@@ -48,6 +46,7 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 		destName     = "refresh-dest"
 		ruleName     = "refresh-rule"
 		gitPath      = "apps/refresh"
+		branchName   = gitBranchName(providerName, "main")
 	)
 
 	BeforeAll(func() {
@@ -70,7 +69,7 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 	AfterAll(func() {
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, providerName)
 		cleanupNamespace(testNs)
 	})
 
@@ -100,17 +99,17 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 		// The push it just made IS an observation of the remote, made on the connection the push
 		// was opening anyway. That is the whole of decision 2, and it is visible here: status
 		// names the commit the server accepted, and says a Push proved it.
-		By("status.remote names the commit our own push established")
+		By("the GitBranch's status.remote names the commit our own push established")
 		var pushedCommit string
 		Eventually(func(g Gomega) {
-			pushedCommit = gitTargetRemoteField(g, destName, testNs, "commit")
+			pushedCommit = gitBranchRemoteField(g, branchName, testNs, "commit")
 			g.Expect(pushedCommit).NotTo(BeEmpty(), "a target that has pushed knows where its branch is")
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "verifiedBy")).To(Equal("Push"))
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "verifiedBy")).To(Equal("Push"))
 			g.Expect(pushedCommit).To(Equal(remoteHeadSHA(g, repo.CheckoutDir)))
 		}, 3*time.Minute, 5*time.Second).Should(Succeed(),
 			"published when the floor lifts, well before a steady tick")
 
-		verifiedBefore := gitTargetRemoteField(Default, destName, testNs, "lastVerifiedAt")
+		verifiedBefore := gitBranchRemoteField(Default, branchName, testNs, "lastVerifiedAt")
 		Expect(verifiedBefore).NotTo(BeEmpty(), "the observation is dated, or nothing can report its own staleness")
 		commitsBefore := remoteCommitCount(repo.CheckoutDir)
 
@@ -126,11 +125,11 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 		// advertisement, and what it saw reaches status.
 		By("the idle target notices, with nobody asking it to")
 		Eventually(func(g Gomega) {
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "commit")).To(Equal(movedCommit),
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "commit")).To(Equal(movedCommit),
 				"an idle target must follow the branch somebody else moved")
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "verifiedBy")).To(Equal("Fetch"),
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "verifiedBy")).To(Equal("Fetch"),
 				"we went and looked, and that is how a foreign push is read off kubectl")
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "lastVerifiedAt")).NotTo(Equal(verifiedBefore),
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "lastVerifiedAt")).NotTo(Equal(verifiedBefore),
 				"the clock has to move with the fact it dates")
 		}, 7*time.Minute, 5*time.Second).Should(Succeed())
 
@@ -157,9 +156,12 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 	})
 })
 
-// gitTargetRemoteField reads one field of status.remote.
-func gitTargetRemoteField(g Gomega, name, namespace, field string) string {
-	return gitTargetField(g, name, namespace, fmt.Sprintf("{.status.remote.%s}", field))
+// gitBranchRemoteField reads one field of a GitBranch's status.remote.
+func gitBranchRemoteField(g Gomega, name, namespace, field string) string {
+	out, err := kubectlRunInNamespace(namespace, "get", "gitbranch", name,
+		"-o", fmt.Sprintf("jsonpath={.status.remote.%s}", field))
+	g.Expect(err).NotTo(HaveOccurred(), "failed to read status.remote.%s of GitBranch %s", field, name)
+	return strings.TrimSpace(out)
 }
 
 func gitTargetField(g Gomega, name, namespace, jsonPath string) string {

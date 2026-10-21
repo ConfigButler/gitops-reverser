@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 var _ = Describe("GitTarget Controller Security", func() {
@@ -24,245 +25,42 @@ var _ = Describe("GitTarget Controller Security", func() {
 		interval = time.Millisecond * 250
 	)
 
-	Context("When a branch is not allowed by GitProvider", func() {
-		It("Should report missing provider through status instead of admission rejection", func() {
+	Context("When the referenced GitBranch is missing", func() {
+		It("Should report a missing GitBranch through status instead of admission rejection", func() {
 			ctx := context.Background()
 
 			gitTarget := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-target-missing-provider",
+					Name:      "test-target-missing-branch",
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "missing-provider",
-					},
-					Branch: "main",
-					Path:   "test-folder",
+					GitBranchRef: meta.NamespacedObjectReference{Name: "missing-branch"},
+					Path:         "test-folder",
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
 
-			gitTargetLookupKey := types.NamespacedName{
-				Name:      "test-target-missing-provider",
-				Namespace: "default",
-			}
-
-			createdGitTarget := &configbutleraiv1alpha3.GitTarget{}
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, gitTargetLookupKey, createdGitTarget)
-				if err != nil {
-					return false
-				}
-				for _, condition := range createdGitTarget.Status.Conditions {
-					if condition.Type == GitTargetConditionValidated &&
-						condition.Reason == GitTargetReasonProviderNotFound {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-
-			var readyCondition *metav1.Condition
-			var validatedCondition *metav1.Condition
-			for i, condition := range createdGitTarget.Status.Conditions {
-				switch condition.Type {
-				case GitTargetConditionReady:
-					readyCondition = &createdGitTarget.Status.Conditions[i]
-				case GitTargetConditionValidated:
-					validatedCondition = &createdGitTarget.Status.Conditions[i]
-				}
-			}
-
-			Expect(readyCondition).NotTo(BeNil(), "Ready condition should exist")
-			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
-
-			Expect(validatedCondition).NotTo(BeNil(), "Validated condition should exist")
-			Expect(validatedCondition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(validatedCondition.Reason).To(Equal(GitTargetReasonProviderNotFound))
-			Expect(validatedCondition.Message).To(
-				ContainSubstring("Referenced GitProvider 'default/missing-provider' not found"),
-			)
+			key := types.NamespacedName{Name: "test-target-missing-branch", Namespace: "default"}
+			Eventually(func(g Gomega) {
+				var got configbutleraiv1alpha3.GitTarget
+				g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+				validated := findCondition(got.Status.Conditions, GitTargetConditionValidated)
+				g.Expect(validated).NotTo(BeNil())
+				g.Expect(validated.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(validated.Reason).To(Equal(GitTargetReasonGitBranchNotFound))
+				g.Expect(validated.Message).
+					To(ContainSubstring("Referenced GitBranch 'default/missing-branch' not found"))
+				ready := findCondition(got.Status.Conditions, GitTargetConditionReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
+			}, timeout, interval).Should(Succeed())
 
 			Expect(k8sClient.Delete(ctx, gitTarget)).Should(Succeed())
 		})
 
-		It("Should clear branch push status when the branch is not allowed", func() {
-			ctx := context.Background()
-
-			// Create a GitProvider that only allows 'main' and 'develop' branches
-			gitProvider := &configbutleraiv1alpha3.GitProvider{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-provider-security",
-					Namespace: "default",
-				},
-				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "https://github.com/test-org/test-repo.git",
-					AllowedBranches: []string{"main", "develop"},
-					SecretRef: &meta.LocalObjectReference{
-						Name: "test-secret", // Dummy secret
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
-
-			// Create a GitTarget referencing an unauthorized branch
-			unauthorizedBranch := "feature/unauthorized"
-			gitTarget := &configbutleraiv1alpha3.GitTarget{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-target-security",
-					Namespace: "default",
-				},
-				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-security",
-					},
-					Branch: unauthorizedBranch,
-					Path:   "test-folder",
-				},
-			}
-			Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
-
-			// Wait for reconciliation and verify status
-			gitTargetLookupKey := types.NamespacedName{
-				Name:      "test-target-security",
-				Namespace: "default",
-			}
-
-			createdGitTarget := &configbutleraiv1alpha3.GitTarget{}
-
-			// Wait for the controller to reach the final BranchNotAllowed state.
-			// The reconciler may pass through transient reasons (e.g. ProviderNotFound) before the
-			// GitProvider cache is warm, so wait for the specific reason this test asserts on.
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, gitTargetLookupKey, createdGitTarget)
-				if err != nil {
-					return false
-				}
-				for _, condition := range createdGitTarget.Status.Conditions {
-					if condition.Type == GitTargetConditionValidated &&
-						condition.Reason == GitTargetReasonBranchNotAllowed {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-
-			// Verify the Ready condition is False with BranchNotAllowed reason
-			Expect(createdGitTarget.Status.Conditions).NotTo(BeEmpty())
-			var readyCondition *metav1.Condition
-			for i, condition := range createdGitTarget.Status.Conditions {
-				if condition.Type == GitTargetConditionReady {
-					readyCondition = &createdGitTarget.Status.Conditions[i]
-					break
-				}
-			}
-			Expect(readyCondition).NotTo(BeNil(), "Ready condition should exist")
-			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse), "Ready should be False")
-			Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
-			var validatedCondition *metav1.Condition
-			for i, condition := range createdGitTarget.Status.Conditions {
-				if condition.Type == GitTargetConditionValidated {
-					validatedCondition = &createdGitTarget.Status.Conditions[i]
-					break
-				}
-			}
-			Expect(validatedCondition).NotTo(BeNil(), "Validated condition should exist")
-			Expect(validatedCondition.Reason).To(Equal(GitTargetReasonBranchNotAllowed))
-
-			// Cleanup
-			Expect(k8sClient.Delete(ctx, gitTarget)).Should(Succeed())
-			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
-		})
-
-		It("Should populate status fields when branch IS allowed", func() {
-			ctx := context.Background()
-
-			// Create a GitProvider with wildcard pattern
-			gitProvider := &configbutleraiv1alpha3.GitProvider{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-provider-allowed",
-					Namespace: "default",
-				},
-				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "https://github.com/test-org/test-repo.git",
-					AllowedBranches: []string{"main", "feature/*"},
-					SecretRef: &meta.LocalObjectReference{
-						Name: "test-secret",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
-
-			// Create a GitTarget with an ALLOWED branch
-			gitTarget := &configbutleraiv1alpha3.GitTarget{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-target-allowed",
-					Namespace: "default",
-				},
-				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-allowed",
-					},
-					Branch: "feature/allowed",
-					Path:   "allowed-folder",
-				},
-			}
-			Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
-
-			// Wait for reconciliation
-			gitTargetLookupKey := types.NamespacedName{
-				Name:      "test-target-allowed",
-				Namespace: "default",
-			}
-
-			createdGitTarget := &configbutleraiv1alpha3.GitTarget{}
-
-			// Wait for the controller to reconcile
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, gitTargetLookupKey, createdGitTarget)
-				if err != nil {
-					return false
-				}
-				// Check if Ready condition exists
-				for _, condition := range createdGitTarget.Status.Conditions {
-					if condition.Type == GitTargetConditionReady {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-
-			// When branch IS allowed, the Ready condition should eventually be True
-			// (may be False initially if repo is not accessible, but that's expected)
-			// The key point is that sensitive fields are NOT cleared
-			var readyCondition *metav1.Condition
-			for i, condition := range createdGitTarget.Status.Conditions {
-				if condition.Type == GitTargetConditionReady {
-					readyCondition = &createdGitTarget.Status.Conditions[i]
-					break
-				}
-			}
-			Expect(readyCondition).NotTo(BeNil(), "Ready condition should exist")
-
-			// If branch is allowed but repo is not accessible, reason should be RepositoryUnavailable
-			// NOT BranchNotAllowed
-			if readyCondition.Status == metav1.ConditionFalse {
-				Expect(readyCondition.Reason).NotTo(Equal(GitTargetReasonBranchNotAllowed),
-					"When branch is allowed, reason should not be BranchNotAllowed")
-			}
-
-			// The key security verification: when branch IS allowed (even if repo unavailable),
-			// the controller attempts to populate status fields and does NOT clear them
-			// (they may be empty due to repo inaccessibility, but won't be explicitly cleared)
-
-			// Cleanup
-			Expect(k8sClient.Delete(ctx, gitTarget)).Should(Succeed())
-			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
-		})
-
-		It("Should surface kstatus and data-plane status without EventStreamLive", func() {
+		It("Should wait for a GitBranch that does not hold its branch, without stalling", func() {
 			ctx := context.Background()
 
 			gitProvider := &configbutleraiv1alpha3.GitProvider{
@@ -279,6 +77,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			gitTarget := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -286,19 +85,18 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-two-axis",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-two-axis", "main"),
 					},
-					Branch: "main",
-					Path:   "two-axis-folder",
+					Path: "two-axis-folder",
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
 
 			key := types.NamespacedName{Name: "test-target-two-axis", Namespace: "default"}
-			// With no EventRouter wired in the suite, a validated target has no resolved streams.
-			// Ready stays false while Reconciling carries progress, and the retired EventStreamLive
-			// condition / snapshot stay absent.
+			// No GitBranch reconciler runs in this suite, so the GitBranch never proves itself and holds
+			// nothing. That clears on its own, so the target is progressing, not stalled, and the
+			// retired EventStreamLive condition stays absent.
 			Eventually(func(g Gomega) {
 				var got configbutleraiv1alpha3.GitTarget
 				g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
@@ -306,126 +104,15 @@ var _ = Describe("GitTarget Controller Security", func() {
 				g.Expect(conditionIsTrue(got.Status.Conditions, GitTargetConditionReconciling)).To(BeTrue())
 				g.Expect(conditionIsTrue(got.Status.Conditions, GitTargetConditionStalled)).To(BeFalse())
 				g.Expect(conditionIsTrue(got.Status.Conditions, GitTargetConditionStreamsRunning)).To(BeFalse())
+				branchReady := findCondition(got.Status.Conditions, GitTargetConditionGitBranchReady)
+				g.Expect(branchReady).NotTo(BeNil())
+				g.Expect(branchReady.Reason).To(Equal(GitTargetReasonGitBranchNotReady))
 				for _, c := range got.Status.Conditions {
 					g.Expect(c.Type).NotTo(Equal("EventStreamLive"), "EventStreamLive condition was removed")
 				}
 			}, timeout, interval).Should(Succeed())
 
 			Expect(k8sClient.Delete(ctx, gitTarget)).Should(Succeed())
-			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
-		})
-
-		It("Should support glob patterns in allowedBranches", func() {
-			ctx := context.Background()
-
-			// Create a GitProvider with various glob patterns
-			gitProvider := &configbutleraiv1alpha3.GitProvider{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-provider-glob",
-					Namespace: "default",
-				},
-				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedBranches: []string{
-						"main",
-						"develop",
-						"feature/*",
-						"release/v*",
-					},
-					SecretRef: &meta.LocalObjectReference{
-						Name: "test-secret",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
-
-			// Test cases for different branches
-			testCases := []struct {
-				branch          string
-				shouldBeAllowed bool
-			}{
-				{"main", true},
-				{"develop", true},
-				{"feature/login", true},
-				{"feature/payment", true},
-				{"release/v1.0", true},
-				{"release/v2.5", true},
-				{"hotfix/urgent", false},
-				{"staging", false},
-			}
-
-			for i, tc := range testCases {
-				// Generate a valid K8s name (no slashes or special chars)
-				targetName := "test-target-glob-" + string(rune('a'+i))
-
-				gitTarget := &configbutleraiv1alpha3.GitTarget{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      targetName,
-						Namespace: "default",
-					},
-					Spec: configbutleraiv1alpha3.GitTargetSpec{
-						GitProviderRef: meta.NamespacedObjectReference{
-							Name: "test-provider-glob",
-						},
-						Branch: tc.branch,
-						Path:   "glob-test",
-					},
-				}
-
-				Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
-
-				// Wait for reconciliation
-				gitTargetLookupKey := types.NamespacedName{
-					Name:      targetName,
-					Namespace: "default",
-				}
-
-				createdGitTarget := &configbutleraiv1alpha3.GitTarget{}
-
-				Eventually(func() bool {
-					err := k8sClient.Get(ctx, gitTargetLookupKey, createdGitTarget)
-					if err != nil {
-						return false
-					}
-					for _, condition := range createdGitTarget.Status.Conditions {
-						if condition.Type == GitTargetConditionReady {
-							return true
-						}
-					}
-					return false
-				}, timeout, interval).Should(BeTrue())
-
-				// Verify the condition based on whether branch should be allowed
-				var readyCondition *metav1.Condition
-				for i, condition := range createdGitTarget.Status.Conditions {
-					if condition.Type == GitTargetConditionReady {
-						readyCondition = &createdGitTarget.Status.Conditions[i]
-						break
-					}
-				}
-
-				if !tc.shouldBeAllowed {
-					Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
-					Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
-					var validatedCondition *metav1.Condition
-					for i, condition := range createdGitTarget.Status.Conditions {
-						if condition.Type == GitTargetConditionValidated {
-							validatedCondition = &createdGitTarget.Status.Conditions[i]
-							break
-						}
-					}
-					Expect(validatedCondition).NotTo(BeNil())
-					Expect(validatedCondition.Reason).To(Equal(GitTargetReasonBranchNotAllowed))
-				} else {
-					// If allowed, reason should not be BranchNotAllowed
-					Expect(readyCondition.Reason).NotTo(Equal(GitTargetReasonBranchNotAllowed))
-				}
-
-				// Cleanup
-				Expect(k8sClient.Delete(ctx, gitTarget)).Should(Succeed())
-			}
-
-			// Cleanup
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
 	})
@@ -449,6 +136,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			// Create first GitTarget (winner - created first)
 			firstTarget := &configbutleraiv1alpha3.GitTarget{
@@ -457,11 +145,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-conflict",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-conflict", "main"),
 					},
-					Branch: "main",
-					Path:   "conflict-folder",
+					Path: "conflict-folder",
 				},
 			}
 			Expect(k8sClient.Create(ctx, firstTarget)).Should(Succeed())
@@ -492,11 +179,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-conflict",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-conflict", "main"),
 					},
-					Branch: "main",
-					Path:   "conflict-folder",
+					Path: "conflict-folder",
 				},
 			}
 			Expect(k8sClient.Create(ctx, secondTarget)).Should(Succeed())
@@ -568,6 +254,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			// Create first GitTarget
 			firstTarget := &configbutleraiv1alpha3.GitTarget{
@@ -576,11 +263,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-no-conflict",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-no-conflict", "main"),
 					},
-					Branch: "main",
-					Path:   "folder-a",
+					Path: "folder-a",
 				},
 			}
 			Expect(k8sClient.Create(ctx, firstTarget)).Should(Succeed())
@@ -592,11 +278,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-no-conflict",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-no-conflict", "main"),
 					},
-					Branch: "main",
-					Path:   "folder-b", // Different!
+					Path: "folder-b", // Different!
 				},
 			}
 			Expect(k8sClient.Create(ctx, secondTarget)).Should(Succeed())
@@ -656,6 +341,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			// First GitTarget owns the parent folder "team" (winner - created first)
 			firstTarget := &configbutleraiv1alpha3.GitTarget{
@@ -664,11 +350,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-nested",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-nested", "main"),
 					},
-					Branch: "main",
-					Path:   "team",
+					Path: "team",
 				},
 			}
 			Expect(k8sClient.Create(ctx, firstTarget)).Should(Succeed())
@@ -698,11 +383,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-nested",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-nested", "main"),
 					},
-					Branch: "main",
-					Path:   "team/app",
+					Path: "team/app",
 				},
 			}
 			Expect(k8sClient.Create(ctx, secondTarget)).Should(Succeed())
@@ -771,6 +455,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			target := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -778,11 +463,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-generate-enc-secret",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-generate-enc-secret", "main"),
 					},
-					Branch: "main",
-					Path:   "test-path",
+					Path: "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
 						SecretRef: meta.LocalObjectReference{
@@ -836,6 +520,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			target := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -843,11 +528,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-no-generate-enc-secret",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-no-generate-enc-secret", "main"),
 					},
-					Branch: "main",
-					Path:   "test-path",
+					Path: "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
 						SecretRef: meta.LocalObjectReference{
@@ -913,6 +597,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					},
 				}
 				Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+				createGitBranchFor(ctx, gitProvider, "main")
 
 				target := &configbutleraiv1alpha3.GitTarget{
 					ObjectMeta: metav1.ObjectMeta{
@@ -920,11 +605,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha3.GitTargetSpec{
-						GitProviderRef: meta.NamespacedObjectReference{
-							Name: "test-provider-no-enc-recipients",
+						GitBranchRef: meta.NamespacedObjectReference{
+							Name: gitBranchNameForTest("test-provider-no-enc-recipients", "main"),
 						},
-						Branch: "main",
-						Path:   "test-path",
+						Path: "test-path",
 						Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 							Provider: "sops",
 							SecretRef: meta.LocalObjectReference{
@@ -994,6 +678,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			seedSecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1013,11 +698,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-update-enc-secret",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-update-enc-secret", "main"),
 					},
-					Branch: "main",
-					Path:   "test-path",
+					Path: "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
 						SecretRef: meta.LocalObjectReference{
@@ -1066,6 +750,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			target := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1073,11 +758,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-recreate-enc-secret",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-recreate-enc-secret", "main"),
 					},
-					Branch: "main",
-					Path:   "test-path",
+					Path: "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
 						SecretRef: meta.LocalObjectReference{
@@ -1145,6 +829,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+			createGitBranchFor(ctx, gitProvider, "main")
 
 			existingIdentity, err := age.GenerateX25519Identity()
 			Expect(err).NotTo(HaveOccurred())
@@ -1168,11 +853,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider-existing-agekey",
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider-existing-agekey", "main"),
 					},
-					Branch: "main",
-					Path:   "test-path",
+					Path: "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
 						SecretRef: meta.LocalObjectReference{
@@ -1207,6 +891,35 @@ var _ = Describe("GitTarget Controller Security", func() {
 		})
 	})
 })
+
+// createGitBranchFor creates the GitBranch "<provider>-<branch>" writing branch through provider, in
+// the provider's namespace, and deletes it when the spec ends.
+func createGitBranchFor(ctx context.Context, provider *configbutleraiv1alpha3.GitProvider, branch string) {
+	gitBranch := &configbutleraiv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: gitBranchNameForTest(provider.Name, branch), Namespace: provider.Namespace,
+		},
+		Spec: configbutleraiv1alpha3.GitBranchSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: provider.Name}, Branch: branch,
+		},
+	}
+	Expect(k8sClient.Create(ctx, gitBranch)).Should(Succeed())
+	DeferCleanup(func() { _ = k8sClient.Delete(context.Background(), gitBranch) })
+}
+
+// holdGitBranchForTest creates the GitBranch "<provider>-<branch>" and makes it hold its repository
+// branch, as its reconcile would once its credential is proved. No GitBranch reconciler runs in
+// this suite.
+func holdGitBranchForTest(ctx context.Context, provider *configbutleraiv1alpha3.GitProvider, branch string) {
+	createGitBranchFor(ctx, provider, branch)
+	stored := &configbutleraiv1alpha3.GitBranch{}
+	key := types.NamespacedName{Namespace: provider.Namespace, Name: gitBranchNameForTest(provider.Name, branch)}
+	Expect(k8sClient.Get(ctx, key, stored)).To(Succeed())
+	testWorkerManager.Claims().Observe(git.BranchKeyFor(provider.Spec.URL, branch), git.BranchClaimant{
+		GitBranch: key, UID: stored.UID, Created: stored.CreationTimestamp.Time,
+	}, true)
+	DeferCleanup(func() { testWorkerManager.Claims().Release(stored.UID) })
+}
 
 func findFirstAgeKeyEntry(data map[string][]byte) (string, []byte) {
 	for key, value := range data {

@@ -31,7 +31,6 @@ import (
 // WatchRule status condition reasons.
 const (
 	WatchRuleReasonValidating            = "Validating"
-	WatchRuleReasonGitProviderNotFound   = "GitProviderNotFound"
 	WatchRuleReasonAccessDenied          = "AccessDenied"
 	WatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	WatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
@@ -175,30 +174,11 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	ready := gitTargetReadyCondition(target)
 	st.set(ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
 
-	// Resolve the GitProvider named by the target, in its own namespace unless the reference names
-	// another one.
-	providerName := target.Spec.GitProviderRef.Name
-	providerNS := target.GitProviderKey().Namespace
-
-	var provider configbutleraiv1alpha3.GitProvider
-	providerKey := types.NamespacedName{Name: providerName, Namespace: providerNS}
-	if err := r.Get(ctx, providerKey, &provider); err != nil {
-		log.Error(err, "Failed to resolve GitProvider from GitTarget",
-			"gitProviderName", providerName, "gitProviderNamespace", providerNS)
-		st.set(
-			ConditionTypeGitTargetReady,
-			metav1.ConditionFalse,
-			WatchRuleReasonGitProviderNotFound,
-			fmt.Sprintf("GitProvider '%s/%s' (from GitTarget) not found: %v", providerNS, providerName, err),
-		)
-		return r.stallRule(ctx, st, WatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
-	}
-
 	// Source-namespace gate AND compilation, in that order and in one call — see
 	// gateSourceNamespace. There is deliberately no AddOrUpdateWatchRule here: routing every
 	// compilation through watch.CompileWatchRule is what stops the startup bootstrap from being a
 	// second, ungated path into the store.
-	if handled, result, err := r.gateSourceNamespace(ctx, st, watchRule, target, provider, log); handled {
+	if handled, result, err := r.gateSourceNamespace(ctx, st, watchRule, target, log); handled {
 		return result, err
 	}
 
@@ -300,15 +280,6 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
 			builder.WithPredicates(gitTargetReadyProjectionChanged()),
 		).
-		// Nothing of the GitProvider's STATUS is mirrored here, so GenerationChangedPredicate is
-		// right on this edge: it reacts to a freshly applied or spec-changed provider while ignoring
-		// the status-only updates its controller writes itself — without it every GitProvider
-		// heartbeat would re-list and re-enqueue all WatchRules.
-		Watches(
-			&configbutleraiv1alpha3.GitProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.gitProviderToWatchRules),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
 		// React to a ClusterProvider's allowCrossNamespace.sources (or accessFrom)
 		// changing. The GitTarget->WatchRules edge above still cannot be relied on to carry this: a
 		// ClusterProvider change reaches the GitTarget as a status update that need not move the
@@ -402,52 +373,6 @@ func (r *WatchRuleReconciler) gitTargetToWatchRules(
 	for i := range rules.Items {
 		rule := &rules.Items[i]
 		if rule.Spec.GitTargetRef.Name != obj.GetName() {
-			continue
-		}
-		requests = append(requests, ctrlreconcile.Request{
-			NamespacedName: types.NamespacedName{Name: rule.Name, Namespace: rule.Namespace},
-		})
-	}
-	return requests
-}
-
-// gitProviderToWatchRules maps a GitProvider event to every WatchRule (in the
-// GitProvider's namespace) whose referenced GitTarget points at this provider.
-// Mirrors the equivalent helper on ClusterWatchRuleReconciler so that an
-// arriving provider doesn't have to wait for a separate GitTarget event to
-// reach the rule.
-func (r *WatchRuleReconciler) gitProviderToWatchRules(
-	ctx context.Context,
-	obj client.Object,
-) []ctrlreconcile.Request {
-	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets); err != nil {
-		logDependencyListError(ctx, err, "GitTargets", obj)
-		return nil
-	}
-
-	matchingTargets := make(map[types.NamespacedName]struct{})
-	for i := range targets.Items {
-		t := &targets.Items[i]
-		if namesGitProvider(t, obj) {
-			matchingTargets[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
-		}
-	}
-	if len(matchingTargets) == 0 {
-		return nil
-	}
-
-	var rules configbutleraiv1alpha3.WatchRuleList
-	if err := r.List(ctx, &rules); err != nil {
-		logDependencyListError(ctx, err, "WatchRules", obj)
-		return nil
-	}
-
-	var requests []ctrlreconcile.Request
-	for i := range rules.Items {
-		rule := &rules.Items[i]
-		target := types.NamespacedName{Name: rule.Spec.GitTargetRef.Name, Namespace: rule.Namespace}
-		if _, ok := matchingTargets[target]; !ok {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{

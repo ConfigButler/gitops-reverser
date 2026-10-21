@@ -52,26 +52,40 @@ func TestEnsureEventStream_RepointsTheStreamAtTheReplacementWorker(t *testing.T)
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: "shop"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "repo1"},
-			Branch:         "main",
-			Path:           "apps",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")},
+			Path:         "apps",
 		},
 	}
 	before := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := git.RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 
-	first, err := r.ensureEventStream(ctx, target, "shop", before, logr.Discard())
+	first, err := r.ensureEventStream(
+		ctx,
+		target,
+		claimWorkerForTest(r.WorkerManager, before),
+		logr.Discard(),
+	)
 	require.NoError(t, err)
 
-	steady, err := r.ensureEventStream(ctx, target, "shop", before, logr.Discard())
+	steady, err := r.ensureEventStream(
+		ctx,
+		target,
+		claimWorkerForTest(r.WorkerManager, before),
+		logr.Discard(),
+	)
 	require.NoError(t, err)
 	assert.Same(t, first, steady, "a steady tick must not re-register anything")
 
-	repointed, err := r.ensureEventStream(ctx, target, "shop", after, logr.Discard())
+	repointed, err := r.ensureEventStream(
+		ctx,
+		target,
+		claimWorkerForTest(r.WorkerManager, after),
+		logr.Discard(),
+	)
 	require.NoError(t, err)
 
 	assert.NotSame(t, first, repointed, "the route has to reach the worker for the repository named NOW")
-	worker, ok := workers.GetWorkerForTarget("repo1", "shop", "main")
+	worker, ok := workers.WorkerForGitBranch(shopRepo1Main)
 	require.True(t, ok)
 	assert.True(t, repointed.ServesWorker(worker))
 	assert.Same(t, repointed, router.GetGitTargetEventStream(types.NewResourceReference("apps", "shop")),
@@ -85,10 +99,10 @@ func TestEnsureEventStream_RepointsTheStreamAtTheReplacementWorker(t *testing.T)
 // declaration is level-triggered, its inputs did not change, so the next pass is a no-op and an
 // idle target would leave the new repository empty.
 //
-// One worker serves every GitTarget on its (provider, branch), and the siblings have no reason of
-// their own to reconcile, so recovering only the target whose reconcile noticed leaves the rest
-// pointing at a repository nothing will repopulate. Targets on another branch, and on another
-// provider, must be left alone: forcing a replay is a full cluster snapshot per target.
+// One worker serves every GitTarget on its GitBranch, and the siblings have no reason of their own
+// to reconcile, so recovering only the target whose reconcile noticed leaves the rest pointing at a
+// repository nothing will repopulate. Targets on another GitBranch must be left alone: forcing a
+// replay is a full cluster snapshot per target.
 func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -98,9 +112,8 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop", UID: k8stypes.UID("uid-" + name)},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.NamespacedObjectReference{Name: provider},
-				Branch:         branch,
-				Path:           name,
+				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest(provider, branch)},
+				Path:         name,
 			},
 		}
 	}
@@ -131,8 +144,8 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 	require.False(t, workers.RenderFidelityGate().AllowsWrites(appsRef))
 
 	branch := git.BranchKeyFor("https://example.invalid/second.git", "main")
-	provider := k8stypes.NamespacedName{Namespace: "shop", Name: "repo1"}
-	require.True(t, r.recoverBranchAfterReplacement(context.Background(), branch, provider, logr.Discard()),
+	require.True(t, r.recoverBranchAfterReplacement(context.Background(), branch,
+		shopRepo1Main, logr.Discard()),
 		"the targets were listed and told, so the recovery is delivered")
 
 	assert.ElementsMatch(t, []string{"shop/apps", "shop/infra"}, manager.ForcedRecheckTargetsForTest(),
@@ -161,9 +174,8 @@ func TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried(t *testing.
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: "shop", UID: k8stypes.UID("uid-apps")},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "repo1"},
-			Branch:         "main",
-			Path:           "apps",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")},
+			Path:         "apps",
 		},
 	}
 	listFails := true
@@ -197,11 +209,21 @@ func TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried(t *testing.
 	after := git.RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 	branch := git.BranchKeyFor(after.URL, "main")
 
-	_, err := r.ensureEventStream(ctx, target, "shop", before, logr.Discard())
+	_, err := r.ensureEventStream(
+		ctx,
+		target,
+		claimWorkerForTest(r.WorkerManager, before),
+		logr.Discard(),
+	)
 	require.NoError(t, err)
 
 	// The repoint. Its recovery cannot be delivered, and the reconcile does not fail for it.
-	_, err = r.ensureEventStream(ctx, target, "shop", after, logr.Discard())
+	_, err = r.ensureEventStream(
+		ctx,
+		target,
+		claimWorkerForTest(r.WorkerManager, after),
+		logr.Discard(),
+	)
 	require.NoError(t, err)
 	require.Empty(t, manager.ForcedRecheckTargetsForTest(), "precondition: nothing was told")
 	assert.True(t, workers.ReplacementPending(branch),
@@ -209,7 +231,12 @@ func TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried(t *testing.
 
 	// The next reconcile — this target's own, or a sibling's — delivers it.
 	listFails = false
-	_, err = r.ensureEventStream(ctx, target, "shop", after, logr.Discard())
+	_, err = r.ensureEventStream(
+		ctx,
+		target,
+		claimWorkerForTest(r.WorkerManager, after),
+		logr.Discard(),
+	)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"shop/apps"}, manager.ForcedRecheckTargetsForTest(),

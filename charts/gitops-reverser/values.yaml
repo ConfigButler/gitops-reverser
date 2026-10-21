@@ -470,7 +470,7 @@ auditKubeconfig:
 # you explicitly opt in.
 quickstart:
   enabled: false
-  # Namespace for the starter GitProvider, GitTarget, and WatchRule. Create it (and the git-creds
+  # Namespace for the starter GitProvider, GitBranch, GitTarget, and WatchRule. Create it (and the git-creds
   # Secret) before installing, so the starter GitProvider is Ready on the first reconcile instead of
   # waiting up to ~5 minutes (RequeueSteadyInterval) for the Secret to appear.
   namespace: gitops-reverser-quickstart-demo
@@ -487,9 +487,13 @@ quickstart:
     secretRef:
       # Required when quickstart.enabled=true.
       name: git-creds
+  # The repository branch the starter GitTarget writes. It holds the branch once the GitProvider's
+  # credential can open a push session on it.
+  gitBranch:
+    name: example-branch
+    branch: main
   gitTarget:
     name: example-target
-    branch: main
     commit:
       # When this target's commit windows close: after idleTimeout of silence, or
       # maxDuration after the window opened, whichever comes first. It is a GitTarget

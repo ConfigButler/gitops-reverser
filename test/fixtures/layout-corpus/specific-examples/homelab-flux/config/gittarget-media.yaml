@@ -1,3 +1,13 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: homelab-repository-main
+  namespace: flux-system
+spec:
+  gitProviderRef:
+    name: homelab-repository
+  branch: main
+---
 # The second target. HelmReleases are a different layer from the sources they pull
 # from, so they get their own folder and their own GitTarget rather than sharing one
 # with the sources — which is the shape Flux's documented repository structures exist
@@ -8,8 +18,7 @@ metadata:
   name: flux-media
   namespace: flux-system
 spec:
-  gitProviderRef:
-    name: homelab-repository
-  branch: main
+  gitBranchRef:
+    name: homelab-repository-main
   path: apps/home/media
   serializeNamespace: false   # the folder's own kustomization.yaml supplies it

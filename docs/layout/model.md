@@ -342,8 +342,7 @@ folder. The way to see what a target would do is to let one do it, somewhere har
 
 ```yaml
 spec:
-  gitProviderRef: {name: homelab}
-  branch: gitops-preview          # not main
+  gitBranchRef: {name: gitops-preview}   # a GitBranch for branch gitops-preview, not main
   path: apps/checkout
 ```
 
@@ -530,6 +529,6 @@ one asserts a rule PR 1 ships; the second-namespace one is written and skipped n
   unrendered files? The remaining objection is legibility, not correctness.
 - Namespace-local `GitProvider` (answered): the homelab examples put a `GitTarget` in `argocd`,
   `flux-system` and `homelab-config`, each with its own `GitProvider`, three copies of one
-  credential in a single-owner cluster. One `GitProvider` now serves all three:
-  `spec.gitProviderRef.namespace` names it, and its `spec.accessFrom` admits the other namespaces.
-  Three `GitProvider`s writing one branch are refused.
+  credential in a single-owner cluster. One `GitBranch` now serves all three:
+  `spec.gitBranchRef.namespace` names it, and its `GitProvider`'s `spec.accessFrom` admits the other
+  namespaces. A second `GitBranch` for the same repository branch holds nothing (`BranchConflict`).

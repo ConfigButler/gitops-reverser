@@ -361,17 +361,25 @@ func assertCorpusPatch(t *testing.T, path, got string) {
 		"the write path and %s disagree; re-run with -update if the new diff is the intended one", path)
 }
 
-// readCorpusGitTarget decodes one scenario's GitTarget. It is the SHIPPED type: a config naming a
-// field the API does not have fails here, which is the check the harness-local struct used to buy
-// with a whole second parser and an assertion test beside it.
+// readCorpusGitTarget decodes one scenario's GitTarget: the GitTarget document of the config file,
+// which also holds the GitBranch it references. It is the SHIPPED type: a config naming a field the
+// API does not have fails here, which is the check the harness-local struct used to buy with a
+// whole second parser and an assertion test beside it.
 func readCorpusGitTarget(t *testing.T, path string) v1alpha3.GitTarget {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
-	var target v1alpha3.GitTarget
-	require.NoError(t, yaml.UnmarshalStrict(raw, &target), "parsing %s", path)
-	require.NotEmpty(t, target.Spec.Path, "%s: spec.path is what the corpus writes into", path)
-	return target
+	for _, doc := range strings.Split(string(raw), "\n---\n") {
+		if !strings.Contains(doc, "kind: GitTarget") {
+			continue
+		}
+		var target v1alpha3.GitTarget
+		require.NoError(t, yaml.UnmarshalStrict([]byte(doc), &target), "parsing %s", path)
+		require.NotEmpty(t, target.Spec.Path, "%s: spec.path is what the corpus writes into", path)
+		return target
+	}
+	require.Failf(t, "no GitTarget", "%s holds no GitTarget document", path)
+	return v1alpha3.GitTarget{}
 }
 
 // readCorpusSourceNamespaces derives the source namespaces a scenario's target is reached by, from

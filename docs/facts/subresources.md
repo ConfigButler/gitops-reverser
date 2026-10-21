@@ -192,14 +192,23 @@ Every `configbutler.ai` CRD enables `/status`: `GitProvider`, `GitTarget`,
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: platform
+  name: platform-config-main
   namespace: default
 spec:
   gitProviderRef:
     name: platform-config
   branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: platform
+  namespace: default
+spec:
+  gitBranchRef:
+    name: platform-config-main
   path: clusters/dev
 status:
   observedGeneration: 4

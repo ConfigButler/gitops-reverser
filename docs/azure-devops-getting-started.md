@@ -48,14 +48,23 @@ spec:
     - <branch>
 ---
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: ado-target
+  name: ado-branch
   namespace: my-namespace
 spec:
   gitProviderRef:
     name: ado-provider
   branch: <branch>
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: ado-target
+  namespace: my-namespace
+spec:
+  gitBranchRef:
+    name: ado-branch
   path: clusters/my-cluster
 ---
 apiVersion: configbutler.ai/v1alpha3

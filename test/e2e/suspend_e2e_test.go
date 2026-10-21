@@ -207,21 +207,20 @@ var _ = Describe("Manager GitTarget suspend", Label("manager", "suspend"), Order
 // applySuspendGitTarget applies a GitTarget with spec.suspend set explicitly.
 func applySuspendGitTarget(name, namespace, providerName, targetPath string, suspend bool) {
 	GinkgoHelper()
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+	manifest := gitBranchManifest(namespace, providerName) + fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: %s
   namespace: %s
 spec:
-  gitProviderRef:
+  gitBranchRef:
     name: %s
-  branch: main
   path: %s
   commit:
     window:
       idleTimeout: "0s"
   suspend: %t
-`, name, namespace, providerName, targetPath, suspend)
+`, name, namespace, gitBranchName(providerName, "main"), targetPath, suspend)
 	out, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(),
 		"failed to apply GitTarget %q with suspend %t: %s", name, suspend, out)

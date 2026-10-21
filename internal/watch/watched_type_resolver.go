@@ -287,14 +287,14 @@ func (m *Manager) resolveWatchedTypeTables() (map[string]WatchedTypeTable, map[s
 	}
 
 	byTarget := map[string]*targetSelections{}
-	get := func(ref types.ResourceReference, providerNS, provider, branch, path string) *targetSelections {
+	get := func(ref types.ResourceReference, gitBranchNS, gitBranch, path string) *targetSelections {
 		key := ref.Key()
 		ts := byTarget[key]
 		if ts == nil {
 			ts = &targetSelections{gitDest: ref}
 			byTarget[key] = ts
 		}
-		ts.dest = watchPlanDest(providerNS, provider, branch, path)
+		ts.dest = watchPlanDest(gitBranchNS, gitBranch, path)
 		return ts
 	}
 
@@ -330,12 +330,12 @@ func (m *Manager) resolveWatchedTypeTables() (map[string]WatchedTypeTable, map[s
 // before being dropped.
 func (m *Manager) collectWatchRuleSelections(
 	recordsFor func(clusterID string) []typeset.TypeRecord,
-	get func(types.ResourceReference, string, string, string, string) *targetSelections,
+	get func(types.ResourceReference, string, string, string) *targetSelections,
 ) {
 	for _, rule := range m.RuleStore.SnapshotWatchRules() {
 		gitTargetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
 		records := recordsFor(m.clusterIDForGitTarget(gitTargetRef))
-		ts := get(gitTargetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
+		ts := get(gitTargetRef, rule.GitBranchNamespace, rule.GitBranchRef, rule.Path)
 		selecting := selectingRule{
 			kind:      ruleKindWatchRule,
 			namespace: rule.Source.Namespace,
@@ -378,12 +378,12 @@ func (m *Manager) collectWatchRuleSelections(
 // cannot widen a stream. Selections keep namespace "", now only for genuinely cluster-scoped types.
 func (m *Manager) collectClusterWatchRuleSelections(
 	recordsFor func(clusterID string) []typeset.TypeRecord,
-	get func(types.ResourceReference, string, string, string, string) *targetSelections,
+	get func(types.ResourceReference, string, string, string) *targetSelections,
 ) {
 	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
 		gitTargetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
 		records := recordsFor(m.clusterIDForGitTarget(gitTargetRef))
-		ts := get(gitTargetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
+		ts := get(gitTargetRef, rule.GitBranchNamespace, rule.GitBranchRef, rule.Path)
 		selecting := selectingRule{kind: ruleKindClusterWatchRule, name: rule.Source.Name, createdAt: rule.CreatedAt}
 		for _, rr := range rule.Rules {
 			matched := matchFollowableRecords(
@@ -526,8 +526,8 @@ func preferredRecord(records []typeset.TypeRecord) typeset.TypeRecord {
 // watchPlanDest renders a GitTarget's write destination fingerprint in the exact form
 // the effective-plan hash uses, so the hash is byte-identical whether built from the
 // table or inline.
-func watchPlanDest(providerNS, provider, branch, path string) string {
-	return fmt.Sprintf("provider=%s/%s|branch=%q|path=%q", providerNS, provider, branch, path)
+func watchPlanDest(gitBranchNS, gitBranch, path string) string {
+	return fmt.Sprintf("gitbranch=%s/%s|path=%q", gitBranchNS, gitBranch, path)
 }
 
 // rulesFingerprint is a cheap, resolution-free hash of the raw rule inputs — the
@@ -566,7 +566,7 @@ func watchRuleFingerprint(rule rulestore.CompiledRule) string {
 	fmt.Fprintf(&b, "wr|%s/%s|created=%d|gt=%s/%s|dest=%s",
 		rule.Source.Namespace, rule.Source.Name, rule.CreatedAt.UnixNano(),
 		rule.GitTargetNamespace, rule.GitTargetRef,
-		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
+		watchPlanDest(rule.GitBranchNamespace, rule.GitBranchRef, rule.Path))
 	for _, rr := range rule.ResourceRules {
 		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;src=%s;sel=%q]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),
@@ -583,7 +583,7 @@ func clusterWatchRuleFingerprint(rule rulestore.CompiledClusterRule) string {
 	fmt.Fprintf(&b, "cwr|%s|created=%d|gt=%s/%s|dest=%s",
 		rule.Source.Name, rule.CreatedAt.UnixNano(),
 		rule.GitTargetNamespace, rule.GitTargetRef,
-		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
+		watchPlanDest(rule.GitBranchNamespace, rule.GitBranchRef, rule.Path))
 	for _, rr := range rule.Rules {
 		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;sel=%q]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),

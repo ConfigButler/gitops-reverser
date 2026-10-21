@@ -81,13 +81,13 @@ without a kubeconfig.
 | --- | --- | --- |
 | `resource_condition` | gauge | `kind`, `resource_namespace`, `resource_name`, `type`, `status`, `reason` |
 
-- `kind` is `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider`, `ClusterProvider`,
-  `FluxTrigger` or `ArgoCDTrigger`: the objects a human declares.
+- `kind` is `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider`, `GitBranch`,
+  `ClusterProvider`, `FluxTrigger` or `ArgoCDTrigger`: the objects a human declares.
 - `type` is the kstatus trio: `Ready` (the summary), `Reconciling` (working on it) and `Stalled`
   (given up, and nothing will retry without a human).
 - `status` is `True`, `False` or `Unknown`.
 - `reason` is the condition's reason as it stands — `ValidationFailed`, `UnsupportedContent`,
-  `ProviderNotFound` — which is what turns a count panel into a first guess. It is the API's own
+  `BranchConflict` — which is what turns a count panel into a first guess. It is the API's own
   string, so a release that renames a reason changes the series a selector matches;
   [`UPGRADING.md`](UPGRADING.md) lists every rename.
 

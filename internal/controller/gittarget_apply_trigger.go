@@ -37,14 +37,14 @@ func (r *GitTargetReconciler) observeApplyTrigger(
 	ctx context.Context,
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
-	gitProvider *configbutleraiv1alpha3.GitProvider,
+	dest gitDestination,
 ) (applyTriggerVerdict, bool) {
 	ref := target.Spec.ApplyTriggerRef
 	if ref == nil {
 		st.remove(GitTargetConditionApplyTriggerReady)
 		return applyTriggerVerdict{}, false
 	}
-	verdict := r.applyTriggerVerdict(ctx, target, gitProvider)
+	verdict := r.applyTriggerVerdict(ctx, target, dest)
 	st.setValue(GitTargetConditionApplyTriggerReady, verdict.value)
 	return verdict, true
 }
@@ -52,7 +52,7 @@ func (r *GitTargetReconciler) observeApplyTrigger(
 func (r *GitTargetReconciler) applyTriggerVerdict(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
-	gitProvider *configbutleraiv1alpha3.GitProvider,
+	dest gitDestination,
 ) applyTriggerVerdict {
 	ref := target.Spec.ApplyTriggerRef
 	name := fmt.Sprintf("%s %s/%s", ref.Kind, target.Namespace, ref.Name)
@@ -94,8 +94,8 @@ func (r *GitTargetReconciler) applyTriggerVerdict(
 		}
 	}
 
-	if gitProvider != nil {
-		want := applier.Binding{RepositoryURL: gitProvider.Spec.URL, Branch: target.Spec.Branch}
+	if dest.provider != nil && dest.branch != nil {
+		want := applier.Binding{RepositoryURL: dest.provider.Spec.URL, Branch: dest.branch.Spec.Branch}
 		if mismatch := applier.BindingMismatch(trigger, want); mismatch != "" {
 			return applyTriggerVerdict{
 				value: conditionValue{

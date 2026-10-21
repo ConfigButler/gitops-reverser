@@ -109,9 +109,8 @@ func applierTestTarget(name string, applier bool, mutate ...func(*configv1alpha3
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: k8stypes.UID("uid-" + name)},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "test-provider"},
-			Branch:         "main",
-			Path:           "apps/" + name,
+			GitBranchRef: meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")},
+			Path:         "apps/" + name,
 		},
 	}
 	if applier {
@@ -134,6 +133,7 @@ func applyTriggerLoop(t *testing.T, targets ...client.Object) (*branchWorkerEven
 
 	w := newMetricsTestWorker()
 	w.GitProviderNamespace = "team-a"
+	w.GitBranch = testGitBranch(w.GitProviderRef, w.GitProviderNamespace, w.Branch)
 	w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
 	w.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testTriggersFor(targets)...).
 		WithStatusSubresource(&configv1alpha3.FluxTrigger{}, &configv1alpha3.ArgoCDTrigger{}).Build()
@@ -166,9 +166,11 @@ func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) 
 		applierTestTarget("alpha", true),
 		applierTestTarget("bravo", true, func(g *configv1alpha3.GitTarget) { g.Spec.Suspend = true }),
 		applierTestTarget("no-applier", false),
-		applierTestTarget("other-branch", true, func(g *configv1alpha3.GitTarget) { g.Spec.Branch = "release" }),
+		applierTestTarget("other-branch", true, func(g *configv1alpha3.GitTarget) {
+			g.Spec.GitBranchRef.Name = testGitBranchName("test-provider", "release")
+		}),
 		applierTestTarget("other-provider", true, func(g *configv1alpha3.GitTarget) {
-			g.Spec.GitProviderRef.Name = "elsewhere"
+			g.Spec.GitBranchRef.Name = testGitBranchName("elsewhere", "main")
 		}),
 	)
 	observeForeignCommit(loop.w)

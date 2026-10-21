@@ -68,7 +68,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
 		cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, providerName)
 		cleanupNamespacedResource(testNs, "secret", receiverSecretName)
 		cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 		cleanupNamespacedResource("flux-system", "gitrepository", fluxName)

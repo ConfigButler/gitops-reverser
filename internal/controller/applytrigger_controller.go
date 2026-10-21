@@ -497,10 +497,15 @@ func (r *ApplyTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// What makes a GitTarget eligible re-runs the check of the trigger it names, and of the one it
 		// named before: the GitTarget appearing, going, or changing what it names or writes.
 		Watches(&configbutleraiv1alpha3.GitTarget{}, r.gitTargetToTriggers()).
-		// A GitProvider's URL is what its GitTargets write.
+		// A GitBranch and its GitProvider's URL are what its GitTargets write.
+		Watches(
+			&configbutleraiv1alpha3.GitBranch{},
+			handler.EnqueueRequestsFromMapFunc(r.gitDestinationToTriggers),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Watches(
 			&configbutleraiv1alpha3.GitProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.gitProviderToTriggers),
+			handler.EnqueueRequestsFromMapFunc(r.gitDestinationToTriggers),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		// A ClusterProvider admits the trigger's namespace, and the namespaces of the GitTargets naming
@@ -632,20 +637,23 @@ func (r *ApplyTriggerReconciler) gitTargetToTriggers() handler.EventHandler {
 	}
 }
 
-// gitProviderToTriggers maps a GitProvider event to the triggers of this kind named by the
-// GitTargets that write through it.
-func (r *ApplyTriggerReconciler) gitProviderToTriggers(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
-	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets); err != nil {
+// gitDestinationToTriggers maps a GitBranch or GitProvider event to the triggers of this kind named
+// by the GitTargets that write through it.
+func (r *ApplyTriggerReconciler) gitDestinationToTriggers(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	targets, err := gitTargetsOn(ctx, r.Client, obj)
+	if err != nil {
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
 	seen := map[k8stypes.NamespacedName]bool{}
 	var requests []ctrlreconcile.Request
-	for i := range targets.Items {
-		target := &targets.Items[i]
+	for i := range targets {
+		target := &targets[i]
 		ref := target.Spec.ApplyTriggerRef
-		if ref == nil || ref.Kind != r.Kind || !namesGitProvider(target, obj) {
+		if ref == nil || ref.Kind != r.Kind {
 			continue
 		}
 		key := k8stypes.NamespacedName{Namespace: target.Namespace, Name: ref.Name}

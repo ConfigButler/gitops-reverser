@@ -29,10 +29,12 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	objects := guideExampleObjects(t, argoCDGuide)
 
 	var provider v1alpha3.GitProvider
+	var branch v1alpha3.GitBranch
 	var target v1alpha3.GitTarget
 	var trigger v1alpha3.ArgoCDTrigger
 	var secret corev1.Secret
 	decodeStrict(t, objects, "GitProvider", &provider)
+	decodeStrict(t, objects, "GitBranch", &branch)
 	decodeStrict(t, objects, "GitTarget", &target)
 	decodeStrict(t, objects, v1alpha3.ApplyTriggerKindArgoCD, &trigger)
 	decodeStrict(t, objects, "Secret", &secret)
@@ -40,8 +42,15 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	app := one(t, objects, kindApplication)
 
 	// The GitOps Reverser objects are wired to each other.
-	assert.Equal(t, provider.Name, target.Spec.GitProviderRef.Name)
-	assert.Equal(t, provider.Namespace, target.Namespace, "a GitTarget names a GitProvider in its own namespace")
+	assert.Equal(t, provider.Name, branch.Spec.GitProviderRef.Name)
+	assert.Equal(t, provider.Namespace, branch.Namespace, "a GitBranch names a GitProvider in its own namespace")
+	assert.Equal(t, branch.Name, target.Spec.GitBranchRef.Name)
+	assert.Equal(
+		t,
+		branch.Namespace,
+		target.Namespace,
+		"the example's GitTarget names a GitBranch in its own namespace",
+	)
 	require.NotNil(t, provider.Spec.Receiver, "the example serves a push receiver")
 	assert.Equal(t, secret.Name, provider.Spec.Receiver.SecretRef.Name)
 	assert.NotEmpty(t, secret.StringData[v1alpha3.ReceiverTokenKey], "the receiver reads the token key")
@@ -60,7 +69,7 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	// The applier, as written, is accepted, binds the GitTarget, and is driven.
 	ref := trigger.Applier()
 	assert.Equal(t, types.NamespacedName{Namespace: app.GetNamespace(), Name: app.GetName()}, ref)
-	want := Binding{RepositoryURL: provider.Spec.URL, Branch: target.Spec.Branch}
+	want := Binding{RepositoryURL: provider.Spec.URL, Branch: branch.Spec.Branch}
 	client := newSourceClient(app)
 	argo := pinnedArgo(client)
 	verdict := argo.Validate(context.Background(), ref)

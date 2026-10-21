@@ -87,9 +87,8 @@ var _ = Describe("Superseded source-scope fields", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-commit", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.NamespacedObjectReference{Name: "any-provider"},
-				Branch:         "main",
-				Path:           "clusters/prod",
+				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("any-provider", "main")},
+				Path:         "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
 					Window: &configbutleraiv1alpha3.CommitWindow{
 						IdleTimeout: &metav1.Duration{Duration: 30 * time.Second},
@@ -197,18 +196,26 @@ var _ = Describe("Reference names must not be empty", func() {
 		Expect(err.Error()).To(ContainSubstring("must not be empty"))
 	})
 
-	It("refuses an empty name on the provider and target references", func() {
+	It("refuses an empty name on the branch, provider and target references", func() {
 		ctx := context.Background()
 
 		target := &configbutleraiv1alpha3.GitTarget{
-			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-branch-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.NamespacedObjectReference{Name: ""},
-				Branch:         "main",
-				Path:           "clusters/prod",
+				GitBranchRef: meta.NamespacedObjectReference{Name: ""},
+				Path:         "clusters/prod",
 			},
 		}
 		Expect(k8sClient.Create(ctx, target)).NotTo(Succeed(),
+			"an empty gitBranchRef.name names nothing and must be refused at admission")
+
+		branch := &configbutleraiv1alpha3.GitBranch{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.GitBranchSpec{
+				GitProviderRef: meta.LocalObjectReference{Name: ""}, Branch: "main",
+			},
+		}
+		Expect(k8sClient.Create(ctx, branch)).NotTo(Succeed(),
 			"an empty gitProviderRef.name names nothing and must be refused at admission")
 
 		rule := &configbutleraiv1alpha3.WatchRule{
@@ -259,5 +266,46 @@ var _ = Describe("Retained and refused throttle fields", func() {
 		})
 		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, provider) })
+	})
+})
+
+// GitTarget.spec.gitProviderRef, spec.branch and spec.parentBranch moved to a GitBranch. A pruned
+// field would apply cleanly and leave the GitTarget naming no branch, so the old spellings stay in
+// the schema and a CEL rule refuses them, naming gitBranchRef.
+var _ = Describe("Retained and refused GitTarget branch fields", func() {
+	legacyTarget := func(name string, spec map[string]any) *unstructured.Unstructured {
+		spec["gitBranchRef"] = map[string]any{"name": "main"}
+		spec["path"] = "apps"
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "GitTarget",
+			"metadata":   map[string]any{"name": name, "namespace": "default"},
+			"spec":       spec,
+		}}
+	}
+
+	It("refuses spec.gitProviderRef, spec.branch and spec.parentBranch, naming spec.gitBranchRef", func() {
+		ctx := context.Background()
+
+		for name, spec := range map[string]map[string]any{
+			"legacy-provider": {"gitProviderRef": map[string]any{"name": "platform"}},
+			"legacy-branch":   {"branch": "main"},
+			"legacy-parent":   {"parentBranch": "develop"},
+		} {
+			err := k8sClient.Create(ctx, legacyTarget(name, spec))
+			Expect(err).To(HaveOccurred(), "%s: the old field must not apply cleanly", name)
+			Expect(err.Error()).To(ContainSubstring("moved to a GitBranch; set spec.gitBranchRef"), name)
+		}
+	})
+
+	It("requires spec.gitBranchRef", func() {
+		ctx := context.Background()
+
+		target := legacyTarget("no-branch-ref", map[string]any{})
+		Expect(unstructured.SetNestedField(target.Object, nil, "spec", "gitBranchRef")).To(Succeed())
+		delete(target.Object["spec"].(map[string]any), "gitBranchRef")
+		err := k8sClient.Create(ctx, target)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("gitBranchRef"))
 	})
 })

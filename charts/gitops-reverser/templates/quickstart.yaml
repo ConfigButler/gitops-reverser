@@ -26,6 +26,19 @@ spec:
     name: {{ .Values.quickstart.gitProvider.secretRef.name }}
 ---
 apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: {{ .Values.quickstart.gitBranch.name }}
+  namespace: {{ .Values.quickstart.namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: quickstart
+spec:
+  gitProviderRef:
+    name: {{ .Values.quickstart.gitProvider.name }}
+  branch: {{ .Values.quickstart.gitBranch.branch | quote }}
+---
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: {{ .Values.quickstart.gitTarget.name }}
@@ -34,9 +47,8 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
     app.kubernetes.io/component: quickstart
 spec:
-  gitProviderRef:
-    name: {{ .Values.quickstart.gitProvider.name }}
-  branch: {{ .Values.quickstart.gitTarget.branch | quote }}
+  gitBranchRef:
+    name: {{ .Values.quickstart.gitBranch.name }}
   path: {{ .Values.quickstart.gitTarget.path | quote }}
   commit:
     window:

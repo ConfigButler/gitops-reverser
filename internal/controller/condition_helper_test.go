@@ -61,8 +61,8 @@ func TestUpsertCondition_ChangesTransitionTimeWhenStatusChanges(t *testing.T) {
 		{
 			Type:               GitTargetConditionValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             GitTargetReasonProviderNotFound,
-			Message:            "missing provider",
+			Reason:             GitTargetReasonGitBranchNotFound,
+			Message:            "missing GitBranch",
 			ObservedGeneration: 2,
 			LastTransitionTime: oldTransition,
 		},

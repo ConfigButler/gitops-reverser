@@ -29,9 +29,8 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 	d := func(v time.Duration) *metav1.Duration { return &metav1.Duration{Duration: v} }
 	target := func(name string, window *configv1alpha3.CommitWindow) *configv1alpha3.GitTarget {
 		spec := configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "p"},
-			Branch:         "main",
-			Path:           "clusters/prod",
+			GitBranchRef: meta.NamespacedObjectReference{Name: testGitBranchName("p", "main")},
+			Path:         "clusters/prod",
 		}
 		if window != nil {
 			spec.Commit = &configv1alpha3.GitTargetCommitSpec{Window: window}

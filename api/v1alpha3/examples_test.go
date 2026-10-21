@@ -124,6 +124,8 @@ func newExampleObject(kind string) any {
 	switch kind {
 	case "GitProvider":
 		return &GitProvider{}
+	case "GitBranch":
+		return &GitBranch{}
 	case "GitTarget":
 		return &GitTarget{}
 	case "ClusterProvider":

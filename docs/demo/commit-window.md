@@ -21,14 +21,23 @@ Save as `watch.yaml`. All resources in this example use the same namespace and t
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: window-demo
+  name: example-provider-commit-window-demo
   namespace: gitops-reverser-quickstart-demo
 spec:
   gitProviderRef:
     name: example-provider
   branch: commit-window-demo
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: window-demo
+  namespace: gitops-reverser-quickstart-demo
+spec:
+  gitBranchRef:
+    name: example-provider-commit-window-demo
   path: apps/demo
   commit:
     window:

@@ -66,11 +66,14 @@ var (
 	advertiseRemoteBranchFn = advertiseRemoteBranch
 )
 
-// BranchWorker processes events for a single (GitProvider, Branch) combination.
+// BranchWorker processes events for a single repository branch, for the GitBranch holding it.
 // It can serve multiple GitTargets that write to different paths in the same branch.
 // This design ensures serialized commits per branch, preventing merge conflicts.
 type BranchWorker struct {
-	// Identity (immutable after creation)
+	// Identity (immutable after creation). GitBranch is the claim holder this worker writes for;
+	// GitProviderRef and GitProviderNamespace name that GitBranch's GitProvider, whose credential
+	// and signing key it uses.
+	GitBranch            types.NamespacedName
 	GitProviderRef       string
 	GitProviderNamespace string
 	Branch               string

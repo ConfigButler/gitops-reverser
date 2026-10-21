@@ -46,10 +46,11 @@ agent over MCP.
 2. **Sanitize** the change and compare it against what Git already holds.
 3. **Write** stable YAML to the target folder and push, grouping a burst of changes into one commit.
 
-Custom resources configure it: `GitProvider` for repository and credentials, `GitTarget` for branch
-and folder, `WatchRule` or `ClusterWatchRule` for what to capture, and `ClusterProvider` for the
-source cluster, created as `default` on install. A rule selects whole resource collections, including
-their deletions; the `GitTarget`'s prune mode decides whether a deletion removes the file from Git.
+Custom resources configure it: `GitProvider` for repository and credentials, `GitBranch` for one
+branch of that repository, `GitTarget` for a folder on it, `WatchRule` or `ClusterWatchRule` for what
+to capture, and `ClusterProvider` for the source cluster, created as `default` on install. A rule
+selects whole resource collections, including their deletions; the `GitTarget`'s prune mode decides
+whether a deletion removes the file from Git.
 See [Configuration](docs/configuration.md).
 
 By default it watches its own cluster. Add more of each as you need them: one operator can serve

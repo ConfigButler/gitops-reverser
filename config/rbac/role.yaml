@@ -59,6 +59,7 @@ rules:
   - clusterwatchrules/status
   - commitrequests/status
   - fluxtriggers/status
+  - gitbranches/status
   - gitproviders/status
   - gittargets/status
   - watchrules/status
@@ -71,6 +72,7 @@ rules:
   resources:
   - clusterproviders
   - fluxtriggers
+  - gitbranches
   verbs:
   - get
   - list
@@ -106,6 +108,7 @@ rules:
   - configbutler.ai
   resources:
   - fluxtriggers/finalizers
+  - gitbranches/finalizers
   - gitproviders/finalizers
   verbs:
   - update

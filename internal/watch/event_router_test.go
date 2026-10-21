@@ -86,8 +86,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
-			Branch:         "main",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
@@ -301,11 +300,10 @@ func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
-			Branch:         "main",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
-	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget, testGitBranchObject()).Build()
 	workerManager := git.NewWorkerManager(
 		client,
 		logr.Discard(),
@@ -332,8 +330,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
-			Branch:         "main",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
@@ -350,8 +347,16 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	time.Sleep(100 * time.Millisecond) // allow the manager to record its context
 
 	ensureErr := workerManager.EnsureWorker(
-		ctx, "team-a-provider", "team-a", "main",
-		git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"}, "")
+		ctx,
+		claimWorkerForTest(
+			workerManager,
+			"team-a-provider",
+			"team-a",
+			"main",
+			git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"},
+			"",
+		),
+	)
 
 	require.NoError(t, ensureErr)
 
@@ -381,11 +386,10 @@ func TestWithdrawCommitRequest_NothingHoldsItWithoutAWorker(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
-			Branch:         "main",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
-	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget, testGitBranchObject()).Build()
 	workerManager := git.NewWorkerManager(
 		client, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
@@ -416,8 +420,7 @@ func TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
-			Branch:         "main",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
@@ -428,8 +431,20 @@ func TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
 	defer cancel()
 	go func() { _ = workerManager.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond) // allow the manager to record its context
-	require.NoError(t, workerManager.EnsureWorker(
-		ctx, "team-a-provider", "team-a", "main", git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"}, ""))
+	require.NoError(
+		t,
+		workerManager.EnsureWorker(
+			ctx,
+			claimWorkerForTest(
+				workerManager,
+				"team-a-provider",
+				"team-a",
+				"main",
+				git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"},
+				"",
+			),
+		),
+	)
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 	attach := saveAttach("team-a-config", "team-a")
@@ -466,8 +481,7 @@ func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
-			Branch:         "main",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
@@ -478,9 +492,21 @@ func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T
 	defer cancel()
 	go func() { _ = workerManager.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond) // allow the manager to record its context
-	require.NoError(t, workerManager.EnsureWorker(
-		ctx, "team-a-provider", "team-a", "main", git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"}, ""))
-	worker, ok := workerManager.GetWorkerForTarget("team-a-provider", "team-a", "main")
+	require.NoError(
+		t,
+		workerManager.EnsureWorker(
+			ctx,
+			claimWorkerForTest(
+				workerManager,
+				"team-a-provider",
+				"team-a",
+				"main",
+				git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"},
+				"",
+			),
+		),
+	)
+	worker, ok := workerManager.WorkerForGitBranch(gitBranchForTest("team-a-provider", "team-a", "main"))
 	require.True(t, ok)
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
@@ -553,4 +579,15 @@ func TestDrainScopedResync_QueueFullIsDrainedNotOrphaned(t *testing.T) {
 	assert.Empty(t, resultCh, "the drain must consume the queue-full reply")
 	assert.Empty(t, mgr.watchPlane().streams,
 		"a resync that never queued wrote nothing, so it must not move stream readiness")
+}
+
+// testGitBranchObject is the GitBranch team-a's GitTargets reference: team-a-provider's main.
+func testGitBranchObject() *configv1alpha3.GitBranch {
+	return &configv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{Name: gitBranchNameForTest("team-a-provider", "main"), Namespace: "team-a"},
+		Spec: configv1alpha3.GitBranchSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			Branch:         "main",
+		},
+	}
 }

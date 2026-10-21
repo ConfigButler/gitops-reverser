@@ -66,8 +66,7 @@ func gitTarget(name, namespace, providerName string) *configbutleraiv1alpha3.Git
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: providerName},
-			Branch:         "main",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest(providerName, "main")},
 		},
 	}
 }
@@ -93,8 +92,18 @@ func clusterWatchRule(name, targetName, targetNamespace string) *configbutleraiv
 	}
 }
 
-// TestGitProviderToGitTargets verifies that a GitProvider event enqueues only
-// the GitTargets in its namespace that reference it.
+// gitBranch is the GitBranch "<provider>-main" in namespace, written through that GitProvider.
+func gitBranch(providerName, namespace string) *configbutleraiv1alpha3.GitBranch {
+	return &configbutleraiv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{Name: gitBranchNameForTest(providerName, "main"), Namespace: namespace},
+		Spec: configbutleraiv1alpha3.GitBranchSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: providerName}, Branch: "main",
+		},
+	}
+}
+
+// TestGitProviderToGitTargets verifies that a GitProvider event enqueues only the GitTargets on the
+// GitBranches in its namespace that name it.
 func TestGitProviderToGitTargets(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -148,10 +157,13 @@ func TestGitProviderToGitTargets(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			client := newDependencyWatchesTestClient(t, tc.objects...)
+			objects := append([]ctrlclient.Object{
+				gitBranch("provider-a", "ns-a"), gitBranch("provider-b", "ns-a"), gitBranch("provider-a", "ns-b"),
+			}, tc.objects...)
+			client := newDependencyWatchesTestClient(t, objects...)
 			r := &GitTargetReconciler{Client: client}
 
-			got := r.gitProviderToGitTargets(context.Background(), tc.provider)
+			got := r.gitDestinationToGitTargets(context.Background(), tc.provider)
 
 			assert.Equal(t, tc.want, requestsToKeys(got))
 		})
@@ -198,49 +210,6 @@ func TestGitTargetToClusterWatchRules(t *testing.T) {
 	}
 }
 
-// TestGitProviderToClusterWatchRules verifies that a GitProvider event
-// transitively enqueues ClusterWatchRules via their GitTarget.
-func TestGitProviderToClusterWatchRules(t *testing.T) {
-	tests := []struct {
-		name     string
-		objects  []ctrlclient.Object
-		provider ctrlclient.Object
-		want     []string
-	}{
-		{
-			name: "enqueues rules whose target points at the provider",
-			objects: []ctrlclient.Object{
-				gitTarget("target-a", "ns-a", "provider-a"),
-				gitTarget("target-other", "ns-a", "provider-b"),
-				clusterWatchRule("rule-matched", "target-a", "ns-a"),
-				clusterWatchRule("rule-unrelated", "target-other", "ns-a"),
-			},
-			provider: gitProvider("provider-a", "ns-a"),
-			want:     []string{"/rule-matched"},
-		},
-		{
-			name: "no matching targets returns empty",
-			objects: []ctrlclient.Object{
-				gitTarget("target-a", "ns-a", "provider-b"),
-				clusterWatchRule("rule-matched", "target-a", "ns-a"),
-			},
-			provider: gitProvider("provider-a", "ns-a"),
-			want:     nil,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			client := newDependencyWatchesTestClient(t, tc.objects...)
-			r := &ClusterWatchRuleReconciler{Client: client}
-
-			got := r.gitProviderToClusterWatchRules(context.Background(), tc.provider)
-
-			assert.Equal(t, tc.want, requestsToKeys(got))
-		})
-	}
-}
-
 // TestGitTargetToWatchRules verifies that a GitTarget event enqueues every
 // WatchRule in the same namespace that names it.
 func TestGitTargetToWatchRules(t *testing.T) {
@@ -275,49 +244,6 @@ func TestGitTargetToWatchRules(t *testing.T) {
 			r := &WatchRuleReconciler{Client: client}
 
 			got := r.gitTargetToWatchRules(context.Background(), tc.target)
-
-			assert.Equal(t, tc.want, requestsToKeys(got))
-		})
-	}
-}
-
-// TestGitProviderToWatchRules verifies that a GitProvider event transitively
-// enqueues WatchRules in the provider's namespace via their GitTarget.
-func TestGitProviderToWatchRules(t *testing.T) {
-	tests := []struct {
-		name     string
-		objects  []ctrlclient.Object
-		provider ctrlclient.Object
-		want     []string
-	}{
-		{
-			name: "enqueues rules whose target points at the provider",
-			objects: []ctrlclient.Object{
-				gitTarget("target-a", "ns-a", "provider-a"),
-				gitTarget("target-other", "ns-a", "provider-b"),
-				watchRule("rule-matched", "ns-a", "target-a"),
-				watchRule("rule-unrelated", "ns-a", "target-other"),
-			},
-			provider: gitProvider("provider-a", "ns-a"),
-			want:     []string{"ns-a/rule-matched"},
-		},
-		{
-			name: "no matching targets returns empty",
-			objects: []ctrlclient.Object{
-				gitTarget("target-a", "ns-a", "provider-b"),
-				watchRule("rule-matched", "ns-a", "target-a"),
-			},
-			provider: gitProvider("provider-a", "ns-a"),
-			want:     nil,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			client := newDependencyWatchesTestClient(t, tc.objects...)
-			r := &WatchRuleReconciler{Client: client}
-
-			got := r.gitProviderToWatchRules(context.Background(), tc.provider)
 
 			assert.Equal(t, tc.want, requestsToKeys(got))
 		})
@@ -381,11 +307,9 @@ func TestDependencyMapFunctionsTolerateListErrors(t *testing.T) {
 	provider := gitProvider("provider-a", "ns-a")
 	target := gitTarget("target-a", "ns-a", "provider-a")
 
-	assert.Nil(t, (&GitTargetReconciler{Client: client}).gitProviderToGitTargets(ctx, provider))
+	assert.Nil(t, (&GitTargetReconciler{Client: client}).gitDestinationToGitTargets(ctx, provider))
 	assert.Nil(t, (&WatchRuleReconciler{Client: client}).gitTargetToWatchRules(ctx, target))
-	assert.Nil(t, (&WatchRuleReconciler{Client: client}).gitProviderToWatchRules(ctx, provider))
 	assert.Nil(t, (&ClusterWatchRuleReconciler{Client: client}).gitTargetToClusterWatchRules(ctx, target))
-	assert.Nil(t, (&ClusterWatchRuleReconciler{Client: client}).gitProviderToClusterWatchRules(ctx, provider))
 }
 
 // TestRequeueSteadyIntervalIsFiveMinutes locks the unified control-plane periodic reconcile

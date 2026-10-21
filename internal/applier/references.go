@@ -8,12 +8,12 @@ import (
 	"sort"
 	"strings"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 )
 
@@ -178,20 +178,22 @@ func judgeReference(
 		return ref, nil
 	}
 
-	provider := &v1alpha3.GitProvider{}
-	key := target.GitProviderKey()
-	if err := reader.Get(ctx, key, provider); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ref, fmt.Errorf("read GitProvider %s: %w", key, err)
-		}
-		ref.State, ref.Message = ReferenceUndecided, fmt.Sprintf("GitProvider %s not found", key)
+	branch, provider, err := git.ResolveGitBranch(ctx, reader, target)
+	switch {
+	case err != nil:
+		return ref, err
+	case branch == nil:
+		ref.State, ref.Message = ReferenceUndecided, fmt.Sprintf("GitBranch %s not found", target.GitBranchKey())
+		return ref, nil
+	case provider == nil:
+		ref.State, ref.Message = ReferenceUndecided, fmt.Sprintf("GitProvider %s not found", branch.GitProviderKey())
 		return ref, nil
 	}
 	if source == nil {
 		ref.State, ref.Message = ReferenceUndecided, "the applier's source has not been read yet"
 		return ref, nil
 	}
-	want := Binding{RepositoryURL: provider.Spec.URL, Branch: target.Spec.Branch}
+	want := Binding{RepositoryURL: provider.Spec.URL, Branch: branch.Spec.Branch}
 	if mismatch := bindingMismatch(trigger, source.URL, source.Revision, want); mismatch != "" {
 		ref.State, ref.Reason, ref.Message = ReferenceRefused, ReasonSourceMismatch, mismatch
 		return ref, nil

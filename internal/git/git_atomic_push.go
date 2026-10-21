@@ -44,7 +44,12 @@ func getPushSession(
 		return nil, errors.New("remote origin has no URL configured")
 	}
 
-	endpoint, err := transport.ParseURL(urls[0])
+	return openReceivePack(ctx, urls[0], auth)
+}
+
+// openReceivePack opens a receive-pack session on rawURL: the handshake a push starts with.
+func openReceivePack(ctx context.Context, rawURL string, auth []gitclient.Option) (transport.Session, error) {
+	endpoint, err := transport.ParseURL(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse remote URL: %w", err)
 	}
@@ -58,6 +63,23 @@ func getPushSession(
 	}
 
 	return session, nil
+}
+
+// ProvePushSession opens a receive-pack session on repoURL with auth and closes it again, sending
+// nothing. It is the proof a GitBranch gives before it may claim a repository branch.
+//
+// What it proves depends on the host. GitHub and GitLab refuse the session without push permission.
+// Gitea opens it for any authenticated user who can read the repository (its AGit flow pushes to
+// refs/for/* with read access) and refuses a missing or wrong credential. A host that advertises
+// receive-pack anonymously proves only that it is reachable.
+func ProvePushSession(ctx context.Context, repoURL string, auth []gitclient.Option) error {
+	callCtx, cancel := boundGitCall(ctx)
+	defer cancel()
+	session, err := openReceivePack(callCtx, repoURL, auth)
+	if err = boundedCallError(callCtx, err); err != nil {
+		return err
+	}
+	return session.Close()
 }
 
 // advertisedHashes indexes a v6 advertisement by reference name. v5 handed back a

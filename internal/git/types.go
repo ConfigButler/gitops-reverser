@@ -177,10 +177,20 @@ func (k BranchKey) String() string {
 	return k.Repository + "@" + k.Branch
 }
 
-// WritesThrough reports whether target writes branch through the GitProvider provider: the pair a
-// branch worker serves.
-func WritesThrough(target *v1alpha3.GitTarget, provider k8stypes.NamespacedName, branch string) bool {
-	return target.GitProviderKey() == provider && target.Spec.Branch == branch
+// OlderGitTarget reports whether a was created before b, ties broken by namespace and name, so every
+// caller orders two GitTargets the same way.
+func OlderGitTarget(a, b *v1alpha3.GitTarget) bool {
+	at, bt := a.CreationTimestamp.Time, b.CreationTimestamp.Time
+	if !at.Equal(bt) {
+		return at.Before(bt)
+	}
+	return a.Namespace+"/"+a.Name < b.Namespace+"/"+b.Name
+}
+
+// WritesThrough reports whether target writes through gitBranch: the GitBranch a branch worker
+// serves.
+func WritesThrough(target *v1alpha3.GitTarget, gitBranch k8stypes.NamespacedName) bool {
+	return gitBranch.Name != "" && target.GitBranchKey() == gitBranch
 }
 
 // RepoIdentity is WHICH REPOSITORY a branch worker's clone, base trust and observations are

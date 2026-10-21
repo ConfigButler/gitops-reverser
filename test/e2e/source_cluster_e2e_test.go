@@ -197,22 +197,21 @@ func deleteClusterProvider(name string) {
 //
 //nolint:unparam // gitProvider is kept an explicit argument for readability; the corner uses one.
 func applyGitTargetWithClusterProvider(ns, name, gitProvider, path, clusterProvider string) (string, error) {
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+	manifest := gitBranchManifest(ns, gitProvider) + fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: %s
   namespace: %s
 spec:
-  gitProviderRef:
+  gitBranchRef:
     name: %s
-  branch: main
   path: %s
   commit:
     window:
       idleTimeout: "0s"
   clusterProviderRef:
     name: %s
-`, name, ns, gitProvider, path, clusterProvider)
+`, name, ns, gitBranchName(gitProvider, "main"), path, clusterProvider)
 	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }
 
@@ -354,17 +353,16 @@ var _ = Describe("Manager source cluster / ClusterProvider attribution", Label("
 	// {name: default} and mirrors the operator's own cluster.
 	It("treats an omitted clusterProviderRef as the default (local) cluster", func() {
 		target := "sc-local-target"
-		manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+		manifest := gitBranchManifest(testNs, providerName) + fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata: {name: %s, namespace: %s}
 spec:
-  gitProviderRef: {name: %s}
-  branch: main
+  gitBranchRef: {name: %s}
   path: clusters/local
   commit:
     window:
       idleTimeout: "0s"
-`, target, testNs, providerName)
+`, target, testNs, gitBranchName(providerName, "main"))
 		_, err := kubectlRunWithStdin(testNs, manifest, "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
 

@@ -56,18 +56,19 @@ const (
 	// controller reads without a network dial); an otherwise-valid kubeconfig whose API server
 	// cannot be contacted is SourceClusterReachable=False.
 	GitTargetConditionSourceClusterReachable = "SourceClusterReachable"
-	// GitTargetConditionGitProviderReady projects the referenced GitProvider's Ready onto the
-	// GitTarget, so one `kubectl get gittarget` separates source-side (SourceClusterReachable)
-	// from destination-side (GitProviderReady) failure.
-	GitTargetConditionGitProviderReady = "GitProviderReady"
+	// GitTargetConditionGitBranchReady projects the referenced GitBranch's Ready onto the GitTarget,
+	// and whether it holds its repository branch, so one `kubectl get gittarget` separates
+	// source-side (SourceClusterReachable) from destination-side (GitBranchReady) failure.
+	GitTargetConditionGitBranchReady = "GitBranchReady"
 
-	// GitTargetReasonGitProviderNotReady is the GitProviderReady=False reason.
-	GitTargetReasonGitProviderNotReady = "GitProviderNotReady"
+	// GitTargetReasonGitBranchNotReady is the GitBranchReady=False reason: the GitBranch exists but
+	// does not hold its branch, or reports itself not Ready.
+	GitTargetReasonGitBranchNotReady = "GitBranchNotReady"
 
 	// GitTargetConditionClusterProviderReady projects the referenced ClusterProvider's Ready onto
 	// the GitTarget, so one `kubectl get gittarget` shows whether the SOURCE cluster's provider is
 	// healthy — distinct from SourceClusterReachable (the data plane's runtime reach) and
-	// GitProviderReady (the destination). It follows the GitProviderReady contract: only an
+	// GitBranchReady (the destination). It follows the GitBranchReady contract: only an
 	// EXPLICIT Ready=False downgrades the GitTarget; a provider that has not reported readiness yet
 	// is Unknown and does not. A MISSING provider never reaches this projection at all — that is the
 	// Validated gate's hard denial (GitTargetReasonClusterProviderNotFound), not a readiness axis.
@@ -148,49 +149,37 @@ func describeKubeConfigKey(specKey string) string {
 	return specKey
 }
 
-// gitProviderReadiness projects the referenced GitProvider's Ready condition. It takes the
-// provider the reconcile already read — the same object the Validated gate and the branch worker's
-// identity came from, so the three cannot describe different objects — and runs only after that
-// gate has confirmed it exists. It returns Unknown — which does NOT downgrade Ready — when
-// readiness cannot be observed (no provider in hand, or one that has not reported a Ready
-// condition yet), so a not-yet-reconciled provider never blocks its GitTarget; only an EXPLICIT
-// Ready=False downgrades.
-func gitProviderReadiness(
-	target *configbutleraiv1alpha3.GitTarget,
-	providerNS string,
-	gp *configbutleraiv1alpha3.GitProvider,
-) conditionValue {
-	key := k8stypes.NamespacedName{Name: target.Spec.GitProviderRef.Name, Namespace: providerNS}
-	notReady := func(status metav1.ConditionStatus, format string, args ...any) conditionValue {
+// gitBranchReadiness projects the referenced GitBranch onto the GitTarget. held is whether it holds
+// its repository branch now (the claim registry), which decides whether this target can be wired;
+// the GitBranch's own Ready carries the reason when it cannot, and its message is repeated here.
+// A GitBranch that holds its branch and reports Ready=False (its credential failing, a parent
+// branch missing) is not Ready either: the target cannot publish through it.
+func gitBranchReadiness(dest gitDestination, held bool) conditionValue {
+	notReady := func(format string, args ...any) conditionValue {
 		return conditionValue{
-			Status:  status,
-			Reason:  GitTargetReasonGitProviderNotReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  GitTargetReasonGitBranchNotReady,
 			Message: fmt.Sprintf(format, args...),
 		}
 	}
-
-	if gp == nil {
-		return notReady(metav1.ConditionUnknown, "referenced GitProvider %s readiness not observed", key)
+	if dest.branch == nil {
+		return notReady("referenced GitBranch %s not found", dest.key)
 	}
-	c := findCondition(gp.Status.Conditions, ConditionTypeReady)
+	c := findCondition(dest.branch.Status.Conditions, ConditionTypeReady)
 	switch {
-	case c == nil:
-		return notReady(metav1.ConditionUnknown, "referenced GitProvider %s has not reported readiness yet", key)
-	case c.Status == metav1.ConditionTrue:
-		return conditionValue{
-			Status:  metav1.ConditionTrue,
-			Reason:  ReasonSucceeded,
-			Message: fmt.Sprintf("referenced GitProvider %s is Ready", key),
-		}
-	case c.Status == metav1.ConditionFalse:
-		if c.Message != "" {
-			return notReady(metav1.ConditionFalse, "referenced GitProvider %s is not Ready: %s", key, c.Message)
-		}
-		return notReady(metav1.ConditionFalse, "referenced GitProvider %s is not Ready", key)
-	default:
-		// Ready=Unknown is the provider mid-reconcile saying it does not know yet, which is the
-		// case the contract above refuses to downgrade on — same rule as clusterProviderReadiness.
-		return notReady(metav1.ConditionUnknown, "referenced GitProvider %s readiness is unknown", key)
+	case !held && c != nil && c.Status == metav1.ConditionFalse && c.Message != "":
+		return notReady("referenced GitBranch %s does not hold its branch: %s", dest.key, c.Message)
+	case !held:
+		return notReady("referenced GitBranch %s does not hold its branch yet", dest.key)
+	case dest.provider == nil:
+		return notReady("referenced GitBranch %s names a GitProvider that does not exist", dest.key)
+	case c != nil && c.Status == metav1.ConditionFalse:
+		return notReady("referenced GitBranch %s is not Ready: %s", dest.key, c.Message)
+	}
+	return conditionValue{
+		Status:  metav1.ConditionTrue,
+		Reason:  ReasonSucceeded,
+		Message: fmt.Sprintf("referenced GitBranch %s holds its branch", dest.key),
 	}
 }
 

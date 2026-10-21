@@ -46,7 +46,7 @@ func TestRecordReadyTransition_SeverityFollowsStalled(t *testing.T) {
 		// kstatus Failed. Waiting changes nothing, which is exactly what a Warning should mean.
 		"a stalled gate is a Warning": {
 			contribute: func(rd *readiness) {
-				rd.stalled(GitTargetReasonBranchNotAllowed, "branch is not allowed")
+				rd.stalled(GitTargetReasonGitBranchNotFound, "GitBranch not found")
 			},
 			want: corev1.EventTypeWarning,
 		},

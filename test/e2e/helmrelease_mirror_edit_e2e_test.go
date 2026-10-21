@@ -67,7 +67,7 @@ var _ = Describe("Manager Higher-Level KRM (HelmRelease)",
 			_, _ = kubectlRunInNamespace(testNs, "delete", "helmrelease", hrName, "--ignore-not-found=true")
 			cleanupWatchRule(ruleName, testNs)
 			cleanupGitTarget(destName, testNs)
-			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+			deleteGitProvider(testNs, providerName)
 			cleanupNamespace(testNs)
 		})
 

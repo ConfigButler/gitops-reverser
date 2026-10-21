@@ -1,3 +1,13 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: app-repository-main
+  namespace: shop-prod
+spec:
+  gitProviderRef:
+    name: app-repository
+  branch: main
+---
 # The MISTAKE this shape exists to name, kept as a fixture because a set where every write
 # succeeds is advertising rather than specification. Same repository as gittarget-prod.yaml,
 # one field different: the path is the app root rather than a leaf overlay.
@@ -13,7 +23,6 @@ metadata:
   name: checkout-app
   namespace: shop-prod
 spec:
-  gitProviderRef:
-    name: app-repository
-  branch: main
+  gitBranchRef:
+    name: app-repository-main
   path: apps/checkout

@@ -32,7 +32,6 @@ import (
 // ClusterWatchRule status condition reasons.
 const (
 	ClusterWatchRuleReasonValidating            = "Validating"
-	ClusterWatchRuleReasonGitProviderNotFound   = "GitProviderNotFound"
 	ClusterWatchRuleReasonAccessDenied          = "AccessDenied"
 	ClusterWatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	ClusterWatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
@@ -186,33 +185,11 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	}
 	r.setGitTargetReadyCondition(st, target)
 
-	// Resolve GitProvider from target
-	providerName := target.Spec.GitProviderRef.Name
-	providerNS := target.GitProviderKey().Namespace
-
-	var provider configbutleraiv1alpha3.GitProvider
-	providerKey := types.NamespacedName{Name: providerName, Namespace: providerNS}
-	if err := r.Get(ctx, providerKey, &provider); err != nil {
-		log.Error(err, "Failed to resolve GitProvider from GitTarget",
-			"gitProviderName", providerName, "gitProviderNamespace", providerNS)
-		st.set(
-			ConditionTypeGitTargetReady,
-			metav1.ConditionFalse,
-			ClusterWatchRuleReasonGitProviderNotFound,
-			fmt.Sprintf("GitProvider '%s/%s' (from GitTarget) not found: %v",
-				providerNS, providerName, err),
-		)
-		return r.stallRule(ctx, st, ClusterWatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
-	}
-
-	// Ready check
-	// TODO: Check GitProvider readiness
-
 	// Admission AND compilation, in that order and in one call — see gateClusterWatchRule. There is
 	// deliberately no AddOrUpdateClusterWatchRule here: routing every compilation through
 	// watch.CompileClusterWatchRule is what stops the startup bootstrap from being a second,
 	// ungated path into the store.
-	if handled, result, err := r.gateClusterWatchRule(ctx, st, clusterRule, target, provider, log); handled {
+	if handled, result, err := r.gateClusterWatchRule(ctx, st, clusterRule, target, log); handled {
 		return result, err
 	}
 
@@ -256,11 +233,10 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 	st *reconcileStatus,
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	target configbutleraiv1alpha3.GitTarget,
-	provider configbutleraiv1alpha3.GitProvider,
 	log logr.Logger,
 ) (bool, ctrl.Result, error) {
 	decision, err := watch.CompileClusterWatchRule(
-		ctx, r.Client, r.RuleStore, *clusterRule, target, provider)
+		ctx, r.Client, r.RuleStore, *clusterRule, target)
 	var selectorErr *watch.ObjectSelectorError
 	if errors.As(err, &selectorErr) {
 		// A refusal of the rule's own resources, not of its GitTarget, so it lands on
@@ -403,15 +379,6 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
 			builder.WithPredicates(gitTargetReadyProjectionChanged()),
 		).
-		// Nothing of the GitProvider's STATUS is mirrored here, so GenerationChangedPredicate is
-		// right on this edge: it reacts to a freshly applied or spec-changed provider while ignoring
-		// the status-only updates its controller writes itself — without it every GitProvider
-		// heartbeat would re-list and re-enqueue all ClusterWatchRules.
-		Watches(
-			&configbutleraiv1alpha3.GitProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.gitProviderToClusterWatchRules),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
 		// React to a ClusterProvider's accessFrom changing. Without this, REVOKING a
 		// namespace stops the GitTarget (which does watch ClusterProvider) but leaves this rule's
 		// compiled entry resident until the next periodic reconcile, so the admission gate would
@@ -549,55 +516,6 @@ func (r *ClusterWatchRuleReconciler) gitTargetToClusterWatchRules(
 			continue
 		}
 		if rule.Spec.GitTargetRef.Namespace != obj.GetNamespace() {
-			continue
-		}
-		requests = append(requests, ctrlreconcile.Request{
-			NamespacedName: types.NamespacedName{Name: rule.Name},
-		})
-	}
-	return requests
-}
-
-// gitProviderToClusterWatchRules maps a GitProvider event to every
-// ClusterWatchRule whose referenced GitTarget points at this provider. This
-// closes the gap where a freshly-arrived GitProvider needs to nudge rules whose
-// own GitTarget event would otherwise not fire (e.g. the GitTarget already
-// existed but its provider lookup was failing).
-func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
-	ctx context.Context,
-	obj client.Object,
-) []ctrlreconcile.Request {
-	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets); err != nil {
-		logDependencyListError(ctx, err, "GitTargets", obj)
-		return nil
-	}
-
-	matchingTargets := make(map[types.NamespacedName]struct{})
-	for i := range targets.Items {
-		t := &targets.Items[i]
-		if namesGitProvider(t, obj) {
-			matchingTargets[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
-		}
-	}
-	if len(matchingTargets) == 0 {
-		return nil
-	}
-
-	var rules configbutleraiv1alpha3.ClusterWatchRuleList
-	if err := r.List(ctx, &rules); err != nil {
-		logDependencyListError(ctx, err, "ClusterWatchRules", obj)
-		return nil
-	}
-
-	var requests []ctrlreconcile.Request
-	for i := range rules.Items {
-		rule := &rules.Items[i]
-		key := types.NamespacedName{
-			Name:      rule.Spec.GitTargetRef.Name,
-			Namespace: rule.Spec.GitTargetRef.Namespace,
-		}
-		if _, ok := matchingTargets[key]; !ok {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{

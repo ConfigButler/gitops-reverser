@@ -8,8 +8,8 @@
 {{- if eq (trim .Values.quickstart.gitProvider.secretRef.name) "" -}}
 {{- fail "quickstart.gitProvider.secretRef.name must be set when quickstart.enabled=true" -}}
 {{- end -}}
-{{- if eq (trim .Values.quickstart.gitTarget.branch) "" -}}
-{{- fail "quickstart.gitTarget.branch must be set when quickstart.enabled=true" -}}
+{{- if eq (trim .Values.quickstart.gitBranch.branch) "" -}}
+{{- fail "quickstart.gitBranch.branch must be set when quickstart.enabled=true" -}}
 {{- end -}}
 {{- if eq (trim .Values.quickstart.gitTarget.path) "" -}}
 {{- fail "quickstart.gitTarget.path must be set when quickstart.enabled=true" -}}

@@ -335,15 +335,14 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: ns, UID: "gt-uid"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.NamespacedObjectReference{Name: "gp"},
-			Branch:             "main",
+			GitBranchRef:       meta.NamespacedObjectReference{Name: gitBranchNameForTest("gp", "main")},
 			Path:               "apps",
 			ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
 		},
 	}
 
 	cl := fake.NewClientBuilder().WithScheme(scScheme(t)).
-		WithObjects(provider, gitProvider, target,
+		WithObjects(provider, gitProvider, gitBranchOn("gp", ns, "main"), target,
 			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}).
 		WithStatusSubresource(&configbutleraiv1alpha3.GitTarget{}).
 		Build()
@@ -441,51 +440,50 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 	}
 }
 
-func TestGitProviderReadiness_AllScenarios(t *testing.T) {
-	provider := func(conds []metav1.Condition) *configbutleraiv1alpha3.GitProvider {
-		return &configbutleraiv1alpha3.GitProvider{
-			ObjectMeta: metav1.ObjectMeta{Name: "prov", Namespace: "team-a"},
-			Status:     configbutleraiv1alpha3.GitProviderStatus{Conditions: conds},
+// TestGitBranchReadiness_AllScenarios: the projection follows the claim first (only a GitBranch that
+// holds its branch can be wired) and the GitBranch's own Ready after that.
+func TestGitBranchReadiness_AllScenarios(t *testing.T) {
+	branch := func(conds ...metav1.Condition) *configbutleraiv1alpha3.GitBranch {
+		return &configbutleraiv1alpha3.GitBranch{
+			ObjectMeta: metav1.ObjectMeta{Name: "main", Namespace: "platform"},
+			Status:     configbutleraiv1alpha3.GitBranchStatus{Conditions: conds},
 		}
 	}
+	provider := &configbutleraiv1alpha3.GitProvider{}
+	key := k8stypes.NamespacedName{Namespace: "platform", Name: "main"}
 	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded}
-	notReady := metav1.Condition{
-		Type:    ConditionTypeReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  "BadRepo",
-		Message: "no repo",
-	}
+	conflict := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionFalse,
+		Reason: GitBranchReasonBranchConflict, Message: "held by team-b/main"}
+	failing := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionFalse,
+		Reason: GitBranchReasonPushSessionFailed, Message: "authentication required"}
 
 	tests := []struct {
-		name string
-		gp   *configbutleraiv1alpha3.GitProvider
-		want metav1.ConditionStatus
+		name    string
+		dest    gitDestination
+		held    bool
+		want    metav1.ConditionStatus
+		message string
 	}{
-		{"ready", provider([]metav1.Condition{ready}), metav1.ConditionTrue},
-		{"not ready -> False (downgrades)", provider([]metav1.Condition{notReady}), metav1.ConditionFalse},
-		{"no condition -> Unknown (does not downgrade)", provider(nil), metav1.ConditionUnknown},
-		{
-			"Ready=Unknown -> Unknown (provider mid-reconcile does not downgrade)",
-			provider([]metav1.Condition{{
-				Type:   ConditionTypeReady,
-				Status: metav1.ConditionUnknown,
-				Reason: ReasonProgressing,
-			}}),
-			metav1.ConditionUnknown,
-		},
-		{"absent provider -> Unknown", nil, metav1.ConditionUnknown},
+		{"holds its branch", gitDestination{key: key, branch: branch(ready), provider: provider}, true,
+			metav1.ConditionTrue, "holds its branch"},
+		{"not found", gitDestination{key: key}, false, metav1.ConditionFalse, "not found"},
+		{"holds nothing yet", gitDestination{key: key, branch: branch(), provider: provider}, false,
+			metav1.ConditionFalse, "does not hold its branch yet"},
+		{"another holds it", gitDestination{key: key, branch: branch(conflict), provider: provider}, false,
+			metav1.ConditionFalse, "held by team-b/main"},
+		{"holds it with a failing credential", gitDestination{key: key, branch: branch(failing), provider: provider},
+			true, metav1.ConditionFalse, "authentication required"},
+		{"its GitProvider is gone", gitDestination{key: key, branch: branch(ready)}, true,
+			metav1.ConditionFalse, "GitProvider that does not exist"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			target := &configbutleraiv1alpha3.GitTarget{
-				ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
-				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{Name: "prov"},
-				},
-			}
-			got := gitProviderReadiness(target, "team-a", tc.gp)
+			got := gitBranchReadiness(tc.dest, tc.held)
 			assert.Equal(t, tc.want, got.Status)
-			assert.NotEmpty(t, got.Message)
+			assert.Contains(t, got.Message, tc.message)
+			if tc.want == metav1.ConditionFalse {
+				assert.Equal(t, GitTargetReasonGitBranchNotReady, got.Reason)
+			}
 		})
 	}
 }

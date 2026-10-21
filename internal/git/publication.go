@@ -180,19 +180,20 @@ func (m *WorkerManager) PublicationEvents() <-chan event.GenericEvent { return m
 // notifyPublication tells every GitTarget on the branch that its worker's report changed. It reads
 // the GitTargets from the cache, and never blocks: the worker's loop calls it, by way of a
 // goroutine, and a status that lags is better than a loop that waits for a controller.
-func (m *WorkerManager) notifyPublication(ctx context.Context, provider k8stypes.NamespacedName, branch string) {
+func (m *WorkerManager) notifyPublication(ctx context.Context, gitBranch k8stypes.NamespacedName) {
+	m.notifyGitBranchLocked(gitBranch)
 	if m.Client == nil || m.publicationEvents == nil {
 		return
 	}
 	var targets configv1alpha3.GitTargetList
 	if err := m.Client.List(ctx, &targets); err != nil {
 		m.Log.V(1).Info("Cannot list the GitTargets of a branch to report its publication",
-			"provider", provider.String(), "branch", branch, "error", err.Error())
+			"gitBranch", gitBranch.String(), "error", err.Error())
 		return
 	}
 	for i := range targets.Items {
 		target := &targets.Items[i]
-		if !WritesThrough(target, provider, branch) {
+		if !WritesThrough(target, gitBranch) {
 			continue
 		}
 		select {

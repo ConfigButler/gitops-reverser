@@ -59,14 +59,14 @@ func TestEnsureWorker_KeepsTheWorkerWhenTheRepositoryIsUnchanged(t *testing.T) {
 	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", repo)
-	first, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	first, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 
 	for range 3 {
 		mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", repo)
 	}
 
-	second, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	second, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	assert.Same(t, first, second, "a steady tick must leave the worker exactly where it was")
 	assert.NoError(t, first.ctx.Err(), "and must not have stopped it")
@@ -81,12 +81,12 @@ func TestEnsureWorker_ReplacesTheWorkerWhenTheProviderIsRecreated(t *testing.T) 
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", before)
-	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	old, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", after)
 
-	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	replacement, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	assert.NotSame(t, old, replacement, "the slot holds the worker for the repository named NOW")
 	assert.Equal(t, after, replacement.repo)
@@ -103,13 +103,13 @@ func TestEnsureWorker_ReplacesOnARecreateThatKeepsTheURL(t *testing.T) {
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
 		RepoIdentity{ProviderUID: "uid-1", URL: url})
-	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	old, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
 		RepoIdentity{ProviderUID: "uid-2", URL: url})
 
-	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	replacement, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	assert.NotSame(t, old, replacement, "a recreated GitProvider is a new object, so it is a new subject")
 }
@@ -123,13 +123,13 @@ func TestEnsureWorker_ReplacesWhenTheURLMovedUnderTheSameObject(t *testing.T) {
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
 		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"})
-	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	old, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
 		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/second.git"})
 
-	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	replacement, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	assert.NotSame(t, old, replacement, "a differing URL is a different repository, whatever the UID says")
 }
@@ -143,7 +143,7 @@ func TestEnsureWorker_ReplacementTakesTheOldCheckoutWithIt(t *testing.T) {
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
 		RepoIdentity{ProviderUID: "uid-1", URL: oldURL})
-	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	old, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 
 	// Stand in for the clone a first publication would have left behind.
@@ -169,7 +169,7 @@ func TestEnsureWorker_ReplacementDropsWhatTheOldWorkerWasHolding(t *testing.T) {
 
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
 		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"})
-	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	old, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 
 	// Enqueued without a loop that can reach a remote, so they are still in hand at replacement.
@@ -180,7 +180,7 @@ func TestEnsureWorker_ReplacementDropsWhatTheOldWorkerWasHolding(t *testing.T) {
 	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
 		RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"})
 
-	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	replacement, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	assert.Zero(t, replacement.queueDepth(),
 		"the new repository starts empty; nothing computed against the old tree follows it")
@@ -352,21 +352,21 @@ func TestEnsureWorker_AnUndeliveredRecoveryIsStillPendingOnTheNextPass(t *testin
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 	key := BranchKeyFor(after.URL, "main")
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", before)))
 	require.False(t, manager.ReplacementPending(key))
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", after)))
 	require.True(t, manager.ReplacementPending(key))
 
 	// The delivery fails, so nothing acknowledges it. Two more reconciles of this target, and of
 	// a sibling on the same branch, still find the recovery waiting.
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", after)))
 	assert.True(t, manager.ReplacementPending(key),
 		"a recovery nobody delivered must survive the calls that come after it")
 
 	manager.AcknowledgeReplacement(key)
 	assert.False(t, manager.ReplacementPending(key))
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", after)))
 	assert.False(t, manager.ReplacementPending(key),
 		"and a delivered one must not be asked for again on every steady tick")
 }
@@ -379,8 +379,8 @@ func TestReconcileWorkers_DropsARecoveryForABranchNothingNeeds(t *testing.T) {
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 	key := BranchKeyFor(after.URL, "main")
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", before)))
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", after)))
 	require.True(t, manager.ReplacementPending(key))
 
 	// No GitTarget names this branch, so the sweep retires its worker.
@@ -410,8 +410,8 @@ func TestSweep_RetiresAWorkerNoDeleteWasEverObserved(t *testing.T) {
 
 	require.NoError(t, manager.ReconcileWorkers(ctx))
 
-	_, stranded := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	_, stranded := manager.WorkerForGitBranch(testGitBranch("repo1", testTargetNamespace, "main"))
 	assert.False(t, stranded, "no GitTarget names this branch any more, and no delete was ever seen")
-	_, live := manager.GetWorkerForTarget("repo1", testTargetNamespace, "release")
+	_, live := manager.WorkerForGitBranch(testGitBranch("repo1", testTargetNamespace, "release"))
 	assert.True(t, live, "and the successor's worker is untouched")
 }

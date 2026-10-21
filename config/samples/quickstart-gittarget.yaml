@@ -4,9 +4,10 @@ metadata:
   name: example-target
   namespace: default
 spec:
-  gitProviderRef:
-    name: example-provider
-  branch: main
+  # The GitBranch this folder is written to. Add `namespace:` to share one from another namespace,
+  # which its GitProvider's accessFrom has to admit.
+  gitBranchRef:
+    name: example-branch
   # Required relative repository path. Use "." only to deliberately write at repo root.
   path: live-cluster
   # How this folder's writes become commits. A commit window closes after

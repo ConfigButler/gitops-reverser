@@ -28,25 +28,25 @@ func TestBranchKeyFor_OneKeyPerRepositoryBranch(t *testing.T) {
 	assert.Equal(t, "github.com/acme/platform@main", https.String())
 }
 
-// TestWritesThrough_IsTheGitProviderAndTheBranch: the GitTargets a worker serves are those that
-// write its branch through its GitProvider, from whichever namespace.
-func TestWritesThrough_IsTheGitProviderAndTheBranch(t *testing.T) {
-	shared := k8stypes.NamespacedName{Namespace: "platform", Name: "monorepo"}
+// TestWritesThrough_IsTheGitBranch: the GitTargets a worker serves are those that reference its
+// GitBranch, from whichever namespace.
+func TestWritesThrough_IsTheGitBranch(t *testing.T) {
+	shared := k8stypes.NamespacedName{Namespace: "platform", Name: "main"}
 	target := &v1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: v1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "monorepo", Namespace: "platform"},
-			Branch:         "main",
+			GitBranchRef: meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
 		},
 	}
-	assert.True(t, WritesThrough(target, shared, "main"))
-	assert.False(t, WritesThrough(target, shared, "develop"))
-	assert.False(t, WritesThrough(target, k8stypes.NamespacedName{Namespace: "team-a", Name: "monorepo"}, "main"),
-		"a GitProvider of the same name in the GitTarget's own namespace is another one")
+	assert.True(t, WritesThrough(target, shared))
+	assert.False(t, WritesThrough(target, k8stypes.NamespacedName{Namespace: "team-a", Name: "main"}),
+		"a GitBranch of the same name in the GitTarget's own namespace is another one")
 
-	target.Spec.GitProviderRef.Namespace = ""
-	assert.True(t, WritesThrough(target, k8stypes.NamespacedName{Namespace: "team-a", Name: "monorepo"}, "main"),
+	target.Spec.GitBranchRef.Namespace = ""
+	assert.True(t, WritesThrough(target, k8stypes.NamespacedName{Namespace: "team-a", Name: "main"}),
 		"no namespace means the GitTarget's own")
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{}
+	assert.False(t, WritesThrough(target, k8stypes.NamespacedName{}), "no reference writes through nothing")
 }
 
 // TestEventWithObject verifies event creation with objects.

@@ -11,13 +11,21 @@ spec:
     name: git-creds-demo
 ---
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: demo-podinfos
+  name: demo-nl-stuff
 spec:
   gitProviderRef:
     name: demo
   branch: nl-stuff
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: demo-podinfos
+spec:
+  gitBranchRef:
+    name: demo-nl-stuff
   path: podinfos
   commit:
     window:

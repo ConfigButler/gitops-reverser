@@ -113,17 +113,8 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"GitProvider is not stalled",
 	)
 
-	// Ahead of every gate, like the GitTarget's own projections and for the same reason: the
-	// inventory explains what a refused or unused repository is FOR, so publishing it only on the
-	// happy path would drop it exactly when it is wanted. It must also come AFTER beginStatus,
-	// which snapshots the status the patch is computed against. A failure to read the GitTargets
-	// leaves the last inventory standing and is not a reason to fail the reconcile.
-	if err := r.publishBranchInventory(ctx, gitProvider); err != nil {
-		log.Error(err, "Could not list the GitTargets for the branch inventory; the last one stands",
-			"name", gitProvider.Name, "namespace", gitProvider.Namespace)
-	}
-	// Ahead of the gates for the same reason: an operator wiring a Git host's webhook needs the
-	// path while the provider is still red.
+	// Ahead of every gate, and after beginStatus, which snapshots the status the patch is computed
+	// against: an operator wiring a Git host's webhook needs the path while the provider is still red.
 	r.publishWebhookPath(ctx, log, gitProvider)
 
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {

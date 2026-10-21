@@ -68,11 +68,8 @@ func secretTargetObjects(t *testing.T, providerName, branch, path string) []clie
 				Namespace: "default",
 			},
 			Spec: configv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.NamespacedObjectReference{
-					Name: providerName,
-				},
-				Branch: branch,
-				Path:   path,
+				GitBranchRef: meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)},
+				Path:         path,
 				Encryption: &configv1alpha3.EncryptionSpec{
 					Provider: "sops",
 					Age: &configv1alpha3.AgeEncryptionSpec{

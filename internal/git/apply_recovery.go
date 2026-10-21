@@ -107,6 +107,7 @@ func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1
 		ID:        attempt.id,
 		Branch:    w.branchKey(),
 		Provider:  w.provider(),
+		GitBranch: w.GitBranch,
 		Applier:   state.ref,
 		Reason:    recorded.Reason,
 		Commit:    recorded.Commit,

@@ -81,7 +81,7 @@ var _ = Describe("Flux Restart Recovery", Label("flux-restart-recovery"), Serial
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
 		cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, providerName)
 		cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 		cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
 		cleanupNamespacedResource("flux-system", "secret", fluxName+"-git")

@@ -835,7 +835,7 @@ func holdingTrigger(
 
 // onBranch reports whether a GitTarget still names a trigger, on the request's branch.
 func onBranch(target *v1alpha3.GitTarget, req git.ApplyRequest) bool {
-	return target.Spec.ApplyTriggerRef != nil && git.WritesThrough(target, req.Provider, req.Branch.Branch)
+	return target.Spec.ApplyTriggerRef != nil && git.WritesThrough(target, req.GitBranch)
 }
 
 // delivered records a delivered request as an ApplyRequested Event on every GitTarget it was for,

@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,19 +24,29 @@ func sharedGitProvider(policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.
 	}
 }
 
-// targetWriting is a GitTarget in testNS writing through the GitProvider namespace/name; an empty
+// sharedGitBranch is the GitBranch platform/main, written with the GitProvider platform/provider.
+func sharedGitBranch(provider string) *configv1alpha3.GitBranch {
+	return &configv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "main"},
+		Spec: configv1alpha3.GitBranchSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: provider}, Branch: "main",
+		},
+	}
+}
+
+// targetWriting is a GitTarget in testNS writing through the GitBranch namespace/name; an empty
 // namespace means its own.
 func targetWriting(namespace, name string) *configv1alpha3.GitTarget {
 	target := targetIn("")
-	target.Spec.GitProviderRef.Name = name
-	target.Spec.GitProviderRef.Namespace = namespace
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: name, Namespace: namespace}
 	return target
 }
 
-// TestGitTargetAdmitted_GitProviderAccessFrom: a GitTarget writes with its GitProvider's credential,
-// so one in another namespace is used only while its spec.accessFrom admits the GitTarget's
-// namespace. A GitProvider in the GitTarget's own namespace needs no policy.
-func TestGitTargetAdmitted_GitProviderAccessFrom(t *testing.T) {
+// TestGitTargetAdmitted_GitBranchsProviderAccessFrom: a GitTarget writes with its GitBranch's
+// GitProvider credential, so a GitBranch in another namespace is used only while that GitProvider's
+// spec.accessFrom admits the GitTarget's namespace. A GitBranch in the GitTarget's own namespace
+// needs no policy.
+func TestGitTargetAdmitted_GitBranchsProviderAccessFrom(t *testing.T) {
 	// The ClusterProvider gate passes in every case, so only the GitProvider's decides.
 	source := providerNamed(configv1alpha3.DefaultClusterProviderName,
 		&configv1alpha3.NamespaceMatcher{Names: []string{testNS}})
@@ -48,46 +59,61 @@ func TestGitTargetAdmitted_GitProviderAccessFrom(t *testing.T) {
 		{
 			name:    "its own namespace, with no policy at all",
 			objects: []client.Object{source},
-			target:  targetWriting("", "repo"),
+			target:  targetWriting("", "main"),
 			allowed: true,
 		},
 		{
 			name:    "its own namespace, named explicitly",
 			objects: []client.Object{source},
-			target:  targetWriting(testNS, "repo"),
+			target:  targetWriting(testNS, "main"),
 			allowed: true,
 		},
 		{
-			name:    "another namespace, with no policy",
-			objects: []client.Object{source, sharedGitProvider(nil), namespaceLabeled(nil)},
-			target:  targetWriting("platform", "monorepo"),
+			name: "another namespace, with no policy",
+			objects: []client.Object{
+				source,
+				sharedGitProvider(nil),
+				sharedGitBranch("monorepo"),
+				namespaceLabeled(nil),
+			},
+			target: targetWriting("platform", "main"),
 		},
 		{
 			name: "another namespace, admitted by name",
-			objects: []client.Object{source, namespaceLabeled(nil),
+			objects: []client.Object{source, namespaceLabeled(nil), sharedGitBranch("monorepo"),
 				sharedGitProvider(&configv1alpha3.NamespaceMatcher{Names: []string{testNS}})},
-			target:  targetWriting("platform", "monorepo"),
+			target:  targetWriting("platform", "main"),
 			allowed: true,
 		},
 		{
 			name: "another namespace, admitted by its labels",
-			objects: []client.Object{source, namespaceLabeled(map[string]string{"tenant": "yes"}),
+			objects: []client.Object{
+				source,
+				namespaceLabeled(map[string]string{"tenant": "yes"}),
+				sharedGitBranch("monorepo"),
 				sharedGitProvider(&configv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "yes"}},
-				})},
-			target:  targetWriting("platform", "monorepo"),
+				}),
+			},
+			target:  targetWriting("platform", "main"),
 			allowed: true,
 		},
 		{
 			name: "another namespace, not admitted",
-			objects: []client.Object{source, namespaceLabeled(nil),
+			objects: []client.Object{source, namespaceLabeled(nil), sharedGitBranch("monorepo"),
 				sharedGitProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"team-b"}})},
-			target: targetWriting("platform", "monorepo"),
+			target: targetWriting("platform", "main"),
 		},
 		{
-			name:    "another namespace's GitProvider that does not exist wields nothing",
+			name:    "another namespace's GitBranch that does not exist wields nothing",
 			objects: []client.Object{source},
 			target:  targetWriting("platform", "missing"),
+			allowed: true,
+		},
+		{
+			name:    "another namespace's GitBranch whose GitProvider does not exist wields nothing",
+			objects: []client.Object{source, sharedGitBranch("missing")},
+			target:  targetWriting("platform", "main"),
 			allowed: true,
 		},
 	}
@@ -101,6 +127,7 @@ func TestGitTargetAdmitted_GitProviderAccessFrom(t *testing.T) {
 			assert.Equal(t, tt.allowed, decision.Allowed, decision.Message)
 			if !tt.allowed {
 				assert.Equal(t, ReasonNamespaceNotAuthorized, decision.Reason)
+				assert.Contains(t, decision.Message, "GitBranch platform/main")
 				assert.Contains(t, decision.Message, "GitProvider platform/monorepo")
 			}
 		})

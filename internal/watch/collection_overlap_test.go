@@ -135,7 +135,7 @@ func TestResolveWatchedTypeTables_SeparateGitTargetsMayOverlap(t *testing.T) {
 	wide := selectorRule("wide", "test-ns", now, nil, configv1alpha3.SourceNamespaceWildcard)
 	wide.Spec.GitTargetRef.Name = "wide-target"
 	store.AddOrUpdateWatchRule(wide, [][]string{{""}},
-		"wide-target", "test-ns", "test-provider", "test-ns", "main", "wide")
+		"wide-target", "test-ns", "test-provider", "test-ns", "wide")
 	addSelectorRule(store, selectorRule("named", "team-a", now.Add(time.Minute), nil, ""), "team-a")
 
 	manager.refreshWatchedTypeTables()

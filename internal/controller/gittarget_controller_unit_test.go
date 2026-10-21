@@ -94,13 +94,12 @@ func TestCheckForConflicts_ListErrorFailsClosed(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: "default"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "provider-a"},
-			Branch:         "main",
-			Path:           "apps",
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("provider-a", "main")},
+			Path:         "apps",
 		},
 	}
 
-	conflict, _, _, err := reconciler.checkForConflicts(context.Background(), target, target.Namespace)
+	conflict, _, _, err := reconciler.checkForConflicts(context.Background(), target)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "list GitTargets for conflict validation")

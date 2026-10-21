@@ -59,7 +59,7 @@ func srcnsOverrideRule(sourceNamespace string) configv1alpha3.WatchRule {
 // compileForSummary seeds the store the way CompileWatchRule would, with an explicit resolved scope.
 func compileForSummary(m *Manager, rule configv1alpha3.WatchRule, scope [][]string) {
 	m.RuleStore.AddOrUpdateWatchRule(
-		rule, scope, "acme", "tenant-acme", "git", "tenant-acme", "main", "tenants/acme")
+		rule, scope, "acme", "tenant-acme", "git", "tenant-acme", "tenants/acme")
 }
 
 func srcnsGitDest() types.ResourceReference {

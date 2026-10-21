@@ -78,7 +78,7 @@ func addSecretsWatchRule(store *rulestore.RuleStore) {
 	store.AddOrUpdateWatchRule(
 		rule,
 		ownNamespaceScope(rule),
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "live",
 	)
 }
 

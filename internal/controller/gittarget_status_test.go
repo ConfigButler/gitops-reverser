@@ -116,13 +116,13 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			want: kstatus.InProgressStatus, wantReadyReason: GitTargetReasonRenderRechecking,
 		},
 		{
-			name: "unready GitProvider holds the target below Ready", streams: running,
+			name: "unready GitBranch holds the target below Ready", streams: running,
 			gitPath: accepted, render: matches,
 			provider: conditionValue{
-				Status: metav1.ConditionFalse, Reason: GitTargetReasonGitProviderNotReady, Message: "no repo",
+				Status: metav1.ConditionFalse, Reason: GitTargetReasonGitBranchNotReady, Message: "no repo",
 			},
 			clusterProvider: healthy, sourceReach: healthy,
-			want: kstatus.InProgressStatus, wantReadyReason: GitTargetReasonGitProviderNotReady,
+			want: kstatus.InProgressStatus, wantReadyReason: GitTargetReasonGitBranchNotReady,
 		},
 		{
 			// THE F1 REGRESSION. A refused Git path is terminal, and an unready provider is
@@ -130,14 +130,14 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			// Stalled=False over the refusal, flipping the object from kstatus Failed to
 			// InProgress — so `kubectl wait` and every CI gate built on kstatus waited out its
 			// timeout on a target that was never going to converge.
-			name: "refused path AND unready provider stays Failed", streams: running, render: matches,
+			name: "refused path AND unready GitBranch stays Failed", streams: running, render: matches,
 			gitPath: watch.GitPathAcceptanceStatus{
 				Accepted: false,
 				Reason:   GitTargetReasonUnsupportedContent,
 				Message:  "Git path refused at kustomization.yaml: uses patches",
 			},
 			provider: conditionValue{
-				Status: metav1.ConditionFalse, Reason: GitTargetReasonGitProviderNotReady, Message: "no repo",
+				Status: metav1.ConditionFalse, Reason: GitTargetReasonGitBranchNotReady, Message: "no repo",
 			},
 			clusterProvider: healthy,
 			sourceReach: conditionValue{
@@ -164,7 +164,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
 
 			rd := newGitTargetReadiness()
-			gitTargetReadinessGates(rd, observed, conditionValue{}, tt.provider, tt.clusterProvider, tt.sourceReach,
+			gitTargetReadinessGates(rd, observed, tt.provider, tt.clusterProvider, tt.sourceReach,
 				conditionValue{})
 			st.applyReadiness(rd)
 

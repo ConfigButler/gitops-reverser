@@ -45,7 +45,7 @@ func TestWorkerManager_SetMapperInjectsIntoWorkers(t *testing.T) {
 
 	repo := createProviderWithLocalRepo(ctx, t, client, "repo1")
 	mustEnsureWorker(ctx, t, manager, "repo1", testProviderNamespace, "main", repo)
-	worker, exists := manager.GetWorkerForTarget("repo1", testProviderNamespace, "main")
+	worker, exists := manager.WorkerForGitBranch(testGitBranch("repo1", testProviderNamespace, "main"))
 	require.True(t, exists)
 	require.NotNil(t, worker)
 	assert.NotNil(t, worker.mapper, "the created worker must carry the injected mapper")
@@ -68,7 +68,7 @@ func mustEnsureWorker(
 	repo RepoIdentity,
 ) bool {
 	t.Helper()
-	require.NoError(t, m.EnsureWorker(ctx, providerName, providerNamespace, branch, repo, ""))
+	require.NoError(t, m.EnsureWorker(ctx, claimForTest(m, providerName, providerNamespace, branch, repo)))
 	key := BranchKeyFor(repo.URL, branch)
 	pending := m.ReplacementPending(key)
 	m.AcknowledgeReplacement(key)
@@ -117,10 +117,7 @@ func createTargetForRegister(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = testTargetNamespace
-	target.Spec.GitProviderRef = meta.NamespacedObjectReference{
-		Name: providerName,
-	}
-	target.Spec.Branch = branch
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
 	target.Spec.Path = path
 	require.NoError(t, k8sClient.Create(ctx, target))
 }
@@ -144,13 +141,13 @@ func TestEnsureWorker_CreatesAWorkerWithTheIdentityItWasAskedFor(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target1", "repo1", "main", "clusters/prod")
 
 	// Register first target
-	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo, "")
+	err := manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", repo))
 	if err != nil {
 		t.Fatalf("Failed to register target: %v", err)
 	}
 
 	// Verify worker was created
-	worker, exists := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	worker, exists := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	if !exists {
 		t.Fatal("Worker should exist after registration")
 	}
@@ -209,7 +206,7 @@ func TestWorkerManagerMultipleTargetsSameBranch(t *testing.T) {
 	}
 
 	// Verify worker exists for both targets
-	_, exists := manager.GetWorkerForTarget("shared-repo", "gitops-system", "main")
+	_, exists := manager.WorkerForGitBranch(testGitBranch("shared-repo", "gitops-system", "main"))
 	if !exists {
 		t.Fatal("Worker should exist")
 	}
@@ -237,12 +234,12 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target-dev", "repo1", "develop", "base/")
 
 	// Register targets for same repo, different branches
-	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo, "")
+	err := manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", repo))
 	if err != nil {
 		t.Fatalf("Failed to register target-main: %v", err)
 	}
 
-	err = manager.EnsureWorker(ctx, "repo1", "gitops-system", "develop", repo, "")
+	err = manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "develop", repo))
 	if err != nil {
 		t.Fatalf("Failed to register target-dev: %v", err)
 	}
@@ -257,12 +254,12 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	}
 
 	// Verify each worker exists and has correct branch
-	workerMain, exists := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	workerMain, exists := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	if !exists || workerMain.Branch != "main" {
 		t.Error("Main branch worker not found or has wrong branch")
 	}
 
-	workerDev, exists := manager.GetWorkerForTarget("repo1", "gitops-system", "develop")
+	workerDev, exists := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "develop"))
 	if !exists || workerDev.Branch != "develop" {
 		t.Error("Develop branch worker not found or has wrong branch")
 	}
@@ -302,14 +299,14 @@ func TestReconcileWorkers_KeepsAWorkerASiblingStillNeeds(t *testing.T) {
 	require.NoError(t, k8sClient.Delete(ctx, targetForRegister("target1")))
 	require.NoError(t, manager.ReconcileWorkers(ctx))
 
-	_, exists := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	_, exists := manager.WorkerForGitBranch(testGitBranch("repo1", testTargetNamespace, "main"))
 	assert.True(t, exists, "target2 still writes to this branch, so its worker must survive")
 
 	// And now the last one.
 	require.NoError(t, k8sClient.Delete(ctx, targetForRegister("target2")))
 	require.NoError(t, manager.ReconcileWorkers(ctx))
 
-	_, exists = manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	_, exists = manager.WorkerForGitBranch(testGitBranch("repo1", testTargetNamespace, "main"))
 	assert.False(t, exists,
 		"nothing needs this worker now, and it holds a goroutine, a queue and a clone until it stops")
 }
@@ -337,7 +334,7 @@ func TestReconcileWorkers_StopsNothingWhenTheTargetsCannotBeRead(t *testing.T) {
 	err := manager.ReconcileWorkers(ctx)
 
 	require.Error(t, err)
-	_, exists := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	_, exists := manager.WorkerForGitBranch(testGitBranch("repo1", testTargetNamespace, "main"))
 	assert.True(t, exists, "a read that failed proves nothing about which workers are needed")
 }
 
@@ -362,7 +359,7 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 	done := make(chan bool, 10)
 	for i := range 10 {
 		go func(index int) {
-			err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo, "")
+			err := manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", repo))
 			if err != nil {
 				t.Errorf("Failed to ensure worker %d: %v", index, err)
 			}
@@ -396,7 +393,7 @@ func TestWorkerManagerGetNonexistentWorker(t *testing.T) {
 
 	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 
-	worker, exists := manager.GetWorkerForTarget("nonexistent", "default", "main")
+	worker, exists := manager.WorkerForGitBranch(testGitBranch("nonexistent", "default", "main"))
 	if exists {
 		t.Error("Should return exists=false for nonexistent worker")
 	}
@@ -437,7 +434,7 @@ func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
 	createTargetForRegister(ctx, t, k8sClient, "target1", "repo1", "main", "apps/")
 	mustEnsureWorker(ctx, t, manager, "repo1", testTargetNamespace, "main", repo)
 
-	worker, exists := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	worker, exists := manager.WorkerForGitBranch(testGitBranch("repo1", testTargetNamespace, "main"))
 	require.True(t, exists)
 	// Stand in for the clone a first publication would leave behind.
 	checkout := worker.repoPath()
@@ -527,8 +524,8 @@ func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
 	root := workerStateRoot
 	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo, ""))
-	worker, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", repo)))
+	worker, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	require.True(t, strings.HasPrefix(worker.repoPath(), root+string(filepath.Separator)),
 		"precondition: the worker keeps its state under the root this test owns")
@@ -555,7 +552,7 @@ func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
 	require.NoError(t, err, "and neither is another provider's")
 	_, err = os.Stat(root)
 	require.NoError(t, err, "least of all the root every worker's state lives under")
-	_, stillThere := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	_, stillThere := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	assert.False(t, stillThere)
 }
 
@@ -571,8 +568,8 @@ func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *te
 	before := RepoIdentity{ProviderUID: "uid-1", URL: sameURL}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: sameURL}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
-	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", before)))
+	old, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	require.NoError(t, os.MkdirAll(old.repoPath(), 0o750))
 
@@ -583,8 +580,8 @@ func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *te
 	sentinel := filepath.Join(successor, "HEAD")
 	require.NoError(t, os.WriteFile(sentinel, []byte("ref: refs/heads/main\n"), 0o600))
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
-	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", after)))
+	replacement, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	require.NotSame(t, old, replacement)
 

@@ -24,7 +24,7 @@ func TestWatchTypeSamples_SumIsTheResolvedTypeCount(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-1", "namespaces"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
 
@@ -59,7 +59,7 @@ func TestWatchTypeSamples_DepartedTargetStopsPublishing(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-1", "namespaces"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
 	manager.installWatchTypeGaugeSource()
@@ -94,7 +94,7 @@ func TestWatchTypeSamples_DoesNotResolveOnTheScrapePath(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-1", "namespaces"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
 	manager.installWatchTypeGaugeSource()
@@ -106,7 +106,7 @@ func TestWatchTypeSamples_DoesNotResolveOnTheScrapePath(t *testing.T) {
 	// A second type is declared, and nothing refreshes the tables.
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-2", "nodes"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 
 	after, ok := telemetry.CollectInt64Sum(reader, watchTypesMetric, typeStateLabels("replaying"))

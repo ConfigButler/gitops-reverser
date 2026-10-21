@@ -7,20 +7,61 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
-## One `GitProvider` per repository branch; a `GitTarget` may name one in another namespace
+## `GitBranch` holds a repository branch; a `GitTarget` names one with `spec.gitBranchRef`
 
-**Breaking.** A branch worker is now keyed by repository and branch, and pushes with one
-`GitProvider`'s credential. So every `GitTarget` that writes one repository branch must name the same
-`GitProvider`. Where two `GitProvider`s name one repository (compared as URLs, so an `https://` and an
-SSH spelling of the same repository are one) and their `GitTarget`s write the same branch, the
-`GitProvider` of the oldest `GitTarget` that may write there keeps the branch (one its providers do
-not admit decides nothing). Every `GitTarget` writing it through another
-`GitProvider` stops writing and reports `Validated=False` (`TargetConflict`), with a message that
-names the `GitProvider` to share. Two `GitProvider`s for one repository on different branches are
-unaffected.
+**Breaking.** A repository branch is its own object, `GitBranch`, in the namespace of the
+`GitProvider` whose credential writes it. A `GitTarget` names one with the required, immutable
+`spec.gitBranchRef`, and `spec.gitProviderRef`, `spec.branch` and `spec.parentBranch` are gone from
+`GitTarget`: setting one is refused at admission, with a message naming `spec.gitBranchRef`.
+`GitTarget.status.remote` is now `GitBranch.status.remote`, and `GitProvider.status.branches` is
+gone; `kubectl get gitbranch -A` answers what it did.
 
-To share one `GitProvider` across namespaces, admit the other namespaces on it, and point their
-`GitTarget`s at it:
+Replace each GitTarget's three fields with a `GitBranch` and a reference to it:
+
+```yaml
+kind: GitBranch
+metadata: {name: platform-main, namespace: platform}
+spec:
+  gitProviderRef: {name: platform}    # a GitProvider in this namespace
+  branch: main
+  # parentBranch: develop             # was GitTarget.spec.parentBranch
+---
+kind: GitTarget
+metadata: {name: apps, namespace: platform}
+spec:
+  gitBranchRef: {name: platform-main}
+  path: apps
+```
+
+`spec.gitBranchRef` is immutable and the old fields are refused, so delete each `GitTarget` and
+create it again with the new shape. Its folder in Git is untouched: the new object takes it over
+on its first snapshot. List the GitTargets to recreate, with what each `GitBranch` needs:
+
+```bash
+kubectl get gittargets -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.gitProviderRef.name}{"\t"}{.spec.branch}{"\t"}{.spec.parentBranch}{"\n"}{end}'
+```
+
+Run it before upgrading the CRDs: the new schema no longer serves the old fields.
+
+**One `GitBranch` holds a repository branch.** It holds it once its `GitProvider`'s credential
+opens a push session on the remote; the oldest such `GitBranch` holds it, keeps it through a later
+credential failure, and every other `GitBranch` for the same repository branch (compared as URLs,
+so an `https://` and an SSH spelling of one repository are one) reports `Stalled=True`
+(`BranchConflict`) and writes nothing. Create one `GitBranch` per repository branch, and point every
+`GitTarget` on that branch at it.
+
+**The push session is a new check, and it needs a credential that may push.** A `GitProvider` with
+no `secretRef` on a public repository used to be enough to write; its `GitBranch` now reports
+`Ready=False` (`PushSessionFailed`) and holds nothing. On GitHub and GitLab opening the session
+takes push permission. On Gitea and Forgejo it takes only a valid credential that can read the
+repository, because their AGit flow accepts pushes from readers and checks a branch write when it
+arrives. On a host that offers push sessions anonymously it proves only that the repository is
+reachable.
+
+**Sharing a repository branch across namespaces.** A `GitTarget` names a `GitBranch` in another
+namespace with `spec.gitBranchRef.namespace`; that `GitBranch`'s `GitProvider` must admit the
+`GitTarget`'s namespace in `spec.accessFrom`, or the target reports `Validated=False`
+(`NamespaceNotAuthorized`). The tenant namespace holds no copy of the credential:
 
 ```yaml
 kind: GitProvider
@@ -32,23 +73,25 @@ spec:
 kind: GitTarget
 metadata: {name: apps, namespace: team-a}
 spec:
-  gitProviderRef: {name: monorepo, namespace: platform}
+  gitBranchRef: {name: monorepo-main, namespace: platform}
 ```
 
-`spec.gitProviderRef` is immutable, so a `GitTarget` that has to move to the shared `GitProvider`
-is deleted and recreated. A `GitTarget` that names a `GitProvider` in another namespace whose
-`spec.accessFrom` does not admit it reports `Validated=False` (`NamespaceNotAuthorized`). Before
-upgrading, list the repositories more than one `GitProvider` names:
+New reasons follow from it. A `GitTarget` whose `GitBranch` does not exist reports
+`Validated=False` (`GitBranchNotFound`); one whose `GitBranch` does not hold its branch, or is not
+`Ready`, reports `GitBranchReady=False` (`GitBranchNotReady`) and waits. That condition replaces
+`GitProviderReady`. `BranchNotAllowed`, `ParentBranchNotFound` and `RecoveringParentBranch` are now
+reported by the `GitBranch`, and `GitTarget`s on it show them in the `GitBranchReady` message.
+`TargetConflict` now means only overlapping paths on one `GitBranch`. A `WatchRule` or
+`ClusterWatchRule` no longer reads the GitProvider and no longer reports `GitProviderNotFound`; it
+follows its `GitTarget`'s readiness. The chart's quick start renders a `GitBranch`
+(`quickstart.gitBranch.name`, `quickstart.gitBranch.branch`), and `quickstart.gitTarget.branch` is
+gone.
 
-```bash
-kubectl get gitproviders -A -o jsonpath='{range .items[*]}{.spec.url}{"\t"}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' | sort
-```
+Deleting a `GitBranch` stops its branch worker after it has pushed or refused every pending write and
+settled every `CommitRequest` it held. It never deletes the branch on the remote.
 
-The list sorts the URLs as written, so an `https://` and an SSH spelling of one repository land
-apart: compare host and path, ignoring the scheme, the user, a trailing `.git` and case.
-
-The metrics keep their `provider_namespace` and `provider_name` labels, which now name the one
-`GitProvider` that owns the branch. Log lines name a branch as `repository@branch`.
+The metrics keep their `provider_namespace` and `provider_name` labels, which name the `GitProvider`
+of the `GitBranch` holding the branch. Log lines name a branch as `repository@branch`.
 
 ## `FluxTrigger` `spec.quietPeriod` and `status.source.prefetch` are removed
 

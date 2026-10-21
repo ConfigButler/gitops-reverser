@@ -189,7 +189,7 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 	for i := range targets.Items {
 		target := &targets.Items[i]
 		if !target.DeletionTimestamp.IsZero() || target.Spec.ApplyTriggerRef == nil ||
-			!WritesThrough(target, w.provider(), w.Branch) {
+			!WritesThrough(target, w.GitBranch) {
 			continue
 		}
 		trigger, err := ResolveApplyTrigger(ctx, w.Client, target)
@@ -728,6 +728,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		ID:            attempt.id,
 		Branch:        w.branchKey(),
 		Provider:      w.provider(),
+		GitBranch:     w.GitBranch,
 		Applier:       state.ref,
 		Reason:        reason,
 		Commit:        tip,

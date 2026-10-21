@@ -112,9 +112,8 @@ func cwaGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaTargetName, Namespace: cwaTargetNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
+			GitBranchRef:       meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: cwaProviderName},
-			Branch:             "main",
 			Path:               "clusters/prod",
 		},
 	}
@@ -311,7 +310,7 @@ func TestReconcile_RefusalStopsDataPlaneBeforePublishingStatus(t *testing.T) {
 	// Pre-seed the store as an earlier, admitted reconcile would have left it, so "no compiled
 	// rule at the end" cannot pass vacuously.
 	f.store.AddOrUpdateClusterWatchRule(
-		*cwaClusterWatchRule(), cwaTargetName, cwaTargetNS, "git", cwaTargetNS, "main", "clusters/prod")
+		*cwaClusterWatchRule(), cwaTargetName, cwaTargetNS, "git", cwaTargetNS, "clusters/prod")
 	require.Len(t, f.compiledNames(), 1, "precondition: the rule starts out compiled")
 
 	f.wm.onReconcile = func() {
@@ -428,7 +427,7 @@ func TestReconcile_AdmissionReadErrorRequeuesAndKeepsCompiledRule(t *testing.T) 
 	})
 
 	f.store.AddOrUpdateClusterWatchRule(
-		*cwaClusterWatchRule(), cwaTargetName, cwaTargetNS, "git", cwaTargetNS, "main", "clusters/prod")
+		*cwaClusterWatchRule(), cwaTargetName, cwaTargetNS, "git", cwaTargetNS, "clusters/prod")
 
 	_, err := f.reconcile(ctx)
 

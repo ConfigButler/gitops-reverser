@@ -58,7 +58,7 @@ func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-1", "namespaces"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 
 	var wg sync.WaitGroup
@@ -75,7 +75,7 @@ func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	// Concurrently add a second rule mid-flight.
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-2", "nodes"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	wg.Wait()
 

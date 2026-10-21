@@ -272,7 +272,7 @@ func TestRefreshWatchedTypeTables_RetargetReResolvesAtEqualRevisions(t *testing.
 
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-1", "namespaces"),
-		"t", "test-ns", "test-provider", "test-ns", "main", "test-path",
+		"t", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	m.rememberGitTargetCluster(gitDestRef("t"), clusterA)
 	m.refreshWatchedTypeTables()

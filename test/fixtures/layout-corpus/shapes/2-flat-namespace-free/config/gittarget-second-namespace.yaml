@@ -1,3 +1,13 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: artifacts-repository-main
+  namespace: shop
+spec:
+  gitProviderRef:
+    name: artifacts-repository
+  branch: main
+---
 # The fence around "one namespace", as a fixture. Same folder and same flag as
 # gittarget.yaml; what differs is that TWO WatchRules reach it, from two source namespaces.
 #
@@ -12,11 +22,10 @@ metadata:
   name: checkout-artifact
   namespace: shop
 spec:
-  gitProviderRef:
-    name: artifacts-repository
+  gitBranchRef:
+    name: artifacts-repository-main
   clusterProviderRef:
     name: apps
-  branch: main
   path: apps/checkout
   placement:
     default: "{name}.yaml"

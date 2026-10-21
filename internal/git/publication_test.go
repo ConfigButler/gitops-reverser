@@ -130,30 +130,32 @@ func TestPublication_MetricsDescribeTheBacklog(t *testing.T) {
 	assert.False(t, ok, "nothing pending, no retry due")
 }
 
-// A change of the report reaches every GitTarget on the branch, and none on another branch: they
-// share the worker, so they share its outage, and a second branch's worker is its own.
+// A change of the report reaches every GitTarget on the GitBranch, and none on another: they share
+// the worker, so they share its outage, and a second GitBranch's worker is its own. The GitBranch
+// itself is woken too, to republish its status.
 func TestPublication_ChangesReachEveryGitTargetOnTheBranch(t *testing.T) {
-	target := func(name, branch string) *configv1alpha3.GitTarget {
+	target := func(namespace, name, gitBranch string) *configv1alpha3.GitTarget {
 		return &configv1alpha3.GitTarget{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: configv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.NamespacedObjectReference{Name: "repo"},
-				Branch:         branch,
+				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranch, Namespace: "shop"},
 			},
 		}
 	}
-	shared := target("team-b", "main")
-	shared.Namespace, shared.Spec.GitProviderRef.Namespace = "team-b", "shop"
 	k8s := fake.NewClientBuilder().WithScheme(replayScheme(t)).WithObjects(
-		target("apps", "main"), target("infra", "main"), target("other", "release"), shared).Build()
+		target("shop", "apps", "main"), target("shop", "infra", "main"), target("shop", "other", "release"),
+		target("team-b", "team-b", "main")).Build()
 	manager := NewWorkerManager(k8s, logr.Discard(), BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
 
-	manager.notifyPublication(context.Background(), k8stypes.NamespacedName{Namespace: "shop", Name: "repo"}, "main")
+	manager.notifyPublication(context.Background(), k8stypes.NamespacedName{Namespace: "shop", Name: "main"})
 
 	var told []string
 	for len(manager.PublicationEvents()) > 0 {
 		told = append(told, (<-manager.PublicationEvents()).Object.GetName())
 	}
 	assert.ElementsMatch(t, []string{"apps", "infra", "team-b"}, told,
-		"a GitTarget in another namespace writing through the shared GitProvider is on the branch too")
+		"a GitTarget in another namespace referencing the GitBranch is on the branch too")
+	require.Len(t, manager.GitBranchEvents(), 1)
+	woken := (<-manager.GitBranchEvents()).Object
+	assert.Equal(t, "shop/main", woken.GetNamespace()+"/"+woken.GetName())
 }

@@ -188,11 +188,12 @@ nodeSelector:
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |
-| `quickstart.enabled` | Create starter `GitProvider`, `GitTarget`, and `WatchRule` resources | `false` |
+| `quickstart.enabled` | Create starter `GitProvider`, `GitBranch`, `GitTarget`, and `WatchRule` resources | `false` |
 | `quickstart.namespace` | Namespace for the starter quickstart resources (create it, and the git-creds Secret, before install) | `gitops-reverser-quickstart-demo` |
 | `quickstart.createNamespace` | Let the chart create `quickstart.namespace` (Helm then owns it) | `false` |
 | `quickstart.gitProvider.url` | Repository URL used by the starter `GitProvider` | `""` |
 | `quickstart.gitProvider.secretRef.name` | Existing Secret name used by the starter `GitProvider` | `git-creds` |
+| `quickstart.gitBranch.branch` | Branch the starter `GitBranch` writes. Must match `quickstart.gitProvider.allowedBranches` | `main` |
 | `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
 | `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty means cold-replay on restart. Set it for warm-restart cursors and for the admission webhook to actually record CommitRequest authors (admission runs as a no-op without it); **required** when `attribution.enabled=true` unless `attribution.transport=memory` | `""` |

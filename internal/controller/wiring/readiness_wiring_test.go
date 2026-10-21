@@ -130,9 +130,8 @@ func seedTarget(ctx context.Context, t *testing.T, name, clusterProvider string)
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "provider"},
-			Branch:         "main",
-			Path:           "mirror",
+			GitBranchRef: meta.NamespacedObjectReference{Name: "provider-main"},
+			Path:         "mirror",
 		},
 	}
 	if clusterProvider != "" {

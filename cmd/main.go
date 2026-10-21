@@ -355,6 +355,17 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterProvider")
 		os.Exit(1)
 	}
+	if err := (&controller.GitBranchReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		WorkerManager:    workerManager,
+		SSHHostKeys:      cfg.sshHostKeys,
+		CredentialPolicy: cfg.credentialPolicy,
+		Recorder:         mgr.GetEventRecorderFor("gitbranch"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GitBranch")
+		os.Exit(1)
+	}
 	if err := (&controller.GitTargetReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),

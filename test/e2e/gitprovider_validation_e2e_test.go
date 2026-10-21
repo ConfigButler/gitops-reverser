@@ -65,7 +65,7 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 		By("showing final controller logs")
 		showControllerLogs("after status verification")
 
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, gitProviderName)
 	})
 
 	It("should handle GitProvider with invalid credentials", func() {
@@ -77,10 +77,10 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 			validationRepo.RepoURLHTTP,
 		)
 		verifyResourceStatus("gitprovider", gitProviderName, testNs, "False", "ConnectionFailed", "")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, gitProviderName)
 	})
 
-	It("should handle GitTarget with nonexistent branch pattern", func() {
+	It("should refuse a GitBranch whose branch the GitProvider does not allow", func() {
 		gitProviderName := "gitprovider-branch-test"
 
 		// GitProvider should be Ready=True (validates connectivity, not branch existence)
@@ -94,15 +94,17 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 			"gitprovider", gitProviderName, testNs, "True", "Succeeded", "Repository connectivity validated",
 		)
 
-		// GitTarget with branch not matching any pattern should fail
+		// A GitBranch for a branch matching no pattern is refused, and its GitTarget waits for it.
 		destName := "dest-invalid-branch"
 		createGitTarget(destName, testNs, gitProviderName, "test/invalid", "different-branch")
 
-		By("verifying GitTarget fails branch validation")
-		verifyResourceStatus("gittarget", destName, testNs, "False", "ValidationFailed", "BranchNotAllowed")
+		By("verifying the GitBranch fails branch validation")
+		verifyResourceStatus("gitbranch", gitBranchName(gitProviderName, "different-branch"), testNs,
+			"False", "BranchNotAllowed", "allowedBranches")
+		verifyResourceStatus("gittarget", destName, testNs, "False", "GitBranchNotReady", "allowedBranches")
 
 		cleanupGitTarget(destName, testNs)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, gitProviderName)
 	})
 
 	It("should validate GitProvider with SSH authentication", func() {
@@ -141,6 +143,6 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 		By("✅ Final SSH test logs")
 		showControllerLogs("SSH test completion")
 
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, gitProviderName)
 	})
 })

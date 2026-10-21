@@ -1,12 +1,23 @@
 apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: {{ .GitBranchName }}
+  namespace: {{ .Namespace }}
+  labels:
+    e2e.configbutler.ai/git-provider: {{ .ProviderName }}
+spec:
+  gitProviderRef:
+    name: {{ .ProviderName }}
+  branch: {{ .Branch }}
+---
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
 spec:
-  gitProviderRef:
-    name: {{ .ProviderName }}
-  branch: {{ .Branch }}
+  gitBranchRef:
+    name: {{ .GitBranchName }}
   path: {{ .Path }}
   commit:
     window:

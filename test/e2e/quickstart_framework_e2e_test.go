@@ -112,6 +112,7 @@ func (r *quickstartFrameworkRun) runReadmeQuickstartFlow() {
 
 	By("verifying the chart's starter resources become Ready")
 	verifyResourceStatus("gitprovider", "example-provider", r.namespace, "True", "Succeeded", "")
+	verifyResourceStatus("gitbranch", "example-branch", r.namespace, "True", "Succeeded", "holds")
 	verifyResourceCondition("gittarget", "example-target", r.namespace, "Validated", "True", "Succeeded", "")
 	verifyResourceStatus("watchrule", "example-watchrule", r.namespace, "True", "Succeeded", "")
 	waitForStreamsRunning("example-target", r.namespace)

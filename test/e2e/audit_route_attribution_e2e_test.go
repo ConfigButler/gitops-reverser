@@ -255,22 +255,21 @@ spec:
 func applyGitTargetForClusterProvider(
 	ns, name, gitProvider, targetPath, clusterProvider string,
 ) (string, error) {
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+	manifest := gitBranchManifest(ns, gitProvider) + fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: %s
   namespace: %s
 spec:
-  gitProviderRef:
+  gitBranchRef:
     name: %s
-  branch: main
   path: %s
   clusterProviderRef:
     name: %s
   commit:
     window:
       idleTimeout: "0s"
-`, name, ns, gitProvider, targetPath, clusterProvider)
+`, name, ns, gitBranchName(gitProvider, "main"), targetPath, clusterProvider)
 	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }
 

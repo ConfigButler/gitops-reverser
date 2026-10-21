@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
+
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,23 +47,26 @@ func TestCleanupDeletedGitTarget_StopsAWorkerNothingNeedsAnyMore(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	func() {
-		err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"}, "")
+		err := workers.EnsureWorker(
+			ctx,
+			claimWorkerForTest(workers, git.RepoIdentity{URL: "file:///repo1.git"}),
+		)
 		require.NoError(t, err)
 	}()
-	_, exists := workers.GetWorkerForTarget("repo1", "shop", "main")
+	_, exists := workers.WorkerForGitBranch(shopRepo1Main)
 	require.True(t, exists)
 
 	r := &GitTargetReconciler{Client: k8sClient, WorkerManager: workers}
 	_ = r.cleanupDeletedGitTarget(ctx,
 		k8stypes.NamespacedName{Name: "checkout", Namespace: "shop"}, logr.Discard())
 
-	_, exists = workers.GetWorkerForTarget("repo1", "shop", "main")
+	_, exists = workers.WorkerForGitBranch(shopRepo1Main)
 	assert.False(t, exists, "the GitTarget is gone and nothing else lists this branch")
 }
 
 // TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses. The sweep reads the API
 // rather than counting registrations, and this is why: one worker serves every GitTarget on its
-// (provider, branch), so one deletion says nothing about the rest.
+// GitBranch, so one deletion says nothing about the rest.
 func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -70,8 +75,7 @@ func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testi
 	sibling := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "invoices", Namespace: "shop"},
 	}
-	sibling.Spec.GitProviderRef.Name = "repo1"
-	sibling.Spec.Branch = "main"
+	sibling.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sibling).Build()
 
 	workers := git.NewWorkerManager(k8sClient, logr.Discard(), git.BranchWorkerLimits{},
@@ -81,7 +85,10 @@ func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testi
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 	func() {
-		err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"}, "")
+		err := workers.EnsureWorker(
+			ctx,
+			claimWorkerForTest(workers, git.RepoIdentity{URL: "file:///repo1.git"}),
+		)
 		require.NoError(t, err)
 	}()
 
@@ -89,7 +96,7 @@ func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testi
 	_ = r.cleanupDeletedGitTarget(ctx,
 		k8stypes.NamespacedName{Name: "checkout", Namespace: "shop"}, logr.Discard())
 
-	_, exists := workers.GetWorkerForTarget("repo1", "shop", "main")
+	_, exists := workers.WorkerForGitBranch(shopRepo1Main)
 	assert.True(t, exists, "invoices still writes to this branch")
 }
 
@@ -125,7 +132,10 @@ func TestCleanupDeletedGitTarget_RetriesWhenTheSweepCannotRead(t *testing.T) {
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 	func() {
-		err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"}, "")
+		err := workers.EnsureWorker(
+			ctx,
+			claimWorkerForTest(workers, git.RepoIdentity{URL: "file:///repo1.git"}),
+		)
 		require.NoError(t, err)
 	}()
 
@@ -134,7 +144,7 @@ func TestCleanupDeletedGitTarget_RetriesWhenTheSweepCannotRead(t *testing.T) {
 		k8stypes.NamespacedName{Name: "checkout", Namespace: "shop"}, logr.Discard())
 
 	require.Error(t, err, "the caller has to come back, or nothing ever retires this worker")
-	_, exists := workers.GetWorkerForTarget("repo1", "shop", "main")
+	_, exists := workers.WorkerForGitBranch(shopRepo1Main)
 	assert.True(t, exists, "and the worker is still there, which is why the retry matters")
 }
 
@@ -158,7 +168,10 @@ func TestHandleFetchError_RequeuesAFailedCleanup(t *testing.T) {
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 	func() {
-		err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"}, "")
+		err := workers.EnsureWorker(
+			ctx,
+			claimWorkerForTest(workers, git.RepoIdentity{URL: "file:///repo1.git"}),
+		)
 		require.NoError(t, err)
 	}()
 

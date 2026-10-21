@@ -67,7 +67,7 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 	AfterAll(func() {
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, providerName)
 		cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 		cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
 		cleanupNamespacedResource("flux-system", "secret", fluxSecretName)
