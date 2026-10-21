@@ -32,7 +32,7 @@ import (
 // Flux applies the overlay when its Kustomization is created, and the trigger then holds it
 // suspended, so a revert of the drifted env var inside this spec is an apply GitOps Reverser started,
 // and nothing else: a resume of the unchanged commit, which is all a Refusal needs.
-var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"), Ordered, func() {
+var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"), Ordered, SpecPriority(80), func() {
 	var (
 		testNs         string
 		repo           *RepoArtifacts

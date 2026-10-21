@@ -63,6 +63,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	By("preparing e2e cluster prerequisites via Task target")
 	prepareE2EClusterOnce()
+	waitForPreviousRunNamespaces()
 
 	// After prepare, while this process still holds the exclusive cluster lock, so every spec runs
 	// against a Prometheus with no retained samples and a controller whose counters start at zero.
@@ -71,6 +72,28 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 }, func(_ []byte) {
 	configureE2EProcess()
 })
+
+// waitForPreviousRunNamespaces waits out test namespaces an earlier run with this seed is still
+// deleting. cleanupNamespace does not wait for a namespace to finalize: every namespace is named
+// for the run's seed (testNamespaceFor), so within one run nothing reads it again. A rerun with the
+// SAME seed (reproducing a failure with --seed) is the exception, and would find its namespaces
+// still terminating, where the specs' create ignores AlreadyExists and the first write is refused.
+// Within one run there is nothing to wait for yet: this runs before any spec.
+func waitForPreviousRunNamespaces() {
+	out, err := kubectlRun("get", "namespaces", "-o",
+		`jsonpath={range .items[?(@.status.phase=="Terminating")]}{.metadata.name}{"\n"}{end}`)
+	Expect(err).NotTo(HaveOccurred(), "failed to list terminating namespaces")
+	prefix := fmt.Sprintf("%d-test-", GinkgoRandomSeed())
+	pinned := strings.TrimSpace(os.Getenv("TESTNAMESPACE"))
+	for _, name := range strings.Fields(out) {
+		if !strings.HasPrefix(name, prefix) && name != pinned {
+			continue
+		}
+		By(fmt.Sprintf("waiting for namespace %s, left by an earlier run with this seed, to finish deleting", name))
+		_, err := kubectlRun("wait", "--for=delete", "namespace/"+name, "--timeout=180s")
+		Expect(err).NotTo(HaveOccurred(), "namespace %s is still terminating", name)
+	}
+}
 
 // resetE2EObservability discards Prometheus's retained samples and restarts the controller so its
 // in-process counters start from zero. Both halves are needed: resetting Prometheus alone leaves

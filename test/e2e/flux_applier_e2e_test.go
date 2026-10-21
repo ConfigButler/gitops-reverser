@@ -23,7 +23,7 @@ import (
 // spec's API edit or this spec's Git-side push. Once the trigger holds it, the Kustomization is
 // suspended, and no Flux Receiver is wired to the repository, so any apply inside the spec is one
 // GitOps Reverser started.
-var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Ordered, func() {
+var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Ordered, SpecPriority(90), func() {
 	const (
 		providerName = "flux-applier-provider"
 		destName     = "flux-applier-dest"
@@ -178,7 +178,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 	// With no receiver and no API edit, the only thing that can find a Git-side push is the
 	// refresher on the GitTarget's steady tick. This is the guarantee that a missing webhook costs
 	// latency and never an apply (docs/design/apply-trigger.md).
-	// The e2e install refreshes after 30s, so the wait is the control plane's reconcile cadence of
+	// The e2e install refreshes after 90s, so the wait is the control plane's reconcile cadence of
 	// about five minutes, as in the refresh-remote spec.
 	It("applies a Git-side push the refresher finds, with no receiver and no API edit", func() {
 		Eventually(func(g Gomega) {

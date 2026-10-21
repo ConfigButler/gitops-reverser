@@ -46,8 +46,11 @@ spec:
         - --author-attribution-grace=10s
         # A short refresh interval so the e2e suite can watch an idle GitTarget notice a branch
         # somebody moved from outside, without waiting out the 10m default. The effective
-        # granularity is still the 5m control-plane reconcile.
-        - --git-refresh-interval=30s
+        # granularity is still the 5m control-plane reconcile. Kept above the 1m status.remote
+        # publication floor, as the default is: below it, a reconcile inside the floor refreshes
+        # an observation that has not been published yet, and our own push is published as a
+        # fetch.
+        - --git-refresh-interval=90s
         # The push receiver, so the e2e suite can deliver a Git host's push webhook through the
         # gitops-reverser-receiver Service (receiver-service.yaml) instead of waiting for a refresh.
         - --receiver-bind-address=:9292

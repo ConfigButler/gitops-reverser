@@ -118,6 +118,9 @@ func (r *GitTargetReconciler) observeRemote(
 // Two things ignore the floor, because they are correctness rather than throughput: the FIRST
 // observation, which is the difference between "nothing has looked" and an answer, and any
 // correction that involves the repository changing under the target.
+//
+// It returns how long the floor is holding news back, zero when nothing is held. A held answer
+// must not wait for whatever reconcile happens to come next: see requeueForRemoteAnswer.
 func (r *GitTargetReconciler) publishRemote(
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
@@ -125,7 +128,7 @@ func (r *GitTargetReconciler) publishRemote(
 	seen bool,
 	repo git.RepoIdentity,
 	now time.Time,
-) {
+) time.Duration {
 	ref := types.NewResourceReference(target.Name, target.Namespace)
 	published, everPublished := r.remotePublications.last(ref, target.UID)
 	// What this target PUBLISHED was proved against a repository it no longer points at: its
@@ -137,12 +140,12 @@ func (r *GitTargetReconciler) publishRemote(
 		// published with, and it has to go rather than go stale.
 		target.Status.Remote = nil
 		st.afterPersist(func() { r.remotePublications.forget(ref) })
-		return
+		return 0
 	}
 	if !seen {
 		// Nothing has looked at this branch since the process started. What is published is the
 		// last thing anyone proved about it, and there is nothing better to replace it with.
-		return
+		return 0
 	}
 	next := &configbutleraiv1alpha3.GitTargetRemoteStatus{
 		Commit:         observed.Commit,
@@ -151,11 +154,11 @@ func (r *GitTargetReconciler) publishRemote(
 		Parent:         parentStatusOf(observed),
 	}
 	if !remoteStatusIsNews(target.Status.Remote, next) {
-		return
+		return 0
 	}
 	// The floor, skipped for the two corrections above and for the first publication.
 	if everPublished && !staleRepository && now.Sub(published.at) < RemotePublicationInterval {
-		return
+		return published.at.Add(RemotePublicationInterval).Sub(now)
 	}
 	target.Status.Remote = next
 	// Only once the write has landed, and dated THEN rather than now. A patch refused by the
@@ -166,6 +169,7 @@ func (r *GitTargetReconciler) publishRemote(
 	// so on a slow reconcile a cooldown dated from it can be half spent before the write lands,
 	// and a reconcile queued behind it would publish again straight away.
 	st.afterPersist(func() { r.remotePublications.record(ref, target.UID, r.clockNow(), observed.Repo) })
+	return 0
 }
 
 // withdrawRemote decides whether what is published has to be taken back rather than replaced.

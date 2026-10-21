@@ -320,7 +320,8 @@ func TestWriteResult_NoAttachment(t *testing.T) {
 		Status: "passed",
 		Stage:  "finished",
 	}
-	if err := writeResult(outputDir, result, " \n\t"); err != nil {
+	blank := textAttachment{name: "Ginkgo output", suffix: "attachment", body: " \n\t"}
+	if err := writeResult(outputDir, result, blank); err != nil {
 		t.Fatalf("writeResult: %v", err)
 	}
 
@@ -330,6 +331,58 @@ func TestWriteResult_NoAttachment(t *testing.T) {
 	}
 	if len(results[0].Attachments) != 0 {
 		t.Errorf("attachments: got %#v, want none", results[0].Attachments)
+	}
+}
+
+// styledTable stands in for a gmeasure experiment: a value Ginkgo renders through ColorableString.
+type styledTable struct{}
+
+func (styledTable) ColorableString() string {
+	return "{{bold}}Flux: Git-side push\n{{/}}push → live | 3 | 2.2s | 2.7s"
+}
+
+func (styledTable) String() string { return "unused" }
+
+func TestRun_AttachesReportEntriesAsMeasurements(t *testing.T) {
+	reports := fixtureReport()
+	spec := &reports[0].SpecReports[1]
+	spec.ReportEntries = []types.ReportEntry{
+		{Name: "Flux: Git-side push", Value: types.WrapEntryValue(styledTable{})},
+		{Name: "empty", Value: types.WrapEntryValue(nil)},
+		{Name: "gitea-commit-verification", Value: types.WrapEntryValue("verified: true")},
+	}
+	reportPath := writeFixtureReport(t, reports)
+	outputDir := filepath.Join(t.TempDir(), "allure-results")
+	if _, err := run(outputDir, []string{reportPath}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	result := findResult(t, readAllureResults(t, outputDir), "passes")
+	var source string
+	for _, attachment := range result.Attachments {
+		if attachment.Name == "Measurements" {
+			source = attachment.Source
+		}
+	}
+	if source == "" {
+		t.Fatalf("attachments: got %#v, want one named Measurements", result.Attachments)
+	}
+	data, err := os.ReadFile(filepath.Join(outputDir, source))
+	if err != nil {
+		t.Fatalf("read measurements: %v", err)
+	}
+	want := "Flux: Git-side push\npush → live | 3 | 2.2s | 2.7s\n\n" +
+		"gitea-commit-verification\nverified: true\n\n"
+	if string(data) != want {
+		t.Errorf("measurements:\n got %q\nwant %q", string(data), want)
+	}
+
+	for _, other := range readAllureResults(t, outputDir) {
+		for _, attachment := range other.Attachments {
+			if other.Name != "passes" && attachment.Name == "Measurements" {
+				t.Errorf("%s: a spec without report entries got a Measurements attachment", other.Name)
+			}
+		}
 	}
 }
 

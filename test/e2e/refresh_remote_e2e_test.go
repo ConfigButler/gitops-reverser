@@ -26,18 +26,21 @@ import (
 // one that writer left behind.
 //
 // Timing. The refresh rides the GitTarget reconcile, and a converged target requeues on the
-// 5-minute steady interval, so the bound here is one steady tick plus the refresh itself — not
-// the 30s --git-refresh-interval config/deployment.yaml sets, which only decides how old an
-// observation may be when that tick arrives.
+// 5-minute steady interval, so the bound on noticing the move is one steady tick plus the refresh
+// itself — not the 90s --git-refresh-interval config/deployment.yaml sets, which only decides how
+// old an observation may be when that tick arrives. What the refresh learns is published in the
+// same round: the reconcile that asked comes back for the answer, and one the publication floor
+// stops comes back when it lifts (requeueForRemoteAnswer).
 //
-// status.remote is SAMPLED onto that same tick: proving where the branch is and publishing it are
-// two different rates, and nothing in the data plane wakes a target because a branch moved. So
-// every wait on that stanza below is one steady tick wide, including the one after our OWN push.
-// That is the contract, not slack: see docs/spec/status-conditions-guide.md.
+// status.remote is SAMPLED: proving where the branch is and publishing it are two different
+// rates, and nothing in the data plane wakes a target because a branch moved. Our OWN push is
+// published once RemotePublicationInterval has passed since the last write, which was the unborn
+// branch moments before; a minute, not a tick. That is the contract, not slack: see
+// docs/spec/status-conditions-guide.md.
 //
 // No reconcile-request annotation is used anywhere in this spec: an operator asking by hand is
 // precisely the case this feature exists to remove.
-var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered, func() {
+var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered, SpecPriority(100), func() {
 	var (
 		testNs       string
 		repo         *RepoArtifacts
@@ -104,7 +107,8 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 			g.Expect(pushedCommit).NotTo(BeEmpty(), "a target that has pushed knows where its branch is")
 			g.Expect(gitTargetRemoteField(g, destName, testNs, "verifiedBy")).To(Equal("Push"))
 			g.Expect(pushedCommit).To(Equal(remoteHeadSHA(g, repo.CheckoutDir)))
-		}, 7*time.Minute, 5*time.Second).Should(Succeed())
+		}, 3*time.Minute, 5*time.Second).Should(Succeed(),
+			"published when the floor lifts, well before a steady tick")
 
 		verifiedBefore := gitTargetRemoteField(Default, destName, testNs, "lastVerifiedAt")
 		Expect(verifiedBefore).NotTo(BeEmpty(), "the observation is dated, or nothing can report its own staleness")
