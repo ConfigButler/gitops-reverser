@@ -79,7 +79,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("test-provider", "main")},
+					GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("test-provider", "main")},
 					Path:         "default/test",
 				},
 			}
@@ -192,7 +192,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("local-provider", "main")},
+					GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("local-provider", "main")},
 					Path:         "ns/default",
 				},
 			}

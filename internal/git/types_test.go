@@ -35,7 +35,7 @@ func TestWritesThrough_IsTheGitBranch(t *testing.T) {
 	target := &v1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: v1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
+			GitBranchRef: meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
 		},
 	}
 	assert.True(t, WritesThrough(target, shared))
@@ -45,7 +45,7 @@ func TestWritesThrough_IsTheGitBranch(t *testing.T) {
 	target.Spec.GitBranchRef.Namespace = ""
 	assert.True(t, WritesThrough(target, k8stypes.NamespacedName{Namespace: "team-a", Name: "main"}),
 		"no namespace means the GitTarget's own")
-	target.Spec.GitBranchRef = nil
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{}
 	assert.False(t, WritesThrough(target, k8stypes.NamespacedName{}), "no reference writes through nothing")
 }
 

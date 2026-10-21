@@ -335,7 +335,7 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: ns, UID: "gt-uid"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef:       &meta.NamespacedObjectReference{Name: gitBranchNameForTest("gp", "main")},
+			GitBranchRef:       meta.NamespacedObjectReference{Name: gitBranchNameForTest("gp", "main")},
 			Path:               "apps",
 			ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
 		},

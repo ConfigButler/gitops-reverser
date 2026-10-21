@@ -268,7 +268,7 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: ns},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("provider-a", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("provider-a", "main")},
 			Path:         "apps",
 			Placement: &configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "{bogus}/all.yaml",

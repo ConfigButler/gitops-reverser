@@ -40,7 +40,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 	existingGitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-target", Namespace: "tilt-playground"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("playground-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("playground-provider", "main")},
 			Path:         "live-cluster",
 		},
 	}
@@ -106,7 +106,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 	existingGitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ops-target", Namespace: "ops"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("ops-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("ops-provider", "main")},
 			Path:         "cluster-state",
 		},
 	}

@@ -31,7 +31,7 @@ func sharedProviderTarget(
 			CreationTimestamp: metav1.NewTime(time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-age)),
 		},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{
+			GitBranchRef: meta.NamespacedObjectReference{
 				Name:      gitBranchNameForTest("monorepo", "main"),
 				Namespace: providerNS,
 			},

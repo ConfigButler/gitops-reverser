@@ -86,7 +86,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
@@ -300,7 +300,7 @@ func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget, testGitBranchObject()).Build()
@@ -330,7 +330,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
@@ -386,7 +386,7 @@ func TestWithdrawCommitRequest_NothingHoldsItWithoutAWorker(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget, testGitBranchObject()).Build()
@@ -420,7 +420,7 @@ func TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
@@ -481,7 +481,7 @@ func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()

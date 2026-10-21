@@ -110,14 +110,23 @@ spec:
       name: platform-receiver
 ---
 apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
+kind: GitBranch
 metadata:
-  name: checkout
+  name: platform-main
   namespace: team-a
 spec:
   gitProviderRef:
     name: platform
   branch: main
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout
+  namespace: team-a
+spec:
+  gitBranchRef:
+    name: platform-main
   path: apps/checkout
   applyTriggerRef:
     kind: FluxTrigger

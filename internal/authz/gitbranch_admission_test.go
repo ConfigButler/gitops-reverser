@@ -38,7 +38,7 @@ func sharedGitBranch(provider string) *configv1alpha3.GitBranch {
 // namespace means its own.
 func targetWriting(namespace, name string) *configv1alpha3.GitTarget {
 	target := targetIn("")
-	target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: name, Namespace: namespace}
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: name, Namespace: namespace}
 	return target
 }
 

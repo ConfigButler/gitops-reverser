@@ -51,7 +51,7 @@ multiple watch rules.
 
 ## Field overview
 
-Ready-made manifests for all eight objects live in [`config/samples/`](../config/samples/). They
+Ready-made manifests for all nine objects live in [`config/samples/`](../config/samples/). They
 cross-reference the same `example-provider` / `example-target` names, so the set can be applied
 together and edited down, rather than assembled from the fragments below.
 
@@ -99,10 +99,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 
 | Field | Default | What it does |
 |---|---|---|
-| `gitBranchRef` | `gitProviderRef` and `branch` instead | The `GitBranch` this target writes: its own namespace, or `namespace` names one whose `GitProvider`'s `accessFrom` admits it |
-| `gitProviderRef` | `gitBranchRef` instead | The `GitProvider` backing this target: its own namespace, or `namespace` names one whose `accessFrom` admits it. Every target on one repository branch names the same one |
-| `branch` | `gitBranchRef` instead | Branch to write. Must be in the provider's `allowedBranches` |
-| `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Immutable. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
+| `gitBranchRef` | **required** | The `GitBranch` this target writes: its own namespace, or `namespace` names one whose `GitProvider`'s `accessFrom` admits it |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
 | `clusterProviderRef` | `{"name":"default"}` | Source cluster to mirror from. The default names a `ClusterProvider` called `default` |
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |

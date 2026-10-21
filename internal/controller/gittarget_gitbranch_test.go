@@ -48,7 +48,7 @@ func newDestinationFixture(t *testing.T) *destinationFixture {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
+			GitBranchRef: meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
 			Path:         "apps",
 		},
 	}
@@ -157,11 +157,11 @@ func TestGitBranchWatches_MapToWhatTheyChange(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
+			GitBranchRef: meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
 		},
 	}
 	assert.Equal(t, []string{"platform/main"}, requestsToKeys(gitTargetToGitBranch(context.Background(), target)))
-	target.Spec.GitBranchRef = nil
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{}
 	assert.Empty(t, gitTargetToGitBranch(context.Background(), target))
 	assert.Empty(t, gitTargetToGitBranch(context.Background(), branchProvider("platform", "acme")))
 }
@@ -200,7 +200,7 @@ func TestGitTargetsOn_FindsTheTargetsOfABranchOrItsProvider(t *testing.T) {
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: &meta.NamespacedObjectReference{Name: branch, Namespace: branchNS},
+				GitBranchRef: meta.NamespacedObjectReference{Name: branch, Namespace: branchNS},
 			},
 		}
 	}

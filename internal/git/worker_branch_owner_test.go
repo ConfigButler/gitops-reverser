@@ -55,7 +55,7 @@ func TestReconcileWorkers_StopsTheWorkerOfAGitBranchThatLostItsBranch(t *testing
 		require.NoError(t, m.Client.Create(ctx, &configv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Namespace: gitBranch.Namespace, Name: "apps"},
 			Spec: configv1alpha3.GitTargetSpec{
-				GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranch.Name}, Path: gitBranch.Namespace,
+				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranch.Name}, Path: gitBranch.Namespace,
 			},
 		}))
 	}

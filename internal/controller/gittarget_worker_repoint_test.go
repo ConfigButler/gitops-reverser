@@ -52,7 +52,7 @@ func TestEnsureEventStream_RepointsTheStreamAtTheReplacementWorker(t *testing.T)
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: "shop"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")},
 			Path:         "apps",
 		},
 	}
@@ -112,7 +112,7 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop", UID: k8stypes.UID("uid-" + name)},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest(provider, branch)},
+				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest(provider, branch)},
 				Path:         name,
 			},
 		}
@@ -174,7 +174,7 @@ func TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried(t *testing.
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: "shop", UID: k8stypes.UID("uid-apps")},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")},
 			Path:         "apps",
 		},
 	}

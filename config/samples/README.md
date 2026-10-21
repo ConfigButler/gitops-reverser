@@ -3,6 +3,8 @@
 These samples are quick starting points for common GitOps Reverser setups.
 
 - `quickstart-gitprovider.yaml`: Minimal `GitProvider` with credentials.
+- `quickstart-gitbranch.yaml`: Minimal `GitBranch`: the `main` branch of `example-provider`'s
+  repository.
 - `quickstart-gittarget.yaml`: Minimal `GitTarget` using a non-root `spec.path` and SOPS encryption auto-generation.
 - `quickstart-watchrule.yaml`: Minimal `WatchRule` for ConfigMaps.
 - `clusterprovider.yaml`: The conventional `default` provider (in-cluster) and a remote one, showing
@@ -14,5 +16,5 @@ These samples are quick starting points for common GitOps Reverser setups.
   `GitTarget`'s open commit window. It uses `metadata.generateName`, so apply it with
   `kubectl create -f`: `kubectl apply` refuses a generated name.
 
-Every sample references `example-target` / `example-provider`, the same names the chart's
+Every sample references `example-target` / `example-branch` / `example-provider`, the same names the chart's
 `quickstart` values use, so the set is internally consistent and can be applied together.

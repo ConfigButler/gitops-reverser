@@ -175,7 +175,7 @@ func (f *ledgerFixture) createLedgerTarget(path string, prune *configv1alpha3.Pr
 	require.NoError(f.t, f.worker.Client.Create(f.worker.ctx, &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: ledgerTargetName, Namespace: "default"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{
+			GitBranchRef: meta.NamespacedObjectReference{
 				Name: testGitBranchName(f.worker.GitProviderRef, f.worker.Branch),
 			},
 			Path:  path,

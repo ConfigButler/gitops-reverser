@@ -75,7 +75,7 @@ func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testi
 	sibling := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "invoices", Namespace: "shop"},
 	}
-	sibling.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")}
+	sibling.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: gitBranchNameForTest("repo1", "main")}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sibling).Build()
 
 	workers := git.NewWorkerManager(k8sClient, logr.Discard(), git.BranchWorkerLimits{},

@@ -513,7 +513,7 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "bootstrap-target"
 	target.Namespace = "default"
-	target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName("test-repo", "main")}
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName("test-repo", "main")}
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
@@ -830,7 +830,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitterAndTargetMessage
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "audit-target"
 	target.Namespace = "default"
-	target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName("test-repo", "main")}
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName("test-repo", "main")}
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
 		Message: &configv1alpha3.CommitMessageSpec{
@@ -928,7 +928,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "demo-target"
 	target.Namespace = "default"
-	target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName("test-repo", "main")}
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName("test-repo", "main")}
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
 		Message: &configv1alpha3.CommitMessageSpec{
@@ -1243,7 +1243,7 @@ func createTargetWithEncryption(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
 	target.Spec.Path = path
 	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
@@ -1270,7 +1270,7 @@ func createTargetWithoutEncryption(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
 	target.Spec.Path = path
 	require.NoError(t, k8sClient.Create(ctx, target))
 }
@@ -1293,7 +1293,7 @@ func createTargetWithEncryptionSecretData(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
 	target.Spec.Path = path
 	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",

@@ -138,7 +138,7 @@ func TestPublication_ChangesReachEveryGitTargetOnTheBranch(t *testing.T) {
 		return &configv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: configv1alpha3.GitTargetSpec{
-				GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranch, Namespace: "shop"},
+				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranch, Namespace: "shop"},
 			},
 		}
 	}

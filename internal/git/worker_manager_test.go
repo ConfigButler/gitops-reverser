@@ -117,7 +117,7 @@ func createTargetForRegister(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = testTargetNamespace
-	target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
+	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)}
 	target.Spec.Path = path
 	require.NoError(t, k8sClient.Create(ctx, target))
 }

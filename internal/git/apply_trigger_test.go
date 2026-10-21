@@ -109,7 +109,7 @@ func applierTestTarget(name string, applier bool, mutate ...func(*configv1alpha3
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: k8stypes.UID("uid-" + name)},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: &meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")},
+			GitBranchRef: meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")},
 			Path:         "apps/" + name,
 		},
 	}

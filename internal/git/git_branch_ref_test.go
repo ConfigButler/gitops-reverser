@@ -21,7 +21,7 @@ import (
 func refTarget(namespace, gitBranch string) *configv1alpha3.GitTarget {
 	target := &configv1alpha3.GitTarget{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"}}
 	if gitBranch != "" {
-		target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: gitBranch, Namespace: namespace}
+		target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: gitBranch, Namespace: namespace}
 	}
 	return target
 }

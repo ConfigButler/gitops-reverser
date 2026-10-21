@@ -43,10 +43,12 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	objects := guideExampleObjects(t, fluxGuide)
 
 	var provider v1alpha3.GitProvider
+	var branch v1alpha3.GitBranch
 	var target v1alpha3.GitTarget
 	var trigger v1alpha3.FluxTrigger
 	var secret corev1.Secret
 	decodeStrict(t, objects, "GitProvider", &provider)
+	decodeStrict(t, objects, "GitBranch", &branch)
 	decodeStrict(t, objects, "GitTarget", &target)
 	decodeStrict(t, objects, v1alpha3.ApplyTriggerKindFlux, &trigger)
 	decodeStrict(t, objects, "Secret", &secret)
@@ -56,8 +58,15 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	assert.NotContains(t, objects, "Receiver", "the guide tells the reader to remove the Flux Receiver")
 
 	// The GitOps Reverser objects are wired to each other.
-	assert.Equal(t, provider.Name, target.Spec.GitProviderRef.Name)
-	assert.Equal(t, provider.Namespace, target.Namespace, "a GitTarget names a GitProvider in its own namespace")
+	assert.Equal(t, provider.Name, branch.Spec.GitProviderRef.Name)
+	assert.Equal(t, provider.Namespace, branch.Namespace, "a GitBranch names a GitProvider in its own namespace")
+	assert.Equal(t, branch.Name, target.Spec.GitBranchRef.Name)
+	assert.Equal(
+		t,
+		branch.Namespace,
+		target.Namespace,
+		"the example's GitTarget names a GitBranch in its own namespace",
+	)
 	require.NotNil(t, provider.Spec.Receiver, "the example serves a push receiver")
 	assert.Equal(t, secret.Name, provider.Spec.Receiver.SecretRef.Name)
 	assert.Equal(t, provider.Namespace, secret.Namespace)
@@ -80,7 +89,7 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	// The applier, as written, is accepted, binds the GitTarget, and is driven.
 	ref := trigger.Applier()
 	assert.Equal(t, types.NamespacedName{Namespace: kustomization.GetNamespace(), Name: kustomization.GetName()}, ref)
-	want := Binding{RepositoryURL: provider.Spec.URL, Branch: target.Spec.Branch}
+	want := Binding{RepositoryURL: provider.Spec.URL, Branch: branch.Spec.Branch}
 
 	client := newSourceClient(kustomization, repository)
 	flux := pinnedFlux(client)
@@ -93,7 +102,7 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 
 	sim := fluxsim.New(t, client)
 	sim.Fetches(types.NamespacedName{Namespace: repository.GetNamespace(), Name: repository.GetName()},
-		target.Spec.Branch+"@sha1:"+testCommit)
+		branch.Spec.Branch+"@sha1:"+testCommit)
 	flux.Now = fluxsim.TickingClock(stampTime)
 	started, err := flux.Request(context.Background(), ref, Ask{
 		Want: want, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit, Token: "T1",

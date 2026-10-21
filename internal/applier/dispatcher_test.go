@@ -62,7 +62,7 @@ func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference
 	target := &v1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: name, UID: uid(name)},
 		Spec: v1alpha3.GitTargetSpec{
-			GitBranchRef: &fluxmeta.NamespacedObjectReference{Name: testGitBranch.Name},
+			GitBranchRef: fluxmeta.NamespacedObjectReference{Name: testGitBranch.Name},
 			Path:         name,
 		},
 	}

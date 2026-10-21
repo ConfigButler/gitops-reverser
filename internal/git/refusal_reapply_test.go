@@ -44,7 +44,7 @@ func refusalTouchWorker(t *testing.T, spec configv1alpha3.GitTargetSpec) *Branch
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
-	spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")}
+	spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")}
 	if spec.Path == "" {
 		spec.Path = "apps"
 	}
@@ -412,7 +412,7 @@ func TestRefusalReapply_OneTargetDoesNotDropAnothersPendingRequest(t *testing.T)
 				Suspend:         suspend,
 			},
 		}
-		target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")}
+		target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")}
 		return target
 	}
 	// B is suspended, so its delayed request must be declined when the timer fires. A is not.

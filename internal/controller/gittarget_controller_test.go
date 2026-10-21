@@ -35,7 +35,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{Name: "missing-branch"},
+					GitBranchRef: meta.NamespacedObjectReference{Name: "missing-branch"},
 					Path:         "test-folder",
 				},
 			}
@@ -85,7 +85,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-two-axis", "main"),
 					},
 					Path: "two-axis-folder",
@@ -145,7 +145,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-conflict", "main"),
 					},
 					Path: "conflict-folder",
@@ -179,7 +179,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-conflict", "main"),
 					},
 					Path: "conflict-folder",
@@ -263,7 +263,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-no-conflict", "main"),
 					},
 					Path: "folder-a",
@@ -278,7 +278,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-no-conflict", "main"),
 					},
 					Path: "folder-b", // Different!
@@ -350,7 +350,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-nested", "main"),
 					},
 					Path: "team",
@@ -383,7 +383,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-nested", "main"),
 					},
 					Path: "team/app",
@@ -463,7 +463,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-generate-enc-secret", "main"),
 					},
 					Path: "test-path",
@@ -528,7 +528,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-no-generate-enc-secret", "main"),
 					},
 					Path: "test-path",
@@ -605,7 +605,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha3.GitTargetSpec{
-						GitBranchRef: &meta.NamespacedObjectReference{
+						GitBranchRef: meta.NamespacedObjectReference{
 							Name: gitBranchNameForTest("test-provider-no-enc-recipients", "main"),
 						},
 						Path: "test-path",
@@ -698,7 +698,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-update-enc-secret", "main"),
 					},
 					Path: "test-path",
@@ -758,7 +758,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-recreate-enc-secret", "main"),
 					},
 					Path: "test-path",
@@ -853,7 +853,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: &meta.NamespacedObjectReference{
+					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-existing-agekey", "main"),
 					},
 					Path: "test-path",
