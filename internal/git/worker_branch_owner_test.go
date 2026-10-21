@@ -47,6 +47,13 @@ func TestEnsureWorker_RefusesASecondGitProviderOnOneRepositoryBranch(t *testing.
 func TestReconcileWorkers_StopsTheWorkerOfAGitProviderThatDoesNotOwnItsBranch(t *testing.T) {
 	m, ctx := startedManager(t)
 	created := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	// A GitTarget its ClusterProvider does not admit may not write, and decides nothing.
+	require.NoError(t, m.Client.Create(ctx, &configv1alpha3.ClusterProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: configv1alpha3.DefaultClusterProviderName},
+		Spec: configv1alpha3.ClusterProviderSpec{
+			AccessFrom: &configv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}},
+		},
+	}))
 	for _, ns := range []string{"team-a", "team-b"} {
 		require.NoError(t, m.Client.Create(ctx, &configv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "monorepo"},

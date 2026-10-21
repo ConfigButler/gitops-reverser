@@ -7,6 +7,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -20,12 +21,10 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	"errors"
-
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -551,4 +550,31 @@ func TestServiceAppliers_AFailedRecordedListingKeepsItsRetry(t *testing.T) {
 	loop.w.Client = reader
 	loop.serviceAppliers()
 	assert.True(t, loop.listRetryAt.IsZero(), "a listing that succeeds clears it")
+}
+
+// TestServiceAppliers_AGitTargetItsProvidersDoNotAdmitAsksNothing: the dispatcher refuses an attempt
+// for a GitTarget its providers do not admit, so the worker leaves it out before it flushes or holds
+// the applier. A check that fails is an error, retried like a failed listing, never a refusal.
+func TestServiceAppliers_AGitTargetItsProvidersDoNotAdmitAsksNothing(t *testing.T) {
+	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", true))
+	loop.w.applierAdmitted = func(
+		_ context.Context, _ client.Reader, target *configv1alpha3.GitTarget, _ configv1alpha3.ApplyTrigger,
+	) (authz.Decision, error) {
+		return authz.Decision{Allowed: target.Name != "alpha"}, nil
+	}
+	observeForeignCommit(loop.w)
+
+	loop.serviceAppliers()
+
+	requests := requester.taken()
+	require.Len(t, requests, 1)
+	assert.Equal(t, applierRef("bravo"), requests[0].Applier, "alpha's applier is asked nothing")
+
+	loop.w.applierAdmitted = func(
+		context.Context, client.Reader, *configv1alpha3.GitTarget, configv1alpha3.ApplyTrigger,
+	) (authz.Decision, error) {
+		return authz.Decision{}, errors.New("the cache is not having it")
+	}
+	_, err := loop.w.appliersOnBranch(context.Background())
+	require.Error(t, err)
 }

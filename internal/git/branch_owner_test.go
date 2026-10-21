@@ -3,12 +3,14 @@
 package git
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
@@ -54,7 +56,8 @@ func TestBranchOwners_TheOldestGitTargetsGitProviderOwnsTheBranch(t *testing.T) 
 		ownerTarget("team-c", "shared", "team-a/monorepo", 3*time.Minute),
 	}
 
-	owners := BranchOwners(targets, urls)
+	owners, err := BranchOwners(targets, urls, admitAll)
+	require.NoError(t, err)
 
 	key := BranchKeyFor("https://github.com/acme/platform", "main")
 	assert.Len(t, owners, 1, "two spellings of one repository are one branch")
@@ -79,10 +82,40 @@ func TestBranchOwners_ADeletedOrUnresolvedGitTargetDecidesNothing(t *testing.T) 
 		ownerTarget("team-b", "next", "monorepo", time.Hour),
 	}
 
-	owner := BranchOwners(targets, urls)[BranchKeyFor("https://github.com/acme/platform", "main")]
+	owners, err := BranchOwners(targets, urls, admitAll)
+	require.NoError(t, err)
+	owner := owners[BranchKeyFor("https://github.com/acme/platform", "main")]
 
 	assert.Equal(t, k8stypes.NamespacedName{Namespace: "team-b", Name: "monorepo"}, owner.Provider)
 }
+
+// TestBranchOwners_AGitTargetThatMayNotWriteDecidesNothing: an older GitTarget whose GitProvider
+// does not admit its namespace may not write, so it must not keep the branch from a younger one that
+// may. A read that fails is an error, never a refusal: it must not move the branch.
+func TestBranchOwners_AGitTargetThatMayNotWriteDecidesNothing(t *testing.T) {
+	urls := urlsOf(map[string]string{
+		"platform/monorepo": "https://github.com/acme/platform",
+		"team-b/monorepo":   "https://github.com/acme/platform",
+	})
+	targets := []v1alpha3.GitTarget{
+		ownerTarget("team-x", "refused", "platform/monorepo", 2*time.Hour),
+		ownerTarget("team-b", "admitted", "monorepo", time.Hour),
+	}
+	refuseTeamX := func(target *v1alpha3.GitTarget) (bool, error) { return target.Namespace != "team-x", nil }
+
+	owners, err := BranchOwners(targets, urls, refuseTeamX)
+	require.NoError(t, err)
+	assert.Equal(t, k8stypes.NamespacedName{Namespace: "team-b", Name: "monorepo"},
+		owners[BranchKeyFor("https://github.com/acme/platform", "main")].Provider)
+
+	_, err = BranchOwners(targets, urls, func(*v1alpha3.GitTarget) (bool, error) {
+		return false, errors.New("the cache is not having it")
+	})
+	require.Error(t, err)
+}
+
+// admitAll admits every GitTarget.
+func admitAll(*v1alpha3.GitTarget) (bool, error) { return true, nil }
 
 // TestOlderGitTarget_BreaksATieByIdentity: two GitTargets created in the same second are still
 // ordered, the same way by every caller.

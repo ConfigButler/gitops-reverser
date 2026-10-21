@@ -338,7 +338,7 @@ beside that. So a full queue of 1000 at the ~800-byte resources of a small CRD i
 saturated worker, against a 1Gi default limit — but the multiplier is on the payload, so a folder
 mirroring megabyte-sized ConfigMaps or Secrets reaches gigabytes at the same depth. Size against
 your own payloads, and against how many workers could saturate at once: the figure is per worker,
-and workers are per `(GitProvider, branch)`.
+and there is one worker per repository branch.
 
 ### Outcomes are classified, not ranked
 

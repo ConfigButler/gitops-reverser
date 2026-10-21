@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -1241,10 +1242,16 @@ func (r *GitTargetReconciler) losesRepositoryBranch(
 		return false, "", nil
 	}
 	branch := git.BranchKeyFor(url, target.Spec.Branch)
-	owners := git.BranchOwners(targets, func(provider k8stypes.NamespacedName) (string, bool) {
+	owners, err := git.BranchOwners(targets, func(provider k8stypes.NamespacedName) (string, bool) {
 		u, ok := urls[provider]
 		return u, ok
+	}, func(candidate *configbutleraiv1alpha3.GitTarget) (bool, error) {
+		decision, err := authz.GitTargetAdmitted(ctx, r.Client, candidate)
+		return decision.Allowed, err
 	})
+	if err != nil {
+		return false, "", fmt.Errorf("decide the owner of the repository branch: %w", err)
+	}
 	owner, owned := owners[branch]
 	if !owned || owner.Provider == target.GitProviderKey() {
 		return false, "", nil

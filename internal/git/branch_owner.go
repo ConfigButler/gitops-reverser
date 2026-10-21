@@ -29,11 +29,15 @@ type BranchOwner struct {
 // BranchOwners decides the owner of every repository branch the targets write. urlOf resolves a
 // GitProvider to its spec.url; a GitTarget whose GitProvider it cannot resolve writes nothing yet,
 // and decides nothing. A GitTarget being deleted decides nothing either, so the next one takes the
-// branch over at once.
+// branch over at once. Nor does one admitted reports refused (authz.GitTargetAdmitted: its
+// ClusterProvider or its GitProvider does not admit its namespace): it may not write, so it must not
+// keep the branch from a GitTarget that may. An error from admitted is returned, never read as a
+// refusal, so a read that fails moves no branch.
 func BranchOwners(
 	targets []v1alpha3.GitTarget,
 	urlOf func(provider k8stypes.NamespacedName) (string, bool),
-) map[BranchKey]BranchOwner {
+	admitted func(target *v1alpha3.GitTarget) (bool, error),
+) (map[BranchKey]BranchOwner, error) {
 	owners := map[BranchKey]BranchOwner{}
 	oldest := map[BranchKey]*v1alpha3.GitTarget{}
 	for i := range targets {
@@ -43,6 +47,13 @@ func BranchOwners(
 		}
 		url, ok := urlOf(target.GitProviderKey())
 		if !ok {
+			continue
+		}
+		allowed, err := admitted(target)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
 			continue
 		}
 		key := BranchKeyFor(url, target.Spec.Branch)
@@ -58,7 +69,7 @@ func BranchOwners(
 			Target:   k8stypes.NamespacedName{Namespace: target.Namespace, Name: target.Name},
 		}
 	}
-	return owners
+	return owners, nil
 }
 
 // OlderGitTarget reports whether a was created before b, ties broken by namespace and name, so every

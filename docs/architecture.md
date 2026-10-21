@@ -432,14 +432,16 @@ Key fields:
   an edit to an existing document is refused. `Reapply` requires `spec.applyTriggerRef`.
 
 `spec.commit` describes the folder, not the connection, so two `GitTarget`s sharing one `GitProvider`
-may batch and phrase their commits differently. A branch worker serves a `(provider, branch)` pair and
-resolves the window per open window, since a window is bound to exactly one target.
+may batch and phrase their commits differently. A branch worker serves a repository branch, through
+its one `GitProvider`, and resolves the window per open window, since a window is bound to exactly
+one target.
 
 `gitProviderRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
 orphan an old materialization or change its source cluster. `parentBranch` is immutable too,
 including adding or removing it, because it decides what history a new write branch gets. The
-controller also rejects path overlaps between GitTargets sharing a provider and branch, and rejects
-two GitTargets on one branch that name different parent branches.
+controller rejects a GitTarget that writes a repository branch through another `GitProvider` than
+the oldest GitTarget there. Among GitTargets sharing a provider and branch, from any namespace, it
+rejects overlapping paths and different parent branches.
 
 Status has a kstatus-compatible summary layer plus domain conditions:
 
@@ -1341,7 +1343,9 @@ A branch worker sits at the intersection and belongs wholly to neither object: `
 which branches are needed, `GitProvider` decides which repository those branches are in. So the
 worker is **keyed** by the repository branch, normalized as `internal/repourl` compares URLs, and
 writes with the one `GitProvider` that owns it: the GitProvider of the oldest `GitTarget` on the
-branch (`internal/git/branch_owner.go`). The `GitTarget` reconciler, the worker sweep and
+branch that may write it (`internal/git/branch_owner.go`). A `GitTarget` its `ClusterProvider` or
+its `GitProvider` does not admit decides nothing, so it cannot keep the branch from one that may.
+The `GitTarget` reconciler, the worker sweep and
 `EnsureWorker` decide ownership the same way, so a second `GitProvider` naming the repository gets no
 worker on that branch, however close together the two `GitTarget`s were created. A provider
 recreated under its name does not move a live worker; it replaces it, and the replacement starts

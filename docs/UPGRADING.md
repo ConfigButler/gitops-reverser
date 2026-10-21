@@ -13,7 +13,8 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 `GitProvider`'s credential. So every `GitTarget` that writes one repository branch must name the same
 `GitProvider`. Where two `GitProvider`s name one repository (compared as URLs, so an `https://` and an
 SSH spelling of the same repository are one) and their `GitTarget`s write the same branch, the
-oldest `GitTarget`'s `GitProvider` keeps the branch. Every `GitTarget` writing it through another
+`GitProvider` of the oldest `GitTarget` that may write there keeps the branch (one its providers do
+not admit decides nothing). Every `GitTarget` writing it through another
 `GitProvider` stops writing and reports `Validated=False` (`TargetConflict`), with a message that
 names the `GitProvider` to share. Two `GitProvider`s for one repository on different branches are
 unaffected.
@@ -42,6 +43,9 @@ upgrading, list the repositories more than one `GitProvider` names:
 ```bash
 kubectl get gitproviders -A -o jsonpath='{range .items[*]}{.spec.url}{"\t"}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' | sort
 ```
+
+The list sorts the URLs as written, so an `https://` and an SSH spelling of one repository land
+apart: compare host and path, ignoring the scheme, the user, a trailing `.git` and case.
 
 The metrics keep their `provider_namespace` and `provider_name` labels, which now name the one
 `GitProvider` that owns the branch. Log lines name a branch as `repository@branch`.

@@ -159,7 +159,11 @@ type BranchWorker struct {
 	// snapshot, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
 	// WorkerManager before Start; nil in the CLI and in tests (apply_epoch.go).
 	initialSnapshots func(target itypes.ResourceReference) bool
-	resyncRecheck    func(target itypes.ResourceReference)
+	// applierAdmitted leaves out of the branch's appliers a GitTarget the dispatcher would refuse
+	// (WorkerManager.applierAdmitted). Nil, in the CLI and in tests that build a worker by hand,
+	// admits every GitTarget.
+	applierAdmitted ApplierAdmission
+	resyncRecheck   func(target itypes.ResourceReference)
 
 	// Event processing
 	eventQueue chan WorkItem

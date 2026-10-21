@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
@@ -180,7 +181,17 @@ type WorkerManager struct {
 	// triggerStatus writes what every worker publishes on its apply triggers' status. Set once at
 	// startup (SetApplyTriggerStatusWriter); nil in the CLI and in tests, which publishes nothing.
 	triggerStatus ApplyTriggerStatusWriter
+
+	// applierAdmitted is the dispatcher's own check of whether a GitTarget may ask its trigger's
+	// applier (authz.ApplierAdmitted), so a worker never flushes or holds an applier for a GitTarget
+	// the dispatcher would refuse. Always set by NewWorkerManager.
+	applierAdmitted ApplierAdmission
 }
+
+// ApplierAdmission reports whether target may ask the applier trigger holds to apply.
+type ApplierAdmission func(
+	ctx context.Context, reader client.Reader, target *configv1alpha3.GitTarget, trigger configv1alpha3.ApplyTrigger,
+) (authz.Decision, error)
 
 // NewWorkerManager creates a new worker manager. limits bounds every worker this manager
 // creates; a zero value of either knob takes that knob's default.
@@ -201,6 +212,7 @@ func NewWorkerManager(
 		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
 		publicationEvents:  make(chan event.GenericEvent, publicationEventBuffer),
+		applierAdmitted:    authz.ApplierAdmitted,
 	}
 }
 
@@ -453,6 +465,7 @@ func (m *WorkerManager) startWorkerLocked(
 	worker.triggerStatus = m.triggerStatus
 	worker.initialSnapshots = m.initialSnapshots
 	worker.resyncRecheck = m.resyncRecheck
+	worker.applierAdmitted = m.applierAdmitted
 	worker.renderFidelityGate = m.renderFidelityGate
 	worker.crOwners = m.commitRequests
 
@@ -872,9 +885,15 @@ func (m *WorkerManager) branchOwners(
 		provider := &providers.Items[i]
 		urls[k8stypes.NamespacedName{Namespace: provider.Namespace, Name: provider.Name}] = provider.Spec.URL
 	}
-	owners := BranchOwners(targets, func(key k8stypes.NamespacedName) (string, bool) {
+	owners, err := BranchOwners(targets, func(key k8stypes.NamespacedName) (string, bool) {
 		url, ok := urls[key]
 		return url, ok
+	}, func(target *configv1alpha3.GitTarget) (bool, error) {
+		decision, err := authz.GitTargetAdmitted(ctx, m.Client, target)
+		return decision.Allowed, err
 	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("decide branch owners: %w", err)
+	}
 	return owners, urls, nil
 }

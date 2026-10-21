@@ -179,7 +179,7 @@ type branchTarget struct {
 // name an apply trigger that exists, with the applier each trigger holds. A GitTarget may name a
 // GitProvider in another namespace, so every namespace is looked in. The client is cached, so this
 // costs no round trip. A GitTarget whose trigger does not exist (yet) names no applier: its
-// ApplyTriggerReady condition says so.
+// ApplyTriggerReady condition says so, and so does one its providers do not admit.
 func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, error) {
 	var targets v1alpha3.GitTargetList
 	if err := w.Client.List(ctx, &targets); err != nil {
@@ -198,6 +198,18 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 		}
 		if trigger == nil || !trigger.GetDeletionTimestamp().IsZero() {
 			continue
+		}
+		// The dispatcher refuses an attempt for a GitTarget its providers do not admit. Listed, it
+		// would make the worker flush, raise its apply epoch and hold the applier, or its whole
+		// source group, for an attempt that cannot go.
+		if w.applierAdmitted != nil {
+			decision, err := w.applierAdmitted(ctx, w.Client, target, trigger)
+			if err != nil {
+				return nil, fmt.Errorf("check whether %s may ask its applier: %w", target.Name, err)
+			}
+			if !decision.Allowed {
+				continue
+			}
 		}
 		listed = append(listed, branchTarget{
 			ref:           itypes.NewResourceReference(target.Name, target.Namespace),

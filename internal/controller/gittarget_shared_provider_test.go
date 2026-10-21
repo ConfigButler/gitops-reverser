@@ -43,6 +43,13 @@ func sharedProviderReconciler(t *testing.T, objects ...ctrlclient.Object) *GitTa
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+	// The chart's default ClusterProvider admits every namespace; only the GitProviders decide here.
+	objects = append(objects, &configbutleraiv1alpha3.ClusterProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: configbutleraiv1alpha3.DefaultClusterProviderName},
+		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
+			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}},
+		},
+	})
 	for _, ns := range []string{"platform", "team-b"} {
 		objects = append(objects, &configbutleraiv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "monorepo"},
@@ -90,4 +97,17 @@ func TestCheckForConflicts_ASharedGitProviderIsOneBranchAcrossNamespaces(t *test
 	assert.True(t, conflict, "a path nested in another namespace's folder on the same branch still overlaps")
 	assert.Equal(t, GitTargetReasonTargetConflict, reason)
 	assert.Contains(t, msg, "platform/apps")
+}
+
+// TestCheckForConflicts_AGitTargetThatMayNotWriteKeepsNoBranch: an older GitTarget naming a
+// GitProvider whose accessFrom does not admit its namespace may not write the branch, so it must not
+// get the GitTarget that may refused.
+func TestCheckForConflicts_AGitTargetThatMayNotWriteKeepsNoBranch(t *testing.T) {
+	refused := sharedProviderTarget("team-x", "early", "platform", "early", 2*time.Hour)
+	own := sharedProviderTarget("team-b", "infra", "", "infra", time.Hour)
+	r := sharedProviderReconciler(t, refused, own)
+
+	conflict, msg, _, err := r.checkForConflicts(context.Background(), own, "team-b")
+	require.NoError(t, err)
+	assert.False(t, conflict, msg)
 }
