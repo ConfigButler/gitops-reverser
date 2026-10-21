@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -136,20 +137,23 @@ func TestPublication_ChangesReachEveryGitTargetOnTheBranch(t *testing.T) {
 		return &configv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop"},
 			Spec: configv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: "repo"},
+				GitProviderRef: meta.NamespacedObjectReference{Name: "repo"},
 				Branch:         branch,
 			},
 		}
 	}
+	shared := target("team-b", "main")
+	shared.Namespace, shared.Spec.GitProviderRef.Namespace = "team-b", "shop"
 	k8s := fake.NewClientBuilder().WithScheme(replayScheme(t)).WithObjects(
-		target("apps", "main"), target("infra", "main"), target("other", "release")).Build()
+		target("apps", "main"), target("infra", "main"), target("other", "release"), shared).Build()
 	manager := NewWorkerManager(k8s, logr.Discard(), BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
 
-	manager.notifyPublication(context.Background(), BranchKey{RepoNamespace: "shop", RepoName: "repo", Branch: "main"})
+	manager.notifyPublication(context.Background(), k8stypes.NamespacedName{Namespace: "shop", Name: "repo"}, "main")
 
 	var told []string
 	for len(manager.PublicationEvents()) > 0 {
 		told = append(told, (<-manager.PublicationEvents()).Object.GetName())
 	}
-	assert.ElementsMatch(t, []string{"apps", "infra"}, told)
+	assert.ElementsMatch(t, []string{"apps", "infra", "team-b"}, told,
+		"a GitTarget in another namespace writing through the shared GitProvider is on the branch too")
 }

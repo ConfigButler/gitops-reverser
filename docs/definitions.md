@@ -127,9 +127,10 @@ Observation failure supplies no evidence of absence. The code calls this write-s
 
 ## Write side
 
-**Branch worker.** The single event loop that owns one `(GitProvider namespace, GitProvider name,
-branch)` tuple. Every write to that branch goes through it. Two words, lowercase in prose,
-`BranchWorker` as the Go type.
+**Branch worker.** The single event loop that owns one repository branch: the repository's URL, as
+`internal/repourl` normalizes it, and the branch. Every write to that branch goes through it, with
+the credential of the one `GitProvider` that owns the branch, the `GitProvider` of the oldest
+`GitTarget` writing it. Two words, lowercase in prose, `BranchWorker` as the Go type.
 
 **Write branch.** The branch a `GitTarget` writes to: `spec.branch`. It must be in the
 `GitProvider`'s `allowedBranches`.
@@ -237,9 +238,7 @@ window, takes the **flush mark** (the last write decided so far), and publishes 
 the mark at once, without waiting for the push cooldown. The request is sent for the tip that
 publication produced. An edit decided after the mark does not hold the request back: the applier's
 [apply window](design/apply-trigger.md#the-apply-window) records it from the mark, so an apply that
-overwrites it is withheld and a `Repair` puts it back. The flush covers the other branch workers
-on the same repository and branch (two `GitProvider`s naming one repository): each closes its own
-window and publishes up to a mark of its own, and the request waits until every one is done.
+overwrites it is withheld and a `Repair` puts it back.
 
 **Echo.** The applier's own write landing: the watch event of an object the applier wrote while
 applying a commit GitOps Reverser asked for. The branch worker knows one by its newest

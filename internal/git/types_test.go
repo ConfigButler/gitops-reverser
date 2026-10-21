@@ -5,92 +5,48 @@ package git
 import (
 	"testing"
 
+	"github.com/fluxcd/pkg/apis/meta"
+	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// TestBranchKeyString verifies BranchKey string representation.
-func TestBranchKeyString(t *testing.T) {
-	tests := []struct {
-		name     string
-		key      BranchKey
-		expected string
-	}{
-		{
-			name: "Standard branch key",
-			key: BranchKey{
-				RepoNamespace: "gitops-system",
-				RepoName:      "my-repo",
-				Branch:        "main",
-			},
-			expected: "gitops-system/my-repo/main",
-		},
-		{
-			name: "Development branch",
-			key: BranchKey{
-				RepoNamespace: "default",
-				RepoName:      "test-repo",
-				Branch:        "develop",
-			},
-			expected: "default/test-repo/develop",
-		},
-		{
-			name: "Feature branch",
-			key: BranchKey{
-				RepoNamespace: "prod",
-				RepoName:      "app",
-				Branch:        "feature/new-api",
-			},
-			expected: "prod/app/feature/new-api",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tt.key.String()
-			if result != tt.expected {
-				t.Errorf("BranchKey.String() = %q, want %q", result, tt.expected)
-			}
-		})
-	}
+// TestBranchKeyFor_OneKeyPerRepositoryBranch: a branch worker is keyed by repository and branch, so
+// every spelling of one repository's URL is one key, and another branch or repository is another.
+func TestBranchKeyFor_OneKeyPerRepositoryBranch(t *testing.T) {
+	https := BranchKeyFor("https://github.com/acme/platform.git", "main")
+	assert.Equal(t, BranchKey{Repository: "github.com/acme/platform", Branch: "main"}, https)
+	assert.Equal(t, https, BranchKeyFor("git@github.com:acme/platform", "main"), "ssh and https name one repository")
+	assert.Equal(t, https, BranchKeyFor("https://GitHub.com/Acme/Platform", "main"), "case is not identity")
+	assert.NotEqual(t, https, BranchKeyFor("https://github.com/acme/platform", "develop"))
+	assert.NotEqual(t, https, BranchKeyFor("https://github.com/acme/other", "main"))
+	assert.Equal(t, BranchKey{}, BranchKeyFor("", "main"), "no URL names no repository")
+	assert.Equal(t, "github.com/acme/platform@main", https.String())
 }
 
-// TestBranchKeyEquality verifies BranchKey can be used as map keys.
-func TestBranchKeyEquality(t *testing.T) {
-	key1 := BranchKey{
-		RepoNamespace: "ns1",
-		RepoName:      "repo1",
-		Branch:        "main",
+// TestWritesThrough_IsTheGitProviderAndTheBranch: the GitTargets a worker serves are those that
+// write its branch through its GitProvider, from whichever namespace.
+func TestWritesThrough_IsTheGitProviderAndTheBranch(t *testing.T) {
+	shared := k8stypes.NamespacedName{Namespace: "platform", Name: "monorepo"}
+	target := &v1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
+		Spec: v1alpha3.GitTargetSpec{
+			GitProviderRef: meta.NamespacedObjectReference{Name: "monorepo", Namespace: "platform"},
+			Branch:         "main",
+		},
 	}
-	key2 := BranchKey{
-		RepoNamespace: "ns1",
-		RepoName:      "repo1",
-		Branch:        "main",
-	}
-	key3 := BranchKey{
-		RepoNamespace: "ns1",
-		RepoName:      "repo1",
-		Branch:        "develop",
-	}
+	assert.True(t, WritesThrough(target, shared, "main"))
+	assert.False(t, WritesThrough(target, shared, "develop"))
+	assert.False(t, WritesThrough(target, k8stypes.NamespacedName{Namespace: "team-a", Name: "monorepo"}, "main"),
+		"a GitProvider of the same name in the GitTarget's own namespace is another one")
 
-	// Test map key usage
-	testMap := make(map[BranchKey]string)
-	testMap[key1] = "value1"
-	testMap[key2] = "value2" // Should overwrite value1
-	testMap[key3] = "value3"
-
-	if len(testMap) != 2 {
-		t.Errorf("Expected 2 entries in map (key1==key2), got %d", len(testMap))
-	}
-
-	if testMap[key1] != "value2" {
-		t.Errorf("key1 should map to 'value2' (overwritten by key2), got %q", testMap[key1])
-	}
-
-	if testMap[key3] != "value3" {
-		t.Errorf("key3 should map to 'value3', got %q", testMap[key3])
-	}
+	target.Spec.GitProviderRef.Namespace = ""
+	assert.True(t, WritesThrough(target, k8stypes.NamespacedName{Namespace: "team-a", Name: "monorepo"}, "main"),
+		"no namespace means the GitTarget's own")
 }
 
 // TestEventWithObject verifies event creation with objects.

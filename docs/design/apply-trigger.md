@@ -118,9 +118,9 @@ the right unit is what makes the 1:n cases fall out:
 
 | Unit | Owns | Why |
 | --- | --- | --- |
-| The **branch** (repository and branch), per worker | The flush, and whether Git is ahead (the apply epoch) | A `Kustomization` applies the tip whichever folder an edit is in, so a flush publishes every pending write of the worker. Two `GitProvider`s naming one repository give one branch two workers: a flush covers both, they share what they observe of the branch and the source claims, and each keeps its epoch for itself |
+| The **branch** (repository and branch), one worker | The flush, and whether Git is ahead (the apply epoch) | A `Kustomization` applies the tip whichever folder an edit is in, so a flush publishes every pending write on the branch. One worker writes a repository branch, through the one `GitProvider` that owns it, so the flush has every unpublished edit in hand, from every namespace |
 | The **applier**, held by its trigger | Pending reasons, retries, the operation, the commit it last applied | One operation at a time, its own backoff, one for every `GitTarget` naming the trigger. The trigger's status records it |
-| The **source** (cluster and `GitRepository`) | One operation at a time across its appliers | The artifact is shared: a sibling's fetch landing between an operation's recheck and its reconcile would apply another commit |
+| The **source** (cluster and `GitRepository`) | One operation at a time across its appliers | The artifact is shared: another applier's fetch landing between an operation's recheck and its reconcile would apply another commit |
 | The **`GitTarget`**, by uid | Configuration, consent, eligibility and its initial snapshots | Consent to a `Refusal` is per target, and a target deleted and recreated under the same name inherits nothing due to the old one. A trigger acts only while an eligible `GitTarget` references it, and its applier is asked for nothing until each `GitTarget` it covers has published its initial snapshots |
 
 ## The design, as built
@@ -229,17 +229,10 @@ its own first would revert the pending API edits on the cluster and need a secon
 back. A push notice from the Git host (the receiver) still closes an open window, unless a
 `CommitRequest` holds it, so its publication finds the move.
 
-The flush covers the sibling workers (other `GitProvider`s on the same repository and branch), whose
-`GitTarget`s can name the same trigger: an apply sent while a sibling holds an unpublished edit would
-revert it on the cluster, and the sibling, which sent nothing and has no apply window, would mirror
-the revert. When an apply comes due, the worker asks each sibling to flush: it closes its open
-window, takes a mark of its own, and publishes up to it at once. The worker sends once every sibling
-it asked is done. Every worker shares what it observes of the branch with its siblings, so the tip
-the attempt is sent for holds their publications. A sibling's push is foreign to the other workers,
-as a fetch of it would be: its appliers may apply another cluster than theirs, so nothing says its
-content is live where their appliers apply, and an echo of content already live is not mirrored. A
-sibling's edit decided
-after its mark does not hold the send, and is not protected while the apply runs, as before.
+The flush covers the whole branch because one worker writes it. Every `GitTarget` writing one
+repository branch names the same `GitProvider`, from whichever namespace (`spec.gitProviderRef`,
+admitted by the provider's `spec.accessFrom`), so no unpublished edit on the branch is out of the
+worker's reach.
 
 ### `CatchUp`: adopt and converge
 
@@ -486,9 +479,8 @@ trigger's `status.operation`, so that converge asks nothing of an applier alread
   for `apps` and `infra` is a normal setup. Each of them applies a new artifact the moment it
   arrives.
 - Appliers that share a source have one operation at a time, and take turns: the one whose last
-  turn is oldest goes first, so a busy sibling cannot starve another. This holds across the
-  workers of GitProviders that name the same repository and branch: a worker claims the source's
-  group before it sends, under the siblings' lock.
+  turn is oldest goes first, so a busy applier cannot starve another. One worker writes the branch,
+  so every applier of a source is its own.
 - The source is stamped only inside an operation, to make its artifact hold the commit (step 1
   [above](#one-operation-every-reason)). Nothing fetches a push into a shared `GitRepository` ahead
   of the apply: that prefetch overlapped the wait for a quiet branch, which is gone, and a flush
@@ -560,9 +552,8 @@ Taken 2026-10-19, after the seventh review:
 
 Taken 2026-10-20, with [`applier-echoes.md`](applier-echoes.md), which carries the argument:
 
-1. **Flush, then apply** ([above](#flush-then-apply)). No apply waits for a quiet branch, on this
-   worker or a sibling: the flush publishes what is pending, on this worker and on every sibling
-   writing the branch, and the apply goes.
+1. **Flush, then apply** ([above](#flush-then-apply)). No apply waits for a quiet branch: the flush
+   publishes what is pending, and the apply goes.
 2. **The applier's own write in its apply window is not mirrored** ([below](#the-apply-window)).
 3. **`CatchUp` only adopts and converges, decided in the branch worker, the same for Flux and Argo
    CD** ([above](#catchup-adopt-and-converge)). This reverses decision 4 of 2026-10-17, so an
@@ -572,8 +563,8 @@ Taken 2026-10-20, with [`applier-echoes.md`](applier-echoes.md), which carries t
    API.
 4. **No apply before every initial snapshot is published**, for any reason.
 5. **A resync never decides from a snapshot collected while Git was ahead, or across an apply**
-   ([below](#resyncs-while-git-is-ahead)). Per worker, so siblings are not consulted, and a
-   `GitTarget`'s snapshots are held off for at most 5 minutes.
+   ([below](#resyncs-while-git-is-ahead)). A `GitTarget`'s snapshots are held off for at most 5
+   minutes.
 6. **An object another applier owns is not mirrored into a triggered folder**
    ([below](#another-appliers-objects)).
 7. **The prefetch is removed**, with `status.source.prefetch`: it overlapped the quiet-branch wait,
@@ -677,8 +668,8 @@ an apply holds a mix. Decided, either reverts the push.
   for then and used, logged and counted, because an apply that keeps failing must not leave drift
   unmirrored for as long as it fails. The "API wins" rule then applies to what the
   unapplied commit changed.
-- **Per worker.** Whether Git is ahead, and the epoch, are this worker's own; a sibling worker's
-  applies are not consulted.
+- **Per worker.** Whether Git is ahead, and the epoch, are the branch worker's, and one worker
+  writes the branch.
 
 `stale_snapshots_total` counts each stale snapshot as `discarded`, or `used` when the 5-minute
 bound let it through.
@@ -832,7 +823,7 @@ adopted by one apply.
 | `CatchUp`: the startup converge asks nothing of an applier at the tip, an API create is adopted even at the tip, a first naming converges once, nothing is asked before the initial snapshots are published, an empty tip asks nothing | [`apply_catchup_test.go`](../../internal/git/apply_catchup_test.go) |
 | A snapshot collected across an apply, or arriving while Git is ahead, is discarded; initial snapshots are exempt; a branch with no trigger never waits; snapshots are held no longer than the limit | [`apply_epoch_test.go`](../../internal/git/apply_epoch_test.go) |
 | Another applier's object is not mirrored from a live write, and a snapshot of it is neither upserted nor swept | [`apply_ownership_test.go`](../../internal/git/apply_ownership_test.go) |
-| Retries are decided by the worker; recovered refusals, withdrawn consent and recreated targets are not retried; each applier keeps its own clock; one attempt for a shared applier; an apply waits for its sibling workers to flush; a stale attempt is decided again without backoff | [`apply_attempt_test.go`](../../internal/git/apply_attempt_test.go) |
+| Retries are decided by the worker; recovered refusals, withdrawn consent and recreated targets are not retried; each applier keeps its own clock; one attempt for a shared applier; a stale attempt is decided again without backoff | [`apply_attempt_test.go`](../../internal/git/apply_attempt_test.go) |
 | The operation is recorded before the write that starts it, moves through its phases on the trigger's status, an attempt that asked nothing restores the record before it, and a withheld rollback makes a `Repair` due | [`apply_operation_test.go`](../../internal/git/apply_operation_test.go), [`status_writer_test.go`](../../internal/applier/status_writer_test.go) |
 | Every attempt rechecks targets, asks for nothing weaker than it was told, and resumes no `Kustomization` on another branch; a stop mid-apply suspends the `Kustomization` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`flux_test.go`](../../internal/applier/flux_test.go) |
 | The suspended lifecycle against the source facts: an apply is not finished when attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../../internal/applier/flux_lifecycle_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go), [`fluxsim`](../../internal/applier/fluxsim/fluxsim_test.go) |

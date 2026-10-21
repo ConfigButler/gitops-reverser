@@ -137,7 +137,7 @@ func referencingTarget(name, kind string) *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef:  meta.LocalObjectReference{Name: "platform"},
+			GitProviderRef:  meta.NamespacedObjectReference{Name: "platform"},
 			Branch:          "main",
 			Path:            name,
 			ApplyTriggerRef: &configbutleraiv1alpha3.ApplyTriggerReference{Kind: kind, Name: "checkout"},

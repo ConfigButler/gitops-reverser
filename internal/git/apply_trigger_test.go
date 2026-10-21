@@ -7,6 +7,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -20,12 +21,10 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	"errors"
-
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -110,7 +109,7 @@ func applierTestTarget(name string, applier bool, mutate ...func(*configv1alpha3
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: k8stypes.UID("uid-" + name)},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "test-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "test-provider"},
 			Branch:         "main",
 			Path:           "apps/" + name,
 		},
@@ -135,6 +134,7 @@ func applyTriggerLoop(t *testing.T, targets ...client.Object) (*branchWorkerEven
 
 	w := newMetricsTestWorker()
 	w.GitProviderNamespace = "team-a"
+	w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
 	w.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testTriggersFor(targets)...).
 		WithStatusSubresource(&configv1alpha3.FluxTrigger{}, &configv1alpha3.ArgoCDTrigger{}).Build()
 	w.Log = logr.Discard()
@@ -180,8 +180,8 @@ func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) 
 	for i, name := range []string{"alpha", "bravo"} {
 		assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requests[i].Reason)
 		assert.Equal(t, "bbb", requests[i].Commit)
-		assert.Equal(t, BranchKey{RepoNamespace: "team-a", RepoName: "test-provider", Branch: "main"},
-			requests[i].Branch)
+		assert.Equal(t, "main", requests[i].Branch.Branch)
+		assert.Equal(t, k8stypes.NamespacedName{Namespace: "team-a", Name: "test-provider"}, requests[i].Provider)
 		assert.Equal(t, applierRef(name), requests[i].Applier)
 		assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(name, "team-a")},
 			targetRefs(requests[i]), "a suspended target stops writing, not deployments")
@@ -550,4 +550,31 @@ func TestServiceAppliers_AFailedRecordedListingKeepsItsRetry(t *testing.T) {
 	loop.w.Client = reader
 	loop.serviceAppliers()
 	assert.True(t, loop.listRetryAt.IsZero(), "a listing that succeeds clears it")
+}
+
+// TestServiceAppliers_AGitTargetItsProvidersDoNotAdmitAsksNothing: the dispatcher refuses an attempt
+// for a GitTarget its providers do not admit, so the worker leaves it out before it flushes or holds
+// the applier. A check that fails is an error, retried like a failed listing, never a refusal.
+func TestServiceAppliers_AGitTargetItsProvidersDoNotAdmitAsksNothing(t *testing.T) {
+	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", true))
+	loop.w.applierAdmitted = func(
+		_ context.Context, _ client.Reader, target *configv1alpha3.GitTarget, _ configv1alpha3.ApplyTrigger,
+	) (authz.Decision, error) {
+		return authz.Decision{Allowed: target.Name != "alpha"}, nil
+	}
+	observeForeignCommit(loop.w)
+
+	loop.serviceAppliers()
+
+	requests := requester.taken()
+	require.Len(t, requests, 1)
+	assert.Equal(t, applierRef("bravo"), requests[0].Applier, "alpha's applier is asked nothing")
+
+	loop.w.applierAdmitted = func(
+		context.Context, client.Reader, *configv1alpha3.GitTarget, configv1alpha3.ApplyTrigger,
+	) (authz.Decision, error) {
+		return authz.Decision{}, errors.New("the cache is not having it")
+	}
+	_, err := loop.w.appliersOnBranch(context.Background())
+	require.Error(t, err)
 }

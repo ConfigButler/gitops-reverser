@@ -52,7 +52,7 @@ func TestEnsureEventStream_RepointsTheStreamAtTheReplacementWorker(t *testing.T)
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: "shop"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "repo1"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "repo1"},
 			Branch:         "main",
 			Path:           "apps",
 		},
@@ -98,7 +98,7 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop", UID: k8stypes.UID("uid-" + name)},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: provider},
+				GitProviderRef: meta.NamespacedObjectReference{Name: provider},
 				Branch:         branch,
 				Path:           name,
 			},
@@ -130,8 +130,9 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 	workers.RenderFidelityGate().Fail(appsRef, manifestanalyzer.RenderDivergence{})
 	require.False(t, workers.RenderFidelityGate().AllowsWrites(appsRef))
 
-	branch := git.BranchKey{RepoNamespace: "shop", RepoName: "repo1", Branch: "main"}
-	require.True(t, r.recoverBranchAfterReplacement(context.Background(), branch, logr.Discard()),
+	branch := git.BranchKeyFor("https://example.invalid/second.git", "main")
+	provider := k8stypes.NamespacedName{Namespace: "shop", Name: "repo1"}
+	require.True(t, r.recoverBranchAfterReplacement(context.Background(), branch, provider, logr.Discard()),
 		"the targets were listed and told, so the recovery is delivered")
 
 	assert.ElementsMatch(t, []string{"shop/apps", "shop/infra"}, manager.ForcedRecheckTargetsForTest(),
@@ -160,7 +161,7 @@ func TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried(t *testing.
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: "shop", UID: k8stypes.UID("uid-apps")},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "repo1"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "repo1"},
 			Branch:         "main",
 			Path:           "apps",
 		},
@@ -192,9 +193,9 @@ func TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried(t *testing.
 		WorkerManager: workers,
 		EventRouter:   watch.NewEventRouter(workers, manager, k8sClient, logr.Discard()),
 	}
-	branch := git.BranchKey{RepoNamespace: "shop", RepoName: "repo1", Branch: "main"}
 	before := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := git.RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+	branch := git.BranchKeyFor(after.URL, "main")
 
 	_, err := r.ensureEventStream(ctx, target, "shop", before, logr.Discard())
 	require.NoError(t, err)

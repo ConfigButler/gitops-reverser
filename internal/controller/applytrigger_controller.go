@@ -636,7 +636,7 @@ func (r *ApplyTriggerReconciler) gitTargetToTriggers() handler.EventHandler {
 // GitTargets that write through it.
 func (r *ApplyTriggerReconciler) gitProviderToTriggers(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
 	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := r.List(ctx, &targets); err != nil {
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
@@ -645,7 +645,7 @@ func (r *ApplyTriggerReconciler) gitProviderToTriggers(ctx context.Context, obj 
 	for i := range targets.Items {
 		target := &targets.Items[i]
 		ref := target.Spec.ApplyTriggerRef
-		if ref == nil || ref.Kind != r.Kind || target.Spec.GitProviderRef.Name != obj.GetName() {
+		if ref == nil || ref.Kind != r.Kind || !namesGitProvider(target, obj) {
 			continue
 		}
 		key := k8stypes.NamespacedName{Namespace: target.Namespace, Name: ref.Name}

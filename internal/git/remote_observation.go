@@ -40,8 +40,9 @@ type RemoteObservation struct {
 	By ObservationSource
 	// Repo is the repository the observation is ABOUT: the identity of the worker that proved it.
 	//
-	// A revision means nothing without it. Workers are keyed by (provider, branch) while a
-	// GitProvider can be repointed at another repository, so the layer that publishes this can be
+	// A revision means nothing without it. A GitProvider can be recreated under its name for another
+	// repository, and the replacing worker's key inherits the old observation, so the layer that
+	// publishes this can be
 	// holding a revision from a repository its GitTarget no longer uses — and if the new one is
 	// unreachable, nothing else would ever correct it. Carrying the identity lets that be DERIVED
 	// at the moment of publication, by comparing it against what the GitProvider names now,

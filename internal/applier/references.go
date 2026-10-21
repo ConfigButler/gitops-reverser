@@ -179,7 +179,7 @@ func judgeReference(
 	}
 
 	provider := &v1alpha3.GitProvider{}
-	key := client.ObjectKey{Namespace: target.Namespace, Name: target.Spec.GitProviderRef.Name}
+	key := target.GitProviderKey()
 	if err := reader.Get(ctx, key, provider); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return ref, fmt.Errorf("read GitProvider %s: %w", key, err)

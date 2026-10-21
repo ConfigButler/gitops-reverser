@@ -145,15 +145,8 @@ type BranchWorker struct {
 	triggerStatus ApplyTriggerStatusWriter
 	inbox         applyInbox
 	// applyWake wakes the loop to service the appliers without queueing a work item: an attempt
-	// reported back, or another worker writing this repository and branch released a source group.
+	// reported back.
 	applyWake chan struct{}
-	// siblings are the workers writing the same repository and branch as this one, under another
-	// GitProvider; they take turns on the source groups their appliers share. Nil siblings (the CLI,
-	// tests) means this worker is alone. See apply_siblings.go.
-	siblings *branchSiblings
-	// groupsOut are the source groups this worker has an attempt out for, so a sibling sends none
-	// for the same GitRepository meanwhile; guarded by the siblings' lock (apply_groups.go).
-	groupsOut map[string]struct{}
 	// unresolvedOperations is how many of this branch's apply operations are Unresolved, as the
 	// loop last published it, for the apply_operations_unresolved gauge.
 	unresolvedOperations atomic.Int64
@@ -162,15 +155,15 @@ type BranchWorker struct {
 	applyEpoch    atomic.Uint64
 	appliersAhead atomic.Bool
 	hasAppliers   atomic.Bool
-	// flushAsked is the latest flush a sibling asked of this worker, and flushDone the latest it
-	// published up to its mark for (apply_sibling_flush.go).
-	flushAsked atomic.Uint64
-	flushDone  atomic.Uint64
 	// initialSnapshots reports whether every collection a GitTarget watches has a settled
 	// snapshot, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
 	// WorkerManager before Start; nil in the CLI and in tests (apply_epoch.go).
 	initialSnapshots func(target itypes.ResourceReference) bool
-	resyncRecheck    func(target itypes.ResourceReference)
+	// applierAdmitted leaves out of the branch's appliers a GitTarget the dispatcher would refuse
+	// (WorkerManager.applierAdmitted). Nil, in the CLI and in tests that build a worker by hand,
+	// admits every GitTarget.
+	applierAdmitted ApplierAdmission
+	resyncRecheck   func(target itypes.ResourceReference)
 
 	// Event processing
 	eventQueue chan WorkItem
@@ -511,8 +504,9 @@ func (w *BranchWorker) stateComponent() string {
 //
 // The URL comes from the worker's own identity and never from the GitProvider as it reads NOW. The
 // provider is still read on every cycle — for credentials, commit identity and signing — and it
-// can name a different repository by then, because it is repointed by being recreated while the
-// worker is keyed by (provider, branch). Following it there is what produced the outage in #382:
+// can name a different repository by then, because it is repointed by being recreated under its
+// name, and the GitTargets find the worker by that name. Following it there is what produced the
+// outage in #382:
 // the cycle planned against trust earned on the old repository and every write failed at
 // `open repository: repository does not exist`. A worker that cannot be pointed anywhere cannot
 // have that happen to it; the WorkerManager replaces it instead.
@@ -1229,12 +1223,6 @@ type branchWorkerEventLoop struct {
 	decisions uint64
 	flushing  bool
 	flushMark uint64
-	// siblingAsk is the generation this worker's flush asked its siblings for, zero with none.
-	// siblingFlushGen and siblingFlushMark are the last flush a sibling asked of this worker, and its
-	// mark. See apply_sibling_flush.go.
-	siblingAsk       uint64
-	siblingFlushGen  uint64
-	siblingFlushMark uint64
 
 	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
@@ -1273,7 +1261,6 @@ func (l *branchWorkerEventLoop) run() {
 	// is followed again, with its apply window open.
 	l.followRecordedOperations(time.Now())
 	l.publishTriggerStatus()
-	l.publishGroupsOut()
 	l.publishLoopState(0)
 	for {
 		commitC, pushC, attachC, refusalC := l.timerChannels()
@@ -1308,8 +1295,7 @@ func (l *branchWorkerEventLoop) run() {
 			l.applierTimer = nil
 			// serviceAppliers, at the end of the wake, sends what has come due.
 		case <-l.w.applyWake:
-			// An attempt reported back, or a sibling released a source group;
-			// serviceAppliers settles and sends.
+			// An attempt reported back; serviceAppliers settles and sends.
 		}
 		l.endWake(0)
 	}
@@ -1335,9 +1321,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 func (l *branchWorkerEventLoop) endWake(released int64) {
 	l.serviceCommitRequests()
 	l.closeWindowForPushHint()
-	l.takeSiblingFlush()
 	l.advance()
-	l.reportSiblingFlush()
 	l.serviceAppliers()
 	l.rerequestSnapshots()
 	l.publishApplyState()
@@ -1743,7 +1727,7 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	if len(l.pendingWrites) == 0 || l.awaitingRetry() {
 		return
 	}
-	if l.lastPushAt.IsZero() || l.publishesAtOnce() {
+	if l.lastPushAt.IsZero() || (l.flushing && l.pendingUpTo(l.flushMark)) {
 		// An apply waits for this publication: it is made at once, cooldown or not.
 		l.pushPending()
 		return
@@ -3180,7 +3164,6 @@ func (w *BranchWorker) publishObservation(observed RemoteObservation) {
 	// still describes the repository the GitTarget points at. See RemoteObservation.Repo.
 	w.lastObservation.Store(&observed)
 	w.inbox.observe(observed)
-	w.siblings.shareObservation(w, observed)
 	// Delivered here, at the one point where an observation is made, rather than by each caller
 	// against whichever GitTargets it happened to be holding. The fact is about the BRANCH, so it
 	// goes to the branch, and every target on it reads the same answer with the time it was
@@ -3356,3 +3339,8 @@ func (w *BranchWorker) RecordUnresolvedDefaultBranchForTest(head string) {
 
 // BaseTrustedForTest exposes the flag to tests in another package.
 func (w *BranchWorker) BaseTrustedForTest() bool { return w.baseTrusted() }
+
+// releaseInflightItem takes one item off the in-flight count, which the queue-depth gauge reads.
+func (w *BranchWorker) releaseInflightItem() {
+	w.inflightItems.Add(-1)
+}

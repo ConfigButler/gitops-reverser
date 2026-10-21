@@ -89,16 +89,12 @@ func (l *remotePublicationLedger) forget(ref types.ResourceReference) {
 // revision.
 func (r *GitTargetReconciler) observeRemote(
 	target *configbutleraiv1alpha3.GitTarget,
-	providerNS string,
+	repo git.RepoIdentity,
 ) (git.RemoteObservation, bool) {
 	if r.WorkerManager == nil {
 		return git.RemoteObservation{}, false
 	}
-	return r.WorkerManager.RemoteForBranch(git.BranchKey{
-		RepoNamespace: providerNS,
-		RepoName:      target.Spec.GitProviderRef.Name,
-		Branch:        target.Spec.Branch,
-	})
+	return r.WorkerManager.RemoteForBranch(git.BranchKeyFor(repo.URL, target.Spec.Branch))
 }
 
 // publishRemote writes status.remote, sampled onto this reconcile and rate-limited.

@@ -35,7 +35,7 @@ a push, the [apply trigger design](design/apply-trigger.md) covers what follows 
 
 ## The structures and their responsibilities
 
-One branch worker serializes writes for each `(GitProvider namespace, GitProvider name, branch)`.
+One branch worker serializes writes for each repository branch.
 Targets on that worker share its queue, checkout, and push cooldown. Their commit settings and
 destination paths remain target-specific.
 

@@ -21,8 +21,8 @@ import (
 // and the layer above kept a copy per target of a value that was identical for all of them.
 func TestRecordRemoteObservation_DeliversOneFactToTheWholeBranch(t *testing.T) {
 	m := NewWorkerManager(nil, logr.Discard(), BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
-	key := BranchKey{RepoNamespace: "shop", RepoName: "repo1", Branch: "main"}
 	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	key := BranchKeyFor(repo.URL, "main")
 	w := &BranchWorker{Log: logr.Discard(), repo: repo}
 	w.remoteReporter = func(observed RemoteObservation) { m.recordRemoteObservation(key, observed) }
 
@@ -52,9 +52,9 @@ func TestRecordRemoteObservation_IsANoOpWithoutAReporter(t *testing.T) {
 // stamped on it, to see that what it has published describes a repository this GitTarget has left.
 func TestRemoteForBranch_SurvivesTheWorkerItWasProvedBy(t *testing.T) {
 	m, ctx := startedManager(t)
-	key := BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}
 	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+	key := BranchKeyFor(after.URL, "main") // where the GitTarget looks: its GitProvider names after
 
 	require.NoError(t, m.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
 	worker, ok := m.GetWorkerForTarget("repo1", "gitops-system", "main")

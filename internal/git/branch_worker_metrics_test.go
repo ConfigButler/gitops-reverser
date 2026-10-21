@@ -28,6 +28,9 @@ const (
 	commitFailuresMetric = "gitopsreverser_git_commit_failures_total"
 )
 
+// testRepoURL is the repository a test worker writes when its key matters.
+const testRepoURL = "https://example.com/test"
+
 func newMetricsTestWorker() *BranchWorker {
 	return &BranchWorker{
 		GitProviderRef:       "test-provider",
@@ -184,7 +187,7 @@ func TestQueueDepthGauge_ReportsWorkTheLoopHasNotReachedYet(t *testing.T) {
 
 	manager := &WorkerManager{Log: logr.Discard(), workers: map[BranchKey]*BranchWorker{}}
 	w := newMetricsTestWorker()
-	manager.workers[BranchKey{RepoNamespace: "test-ns", RepoName: "test-provider", Branch: "main"}] = w
+	manager.workers[BranchKey{Repository: "example.com/test", Branch: "main"}] = w
 	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, manager.queueDepthSamples)
 	defer telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, nil)
 

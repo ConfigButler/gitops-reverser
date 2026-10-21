@@ -64,6 +64,7 @@ fields that need more than a line.
 |---|---|---|
 | `url` | **required** | Repository URL, SSH or HTTPS |
 | `allowedBranches` | **required** | Branches a `GitTarget` may write. A target naming any other is rejected |
+| `accessFrom` | **no other namespace** | Other namespaces whose `GitTarget`s may write through this provider, by name or label selector. Its own namespace is always admitted |
 | `secretRef` | anonymous access | Secret holding the write credential. See [the credentials Secret](#gitproviderspecsecretref-the-credentials-secret) |
 | `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
 | `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
@@ -88,7 +89,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 
 | Field | Default | What it does |
 |---|---|---|
-| `gitProviderRef` | **required** | The `GitProvider` backing this target, in the same namespace |
+| `gitProviderRef` | **required** | The `GitProvider` backing this target: its own namespace, or `namespace` names one whose `accessFrom` admits it. Every target on one repository branch names the same one |
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches` |
 | `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Immutable. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
@@ -708,8 +709,13 @@ dedicated to this target.
 If you enable `spec.encryption`, that applies to `Secret` resource writes for this target. For SOPS
 and age details, see [sops-age-guide.md](sops-age-guide.md).
 
-`spec.gitProviderRef` references a `GitProvider` in the same namespace as the `GitTarget`, by name.
-The field name says what it points at, so the reference itself carries nothing but the `name`.
+`spec.gitProviderRef` references a `GitProvider` by `name`, in the `GitTarget`'s own namespace. Set
+`namespace` to write through a `GitProvider` in another namespace; that `GitProvider`'s
+`spec.accessFrom` must admit this `GitTarget`'s namespace, or the `GitTarget` is refused with
+`Validated=False` (`NamespaceNotAuthorized`). Every `GitTarget` writing one repository branch must
+name the same `GitProvider`, because one branch worker writes it with one credential. One that
+writes the branch through another `GitProvider` than the oldest `GitTarget` there is refused with
+`TargetConflict`, and the message names the `GitProvider` to share instead.
 
 `spec.clusterProviderRef` references a cluster-scoped `ClusterProvider`. It defaults to
 `{name: default}` when omitted. That is intentionally different from `gitProviderRef`: a source cluster

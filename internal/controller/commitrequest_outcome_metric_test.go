@@ -356,7 +356,7 @@ func TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
 			Branch:         "main",
 		},
 	}

@@ -10,7 +10,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -180,19 +180,19 @@ func (m *WorkerManager) PublicationEvents() <-chan event.GenericEvent { return m
 // notifyPublication tells every GitTarget on the branch that its worker's report changed. It reads
 // the GitTargets from the cache, and never blocks: the worker's loop calls it, by way of a
 // goroutine, and a status that lags is better than a loop that waits for a controller.
-func (m *WorkerManager) notifyPublication(ctx context.Context, key BranchKey) {
+func (m *WorkerManager) notifyPublication(ctx context.Context, provider k8stypes.NamespacedName, branch string) {
 	if m.Client == nil || m.publicationEvents == nil {
 		return
 	}
 	var targets configv1alpha3.GitTargetList
-	if err := m.Client.List(ctx, &targets, client.InNamespace(key.RepoNamespace)); err != nil {
+	if err := m.Client.List(ctx, &targets); err != nil {
 		m.Log.V(1).Info("Cannot list the GitTargets of a branch to report its publication",
-			"branch", key.String(), "error", err.Error())
+			"provider", provider.String(), "branch", branch, "error", err.Error())
 		return
 	}
 	for i := range targets.Items {
 		target := &targets.Items[i]
-		if target.Spec.GitProviderRef.Name != key.RepoName || target.Spec.Branch != key.Branch {
+		if !WritesThrough(target, provider, branch) {
 			continue
 		}
 		select {

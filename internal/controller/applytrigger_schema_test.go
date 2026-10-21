@@ -117,7 +117,7 @@ var _ = Describe("Apply trigger schema", func() {
 			return &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef:  meta.LocalObjectReference{Name: "prov"},
+					GitProviderRef:  meta.NamespacedObjectReference{Name: "prov"},
 					Branch:          "main",
 					Path:            "apps/" + name,
 					ApplyTriggerRef: ref,
@@ -172,7 +172,7 @@ var _ = Describe("Apply trigger reconcile", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "names-reconciled", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: "prov"}, Branch: "main", Path: "apps/reconciled",
+				GitProviderRef: meta.NamespacedObjectReference{Name: "prov"}, Branch: "main", Path: "apps/reconciled",
 				ApplyTriggerRef: &configbutleraiv1alpha3.ApplyTriggerReference{
 					Kind: configbutleraiv1alpha3.ApplyTriggerKindArgoCD, Name: "reconciled",
 				},

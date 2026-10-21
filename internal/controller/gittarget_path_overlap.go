@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 // normalizeGitTargetPath canonicalizes a GitTarget spec.path into a clean,
@@ -58,17 +59,5 @@ func gitTargetPathsOverlap(a, b string) bool {
 // Ready over the same subtree. Both targets share a namespace here, so the
 // namespace/name key is unique and stable across every reconcile.
 func gitTargetLosesConflict(target, existing *configbutleraiv1alpha3.GitTarget) bool {
-	switch {
-	case target.CreationTimestamp.Time.After(existing.CreationTimestamp.Time):
-		return true
-	case target.CreationTimestamp.Time.Equal(existing.CreationTimestamp.Time):
-		return gitTargetIdentityKey(target) > gitTargetIdentityKey(existing)
-	default:
-		return false
-	}
-}
-
-// gitTargetIdentityKey returns a stable, unique ordering key for a GitTarget.
-func gitTargetIdentityKey(t *configbutleraiv1alpha3.GitTarget) string {
-	return t.Namespace + "/" + t.Name
+	return git.OlderGitTarget(existing, target)
 }

@@ -86,7 +86,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
 			Branch:         "main",
 		},
 	}
@@ -301,7 +301,7 @@ func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
 			Branch:         "main",
 		},
 	}
@@ -332,7 +332,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
 			Branch:         "main",
 		},
 	}
@@ -381,7 +381,7 @@ func TestWithdrawCommitRequest_NothingHoldsItWithoutAWorker(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
 			Branch:         "main",
 		},
 	}
@@ -416,7 +416,7 @@ func TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
 			Branch:         "main",
 		},
 	}
@@ -466,7 +466,7 @@ func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
 			Branch:         "main",
 		},
 	}

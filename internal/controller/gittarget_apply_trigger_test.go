@@ -25,7 +25,7 @@ func triggerTarget(named bool) *configbutleraiv1alpha3.GitTarget {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "platform"}, Branch: "main", Path: "apps",
+			GitProviderRef: meta.NamespacedObjectReference{Name: "platform"}, Branch: "main", Path: "apps",
 		},
 	}
 	if named {

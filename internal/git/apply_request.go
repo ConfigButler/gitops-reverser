@@ -87,6 +87,9 @@ type ApplyRequest struct {
 	ID uint64
 	// Branch is the branch the request is about.
 	Branch BranchKey
+	// Provider is the GitProvider the branch's worker writes through; its GitTargets are the ones
+	// that write the branch through it.
+	Provider k8stypes.NamespacedName
 	// Applier is what is asked to apply.
 	Applier ApplierRef
 	// Reason is what the applier is asked: the strongest of the targets' reasons.

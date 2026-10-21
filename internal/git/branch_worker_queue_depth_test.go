@@ -50,7 +50,7 @@ func TestHandledItem_PublishesRetainedWorkBeforeReleasingInflight(t *testing.T) 
 func TestQueueDepthSamples_NotBlockedByASlowWorkerShutdown(t *testing.T) {
 	manager := &WorkerManager{Log: logr.Discard(), workers: map[BranchKey]*BranchWorker{}}
 	w := newMetricsTestWorker()
-	manager.workers[BranchKey{RepoNamespace: "test-ns", RepoName: "test-provider", Branch: "main"}] = w
+	manager.workers[BranchKey{Repository: "example.com/test", Branch: "main"}] = w
 
 	// A worker whose Stop() blocks: started, so Stop proceeds, and one wg entry nothing releases
 	// until this test does.
@@ -65,7 +65,7 @@ func TestQueueDepthSamples_NotBlockedByASlowWorkerShutdown(t *testing.T) {
 	removed.Add(1)
 	go func() {
 		defer removed.Done()
-		manager.removeWorkers([]BranchKey{{RepoNamespace: "test-ns", RepoName: "test-provider", Branch: "main"}},
+		manager.removeWorkers([]BranchKey{{Repository: "example.com/test", Branch: "main"}},
 			"test")
 	}()
 
@@ -92,7 +92,7 @@ func TestQueueDepthSamples_NotBlockedByASlowWorkerShutdown(t *testing.T) {
 // two live at once would operate on the same worktree. Detaching under m.mu and stopping outside it
 // keeps the scrape unblocked, but the guarantee has to survive that: lifecycleMu is what holds it.
 func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {
-	key := BranchKey{RepoNamespace: "test-ns", RepoName: "test-provider", Branch: "main"}
+	key := BranchKeyFor(testRepoURL, "main")
 	scheme := runtime.NewScheme()
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	manager := &WorkerManager{
@@ -104,6 +104,7 @@ func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {
 		workers: map[BranchKey]*BranchWorker{},
 	}
 	w := newMetricsTestWorker()
+	w.repo = RepoIdentity{URL: testRepoURL}
 	manager.workers[key] = w
 
 	w.started = true
@@ -131,7 +132,14 @@ func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {
 
 	ensured := make(chan struct{})
 	go func() {
-		_ = manager.EnsureWorker(context.Background(), "test-provider", "test-ns", "main", RepoIdentity{}, "")
+		_ = manager.EnsureWorker(
+			context.Background(),
+			"test-provider",
+			"test-ns",
+			"main",
+			RepoIdentity{URL: testRepoURL},
+			"",
+		)
 		close(ensured)
 	}()
 
@@ -160,7 +168,7 @@ func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {
 // the key ends up with no worker at all.
 func TestReconcileWorkers_DoesNotStopAWorkerEnsureWorkerJustHandedOut(t *testing.T) {
 	withTemporaryWorkerStateRoot(t)
-	key := BranchKey{RepoNamespace: "test-ns", RepoName: "test-provider", Branch: "main"}
+	key := BranchKeyFor(testRepoURL, "main")
 	scheme := runtime.NewScheme()
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	manager := &WorkerManager{
@@ -170,6 +178,7 @@ func TestReconcileWorkers_DoesNotStopAWorkerEnsureWorkerJustHandedOut(t *testing
 		workers: map[BranchKey]*BranchWorker{},
 	}
 	retiring := newMetricsTestWorker()
+	retiring.repo = RepoIdentity{URL: testRepoURL}
 	manager.workers[key] = retiring
 
 	ensured := make(chan struct{})
@@ -220,7 +229,7 @@ func TestReconcileWorkers_DoesNotStopAWorkerEnsureWorkerJustHandedOut(t *testing
 // until the removal is done.
 func TestReconcileWorkers_DoesNotStopAWorkerCreatedAfterItsSnapshot(t *testing.T) {
 	withTemporaryWorkerStateRoot(t)
-	key := BranchKey{RepoNamespace: "test-ns", RepoName: "newcomer-provider", Branch: "main"}
+	key := BranchKeyFor(testRepoURL, "main")
 	scheme := runtime.NewScheme()
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	manager := &WorkerManager{
@@ -244,7 +253,13 @@ func TestReconcileWorkers_DoesNotStopAWorkerCreatedAfterItsSnapshot(t *testing.T
 					go func() {
 						defer close(ensured)
 						_ = manager.EnsureWorker(
-							context.Background(), "newcomer-provider", "test-ns", "main", RepoIdentity{}, "")
+							context.Background(),
+							"newcomer-provider",
+							"test-ns",
+							"main",
+							RepoIdentity{URL: testRepoURL},
+							"",
+						)
 					}()
 					time.Sleep(200 * time.Millisecond)
 				})

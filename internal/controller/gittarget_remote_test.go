@@ -330,17 +330,23 @@ func TestPublishRemote_ARestartPublishesAgainstTheObservationAlone(t *testing.T)
 }
 
 // TestObserveRemote_ReadsTheBranchItsGitTargetWrites. The observation is shared by every GitTarget
-// on the branch, so it is looked up by (provider namespace, provider, branch) and not by target.
+// on the branch, so it is looked up by (repository, branch) and not by target.
 func TestObserveRemote_ReadsTheBranchItsGitTargetWrites(t *testing.T) {
 	target := remoteTestTarget()
 	target.Spec.GitProviderRef.Name = "repo1"
 	target.Spec.Branch = "main"
 
-	_, seen := (&GitTargetReconciler{}).observeRemote(target, "shop")
+	_, seen := (&GitTargetReconciler{}).observeRemote(
+		target,
+		git.RepoIdentity{URL: "https://example.invalid/repo1.git"},
+	)
 	assert.False(t, seen, "a reconcile with no worker manager has nothing to read")
 
 	workers := git.NewWorkerManager(nil, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
-	_, seen = (&GitTargetReconciler{WorkerManager: workers}).observeRemote(target, "shop")
+	_, seen = (&GitTargetReconciler{WorkerManager: workers}).observeRemote(
+		target,
+		git.RepoIdentity{URL: "https://example.invalid/repo1.git"},
+	)
 	assert.False(t, seen, "and neither has one whose branch nothing has looked at")
 }
 

@@ -5,6 +5,7 @@ package v1alpha3
 import (
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // GitTargetSpec defines the desired state of GitTarget.
@@ -37,12 +38,14 @@ import (
 // +kubebuilder:validation:XValidation:rule="self.clusterProviderRef == oldSelf.clusterProviderRef",message="spec.clusterProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
 // +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applyTriggerRef)",message="spec.onRefusal: Reapply needs spec.applyTriggerRef, the trigger asked to reapply"
 type GitTargetSpec struct {
-	// GitProviderRef names the GitProvider that backs this target, in this GitTarget's own
-	// namespace. Many GitTargets may name the same GitProvider.
+	// GitProviderRef names the GitProvider that backs this target. Namespace omitted means this
+	// GitTarget's own namespace. A GitProvider in another namespace is used only while its
+	// spec.accessFrom admits this GitTarget's namespace. Many GitTargets may name the same
+	// GitProvider, and every GitTarget writing one repository branch must name the same one.
 	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitProviderRef.name must not be empty"
-	GitProviderRef meta.LocalObjectReference `json:"gitProviderRef"`
+	GitProviderRef meta.NamespacedObjectReference `json:"gitProviderRef"`
 
 	// Branch to use for this target.
 	// Must be one of the allowed branches in the provider.
@@ -669,6 +672,16 @@ func (g *GitTarget) SourceCluster() string {
 		return DefaultClusterProviderName
 	}
 	return g.Spec.ClusterProviderRef.Name
+}
+
+// GitProviderKey is the GitProvider this GitTarget writes through: spec.gitProviderRef, in this
+// GitTarget's own namespace unless the reference names another one.
+func (g *GitTarget) GitProviderKey() types.NamespacedName {
+	namespace := g.Spec.GitProviderRef.Namespace
+	if namespace == "" {
+		namespace = g.Namespace
+	}
+	return types.NamespacedName{Namespace: namespace, Name: g.Spec.GitProviderRef.Name}
 }
 
 // IsLocalSource reports whether this GitTarget references the "default" ClusterProvider, which the

@@ -607,7 +607,7 @@ func newInventoryGitTarget(name, provider, branch string) *configbutleraiv1alpha
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: provider},
+			GitProviderRef: meta.NamespacedObjectReference{Name: provider},
 			Branch:         branch,
 			Path:           "apps/" + name,
 		},

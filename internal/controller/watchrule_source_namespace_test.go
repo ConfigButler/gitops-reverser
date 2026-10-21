@@ -36,7 +36,7 @@ func wrsnGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnTarget, Namespace: wrsnTenantNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: wrsnProvider},
 			Branch:             "main",
 			Path:               "tenants/acme",

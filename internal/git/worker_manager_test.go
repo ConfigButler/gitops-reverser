@@ -69,7 +69,7 @@ func mustEnsureWorker(
 ) bool {
 	t.Helper()
 	require.NoError(t, m.EnsureWorker(ctx, providerName, providerNamespace, branch, repo, ""))
-	key := BranchKey{RepoNamespace: providerNamespace, RepoName: providerName, Branch: branch}
+	key := BranchKeyFor(repo.URL, branch)
 	pending := m.ReplacementPending(key)
 	m.AcknowledgeReplacement(key)
 	return pending
@@ -117,7 +117,7 @@ func createTargetForRegister(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = testTargetNamespace
-	target.Spec.GitProviderRef = meta.LocalObjectReference{
+	target.Spec.GitProviderRef = meta.NamespacedObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
@@ -414,9 +414,7 @@ func TestRemoveWorkers_IgnoresAKeyThatNamesNoWorker(t *testing.T) {
 	manager := NewWorkerManager(k8sClient, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 
 	assert.NotPanics(t, func() {
-		manager.removeWorkers([]BranchKey{{
-			RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main",
-		}}, "test")
+		manager.removeWorkers([]BranchKey{{Repository: "example.com/repo1", Branch: "main"}}, "test")
 	})
 }
 
@@ -598,7 +596,6 @@ func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *te
 	assert.True(t, os.IsNotExist(err), "the retired worker took its own checkout with it")
 	_, err = os.Stat(sentinel)
 	require.NoError(t, err, "and left the replacement's alone")
-	assert.True(t, manager.ReplacementPending(
-		BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}),
+	assert.True(t, manager.ReplacementPending(BranchKeyFor(after.URL, "main")),
 		"and the targets on the branch still wait to be rebuilt in the new one")
 }

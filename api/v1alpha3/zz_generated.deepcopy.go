@@ -1030,6 +1030,11 @@ func (in *GitProviderSpec) DeepCopyInto(out *GitProviderSpec) {
 		*out = new(KnownHostsReference)
 		**out = **in
 	}
+	if in.AccessFrom != nil {
+		in, out := &in.AccessFrom, &out.AccessFrom
+		*out = new(NamespaceMatcher)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.AllowedBranches != nil {
 		in, out := &in.AllowedBranches, &out.AllowedBranches
 		*out = make([]string, len(*in))

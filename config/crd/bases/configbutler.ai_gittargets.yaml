@@ -323,12 +323,18 @@ spec:
                 type: object
               gitProviderRef:
                 description: |-
-                  GitProviderRef names the GitProvider that backs this target, in this GitTarget's own
-                  namespace. Many GitTargets may name the same GitProvider.
+                  GitProviderRef names the GitProvider that backs this target. Namespace omitted means this
+                  GitTarget's own namespace. A GitProvider in another namespace is used only while its
+                  spec.accessFrom admits this GitTarget's namespace. Many GitTargets may name the same
+                  GitProvider, and every GitTarget writing one repository branch must name the same one.
                   Immutable: delete and recreate the GitTarget to change its destination.
                 properties:
                   name:
                     description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
                     type: string
                 required:
                 - name

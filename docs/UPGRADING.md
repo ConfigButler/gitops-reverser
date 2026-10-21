@@ -7,6 +7,58 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## One `GitProvider` per repository branch; a `GitTarget` may name one in another namespace
+
+**Breaking.** A branch worker is now keyed by repository and branch, and pushes with one
+`GitProvider`'s credential. So every `GitTarget` that writes one repository branch must name the same
+`GitProvider`. Where two `GitProvider`s name one repository (compared as URLs, so an `https://` and an
+SSH spelling of the same repository are one) and their `GitTarget`s write the same branch, the
+`GitProvider` of the oldest `GitTarget` that may write there keeps the branch (one its providers do
+not admit decides nothing). Every `GitTarget` writing it through another
+`GitProvider` stops writing and reports `Validated=False` (`TargetConflict`), with a message that
+names the `GitProvider` to share. Two `GitProvider`s for one repository on different branches are
+unaffected.
+
+To share one `GitProvider` across namespaces, admit the other namespaces on it, and point their
+`GitTarget`s at it:
+
+```yaml
+kind: GitProvider
+metadata: {name: monorepo, namespace: platform}
+spec:
+  accessFrom:
+    names: [team-a, team-b]      # or selector:, matched against Namespace labels
+---
+kind: GitTarget
+metadata: {name: apps, namespace: team-a}
+spec:
+  gitProviderRef: {name: monorepo, namespace: platform}
+```
+
+`spec.gitProviderRef` is immutable, so a `GitTarget` that has to move to the shared `GitProvider`
+is deleted and recreated. A `GitTarget` that names a `GitProvider` in another namespace whose
+`spec.accessFrom` does not admit it reports `Validated=False` (`NamespaceNotAuthorized`). Before
+upgrading, list the repositories more than one `GitProvider` names:
+
+```bash
+kubectl get gitproviders -A -o jsonpath='{range .items[*]}{.spec.url}{"\t"}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' | sort
+```
+
+The list sorts the URLs as written, so an `https://` and an SSH spelling of one repository land
+apart: compare host and path, ignoring the scheme, the user, a trailing `.git` and case.
+
+The metrics keep their `provider_namespace` and `provider_name` labels, which now name the one
+`GitProvider` that owns the branch. Log lines name a branch as `repository@branch`.
+
+## `FluxTrigger` `spec.quietPeriod` and `status.source.prefetch` are removed
+
+**Breaking.** An apply no longer waits for a quiet branch: the branch worker publishes what is
+pending, then applies, so `spec.quietPeriod` has nothing left to set. The source prefetch is gone
+with `status.source.prefetch`. Server-side apply and `kubectl`'s strict field validation reject a
+`FluxTrigger` manifest that still sets `spec.quietPeriod`; a client with field validation off drops
+the field without an error. Remove `spec.quietPeriod` from your `FluxTrigger` manifests before
+upgrading. Nothing replaces either field.
+
 ## `allowAnySourceNamespace` is gone; `allowCrossNamespace.sources` replaces it
 
 **Breaking.** `ClusterProvider.spec.allowAnySourceNamespace` is no longer read.
