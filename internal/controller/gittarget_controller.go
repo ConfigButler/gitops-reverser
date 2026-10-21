@@ -193,10 +193,10 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 	// The branch worker keeps the writes decided while the parent is missing and publishes them when
 	// it returns, so nothing has to be re-derived; this only reports the progress.
-	recoveringParent := r.parentRecovering(&target, target.Namespace)
-	publication := r.branchPublication(&target, target.Namespace)
+	providerNS := target.GitProviderKey().Namespace
+	recoveringParent := r.parentRecovering(&target, providerNS)
+	publication := r.branchPublication(&target, providerNS)
 
-	providerNS := target.Namespace
 	// One read of the GitProvider for everything below it; see getGitProvider.
 	gitProvider, providerErr := r.getGitProvider(ctx, providerNS, target.Spec.GitProviderRef.Name)
 	if providerErr != nil {
@@ -206,7 +206,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// remoteWake: whether this reconcile is about to ask the remote where the branch is, so the
 	// answer lands after the status write below, and how long the floor holds back an answer it
 	// already has. See requeueForRemoteAnswer.
-	remoteWake := r.publishGitObservations(st, &target, providerNS, repoIdentityOf(gitProvider))
+	remoteWake := r.publishGitObservations(st, &target, repoIdentityOf(gitProvider))
 
 	// Ahead of every gate, for the reason the layout stanza above is: the join series has to carry
 	// the targets that are NOT working. git_pushes_total names a branch that stopped advancing and
@@ -293,7 +293,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	rd := newGitTargetReadiness()
 	convergeAsSuspended(rd, &target)
-	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS, repoIdentityOf(gitProvider)),
+	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, repoIdentityOf(gitProvider)),
 		refs.gitProvider, refs.clusterProvider, refs.sourceCluster, publicationCondition(publication))
 	applyTriggerReadiness(rd, triggerVerdict, hasTrigger)
 	parentRecoveryReadiness(rd, recoveringParent)
@@ -840,11 +840,10 @@ func gitTargetReadinessGates(
 // repository the GitProvider names now (a repoint proves nothing about the new one).
 func (r *GitTargetReconciler) parentBranchReadiness(
 	target *configbutleraiv1alpha3.GitTarget,
-	providerNS string,
 	repo git.RepoIdentity,
 ) conditionValue {
 	ok := conditionValue{Status: metav1.ConditionTrue, Reason: GitTargetReasonOK}
-	observed, seen := r.observeRemote(target, providerNS)
+	observed, seen := r.observeRemote(target, repo)
 	if !seen || observed.ParentState != git.ParentMissing ||
 		observed.ParentRequested != target.Spec.ParentBranch || differentRepository(observed.Repo, repo) {
 		return ok
@@ -920,14 +919,13 @@ func (r *GitTargetReconciler) requestRemoteRefresh(
 func (r *GitTargetReconciler) publishGitObservations(
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
-	providerNS string,
 	repo git.RepoIdentity,
 ) remoteWake {
 	layout, scanned := r.observeLayout(target)
 	publishLayout(st, target, layout, scanned)
 
 	now := r.clockNow()
-	remote, remoteSeen := r.observeRemote(target, providerNS)
+	remote, remoteSeen := r.observeRemote(target, repo)
 	heldFor := r.publishRemote(st, target, remote, remoteSeen, repo, now)
 	return remoteWake{
 		// Whether the refresh this reconcile goes on to enqueue will actually reach the remote: the
@@ -1013,13 +1011,9 @@ func (r *GitTargetReconciler) ensureEventStream(
 	// Asked on EVERY reconcile, not only on the one that did the replacing. The recovery is held
 	// by the worker manager until it has been delivered, so a delivery that failed is retried by
 	// whichever GitTarget on the branch reconciles next.
-	branch := git.BranchKey{
-		RepoNamespace: providerNS,
-		RepoName:      target.Spec.GitProviderRef.Name,
-		Branch:        target.Spec.Branch,
-	}
+	branch := git.BranchKeyFor(repo.URL, target.Spec.Branch)
 	if r.WorkerManager.ReplacementPending(branch) &&
-		r.recoverBranchAfterReplacement(ctx, branch, log) {
+		r.recoverBranchAfterReplacement(ctx, branch, target.GitProviderKey(), log) {
 		r.WorkerManager.AcknowledgeReplacement(branch)
 	}
 
@@ -1117,22 +1111,23 @@ func validateProviderAndBranch(
 func (r *GitTargetReconciler) recoverBranchAfterReplacement(
 	ctx context.Context,
 	branch git.BranchKey,
+	provider k8stypes.NamespacedName,
 	log logr.Logger,
 ) bool {
 	if r.EventRouter == nil || r.EventRouter.WatchManager == nil {
 		return false
 	}
 	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets, client.InNamespace(branch.RepoNamespace)); err != nil {
+	if err := r.List(ctx, &targets); err != nil {
 		log.Error(err, "Could not re-establish the branch after its worker was replaced; it stays pending",
-			"provider", branch.RepoNamespace+"/"+branch.RepoName, "branch", branch.Branch)
+			"branch", branch.String(), "provider", provider.String())
 		return false
 	}
 	gate := r.WorkerManager.RenderFidelityGate()
 	recovered := 0
 	for i := range targets.Items {
 		affected := &targets.Items[i]
-		if affected.Spec.GitProviderRef.Name != branch.RepoName || affected.Spec.Branch != branch.Branch {
+		if !git.WritesThrough(affected, provider, branch.Branch) {
 			continue
 		}
 		if !affected.DeletionTimestamp.IsZero() {
@@ -1144,7 +1139,7 @@ func (r *GitTargetReconciler) recoverBranchAfterReplacement(
 		recovered++
 	}
 	log.Info("Branch worker replaced; re-establishing every GitTarget on the branch",
-		"provider", branch.RepoNamespace+"/"+branch.RepoName, "branch", branch.Branch, "gitTargets", recovered)
+		"branch", branch.String(), "provider", provider.String(), "gitTargets", recovered)
 	return true
 }
 
@@ -1192,12 +1187,17 @@ func (r *GitTargetReconciler) checkForConflicts(
 		return false, "", "", fmt.Errorf("list GitTargets for conflict validation: %w", err)
 	}
 
+	lost, msg, err := r.losesRepositoryBranch(ctx, target, allTargets.Items)
+	if err != nil || lost {
+		return lost, msg, GitTargetReasonTargetConflict, err
+	}
+
 	for i := range allTargets.Items {
 		existing := &allTargets.Items[i]
 		if existing.Namespace == target.Namespace && existing.Name == target.Name {
 			continue
 		}
-		if existing.Namespace != providerNS || existing.Spec.GitProviderRef.Name != target.Spec.GitProviderRef.Name {
+		if existing.GitProviderKey() != target.GitProviderKey() {
 			continue
 		}
 		if existing.Spec.Branch != target.Spec.Branch {
@@ -1217,6 +1217,45 @@ func (r *GitTargetReconciler) checkForConflicts(
 	}
 
 	return false, "", "", nil
+}
+
+// losesRepositoryBranch reports whether another GitProvider owns the repository branch target writes:
+// a GitTarget older than target writes the same repository and branch through a GitProvider other
+// than target's. One worker writes a repository branch, with one GitProvider's credential, so the
+// later GitTarget is refused (git/branch_owner.go). The GitProviders are read from the cache.
+func (r *GitTargetReconciler) losesRepositoryBranch(
+	ctx context.Context,
+	target *configbutleraiv1alpha3.GitTarget,
+	targets []configbutleraiv1alpha3.GitTarget,
+) (bool, string, error) {
+	var providers configbutleraiv1alpha3.GitProviderList
+	if err := r.List(ctx, &providers); err != nil {
+		return false, "", fmt.Errorf("list GitProviders for conflict validation: %w", err)
+	}
+	urls := make(map[k8stypes.NamespacedName]string, len(providers.Items))
+	for i := range providers.Items {
+		urls[client.ObjectKeyFromObject(&providers.Items[i])] = providers.Items[i].Spec.URL
+	}
+	url, known := urls[target.GitProviderKey()]
+	if !known {
+		return false, "", nil
+	}
+	branch := git.BranchKeyFor(url, target.Spec.Branch)
+	owners := git.BranchOwners(targets, func(provider k8stypes.NamespacedName) (string, bool) {
+		u, ok := urls[provider]
+		return u, ok
+	})
+	owner, owned := owners[branch]
+	if !owned || owner.Provider == target.GitProviderKey() {
+		return false, "", nil
+	}
+	return true, fmt.Sprintf(
+		"Conflict detected. GitTarget '%s' (older) writes repository %s, branch '%s' through GitProvider '%s', "+
+			"and this GitTarget writes it through GitProvider '%s'. Every GitTarget writing one repository branch "+
+			"must name the same GitProvider: to share it from another namespace, set spec.gitProviderRef.namespace "+
+			"and admit this namespace in that GitProvider's spec.accessFrom. This GitTarget will not be processed.",
+		owner.Target, branch.Repository, branch.Branch, owner.Provider, target.GitProviderKey(),
+	), nil
 }
 
 // losesPathConflict reports whether target loses to existing, on the same write branch, because
@@ -1704,16 +1743,22 @@ func (r *GitTargetReconciler) clusterWatchRuleToGitTarget(
 	}}}
 }
 
-// gitProviderToGitTargets maps a GitProvider event to every GitTarget in the
-// same namespace that references it, so a freshly-arrived provider re-enqueues
-// any dependents currently stuck on ProviderNotFound instead of waiting for the
+// namesGitProvider reports whether a GitTarget writes through the GitProvider obj, from whichever
+// namespace.
+func namesGitProvider(target *configbutleraiv1alpha3.GitTarget, obj client.Object) bool {
+	return target.GitProviderKey() == client.ObjectKeyFromObject(obj)
+}
+
+// gitProviderToGitTargets maps a GitProvider event to every GitTarget that references it, in any
+// namespace, so a freshly-arrived provider re-enqueues any dependents currently stuck on
+// ProviderNotFound, and a changed accessFrom grants or revokes at once, instead of waiting for the
 // periodic RequeueSteadyInterval.
 func (r *GitTargetReconciler) gitProviderToGitTargets(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
 	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := r.List(ctx, &targets); err != nil {
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
@@ -1721,7 +1766,7 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 	var requests []ctrlreconcile.Request
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.Spec.GitProviderRef.Name != obj.GetName() {
+		if !namesGitProvider(t, obj) {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{

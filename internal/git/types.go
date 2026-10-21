@@ -19,6 +19,7 @@ import (
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -148,28 +149,44 @@ type PullReport struct {
 	ParentBranch string
 }
 
-// BranchKey uniquely identifies a (GitProvider, Branch) combination.
-// This is the unit of worker ownership to prevent merge conflicts.
-// Multiple GitTargets can share the same BranchKey (same provider+branch)
-// but write to different paths within that branch.
+// BranchKey is the branch a worker owns: one branch of one repository, the repository compared as
+// repourl does, so two spellings of one URL are one key. It is the unit of worker ownership: every
+// write to a repository branch goes through the one worker under its key, which pushes with the
+// credential of the one GitProvider that owns the branch (branch_owner.go). Many GitTargets can
+// share it, writing different paths.
 type BranchKey struct {
-	// RepoNamespace is the namespace containing the GitProvider.
-	RepoNamespace string
-	// RepoName is the name of the GitProvider.
-	RepoName string
+	// Repository is the repository's URL, normalized by repourl.
+	Repository string
 	// Branch is the Git branch name.
 	Branch string
 }
 
+// BranchKeyFor is the key of a branch of the repository at url. An empty url names no repository,
+// and its zero key matches nothing.
+func BranchKeyFor(url, branch string) BranchKey {
+	normalized := repourl.Normalize(url)
+	if normalized == "" {
+		return BranchKey{}
+	}
+	return BranchKey{Repository: normalized, Branch: branch}
+}
+
 // String returns a string representation for logging and debugging.
-// Format: "namespace/provider-name/branch".
+// Format: "repository@branch".
 func (k BranchKey) String() string {
-	return fmt.Sprintf("%s/%s/%s", k.RepoNamespace, k.RepoName, k.Branch)
+	return k.Repository + "@" + k.Branch
+}
+
+// WritesThrough reports whether target writes branch through the GitProvider provider: the pair a
+// branch worker serves.
+func WritesThrough(target *v1alpha3.GitTarget, provider k8stypes.NamespacedName, branch string) bool {
+	return target.GitProviderKey() == provider && target.Spec.Branch == branch
 }
 
 // RepoIdentity is WHICH REPOSITORY a branch worker's clone, base trust and observations are
-// about. It is what BranchKey does not say: every field of that key comes off the GitTarget, and
-// none of them mentions the repository.
+// about, down to the GitProvider object it was made for. BranchKey names the repository by URL,
+// but not that object: a GitProvider recreated under its name, for the same repository, is the same
+// key and another identity, and the worker is replaced.
 //
 // The UID carries the identity because spec.url is immutable, so within the lifetime of one
 // GitProvider object the repository cannot change: a new object is the only way to reach a new
@@ -178,10 +195,9 @@ func (k BranchKey) String() string {
 // compared EXACTLY, with no normalization, because a re-spelled URL can only arrive with a
 // recreate, which the UID has already caught.
 //
-// It is deliberately NOT part of BranchKey. That key is derivable from the GitTarget alone, which
-// is what lets the event router resolve a worker with a map read and no GitProvider in hand; a key
-// naming the repository would put a provider read on the per-event path, and would let two workers
-// for one (provider, branch) report under one set of metric labels while both were live.
+// It is deliberately NOT part of BranchKey. The event router resolves a worker from a GitTarget by
+// its GitProvider and branch (WritesThrough), with no GitProvider read on the per-event path, and a
+// key carrying the UID would make a recreated GitProvider a second live worker on one branch.
 type RepoIdentity struct {
 	// ProviderUID is the GitProvider object's metadata.uid.
 	ProviderUID k8stypes.UID

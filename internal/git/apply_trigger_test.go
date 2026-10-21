@@ -110,7 +110,7 @@ func applierTestTarget(name string, applier bool, mutate ...func(*configv1alpha3
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: k8stypes.UID("uid-" + name)},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "test-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "test-provider"},
 			Branch:         "main",
 			Path:           "apps/" + name,
 		},
@@ -135,6 +135,7 @@ func applyTriggerLoop(t *testing.T, targets ...client.Object) (*branchWorkerEven
 
 	w := newMetricsTestWorker()
 	w.GitProviderNamespace = "team-a"
+	w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
 	w.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testTriggersFor(targets)...).
 		WithStatusSubresource(&configv1alpha3.FluxTrigger{}, &configv1alpha3.ArgoCDTrigger{}).Build()
 	w.Log = logr.Discard()
@@ -180,8 +181,8 @@ func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) 
 	for i, name := range []string{"alpha", "bravo"} {
 		assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requests[i].Reason)
 		assert.Equal(t, "bbb", requests[i].Commit)
-		assert.Equal(t, BranchKey{RepoNamespace: "team-a", RepoName: "test-provider", Branch: "main"},
-			requests[i].Branch)
+		assert.Equal(t, "main", requests[i].Branch.Branch)
+		assert.Equal(t, k8stypes.NamespacedName{Namespace: "team-a", Name: "test-provider"}, requests[i].Provider)
 		assert.Equal(t, applierRef(name), requests[i].Applier)
 		assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(name, "team-a")},
 			targetRefs(requests[i]), "a suspended target stops writing, not deployments")

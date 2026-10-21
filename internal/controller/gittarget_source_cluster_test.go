@@ -335,7 +335,7 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: ns, UID: "gt-uid"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.LocalObjectReference{Name: "gp"},
+			GitProviderRef:     meta.NamespacedObjectReference{Name: "gp"},
 			Branch:             "main",
 			Path:               "apps",
 			ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
@@ -480,7 +480,7 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 			target := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.LocalObjectReference{Name: "prov"},
+					GitProviderRef: meta.NamespacedObjectReference{Name: "prov"},
 				},
 			}
 			got := gitProviderReadiness(target, "team-a", tc.gp)

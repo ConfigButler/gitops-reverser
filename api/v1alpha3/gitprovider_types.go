@@ -48,6 +48,13 @@ type GitProviderSpec struct {
 	// +optional
 	KnownHostsRef *KnownHostsReference `json:"knownHostsRef,omitempty"`
 
+	// AccessFrom is the policy for which OTHER namespaces may reference this GitProvider from a
+	// GitTarget. This GitProvider's own namespace is always admitted. Empty (or omitted) admits no
+	// other namespace. A GitTarget admitted from another namespace writes with this provider's
+	// credential, commit identity and allowedBranches, as one in its own namespace does.
+	// +optional
+	AccessFrom *NamespaceMatcher `json:"accessFrom,omitempty"`
+
 	// AllowedBranches restricts which branches can be written to.
 	// +required
 	// +kubebuilder:validation:MinItems=1
@@ -389,6 +396,16 @@ type GitProviderList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []GitProvider `json:"items"`
+}
+
+// AdmitsNamespace reports whether a GitTarget in namespace (by name and labels) may write through
+// this GitProvider: its own namespace always, another one only as spec.accessFrom admits it. A
+// malformed selector is an error, never a silent allow.
+func (p *GitProvider) AdmitsNamespace(nsName string, nsLabels map[string]string) (bool, error) {
+	if nsName == p.Namespace {
+		return true, nil
+	}
+	return p.Spec.AccessFrom.Matches(nsName, nsLabels)
 }
 
 func init() {

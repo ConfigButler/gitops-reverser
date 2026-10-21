@@ -115,6 +115,8 @@ rebuild fails is no longer dropped: it stays pending for that retry
   refusing rather than reporting when a governing root disappears, a CRD default for
   `placement.default` (legibility only, since #319 removed the correctness objection), and a
   namespace-local `GitProvider` so three targets in three namespaces need not copy one credential.
+  That last one is answered: a `GitTarget` may name a `GitProvider` in another namespace, which
+  its `spec.accessFrom` admits.
 
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 

@@ -21,8 +21,8 @@ import (
 // branches" is configured-and-unused, which looks nothing like broken, and telling the two apart
 // used to take a GitTarget listing.
 //
-// A GitProvider is referenced only from its own namespace, so the list is namespace-scoped, and
-// it is read from the cache on the provider's own steady tick. There is deliberately no watch on
+// A GitProvider can be referenced from any namespace its accessFrom admits, so the list is
+// cluster-wide, and it is read from the cache on the provider's own steady tick. There is deliberately no watch on
 // GitTarget: this reconcile also proves the credential against the remote, so an edge per
 // GitTarget edit would spend a network round trip and advance status.lastVerifiedAt to answer a
 // question about configuration. The inventory lags a GitTarget edit by up to one steady interval,
@@ -36,20 +36,21 @@ func (r *GitProviderReconciler) publishBranchInventory(
 	gitProvider *configbutleraiv1alpha3.GitProvider,
 ) error {
 	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets, client.InNamespace(gitProvider.Namespace)); err != nil {
+	if err := r.List(ctx, &targets); err != nil {
 		return err
 	}
-	gitProvider.Status.Branches = branchInventory(gitProvider.Name, targets.Items)
+	gitProvider.Status.Branches = branchInventory(client.ObjectKeyFromObject(gitProvider), targets.Items)
 	return nil
 }
 
-// branchInventory counts the live GitTargets that name provider, by branch, sorted by name.
+// branchInventory counts the live GitTargets that name provider, from any namespace, by branch,
+// sorted by name.
 //
 // Sorting is not cosmetic. The status patch is computed against what is published, so an order
 // that followed the list's arrival order would rewrite the field — and wake every watcher of the
 // type — on a change that moved nothing.
 func branchInventory(
-	provider string,
+	provider client.ObjectKey,
 	targets []configbutleraiv1alpha3.GitTarget,
 ) []configbutleraiv1alpha3.GitProviderBranchStatus {
 	counts := map[string]int32{}
@@ -58,7 +59,7 @@ func branchInventory(
 		// A target being deleted is not what the repository is for any more: its worker is
 		// retired by the sweep the delete drives, and counting it would leave a branch in the
 		// inventory that nothing writes.
-		if !target.DeletionTimestamp.IsZero() || target.Spec.GitProviderRef.Name != provider {
+		if !target.DeletionTimestamp.IsZero() || target.GitProviderKey() != provider {
 			continue
 		}
 		counts[target.Spec.Branch]++

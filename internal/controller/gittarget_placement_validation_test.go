@@ -268,7 +268,7 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: ns},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "provider-a"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "provider-a"},
 			Branch:         "main",
 			Path:           "apps",
 			Placement: &configbutleraiv1alpha3.GitTargetPlacementSpec{

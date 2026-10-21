@@ -97,7 +97,7 @@ func createGitTarget(
 			Namespace: "default",
 		},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{
+			GitProviderRef: meta.NamespacedObjectReference{
 				Name: worker.GitProviderRef,
 			},
 			Branch: worker.Branch,

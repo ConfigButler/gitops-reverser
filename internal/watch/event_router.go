@@ -196,11 +196,8 @@ func (r *EventRouter) commitRequestWorker(
 			attach.GitTargetNamespace, attach.GitTargetName, err)
 	}
 
-	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		gitTarget.Spec.GitProviderRef.Name,
-		gitTarget.Namespace, // provider is in the same namespace as the target
-		gitTarget.Spec.Branch,
-	)
+	provider := gitTarget.GitProviderKey()
+	worker, exists := r.WorkerManager.GetWorkerForTarget(provider.Name, provider.Namespace, gitTarget.Spec.Branch)
 	if !exists {
 		return nil, gitTarget.Spec.Branch, nil
 	}
@@ -247,11 +244,8 @@ func (r *EventRouter) resolveWorkerForGitDest(
 		}
 		return nil, fmt.Errorf("get GitTarget %s: %w", gitDest.String(), err)
 	}
-	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		gitTarget.Spec.GitProviderRef.Name,
-		gitTarget.Namespace, // provider is in the same namespace as the target
-		gitTarget.Spec.Branch,
-	)
+	provider := gitTarget.GitProviderKey()
+	worker, exists := r.WorkerManager.GetWorkerForTarget(provider.Name, provider.Namespace, gitTarget.Spec.Branch)
 	if !exists {
 		return nil, fmt.Errorf("no worker for %s", gitDest.String())
 	}

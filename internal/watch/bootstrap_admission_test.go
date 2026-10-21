@@ -35,7 +35,7 @@ func bootGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: bootTargetName, Namespace: bootTargetNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
 			Branch:             "main",
 			Path:               "clusters/prod",
@@ -143,7 +143,7 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 	admittedTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ok-mirror", Namespace: "team-ok"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
 			Branch:             "main",
 			Path:               "clusters/ok",

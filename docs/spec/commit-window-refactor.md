@@ -103,8 +103,8 @@ window finalizes on its idle timeout or its maximum duration, and immediately on
 author change, target change, the byte cap, an `attach: Next` request, a resync,
 shutdown, an apply coming due, or a Git host's push notice. An apply coming due
 closes the window so its edits are published before the apply request is sent
-([the flush](../design/apply-trigger.md#flush-then-apply), `close_reason="apply_due"`);
-the same holds when a sibling worker on the same repository and branch flushes. A push notice closes it so its writes are
+([the flush](../design/apply-trigger.md#flush-then-apply), `close_reason="apply_due"`).
+A push notice closes it so its writes are
 published, and replayed onto the move, at once. Neither applies while a
 `CommitRequest` holds the window: no flush is made while a request is registered,
 and a push notice leaves an attached window to its save.

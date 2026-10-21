@@ -79,7 +79,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.LocalObjectReference{
+					GitProviderRef: meta.NamespacedObjectReference{
 						Name: "test-provider",
 					},
 					Branch: "main",
@@ -195,7 +195,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.LocalObjectReference{
+					GitProviderRef: meta.NamespacedObjectReference{
 						Name: "local-provider",
 					},
 					Branch: "main",

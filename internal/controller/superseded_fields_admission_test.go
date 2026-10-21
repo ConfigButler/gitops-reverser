@@ -87,7 +87,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-commit", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: "any-provider"},
+				GitProviderRef: meta.NamespacedObjectReference{Name: "any-provider"},
 				Branch:         "main",
 				Path:           "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
@@ -203,7 +203,7 @@ var _ = Describe("Reference names must not be empty", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: ""},
+				GitProviderRef: meta.NamespacedObjectReference{Name: ""},
 				Branch:         "main",
 				Path:           "clusters/prod",
 			},

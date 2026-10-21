@@ -66,7 +66,7 @@ func gitTarget(name, namespace, providerName string) *configbutleraiv1alpha3.Git
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: providerName},
+			GitProviderRef: meta.NamespacedObjectReference{Name: providerName},
 			Branch:         "main",
 		},
 	}

@@ -319,8 +319,10 @@ administrative one.
 number of concurrent write requests a bounded burst can produce — roughly
 `(concurrent writers) × (GitTargets sharing the branch worker)`. A burst that cannot exceed the
 depth is never refused, whatever its arrival shape. Note the second factor: workers are keyed by
-`(GitProvider namespace, GitProvider name, branch)`, so pointing a second GitTarget at a branch
-halves the headroom of a worker already in use, and nothing in the API surface says so. Confirm
+repository branch, so pointing a second GitTarget at a branch, from any namespace, halves the
+headroom of a worker already in use, and nothing in the API surface says so. The branch series keep
+their `provider_namespace` and `provider_name` labels: they name the one `GitProvider` that owns the
+branch. Confirm
 which targets share one worker by joining on `git_branch_targets` — several targets against a
 single `git_queue_depth` series is one worker serving all of them.
 

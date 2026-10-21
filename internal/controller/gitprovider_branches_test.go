@@ -21,11 +21,14 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
+// shopRepo1 is the GitProvider the inventory tests count for.
+var shopRepo1 = client.ObjectKey{Namespace: "shop", Name: "repo1"}
+
 func inventoryTarget(name, provider, branch string) *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: provider},
+			GitProviderRef: meta.NamespacedObjectReference{Name: provider},
 			Branch:         branch,
 			Path:           name,
 		},
@@ -41,7 +44,14 @@ func TestBranchInventory_CountsTheGitTargetsThatConfigureEachBranch(t *testing.T
 	deleting := inventoryTarget("leaving", "repo1", "retired")
 	deleting.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 
-	got := branchInventory("repo1", []configbutleraiv1alpha3.GitTarget{
+	shared := inventoryTarget("team-b", "repo1", "main")
+	shared.Namespace, shared.Spec.GitProviderRef.Namespace = "team-b", "shop"
+	sameName := inventoryTarget("team-b-own", "repo1", "main")
+	sameName.Namespace = "team-b" // its own namespace's repo1, another GitProvider
+
+	got := branchInventory(shopRepo1, []configbutleraiv1alpha3.GitTarget{
+		*shared,
+		*sameName,
 		*inventoryTarget("release", "repo1", "rel"),
 		*inventoryTarget("apps", "repo1", "main"),
 		*inventoryTarget("infra", "repo1", "main"),
@@ -51,10 +61,11 @@ func TestBranchInventory_CountsTheGitTargetsThatConfigureEachBranch(t *testing.T
 	})
 
 	assert.Equal(t, []configbutleraiv1alpha3.GitProviderBranchStatus{
-		{Name: "main", GitTargetCount: 3},
+		{Name: "main", GitTargetCount: 4},
 		{Name: "rel", GitTargetCount: 1},
 	}, got,
-		"every branch a live GitTarget of THIS provider configures, suspended ones included, sorted by name")
+		"every branch a live GitTarget of THIS provider configures, from any namespace, suspended ones "+
+			"included, sorted by name")
 }
 
 // TestBranchInventory_AConfiguredAndUnusedRepositoryReportsAnEmptyList is the state the field
@@ -62,11 +73,11 @@ func TestBranchInventory_CountsTheGitTargetsThatConfigureEachBranch(t *testing.T
 // like the third state either: an ABSENT list means nothing has read the GitTargets yet, so the
 // measured-and-empty answer is an empty slice rather than nil.
 func TestBranchInventory_AConfiguredAndUnusedRepositoryReportsAnEmptyList(t *testing.T) {
-	measured := branchInventory("repo1", nil)
+	measured := branchInventory(shopRepo1, nil)
 	assert.NotNil(t, measured, "configured and unused is an answer, not the absence of one")
 	assert.Empty(t, measured)
 
-	measured = branchInventory("repo1", []configbutleraiv1alpha3.GitTarget{
+	measured = branchInventory(shopRepo1, []configbutleraiv1alpha3.GitTarget{
 		*inventoryTarget("other", "repo2", "main"),
 	})
 	assert.NotNil(t, measured)

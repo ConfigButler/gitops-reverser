@@ -41,7 +41,10 @@ const (
 	targetNS            = "team-a"
 )
 
-var testBranchKey = git.BranchKey{RepoNamespace: targetNS, RepoName: "platform", Branch: testBranch}
+var (
+	testBranchKey = git.BranchKeyFor(testRepoURL, testBranch)
+	testProvider  = types.NamespacedName{Namespace: targetNS, Name: "platform"}
+)
 
 // Test-only annotations on a GitTarget, which newDispatcherFixture reads to create the trigger the
 // GitTarget names: the applier it holds ("namespace/name") and the cluster it is in.
@@ -58,7 +61,7 @@ func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference
 	target := &v1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: name, UID: uid(name)},
 		Spec: v1alpha3.GitTargetSpec{
-			GitProviderRef: fluxmeta.LocalObjectReference{Name: testBranchKey.RepoName},
+			GitProviderRef: fluxmeta.NamespacedObjectReference{Name: testProvider.Name},
 			Branch:         testBranch,
 			Path:           name,
 		},
@@ -144,12 +147,12 @@ func clusterProvider(name string, admits ...string) *v1alpha3.ClusterProvider {
 	}
 }
 
-// controlPlane is what every dispatcher test reads besides its GitTargets: the GitProvider of
-// testBranchKey, and the ClusterProviders the tests name, admitting targetNS.
+// controlPlane is what every dispatcher test reads besides its GitTargets: testProvider, the
+// GitProvider of testBranchKey, and the ClusterProviders the tests name, admitting targetNS.
 func controlPlane() []client.Object {
 	return []client.Object{
 		&v1alpha3.GitProvider{
-			ObjectMeta: metav1.ObjectMeta{Namespace: testBranchKey.RepoNamespace, Name: testBranchKey.RepoName},
+			ObjectMeta: metav1.ObjectMeta{Namespace: testProvider.Namespace, Name: testProvider.Name},
 			Spec:       v1alpha3.GitProviderSpec{URL: testRepoURL},
 		},
 		clusterProvider(v1alpha3.DefaultClusterProviderName, targetNS),
@@ -182,7 +185,9 @@ var checkout = kustomizationApplier(v1alpha3.DefaultClusterProviderName, fluxSys
 // request is one attempt for an applier to apply testCommit, for the named targets, all asking for
 // reason.
 func request(applier git.ApplierRef, reason v1alpha3.ApplyReason, names ...string) git.ApplyRequest {
-	req := git.ApplyRequest{ID: 1, Branch: testBranchKey, Applier: applier, Reason: reason, Commit: testCommit}
+	req := git.ApplyRequest{
+		ID: 1, Branch: testBranchKey, Provider: testProvider, Applier: applier, Reason: reason, Commit: testCommit,
+	}
 	for _, name := range names {
 		req.Targets = append(req.Targets, git.ApplyTarget{Ref: ref(name), UID: uid(name), Reason: reason})
 	}

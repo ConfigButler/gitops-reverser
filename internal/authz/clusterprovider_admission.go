@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package authz holds the ClusterProvider namespace-admission decision.
+// Package authz holds the namespace-admission decisions for the providers a GitTarget uses.
 //
 // A ClusterProvider is cluster-scoped and holds a credential that can read a lot of a source
 // cluster; its spec.accessFrom is that provider's explicit, deny-by-default admission of
-// the GitTarget NAMESPACES permitted to mirror through it.
+// the GitTarget NAMESPACES permitted to mirror through it. A GitProvider is namespaced and holds a
+// write credential; its spec.accessFrom admits the OTHER namespaces whose GitTargets may write
+// through it.
 //
 // The decision lives in its own package — outside both internal/controller and internal/watch —
 // because more than one call site compiles rules or starts a data plane for a GitTarget: the
@@ -56,7 +58,8 @@ type Decision struct {
 }
 
 // GitTargetAdmitted reports whether target's namespace is admitted by the ClusterProvider that
-// target references, reading both the provider and the target's Namespace through reader.
+// target references, reading both the provider and the target's Namespace through reader, and by
+// the GitProvider it writes through (gitProviderAdmitted).
 //
 // It is evaluated on every reconcile rather than only at admission, so a policy TIGHTENED after a
 // GitTarget was created revokes it too. The two denial paths are deliberate and ordered: a missing
@@ -78,7 +81,52 @@ func GitTargetAdmitted(
 			"only through an existing ClusterProvider. The operator never creates one: declare it "+
 			"yourself, or let the chart render %q via clusterProvider.createDefault",
 		providerName, configv1alpha3.DefaultClusterProviderName))
-	return decision, err
+	if err != nil || !decision.Allowed {
+		return decision, err
+	}
+	return gitProviderAdmitted(ctx, reader, target)
+}
+
+// gitProviderAdmitted reports whether target's namespace may write through the GitProvider it
+// names. One in its own namespace always may. One in another namespace may only while its
+// spec.accessFrom admits target's namespace, because the GitTarget then writes with that
+// provider's credential. A GitProvider that does not exist admits nothing and denies nothing here:
+// there is no credential to wield, and the Validated gate reports it as not found.
+func gitProviderAdmitted(
+	ctx context.Context,
+	reader client.Reader,
+	target *configv1alpha3.GitTarget,
+) (Decision, error) {
+	key := target.GitProviderKey()
+	if key.Namespace == target.Namespace {
+		return Decision{Allowed: true}, nil
+	}
+	provider := &configv1alpha3.GitProvider{}
+	if err := reader.Get(ctx, key, provider); err != nil {
+		if apierrors.IsNotFound(err) {
+			return Decision{Allowed: true}, nil
+		}
+		return Decision{}, fmt.Errorf("read GitProvider %s: %w", key, err)
+	}
+	nsLabels, err := namespaceLabels(ctx, reader, target.Namespace)
+	if err != nil {
+		return Decision{}, err
+	}
+	allowed, selErr := provider.AdmitsNamespace(target.Namespace, nsLabels)
+	if selErr != nil {
+		return Decision{
+			Reason:  ReasonNamespaceNotAuthorized,
+			Message: fmt.Sprintf("GitProvider %s accessFrom selector is invalid: %v", key, selErr),
+		}, nil
+	}
+	if !allowed {
+		return Decision{
+			Reason: ReasonNamespaceNotAuthorized,
+			Message: fmt.Sprintf(
+				"namespace %q is not permitted to reference GitProvider %s (spec.accessFrom)", target.Namespace, key),
+		}, nil
+	}
+	return Decision{Allowed: true}, nil
 }
 
 // ApplyTriggerAdmitted reports whether a trigger's namespace is admitted by the ClusterProvider it
@@ -149,14 +197,9 @@ func namespaceAdmitted(
 		return Decision{}, nil, fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
 	}
 
-	nsLabels := map[string]string{}
-	var ns corev1.Namespace
-	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: namespace}, &ns); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return Decision{}, nil, fmt.Errorf("read namespace %q: %w", namespace, err)
-		}
-	} else {
-		nsLabels = ns.Labels
+	nsLabels, err := namespaceLabels(ctx, reader, namespace)
+	if err != nil {
+		return Decision{}, nil, err
 	}
 
 	allowed, selErr := provider.AllowsNamespace(namespace, nsLabels)
@@ -177,4 +220,17 @@ func namespaceAdmitted(
 	}
 
 	return Decision{Allowed: true}, provider, nil
+}
+
+// namespaceLabels reads a control-cluster Namespace's labels. A Namespace that does not exist has
+// none: a names entry still admits it, and a selector does not.
+func namespaceLabels(ctx context.Context, reader client.Reader, namespace string) (map[string]string, error) {
+	var ns corev1.Namespace
+	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: namespace}, &ns); err != nil {
+		if apierrors.IsNotFound(err) {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("read namespace %q: %w", namespace, err)
+	}
+	return ns.Labels, nil
 }

@@ -35,7 +35,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		gitTarget := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: "prov-a"},
+				GitProviderRef: meta.NamespacedObjectReference{Name: "prov-a"},
 				Branch:         "main",
 				Path:           "apps",
 			},
@@ -90,7 +90,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 			gitTarget := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: tc.key.Name, Namespace: tc.key.Namespace},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.LocalObjectReference{Name: "prov-a"},
+					GitProviderRef: meta.NamespacedObjectReference{Name: "prov-a"},
 					Branch:         "edits",
 					Path:           "apps-" + tc.key.Name,
 					ParentBranch:   tc.parent,
@@ -137,7 +137,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		base := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: "prov-a"},
+				GitProviderRef: meta.NamespacedObjectReference{Name: "prov-a"},
 				Branch:         "main",
 			},
 		}

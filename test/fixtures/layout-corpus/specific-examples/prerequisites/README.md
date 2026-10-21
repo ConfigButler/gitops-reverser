@@ -1,6 +1,6 @@
 # Shared prerequisites
 
-Every `GitTarget` refers to a `GitProvider` in the same namespace. The provider owns the repository
+Every `GitTarget` here refers to a `GitProvider` in the same namespace. The provider owns the repository
 connection and writable branch policy; the target owns the folder and its layout. This separation
 lets one repository serve several independently scoped targets.
 
@@ -15,8 +15,9 @@ namespace demo
   GitTarget/demo -> GitProvider/app-repository
 ```
 
-The provider is namespace-local because it carries credentials. A `GitTarget` cannot refer to a
-provider in another namespace.
+The provider is namespace-local because it carries credentials. A `GitTarget` may refer to a
+provider in another namespace only when that provider's `spec.accessFrom` admits the target's
+namespace, and every `GitTarget` writing one repository branch must refer to the same provider.
 
 ## Source cluster authority
 

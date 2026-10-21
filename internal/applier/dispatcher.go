@@ -747,7 +747,7 @@ func (d *Dispatcher) failure(
 // is an error, so the attempt fails rather than a GitTarget being dropped on a blip.
 func (d *Dispatcher) recheck(ctx context.Context, req git.ApplyRequest) ([]eligibleTarget, Binding, error) {
 	provider := &v1alpha3.GitProvider{}
-	providerKey := client.ObjectKey{Namespace: req.Branch.RepoNamespace, Name: req.Branch.RepoName}
+	providerKey := req.Provider
 	if err := d.reader.Get(ctx, providerKey, provider); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, Binding{}, nil
@@ -835,8 +835,7 @@ func holdingTrigger(
 
 // onBranch reports whether a GitTarget still names a trigger, on the request's branch.
 func onBranch(target *v1alpha3.GitTarget, req git.ApplyRequest) bool {
-	return target.Spec.ApplyTriggerRef != nil && target.Namespace == req.Branch.RepoNamespace &&
-		target.Spec.GitProviderRef.Name == req.Branch.RepoName && target.Spec.Branch == req.Branch.Branch
+	return target.Spec.ApplyTriggerRef != nil && git.WritesThrough(target, req.Provider, req.Branch.Branch)
 }
 
 // delivered records a delivered request as an ApplyRequested Event on every GitTarget it was for,

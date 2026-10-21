@@ -528,6 +528,8 @@ one asserts a rule PR 1 ships; the second-namespace one is written and skipped n
   `Plain`), which republishes, so the change is already visible without a refusal.
 - Should `placement.default` gain a CRD default now that a defaulted template no longer produces
   unrendered files? The remaining objection is legibility, not correctness.
-- Namespace-local `GitProvider`: the homelab examples put a `GitTarget` in `argocd`, `flux-system`
-  and `homelab-config`, each needing its own `GitProvider` — three copies of one credential in a
-  single-owner cluster. Recorded as a gap, not a blocker.
+- Namespace-local `GitProvider` (answered): the homelab examples put a `GitTarget` in `argocd`,
+  `flux-system` and `homelab-config`, each with its own `GitProvider`, three copies of one
+  credential in a single-owner cluster. One `GitProvider` now serves all three:
+  `spec.gitProviderRef.namespace` names it, and its `spec.accessFrom` admits the other namespaces.
+  Three `GitProvider`s writing one branch are refused.

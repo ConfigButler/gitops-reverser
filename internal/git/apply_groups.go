@@ -12,12 +12,9 @@ import (
 //
 // Flux appliers on one branch that apply one GitRepository form a group, and a group has one
 // operation at a time: the artifact is shared, and an operation reads it again just before it
-// resumes its Kustomization, so a sibling's fetch landing in between would make it apply another
-// commit than the one it checked. The appliers of a group take turns (turnOrder). The group spans
-// the workers writing the branch (apply_siblings.go): two GitProviders on one repository are two
-// workers, and their triggers can apply one GitRepository, so a worker claims the group before it
-// sends, and publishes the groups it has attempts out for.
-//
+// resumes its Kustomization, so another applier's fetch landing in between would make it apply
+// another commit than the one it checked. The appliers of a group take turns (turnOrder). One
+// worker writes a repository branch (branch_owner.go), so a group's appliers are all its own.
 
 // sourceGroup is the group a trigger's applier belongs to: its cluster and GitRepository, or "" for
 // an applier that shares nothing this way.
@@ -42,8 +39,7 @@ func (l *branchWorkerEventLoop) attemptOut(state *applierState) bool {
 	return state.inflight != nil || l.groupBusy(state)
 }
 
-// groupBusy reports whether another applier of state's group has an attempt out, on this worker or
-// on a sibling.
+// groupBusy reports whether another applier of state's group has an attempt out.
 func (l *branchWorkerEventLoop) groupBusy(state *applierState) bool {
 	group := state.group()
 	if group == "" {
@@ -54,22 +50,7 @@ func (l *branchWorkerEventLoop) groupBusy(state *applierState) bool {
 			return true
 		}
 	}
-	return l.w.groupOutOnSibling(group)
-}
-
-// publishGroupsOut publishes the groups this worker has an attempt out for, for its siblings
-// (branchSiblings.claimGroup). A group no longer out wakes them.
-func (l *branchWorkerEventLoop) publishGroupsOut() {
-	if l.w.siblings == nil {
-		return
-	}
-	out := map[string]struct{}{}
-	for _, state := range l.appliers {
-		if group := state.group(); group != "" && state.inflight != nil {
-			out[group] = struct{}{}
-		}
-	}
-	l.w.siblings.publishGroupsOut(l.w, out)
+	return false
 }
 
 // turnOrder is the appliers with the one whose last turn is oldest first, those never sent an

@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -176,21 +175,21 @@ type branchTarget struct {
 	group string
 }
 
-// appliersOnBranch lists the GitTargets on this worker's (provider, branch) that name an apply
-// trigger that exists, with the applier each trigger holds. A GitTarget names its GitProvider and
-// its trigger in its own namespace, so the provider's namespace is the only one to look in. The
-// client is cached, so this costs no round trip. A GitTarget whose trigger does not exist (yet)
-// names no applier: its ApplyTriggerReady condition says so.
+// appliersOnBranch lists the GitTargets that write this worker's branch through its GitProvider and
+// name an apply trigger that exists, with the applier each trigger holds. A GitTarget may name a
+// GitProvider in another namespace, so every namespace is looked in. The client is cached, so this
+// costs no round trip. A GitTarget whose trigger does not exist (yet) names no applier: its
+// ApplyTriggerReady condition says so.
 func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, error) {
 	var targets v1alpha3.GitTargetList
-	if err := w.Client.List(ctx, &targets, client.InNamespace(w.GitProviderNamespace)); err != nil {
+	if err := w.Client.List(ctx, &targets); err != nil {
 		return nil, fmt.Errorf("list GitTargets: %w", err)
 	}
 	listed := make([]branchTarget, 0, len(targets.Items))
 	for i := range targets.Items {
 		target := &targets.Items[i]
 		if !target.DeletionTimestamp.IsZero() || target.Spec.ApplyTriggerRef == nil ||
-			target.Spec.GitProviderRef.Name != w.GitProviderRef || target.Spec.Branch != w.Branch {
+			!WritesThrough(target, w.provider(), w.Branch) {
 			continue
 		}
 		trigger, err := ResolveApplyTrigger(ctx, w.Client, target)
@@ -346,7 +345,6 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 		return
 	}
 	defer l.publishTriggerStatus()
-	defer l.publishGroupsOut()
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
@@ -378,8 +376,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	l.takeReasons()
 	tip := w.inbox.lastTip()
 	for _, state := range due {
-		if l.attemptOut(state) || !l.w.claimGroup(state.group()) {
-			// A sibling sent one for the group since; its end wakes this worker.
+		if l.attemptOut(state) {
 			continue
 		}
 		l.sendAttempt(state, tip, l.unsentRefusalsFor(state))
@@ -507,15 +504,13 @@ func (l *branchWorkerEventLoop) flushed(due []*applierState) bool {
 	if !l.flushing {
 		l.finalizeOpenWindowWithReason(windowFinalizeReasonApplyDue)
 		l.flushing, l.flushMark = true, l.decisions
-		// The siblings writing this branch flush too (apply_sibling_flush.go).
-		l.siblingAsk = l.w.siblings.askFlush(l.w)
 		if l.pendingUpTo(l.flushMark) {
 			l.w.Log.Info("An apply is due; publishing the pending writes first", "branch", l.w.Branch,
 				"pendingWrites", len(l.pendingWrites))
 			l.advance()
 		}
 	}
-	return !l.pendingUpTo(l.flushMark) && l.siblingsFlushed()
+	return !l.pendingUpTo(l.flushMark)
 }
 
 // pendingUpTo reports whether a write decided up to mark is still pending.
@@ -531,7 +526,7 @@ func (l *branchWorkerEventLoop) pendingUpTo(mark uint64) bool {
 // endFlush ends the flush once nothing is due: the edits recorded for an applier that has nothing
 // pending any more are dropped with it.
 func (l *branchWorkerEventLoop) endFlush() {
-	l.flushing, l.siblingAsk = false, 0
+	l.flushing = false
 	for _, state := range l.appliers {
 		if state.inflight == nil && !state.hasReason(l.unsentRefusalsFor(state)) {
 			state.flushEdits = nil
@@ -720,6 +715,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	w.applyRequester.RequestApply(ApplyRequest{
 		ID:            attempt.id,
 		Branch:        w.branchKey(),
+		Provider:      w.provider(),
 		Applier:       state.ref,
 		Reason:        reason,
 		Commit:        tip,
@@ -992,7 +988,12 @@ func (l *branchWorkerEventLoop) applierAwaiting(id uint64) *applierState {
 
 // branchKey is the repository and branch this worker writes.
 func (w *BranchWorker) branchKey() BranchKey {
-	return BranchKey{RepoNamespace: w.GitProviderNamespace, RepoName: w.GitProviderRef, Branch: w.Branch}
+	return BranchKeyFor(w.repo.URL, w.Branch)
+}
+
+// provider is the GitProvider this worker writes through: the one that owns its branch.
+func (w *BranchWorker) provider() k8stypes.NamespacedName {
+	return k8stypes.NamespacedName{Namespace: w.GitProviderNamespace, Name: w.GitProviderRef}
 }
 
 // decisionHolds is ApplyRequest.Current for an attempt decided at tip: the branch is still at that

@@ -114,7 +114,7 @@ routed to a branch worker.
 
 ### Git write plane
 
-One `BranchWorker` owns each `(GitProvider namespace, GitProvider name, branch)` tuple, and every
+One `BranchWorker` owns each repository branch (the normalized URL and the branch), and every
 write to that branch goes through its single event loop.
 
 | Component | Path | Role |

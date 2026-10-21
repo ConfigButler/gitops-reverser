@@ -32,7 +32,7 @@ func snbGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: snbTarget, Namespace: snbTenantNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: snbProvider},
 			Branch:             "main",
 			Path:               "tenants/acme",

@@ -134,7 +134,9 @@ resource types can opt into the same encryption path at controller startup. See
 
 ## Git credentials Secret shape
 
-`GitProvider.spec.secretRef` points to a namespace-local Secret. The controller picks the auth
+`GitProvider.spec.secretRef` points to a Secret in the provider's own namespace. A `GitTarget` in
+another namespace that writes through the provider, which its `spec.accessFrom` must admit, uses
+that Secret without being able to read it. The controller picks the auth
 method from the keys present, preferring an SSH key, then HTTP basic auth, then a bearer token. The
 examples below use the Kubernetes-native key names; the reader also accepts the Flux and Argo CD key
 names so an existing GitOps Secret works unchanged (see

@@ -106,6 +106,7 @@ func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1
 	w.applyRequester.RequestApply(ApplyRequest{
 		ID:        attempt.id,
 		Branch:    w.branchKey(),
+		Provider:  w.provider(),
 		Applier:   state.ref,
 		Reason:    recorded.Reason,
 		Commit:    recorded.Commit,

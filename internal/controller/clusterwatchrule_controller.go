@@ -188,7 +188,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 
 	// Resolve GitProvider from target
 	providerName := target.Spec.GitProviderRef.Name
-	providerNS := target.Namespace // Same as GitTarget
+	providerNS := target.GitProviderKey().Namespace
 
 	var provider configbutleraiv1alpha3.GitProvider
 	providerKey := types.NamespacedName{Name: providerName, Namespace: providerNS}
@@ -568,7 +568,7 @@ func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
 	obj client.Object,
 ) []ctrlreconcile.Request {
 	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := r.List(ctx, &targets); err != nil {
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
@@ -576,7 +576,7 @@ func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
 	matchingTargets := make(map[types.NamespacedName]struct{})
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.Spec.GitProviderRef.Name == obj.GetName() {
+		if namesGitProvider(t, obj) {
 			matchingTargets[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
 		}
 	}

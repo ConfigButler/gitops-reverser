@@ -480,7 +480,7 @@ Read from the code at `47b171b9`.
 | `branchQuiet` | [`apply_trigger.go`](../../internal/git/apply_trigger.go) | the quiet branch is the wait S1 replaces with the flush |
 | `workWaiting` | `apply_trigger.go` | queued work items, here or on a sibling, no longer hold an apply |
 | The "nothing pending" half of `decisionHolds` (`busyWriting`, `inflightItems`, `siblingBusy`) | `apply_trigger.go` | `ApplyRequest.Current` checks only that the remote is still at the commit asked for |
-| `branchSiblings.othersBusy`, `BranchWorker.siblingBusy`, `publishWriteBusy`, the `busyWriting` atomic, and the `wakeOthers` calls for quietness | [`apply_siblings.go`](../../internal/git/apply_siblings.go), [`branch_worker.go`](../../internal/git/branch_worker.go) | quietness across siblings existed only for the quiet branch; the claims for source groups stay |
+| `branchSiblings.othersBusy`, `BranchWorker.siblingBusy`, `publishWriteBusy`, the `busyWriting` atomic, and the `wakeOthers` calls for quietness | `apply_siblings.go` (since removed), [`branch_worker.go`](../../internal/git/branch_worker.go) | quietness across siblings existed only for the quiet branch; the claims for source groups stay |
 | `stashDeferredHeal`, `applyDeferredHeals`, `deferredHeals` | [`resync_flush.go`](../../internal/git/resync_flush.go), `branch_worker.go` | no snapshot is parked anymore (F3) |
 | The re-run of the mark-and-sweep on replay | `resync_flush.go` (`applyResyncToWorktree`), [`commit_executor.go`](../../internal/git/commit_executor.go) | a replayed resync applies its decided actions (F2) |
 | `ApplierRef.CatchesUp` | [`apply_request.go`](../../internal/git/apply_request.go) | both appliers catch up (S2) |
@@ -662,8 +662,10 @@ The build departs from the plan above in twelve places, decided on 2026-10-20:
     asked for it again once the window was idle. Nothing produces one: every resync the watch plane
     sends is a replay, which finalizes the window. The `Heal` flag, its discard and its window-idle
     re-request are removed, with the tests that drove a heal by hand.
-12. **The flush covers the sibling workers.** The plan removed sibling quietness, and S1 flushed only
-    the sending worker. A sibling sharing the trigger then kept its unpublished edit while the apply
+12. **The flush covers the sibling workers** (superseded: one worker now writes a repository
+    branch, through one `GitProvider`, so there are no sibling workers; see
+    [`architecture.md`](../architecture.md#gitprovider)). The plan removed sibling quietness, and S1
+    flushed only the sending worker. A sibling sharing the trigger then kept its unpublished edit while the apply
     reverted it on the cluster, and mirrored the revert, having sent nothing and holding no apply
     window (found in review). When an apply comes due, the worker asks each sibling to flush up to a
     mark of its own and sends once all have; workers share what they observe of the branch, so the

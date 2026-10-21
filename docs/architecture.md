@@ -24,17 +24,18 @@ that shared source; it does not grant source-cluster RBAC or select source names
 is the `ClusterProvider` name alone, with no API-server identity probe: two providers configured for the same
 server deliberately remain separate source partitions.
 
-The asymmetry is not an oversight, and it is worth stating what would change it. A source cluster is
-an inherent singleton; a Git destination is not, and a namespaced `GitProvider` keeps a repository's
-write credential in the namespace of whoever owns that repository, which is what makes a team able
-to start mirroring without a platform admin. The known cost is duplication: a cluster whose
-`GitTarget`s live in several namespaces needs a copy of one credential in each of them. If that ever
-has to be solved, the two additive shapes are a `GitProvider` that admits other namespaces through
-an `accessFrom` policy of its own (the `ClusterProvider` pattern, applied to the destination), or a
-separate cluster-scoped destination kind with an explicit ownership model. **Converting
-`GitProvider` itself is not one of the options**: a CRD's `spec.scope` is immutable once the
-definition is `Established`, so the change would mean deleting the definition (and every
-`GitProvider` in the cluster with it) and recreating both.
+The asymmetry is not an oversight. A source cluster is an inherent singleton; a Git destination is
+not, and a namespaced `GitProvider` keeps a repository's write credential in the namespace of
+whoever owns that repository, which is what makes a team able to start mirroring without a platform
+admin. A repository written from several namespaces needs no copy of the credential in each: one
+`GitProvider` admits the other namespaces through its own `spec.accessFrom` (the `ClusterProvider`
+pattern, applied to the destination), and their `GitTarget`s name it with
+`spec.gitProviderRef.namespace`. Its own namespace is always admitted. **Every `GitTarget` writing
+one repository branch must name the same `GitProvider`**, because one branch worker writes the
+branch, with one credential: a `GitTarget` that writes it through another `GitProvider` than the
+oldest one's is refused (`TargetConflict`). Converting `GitProvider` to cluster scope is not an
+option: a CRD's `spec.scope` is immutable once the definition is `Established`, so the change would
+mean deleting the definition (and every `GitProvider` in the cluster with it) and recreating both.
 
 ***
 
@@ -58,8 +59,9 @@ types must be encrypted before they touch the Git worktree. If encryption cannot
 fails; there is no plaintext opt-out.
 
 **Writes are serialized per Git branch.** One [BranchWorker](../internal/git/branch_worker.go) owns each
-`(GitProvider namespace, GitProvider name, branch)` tuple. Multiple `GitTarget`s may share one branch.
-Every write to that branch goes through the worker's single event loop and commit window.
+repository branch: the repository's URL, normalized, and the branch. Multiple `GitTarget`s may share
+one branch, from any namespace, through the one `GitProvider` that owns it. Every write to that
+branch goes through the worker's single event loop and commit window.
 
 **The worktree sits at the remote tip, or the worker knows it does not.** The write path used to
 fetch and hard-reset before the first commit of every publication cycle. It no longer does: the push
@@ -82,13 +84,14 @@ advertisement must either fetch, or refuse to conclude. See
 [how the branch worker reads the remote](design/push-notification-and-reconcile-trigger.md#part-1-how-the-branch-worker-reads-the-remote).
 
 That trust belongs to **one repository**, and so does the worker holding it. A worker is keyed by
-`(GitProvider namespace, GitProvider name, branch)`, which names no repository, while `spec.url` is
-immutable and repointed by deleting and recreating the `GitProvider`. So the worker also carries
-the **repository identity** it was created for: the provider's UID paired with its URL. Every
-repository operation uses that URL rather than whatever the provider names when the cycle reads it,
-and the reconcile compares the identity on each tick. A provider naming a different repository does
-not move the worker; it **replaces** it, and the replaced worker takes its clone, its trust and its
-queued work with it. Nothing has to remember to invalidate a field.
+the repository branch, and `spec.url` is immutable and repointed by deleting and recreating the
+`GitProvider`. The key names the repository but not the object behind it, so the worker also
+carries the **repository identity** it was created for: the provider's UID paired with its URL.
+Every repository operation uses that URL rather than whatever the provider names when the cycle
+reads it, and the reconcile compares the identity on each tick. A provider recreated under its name,
+for the same repository or another, does not move the worker; it **replaces** it, and the replaced
+worker takes its clone, its trust and its queued work with it. Nothing has to remember to invalidate
+a field.
 
 **An idle target re-proves where its branch is, periodically.** A target that is writing learns it
 for free: the push session reads the remote's advertisement and the server names the hash it
@@ -406,7 +409,9 @@ How attribution and finalization interact is described under
 One materialization from a source provider to a Git destination: `(cluster provider, provider, branch, path)`.
 Key fields:
 
-- `spec.gitProviderRef`: a `GitProvider` in the same namespace, by name.
+- `spec.gitProviderRef`: a `GitProvider` by name, in the `GitTarget`'s own namespace unless
+  `namespace` names another one, whose `spec.accessFrom` must then admit it. Every `GitTarget`
+  writing one repository branch names the same `GitProvider`.
 - `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
 - `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
 - `spec.parentBranch`: optional, immutable branch the write branch is created from and compared
@@ -470,6 +475,10 @@ Represents a Git repository and the credentials/configuration used to write it. 
 
 - `spec.url`: immutable repository URL.
 - `spec.secretRef`: optional Secret in the same namespace for HTTP/SSH authentication.
+- `spec.accessFrom`: which other namespaces' `GitTarget`s may write through it, by name or label
+  selector, as on a `ClusterProvider`. Its own namespace is always admitted; omitted admits no
+  other. A `GitTarget` admitted from another namespace writes with this provider's credential,
+  identity and `allowedBranches`. Checked on every reconcile, so a tightened policy revokes.
 - `spec.knownHostsRef`: optional SSH known hosts source.
 - `spec.allowedBranches`: glob patterns that gate writable branches.
 - `spec.commit.committer`: committer identity (defaults to `GitOps Reverser` / `noreply@configbutler.ai`).
@@ -719,12 +728,8 @@ snapshot of the `GitTarget`s its applier covers is published (a `GitTarget` with
 collection yet, or with a blocked watch, holds its applier the same way), and an empty tip (a
 remote that does not carry the branch) asks nothing until there is a commit to apply.
 
-The flush covers the **sibling** workers too: two `GitProvider`s naming one repository give its
-branch two workers, and their `GitTarget`s can name one trigger. When an apply comes due, the
-worker asks each sibling to close its window and publish up to a mark of its own at once, and
-sends only once every sibling it asked is done. The workers share what they observe of the
-branch, so each sends for the tip that holds the others' writes; a sibling's push is foreign to the
-others, as a fetch of it would be, because its appliers may apply another cluster.
+One worker writes a repository branch, so the flush has every unpublished edit on the branch in
+hand, whichever namespace its `GitTarget` is in.
 
 Which apply is due lives on the worker, per applier: one attempt out at a time, and its own retry
 clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
@@ -1334,10 +1339,13 @@ stops a fact being published by something that cannot actually prove it.
 
 A branch worker sits at the intersection and belongs wholly to neither object: `GitTarget`s decide
 which branches are needed, `GitProvider` decides which repository those branches are in. So the
-worker is **keyed** by `(provider namespace, provider, branch)`, all of which a `GitTarget` carries,
-and **identified** by the repository it is about, which only the `GitProvider` carries. A provider
-that names a different repository does not move a live worker; it replaces it, and the replacement
-starts with no clone, no base trust and no observation.
+worker is **keyed** by the repository branch, normalized as `internal/repourl` compares URLs, and
+writes with the one `GitProvider` that owns it: the GitProvider of the oldest `GitTarget` on the
+branch (`internal/git/branch_owner.go`). The `GitTarget` reconciler, the worker sweep and
+`EnsureWorker` decide ownership the same way, so a second `GitProvider` naming the repository gets no
+worker on that branch, however close together the two `GitTarget`s were created. A provider
+recreated under its name does not move a live worker; it replaces it, and the replacement starts
+with no clone, no base trust and no observation.
 
 `GitTarget.status.remote` is a **branch** fact published per target, and it is worth being exact
 about that, because the reverse reading is tempting and wrong. The commit and its `lastVerifiedAt`
@@ -1376,9 +1384,8 @@ no branch worker exists at all, including before any `GitTarget` has been create
 - **Source**: [internal/git/branch_worker.go](../internal/git/branch_worker.go)
 - **Worker manager**: [internal/git/worker_manager.go](../internal/git/worker_manager.go)
 
-`BranchWorker` owns a local clone and a single FIFO event loop for its `(provider namespace, provider,
-branch)` tuple. Events accumulate in one open commit window, which accepts only one `(author, GitTarget)`
-pair at a time:
+`BranchWorker` owns a local clone and a single FIFO event loop for its repository branch. Events
+accumulate in one open commit window, which accepts only one `(author, GitTarget)` pair at a time:
 
 - same author + same GitTarget: append to the window;
 - different author or GitTarget: finalize the current window first;
@@ -1387,7 +1394,7 @@ pair at a time:
 The window finalizes when its `idleTimeout` passes with no new matching event, its `maxDuration` runs
 out, the retained buffer reaches `--branch-buffer-max-size` (default `8Mi`), an `attach: Next`
 `CommitRequest` closes it, a resync, an atomic batch, a push-receiver delivery or shutdown arrives,
-or an apply comes due for an applier on the branch or on a sibling worker. The timers
+or an apply comes due for an applier on the branch. The timers
 are the GitTarget's `spec.commit.window` until a `CommitRequest` attaches and replaces them. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
 bursts. The one exception is an apply's flush: the writes decided before the apply came due are
@@ -1842,9 +1849,7 @@ Current limitations:
 - **An apply request cannot reserve time.** An edit made while the requested apply runs, to a field
   the applier sets, is reverted on the cluster. Its value stays in Git, because the applier's write
   over it is not mirrored, and the next apply restores it; until then the cluster runs the older
-  value. A sibling worker (another `GitProvider` on the same repository and branch) has no apply
-  window, so an edit made in its folders while the apply runs is reverted, and the sibling mirrors
-  the revert as an edit of its own. See [the apply window](design/apply-trigger.md#the-apply-window).
+  value. See [the apply window](design/apply-trigger.md#the-apply-window).
 - **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
   certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not

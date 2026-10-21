@@ -28,7 +28,7 @@ func parentBranchTarget(name, branch, path, parent string, created time.Time) *c
 			Name: name, Namespace: "shop", CreationTimestamp: metav1.NewTime(created),
 		},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "repo1"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "repo1"},
 			Branch:         branch,
 			Path:           path,
 			ParentBranch:   parent,
@@ -141,7 +141,7 @@ func TestParentBranchReadiness(t *testing.T) {
 	repo := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
 	target := parentBranchTarget("apps", "edits", "apps", "release", time.Now())
 
-	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status,
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, repo).Status,
 		"nothing has looked yet")
 
 	_, err := r.ensureEventStream(context.Background(), target, "shop", repo, logr.Discard())
@@ -149,7 +149,7 @@ func TestParentBranchReadiness(t *testing.T) {
 	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
 	worker.RecordMissingParentForTest("release")
 
-	got := r.parentBranchReadiness(target, "shop", repo)
+	got := r.parentBranchReadiness(target, repo)
 	assert.Equal(t, metav1.ConditionFalse, got.Status)
 	assert.Equal(t, GitTargetReasonParentBranchNotFound, got.Reason)
 	assert.Contains(t, got.Message, "'release'")
@@ -165,10 +165,10 @@ func TestParentBranchReadiness(t *testing.T) {
 	assert.Equal(t, GitTargetReasonParentBranchNotFound, trio.Ready.Reason)
 
 	target.Spec.ParentBranch = "other"
-	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status,
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, repo).Status,
 		"the observation is about another parent")
 	target.Spec.ParentBranch = ""
-	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status)
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, repo).Status)
 }
 
 // TestParentBranchReadiness_AnOmittedParentCanStall: with spec.parentBranch omitted, a remote that
@@ -183,19 +183,19 @@ func TestParentBranchReadiness_AnOmittedParentCanStall(t *testing.T) {
 	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
 
 	worker.RecordUnresolvedDefaultBranchForTest("master")
-	got := r.parentBranchReadiness(target, "shop", repo)
+	got := r.parentBranchReadiness(target, repo)
 	assert.Equal(t, metav1.ConditionFalse, got.Status)
 	assert.Equal(t, GitTargetReasonParentBranchNotFound, got.Reason)
 	assert.Contains(t, got.Message, "HEAD -> 'master'")
 	assert.Contains(t, got.Message, "spec.parentBranch")
 
 	worker.RecordUnresolvedDefaultBranchForTest("")
-	got = r.parentBranchReadiness(target, "shop", repo)
+	got = r.parentBranchReadiness(target, repo)
 	assert.Equal(t, GitTargetReasonParentBranchNotFound, got.Reason)
 	assert.Contains(t, got.Message, "no default branch")
 
 	worker.RecordMissingParentForTest("release")
-	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status,
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, repo).Status,
 		"an observation made under a configured parent is about another configuration")
 }
 
@@ -268,11 +268,11 @@ func TestParentBranchReadiness_IgnoresAnotherRepository(t *testing.T) {
 	require.NoError(t, err)
 	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
 	worker.RecordMissingParentForTest("release")
-	require.Equal(t, metav1.ConditionFalse, r.parentBranchReadiness(target, "shop", firstRepo).Status)
+	require.Equal(t, metav1.ConditionFalse, r.parentBranchReadiness(target, firstRepo).Status)
 
 	_, err = r.ensureEventStream(context.Background(), target, "shop", secondRepo, logr.Discard())
 	require.NoError(t, err)
-	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", secondRepo).Status,
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, secondRepo).Status,
 		"the old repository's missing parent is not evidence about the replacement")
 }
 

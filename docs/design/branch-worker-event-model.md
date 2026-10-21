@@ -63,9 +63,10 @@ fix promises an active recovery schedule, not a time by which an unavailable ser
 
 ## Why the branch worker remains the right owner
 
-One worker currently serves `(GitProvider namespace, GitProvider name, write branch)`. Several
-`GitTarget`s can share it. The provider's UID and URL identify the repository incarnation;
-replacing that identity replaces the worker and its checkout.
+One worker serves each repository branch (the normalized URL and the write branch), with the one
+`GitProvider` that owns it. Several `GitTarget`s can share it, from any namespace. The provider's UID
+and URL identify the repository incarnation; replacing that identity replaces the worker and its
+checkout.
 
 The event loop owns the open window, pending writes, deferred snapshots, request attachment, and
 parent recovery. One owner can decide whether a write joins a window, whether a save attaches,

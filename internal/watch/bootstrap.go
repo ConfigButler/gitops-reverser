@@ -114,10 +114,7 @@ func (m *Manager) resolveTargetAndProvider(
 			fmt.Errorf("resolving GitTarget %s/%s: %w", targetKey.Namespace, targetKey.Name, err)
 	}
 
-	providerKey := client.ObjectKey{
-		Name:      target.Spec.GitProviderRef.Name,
-		Namespace: target.Namespace,
-	}
+	providerKey := target.GitProviderKey()
 	var provider configv1alpha3.GitProvider
 	if err := m.Client.Get(ctx, providerKey, &provider); err != nil {
 		return configv1alpha3.GitTarget{}, configv1alpha3.GitProvider{},

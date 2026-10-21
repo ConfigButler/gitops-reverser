@@ -130,10 +130,11 @@ The journal and worker key must be:
 
     BranchWriteShard = canonical remote identity + branch
 
-The current GitProvider namespace/name plus branch key is not sufficient:
-multiple GitProvider objects can name the same repository and branch. The
-canonical remote identity should normalize the resolved Git URL and be hashed
-for key and Lease names. It must be exposed in logs, metrics, and target status.
+The branch worker is already keyed this way (`git.BranchKey`: the URL as
+`internal/repourl` normalizes it, and the branch), and one `GitProvider` owns a
+repository branch: a `GitTarget` writing it through another one is refused. The
+journal and Lease names should hash that key. It must be exposed in logs,
+metrics, and target status.
 
 URL normalization alone cannot prove that SSH and HTTPS URLs, redirects, or host aliases name the
 same repository. HA-0 must define the supported identity and alias rules and document any aliases
@@ -145,9 +146,10 @@ Overlapping paths must remain a reconciliation-time and writer-time refusal. Ret
 target incarnations alongside the shard key; sharing a destination must not silently combine
 incompatible policy or reroute old work to a replacement object with the same name.
 
-Before combining providers, define credential selection and compatibility for branch permissions,
-parent choice, and signing policy. Refuse incompatible bindings explicitly. A shared destination
-does not authorize one provider's work to use another provider's permissions.
+Providers are not combined: the branch's one `GitProvider` decides credential, branch
+permissions and signing policy, and `GitTarget`s in other namespaces share it through its
+`spec.accessFrom`. A shared destination does not authorize one provider's work to use another
+provider's permissions.
 
 ### Journal record
 

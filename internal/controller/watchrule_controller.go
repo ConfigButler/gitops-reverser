@@ -175,10 +175,10 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	ready := gitTargetReadyCondition(target)
 	st.set(ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
 
-	// Resolve the GitProvider named by the target. A meta.LocalObjectReference is a
-	// name-only reference to a GitProvider in the GitTarget's own namespace.
+	// Resolve the GitProvider named by the target, in its own namespace unless the reference names
+	// another one.
 	providerName := target.Spec.GitProviderRef.Name
-	providerNS := target.Namespace // GitProvider is namespace-local to the GitTarget
+	providerNS := target.GitProviderKey().Namespace
 
 	var provider configbutleraiv1alpha3.GitProvider
 	providerKey := types.NamespacedName{Name: providerName, Namespace: providerNS}
@@ -421,16 +421,16 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 	obj client.Object,
 ) []ctrlreconcile.Request {
 	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := r.List(ctx, &targets); err != nil {
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
 
-	matchingTargets := make(map[string]struct{})
+	matchingTargets := make(map[types.NamespacedName]struct{})
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.Spec.GitProviderRef.Name == obj.GetName() {
-			matchingTargets[t.Name] = struct{}{}
+		if namesGitProvider(t, obj) {
+			matchingTargets[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
 		}
 	}
 	if len(matchingTargets) == 0 {
@@ -438,7 +438,7 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 	}
 
 	var rules configbutleraiv1alpha3.WatchRuleList
-	if err := r.List(ctx, &rules, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := r.List(ctx, &rules); err != nil {
 		logDependencyListError(ctx, err, "WatchRules", obj)
 		return nil
 	}
@@ -446,7 +446,8 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 	var requests []ctrlreconcile.Request
 	for i := range rules.Items {
 		rule := &rules.Items[i]
-		if _, ok := matchingTargets[rule.Spec.GitTargetRef.Name]; !ok {
+		target := types.NamespacedName{Name: rule.Spec.GitTargetRef.Name, Namespace: rule.Namespace}
+		if _, ok := matchingTargets[target]; !ok {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{

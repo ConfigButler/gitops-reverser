@@ -112,7 +112,7 @@ func cwaGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaTargetName, Namespace: cwaTargetNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: cwaProviderName},
 			Branch:             "main",
 			Path:               "clusters/prod",

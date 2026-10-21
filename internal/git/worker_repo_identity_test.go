@@ -348,9 +348,9 @@ func TestEnsureWorker_HoldsTheReplacementUntilItIsAcknowledged(t *testing.T) {
 // new repository empty indefinitely. The recovery is now held until something acknowledges it.
 func TestEnsureWorker_AnUndeliveredRecoveryIsStillPendingOnTheNextPass(t *testing.T) {
 	manager, ctx := startedManager(t)
-	key := BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}
 	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+	key := BranchKeyFor(after.URL, "main")
 
 	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
 	require.False(t, manager.ReplacementPending(key))
@@ -375,9 +375,9 @@ func TestEnsureWorker_AnUndeliveredRecoveryIsStillPendingOnTheNextPass(t *testin
 // configuration: a branch whose last GitTarget is gone has no folder left to re-establish.
 func TestReconcileWorkers_DropsARecoveryForABranchNothingNeeds(t *testing.T) {
 	manager, ctx := startedManager(t)
-	key := BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}
 	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+	key := BranchKeyFor(after.URL, "main")
 
 	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
 	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))

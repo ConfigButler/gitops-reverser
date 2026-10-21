@@ -32,6 +32,11 @@ kinds:
         doc: Repository URL, SSH or HTTPS
       - path: allowedBranches
         doc: Branches a `GitTarget` may write. A target naming any other is rejected
+      - path: accessFrom
+        default: "**no other namespace**"
+        doc: >-
+          Other namespaces whose `GitTarget`s may write through this provider, by name or label
+          selector. Its own namespace is always admitted
       - path: secretRef
         default: anonymous access
         doc: >-
@@ -100,7 +105,9 @@ kinds:
     intro: "The destination fields are immutable: to move a target, delete it and create a new one."
     fields:
       - path: gitProviderRef
-        doc: The `GitProvider` backing this target, in the same namespace
+        doc: >-
+          The `GitProvider` backing this target: its own namespace, or `namespace` names one whose
+          `accessFrom` admits it. Every target on one repository branch names the same one
       - path: branch
         doc: Branch to write. Must be in the provider's `allowedBranches`
       - path: parentBranch
