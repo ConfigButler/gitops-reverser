@@ -3,126 +3,140 @@
 package git
 
 import (
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-
-	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// ownerTarget is a GitTarget in namespace writing main through the GitProvider provider
-// ("namespace/name", or a bare name for its own namespace), created age ago.
-func ownerTarget(namespace, name, provider string, age time.Duration) v1alpha3.GitTarget {
-	ref := meta.NamespacedObjectReference{Name: provider}
-	if ns, n, found := strings.Cut(provider, "/"); found {
-		ref = meta.NamespacedObjectReference{Namespace: ns, Name: n}
-	}
-	return v1alpha3.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespace, Name: name,
-			CreationTimestamp: metav1.NewTime(time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-age)),
-		},
-		Spec: v1alpha3.GitTargetSpec{GitProviderRef: ref, Branch: "main", Path: name},
+var claimEpoch = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+
+// claimant is a GitBranch namespace/name created age ago, with a UID of its name.
+func claimant(namespace, name string, age time.Duration) BranchClaimant {
+	return BranchClaimant{
+		GitBranch: k8stypes.NamespacedName{Namespace: namespace, Name: name},
+		UID:       k8stypes.UID(namespace + "/" + name),
+		Created:   claimEpoch.Add(-age),
 	}
 }
 
-// urlsOf resolves the GitProviders the ownership tests name.
-func urlsOf(urls map[string]string) func(k8stypes.NamespacedName) (string, bool) {
-	return func(provider k8stypes.NamespacedName) (string, bool) {
-		url, ok := urls[provider.String()]
-		return url, ok
-	}
+// TestBranchClaims_AnUnprovenGitBranchClaimsNothing is rule 1: a GitBranch with a bad credential,
+// created first, does not stop a valid one created later from claiming the branch.
+func TestBranchClaims_AnUnprovenGitBranchClaimsNothing(t *testing.T) {
+	claims := NewBranchClaims()
+	key := BranchKeyFor("https://github.com/acme/platform.git", "main")
+	squatter := claimant("team-x", "main", 2*time.Hour)
+	owner := claimant("platform", "main", time.Hour)
+
+	_, held := claims.Observe(key, squatter, false)
+	assert.False(t, held, "an unproven GitBranch holds nothing")
+
+	holder, held := claims.Observe(key, owner, true)
+	require.True(t, held)
+	assert.Equal(t, owner, holder)
 }
 
-// TestBranchOwners_TheOldestGitTargetsGitProviderOwnsTheBranch: GitTargets on one repository branch
-// through two GitProviders, spelled two ways. One worker writes the branch, with one credential, so
-// the oldest GitTarget decides whose; a GitTarget sharing that GitProvider from another namespace is
-// on the owner's side.
-func TestBranchOwners_TheOldestGitTargetsGitProviderOwnsTheBranch(t *testing.T) {
-	urls := urlsOf(map[string]string{
-		"team-a/monorepo": "https://github.com/acme/platform.git",
-		"team-b/monorepo": "git@github.com:acme/platform",
-	})
-	targets := []v1alpha3.GitTarget{
-		ownerTarget("team-b", "late", "monorepo", time.Hour),
-		ownerTarget("team-a", "first", "monorepo", 2*time.Hour),
-		ownerTarget("team-c", "shared", "team-a/monorepo", 3*time.Minute),
-	}
+// TestBranchClaims_TheOldestCandidateHoldsTheBranch is rule 2, across two spellings of one
+// repository: the younger GitBranch learns who holds it, whichever reconciles first.
+func TestBranchClaims_TheOldestCandidateHoldsTheBranch(t *testing.T) {
+	claims := NewBranchClaims()
+	https := BranchKeyFor("https://github.com/acme/platform.git", "main")
+	ssh := BranchKeyFor("git@github.com:acme/platform", "main")
+	require.Equal(t, https, ssh, "one repository, spelled two ways, is one key")
+	older := claimant("team-a", "main", 2*time.Hour)
+	younger := claimant("team-b", "main", time.Hour)
 
-	owners, err := BranchOwners(targets, urls, admitAll)
-	require.NoError(t, err)
+	holder, _ := claims.Observe(ssh, younger, true)
+	assert.Equal(t, younger, holder, "alone, the younger GitBranch holds the branch")
+	holder, _ = claims.Observe(https, older, true)
+	assert.Equal(t, older, holder, "an older candidate takes the branch over")
+	holder, _ = claims.Observe(ssh, younger, true)
+	assert.Equal(t, older, holder)
 
-	key := BranchKeyFor("https://github.com/acme/platform", "main")
-	assert.Len(t, owners, 1, "two spellings of one repository are one branch")
-	assert.Equal(t, BranchOwner{
-		Provider: k8stypes.NamespacedName{Namespace: "team-a", Name: "monorepo"},
-		Target:   k8stypes.NamespacedName{Namespace: "team-a", Name: "first"},
-	}, owners[key])
+	other := BranchKeyFor("https://github.com/acme/platform.git", "release")
+	holder, _ = claims.Observe(other, claimant("team-b", "release", time.Hour), true)
+	assert.Equal(t, "release", holder.GitBranch.Name, "another branch is another claim")
 }
 
-// TestBranchOwners_ADeletedOrUnresolvedGitTargetDecidesNothing: a GitTarget being deleted hands the
-// branch to the next one at once, and one whose GitProvider cannot be read writes nothing yet.
-func TestBranchOwners_ADeletedOrUnresolvedGitTargetDecidesNothing(t *testing.T) {
-	urls := urlsOf(map[string]string{
-		"team-a/monorepo": "https://github.com/acme/platform",
-		"team-b/monorepo": "https://github.com/acme/platform",
-	})
-	leaving := ownerTarget("team-a", "leaving", "monorepo", 2*time.Hour)
-	leaving.DeletionTimestamp = &metav1.Time{Time: time.Now()}
-	targets := []v1alpha3.GitTarget{
-		leaving,
-		ownerTarget("team-x", "unread", "gone", 3*time.Hour),
-		ownerTarget("team-b", "next", "monorepo", time.Hour),
-	}
+// TestBranchClaims_TheHolderKeepsTheBranchThroughAFailedProof is rule 3: a holder whose credential
+// starts failing keeps the branch, and does not hand it to a younger candidate. A candidate that is
+// not the holder stops being one when its proof fails.
+func TestBranchClaims_TheHolderKeepsTheBranchThroughAFailedProof(t *testing.T) {
+	claims := NewBranchClaims()
+	key := BranchKeyFor("https://github.com/acme/platform.git", "main")
+	holder := claimant("platform", "main", 2*time.Hour)
+	younger := claimant("team-b", "main", time.Hour)
+	claims.Observe(key, holder, true)
+	claims.Observe(key, younger, true)
 
-	owners, err := BranchOwners(targets, urls, admitAll)
-	require.NoError(t, err)
-	owner := owners[BranchKeyFor("https://github.com/acme/platform", "main")]
+	got, held := claims.Observe(key, holder, false)
+	require.True(t, held)
+	assert.Equal(t, holder, got, "the holder keeps the branch")
 
-	assert.Equal(t, k8stypes.NamespacedName{Namespace: "team-b", Name: "monorepo"}, owner.Provider)
+	claims.Observe(key, younger, false)
+	claims.Release(holder.UID)
+	_, held = claims.Holder(key)
+	assert.False(t, held, "a candidate whose proof failed does not inherit the branch")
+
+	got, held = claims.Observe(key, younger, true)
+	require.True(t, held)
+	assert.Equal(t, younger, got)
 }
 
-// TestBranchOwners_AGitTargetThatMayNotWriteDecidesNothing: an older GitTarget whose GitProvider
-// does not admit its namespace may not write, so it must not keep the branch from a younger one that
-// may. A read that fails is an error, never a refusal: it must not move the branch.
-func TestBranchOwners_AGitTargetThatMayNotWriteDecidesNothing(t *testing.T) {
-	urls := urlsOf(map[string]string{
-		"platform/monorepo": "https://github.com/acme/platform",
-		"team-b/monorepo":   "https://github.com/acme/platform",
-	})
-	targets := []v1alpha3.GitTarget{
-		ownerTarget("team-x", "refused", "platform/monorepo", 2*time.Hour),
-		ownerTarget("team-b", "admitted", "monorepo", time.Hour),
+// TestBranchClaims_ReleaseHandsTheBranchToTheNextCandidate: a deleted holder gives the branch to the
+// oldest remaining candidate, and HeldBy follows it.
+func TestBranchClaims_ReleaseHandsTheBranchToTheNextCandidate(t *testing.T) {
+	claims := NewBranchClaims()
+	key := BranchKeyFor("https://github.com/acme/platform.git", "main")
+	first := claimant("platform", "main", 3*time.Hour)
+	second := claimant("team-a", "main", 2*time.Hour)
+	third := claimant("team-b", "main", time.Hour)
+	for _, c := range []BranchClaimant{third, first, second} {
+		claims.Observe(key, c, true)
 	}
-	refuseTeamX := func(target *v1alpha3.GitTarget) (bool, error) { return target.Namespace != "team-x", nil }
 
-	owners, err := BranchOwners(targets, urls, refuseTeamX)
-	require.NoError(t, err)
-	assert.Equal(t, k8stypes.NamespacedName{Namespace: "team-b", Name: "monorepo"},
-		owners[BranchKeyFor("https://github.com/acme/platform", "main")].Provider)
-
-	_, err = BranchOwners(targets, urls, func(*v1alpha3.GitTarget) (bool, error) {
-		return false, errors.New("the cache is not having it")
-	})
-	require.Error(t, err)
+	claims.Release(first.UID)
+	gotKey, got, held := claims.HeldBy(second.GitBranch)
+	require.True(t, held)
+	assert.Equal(t, key, gotKey)
+	assert.Equal(t, second, got)
+	_, _, held = claims.HeldBy(first.GitBranch)
+	assert.False(t, held, "a released GitBranch holds nothing")
 }
 
-// admitAll admits every GitTarget.
-func admitAll(*v1alpha3.GitTarget) (bool, error) { return true, nil }
+// TestBranchClaims_AGitBranchThatNamesAnotherRepositoryGivesTheOldOneUp: its GitProvider was
+// recreated against another URL, so its claim moves with it and the old branch is free again.
+func TestBranchClaims_AGitBranchThatNamesAnotherRepositoryGivesTheOldOneUp(t *testing.T) {
+	claims := NewBranchClaims()
+	before := BranchKeyFor("https://github.com/acme/old.git", "main")
+	after := BranchKeyFor("https://github.com/acme/new.git", "main")
+	branch := claimant("platform", "main", time.Hour)
+	claims.Observe(before, branch, true)
 
-// TestOlderGitTarget_BreaksATieByIdentity: two GitTargets created in the same second are still
-// ordered, the same way by every caller.
-func TestOlderGitTarget_BreaksATieByIdentity(t *testing.T) {
-	a := ownerTarget("team-a", "x", "p", time.Hour)
-	b := ownerTarget("team-b", "x", "p", time.Hour)
-	assert.True(t, OlderGitTarget(&a, &b))
-	assert.False(t, OlderGitTarget(&b, &a))
-	assert.False(t, OlderGitTarget(&a, &a))
+	claims.Observe(after, branch, true)
+	_, held := claims.Holder(before)
+	assert.False(t, held)
+	got, held := claims.Holder(after)
+	require.True(t, held)
+	assert.Equal(t, branch, got)
+}
+
+// TestBranchClaims_ARecreatedGitBranchStartsWithoutTheClaim: the UID holds the claim, so an object
+// recreated under the same name holds nothing until its own proof.
+func TestBranchClaims_ARecreatedGitBranchStartsWithoutTheClaim(t *testing.T) {
+	claims := NewBranchClaims()
+	key := BranchKeyFor("https://github.com/acme/platform.git", "main")
+	old := claimant("platform", "main", time.Hour)
+	claims.Observe(key, old, true)
+	claims.Release(old.UID)
+
+	recreated := old
+	recreated.UID = "platform/main-2"
+	_, _, held := claims.HeldBy(recreated.GitBranch)
+	assert.False(t, held)
+	got, held := claims.Observe(key, recreated, true)
+	require.True(t, held)
+	assert.Equal(t, recreated.UID, got.UID)
 }

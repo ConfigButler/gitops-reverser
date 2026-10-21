@@ -64,6 +64,18 @@ func getAuthFromSecret(
 	return CredentialOptionsForProvider(provider, cred, transportPolicy)
 }
 
+// AuthForProvider resolves the GitProvider's credential into the transport options its branch
+// worker pushes with, so a caller proving the credential proves the one that will be used.
+func AuthForProvider(
+	ctx context.Context,
+	k8sClient client.Client,
+	provider *v1alpha3.GitProvider,
+	hostKeys SSHHostKeyConfig,
+	transportPolicy CredentialTransportPolicy,
+) ([]gitclient.Option, error) {
+	return getAuthFromSecret(ctx, k8sClient, provider, hostKeys, transportPolicy)
+}
+
 // CredentialOptionsForProvider applies transport policy to a resolved credential.
 func CredentialOptionsForProvider(
 	provider *v1alpha3.GitProvider,

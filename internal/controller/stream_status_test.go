@@ -83,8 +83,8 @@ func TestRuleReadiness_StallsOnTheGitTargetsVerdictWhateverItsReason(t *testing.
 	}{
 		{"refused folder", stalledTarget(GitTargetReasonAmbiguousLayout),
 			metav1.ConditionTrue, GitTargetReasonAmbiguousLayout},
-		{"no parent branch", stalledTarget(GitTargetReasonParentBranchNotFound),
-			metav1.ConditionTrue, GitTargetReasonParentBranchNotFound},
+		{"a conflicting path", stalledTarget(GitTargetReasonTargetConflict),
+			metav1.ConditionTrue, GitTargetReasonTargetConflict},
 		{"apply trigger on another source", stalledTarget(applier.ReasonSourceMismatch),
 			metav1.ConditionTrue, applier.ReasonSourceMismatch},
 		{"a reason this package has never heard of", stalledTarget("SomeFutureReason"),

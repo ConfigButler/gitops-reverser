@@ -356,8 +356,7 @@ func TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
-			Branch:         "main",
+			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	fresh := newCommitRequest("save-fresh")
@@ -367,7 +366,7 @@ func TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 	stale.Spec.GitTargetRef = meta.LocalObjectReference{Name: target.Name}
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
 	stale.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(stale.Spec).resolveTimeout()))
-	c := newCommitRequestClient(t, nil, fresh, stale, target)
+	c := newCommitRequestClient(t, nil, fresh, stale, target, gitBranchOn("team-a-provider", "default", "main"))
 	workers := git.NewWorkerManager(c, logr.Discard(), git.BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
 	router := watch.NewEventRouter(workers, nil, c, logr.Discard())
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: router, AuthorLookup: attributedAlice()}

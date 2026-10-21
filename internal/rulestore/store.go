@@ -28,10 +28,9 @@ type CompiledRule struct {
 	GitTargetNamespace string
 
 	// Resolved values (from GitTarget)
-	GitProviderRef       string
-	GitProviderNamespace string
-	Branch               string
-	Path                 string
+	GitBranchRef       string
+	GitBranchNamespace string
+	Path               string
 
 	// CreatedAt is the WatchRule's creation timestamp. Where two rules on one GitTarget ask for
 	// overlapping collections with different object selectors, the older rule (then the lower
@@ -135,10 +134,9 @@ type CompiledClusterRule struct {
 	GitTargetNamespace string
 
 	// Resolved values (from GitTarget)
-	GitProviderRef       string
-	GitProviderNamespace string
-	Branch               string
-	Path                 string
+	GitBranchRef       string
+	GitBranchNamespace string
+	Path               string
 
 	// CreatedAt is the ClusterWatchRule's creation timestamp; see CompiledRule.CreatedAt.
 	CreatedAt metav1.Time
@@ -190,18 +188,16 @@ func NewStore() *RuleStore {
 //     authz.ResolveWatchRuleSourceScope).
 //   - gitTargetName: the name of the GitTarget
 //   - gitTargetNamespace: the namespace containing the GitTarget
-//   - gitProviderName: the name of the resolved GitProvider (from GitTarget.Spec.Provider)
-//   - gitProviderNamespace: the namespace containing the resolved GitProvider
-//   - branch: the Git branch to write to (from GitTarget.Spec.Branch)
+//   - gitBranchName: the GitBranch the GitTarget writes (from GitTarget.Spec.GitBranchRef)
+//   - gitBranchNamespace: the namespace containing that GitBranch
 //   - path: POSIX-like relative path prefix for writes (from GitTarget.Spec.Path, sanitized upstream)
 func (s *RuleStore) AddOrUpdateWatchRule(
 	rule configv1alpha3.WatchRule,
 	sourceNamespaces [][]string,
 	gitTargetName string,
 	gitTargetNamespace string,
-	gitProviderName string,
-	gitProviderNamespace string,
-	branch string,
+	gitBranchName string,
+	gitBranchNamespace string,
 	path string,
 ) {
 	s.mu.Lock()
@@ -213,16 +209,15 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 	}
 
 	compiled := CompiledRule{
-		Source:               key,
-		GitTargetRef:         gitTargetName,
-		GitTargetNamespace:   gitTargetNamespace,
-		GitProviderRef:       gitProviderName,
-		GitProviderNamespace: gitProviderNamespace,
-		Branch:               branch,
-		Path:                 path,
-		CreatedAt:            rule.CreationTimestamp,
-		IsClusterScoped:      false,
-		ResourceRules:        make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
+		Source:             key,
+		GitTargetRef:       gitTargetName,
+		GitTargetNamespace: gitTargetNamespace,
+		GitBranchRef:       gitBranchName,
+		GitBranchNamespace: gitBranchNamespace,
+		Path:               path,
+		CreatedAt:          rule.CreationTimestamp,
+		IsClusterScoped:    false,
+		ResourceRules:      make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
 	}
 
 	for i, r := range rule.Spec.Rules {
@@ -265,17 +260,15 @@ func (s *RuleStore) GetWatchRule(key types.NamespacedName) (CompiledRule, bool) 
 //   - rule: the ClusterWatchRule to add or update
 //   - gitTargetName: the name of the GitTarget
 //   - gitTargetNamespace: the namespace containing the GitTarget
-//   - gitProviderName: the name of the resolved GitProvider (from GitTarget.Spec.Provider)
-//   - gitProviderNamespace: the namespace containing the resolved GitProvider
-//   - branch: the Git branch to write to (from GitTarget.Spec.Branch)
+//   - gitBranchName: the GitBranch the GitTarget writes (from GitTarget.Spec.GitBranchRef)
+//   - gitBranchNamespace: the namespace containing that GitBranch
 //   - path: POSIX-like relative path prefix for writes (from GitTarget.Spec.Path, sanitized upstream)
 func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	rule configv1alpha3.ClusterWatchRule,
 	gitTargetName string,
 	gitTargetNamespace string,
-	gitProviderName string,
-	gitProviderNamespace string,
-	branch string,
+	gitBranchName string,
+	gitBranchNamespace string,
 	path string,
 ) {
 	s.mu.Lock()
@@ -287,15 +280,14 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	}
 
 	compiled := CompiledClusterRule{
-		Source:               key,
-		GitTargetRef:         gitTargetName,
-		GitTargetNamespace:   gitTargetNamespace,
-		GitProviderRef:       gitProviderName,
-		GitProviderNamespace: gitProviderNamespace,
-		Branch:               branch,
-		Path:                 path,
-		CreatedAt:            rule.CreationTimestamp,
-		Rules:                make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
+		Source:             key,
+		GitTargetRef:       gitTargetName,
+		GitTargetNamespace: gitTargetNamespace,
+		GitBranchRef:       gitBranchName,
+		GitBranchNamespace: gitBranchNamespace,
+		Path:               path,
+		CreatedAt:          rule.CreationTimestamp,
+		Rules:              make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
 	}
 
 	for _, r := range rule.Spec.Rules {

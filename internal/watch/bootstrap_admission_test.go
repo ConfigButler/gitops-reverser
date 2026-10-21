@@ -35,9 +35,8 @@ func bootGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: bootTargetName, Namespace: bootTargetNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
+			GitBranchRef:       &meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
-			Branch:             "main",
 			Path:               "clusters/prod",
 		},
 	}
@@ -132,7 +131,6 @@ func TestBootstrapClusterWatchRule_SeedsAdmittedRule(t *testing.T) {
 	assert.Equal(t, bootRuleName, compiled[0].Source.Name)
 	assert.Equal(t, bootTargetName, compiled[0].GitTargetRef)
 	assert.Equal(t, bootTargetNS, compiled[0].GitTargetNamespace)
-	assert.Equal(t, "main", compiled[0].Branch)
 	assert.Equal(t, "clusters/prod", compiled[0].Path)
 }
 
@@ -143,9 +141,8 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 	admittedTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ok-mirror", Namespace: "team-ok"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
+			GitBranchRef:       &meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
-			Branch:             "main",
 			Path:               "clusters/ok",
 		},
 	}
@@ -209,7 +206,7 @@ func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.
 	)
 
 	decision, err := CompileClusterWatchRule(
-		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget(), *bootGitProvider())
+		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget())
 	require.NoError(t, err)
 	require.True(t, decision.Admitted)
 	require.Len(t, bootCompiledNames(m), 1, "precondition: the rule is compiled")
@@ -221,7 +218,7 @@ func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.
 	require.NoError(t, m.Client.Update(ctx, &provider))
 
 	decision, err = CompileClusterWatchRule(
-		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget(), *bootGitProvider())
+		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget())
 
 	require.NoError(t, err)
 	assert.False(t, decision.Admitted)

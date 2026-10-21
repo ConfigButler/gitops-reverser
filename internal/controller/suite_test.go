@@ -39,6 +39,9 @@ var (
 	cancel        context.CancelFunc
 	mgr           manager.Manager
 	testRuleStore *rulestore.RuleStore
+	// testWorkerManager is the suite's worker manager. No GitBranch reconciler runs here, so a spec
+	// that needs a GitBranch to hold its branch claims it directly (holdGitBranchForTest).
+	testWorkerManager *git.WorkerManager
 )
 
 func TestControllers(t *testing.T) {
@@ -98,9 +101,10 @@ var _ = BeforeSuite(func() {
 	testRuleStore = rulestore.NewStore()
 
 	// Initialize WorkerManager for new architecture
-	workerManager := git.NewWorkerManager(
+	testWorkerManager = git.NewWorkerManager(
 		mgr.GetClient(), logf.Log.WithName("worker-manager"), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{},
 	)
+	workerManager := testWorkerManager
 	err = mgr.Add(workerManager)
 	Expect(err).NotTo(HaveOccurred())
 

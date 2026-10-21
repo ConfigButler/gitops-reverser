@@ -3,81 +3,156 @@
 package git
 
 import (
-	k8stypes "k8s.io/apimachinery/pkg/types"
+	"sync"
+	"time"
 
-	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 )
 
-// One GitProvider per repository branch.
+// One GitBranch per repository branch.
 //
-// A branch worker is keyed by its repository and branch (BranchKey), and pushes with one
-// credential. So every GitTarget that writes one repository branch must name the same
-// GitProvider; a GitTarget in another namespace reaches a shared one through
-// spec.gitProviderRef.namespace, which the provider's spec.accessFrom admits. When GitTargets on
-// one repository branch name different GitProviders anyway, the oldest GitTarget's GitProvider
-// owns the branch, and the others are refused (TargetConflict) and are written by no worker. The
-// GitTarget reconciler, the worker sweep and EnsureWorker all decide it here, so they cannot
-// disagree.
+// A branch worker is keyed by its repository and branch (BranchKey) and pushes with one credential,
+// so exactly one GitBranch may write a repository branch: the one holding its claim. The rules are
+// the plan's (docs/design/gitbranch-and-kubeprovider-plan.md):
+//
+//  1. A GitBranch becomes a candidate once its credential opens a receive-pack session on the
+//     remote (ProvePushSession). An unproven GitBranch claims nothing, so creating one first
+//     cannot block anybody.
+//  2. Among the candidates for one key, the oldest by creationTimestamp, then UID, holds the claim.
+//  3. The holder stays a candidate through a later credential or network failure, so it keeps the
+//     claim and does not hand the branch to another GitBranch. Any other candidate whose proof
+//     fails stops being one.
+//  4. The claim lives here, in the manager's memory. After a restart it is recomputed by 1 and 2.
+//
+// The GitBranch reconciler feeds it (Observe, Release); the GitTarget reconciler, the worker sweep
+// and EnsureWorker read it, so they cannot disagree about who writes a branch.
 
-// BranchOwner is the GitProvider that writes a repository branch, and the GitTarget that decided
-// it: the oldest one writing that branch.
-type BranchOwner struct {
-	Provider k8stypes.NamespacedName
-	Target   k8stypes.NamespacedName
+// BranchClaimant is a GitBranch as the claim sees it: which object, and how old.
+type BranchClaimant struct {
+	GitBranch k8stypes.NamespacedName
+	UID       k8stypes.UID
+	Created   time.Time
 }
 
-// BranchOwners decides the owner of every repository branch the targets write. urlOf resolves a
-// GitProvider to its spec.url; a GitTarget whose GitProvider it cannot resolve writes nothing yet,
-// and decides nothing. A GitTarget being deleted decides nothing either, so the next one takes the
-// branch over at once. Nor does one admitted reports refused (authz.GitTargetAdmitted: its
-// ClusterProvider or its GitProvider does not admit its namespace): it may not write, so it must not
-// keep the branch from a GitTarget that may. An error from admitted is returned, never read as a
-// refusal, so a read that fails moves no branch.
-func BranchOwners(
-	targets []v1alpha3.GitTarget,
-	urlOf func(provider k8stypes.NamespacedName) (string, bool),
-	admitted func(target *v1alpha3.GitTarget) (bool, error),
-) (map[BranchKey]BranchOwner, error) {
-	owners := map[BranchKey]BranchOwner{}
-	oldest := map[BranchKey]*v1alpha3.GitTarget{}
-	for i := range targets {
-		target := &targets[i]
-		if !target.DeletionTimestamp.IsZero() {
-			continue
-		}
-		url, ok := urlOf(target.GitProviderKey())
-		if !ok {
-			continue
-		}
-		allowed, err := admitted(target)
-		if err != nil {
-			return nil, err
-		}
-		if !allowed {
-			continue
-		}
-		key := BranchKeyFor(url, target.Spec.Branch)
-		if key == (BranchKey{}) {
-			continue
-		}
-		if current, held := oldest[key]; held && !OlderGitTarget(target, current) {
-			continue
-		}
-		oldest[key] = target
-		owners[key] = BranchOwner{
-			Provider: target.GitProviderKey(),
-			Target:   k8stypes.NamespacedName{Namespace: target.Namespace, Name: target.Name},
-		}
+// olderThan orders two claimants: creationTimestamp first, then UID, so every caller and every
+// restart elects the same one.
+func (c BranchClaimant) olderThan(other BranchClaimant) bool {
+	if !c.Created.Equal(other.Created) {
+		return c.Created.Before(other.Created)
 	}
-	return owners, nil
+	return c.UID < other.UID
 }
 
-// OlderGitTarget reports whether a was created before b, ties broken by namespace and name, so every
-// caller orders two GitTargets the same way.
-func OlderGitTarget(a, b *v1alpha3.GitTarget) bool {
-	at, bt := a.CreationTimestamp.Time, b.CreationTimestamp.Time
-	if !at.Equal(bt) {
-		return at.Before(bt)
+type claimEntry struct {
+	claimant  BranchClaimant
+	key       BranchKey
+	candidate bool
+}
+
+// BranchClaims records which GitBranch holds each repository branch. Its zero value is not usable;
+// use NewBranchClaims.
+type BranchClaims struct {
+	mu      sync.RWMutex
+	entries map[k8stypes.UID]*claimEntry
+	holders map[BranchKey]k8stypes.UID
+}
+
+// NewBranchClaims returns an empty claim registry.
+func NewBranchClaims() *BranchClaims {
+	return &BranchClaims{
+		entries: map[k8stypes.UID]*claimEntry{},
+		holders: map[BranchKey]k8stypes.UID{},
 	}
-	return a.Namespace+"/"+a.Name < b.Namespace+"/"+b.Name
+}
+
+// Observe records what a GitBranch's reconcile found: the key it names now and whether its proof
+// succeeded. It returns who holds the key afterwards. A GitBranch that names another key than it
+// did before (its GitProvider was recreated against another repository) gives up the old one first.
+func (c *BranchClaims) Observe(key BranchKey, claimant BranchClaimant, proven bool) (BranchClaimant, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, known := c.entries[claimant.UID]
+	if known && entry.key != key {
+		c.releaseLocked(claimant.UID)
+		known = false
+	}
+	if !known {
+		entry = &claimEntry{claimant: claimant, key: key}
+		c.entries[claimant.UID] = entry
+	}
+	// Rule 3: the holder's candidacy survives a failed proof. Everyone else's follows the proof.
+	if c.holders[key] != claimant.UID {
+		entry.candidate = proven
+	}
+	c.electLocked(key)
+	return c.holderLocked(key)
+}
+
+// Release forgets a GitBranch: it is being deleted, and its worker has stopped. If it held its key,
+// the oldest remaining candidate takes it over.
+func (c *BranchClaims) Release(uid k8stypes.UID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.releaseLocked(uid)
+}
+
+func (c *BranchClaims) releaseLocked(uid k8stypes.UID) {
+	entry, known := c.entries[uid]
+	if !known {
+		return
+	}
+	delete(c.entries, uid)
+	if c.holders[entry.key] == uid {
+		delete(c.holders, entry.key)
+	}
+	c.electLocked(entry.key)
+}
+
+// electLocked applies rule 2: the oldest candidate for key holds it. A holder is always a candidate,
+// so an older GitBranch that proves itself later takes the key over; that is the rule, and it is
+// what makes the outcome the same after a restart.
+func (c *BranchClaims) electLocked(key BranchKey) {
+	var oldest *claimEntry
+	for _, entry := range c.entries {
+		if entry.key != key || !entry.candidate {
+			continue
+		}
+		if oldest == nil || entry.claimant.olderThan(oldest.claimant) {
+			oldest = entry
+		}
+	}
+	if oldest == nil {
+		delete(c.holders, key)
+		return
+	}
+	c.holders[key] = oldest.claimant.UID
+}
+
+// Holder returns the GitBranch holding key.
+func (c *BranchClaims) Holder(key BranchKey) (BranchClaimant, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.holderLocked(key)
+}
+
+func (c *BranchClaims) holderLocked(key BranchKey) (BranchClaimant, bool) {
+	uid, held := c.holders[key]
+	if !held {
+		return BranchClaimant{}, false
+	}
+	return c.entries[uid].claimant, true
+}
+
+// HeldBy returns the key the named GitBranch holds, if it holds one. GitTargets reference a
+// GitBranch by name; a recreated object with that name is a new UID, and it holds nothing until it
+// has proved itself (Observe), because Release forgot the old one before its finalizer went.
+func (c *BranchClaims) HeldBy(gitBranch k8stypes.NamespacedName) (BranchKey, BranchClaimant, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for key, uid := range c.holders {
+		if claimant := c.entries[uid].claimant; claimant.GitBranch == gitBranch {
+			return key, claimant, true
+		}
+	}
+	return BranchKey{}, BranchClaimant{}, false
 }

@@ -203,9 +203,8 @@ func diamondGitTarget(providerName, branch string) *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "podinfo-test", Namespace: "default"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: providerName},
-			Branch:         branch,
-			Path:           "",
+			GitBranchRef: &meta.NamespacedObjectReference{Name: testGitBranchName(providerName, branch)},
+			Path:         "",
 		},
 	}
 }

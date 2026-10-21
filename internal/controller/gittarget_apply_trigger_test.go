@@ -25,7 +25,7 @@ func triggerTarget(named bool) *configbutleraiv1alpha3.GitTarget {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: "platform"}, Branch: "main", Path: "apps",
+			GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("platform", "main")}, Path: "apps",
 		},
 	}
 	if named {
@@ -36,8 +36,17 @@ func triggerTarget(named bool) *configbutleraiv1alpha3.GitTarget {
 	return target
 }
 
-func triggerProvider() *configbutleraiv1alpha3.GitProvider {
-	return &configbutleraiv1alpha3.GitProvider{Spec: configbutleraiv1alpha3.GitProviderSpec{URL: applierTestRepo}}
+// triggerDestination is what triggerTarget's spec.gitBranchRef resolves to: branch main of the test
+// repository.
+func triggerDestination() gitDestination {
+	branch := gitBranch("platform", "team-a")
+	return gitDestination{
+		key:    ctrlclient.ObjectKeyFromObject(branch),
+		branch: branch,
+		provider: &configbutleraiv1alpha3.GitProvider{
+			Spec: configbutleraiv1alpha3.GitProviderSpec{URL: applierTestRepo},
+		},
+	}
 }
 
 // readyTrigger is the FluxTrigger checkout, as its reconciler published it: Ready with status,
@@ -67,7 +76,7 @@ func TestObserveApplyTrigger_NoReferenceRemovesTheCondition(t *testing.T) {
 	st := beginStatus(nil, nil, target)
 
 	r := &GitTargetReconciler{Client: triggerTestClient(t)}
-	_, present := r.observeApplyTrigger(context.Background(), st, target, triggerProvider())
+	_, present := r.observeApplyTrigger(context.Background(), st, target, triggerDestination())
 
 	assert.False(t, present)
 	assert.Nil(t, findCondition(target.Status.Conditions, GitTargetConditionApplyTriggerReady))
@@ -119,7 +128,7 @@ func TestObserveApplyTrigger_Verdicts(t *testing.T) {
 			target := triggerTarget(true)
 			st := beginStatus(nil, nil, target)
 
-			verdict, present := r.observeApplyTrigger(context.Background(), st, target, triggerProvider())
+			verdict, present := r.observeApplyTrigger(context.Background(), st, target, triggerDestination())
 
 			require.True(t, present)
 			assert.Equal(t, tc.wantStatus, verdict.value.Status, verdict.value.Message)
@@ -145,7 +154,12 @@ func TestObserveApplyTrigger_AReadyOfAnOlderGenerationIsNotReady(t *testing.T) {
 	r := &GitTargetReconciler{Client: triggerTestClient(t, trigger)}
 	target := triggerTarget(true)
 
-	verdict, _ := r.observeApplyTrigger(context.Background(), beginStatus(nil, nil, target), target, triggerProvider())
+	verdict, _ := r.observeApplyTrigger(
+		context.Background(),
+		beginStatus(nil, nil, target),
+		target,
+		triggerDestination(),
+	)
 
 	assert.Equal(t, metav1.ConditionUnknown, verdict.value.Status)
 }
@@ -199,13 +213,23 @@ func TestObserveApplyTrigger_AFailedReadKeepsThePublishedVerdict(t *testing.T) {
 	r := &GitTargetReconciler{Client: failing}
 
 	target := triggerTarget(true)
-	verdict, _ := r.observeApplyTrigger(context.Background(), beginStatus(nil, nil, target), target, triggerProvider())
+	verdict, _ := r.observeApplyTrigger(
+		context.Background(),
+		beginStatus(nil, nil, target),
+		target,
+		triggerDestination(),
+	)
 	assert.Equal(t, metav1.ConditionUnknown, verdict.value.Status, "nothing published yet")
 
 	target = triggerTarget(true)
 	target.Status.Conditions = []metav1.Condition{{
 		Type: GitTargetConditionApplyTriggerReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
 	}}
-	verdict, _ = r.observeApplyTrigger(context.Background(), beginStatus(nil, nil, target), target, triggerProvider())
+	verdict, _ = r.observeApplyTrigger(
+		context.Background(),
+		beginStatus(nil, nil, target),
+		target,
+		triggerDestination(),
+	)
 	assert.Equal(t, metav1.ConditionTrue, verdict.value.Status, "the published verdict stands")
 }

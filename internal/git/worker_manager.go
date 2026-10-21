@@ -167,6 +167,16 @@ type WorkerManager struct {
 	// PublicationEvents.
 	publicationEvents chan event.GenericEvent
 
+	// gitBranchEvents carries the GitBranch whose worker proved something new about the remote or
+	// whose publication report changed. See GitBranchEvents.
+	gitBranchEvents chan event.GenericEvent
+
+	// claims is which GitBranch holds each repository branch (branch_owner.go). The GitBranch
+	// reconciler writes it; EnsureWorker and the sweep read it. Reach it through Claims, which makes
+	// one for a manager not built by NewWorkerManager.
+	claims     *BranchClaims
+	claimsOnce sync.Once
+
 	// initialSnapshots and resyncRecheck are the watch side's half of the applier-echo rules every
 	// worker follows (apply_epoch.go). Set once at startup (SetSnapshotHooks); nil in the CLI and in
 	// tests.
@@ -212,8 +222,20 @@ func NewWorkerManager(
 		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
 		publicationEvents:  make(chan event.GenericEvent, publicationEventBuffer),
+		gitBranchEvents:    make(chan event.GenericEvent, publicationEventBuffer),
+		claims:             NewBranchClaims(),
 		applierAdmitted:    authz.ApplierAdmitted,
 	}
+}
+
+// Claims is the registry of which GitBranch holds each repository branch.
+func (m *WorkerManager) Claims() *BranchClaims {
+	m.claimsOnce.Do(func() {
+		if m.claims == nil {
+			m.claims = NewBranchClaims()
+		}
+	})
+	return m.claims
 }
 
 // RenderFidelityGate returns the manager-wide target gate used by branch workers. The gate is
@@ -322,6 +344,9 @@ func (m *WorkerManager) recordRemoteObservation(key BranchKey, observed RemoteOb
 		m.remotes = map[BranchKey]RemoteObservation{}
 	}
 	m.remotes[key] = observed
+	if worker, live := m.workers[key]; live {
+		m.notifyGitBranchLocked(worker.GitBranch)
+	}
 }
 
 // RemoteForBranch is what this branch was last proved to be at, and whether anything has looked at
@@ -338,16 +363,36 @@ func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool)
 	return observed, known
 }
 
-// EnsureWorker ensures a worker exists for the given (provider, branch), keyed by the repository
-// branch it writes (BranchKey), and that it is the worker for the repository the GitProvider names
-// NOW. A second GitProvider on a repository branch another one's worker writes is refused
-// (ErrBranchOwnedElsewhere).
+// WorkerRequest names the branch worker a GitTarget needs: the GitBranch holding the branch, the
+// GitProvider (in the GitBranch's namespace) it writes with, and the repository that provider names.
+type WorkerRequest struct {
+	// GitBranch is the claim holder the worker writes for.
+	GitBranch k8stypes.NamespacedName
+	// Provider is the GitBranch's GitProvider, by name, in the GitBranch's namespace.
+	Provider string
+	// Branch is the GitBranch's spec.branch.
+	Branch string
+	// Repo is the repository the GitProvider names now.
+	Repo RepoIdentity
+	// ParentBranch is the GitBranch's spec.parentBranch.
+	ParentBranch string
+}
+
+func (r WorkerRequest) provider() k8stypes.NamespacedName {
+	return k8stypes.NamespacedName{Namespace: r.GitBranch.Namespace, Name: r.Provider}
+}
+
+// EnsureWorker ensures a worker exists for the repository branch req names, keyed by that branch
+// (BranchKey), and that it is the worker for the repository the GitProvider names NOW. Only the
+// GitBranch holding the branch's claim (branch_owner.go) gets one: any other is refused
+// (ErrBranchOwnedElsewhere), and so is a request while another GitBranch's worker is still live on
+// the branch, which the sweep retires.
 //
-// repo is the caller's answer to "which repository is this"; the reconcile has already read the
-// GitProvider one gate earlier, so it costs no API call. A slot holding a worker for a DIFFERENT
-// repository is not corrected field by field — the clone, the base trust, the observation and the
-// retained writes are all statements about the old one — so that worker is stopped, its checkout
-// reclaimed, and a fresh one takes the slot.
+// req.Repo is the caller's answer to "which repository is this"; the reconcile has already read the
+// GitProvider, so it costs no API call. A slot holding a worker for a DIFFERENT repository is not
+// corrected field by field — the clone, the base trust, the observation and the retained writes are
+// all statements about the old one — so that worker is stopped, its checkout reclaimed, and a fresh
+// one takes the slot.
 //
 // A replacement is not complete when it returns: the new worker has no clone and no queue, so
 // every GitTarget on that branch has to re-establish its folder against the new repository. That
@@ -355,43 +400,39 @@ func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool)
 // and the caller can fail. See ReplacementPending; the delivery is the GitTarget reconcile's
 // worker wiring gate.
 //
-// parentBranch is the GitTarget's spec.parentBranch. It is immutable on a GitTarget, so a live
-// worker sees a different one only when every target on its branch was replaced before the worker
-// sweep ran. That is not a replacement: the worker keeps its clone, and SetParentBranch raises the
-// parent generation, so nothing planned under the old parent is pushed and retained writes are
-// rebuilt on the new one.
+// req.ParentBranch is immutable on a GitBranch, so a live worker sees a different one only when its
+// GitBranch was replaced before the worker sweep ran. That is not a replacement: the worker keeps
+// its clone, and SetParentBranch raises the parent generation, so nothing planned under the old
+// parent is pushed and retained writes are rebuilt on the new one.
 //
 // Worker creation/start is protected by the manager lock.
-func (m *WorkerManager) EnsureWorker(
-	_ context.Context,
-	providerName, providerNamespace string,
-	branch string,
-	repo RepoIdentity,
-	parentBranch string,
-) error {
+func (m *WorkerManager) EnsureWorker(_ context.Context, req WorkerRequest) error {
 	// Held across the whole check-and-create so a replacement cannot start while the worker it
 	// replaces is still stopping; they would share a clone.
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 
-	key := BranchKeyFor(repo.URL, branch)
+	repo := req.Repo
+	key := BranchKeyFor(repo.URL, req.Branch)
 	if key == (BranchKey{}) {
-		return fmt.Errorf("GitProvider %s/%s names no repository", providerNamespace, providerName)
+		return fmt.Errorf("GitProvider %s names no repository", req.provider())
 	}
-	provider := k8stypes.NamespacedName{Namespace: providerNamespace, Name: providerName}
+	if err := m.refuseUnclaimed(key, req.GitBranch); err != nil {
+		return err
+	}
 
 	m.mu.RLock()
 	existing, exists := m.workers[key]
-	previous, hadPrevious := m.workerServingLocked(provider, branch)
+	previous, hadPrevious := m.workerServingLocked(req.GitBranch)
 	m.mu.RUnlock()
 
-	if exists && existing.provider() != provider {
-		return fmt.Errorf("%w: %s, through GitProvider %s", ErrBranchOwnedElsewhere, key, existing.provider())
+	if exists && existing.GitBranch != req.GitBranch {
+		return fmt.Errorf("%w: %s, by GitBranch %s", ErrBranchOwnedElsewhere, key, existing.GitBranch)
 	}
-	if !exists && hadPrevious {
-		// This GitProvider's worker on this branch writes another repository: the GitProvider was
-		// recreated under its name with another URL. The new repository is a new key, and the old
-		// worker's clone, base trust and retained writes are about the old repository.
+	if !exists && hadPrevious && previous != key {
+		// This GitBranch's worker writes another repository: its GitProvider was recreated under
+		// its name with another URL. The new repository is a new key, and the old worker's clone,
+		// base trust and retained writes are about the old repository.
 		m.Log.Info("GitProvider now names a different repository; replacing the branch worker",
 			"key", key.String(), "was", previous.String())
 		m.removeWorkersLocked([]BranchKey{previous}, "the GitProvider names a different repository")
@@ -400,9 +441,9 @@ func (m *WorkerManager) EnsureWorker(
 	}
 	if exists {
 		if existing.repo == repo {
-			if existing.SetParentBranch(parentBranch) {
+			if existing.SetParentBranch(req.ParentBranch) {
 				m.Log.Info("Parent branch changed; the worker re-reads the remote on its next cycle",
-					"key", key.String(), "parentBranch", parentBranch)
+					"key", key.String(), "parentBranch", req.ParentBranch)
 			}
 			return nil
 		}
@@ -421,20 +462,28 @@ func (m *WorkerManager) EnsureWorker(
 	defer m.mu.Unlock()
 
 	if _, live := m.workers[key]; !live {
-		return m.startWorkerLocked(key, provider, repo, parentBranch)
+		return m.startWorkerLocked(key, req)
 	}
 
 	return nil
 }
 
+// refuseUnclaimed is EnsureWorker's claim check: only the GitBranch holding key gets its worker.
+func (m *WorkerManager) refuseUnclaimed(key BranchKey, gitBranch k8stypes.NamespacedName) error {
+	holder, held := m.Claims().Holder(key)
+	switch {
+	case !held:
+		return fmt.Errorf("%w: %s, and no GitBranch holds it yet", ErrBranchOwnedElsewhere, key)
+	case holder.GitBranch != gitBranch:
+		return fmt.Errorf("%w: %s, held by GitBranch %s", ErrBranchOwnedElsewhere, key, holder.GitBranch)
+	}
+	return nil
+}
+
 // startWorkerLocked creates and starts the worker for key, writing through provider, and records
 // it. Called with lifecycleMu and mu held.
-func (m *WorkerManager) startWorkerLocked(
-	key BranchKey,
-	provider k8stypes.NamespacedName,
-	repo RepoIdentity,
-	parentBranch string,
-) error {
+func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest) error {
+	provider, repo, parentBranch := req.provider(), req.Repo, req.ParentBranch
 	providerName, providerNamespace, branch := provider.Name, provider.Namespace, key.Branch
 	m.Log.Info("Creating new branch worker", "key", key.String(), "repository", repo.String())
 	worker := NewBranchWorker(
@@ -450,6 +499,7 @@ func (m *WorkerManager) startWorkerLocked(
 	// Inject the resolver before Start: the field is read only by the event-loop
 	// goroutine Start spawns, so setting it here (under m.mu, before that goroutine
 	// exists) is race-free.
+	worker.GitBranch = req.GitBranch
 	worker.SetParentBranch(parentBranch)
 	worker.mapper = m.mapper
 	worker.clusterMapper = m.clusterMapper
@@ -459,7 +509,8 @@ func (m *WorkerManager) startWorkerLocked(
 	worker.layoutReporter = m.layoutReporter
 	worker.remoteReporter = func(observed RemoteObservation) { m.recordRemoteObservation(key, observed) }
 	managerCtx := m.ctx // read under m.mu; the worker's loop calls the reporter later
-	worker.publicationReporter = func() { go m.notifyPublication(managerCtx, provider, branch) }
+	gitBranch := req.GitBranch
+	worker.publicationReporter = func() { go m.notifyPublication(managerCtx, gitBranch) }
 	worker.scanAcceptance = m.scanAcceptance
 	worker.applyRequester = m.applyRequester
 	worker.triggerStatus = m.triggerStatus
@@ -477,23 +528,42 @@ func (m *WorkerManager) startWorkerLocked(
 	return nil
 }
 
-// ErrBranchOwnedElsewhere is EnsureWorker's refusal to let a second GitProvider write a repository
-// branch (branch_owner.go). The GitTarget reconciler refuses such a GitTarget first; this holds
-// when two GitTargets are created too close together for either reconcile to see the other, and
-// while a branch passes to another GitProvider. The worker sweep stops the worker of a GitProvider
-// that does not own its branch, and the owner's next reconcile starts its own.
-var ErrBranchOwnedElsewhere = errors.New("another GitProvider's branch worker writes this repository branch")
+// ErrBranchOwnedElsewhere is EnsureWorker's refusal to start a worker for a GitBranch that does not
+// hold its repository branch (branch_owner.go). The GitTarget reconciler checks the claim first;
+// this holds while a claim passes to another GitBranch, until the sweep has retired the previous
+// holder's worker and the new holder's next reconcile starts its own.
+var ErrBranchOwnedElsewhere = errors.New("another GitBranch holds this repository branch")
 
-// workerServingLocked is the key of the worker that writes branch through provider, if one is live.
-// Called with m.mu held. There are few workers, so it looks at each.
-func (m *WorkerManager) workerServingLocked(provider k8stypes.NamespacedName, branch string) (BranchKey, bool) {
+// workerServingLocked is the key of the worker that writes for gitBranch, if one is live. Called
+// with m.mu held. There are few workers, so it looks at each.
+func (m *WorkerManager) workerServingLocked(gitBranch k8stypes.NamespacedName) (BranchKey, bool) {
 	for key, worker := range m.workers {
-		if worker.provider() == provider && key.Branch == branch {
+		if worker.GitBranch == gitBranch {
 			return key, true
 		}
 	}
 	return BranchKey{}, false
 }
+
+// notifyGitBranchLocked wakes the GitBranch reconciler for gitBranch. It never blocks: a full buffer
+// drops the event, and the GitBranch's own requeue reads the worker later. Called with m.mu held or
+// from the worker's reporter goroutine; it touches only the channel.
+func (m *WorkerManager) notifyGitBranchLocked(gitBranch k8stypes.NamespacedName) {
+	if m.gitBranchEvents == nil || gitBranch.Name == "" {
+		return
+	}
+	object := &configv1alpha3.GitBranch{}
+	object.Name, object.Namespace = gitBranch.Name, gitBranch.Namespace
+	select {
+	case m.gitBranchEvents <- event.GenericEvent{Object: object}:
+	default:
+	}
+}
+
+// GitBranchEvents carries a GitBranch whose branch worker proved something new about the remote or
+// whose publication report changed, so the GitBranch controller publishes status.remote within one
+// reconcile instead of at its next requeue. Nil for a manager not built by NewWorkerManager.
+func (m *WorkerManager) GitBranchEvents() <-chan event.GenericEvent { return m.gitBranchEvents }
 
 // carryRemote moves the last observation of a replaced worker's branch to the key of the worker
 // replacing it. It is stamped with the old repository, which is how the GitTarget's status sees
@@ -588,24 +658,43 @@ func (m *WorkerManager) removeWorkersLocked(keys []BranchKey, reason string) {
 	}
 }
 
-// GetWorkerForTarget finds the worker for a target's (provider, branch).
-// Returns the worker and true if found, nil and false otherwise.
-// This is used by EventRouter to dispatch events to the correct worker.
-func (m *WorkerManager) GetWorkerForTarget(
-	providerName, providerNamespace string,
-	branch string,
-) (*BranchWorker, bool) {
+// RetireGitBranch stops the worker writing for gitBranch, if one is live, and returns once it has
+// stopped. Stopping closes the worker's intake, pushes or refuses every pending write and settles
+// every CommitRequest it holds, so a GitBranch being deleted calls this before its finalizer goes.
+// What the manager kept about the branch goes with it: the next holder starts from the remote.
+func (m *WorkerManager) RetireGitBranch(gitBranch k8stypes.NamespacedName) {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.mu.RLock()
+	key, live := m.workerServingLocked(gitBranch)
+	m.mu.RUnlock()
+	if !live {
+		return
+	}
+	m.removeWorkersLocked([]BranchKey{key}, "its GitBranch is being deleted")
+	m.mu.Lock()
+	delete(m.replacements, key)
+	delete(m.remotes, key)
+	m.mu.Unlock()
+}
+
+// WorkerForGitBranch finds the worker writing for gitBranch: the worker of the repository branch
+// that GitBranch holds. A GitTarget reaches its worker through its spec.gitBranchRef, so this is
+// the lookup the event router and the GitTarget reconciler use, with no read on the event path.
+func (m *WorkerManager) WorkerForGitBranch(gitBranch k8stypes.NamespacedName) (*BranchWorker, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	key, exists := m.workerServingLocked(
-		k8stypes.NamespacedName{Namespace: providerNamespace, Name: providerName},
-		branch,
-	)
+	key, exists := m.workerServingLocked(gitBranch)
 	if !exists {
 		return nil, false
 	}
 	return m.workers[key], true
+}
+
+// WorkerForTarget is WorkerForGitBranch for the GitBranch a GitTarget references.
+func (m *WorkerManager) WorkerForTarget(target *configv1alpha3.GitTarget) (*BranchWorker, bool) {
+	return m.WorkerForGitBranch(target.GitBranchKey())
 }
 
 // CommitRequestOwner returns the worker that holds a CommitRequest: the one that accepted its
@@ -661,17 +750,12 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 		return fmt.Errorf("failed to list GitTargets: %w", err)
 	}
 
-	owners, urls, err := m.branchOwners(ctx, targetList.Items)
-	if err != nil {
-		return err
-	}
-
-	needed := workersNeeded(targetList.Items, owners, urls)
+	needed := workersNeeded(targetList.Items, m.Claims())
 
 	m.mu.RLock()
 	orphans := make([]BranchKey, 0, len(m.workers))
 	for key, worker := range m.workers {
-		if !needed.keeps(key, worker.provider()) {
+		if gitBranch, kept := needed[key]; !kept || gitBranch != worker.GitBranch {
 			orphans = append(orphans, key)
 		}
 	}
@@ -699,7 +783,7 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 
 	m.Log.V(1).Info("Worker reconciliation complete",
 		"activeWorkers", remaining,
-		"neededWorkers", len(needed.owned),
+		"neededWorkers", len(needed),
 		"stopped", len(orphans))
 
 	return nil
@@ -814,86 +898,40 @@ func (m *WorkerManager) NeedLeaderElection() bool {
 // reports whether such a worker exists. after is the commit the delivery named; it is logged and
 // never trusted: the worker reads where the branch is from the remote itself.
 func (m *WorkerManager) NotifyPush(providerNamespace, providerName, branch, after string) bool {
-	worker, found := m.GetWorkerForTarget(providerName, providerNamespace, branch)
-	if !found {
+	provider := k8stypes.NamespacedName{Namespace: providerNamespace, Name: providerName}
+	m.mu.RLock()
+	var found *BranchWorker
+	for key, worker := range m.workers {
+		if worker.provider() == provider && key.Branch == branch {
+			found = worker
+			break
+		}
+	}
+	m.mu.RUnlock()
+	if found == nil {
 		return false
 	}
-	worker.EnqueuePushNotification(after)
+	found.EnqueuePushNotification(after)
 	return true
 }
 
-// neededWorkers is which workers the live GitTargets need: the owner of every repository branch they
-// write (branch_owner.go), and, for a GitTarget whose GitProvider cannot be read, any worker that
-// serves that GitProvider and branch, so its retained writes wait for the GitProvider to be back,
-// as they always did.
-type neededWorkers struct {
-	owned      map[BranchKey]k8stypes.NamespacedName
-	unresolved map[k8stypes.NamespacedName]map[string]bool
-}
-
-func workersNeeded(
-	targets []configv1alpha3.GitTarget,
-	owners map[BranchKey]BranchOwner,
-	urls map[k8stypes.NamespacedName]string,
-) neededWorkers {
-	needed := neededWorkers{
-		owned:      map[BranchKey]k8stypes.NamespacedName{},
-		unresolved: map[k8stypes.NamespacedName]map[string]bool{},
-	}
+// workersNeeded is the worker each repository branch needs, by the GitBranch it writes for: the
+// holder of a branch that at least one live GitTarget references. A held branch nothing references
+// needs no worker, and one whose GitTargets are all gone has its worker retired.
+func workersNeeded(targets []configv1alpha3.GitTarget, claims *BranchClaims) map[BranchKey]k8stypes.NamespacedName {
+	needed := map[BranchKey]k8stypes.NamespacedName{}
 	for i := range targets {
 		target := &targets[i]
 		if !target.DeletionTimestamp.IsZero() {
 			continue
 		}
-		provider := target.GitProviderKey()
-		url, known := urls[provider]
-		if !known {
-			if needed.unresolved[provider] == nil {
-				needed.unresolved[provider] = map[string]bool{}
-			}
-			needed.unresolved[provider][target.Spec.Branch] = true
+		gitBranch := target.GitBranchKey()
+		if gitBranch.Name == "" {
 			continue
 		}
-		key := BranchKeyFor(url, target.Spec.Branch)
-		if owner, owned := owners[key]; owned && owner.Provider == provider {
-			needed.owned[key] = provider
+		if key, _, held := claims.HeldBy(gitBranch); held {
+			needed[key] = gitBranch
 		}
 	}
 	return needed
-}
-
-// keeps reports whether the worker under key, writing through provider, is needed.
-func (n neededWorkers) keeps(key BranchKey, provider k8stypes.NamespacedName) bool {
-	if owner, ok := n.owned[key]; ok && owner == provider {
-		return true
-	}
-	return n.unresolved[provider][key.Branch]
-}
-
-// branchOwners decides which GitProvider owns each repository branch the targets write
-// (branch_owner.go), and returns the URL of every GitProvider it read. The client is cached.
-func (m *WorkerManager) branchOwners(
-	ctx context.Context,
-	targets []configv1alpha3.GitTarget,
-) (map[BranchKey]BranchOwner, map[k8stypes.NamespacedName]string, error) {
-	var providers configv1alpha3.GitProviderList
-	if err := m.Client.List(ctx, &providers); err != nil {
-		return nil, nil, fmt.Errorf("failed to list GitProviders: %w", err)
-	}
-	urls := make(map[k8stypes.NamespacedName]string, len(providers.Items))
-	for i := range providers.Items {
-		provider := &providers.Items[i]
-		urls[k8stypes.NamespacedName{Namespace: provider.Namespace, Name: provider.Name}] = provider.Spec.URL
-	}
-	owners, err := BranchOwners(targets, func(key k8stypes.NamespacedName) (string, bool) {
-		url, ok := urls[key]
-		return url, ok
-	}, func(target *configv1alpha3.GitTarget) (bool, error) {
-		decision, err := authz.GitTargetAdmitted(ctx, m.Client, target)
-		return decision.Allowed, err
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("decide branch owners: %w", err)
-	}
-	return owners, urls, nil
 }

@@ -13,14 +13,11 @@ import (
 // remote, and if not, since when and why. Every GitTarget on the branch reads the same report,
 // because they share the worker: a sibling's success cannot clear it, and only a landed push does.
 // It reads memory only, and costs no connection.
-func (r *GitTargetReconciler) branchPublication(
-	target *configbutleraiv1alpha3.GitTarget,
-	providerNS string,
-) git.PublicationStatus {
+func (r *GitTargetReconciler) branchPublication(target *configbutleraiv1alpha3.GitTarget) git.PublicationStatus {
 	if r.WorkerManager == nil {
 		return git.PublicationStatus{}
 	}
-	worker, ok := r.WorkerManager.GetWorkerForTarget(target.Spec.GitProviderRef.Name, providerNS, target.Spec.Branch)
+	worker, ok := r.WorkerManager.WorkerForTarget(target)
 	if !ok {
 		return git.PublicationStatus{}
 	}

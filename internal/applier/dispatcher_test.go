@@ -44,6 +44,7 @@ const (
 var (
 	testBranchKey = git.BranchKeyFor(testRepoURL, testBranch)
 	testProvider  = types.NamespacedName{Namespace: targetNS, Name: "platform"}
+	testGitBranch = types.NamespacedName{Namespace: targetNS, Name: "platform-" + testBranch}
 )
 
 // Test-only annotations on a GitTarget, which newDispatcherFixture reads to create the trigger the
@@ -61,9 +62,8 @@ func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference
 	target := &v1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: name, UID: uid(name)},
 		Spec: v1alpha3.GitTargetSpec{
-			GitProviderRef: fluxmeta.NamespacedObjectReference{Name: testProvider.Name},
-			Branch:         testBranch,
-			Path:           name,
+			GitBranchRef: &fluxmeta.NamespacedObjectReference{Name: testGitBranch.Name},
+			Path:         name,
 		},
 	}
 	if cluster != "" {
@@ -155,6 +155,12 @@ func controlPlane() []client.Object {
 			ObjectMeta: metav1.ObjectMeta{Namespace: testProvider.Namespace, Name: testProvider.Name},
 			Spec:       v1alpha3.GitProviderSpec{URL: testRepoURL},
 		},
+		&v1alpha3.GitBranch{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testGitBranch.Namespace, Name: testGitBranch.Name},
+			Spec: v1alpha3.GitBranchSpec{
+				GitProviderRef: fluxmeta.LocalObjectReference{Name: testProvider.Name}, Branch: testBranch,
+			},
+		},
 		clusterProvider(v1alpha3.DefaultClusterProviderName, targetNS),
 		clusterProvider("prod-eu-1", targetNS),
 	}
@@ -186,7 +192,8 @@ var checkout = kustomizationApplier(v1alpha3.DefaultClusterProviderName, fluxSys
 // reason.
 func request(applier git.ApplierRef, reason v1alpha3.ApplyReason, names ...string) git.ApplyRequest {
 	req := git.ApplyRequest{
-		ID: 1, Branch: testBranchKey, Provider: testProvider, Applier: applier, Reason: reason, Commit: testCommit,
+		ID: 1, Branch: testBranchKey, Provider: testProvider, GitBranch: testGitBranch, Applier: applier,
+		Reason: reason, Commit: testCommit,
 	}
 	for _, name := range names {
 		req.Targets = append(req.Targets, git.ApplyTarget{Ref: ref(name), UID: uid(name), Reason: reason})
@@ -558,7 +565,7 @@ func TestDispatcher_WithdrawnConsentAsksNothing(t *testing.T) {
 func TestDispatcher_ATargetThatChangedAsksNothing(t *testing.T) {
 	for name, change := range map[string]func(*v1alpha3.GitTarget){
 		"it was deleted and recreated": func(g *v1alpha3.GitTarget) { g.UID = "uid-recreated" },
-		"it moved to another branch":   func(g *v1alpha3.GitTarget) { g.Spec.Branch = "release" },
+		"it moved to another branch":   func(g *v1alpha3.GitTarget) { g.Spec.GitBranchRef.Name = "platform-release" },
 		"it names another trigger":     func(g *v1alpha3.GitTarget) { namesKustomization(g, fluxSystemNS, "other") },
 		"it names no trigger any more": func(g *v1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil },
 		"its trigger is gone": func(g *v1alpha3.GitTarget) {

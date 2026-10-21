@@ -44,9 +44,8 @@ func snTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: snTargetName, Namespace: snTenantNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.NamespacedObjectReference{Name: "acme-git"},
+			GitBranchRef:       &meta.NamespacedObjectReference{Name: "acme-git-main"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: snProvider},
-			Branch:             "main",
 			Path:               "tenants/acme",
 		},
 	}

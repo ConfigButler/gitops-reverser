@@ -137,8 +137,7 @@ func referencingTarget(name, kind string) *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitProviderRef:  meta.NamespacedObjectReference{Name: "platform"},
-			Branch:          "main",
+			GitBranchRef:    &meta.NamespacedObjectReference{Name: gitBranchNameForTest("platform", "main")},
 			Path:            name,
 			ApplyTriggerRef: &configbutleraiv1alpha3.ApplyTriggerReference{Kind: kind, Name: "checkout"},
 		},
@@ -186,6 +185,8 @@ func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Cl
 			hasTarget = true
 		case *configbutleraiv1alpha3.GitProvider:
 			hasProvider = true
+			// The GitBranch its GitTargets write through: "<provider>-main".
+			kept = append(kept, gitBranch(obj.GetName(), obj.GetNamespace()))
 		}
 		if _, marker := obj.(unreferenced); !marker {
 			kept = append(kept, obj)
@@ -198,7 +199,7 @@ func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Cl
 		}
 	}
 	if !hasProvider {
-		objects = append(objects, platformProvider())
+		objects = append(objects, platformProvider(), gitBranch("platform", "team-a"))
 	}
 	if !hasTarget {
 		objects = append(objects,

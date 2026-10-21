@@ -65,7 +65,6 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 		"default",
 		"test-provider",
 		"gitops-system",
-		"main",
 		"clusters/prod",
 	)
 
@@ -80,14 +79,11 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	if compiled.Source != key {
 		t.Errorf("Source mismatch: got %v, want %v", compiled.Source, key)
 	}
-	if compiled.GitProviderRef != "test-provider" {
-		t.Errorf("GitProviderRef mismatch: got %s, want test-provider", compiled.GitProviderRef)
+	if compiled.GitBranchRef != "test-provider" {
+		t.Errorf("GitBranchRef mismatch: got %s, want test-provider", compiled.GitBranchRef)
 	}
-	if compiled.GitProviderNamespace != "gitops-system" {
-		t.Errorf("GitProviderNamespace mismatch: got %s, want gitops-system", compiled.GitProviderNamespace)
-	}
-	if compiled.Branch != "main" {
-		t.Errorf("Branch mismatch: got %s, want main", compiled.Branch)
+	if compiled.GitBranchNamespace != "gitops-system" {
+		t.Errorf("GitBranchNamespace mismatch: got %s, want gitops-system", compiled.GitBranchNamespace)
 	}
 	if compiled.Path != "clusters/prod" {
 		t.Errorf("Path mismatch: got %s, want clusters/prod", compiled.Path)
@@ -107,7 +103,6 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 		"default",
 		"updated-provider",
 		"gitops-system",
-		"develop",
 		"clusters/staging",
 	)
 
@@ -115,11 +110,8 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	if !exists {
 		t.Fatal("Rule was deleted instead of updated")
 	}
-	if compiled.GitProviderRef != "updated-provider" {
-		t.Errorf("GitProviderRef not updated: got %s, want updated-provider", compiled.GitProviderRef)
-	}
-	if compiled.Branch != "develop" {
-		t.Errorf("Branch not updated: got %s, want develop", compiled.Branch)
+	if compiled.GitBranchRef != "updated-provider" {
+		t.Errorf("GitBranchRef not updated: got %s, want updated-provider", compiled.GitBranchRef)
 	}
 	if compiled.Path != "clusters/staging" {
 		t.Errorf("Path not updated: got %s, want clusters/staging", compiled.Path)
@@ -150,7 +142,6 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 		"gitops-system",
 		"cluster-provider",
 		"gitops-system",
-		"main",
 		"cluster/audit",
 	)
 
@@ -165,11 +156,8 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 	if compiled.Source != key {
 		t.Errorf("Source mismatch: got %v, want %v", compiled.Source, key)
 	}
-	if compiled.GitProviderRef != "cluster-provider" {
-		t.Errorf("GitProviderRef mismatch: got %s, want cluster-provider", compiled.GitProviderRef)
-	}
-	if compiled.Branch != "main" {
-		t.Errorf("Branch mismatch: got %s, want main", compiled.Branch)
+	if compiled.GitBranchRef != "cluster-provider" {
+		t.Errorf("GitBranchRef mismatch: got %s, want cluster-provider", compiled.GitBranchRef)
 	}
 	if compiled.Path != "cluster/audit" {
 		t.Errorf("Path mismatch: got %s, want cluster/audit", compiled.Path)
@@ -200,7 +188,7 @@ func TestDelete(t *testing.T) {
 
 	// Add rule
 	store.AddOrUpdateWatchRule(
-		rule, ownNamespaceScope(rule), "test-dest", "default", "test-repo", "gitops-system", "main", "test")
+		rule, ownNamespaceScope(rule), "test-dest", "default", "test-repo", "gitops-system", "test")
 
 	// Verify it exists
 	if _, exists := store.rules[key]; !exists {
@@ -234,7 +222,7 @@ func TestDeleteClusterWatchRule(t *testing.T) {
 	key := types.NamespacedName{Name: "delete-cluster-test", Namespace: ""}
 
 	// Add rule
-	store.AddOrUpdateClusterWatchRule(rule, "test-dest", "gitops-system", "test-repo", "gitops-system", "main", "test")
+	store.AddOrUpdateClusterWatchRule(rule, "test-dest", "gitops-system", "test-repo", "gitops-system", "test")
 
 	// Verify it exists
 	if _, exists := store.clusterRules[key]; !exists {
@@ -284,9 +272,9 @@ func TestGetMatchingRules(t *testing.T) {
 	rule2.Namespace = "default"
 
 	store.AddOrUpdateWatchRule(
-		rule1, ownNamespaceScope(rule1), "dest1", "default", "repo1", "gitops-system", "main", "test1")
+		rule1, ownNamespaceScope(rule1), "dest1", "default", "repo1", "gitops-system", "test1")
 	store.AddOrUpdateWatchRule(
-		rule2, ownNamespaceScope(rule2), "dest2", "default", "repo2", "gitops-system", "main", "test2")
+		rule2, ownNamespaceScope(rule2), "dest2", "default", "repo2", "gitops-system", "test2")
 
 	tests := []struct {
 		name            string
@@ -393,7 +381,7 @@ func TestGetMatchingRules_OverlappingRulesAreAdditive(t *testing.T) {
 	for _, name := range []string{"pods-a", "pods-b"} {
 		rule := podsRule(name)
 		store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "dest-a", "default", "repo",
-			"gitops-system", "main", "a")
+			"gitops-system", "a")
 	}
 
 	matches := store.GetMatchingRules(nil, "pods", "", "v1", false)
@@ -448,7 +436,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		"gitops-system",
 		"repo1",
 		"gitops-system",
-		"main",
 		"cluster",
 	)
 	store.AddOrUpdateClusterWatchRule(
@@ -457,7 +444,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		"gitops-system",
 		"repo2",
 		"gitops-system",
-		"main",
 		"namespaced",
 	)
 
@@ -640,9 +626,9 @@ func TestSnapshotWatchRules(t *testing.T) {
 	rule2.Namespace = "default"
 
 	store.AddOrUpdateWatchRule(
-		rule1, ownNamespaceScope(rule1), "dest1", "default", "repo1", "gitops-system", "main", "test1")
+		rule1, ownNamespaceScope(rule1), "dest1", "default", "repo1", "gitops-system", "test1")
 	store.AddOrUpdateWatchRule(
-		rule2, ownNamespaceScope(rule2), "dest2", "default", "repo2", "gitops-system", "main", "test2")
+		rule2, ownNamespaceScope(rule2), "dest2", "default", "repo2", "gitops-system", "test2")
 
 	// Get snapshot
 	snapshot := store.SnapshotWatchRules()
@@ -652,12 +638,12 @@ func TestSnapshotWatchRules(t *testing.T) {
 	}
 
 	// Verify snapshot is independent (deep copy)
-	snapshot[0].Branch = "modified"
+	snapshot[0].Path = "modified"
 
 	// Get another snapshot to verify original wasn't modified
 	snapshot2 := store.SnapshotWatchRules()
 	for _, rule := range snapshot2 {
-		if rule.Branch == "modified" {
+		if rule.Path == "modified" {
 			t.Error("Snapshot modification affected original store")
 		}
 	}
@@ -678,7 +664,7 @@ func TestSnapshotClusterWatchRules(t *testing.T) {
 	}
 	rule1.Name = "cluster-rule1"
 
-	store.AddOrUpdateClusterWatchRule(rule1, "dest1", "gitops-system", "repo1", "gitops-system", "main", "cluster")
+	store.AddOrUpdateClusterWatchRule(rule1, "dest1", "gitops-system", "repo1", "gitops-system", "cluster")
 
 	snapshot := store.SnapshotClusterWatchRules()
 
@@ -687,9 +673,9 @@ func TestSnapshotClusterWatchRules(t *testing.T) {
 	}
 
 	// Verify deep copy
-	snapshot[0].Branch = "modified"
+	snapshot[0].Path = "modified"
 	snapshot2 := store.SnapshotClusterWatchRules()
-	if snapshot2[0].Branch == "modified" {
+	if snapshot2[0].Path == "modified" {
 		t.Error("Snapshot modification affected original store")
 	}
 }
@@ -719,7 +705,7 @@ func TestConcurrentAccess(t *testing.T) {
 				rule.Namespace = "default"
 
 				store.AddOrUpdateWatchRule(
-					rule, ownNamespaceScope(rule), "dest", "default", "repo", "gitops-system", "main", "test")
+					rule, ownNamespaceScope(rule), "dest", "default", "repo", "gitops-system", "test")
 			}
 		}(i)
 	}
@@ -765,7 +751,7 @@ func TestMultipleResourceRules(t *testing.T) {
 	rule.Namespace = "default"
 
 	store.AddOrUpdateWatchRule(
-		rule, ownNamespaceScope(rule), "dest", "default", "repo", "gitops-system", "main", "test")
+		rule, ownNamespaceScope(rule), "dest", "default", "repo", "gitops-system", "test")
 
 	// Either item selects its resource: the items are a logical OR.
 	for _, resource := range []string{"pods", "services"} {
@@ -801,7 +787,7 @@ func TestGetMatchingRules_MustFilterByNamespaceForNamespacedWatchRule(t *testing
 	rule.Namespace = "tilt-playground"
 	store.AddOrUpdateWatchRule(
 		rule, ownNamespaceScope(rule),
-		"target", "tilt-playground", "provider", "tilt-playground", "main", "live")
+		"target", "tilt-playground", "provider", "tilt-playground", "live")
 
 	sameNSObject := &unstructured.Unstructured{}
 	sameNSObject.SetNamespace("tilt-playground")
@@ -838,7 +824,7 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 	rule.Name = "ns-wr"
 	rule.Namespace = "tilt-playground"
 	store.AddOrUpdateWatchRule(
-		rule, ownNamespaceScope(rule), "tgt", "tilt-playground", "prov", "tilt-playground", "main", "live")
+		rule, ownNamespaceScope(rule), "tgt", "tilt-playground", "prov", "tilt-playground", "live")
 
 	store.AddOrUpdateClusterWatchRule(
 		configv1alpha3.ClusterWatchRule{
@@ -852,7 +838,7 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 				}},
 			},
 		},
-		"cluster-target", "ops", "cluster-provider", "ops", "main", "cluster",
+		"cluster-target", "ops", "cluster-provider", "ops", "cluster",
 	)
 
 	t.Run("same namespace matches", func(t *testing.T) {
@@ -911,7 +897,7 @@ func TestGetMatchingRules_PerItemSourceNamespaces(t *testing.T) {
 	store.AddOrUpdateWatchRule(
 		rule,
 		[][]string{{"tenant-acme"}, {"repo-config"}},
-		"tgt", "tenant-acme", "prov", "tenant-acme", "main", "live",
+		"tgt", "tenant-acme", "prov", "tenant-acme", "live",
 	)
 
 	object := func(namespace string) *unstructured.Unstructured {
@@ -961,7 +947,7 @@ func TestGetMatchingRules_WildcardItemMatchesEveryResolvedNamespace(t *testing.T
 	store.AddOrUpdateWatchRule(
 		rule,
 		[][]string{{"repo-config", "team-payments"}},
-		"tgt", "tenant-acme", "prov", "tenant-acme", "main", "live",
+		"tgt", "tenant-acme", "prov", "tenant-acme", "live",
 	)
 
 	for _, ns := range []string{"repo-config", "team-payments"} {
@@ -1009,7 +995,7 @@ func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 	watchRule.Name = "rule"
 	watchRule.Namespace = "tenant-acme"
 	store.AddOrUpdateWatchRule(watchRule, ownNamespaceScope(watchRule), "target", "tenant-acme",
-		"provider", "tenant-acme", "main", "clusters")
+		"provider", "tenant-acme", "clusters")
 
 	// The same selector on the cluster-scoped kind. A ClusterWatchRule may legally name a
 	// namespaced plural (see TestGetMatchingClusterRules); what bounds it is the OBJECT's scope.
@@ -1023,8 +1009,7 @@ func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 		},
 	}
 	clusterRule.Name = "cluster-rule"
-	store.AddOrUpdateClusterWatchRule(clusterRule, "target", "tenant-acme", "provider", "tenant-acme",
-		"main", "clusters")
+	store.AddOrUpdateClusterWatchRule(clusterRule, "target", "tenant-acme", "provider", "tenant-acme", "clusters")
 
 	inScope := &unstructured.Unstructured{}
 	inScope.SetNamespace("tenant-acme")
@@ -1096,8 +1081,15 @@ func TestSnapshotWatchRules_SourceNamespacesStayDefensivelyCopied(t *testing.T) 
 	}
 	rule.Name = "rule"
 	rule.Namespace = "tenant-acme"
-	store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "target", "tenant-acme", "provider", "tenant-acme",
-		"main", "clusters")
+	store.AddOrUpdateWatchRule(
+		rule,
+		ownNamespaceScope(rule),
+		"target",
+		"tenant-acme",
+		"provider",
+		"tenant-acme",
+		"clusters",
+	)
 
 	snapshot := store.SnapshotWatchRules()
 	if len(snapshot) != 1 || len(snapshot[0].ResourceRules) != 1 {
@@ -1150,7 +1142,7 @@ func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 				rule.Name = "rule"
 				rule.Namespace = "tenant-acme"
 				store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "target", "tenant-acme",
-					"provider", "tenant-acme", "main", "clusters")
+					"provider", "tenant-acme", "clusters")
 
 				return func() {
 						item.APIGroups[0] = "batch"
@@ -1177,7 +1169,7 @@ func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 				}
 				rule.Name = "cluster-rule"
 				store.AddOrUpdateClusterWatchRule(rule, "target", "tenant-acme", "provider",
-					"tenant-acme", "main", "clusters")
+					"tenant-acme", "clusters")
 
 				return func() {
 						item.APIGroups[0] = "batch"

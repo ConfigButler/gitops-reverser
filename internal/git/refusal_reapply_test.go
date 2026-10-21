@@ -44,8 +44,7 @@ func refusalTouchWorker(t *testing.T, spec configv1alpha3.GitTargetSpec) *Branch
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
-	spec.GitProviderRef.Name = "test-provider"
-	spec.Branch = "main"
+	spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")}
 	if spec.Path == "" {
 		spec.Path = "apps"
 	}
@@ -65,6 +64,7 @@ func refusalTouchWorker(t *testing.T, spec configv1alpha3.GitTargetSpec) *Branch
 	// A GitTarget names its GitProvider in its own namespace, which is where a worker looks for
 	// the appliers on its branch.
 	w.GitProviderNamespace = target.Namespace
+	w.GitBranch = testGitBranch(w.GitProviderRef, w.GitProviderNamespace, w.Branch)
 	w.Client = client
 	w.Log = logr.Discard()
 	w.ctx = context.Background()
@@ -246,8 +246,7 @@ func TestRefusalReapply_TrailingRequestRechecksConsent(t *testing.T) {
 	setSpec := func(spec configv1alpha3.GitTargetSpec) {
 		target := &configv1alpha3.GitTarget{}
 		require.NoError(t, w.Client.Get(w.ctx, client.ObjectKey{Name: "editing", Namespace: "team-a"}, target))
-		spec.GitProviderRef = target.Spec.GitProviderRef
-		spec.Branch, spec.Path = target.Spec.Branch, target.Spec.Path
+		spec.GitBranchRef, spec.Path = target.Spec.GitBranchRef, target.Spec.Path
 		target.Spec = spec
 		require.NoError(t, w.Client.Update(w.ctx, target))
 	}
@@ -407,13 +406,13 @@ func TestRefusalReapply_OneTargetDoesNotDropAnothersPendingRequest(t *testing.T)
 		target := &configv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 			Spec: configv1alpha3.GitTargetSpec{
-				Branch: "main", Path: "apps/" + name,
+				Path:            "apps/" + name,
 				OnRefusal:       configv1alpha3.RefusalActionReapply,
 				ApplyTriggerRef: testApplier(name),
 				Suspend:         suspend,
 			},
 		}
-		target.Spec.GitProviderRef.Name = "test-provider"
+		target.Spec.GitBranchRef = &meta.NamespacedObjectReference{Name: testGitBranchName("test-provider", "main")}
 		return target
 	}
 	// B is suspended, so its delayed request must be declined when the timer fires. A is not.

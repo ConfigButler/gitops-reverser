@@ -87,9 +87,8 @@ var _ = Describe("Superseded source-scope fields", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-commit", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.NamespacedObjectReference{Name: "any-provider"},
-				Branch:         "main",
-				Path:           "clusters/prod",
+				GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("any-provider", "main")},
+				Path:         "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
 					Window: &configbutleraiv1alpha3.CommitWindow{
 						IdleTimeout: &metav1.Duration{Duration: 30 * time.Second},
@@ -197,18 +196,26 @@ var _ = Describe("Reference names must not be empty", func() {
 		Expect(err.Error()).To(ContainSubstring("must not be empty"))
 	})
 
-	It("refuses an empty name on the provider and target references", func() {
+	It("refuses an empty name on the branch, provider and target references", func() {
 		ctx := context.Background()
 
 		target := &configbutleraiv1alpha3.GitTarget{
-			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-branch-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitProviderRef: meta.NamespacedObjectReference{Name: ""},
-				Branch:         "main",
-				Path:           "clusters/prod",
+				GitBranchRef: &meta.NamespacedObjectReference{Name: ""},
+				Path:         "clusters/prod",
 			},
 		}
 		Expect(k8sClient.Create(ctx, target)).NotTo(Succeed(),
+			"an empty gitBranchRef.name names nothing and must be refused at admission")
+
+		branch := &configbutleraiv1alpha3.GitBranch{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.GitBranchSpec{
+				GitProviderRef: meta.LocalObjectReference{Name: ""}, Branch: "main",
+			},
+		}
+		Expect(k8sClient.Create(ctx, branch)).NotTo(Succeed(),
 			"an empty gitProviderRef.name names nothing and must be refused at admission")
 
 		rule := &configbutleraiv1alpha3.WatchRule{

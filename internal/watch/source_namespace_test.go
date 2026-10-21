@@ -32,9 +32,8 @@ func snbGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: snbTarget, Namespace: snbTenantNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef:     meta.NamespacedObjectReference{Name: "git"},
+			GitBranchRef:       &meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: snbProvider},
-			Branch:             "main",
 			Path:               "tenants/acme",
 		},
 	}
@@ -129,7 +128,6 @@ func TestBootstrap_LegacyWatchRuleStillCompiles(t *testing.T) {
 	assert.Equal(t, snbRule, compiled[0].Source.Name)
 	assert.Equal(t, []string{snbTenantNS}, compiled[0].ResourceRules[0].SourceNamespaces,
 		"a legacy item's source namespace is the rule's own namespace")
-	assert.Equal(t, "main", compiled[0].Branch)
 }
 
 // The admitted override path seeds the EFFECTIVE namespace, not the rule's own.
@@ -160,7 +158,7 @@ func TestCompileWatchRule_WildcardCompilesToTheClusterWideCollection(t *testing.
 	)
 
 	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore,
-		*snbWatchRule(configv1alpha3.SourceNamespaceWildcard), *snbGitTarget(), *snbGitProvider())
+		*snbWatchRule(configv1alpha3.SourceNamespaceWildcard), *snbGitTarget())
 
 	require.NoError(t, err)
 	require.True(t, resolved.Admitted())
@@ -180,7 +178,7 @@ func TestCompileWatchRule_WildcardIsRefusedWithoutDelegation(t *testing.T) {
 	)
 
 	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore,
-		*snbWatchRule(configv1alpha3.SourceNamespaceWildcard), *snbGitTarget(), *snbGitProvider())
+		*snbWatchRule(configv1alpha3.SourceNamespaceWildcard), *snbGitTarget())
 
 	require.NoError(t, err)
 	assert.False(t, resolved.Admitted())
@@ -201,9 +199,8 @@ func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing
 
 	rule := *snbWatchRule(snbSourceNS)
 	target := *snbGitTarget()
-	provider := *snbGitProvider()
 
-	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)
+	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target)
 	require.NoError(t, err)
 	require.True(t, resolved.Admitted())
 	require.Len(t, m.RuleStore.SnapshotWatchRules(), 1, "precondition: the rule is compiled")
@@ -214,7 +211,7 @@ func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing
 	stored.Spec.AllowCrossNamespace = nil
 	require.NoError(t, m.Client.Update(ctx, &stored))
 
-	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)
+	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target)
 
 	require.NoError(t, err)
 	assert.False(t, resolved.Admitted())

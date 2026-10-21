@@ -97,12 +97,11 @@ func createGitTarget(
 			Namespace: "default",
 		},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{
-				Name: worker.GitProviderRef,
+			GitBranchRef: &meta.NamespacedObjectReference{
+				Name: testGitBranchName(worker.GitProviderRef, worker.Branch),
 			},
-			Branch: worker.Branch,
-			Path:   path,
-			Prune:  prune,
+			Path:  path,
+			Prune: prune,
 		},
 	}))
 }

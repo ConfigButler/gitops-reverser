@@ -143,7 +143,7 @@ func TestNotServedResourceProducesNoGVR(t *testing.T) {
 		},
 	}
 	store.AddOrUpdateWatchRule(
-		rule, ownNamespaceScope(rule), "target", "default", "provider", "default", "main", "live")
+		rule, ownNamespaceScope(rule), "target", "default", "provider", "default", "live")
 	manager := &Manager{RuleStore: store, resourceCatalog: newCommonTestCatalog(t)}
 
 	assert.Empty(t, manager.ComputeRequestedGVRs())

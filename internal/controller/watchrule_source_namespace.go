@@ -55,10 +55,9 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 	target configbutleraiv1alpha3.GitTarget,
-	provider configbutleraiv1alpha3.GitProvider,
 	log logr.Logger,
 ) (bool, ctrl.Result, error) {
-	resolved, err := watch.CompileWatchRule(ctx, r.Client, r.RuleStore, *watchRule, target, provider)
+	resolved, err := watch.CompileWatchRule(ctx, r.Client, r.RuleStore, *watchRule, target)
 	var selectorErr *watch.ObjectSelectorError
 	if errors.As(err, &selectorErr) {
 		result, refuseErr := r.refuseRuleResources(ctx, st, watchRule, watch.ReasonInvalidObjectSelector,

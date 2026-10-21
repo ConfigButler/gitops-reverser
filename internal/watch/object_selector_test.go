@@ -176,7 +176,7 @@ func selectorRule(name, namespace string, created time.Time, selector *metav1.La
 
 func addSelectorRule(store *rulestore.RuleStore, rule configv1alpha3.WatchRule, namespaces ...string) {
 	store.AddOrUpdateWatchRule(rule, [][]string{namespaces},
-		"sel-target", "test-ns", "test-provider", "test-ns", "main", "test-path")
+		"sel-target", "test-ns", "test-provider", "test-ns", "test-path")
 }
 
 func labels(kv ...string) *metav1.LabelSelector {
@@ -239,7 +239,7 @@ func TestCompileWatchRule_RefusesAnInvalidObjectSelector(t *testing.T) {
 	}
 
 	_, err := CompileWatchRule(context.Background(), nil, store, rule,
-		configv1alpha3.GitTarget{}, configv1alpha3.GitProvider{})
+		configv1alpha3.GitTarget{})
 
 	var selectorErr *ObjectSelectorError
 	require.ErrorAs(t, err, &selectorErr)
@@ -251,11 +251,11 @@ func TestCompileWatchRule_RefusesAnInvalidObjectSelector(t *testing.T) {
 func TestCompileClusterWatchRule_RefusesAnInvalidObjectSelector(t *testing.T) {
 	store := rulestore.NewStore()
 	rule := clusterRuleForResource("bad", "namespaces")
-	store.AddOrUpdateClusterWatchRule(rule, "t", "ns", "p", "ns", "main", "path")
+	store.AddOrUpdateClusterWatchRule(rule, "t", "ns", "p", "ns", "path")
 	rule.Spec.Rules[0].ObjectSelector = labels("bad key", "x")
 
 	_, err := CompileClusterWatchRule(context.Background(), nil, store, rule,
-		configv1alpha3.GitTarget{}, configv1alpha3.GitProvider{})
+		configv1alpha3.GitTarget{})
 
 	var selectorErr *ObjectSelectorError
 	require.ErrorAs(t, err, &selectorErr)

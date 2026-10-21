@@ -79,11 +79,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "test-provider",
-					},
-					Branch: "main",
-					Path:   "default/test",
+					GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("test-provider", "main")},
+					Path:         "default/test",
 				},
 			}
 			Expect(k8sClient.Create(ctx, target)).To(Succeed())
@@ -184,9 +181,9 @@ var _ = Describe("WatchRule Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
-			// No wait on GitProvider readiness: reconcileWatchRuleViaTarget only requires the
-			// GitProvider to exist (it is resolved by name), not to be Ready. The GitTarget
-			// readiness wait below is the dependency gate this spec actually needs.
+			// The GitTarget readiness wait below is the dependency gate this spec needs: its
+			// GitBranch has to hold the branch for the target to get past the claim.
+			holdGitBranchForTest(ctx, gitProvider, "main")
 
 			By("Creating GitTarget in same namespace referencing the GitProvider")
 			target := &configbutleraiv1alpha3.GitTarget{
@@ -195,11 +192,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitProviderRef: meta.NamespacedObjectReference{
-						Name: "local-provider",
-					},
-					Branch: "main",
-					Path:   "ns/default",
+					GitBranchRef: &meta.NamespacedObjectReference{Name: gitBranchNameForTest("local-provider", "main")},
+					Path:         "ns/default",
 				},
 			}
 			Expect(k8sClient.Create(ctx, target)).Should(Succeed())

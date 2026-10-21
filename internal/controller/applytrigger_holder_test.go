@@ -123,7 +123,7 @@ func TestFluxTrigger_OneTriggerHoldsAKustomization(t *testing.T) {
 	target.Namespace = inLineKey.Namespace
 	gt := &GitTargetReconciler{Client: f.r.Client}
 	verdict, _ := gt.observeApplyTrigger(context.Background(), beginStatus(nil, nil, target), target,
-		triggerProvider())
+		triggerDestination())
 	assert.Equal(t, metav1.ConditionFalse, verdict.value.Status)
 	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, verdict.value.Reason)
 	assert.Contains(t, verdict.value.Message, "held by FluxTrigger team-a/checkout")

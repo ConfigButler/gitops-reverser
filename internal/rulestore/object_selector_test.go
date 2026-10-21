@@ -37,7 +37,7 @@ func TestAddOrUpdateWatchRule_CompilesTheCanonicalObjectSelector(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "target", "team-a", "p", "team-a", "main", "path")
+	store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "target", "team-a", "p", "team-a", "path")
 
 	compiled, ok := store.GetWatchRule(types.NamespacedName{Name: "r", Namespace: "team-a"})
 	if !ok {
@@ -68,7 +68,7 @@ func TestAddOrUpdateClusterWatchRule_CompilesTheCanonicalObjectSelector(t *testi
 			}},
 		},
 	}
-	store.AddOrUpdateClusterWatchRule(rule, "target", "ns", "p", "ns", "main", "path")
+	store.AddOrUpdateClusterWatchRule(rule, "target", "ns", "p", "ns", "path")
 
 	rules := store.SnapshotClusterWatchRules()
 	if len(rules) != 1 || len(rules[0].Rules) != 1 {

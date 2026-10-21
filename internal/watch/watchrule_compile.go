@@ -51,7 +51,6 @@ func CompileWatchRule(
 	store *rulestore.RuleStore,
 	rule configv1alpha3.WatchRule,
 	target configv1alpha3.GitTarget,
-	provider configv1alpha3.GitProvider,
 ) (authz.ResolvedSourceScope, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name, Namespace: rule.Namespace}
 
@@ -72,8 +71,7 @@ func CompileWatchRule(
 			rule,
 			itemNamespaces(resolved),
 			target.Name, target.Namespace,
-			provider.Name, provider.Namespace,
-			target.Spec.Branch,
+			target.GitBranchKey().Name, target.GitBranchKey().Namespace,
 			target.Spec.Path,
 		)
 		return resolved, nil
@@ -113,7 +111,6 @@ func CompileClusterWatchRule(
 	store *rulestore.RuleStore,
 	rule configv1alpha3.ClusterWatchRule,
 	target configv1alpha3.GitTarget,
-	provider configv1alpha3.GitProvider,
 ) (ClusterWatchRuleDecision, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name}
 
@@ -139,8 +136,7 @@ func CompileClusterWatchRule(
 	store.AddOrUpdateClusterWatchRule(
 		rule,
 		target.Name, target.Namespace,
-		provider.Name, provider.Namespace,
-		target.Spec.Branch,
+		target.GitBranchKey().Name, target.GitBranchKey().Namespace,
 		target.Spec.Path,
 	)
 	return ClusterWatchRuleDecision{Admitted: true}, nil

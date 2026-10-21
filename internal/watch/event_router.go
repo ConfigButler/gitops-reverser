@@ -196,12 +196,20 @@ func (r *EventRouter) commitRequestWorker(
 			attach.GitTargetNamespace, attach.GitTargetName, err)
 	}
 
-	provider := gitTarget.GitProviderKey()
-	worker, exists := r.WorkerManager.GetWorkerForTarget(provider.Name, provider.Namespace, gitTarget.Spec.Branch)
-	if !exists {
-		return nil, gitTarget.Spec.Branch, nil
+	worker, exists := r.WorkerManager.WorkerForTarget(&gitTarget)
+	if exists {
+		return worker, worker.Branch, nil
 	}
-	return worker, gitTarget.Spec.Branch, nil
+	// No worker yet: the branch is still the GitBranch's to name, read from the cache. A GitBranch
+	// that is not there names none.
+	var gitBranch configv1alpha3.GitBranch
+	if err := r.Client.Get(ctx, gitTarget.GitBranchKey(), &gitBranch); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, "", nil
+		}
+		return nil, "", fmt.Errorf("get GitBranch %s: %w", gitTarget.GitBranchKey(), err)
+	}
+	return nil, gitBranch.Spec.Branch, nil
 }
 
 // recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or
@@ -244,8 +252,7 @@ func (r *EventRouter) resolveWorkerForGitDest(
 		}
 		return nil, fmt.Errorf("get GitTarget %s: %w", gitDest.String(), err)
 	}
-	provider := gitTarget.GitProviderKey()
-	worker, exists := r.WorkerManager.GetWorkerForTarget(provider.Name, provider.Namespace, gitTarget.Spec.Branch)
+	worker, exists := r.WorkerManager.WorkerForTarget(&gitTarget)
 	if !exists {
 		return nil, fmt.Errorf("no worker for %s", gitDest.String())
 	}

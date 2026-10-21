@@ -36,8 +36,8 @@ var (
 // the ledger as commit() does once the write has landed. Tests that care about a write which did
 // NOT land call publishRemote directly and never settle.
 func publishPersisted(
-	r *GitTargetReconciler,
-	target *configbutleraiv1alpha3.GitTarget,
+	r *GitBranchReconciler,
+	target *configbutleraiv1alpha3.GitBranch,
 	observed git.RemoteObservation,
 	seen bool,
 	repo git.RepoIdentity,
@@ -54,8 +54,8 @@ func publishPersisted(
 	st.runPersisted()
 }
 
-func remoteTestTarget() *configbutleraiv1alpha3.GitTarget {
-	return &configbutleraiv1alpha3.GitTarget{
+func remoteTestTarget() *configbutleraiv1alpha3.GitBranch {
+	return &configbutleraiv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "shop", Generation: 4},
 	}
 }
@@ -67,7 +67,7 @@ func observation(revision string, at time.Time, by git.ObservationSource, repo g
 // TestPublishRemote_AbsentUntilSomethingLooks keeps the two "no revision" cases apart. Nothing has
 // looked, so there is no stanza at all — which is not the same as a look that found no branch.
 func TestPublishRemote_AbsentUntilSomethingLooks(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 
 	publishPersisted(r, target, git.RemoteObservation{}, false, git.RepoIdentity{}, time.Now())
@@ -78,7 +78,7 @@ func TestPublishRemote_AbsentUntilSomethingLooks(t *testing.T) {
 // TestPublishRemote_AnObservationWithNoRevisionIsStillPublished is the other half: the branch is
 // not on the remote, and saying so is the answer rather than the absence of one.
 func TestPublishRemote_AnObservationWithNoRevisionIsStillPublished(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 
@@ -104,7 +104,7 @@ func TestPublishRemote_AnObservationWithNoRevisionIsStillPublished(t *testing.T)
 // made at 12:00:02 can be written at 12:01:00, and a revision proved at 12:01:02 then looks a full
 // minute newer than what is published and is written two seconds after it.
 func TestPublishRemote_TheFloorIsMeasuredFromTheLastWrite(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	start := time.Now()
 
@@ -130,7 +130,7 @@ func TestPublishRemote_TheFloorIsMeasuredFromTheLastWrite(t *testing.T) {
 // first one has no rate: holding it back would leave a target that has just published showing no
 // branch at all, which reads as a broken data plane rather than as a sampled field.
 func TestPublishRemote_TheFirstObservationIsImmediate(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 
@@ -150,7 +150,7 @@ func TestPublishRemote_TheFirstObservationIsImmediate(t *testing.T) {
 // target whose branch has not moved must not write status once per tick merely to advance a clock,
 // however long it has been since the last one.
 func TestPublishRemote_AConvergedTargetWritesNothing(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 	publishPersisted(r,
@@ -172,7 +172,7 @@ func TestPublishRemote_AConvergedTargetWritesNothing(t *testing.T) {
 // news — that is what makes lastVerifiedAt a freshness field — and like every other kind of news
 // it waits for the floor.
 func TestPublishRemote_AReProvedRevisionRefreshesTheClock(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 	publishPersisted(r,
@@ -227,7 +227,7 @@ func TestRemoteStatusIsNews_AMissingTimestampIsAlwaysNews(t *testing.T) {
 // until a look at the new one succeeds. If that repository is unreachable there never will be, so
 // the stanza goes rather than going stale.
 func TestPublishRemote_ARevisionFromAnotherRepositoryIsRemoved(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 	publishPersisted(r, target, observation("aaaa", at, git.ObservedByPush, firstRepo), true, firstRepo, at)
@@ -247,7 +247,7 @@ func TestPublishRemote_ARevisionFromAnotherRepositoryIsRemoved(t *testing.T) {
 // target is still publishing a revision from the repository it has left, and the floor would hold
 // the correction back on top of that. Invalidation follows what THIS target published.
 func TestPublishRemote_ASiblingsObservationCannotHideAStaleRepository(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 	publishPersisted(r, target, observation("aaaa", at, git.ObservedByPush, firstRepo), true, firstRepo, at)
@@ -277,7 +277,7 @@ func TestPublishRemote_AnUnknownIdentityProvesNothing(t *testing.T) {
 		{"the worker has no identity", git.RepoIdentity{}, firstRepo},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &GitTargetReconciler{}
+			r := &GitBranchReconciler{}
 			target := remoteTestTarget()
 			at := time.Now()
 
@@ -293,7 +293,7 @@ func TestPublishRemote_AnUnknownIdentityProvesNothing(t *testing.T) {
 // first look at the repository the target points at NOW publishes again, with no latch to clear
 // and no floor to wait for, because the ledger was dropped with the revision it described.
 func TestPublishRemote_TheNewRepositoryRepopulatesTheStanza(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 	publishPersisted(r, target, observation("aaaa", at, git.ObservedByPush, firstRepo), true, secondRepo, at)
@@ -315,7 +315,7 @@ func TestPublishRemote_ARestartPublishesAgainstTheObservationAlone(t *testing.T)
 	target.Status.Remote = &configbutleraiv1alpha3.GitBranchRemoteStatus{
 		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Push",
 	}
-	fresh := &GitTargetReconciler{}
+	fresh := &GitBranchReconciler{}
 
 	publishPersisted(
 		fresh,
@@ -329,24 +329,16 @@ func TestPublishRemote_ARestartPublishesAgainstTheObservationAlone(t *testing.T)
 	assert.Nil(t, target.Status.Remote, "the observation is about a repository this target has left")
 }
 
-// TestObserveRemote_ReadsTheBranchItsGitTargetWrites. The observation is shared by every GitTarget
-// on the branch, so it is looked up by (repository, branch) and not by target.
-func TestObserveRemote_ReadsTheBranchItsGitTargetWrites(t *testing.T) {
-	target := remoteTestTarget()
-	target.Spec.GitProviderRef.Name = "repo1"
-	target.Spec.Branch = "main"
+// TestObserveRemote_ReadsTheBranchItHolds. The observation is the branch worker's, looked up by
+// (repository, branch).
+func TestObserveRemote_ReadsTheBranchItHolds(t *testing.T) {
+	key := git.BranchKeyFor("https://example.invalid/repo1.git", "main")
 
-	_, seen := (&GitTargetReconciler{}).observeRemote(
-		target,
-		git.RepoIdentity{URL: "https://example.invalid/repo1.git"},
-	)
+	_, seen := (&GitBranchReconciler{}).observeRemote(key)
 	assert.False(t, seen, "a reconcile with no worker manager has nothing to read")
 
 	workers := git.NewWorkerManager(nil, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
-	_, seen = (&GitTargetReconciler{WorkerManager: workers}).observeRemote(
-		target,
-		git.RepoIdentity{URL: "https://example.invalid/repo1.git"},
-	)
+	_, seen = (&GitBranchReconciler{WorkerManager: workers}).observeRemote(key)
 	assert.False(t, seen, "and neither has one whose branch nothing has looked at")
 }
 
@@ -354,21 +346,19 @@ func TestObserveRemote_ReadsTheBranchItsGitTargetWrites(t *testing.T) {
 // not armed: the refresher turned off, and a reconcile running without a worker manager. Neither
 // may reach for a worker, because the reconcile runs on every tick of every target.
 func TestRequestRemoteRefresh_DoesNothingWithoutADataPlane(t *testing.T) {
-	target := remoteTestTarget()
+	target := &configbutleraiv1alpha3.GitTarget{ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "shop"}}
 
 	assert.NotPanics(t, func() {
-		(&GitTargetReconciler{GitRefreshInterval: 0}).requestRemoteRefresh(target, "default")
+		(&GitTargetReconciler{GitRefreshInterval: 0}).requestRemoteRefresh(target)
 	}, "a zero interval turns the refresher off")
 
 	assert.NotPanics(t, func() {
-		(&GitTargetReconciler{GitRefreshInterval: time.Minute}).requestRemoteRefresh(target, "default")
+		(&GitTargetReconciler{GitRefreshInterval: time.Minute}).requestRemoteRefresh(target)
 	}, "and a reconcile with no worker manager has nothing to ask")
 
 	workers := git.NewWorkerManager(nil, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	assert.NotPanics(t, func() {
-		(&GitTargetReconciler{
-			GitRefreshInterval: time.Minute, WorkerManager: workers,
-		}).requestRemoteRefresh(target, "default")
+		(&GitTargetReconciler{GitRefreshInterval: time.Minute, WorkerManager: workers}).requestRemoteRefresh(target)
 	}, "and a target whose branch has no worker yet has nothing to refresh either")
 }
 
@@ -376,7 +366,7 @@ func TestRequestRemoteRefresh_DoesNothingWithoutADataPlane(t *testing.T) {
 // removing a field: the status write is a JSON merge patch computed against the object as read, so
 // the fix works only if a field that was there and is now nil is emitted as an explicit null.
 func TestPublishRemote_TheRemovalReachesTheAPIAsADelete(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	target.Status.Conditions = []metav1.Condition{{
 		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready",
@@ -397,7 +387,7 @@ func TestPublishRemote_TheRemovalReachesTheAPIAsADelete(t *testing.T) {
 // memory, keyed by namespace/name, so an entry left behind would hold a rate limit against a name
 // that may be recreated tomorrow with nothing published at all.
 func TestPublishRemote_ADeletedTargetReleasesItsLedgerEntry(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 	publishPersisted(r, target, observation("aaaa", at, git.ObservedByPush, firstRepo), true, firstRepo, at)
@@ -418,36 +408,11 @@ func TestPublishRemote_ADeletedTargetReleasesItsLedgerEntry(t *testing.T) {
 	assert.Equal(t, "bbbb", successor.Status.Remote.Commit)
 }
 
-// TestRequeueForRemoteAnswer_ShortensOnlyWhenSomethingWasAsked. The refresh is enqueued during the
-// reconcile, so its answer lands after the status write: a target that asked has to come back for
-// it, or an idle one spends a connection every interval and publishes what it learned a whole tick
-// late. A target that asked nothing keeps its own cadence.
-func TestRequeueForRemoteAnswer_ShortensOnlyWhenSomethingWasAsked(t *testing.T) {
-	assert.Equal(t, RemotePublicationInterval,
-		requeueForRemoteAnswer(RequeueSteadyInterval, remoteWake{asked: true}))
-	assert.Equal(t, RequeueSteadyInterval, requeueForRemoteAnswer(RequeueSteadyInterval, remoteWake{}))
-	assert.Equal(t, time.Second, requeueForRemoteAnswer(time.Second, remoteWake{asked: true}),
-		"a target already on a faster loop is not slowed down to the publication interval")
-}
-
-// TestRequeueForRemoteAnswer_ComesBackWhenTheFloorLifts is the reconcile after a lost requeue. The
-// asking reconcile's one-minute requeue is folded away when the refresh's answer re-enqueues the
-// target while it runs; the reconcile that follows holds that answer fresh, asks nothing, and is
-// stopped by the floor. It must come back when the floor lifts, not a whole steady tick later.
-func TestRequeueForRemoteAnswer_ComesBackWhenTheFloorLifts(t *testing.T) {
-	held := 59 * time.Second
-	assert.Equal(t, held, requeueForRemoteAnswer(RequeueSteadyInterval, remoteWake{heldFor: held}))
-	assert.Equal(t, held, requeueForRemoteAnswer(RequeueSteadyInterval, remoteWake{asked: true, heldFor: held}),
-		"the earlier of the two wakes wins")
-	assert.Equal(t, time.Second, requeueForRemoteAnswer(time.Second, remoteWake{heldFor: held}),
-		"a target already on a faster loop is not slowed down to the floor")
-}
-
 // TestPublishRemote_ReportsHowLongTheFloorHoldsAnAnswer: the floor delays news, and says for how
 // long, so the reconcile can come back for it. What is not news, and what is published, holds
 // nothing back.
 func TestPublishRemote_ReportsHowLongTheFloorHoldsAnAnswer(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	start := time.Now()
 	previous := r.clock
@@ -475,13 +440,13 @@ func TestPublishRemote_ReportsHowLongTheFloorHoldsAnAnswer(t *testing.T) {
 // remoteLedgerFixture drives publishRemote through the REAL status session, so what advances the
 // ledger is a patch the API server accepted rather than a callback a test chose to run.
 type remoteLedgerFixture struct {
-	r        *GitTargetReconciler
+	r        *GitBranchReconciler
 	client   client.Client
 	conflict bool
 	now      time.Time
 }
 
-func newRemoteLedgerFixture(t *testing.T, target *configbutleraiv1alpha3.GitTarget) *remoteLedgerFixture {
+func newRemoteLedgerFixture(t *testing.T, target *configbutleraiv1alpha3.GitBranch) *remoteLedgerFixture {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -500,13 +465,13 @@ func newRemoteLedgerFixture(t *testing.T, target *configbutleraiv1alpha3.GitTarg
 					// What losing the optimistic lock looks like: the object moved under this
 					// reconcile, so the patch is refused.
 					return apierrors.NewConflict(
-						schema.GroupResource{Group: "configbutler.ai", Resource: "gittargets"},
+						schema.GroupResource{Group: "configbutler.ai", Resource: "gitbranches"},
 						obj.GetName(), errors.New("the object has been modified"))
 				}
 				return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
 			},
 		})
-	f.r = &GitTargetReconciler{Client: f.client, clock: func() time.Time { return f.now }}
+	f.r = &GitBranchReconciler{Client: f.client, clock: func() time.Time { return f.now }}
 	return f
 }
 
@@ -514,7 +479,7 @@ func newRemoteLedgerFixture(t *testing.T, target *configbutleraiv1alpha3.GitTarg
 // whether the write landed.
 func (f *remoteLedgerFixture) publish(
 	t *testing.T,
-	target *configbutleraiv1alpha3.GitTarget,
+	target *configbutleraiv1alpha3.GitBranch,
 	observed git.RemoteObservation,
 	repo git.RepoIdentity,
 ) bool {
@@ -544,7 +509,7 @@ func TestPublishRemote_ARejectedPatchDoesNotAdvanceTheLedger(t *testing.T) {
 	// The retry, two seconds later, is not held off by a cooldown it never earned.
 	f.conflict = false
 	f.now = f.now.Add(2 * time.Second)
-	fresh := &configbutleraiv1alpha3.GitTarget{}
+	fresh := &configbutleraiv1alpha3.GitBranch{}
 	require.NoError(t, f.client.Get(context.Background(),
 		client.ObjectKeyFromObject(target), fresh))
 	require.Nil(t, fresh.Status.Remote, "nothing was published, so there is nothing to read back")
@@ -581,7 +546,7 @@ func TestPublishRemote_ARejectedWithdrawalKeepsTheLedgerEntry(t *testing.T) {
 	// And the next one does, against the object as it actually stands.
 	f.conflict = false
 	f.now = f.now.Add(time.Second)
-	stale := &configbutleraiv1alpha3.GitTarget{}
+	stale := &configbutleraiv1alpha3.GitBranch{}
 	require.NoError(t, f.client.Get(context.Background(), client.ObjectKeyFromObject(target), stale))
 	require.NotNil(t, stale.Status.Remote, "the old repository's revision is still published")
 
@@ -595,7 +560,7 @@ func TestPublishRemote_ARejectedWithdrawalKeepsTheLedgerEntry(t *testing.T) {
 // worker wiring and the patch, so on a slow reconcile a cooldown dated from it is already part
 // spent when the write lands — and a reconcile queued behind it publishes again straight away.
 func TestPublishRemote_TheCooldownStartsWhenTheWriteLands(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	evaluated := time.Now()
 	landed := evaluated.Add(90 * time.Second) // a slow pass: gates, wiring, then the patch
@@ -627,7 +592,7 @@ func TestPublishRemote_TheCooldownStartsWhenTheWriteLands(t *testing.T) {
 // has the same shape: forgetting the entry before the removal persists leaves the old repository's
 // revision standing with nothing to take it back.
 func TestPublishRemote_AWriteThatDidNotLandDoesNotAdvanceTheLedger(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	target := remoteTestTarget()
 	at := time.Now()
 
@@ -655,7 +620,7 @@ func TestPublishRemote_AWriteThatDidNotLandDoesNotAdvanceTheLedger(t *testing.T)
 // observation suppressed by its predecessor's cooldown. The entry carries the UID it was earned
 // under, which is the one thing that tells the two objects apart.
 func TestPublishRemote_ARecreatedTargetDoesNotInheritTheCooldown(t *testing.T) {
-	r := &GitTargetReconciler{}
+	r := &GitBranchReconciler{}
 	at := time.Now()
 
 	predecessor := remoteTestTarget()

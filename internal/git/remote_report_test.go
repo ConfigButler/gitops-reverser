@@ -56,12 +56,12 @@ func TestRemoteForBranch_SurvivesTheWorkerItWasProvedBy(t *testing.T) {
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 	key := BranchKeyFor(after.URL, "main") // where the GitTarget looks: its GitProvider names after
 
-	require.NoError(t, m.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
-	worker, ok := m.GetWorkerForTarget("repo1", "gitops-system", "main")
+	require.NoError(t, m.EnsureWorker(ctx, claimForTest(m, "repo1", "gitops-system", "main", before)))
+	worker, ok := m.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	worker.recordRemoteObservation("aaaa", ObservedByPush)
 
-	require.NoError(t, m.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
+	require.NoError(t, m.EnsureWorker(ctx, claimForTest(m, "repo1", "gitops-system", "main", after)))
 
 	observed, known := m.RemoteForBranch(key)
 	require.True(t, known,

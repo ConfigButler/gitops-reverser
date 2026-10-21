@@ -119,6 +119,7 @@ func newLedgerFixtureOnBranch(t *testing.T, slug string, seeded bool, branch str
 		BranchWorkerLimits{},
 	)
 	worker.ctx = ctx
+	worker.GitBranch = testGitBranch(providerName, "default", branch)
 	t.Cleanup(func() { _ = os.RemoveAll(worker.repoRootPath()) })
 
 	return &ledgerFixture{t: t, sim: sim, repoDir: repoDir, worker: worker}
@@ -174,10 +175,11 @@ func (f *ledgerFixture) createLedgerTarget(path string, prune *configv1alpha3.Pr
 	require.NoError(f.t, f.worker.Client.Create(f.worker.ctx, &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: ledgerTargetName, Namespace: "default"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitProviderRef: meta.NamespacedObjectReference{Name: f.worker.GitProviderRef},
-			Branch:         f.worker.Branch,
-			Path:           path,
-			Prune:          prune,
+			GitBranchRef: &meta.NamespacedObjectReference{
+				Name: testGitBranchName(f.worker.GitProviderRef, f.worker.Branch),
+			},
+			Path:  path,
+			Prune: prune,
 		},
 	}))
 }

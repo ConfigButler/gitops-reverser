@@ -49,7 +49,7 @@ func (m *Manager) bootstrapRuleStore(ctx context.Context, log logr.Logger) error
 func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.WatchRule) error {
 	targetNS := rule.Namespace
 
-	target, provider, err := m.resolveTargetAndProvider(ctx, client.ObjectKey{
+	target, err := m.resolveTarget(ctx, client.ObjectKey{
 		Name:      rule.Spec.GitTargetRef.Name,
 		Namespace: targetNS,
 	})
@@ -63,7 +63,7 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 	// override and watch a namespace the policy refuses. A denial is not fatal to startup: the
 	// rule is simply left out of the store (bootstrap has no controllers yet and cannot publish
 	// status), and the first reconcile re-decides and writes the terminal condition.
-	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)
+	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target)
 	if err != nil {
 		return fmt.Errorf("evaluating source-namespace authorization for WatchRule %s/%s: %w",
 			rule.Namespace, rule.Name, err)
@@ -79,7 +79,7 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1alpha3.ClusterWatchRule) error {
 	targetNS := rule.Spec.GitTargetRef.Namespace
 
-	target, provider, err := m.resolveTargetAndProvider(ctx, client.ObjectKey{
+	target, err := m.resolveTarget(ctx, client.ObjectKey{
 		Name:      rule.Spec.GitTargetRef.Name,
 		Namespace: targetNS,
 	})
@@ -93,7 +93,7 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 	// target the provider never admitted. A refusal is not fatal to startup: the
 	// rule is simply left out of the store, and the reconciler's own gate re-decides (and can grant
 	// it) as soon as the controller's initial sync reaches this rule.
-	decision, err := CompileClusterWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)
+	decision, err := CompileClusterWatchRule(ctx, m.Client, m.RuleStore, rule, target)
 	if err != nil {
 		return fmt.Errorf("evaluating admission for ClusterWatchRule %q: %w", rule.Name, err)
 	}
@@ -104,22 +104,11 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 	return nil
 }
 
-func (m *Manager) resolveTargetAndProvider(
-	ctx context.Context,
-	targetKey client.ObjectKey,
-) (configv1alpha3.GitTarget, configv1alpha3.GitProvider, error) {
+func (m *Manager) resolveTarget(ctx context.Context, targetKey client.ObjectKey) (configv1alpha3.GitTarget, error) {
 	var target configv1alpha3.GitTarget
 	if err := m.Client.Get(ctx, targetKey, &target); err != nil {
-		return configv1alpha3.GitTarget{}, configv1alpha3.GitProvider{},
-			fmt.Errorf("resolving GitTarget %s/%s: %w", targetKey.Namespace, targetKey.Name, err)
+		return configv1alpha3.GitTarget{}, fmt.Errorf("resolving GitTarget %s/%s: %w",
+			targetKey.Namespace, targetKey.Name, err)
 	}
-
-	providerKey := target.GitProviderKey()
-	var provider configv1alpha3.GitProvider
-	if err := m.Client.Get(ctx, providerKey, &provider); err != nil {
-		return configv1alpha3.GitTarget{}, configv1alpha3.GitProvider{},
-			fmt.Errorf("resolving GitProvider %s/%s: %w", providerKey.Namespace, providerKey.Name, err)
-	}
-
-	return target, provider, nil
+	return target, nil
 }
