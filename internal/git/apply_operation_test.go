@@ -25,7 +25,7 @@ import (
 // Argo CD sync of replicas 2 runs, the API edits replicas to 3, and the sync's write of 2 arrives
 // after it: the window withholds it, so Git keeps 3, and the cluster runs 2. An Application is never
 // sent a CatchUp, so nothing used to sync again. The withheld write leaves a Repair pending: a
-// second sync, pinned to the tip that holds the edit, sent on the quiet branch with no quiet
+// second sync, pinned to the tip that holds the edit, sent after a flush with no quiet
 // period.
 func TestApplier_AWithheldRollbackIsRepairedWithASecondSync(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))
@@ -54,10 +54,9 @@ func TestApplier_AWithheldRollbackIsRepairedWithASecondSync(t *testing.T) {
 	assert.Empty(t, requester.taken(), "a repair is sent once")
 }
 
-// TestApplier_ARepairWaitsForTheBranchNotForAQuietPeriod: a Repair is decided like a Refusal. It
-// waits for a quiet branch, and for the attempt still out, but not for the quiet period; and a
-// failed one comes back.
-func TestApplier_ARepairWaitsForTheBranchNotForAQuietPeriod(t *testing.T) {
+// TestApplier_ARepairWaitsForTheAttemptOut: a Repair is decided like a Refusal. It waits for the
+// attempt still out and for a flush, but not for a quiet period; and a failed one comes back.
+func TestApplier_ARepairWaitsForTheAttemptOut(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -70,15 +69,14 @@ func TestApplier_ARepairWaitsForTheBranchNotForAQuietPeriod(t *testing.T) {
 	assert.Empty(t, requester.taken(), "the attempt is still out")
 
 	report(first[0], ApplySucceeded)
-	loop.openWindow = &openWindow{}
+	holdApplies(loop)
 	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "not while the branch is busy")
+	assert.Empty(t, requester.taken(), "not while a save holds the flush")
 
-	loop.openWindow = nil
-	loop.quietSince = time.Time{}
+	releaseApplies(loop)
 	loop.serviceAppliers()
 	repair := requester.taken()
-	require.Len(t, repair, 1, "the moment the branch is quiet")
+	require.Len(t, repair, 1, "the moment a flush can be made")
 	assert.Equal(t, configv1alpha3.ApplyReasonRepair, repair[0].Reason)
 
 	report(repair[0], ApplyFailed)
@@ -305,7 +303,7 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 // Record, the trigger is told nothing about it.
 func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T) {
 	for _, outcome := range []ApplyOutcome{
-		ApplyRejected, ApplyDropped, ApplyStale, ApplyRequestFailed, ApplyCurrent,
+		ApplyRejected, ApplyDropped, ApplyStale, ApplyRequestFailed,
 	} {
 		t.Run(string(outcome), func(t *testing.T) {
 			loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))

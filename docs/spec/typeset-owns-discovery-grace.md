@@ -1,8 +1,10 @@
 # Typeset owns discovery grace: thinning the API-resource catalog
 
-> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+> **spec**, a staged plan: S1–S3 are built and describe current behavior, S4 is open. The code
+> depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
 
-**Status: S1–S3 IMPLEMENTED (2026-06-11); S4 open.** As-built deltas from the plan below
+**Status: S1–S3 IMPLEMENTED (2026-06-11); S4 open.** §2 describes the code before S2 and S3
+landed, so read it as the starting point, not as today. As-built deltas from the plan below
 (all minor, same shape):
 
 - The catalog kept its `Refresh(disco) (bool, error)` signature; the scan is read back
@@ -15,7 +17,15 @@
 - The catalog keeps the last normalized scan as its only cross-scan state — mechanical,
   per §3.1's allowance: it is the change fingerprint (generation bumps only on changed
   facts, so registry revisions don't churn on steady rescans) and the re-derive source
-  for `refreshTypeRegistry`'s lazy callers (rule status, watched-type tables).
+  for `refreshClusterTypeRegistry`'s lazy callers (rule status, watched-type tables).
+- There is one registry per source cluster (`refreshClusterTypeRegistry` publishes each
+  cluster's scan to its own), and the feed is `UpdateFromScan(scan)`: §2.1's "Registry
+  feed" row names the pre-S2 `Update`, which survives only for `NewSnapshotRegistry`.
+  §2.1's fixtures row is also out of date: `SplitFieldPath` and
+  `internal/auditutil/subresource_policy.go` are gone, and `BuiltinScale` has no caller
+  outside `internal/typeset`.
+- After the grace a record is dropped from the registry rather than kept as `Refused`
+  (§3.2): lookups stop knowing the type, and the lifecycle emits `TypeRemoved`.
 - **The demand axis is gone (2026-08-26).** `typeset.Materializer` and its
   materialization lifecycle were deleted: the watch-first rewrite left them with no
   production caller, and the demand intersection ("followable AND claimed") now lives in

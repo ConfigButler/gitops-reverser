@@ -20,6 +20,12 @@ var ErrFinalizeQueueFull = errors.New("branch worker event queue full; item drop
 // happen.
 var ErrResyncSuperseded = errors.New("resync superseded by a newer request for the same scope")
 
+// ErrResyncDiscarded replies to a resync whose snapshot the worker did not use: it was collected
+// while Git was ahead of the cluster, or across an apply, so an apply was about to make it stale
+// (docs/design/applier-echoes.md, F3). It is NOT a failure: the worker asks for a fresh snapshot of
+// the GitTarget once Git is no longer ahead.
+var ErrResyncDiscarded = errors.New("resync snapshot discarded: an apply made it stale; a fresh one is requested")
+
 // FinalizeOutcome is the terminal result of resolving a CommitRequest.
 type FinalizeOutcome string
 

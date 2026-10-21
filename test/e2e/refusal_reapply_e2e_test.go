@@ -96,7 +96,7 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 
 		By("creating the GitTarget on the OVERLAY, naming the Kustomization and asking it to reapply")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		createFluxTrigger(testNs, fluxName, fluxName, "")
+		createFluxTrigger(testNs, fluxName, fluxName)
 		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "Reapply")
 		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
 

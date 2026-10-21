@@ -2,7 +2,18 @@
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: architecture review, captured 2026-06-04
+> Status: design history. An architecture review captured 2026-06-04 that proposed the
+> materialized manifest model. That model has shipped: the `ManifestStore` in
+> [`internal/manifestanalyzer`](../../internal/manifestanalyzer), planned and flushed once per
+> write by [`internal/git/plan_flush.go`](../../internal/git/plan_flush.go). "Current
+> Architecture", "How It Works Today", "Key Code Paths", "What Works Well", and "Cons And Gaps"
+> describe the code of that date; `FolderReconciler`, the path-derived scan, and the per-batch
+> `manifestLocator` are gone. Three decisions below have changed since. Non-YAML files are no
+> longer exempt (decision 4): a file in no recognized role refuses the folder
+> ([gitpath-foreign-content-stringency.md](gitpath-foreign-content-stringency.md)). The operator
+> refuses no folder for unwatched or out-of-scope KRM (decision 3); only the dry-run scan reports
+> them. The managed drop is a policy knob: a resync sweeps only under `spec.prune.mode: Always`.
+> For current behavior, read [manifest-system.md](manifest-system.md).
 > Related:
 > `implementation-plan.md`,
 > [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),

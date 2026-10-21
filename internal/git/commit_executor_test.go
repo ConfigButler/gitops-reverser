@@ -167,7 +167,7 @@ func TestExecutor_NoOpUnit_SkipsCommit(t *testing.T) {
 	headBefore, err := repo.Head()
 	require.NoError(t, err)
 
-	created, hash, _, err := worker.executePendingWrite(context.Background(), repo, worktree, PendingWrite{
+	created, hash, _, err := worker.executePendingWrite(context.Background(), repo, worktree, &PendingWrite{
 		Kind:         PendingWriteCommit,
 		Events:       []Event{event},
 		CommitConfig: ResolveCommitConfig(nil),
@@ -210,7 +210,7 @@ func TestExecutor_AppliesEncryptionFromPendingWrite_NotFromWorker(t *testing.T) 
 		},
 	}
 
-	created, hash, _, err := worker.executePendingWrite(context.Background(), repo, worktree, pendingWrite)
+	created, hash, _, err := worker.executePendingWrite(context.Background(), repo, worktree, &pendingWrite)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
 	assert.False(t, hash.IsZero(), "a committed write reports its commit hash")

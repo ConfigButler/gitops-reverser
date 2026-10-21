@@ -185,6 +185,7 @@ func (w *BranchWorker) resolveTargetMetadata(
 		Namespaces:       namespacePolicyFor(target.Spec, sourceNamespaces, wildcard),
 		PruneMode:        target.EffectivePruneMode(),
 		SourceCluster:    target.SourceCluster(),
+		Applied:          target.Spec.ApplyTriggerRef != nil,
 		Suspend:          target.Spec.Suspend,
 	}, nil
 }
@@ -246,7 +247,7 @@ func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanal
 }
 
 // placementPolicyForBase finds the placement policy for the GitTarget that owns
-// base among targets. base is already a sanitized subtree key (groupEventsByBase
+// base among targets. base is already a sanitized subtree key (groupEventsByBaseWithIndex
 // runs it through sanitizePath), so md.Path must be sanitized the same way before
 // comparing — otherwise a root target, whose spec.path is "." but whose sanitized
 // base is "", would never match and would silently drop its declared placement on

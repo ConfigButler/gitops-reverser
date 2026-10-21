@@ -228,8 +228,6 @@ kinds:
         doc: >-
           The `Kustomization` that applies the folders of the `GitTarget`s naming this trigger. See
           [who applies this folder](#who-applies-this-folder-specapplytriggerref)
-      - path: quietPeriod
-        doc: How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp`
 
   - kind: ArgoCDTrigger
     title: "`ArgoCDTrigger` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync"

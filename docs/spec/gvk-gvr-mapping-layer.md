@@ -1,14 +1,26 @@
 # Manifest GVK/GVR Mapping Layer
 
-> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+> **spec**, kept as design history. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: design, captured 2026-06-04
+> Status: built 2026-06-04, then superseded by [type-followability.md](type-followability.md). The
+> layer this page designs (`internal/mapping` with `ResourceMapper`, `StructureOnlyMapper`,
+> `StaticSnapshotMapper` and `mapping.Status`; `watch.CatalogMapper`; the catalog's `byGVK`,
+> `LookupGVK`, `LookupGVR` and `APIResourceEntry`; `RuleGVRResolver`) no longer exists. The mapper
+> is now `typeset.Lookup` ([`internal/typeset/lookup.go`](../../internal/typeset/lookup.go)):
+> `Ready()` plus an exact-match `ByGVK(gvk) (TypeRecord, bool)`, and a caller gates on
+> `TypeRecord.Followable()` instead of a status vocabulary. The controller hands the git writer its
+> `typeset.Registry`; tests use `typeset.NewSnapshotRegistry`; a Lookup that is not ready is the
+> structure-only mode, which is still the `manifest-analyzer` default. The kubeconfig-backed mapper
+> and the `APIMappingReady` condition were never built. What carries over is the reasoning:
+> discovery is the only source of GVK/GVR truth, a mapping must match exactly, and degraded
+> discovery is never evidence of absence.
+>
+> Captured 2026-06-04.
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),
 > [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
-> [../kubernetes-api-resource-catalog.md](../facts/kubernetes-api-resource-catalog.md),
+> [kubernetes-api-resource-catalog.md](../facts/kubernetes-api-resource-catalog.md),
 > [`internal/watch/api_resource_catalog.go`](../../internal/watch/api_resource_catalog.go),
-> `internal/watch/rule_gvr_resolver.go`,
 > [`internal/manifestanalyzer/analyzer.go`](../../internal/manifestanalyzer/analyzer.go)
 
 ## Summary
@@ -174,7 +186,9 @@ degraded.
 > repository's no-stutter lint, `MappingResult` is `mapping.Result` and
 > `MappingStatus` is `mapping.Status`. The `Mapping*` status constants below kept
 > their names. `internal/mapping` has no dependency on `internal/watch`, so the
-> analyzer can resolve mappings without importing the watch manager.
+> analyzer can resolve mappings without importing the watch manager. All of it was
+> later replaced by `internal/typeset`, which keeps that leaf property (see the
+> status at the top).
 
 The concrete Go names can move, but the interface should make the dependency
 explicit:

@@ -146,8 +146,9 @@ setting. Verdict: **cannot be used to be slow.**
 ## The configuration that works
 
 Turn automated sync **off** and let GitOps Reverser start every sync. Nothing in Argo CD then
-applies on its own, so the only syncs are ones started on a quiet branch, pinned to a commit with
-nothing live missing from it. Argo CD's own rules make it safe to drive this way: a sync is started
+applies on its own, so the only syncs are ones started after a flush, pinned to a commit that
+holds every edit published before it; an edit made after the flush is repaired should the sync
+overwrite it. Argo CD's own rules make it safe to drive this way: a sync is started
 by setting the `Application`'s `operation` as automated sync would (`controller/appcontroller.go`
 `autoSync`), and never while another operation is set (`util/argo/argo.go` `SetAppOperation`). With
 automated sync off, a refresh only compares: `autoSync` returns at once when
@@ -185,7 +186,7 @@ forgotten.
 | PreSync hook (veto) | **No** | also aborts legitimate deploys; can't tell them apart |
 | self-heal timeout / backoff | **No** | throttles repeats; first drift reverted immediately |
 | `selfHeal: false` + push webhook | **Mostly** | nothing reverts drift, but every new commit, GitOps Reverser's own included, is synced over pending edits |
-| automated sync off + an `ArgoCDTrigger` | **Yes** | GitOps Reverser starts every sync, on a quiet branch, pinned to a checked commit |
+| automated sync off + an `ArgoCDTrigger` | **Yes** | GitOps Reverser starts every sync, after a flush, pinned to a checked commit |
 | admission gate on Argo's writes | (recovers "revert unauthorized") | per-write authority decision; external to Argo |
 
 ## References

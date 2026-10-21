@@ -14,9 +14,9 @@
 > What is still **open** is not here. It is ranked in
 > [`../design/open-asks-priority.md`](../design/open-asks-priority.md). Removal-wait alternatives are in
 > [`../design/attribution-removal-wait-options.md`](../design/attribution-removal-wait-options.md).
-> The [planned filtered-removal policy](../design/watches-labels-simplification.md#attribution-for-filtered-removals)
-> adds stricter evidence and immediate release of eligible exact matches for label-filtered
-> `DELETED` events. It is not implemented; the behavior below remains the current contract.
+> The [filtered-removal policy](../design/watches-labels-simplification.md#attribution-for-filtered-removals)
+> for label-filtered `DELETED` events is built, and is the last of the
+> [four rules that are easy to miss](#four-rules-that-are-easy-to-miss) below.
 >
 > Related: [`watch-event-ordering-and-attribution-grace.md`](watch-event-ordering-and-attribution-grace.md),
 > [`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md),
@@ -108,9 +108,8 @@ repository means.
 
 **In code.** [`routeLiveTargetWatchEvent`](../../internal/watch/target_watch.go) routes an event
 whose object has `GetDeletionTimestamp() != nil` as a **Delete** regardless of whether the watch type
-is `MODIFIED` or `DELETED`; the Delete path emits no body, so the file is removed. This is computed
-*before* the operation is matched against the rule's verbs, so a WatchRule that excludes deletes
-consistently does not act on the logical delete either. Later finalizer-clearing events re-issue
+is `MODIFIED` or `DELETED`; the Delete path emits no body, so the file is removed. A rule has no
+operation filter, so every rule acts on the logical delete. Later finalizer-clearing events re-issue
 "delete X" against an already-absent path, and the writer diffs them to a no-op.
 
 **One operational caveat.** Logical absence is a Git statement, and it must not make us blind to a

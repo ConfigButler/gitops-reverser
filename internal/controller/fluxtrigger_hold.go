@@ -667,19 +667,16 @@ func (r *ApplyTriggerReconciler) event(object client.Object, eventType, reason, 
 	}
 }
 
-// publishConsumers sets the trigger's status.source.otherConsumers and status.source.prefetch: the
-// consumers of its GitRepository in the applier's cluster, other than its own Kustomization, that no
-// FluxTrigger on the same ClusterProvider holds. Prefetch also needs its own Kustomization held,
-// which held, this pass's Held, says. A listing that fails publishes none and no prefetch,
-// because the precondition cannot be checked. Information only (decision 2): it never affects Ready.
-func (r *ApplyTriggerReconciler) publishConsumers(
-	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, held conditionValue,
-) {
+// publishConsumers sets the trigger's status.source.otherConsumers: the consumers of its GitRepository
+// in the applier's cluster, other than its own Kustomization, that no FluxTrigger on the same
+// ClusterProvider holds. A listing that fails publishes none. Information only (decision 2): it never
+// affects Ready.
+func (r *ApplyTriggerReconciler) publishConsumers(ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger) {
 	source := trigger.Status.Source
 	if source == nil || r.ApplierClients == nil {
 		return
 	}
-	source.OtherConsumers, source.Prefetch = nil, false
+	source.OtherConsumers = nil
 	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
 	defer cancel()
 	flux, err := r.fluxClient(ctx, trigger)
@@ -690,7 +687,7 @@ func (r *ApplyTriggerReconciler) publishConsumers(
 		Namespace: source.GitRepository.Namespace, Name: source.GitRepository.Name,
 	})
 	if err != nil {
-		logf.FromContext(ctx).V(1).Info("cannot list the GitRepository's consumers; not prefetching it",
+		logf.FromContext(ctx).V(1).Info("cannot list the GitRepository's consumers",
 			"gitRepository", source.GitRepository.Namespace+"/"+source.GitRepository.Name, "error", err.Error())
 		return
 	}
@@ -706,7 +703,6 @@ func (r *ApplyTriggerReconciler) publishConsumers(
 		}
 		source.OtherConsumers = append(source.OtherConsumers, consumer)
 	}
-	source.Prefetch = len(source.OtherConsumers) == 0 && held.Status == metav1.ConditionTrue
 }
 
 // heldKustomizations is every Kustomization a FluxTrigger on the ClusterProvider holds: one whose

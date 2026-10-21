@@ -44,6 +44,7 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 		fluxTrigger("alpha", recording(recorded, false)))
 	writer := &recordingStatusWriter{}
 	loop.w.triggerStatus = writer
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch}) // the tip it applies
 
 	loop.followRecordedOperations(time.Now())
 
@@ -64,7 +65,7 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySettling, SuspendToken: "T2"})
 	followed[0].Report(ApplyResult{ID: followed[0].ID, Outcome: ApplySucceeded, SuspendToken: "T2",
 		AppliedRevision: "main@sha1:bbb"})
-	loop.openWindow = &openWindow{} // busy: the repair the withheld write left pending waits
+	holdApplies(loop) // the repair the withheld write left pending waits
 	loop.serviceAppliers()
 	status, _ := writer.last(applierRef("alpha").Trigger)
 	completed := status.Operation
@@ -75,7 +76,7 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 	assert.Equal(t, "T2", completed.SuspendToken)
 	assert.Empty(t, requester.taken())
 
-	loop.openWindow, loop.quietSince = nil, time.Time{}
+	releaseApplies(loop)
 	loop.serviceAppliers()
 	repair := requester.taken()
 	require.Len(t, repair, 1, "the withheld write leaves a repair pending, as in a process that never stopped")
@@ -87,11 +88,12 @@ func TestRecovery_AnOperationLeftInFlightIsFollowedWithItsWindowOpen(t *testing.
 func TestRecovery_APendingRepairIsRestored(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true),
 		fluxTrigger("alpha", recording(recordedOperation(configv1alpha3.ApplyOperationSucceeded), true)))
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch}) // the tip it applied
 	loop.followRecordedOperations(time.Now())
 	assert.True(t, onlyApplier(t, loop).repair)
 	loop.serviceAppliers()
 	repair := requester.taken()
-	require.Len(t, repair, 1, "the repair is sent on the quiet branch")
+	require.Len(t, repair, 1, "the repair is sent after a flush")
 	assert.Equal(t, configv1alpha3.ApplyReasonRepair, repair[0].Reason)
 	assert.Nil(t, repair[0].Recovered)
 }

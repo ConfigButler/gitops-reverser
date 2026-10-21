@@ -175,6 +175,14 @@ func liveWrite(loop *branchWorkerEventLoop, name string) {
 	}})
 }
 
+// noOpSave saves a live write of cm1, which the tests' parent already holds. A write that changes
+// nothing does not exist and settles without a push (docs/design/applier-echoes.md, F2); a save is
+// never trimmed, so its push still reaches the remote, which settles it.
+func noOpSave(loop *branchWorkerEventLoop) {
+	serviceAttach(loop, standbyRequest())
+	liveWrite(loop, "cm1")
+}
+
 // treeHas reports whether the commit's tree carries the file.
 func treeHas(t *testing.T, repo *git.Repository, commit plumbing.Hash, file string) bool {
 	t.Helper()
@@ -311,9 +319,10 @@ func TestBranchWorker_ResyncOnAbsentBranchDiffsAgainstTheMovedParent(t *testing.
 }
 
 // TestBranchWorker_NoDiffLiveWriteOnAbsentBranchStaysOnStandby is "keep normal deployments
-// quiet". A live write the parent already holds commits nothing, and its push must not create the
-// write branch merely to record that nothing changed. It still reaches the remote: "already
-// present" is a claim only the advertisement can settle.
+// quiet". A live write the parent already holds commits nothing, and must not create the write
+// branch merely to record that nothing changed. A write that changes nothing does not exist, so it
+// settles without a push; a save of it still reaches the remote, because "already present" is a
+// claim only the advertisement can settle.
 func TestBranchWorker_NoDiffLiveWriteOnAbsentBranchStaysOnStandby(t *testing.T) {
 	t.Run("the parent already holds the document", func(t *testing.T) {
 		f := newNewBranchFixture(t, map[string]string{cmFile("cm1"): cmDocument("cm1")})
@@ -323,7 +332,21 @@ func TestBranchWorker_NoDiffLiveWriteOnAbsentBranchStaysOnStandby(t *testing.T) 
 
 		liveWrite(loop, "cm1")
 
-		require.Empty(t, loop.pendingWrites, "the no-diff write was published")
+		require.Empty(t, loop.pendingWrites, "the no-diff write settled at once")
+		assert.True(t, loop.lastPushAt.IsZero(), "with nothing to publish, nothing was pushed")
+		_, onRemote := f.featureOnRemote()
+		assert.False(t, onRemote, "and the write branch stays absent")
+	})
+
+	t.Run("a save the parent already holds", func(t *testing.T) {
+		f := newNewBranchFixture(t, map[string]string{cmFile("cm1"): cmDocument("cm1")})
+		loop := newBranchWorkerEventLoop(f.worker, 0)
+		defer loop.stopTimers()
+		f.warmOnParent()
+
+		noOpSave(loop)
+
+		require.Empty(t, loop.pendingWrites, "the no-diff save was published")
 		assert.False(t, loop.lastPushAt.IsZero(), "it reached the remote to confirm")
 		_, onRemote := f.featureOnRemote()
 		assert.False(t, onRemote, "and the write branch stays absent")

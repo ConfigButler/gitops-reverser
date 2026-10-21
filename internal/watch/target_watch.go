@@ -742,6 +742,9 @@ func (m *Manager) targetWatchReplayAndStream(
 	)
 	replaying := true
 	replayStarted := time.Now()
+	// Read before the collection starts: the worker judges the snapshot by whether an apply could
+	// have changed what it saw since (docs/design/applier-echoes.md, F3).
+	start := m.applyStateAtCollectionStart(ctx, gitDest)
 	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), stream.key, opts)
 	if err != nil {
 		if watchListUnsupported(err) {
@@ -768,7 +771,7 @@ func (m *Manager) targetWatchReplayAndStream(
 	defer release()
 	defer w.Stop()
 
-	return m.pumpTargetWatchSession(ctx, log, gitDest, stream, w.ResultChan(), replaying, replayStarted)
+	return m.pumpTargetWatchSession(ctx, log, gitDest, stream, w.ResultChan(), replaying, replayStarted, start)
 }
 
 // pumpTargetWatchSession drains one open session, folding replay events and then streaming live
@@ -785,8 +788,9 @@ func (m *Manager) pumpTargetWatchSession(
 	events <-chan watch.Event,
 	replaying bool,
 	replayStarted time.Time,
+	start *git.ApplyState,
 ) error {
-	var replay replaySnapshot
+	replay := replaySnapshot{start: start}
 	for {
 		select {
 		case <-ctx.Done():
@@ -897,6 +901,7 @@ func (m *Manager) targetWatchListAndStream(
 	buffered := make(chan watch.Event, targetWatchBufferCapacity)
 	go bufferTargetWatchEvents(ctx, w.ResultChan(), buffered)
 
+	start := m.applyStateAtCollectionStart(ctx, gitDest)
 	list, err := m.openTargetList(ctx, clusterID, stream.key, metav1.ListOptions{})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -912,6 +917,7 @@ func (m *Manager) targetWatchListAndStream(
 		return fmt.Errorf("list target watch snapshot %s/%q: %w", stream.key.GVR.String(), stream.key.Namespace, err)
 	}
 	snapshot := snapshotFromList(stream.key.GVR, list)
+	snapshot.start = start
 	resourceVersion := list.GetResourceVersion()
 	if err := m.enqueueReplayResync(ctx, log, gitDest, stream, snapshot, resourceVersion); err != nil {
 		return err
@@ -965,7 +971,7 @@ func (m *Manager) handleTargetWatchSessionEvent(
 		return true, err
 	}
 	stream.markReplayed()
-	*replay = replaySnapshot{}
+	*replay = replaySnapshot{start: replay.start}
 	m.markTargetStreamState(
 		gitDest,
 		stream.key.Collection(),
@@ -1037,8 +1043,8 @@ func (m *Manager) enqueueReplayResync(
 	// A retired stream's snapshot is dropped here, at the producer: see producerGate.
 	if !stream.gate.enqueue(ctx, func() {
 		resultCh, enqueued, err = m.EventRouter.enqueueScopedResync(
-			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), snapshot.desired,
-			resourceVersion, false, stream.revision)
+			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), snapshot,
+			resourceVersion, stream.revision)
 	}) {
 		return nil
 	}
@@ -1330,6 +1336,7 @@ func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstru
 	}
 	if op != string(types.OperationDelete) {
 		event.LastFieldManagers, event.LastFieldManagedAt = lastFieldManagers(u)
+		event.AppliedBy = git.AppliedByOf(u)
 		event.Object = sanitize.Sanitize(u)
 	}
 	return event

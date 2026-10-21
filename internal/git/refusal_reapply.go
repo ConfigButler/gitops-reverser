@@ -133,7 +133,7 @@ func (w *BranchWorker) refusalRateLimited(target itypes.ResourceReference) (bool
 }
 
 // reapplyForRefusal is the loop-side half: it turns a reported refusal into an unsent Refusal apply
-// request for the target's applier, sent once the branch is quiet (serviceAppliers).
+// request for the target's applier, sent after a flush (serviceAppliers).
 //
 // It runs on the event loop, after the refusal has already been reported, and it is deliberately
 // best-effort. A refusal is already surfaced as GitPathAccepted=False; failing to ask for a reapply
@@ -309,7 +309,7 @@ func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference
 			delete(l.refusalPending, key)
 		}
 	}
-	// An unsent refusal, decided and waiting for a quiet branch, is cancelled the same way. Keyed by
+	// An unsent refusal, decided and waiting for its flush, is cancelled the same way. Keyed by
 	// target alone it could not be told apart from a sibling collection's, so it outlived the
 	// recovery and asked for an apply for a refusal that no longer existed.
 	for key := range l.unsentRefusals {
@@ -440,7 +440,7 @@ func sortedRefusalKeys(pending map[refusalKey]pendingRefusalReapply) []refusalKe
 }
 
 // addUnsentRefusal records that the worker decided a Refusal request for the target's applier,
-// which serviceAppliers sends once the branch is quiet. Several refusals for one target before then
+// which serviceAppliers sends after a flush. Several refusals for one target before then
 // share one request.
 func (l *branchWorkerEventLoop) addUnsentRefusal(key refusalKey, refusal unsentRefusal, observation string) {
 	// Recorded as covered now, when the request is decided, rather than when it is delivered: the
@@ -452,7 +452,7 @@ func (l *branchWorkerEventLoop) addUnsentRefusal(key refusalKey, refusal unsentR
 		l.unsentRefusals = map[refusalKey]unsentRefusal{}
 	}
 	l.unsentRefusals[key] = refusal
-	l.w.Log.Info("Refused edit: asking its applier to reapply once the branch is quiet",
+	l.w.Log.Info("Refused edit: asking its applier to reapply after a flush",
 		"gitTarget", key.target.String(), "branch", l.w.Branch, "refused", refusal.detail)
 }
 

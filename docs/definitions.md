@@ -144,8 +144,9 @@ the parent branch is not followed.
 
 **Commit window.** The interval a branch worker batches one author's writes to one target over before
 it commits. Only a write opens one; nothing else does. It closes on its `idleTimeout` of silence or
-its `maxDuration` after opening, whichever comes first. Windows do not merge across authors, which
-is why attribution can be per-commit.
+its `maxDuration` after opening, whichever comes first, or earlier for a flush, unless a
+`CommitRequest` holds it. Windows do not merge across authors, which is why attribution can be
+per-commit.
 
 **Attach.** What a `CommitRequest` does to a commit window: it gives the window its message and
 replaces the window's timers with its own. A request attaches to at most one window and never opens
@@ -156,8 +157,11 @@ one. One word for the act, in the API (`window.attach`, `attachTimeout`), the co
 commit window, an atomic batch, a resync, or a save's empty record. The branch worker keeps its
 pending writes in order, commits them, and pushes them on one retry schedule. A pending write can
 be waiting to become a commit, committed locally and waiting for a push, or replayed onto a remote
-that moved. `PendingWrite` and `pendingWrites` in Go. Not "log",
-which also names diagnostic logs and suggests a durable journal, which this is not.
+that moved. It carries the actions decided once, on its tree: an upsert per object that changed
+the tree and a delete per document removed, while a save keeps every object it captured. A replay
+applies those actions to the newer tip instead of planning the cluster's picture again.
+`PendingWrite` and `pendingWrites` in Go. Not "log", which also names diagnostic logs and suggests
+a durable journal, which this is not.
 
 **Publication.** One commit-and-push cycle by a branch worker. The thing a `GitTarget` reports in
 `status.remote`.
@@ -221,15 +225,50 @@ happens to the `Kustomization` rather than what the trigger does. **Hand back** 
 `spec.suspend`, so Flux applies on its own again.
 
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
-(`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`). It asks; the operation it starts is followed
-until the applier's status shows the apply completed. A reason is **pending** for an applier from
+(`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`; a `CatchUp` adopts or converges, both defined
+below). It asks; the operation it starts is followed until the applier's status shows the apply
+completed. A reason is **pending** for an applier from
 the moment the branch worker decides it until an attempt **carries** it; an operation that
 succeeds **answers** it, and one that does not gives it back to pending. A pending `Repair` shows
 on the trigger as `status.repairPending`.
 
-**Quiet branch.** A branch on which no branch worker writing that repository and branch holds an
-open commit window or pending writes. Apply requests go out only on a quiet branch, because only
-then is nothing live missing from the tip.
+**Flush.** What a branch worker does before it sends an apply request: it closes the open commit
+window, takes the **flush mark** (the last write decided so far), and publishes every write up to
+the mark at once, without waiting for the push cooldown. The request is sent for the tip that
+publication produced. An edit decided after the mark does not hold the request back: the applier's
+[apply window](design/apply-trigger.md#the-apply-window) records it from the mark, so an apply that
+overwrites it is withheld and a `Repair` puts it back. The flush covers the other branch workers
+on the same repository and branch (two `GitProvider`s naming one repository): each closes its own
+window and publishes up to a mark of its own, and the request waits until every one is done.
+
+**Echo.** The applier's own write landing: the watch event of an object the applier wrote while
+applying a commit GitOps Reverser asked for. The branch worker knows one by its newest
+`managedFields` entries, which are the applier's field managers alone, written at or after the
+earliest send of the apply windows still open or carried, to an object nobody edited in the window.
+An echo is not mirrored, because its content is the commit's, which Git already holds. An applier
+write with no window open is mirrored as an edit, and counted as a late echo.
+
+**Adopt.** A `CatchUp` that has the applier take ownership of an object the API created in its
+folder. An applier prunes only what it applied, and an apply is what stamps an object as applied:
+Flux's owner labels and inventory, Argo CD's tracking annotation. So an object nobody applied stays
+on the cluster when Git later deletes its file. An adopt is pending once the branch worker observes
+an API create in a folder an applier applies, or a resync adds an object to Git, and it is never
+skipped as already applied. A trigger's `Adopted` Event names something else, the trigger taking
+hold of its `Kustomization`'s `spec.suspend`.
+
+**Converge.** A `CatchUp` that applies the tip because nothing says the applier runs it: once when
+the branch worker starts, and once when a `GitTarget` first names the trigger (per incarnation, by
+uid). The worker keeps, per applier, the commit its last succeeded operation applied, recovered on
+restart from the trigger's `status.operation`, and a converge of that commit asks nothing.
+
+**Apply epoch.** A counter on the branch worker, raised at every send of an apply attempt and at
+every end of one. When a snapshot's collection starts, the watch side reads it, with whether **Git
+is ahead** of the cluster: an applier on the branch has a `ForeignCommit`, `Refusal` or `Repair`
+pending, a converge it may be asked for, or an attempt out. A snapshot collected while Git was
+ahead, or across an epoch change, holds a picture the apply has made stale, so the worker discards
+it and asks for a fresh one once Git is no longer ahead. A `GitTarget`'s initial snapshots, the
+first of each collection until one of it settles, are exempt, and its snapshots are held off for at
+most 5 minutes.
 
 **Receiver.** `GitProvider.spec.receiver`, the endpoint a Git host notifies on a push. The word and
 its `type` values are Flux's. A delivery to it is a hint to look, never a fact about the branch.
@@ -442,3 +481,4 @@ outage.
 | reconciler, orchestrator (for Flux or Argo CD) | applier | "reconciler" also names our own controllers |
 | owed, owes, debt, obligation | pending, decided, sent, waiting for | an accounting word names no state: say what is pending, for whom, and what ends it |
 | fence, fenced (for what a trigger does to its applier) | suspend, held | the `Kustomization` is suspended, and the trigger holds it; say which, and whether the suspend is handled |
+| quiet branch | flush | no apply waits for a branch with nothing pending; it goes after a flush |

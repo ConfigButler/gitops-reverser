@@ -181,6 +181,9 @@ func main() {
 	// The read-only twin of the refusal reporter: the refresher re-reads an idle target's folder,
 	// and a folder somebody else broke in Git produces no Kubernetes event to notice it by.
 	workerManager.SetScanAcceptanceReporter(watchMgr.ReportGitPathScan)
+	// A worker discards a snapshot an apply made stale and asks for a fresh one, and asks no applier
+	// for anything before a GitTarget's initial snapshots are in Git: both read the streams.
+	workerManager.SetSnapshotHooks(watchMgr.InitialSnapshotsSettled, watchMgr.RequestRecheckForGitTarget)
 	// The branch workers decide when a GitTarget's applier may apply; the dispatcher delivers it,
 	// off their queues, to the applier its apply trigger holds, in the trigger's cluster. The status
 	// writer records each operation on the trigger, also off their queues.
@@ -614,9 +617,9 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"decides how often the precise path is taken; drops are counted on "+
 			"attribution_collection_without_uidset_total{reason}.")
 	fs.DurationVar(&cfg.attributionGrace, "author-attribution-grace", watch.DefaultAttributionGraceWindow,
-		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
-			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
-			"at the cost of commit latency.")
+		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships unresolved, "+
+			"authored \"unknown (attribution unresolved)\" (duration string; default 3s). Larger values "+
+			"raise attribution hit-rate at the cost of commit latency.")
 	fs.DurationVar(&cfg.commitRequestTTL, "commit-request-ttl", controller.DefaultCommitRequestTTL,
 		"How long a CommitRequest is kept once it finishes (duration string; default 48h, 0 keeps "+
 			"them). The deletion time is written onto the request as the "+

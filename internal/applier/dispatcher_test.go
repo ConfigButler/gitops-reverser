@@ -448,8 +448,24 @@ func TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing(t *testing.T) {
 	assert.Empty(t, f.source.clusters, "the hub's client is never even asked for")
 }
 
-// TestDispatcher_AFailureIsReportedAndNeverRetried: retrying is the branch worker's decision, on a
-// quiet branch. The dispatcher reports the failure, and records ApplyRequestFailed only for the
+// TestDispatcher_ASourceElsewhereIsReportedWithItsRevision: a GitRepository that fetched and holds
+// another commit than the one asked for fails the attempt, and the report carries the revision it
+// holds, which the branch worker takes as a hint that the branch moved.
+func TestDispatcher_ASourceElsewhereIsReportedWithItsRevision(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+	f.sim.Fetches(platformKey, "main@sha1:"+olderCommit)
+
+	res := f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
+	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
+	assert.Equal(t, "main@sha1:"+olderCommit, res.SourceRevision)
+
+	f.sim.Fetches(platformKey, "main@sha1:"+testCommit)
+	assert.Empty(t, f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a")).SourceRevision,
+		"a source that brings the commit says nothing")
+}
+
+// TestDispatcher_AFailureIsReportedAndNeverRetried: retrying is the branch worker's decision, after a
+// flush. The dispatcher reports the failure, and records ApplyRequestFailed only for the
 // first failure of a run.
 func TestDispatcher_AFailureIsReportedAndNeverRetried(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")})
@@ -576,10 +592,11 @@ func TestDispatcher_AStaleDecisionAsksNothing(t *testing.T) {
 	assert.Equal(t, int64(1), f.count(v1alpha3.ApplyReasonRefusal, outcomeStale))
 }
 
-// TestDispatcher_CatchUpAlreadyCurrent: a CatchUp the applier already satisfies (suspended, with
-// the commit in its artifact and applied) counts as sent and records nothing, since nothing was
-// asked of it.
-func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {
+// TestDispatcher_ACatchUpOfTheAppliedCommitIsAsked: the branch worker decides what needs no apply
+// (it sends no converge of the commit an applier last applied), so a CatchUp the dispatcher carries
+// is asked even of a Kustomization suspended with the commit applied: an adopt re-applies it on
+// purpose, which is what stamps Flux's owner labels on an object the API created.
+func TestDispatcher_ACatchUpOfTheAppliedCommitIsAsked(t *testing.T) {
 	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
 	_ = unstructured.SetNestedField(ks.Object, true, "spec", "suspend")
 	_ = unstructured.SetNestedField(ks.Object, "main@sha1:"+testCommit, "status", "lastAppliedRevision")
@@ -590,9 +607,8 @@ func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {
 
 	res := f.attempt(request(checkout, v1alpha3.ApplyReasonCatchUp, "a"))
 
-	assert.Equal(t, git.ApplyCurrent, res.Outcome)
-	assert.Empty(t, f.patches())
-	assert.Empty(t, f.events())
+	assert.Equal(t, git.ApplyRequested, res.Outcome)
+	assert.NotEmpty(t, f.patches(), "the Kustomization was resumed")
 }
 
 // TestDispatcher_RequestApplyReportsFromItsOwnGoroutine: RequestApply returns at once and the
@@ -717,7 +733,7 @@ func TestDispatcher_AnApplyPastItsBudgetIsUnresolvedAndStillFollowed(t *testing.
 }
 
 // TestDispatcher_AFailedApplyIsSuspendedAgain: a failed apply is suspended like any other, which is
-// what stops Flux's own retryInterval retry; the worker decides the retry, on a quiet branch.
+// what stops Flux's own retryInterval retry; the worker decides the retry, after a flush.
 func TestDispatcher_AFailedApplyIsSuspendedAgain(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
 	f.sim.FailApplies("ConfigMap/apps/x dry-run failed")

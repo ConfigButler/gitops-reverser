@@ -249,9 +249,9 @@ func TestBranchWorker_AParentChangeRebuildsRetainedWrites(t *testing.T) {
 			defer loop.stopTimers()
 
 			loop.lastPushAt = time.Now()
-			liveWrite(loop, "cm1")
+			noOpSave(loop)
 			require.Len(t, loop.pendingWrites, 1)
-			require.True(t, loop.pendingWrites[0].CommitSHA.IsZero(), "a no-op is retained during the cooldown")
+			require.True(t, loop.pendingWrites[0].CommitSHA.IsZero(), "a no-op save is retained during the cooldown")
 
 			require.True(t, f.worker.SetParentBranch(parent))
 			liveWrite(loop, "cm2")
@@ -354,7 +354,7 @@ func TestBranchWorker_ObservesTheParentOfAnAbsentBranch(t *testing.T) {
 		loop := newBranchWorkerEventLoop(f.worker, 0)
 		defer loop.stopTimers()
 
-		liveWrite(loop, "cm1")
+		noOpSave(loop)
 
 		o := observed(f)
 		assert.Equal(t, ObservedByPush, o.By)

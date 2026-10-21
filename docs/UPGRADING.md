@@ -33,10 +33,10 @@ default stored on every provider, is accepted.
 
 **Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
 GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
-`Reapply` it asks the target's applier to apply the current tip once the branch holds no open
-commit window and no pending writes. The applier is the Flux `Kustomization` a `FluxTrigger` holds,
-or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget` names the trigger in the
-new `spec.applyTriggerRef`. Only that applier applies, rather than every applier watching the
+`Reapply` it asks the target's applier to apply the current tip, after closing the open commit
+window and publishing the writes pending on the branch. The applier is the Flux `Kustomization` a
+`FluxTrigger` holds, or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget`
+names the trigger in the new `spec.applyTriggerRef`. Only that applier applies, rather than every applier watching the
 branch; a `GitRepository` that has to fetch the tip wakes only the consumers no trigger holds. An
 allowed edit still in a commit window is published before the apply instead of being
 reverted with the refused one. The API rejects `Reapply` without `spec.applyTriggerRef`.
@@ -61,25 +61,42 @@ See [who applies this folder](configuration.md#who-applies-this-folder-specapply
 
 A trigger also changes what else applies the folder. A `FluxTrigger` holds its `Kustomization`
 suspended, so Flux applies it only when GitOps Reverser resumes it: when somebody else pushes to the
-branch, after a refusal or a reverted edit, and to catch up with its own pushes, or with the branch
-once a `GitTarget` first names the trigger, after the branch has been quiet for the trigger's
-`quietPeriod`. `flux get ks` shows it `Suspended`, and while the
-operator is down it waits suspended: a graceful stop suspends one it had resumed, and after a crash
-the next process does. Remove `spec.suspend` from whatever applies the
-`Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
-webhook into a Flux `Receiver` for the repository, as [the Flux guide](bi-directional-flux.md)
-describes. A trigger acts only while an eligible `GitTarget` names it, so create the two in any
-order: until one names it, it is `Ready` (`NotReferenced`) and holds nothing. Deleting the trigger,
-or the last `GitTarget` naming it, hands the `Kustomization` back to Flux. The operator needs `get`,
-`list` and `patch` on `kustomizations`, `list` on `helmreleases` and `helmcharts`, `get` and `patch`
-on `gitrepositories`, and `create` on `selfsubjectaccessreviews`, in the trigger's cluster: Helm
-`applierAccess.flux: true` grants them for the operator's own cluster.
+branch, after a refusal or a reverted edit, to adopt an object created through the API in the folder
+(Flux prunes only what it applied, so such an object would otherwise survive the deletion of its
+file in Git), and to converge, once when the operator starts and once when a `GitTarget` first names
+the trigger. An API edit asks for no apply. Each apply goes out once the writes pending on the
+branch are published, and none before every initial snapshot of the `GitTarget`s naming the trigger
+is published. A `GitTarget` that names a trigger has its folder created before it is applied: a
+resync into a folder the branch does not hold yet commits the folder's bootstrap files (`README.md`,
+`.gittargetignore`, and `.sops.yaml` with encryption) even when there is nothing to mirror.
+`flux get ks` shows it `Suspended`, and while the operator is down it waits suspended: a graceful
+stop suspends one it had resumed, and after a crash the next process does. Remove
+`spec.suspend` from whatever applies the `Kustomization`'s manifest (the trigger reports
+`SuspendOwnedElsewhere` otherwise) and any Git-host webhook into a Flux `Receiver` for the
+repository, as [the Flux guide](bi-directional-flux.md) describes. A trigger acts only while an
+eligible `GitTarget` names it, so create the two in any order: until one names it, it is `Ready`
+(`NotReferenced`) and holds nothing. Deleting the trigger, or the last `GitTarget` naming it, hands
+the `Kustomization` back to Flux. The operator needs `get`, `list` and `patch` on `kustomizations`,
+`list` on `helmreleases` and `helmcharts`, `get` and `patch` on `gitrepositories`, and `create` on
+`selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true` grants them
+for the operator's own cluster.
 
 For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its automated sync off
 (`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before its trigger holds it; one with
 automated sync on reports `Configured=False` (`AutomatedSyncEnabled`) on the trigger and is never
-synced. The operator needs `get` and `update` on `applications`: Helm `applierAccess.argocd: true`.
-See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
+synced. An `Application` is asked to sync for the same reasons as a `Kustomization`, adopt and
+converge included, so its hooks also run after an API create in the folder and when a `GitTarget`
+first names the trigger. The operator needs `get` and `update` on `applications`: Helm
+`applierAccess.argocd: true`. See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
+
+Naming a trigger also narrows what the folder mirrors. An object another applier owns, one whose
+Flux owner labels (`kustomize.toolkit.fluxcd.io/name` and `kustomize.toolkit.fluxcd.io/namespace`)
+or Argo CD tracking annotation (`argocd.argoproj.io/tracking-id`) name an applier other than the
+trigger's, is no longer mirrored into that folder, and a resync leaves its document in Git alone.
+Mirrored, it would be applied by two appliers, which fight each other. After naming a trigger, read
+`gitopsreverser_apply_ownership_conflicts_total` and the log line `Not mirroring an object another
+applier owns`: each object they report was mirrored before, and belongs to one applier only. See
+[objects another applier owns](bi-directional.md#objects-another-applier-owns).
 
 ## `git_queue_drops_total` is now `git_queue_refusals_total`
 

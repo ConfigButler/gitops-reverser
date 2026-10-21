@@ -27,7 +27,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// flushEventsToWorktree is the plan-then-flush write path: model the subtree once, resolve each
+// planEventsToWorktree is the plan-then-flush write path: model the subtree once, resolve each
 // event to a single-identity action, apply to commit-scoped buffers, flush only what changed.
 //
 // Every event is a single-identity intent and the writer NEVER mark-and-sweeps a batch.
@@ -56,7 +56,10 @@ func clusterIDForEvents(events []Event) string {
 	return ""
 }
 
-func (w *BranchWorker) flushEventsToWorktree(
+// planEventsToWorktree flushes one GitTarget base's events into the worktree, and reports whether
+// the tree changed and, per event and in order, whether that event changed it: the write's actions
+// (docs/design/applier-echoes.md, F2).
+func (w *BranchWorker) planEventsToWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,
 	base string,
@@ -64,11 +67,11 @@ func (w *BranchWorker) flushEventsToWorktree(
 	policy *manifestanalyzer.PlacementPolicy,
 	namespaces namespacePolicy,
 	pruneMode v1alpha3.PruneMode,
-) (bool, error) {
+) (bool, []bool, error) {
 	root := worktree.Filesystem().Root()
 	scoped, err := scanRenderScope(root, base)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 
 	// Every event in a base shares one GitTarget (events are grouped by base), so they share
@@ -78,7 +81,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	batch.pruneMode = pruneMode
 	batch.target = placementTargetForEvents(events)
 	if err := batch.refusal(); err != nil {
-		return false, err
+		return false, nil, err
 	}
 	// Publish what this folder's shape resolved to before folding anything in. It is a fact about
 	// the scan, so it must not depend on the events applying — or on their being applied at all,
@@ -90,7 +93,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	// raised AFTER the layout is published: the folder is fine and its shape is still worth
 	// reporting; what is wrong is the configuration pointed at it.
 	if err := batch.sourceNamespaceRefusal(); err != nil {
-		return false, err
+		return false, nil, err
 	}
 	// Before the first event is folded in, not as they are reached: an upsert that refuses aborts
 	// the batch, and a DELETE queued behind it would never be seen by the eligibility evidence the
@@ -99,15 +102,19 @@ func (w *BranchWorker) flushEventsToWorktree(
 	if batch.pruneMode.OrDefault().AppliesEventDeletes() {
 		batch.declarePlannedRemovals(countDeleteEvents(events))
 	}
-	for _, event := range events {
+	changedBy := make([]bool, len(events))
+	for i, event := range events {
+		batch.beginEvent()
 		if err := batch.applyEvent(ctx, event); err != nil {
-			return false, err
+			return false, nil, err
 		}
+		changedBy[i] = batch.eventChanged()
 	}
 	// The flush is anchored at renderBase — spec.path, or the common ancestor of spec.path
 	// and every base it reads. The write jail (writeSubdir) is enforced inside the batch, so
 	// a planned write outside spec.path is refused even though the scan reached past it.
-	return batch.flush(ctx, worktree, root, scoped.renderBase)
+	changed, err := batch.flush(ctx, worktree, root, scoped.renderBase)
+	return changed, changedBy, err
 }
 
 // countDeleteEvents counts the events in a batch that remove a document.
@@ -210,6 +217,36 @@ type writeBatch struct {
 	// (ADDED then MODIFIED, or back and gone again) read the pre-batch render and was wrong about
 	// it. See rendersInBatch.
 	rendered map[renderKey]bool
+	// touched records, while one event is applied, each file it touched with that file's bytes
+	// before the event. Nil when nothing is recorded. See beginEvent.
+	touched map[string]touchedFile
+}
+
+// touchedFile is a file's bytes as they were before the event being applied touched it, and
+// whether the file was there at all.
+type touchedFile struct {
+	content []byte
+	present bool
+}
+
+// beginEvent starts recording what the next event changes; eventChanged answers once it is applied.
+// A write keeps only the objects whose plan changed its tree (docs/design/applier-echoes.md, F2),
+// and the bytes are the one judge of that: every path an event takes, a field patch, an override
+// edit or a kustomization entry, reaches its file through buffer.
+func (wb *writeBatch) beginEvent() { wb.touched = map[string]touchedFile{} }
+
+// eventChanged reports whether the event applied since beginEvent changed any file's bytes, and
+// stops recording.
+func (wb *writeBatch) eventChanged() bool {
+	touched := wb.touched
+	wb.touched = nil
+	for rel, before := range touched {
+		after := wb.buffers[rel]
+		if before.present != (after.current != nil) || !bytes.Equal(before.content, after.current) {
+			return true
+		}
+	}
+	return false
 }
 
 // renderKey names one document of the store by where it lives and what it is.
@@ -375,15 +412,18 @@ func (wb *writeBatch) declarePlannedRemovals(count int) { wb.plannedRemovals += 
 // worktree bytes into Original/Current on first touch. A path with no worktree
 // bytes is a new file (Original nil).
 func (wb *writeBatch) buffer(rel string) *fileBuffer {
-	if b, ok := wb.buffers[rel]; ok {
-		return b
+	b, ok := wb.buffers[rel]
+	if !ok {
+		b = &fileBuffer{rel: rel}
+		if orig, found := wb.contentByPath[rel]; found {
+			b.original = orig
+			b.current = orig
+		}
+		wb.buffers[rel] = b
 	}
-	b := &fileBuffer{rel: rel}
-	if orig, ok := wb.contentByPath[rel]; ok {
-		b.original = orig
-		b.current = orig
+	if _, seen := wb.touched[rel]; wb.touched != nil && !seen {
+		wb.touched[rel] = touchedFile{content: bytes.Clone(b.current), present: b.current != nil}
 	}
-	wb.buffers[rel] = b
 	return b
 }
 
@@ -1964,16 +2004,19 @@ func loadWorktreeGitTargetIgnore(absBase string) (*manifestanalyzer.IgnoreMatche
 	return manifestanalyzer.LoadGitTargetIgnore(content)
 }
 
-// groupEventsByBase buckets events by their sanitized GitTarget base path, preserving
-// arrival order within each bucket. A grouped commit window is single-target (one
-// base) by construction; the grouping stays correct for any future multi-target batch.
-func groupEventsByBase(events []Event) map[string][]Event {
+// groupEventsByBaseWithIndex buckets events by their sanitized GitTarget base path, preserving
+// arrival order within each bucket, and returns, per base, each event's index in events, so a
+// result per event can be put back in order. A grouped commit window is single-target (one base) by
+// construction; the grouping stays correct for any future multi-target batch.
+func groupEventsByBaseWithIndex(events []Event) (map[string][]Event, map[string][]int) {
 	byBase := map[string][]Event{}
-	for _, event := range events {
+	indexes := map[string][]int{}
+	for i, event := range events {
 		base := sanitizePath(event.Path)
 		byBase[base] = append(byBase[base], event)
+		indexes[base] = append(indexes[base], i)
 	}
-	return byBase
+	return byBase, indexes
 }
 
 // sortedBufferKeys returns the buffer paths in lexicographic order so flushing is

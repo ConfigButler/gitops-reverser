@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -31,7 +30,7 @@ import (
 //     waiting resync callers an answer (replyToDeferredResyncs).
 //
 // Settling an outcome never decides more work directly: a refused write leaves a reapply request
-// due to its applier (reapplyForRefusal), which is sent once the branch is quiet, outside the
+// due to its applier (reapplyForRefusal), which is sent after a flush, outside the
 // pending writes.
 
 // errWriteFailed marks a failure of the write itself, as opposed to reaching the remote or reading
@@ -85,12 +84,8 @@ func retainedCharge(pendingWrite *PendingWrite) int64 {
 // A request riding it is held from here on, so the controller never fails a save whose write can
 // still land. Committing it is advance's job, at the end of the wake.
 func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
-	// Every decided write restarts the quiet period the apply trigger waits out, wherever in the
-	// wake it is decided. A wake can open a window, close it, commit and push before it ends, and
-	// end quiet; reading "busy" only from the state a wake ends in would let that wake inherit the
-	// quiet period of the wakes before it and ask the applier to catch up at once, over the next
-	// edit. See serviceAppliers.
-	l.quietSince = time.Time{}
+	l.decisions++
+	pendingWrite.decision = l.decisions
 	pendingWrite.charge = retainedCharge(&pendingWrite)
 	pendingWrite.decidedAt = l.w.now()
 	l.pendingWrites = append(l.pendingWrites, pendingWrite)
@@ -163,6 +158,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 		if i < len(l.pendingWrites) && l.pendingWrites[i].Kind == PendingWriteResync {
 			refetch = fetchReasonForcedRecheck
 		}
+		tipBefore := l.w.inbox.lastTip()
 		if err := l.materializePrefix(refetch); err != nil {
 			l.replyToDeferredResyncs(err)
 			l.w.recordMaterializationFailure(err)
@@ -172,6 +168,9 @@ func (l *branchWorkerEventLoop) materialize() error {
 		i = l.materializedPrefix()
 		if i == len(l.pendingWrites) {
 			return nil
+		}
+		if refetch != "" && l.discardIfFetchFoundForeign(i, tipBefore) {
+			continue
 		}
 		// A write is planned under the policy in force when it is committed, exactly as a replay is:
 		// an operator who tightened pruning since it was decided is obeyed.
@@ -192,6 +191,26 @@ func (l *branchWorkerEventLoop) materialize() error {
 			return err
 		}
 	}
+}
+
+// discardIfFetchFoundForeign discards the resync at i when the fetch it was planned behind found a
+// commit the worker did not push: the cluster does not run it yet, and it holds what the snapshot is
+// about to be judged against (docs/design/applier-echoes.md, F3). tipBefore is the tip observed before
+// that fetch. The resync is decided and not committed, so nothing is committed on it.
+func (l *branchWorkerEventLoop) discardIfFetchFoundForeign(i int, tipBefore string) bool {
+	req := l.pendingWrites[i].origin.resync
+	if req == nil || l.w.inbox.lastTip() == tipBefore || !l.w.inbox.foreignPending() || !l.snapshotsWait(req) {
+		return false
+	}
+	answered := l.pendingWrites[i].origin.answered
+	l.removeAt(i)
+	if answered {
+		// Its caller heard already that the remote held it back; it is only asked for again.
+		req = &ResyncRequest{GitTargetName: req.GitTargetName, GitTargetNamespace: req.GitTargetNamespace,
+			Scope: req.Scope}
+	}
+	l.discardSnapshot(req, snapshotForeignFetch)
+	return true
 }
 
 // materializePrefix rebuilds the writes committed before when the checkout is behind them: a write
@@ -310,12 +329,17 @@ func (l *branchWorkerEventLoop) settleReplayRefusals(refused []PendingWrite) {
 }
 
 // settleCommitted acts on a write whose commit was made. A resync answers its caller with what it
-// found, and one that committed nothing stops being pending: it is neither retained nor pushed.
+// found. A write whose plan left no action, a resync or a window alike, stops being pending: it is
+// neither retained nor pushed, so a replay can never plan it onto a newer tip
+// (docs/design/applier-echoes.md, F2).
 func (l *branchWorkerEventLoop) settleCommitted(i int) {
 	l.pendingWrites[i].committedOnce = true
 	pendingWrite := l.pendingWrites[i]
-	if pendingWrite.origin.resync != nil {
+	switch {
+	case pendingWrite.origin.resync != nil:
 		l.settleResyncApplied(i)
+	case !pendingWrite.retained():
+		l.removeAt(i)
 	}
 }
 
@@ -325,6 +349,11 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 	answered := l.pendingWrites[i].origin.answered
 	stats := l.pendingWrites[i].ResyncStats
 	committed := l.pendingWrites[i].retained()
+	if stats.Created > 0 {
+		// An object a resync adds to Git runs on the cluster already, and its applier never applied
+		// it: it is adopted (S2 in docs/design/applier-echoes.md).
+		l.adopt(req.GitTargetName, req.GitTargetNamespace, fmt.Sprintf("%d objects", stats.Created))
+	}
 	if !committed {
 		l.removeAt(i)
 	}

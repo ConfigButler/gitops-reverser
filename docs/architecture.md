@@ -79,7 +79,7 @@ lock the parent. The parent can still move after the advertisement, so what is g
 parent's tip as that advertisement showed it. **The corollary is the rule to keep in your head
 when adding code here:** anything that resolves, commits, or concludes without reaching a push
 advertisement must either fetch, or refuse to conclude. See
-[inbound push notification](design/apply-trigger.md).
+[how the branch worker reads the remote](design/push-notification-and-reconcile-trigger.md#part-1-how-the-branch-worker-reads-the-remote).
 
 That trust belongs to **one repository**, and so does the worker holding it. A worker is keyed by
 `(GitProvider namespace, GitProvider name, branch)`, which names no repository, while `spec.url` is
@@ -95,7 +95,7 @@ for free: the push session reads the remote's advertisement and the server names
 accepted, so an active branch never schedules a look of its own. One that has gone quiet is asked
 on its 5-minute reconcile tick, and spends one ref advertisement per `--git-refresh-interval`
 (10m by default); only a branch that moved costs a fetch after that. What it learns is published
-as `status.remote` (the revision, when it was last proved, and whether a push or a fetch proved
+as `status.remote` (the commit, when it was last proved, and whether a push or a fetch proved
 it), and a folder somebody changed in Git is re-read and republished as `status.placement`.
 
 **A refresh never writes content.** It plans nothing and commits nothing of its own. What it does
@@ -115,25 +115,31 @@ advertisement, and what the remote says decides whether the branch moved. It nev
 cluster snapshot: the cluster still holds the values from before the push, so a snapshot would
 publish them over the incoming change.
 
-**GitOps Reverser decides when Git is applied to the cluster.** An apply is safe only when nothing
-live is missing from the commit being applied, and only the workers writing the branch can see the
-edits that are live and not yet pushed. So a `GitTarget` names an **apply trigger**, which holds
-its **applier** so that it applies nothing on its own (a Flux `Kustomization` is held suspended, an
-Argo CD `Application` has automated sync off), and the branch worker sends **apply requests**
-instead. A request is sent only on a **quiet branch**, with no open commit window and no pending
-writes on any worker writing that repository and branch:
+**GitOps Reverser decides when Git is applied to the cluster.** An apply must not revert an edit
+that is live and not yet in Git, and only the worker writing the branch can see those edits. So a
+`GitTarget` names an **apply trigger**, which holds its **applier** so that it applies nothing on
+its own (a Flux `Kustomization` is held suspended, an Argo CD `Application` has automated sync off),
+and the branch worker sends **apply requests** instead. A request is sent only **after a flush**:
+when an apply comes due, the worker closes the open commit window, publishes every write decided so
+far at once, and sends the request for the tip that publication produced. An edit decided after
+that is recorded in the apply window, so an apply that overwrites it is withheld and repaired.
+Continuous editing therefore never holds an apply back. A request goes out:
 
-- for a commit somebody else pushed, after closing open windows and replaying the pending writes
-  onto it, so the applied commit carries the API side's answer;
+- for a commit somebody else pushed, after replaying the pending writes onto it, so the applied
+  commit carries the API side's answer;
 - for a refused edit the target opted to revert;
 - for an API edit that an apply reverted on the cluster after the edit was made, to put it back;
-- for Flux only, to catch up with GitOps Reverser's own pushes once the branch has been quiet for
-  the trigger's `quietPeriod`, because Flux's inventory learns of an object only from an apply of a
-  commit that holds it. Argo CD is never asked to apply GitOps Reverser's own commits: with automated
-  sync off it applies nothing on its own, and a sync is pinned to the commit the worker checked.
+- to catch up (`CatchUp`), for a Flux `Kustomization` and an Argo CD `Application` alike: to adopt
+  an object the API created in the folder, because an applier prunes only what it applied and a
+  later Git-side delete would otherwise leave the object running; and to converge, once when the
+  worker starts and once when a `GitTarget` first names the trigger, unless the applier already
+  applied the tip. A push of GitOps Reverser's own asks for nothing: the cluster already runs the
+  edits it holds.
 
-The worker keeps each reason pending until an apply operation answers it, and decides every retry
-the same way. A request runs off the publication path and cannot fail a publication; the trigger's
+No applier is asked for anything before every initial snapshot of the `GitTarget`s it covers is
+published, so the edits made while the operator was down reach Git before any apply. The worker
+keeps each reason pending until an apply operation answers it, and decides every retry the same
+way. A request runs off the publication path and cannot fail a publication; the trigger's
 `status.operation` records the operation it started. **Built:**
 the Flux `Kustomization` applier and the Argo CD `Application` applier, with automated sync off.
 **The aim:** a webhook for any other tool. See [the apply trigger design](design/apply-trigger.md).
@@ -183,7 +189,8 @@ The solution, in the vocabulary used throughout this document:
   requests initial state for the new render-fidelity revision. Later attempts in the same watch
   loop can use a stored resume RV; expired history requires fresh initialization. A completed
   snapshot permits cleanup only within its observed collection and pruning policy. Cursors use
-  target UID, group/resource, and namespace, with a TTL refreshed by events and bookmarks.
+  target UID, group/resource, namespace, and label selector, with a TTL refreshed by events and
+  bookmarks.
   Unsupported initial-event requests use LIST with a buffered watch. Snapshot reconciliation
   is triggered by initialization, never by a timer.
 - **Audit, when enabled, only names the author.** It is an optional attribution lookup; a missing or
@@ -277,7 +284,7 @@ graph LR
     end
 
     subgraph SOURCE["Source cluster selected by ClusterProvider"]
-        API["Kubernetes API\ndiscovery · Namespace policy · watches"]
+        API["Kubernetes API\ndiscovery · watches"]
         APPLIER["Applier\nFlux Kustomization\nor Argo CD Application"]
     end
 
@@ -300,8 +307,8 @@ graph LR
 The diagram follows one `GitTarget`. A provider with no `spec.kubeConfig` selects the operator's own
 cluster as its source; any provider name, including `default`, can instead select a remote cluster through
 a kubeconfig Secret in the operator namespace. Each referenced `ClusterProvider` gets an independent
-source context: client, discovery catalog, followability registry, source-namespace snapshot, and
-reachability state. Its `GitTarget`s open their source watches through that context. The contexts are keyed
+source context: client, discovery catalog, followability registry, and reachability state. Its
+`GitTarget`s open their source watches through that context. The contexts are keyed
 by provider name and are released when no `GitTarget` references them.
 
 The applier is not one of the eight kinds. It belongs to Flux or Argo CD, lives in the cluster the
@@ -339,6 +346,8 @@ namespace selection of its own. Both share the rule model:
   group; `*` is all.
 - `rules[].apiVersions`: omitted means the preferred served version.
 - `rules[].resources`: plural resource names or `*`.
+- `rules[].objectSelector`: an optional label selector the API server applies to every list and
+  watch the rule opens. An object that stops matching leaves the collection as a deleted one does.
 - `WatchRule` adds `rules[].sourceNamespace`: omitted for the rule's own namespace, an exact name, or
   `*` for every namespace the source credential can read. Anything but the rule's own namespace passes
   the source-namespace gate (`SourceNamespaceAuthorized`). A `*` compiles to ONE cluster-wide
@@ -347,8 +356,9 @@ namespace selection of its own. Both share the rule model:
   peer of any named-namespace collection on the same type, never a replacement.
 - `ClusterWatchRule` has no scope or namespace choice of its own: the kind is the choice.
 
-Subresources are rejected in rule resources. Mirroring operates on top level resources; the selected
-`/scale` subresource effect is translated separately into a parent `spec.replicas` field patch.
+Subresources are rejected in rule resources. Mirroring operates on top level resources: a scale
+made through the `/scale` subresource reaches Git as the parent's own watch event, and its audit
+event serves only to name who scaled the parent.
 
 The two namespace controls intentionally live in different planes:
 
@@ -409,9 +419,10 @@ Key fields:
 - `spec.commit.window`: when this target's commit windows close: `idleTimeout` (default `5s`) of
   silence, or `maxDuration` (default `1m`) after the window opened.
 - `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
-- `spec.applyTriggerRef`: optional; the `FluxTrigger` (a Flux `Kustomization` GitOps Reverser asks
-  to apply, with its `quietPeriod`, default `30s`) or `ArgoCDTrigger` (an Argo CD `Application`,
-  automated sync off, whose syncs GitOps Reverser starts) in this namespace.
+- `spec.applyTriggerRef`: optional; the `FluxTrigger` (a Flux `Kustomization` GitOps Reverser holds
+  suspended and asks to apply) or `ArgoCDTrigger` (an Argo CD `Application`, automated sync off,
+  whose syncs GitOps Reverser starts) in this namespace. In a folder a trigger applies, an object
+  another applier owns (by Flux's owner labels or Argo CD's tracking annotation) is not mirrored.
 - `spec.onRefusal`: `Ignore` (default) or `Reapply`, which asks the applier to reapply the tip when
   an edit to an existing document is refused. `Reapply` requires `spec.applyTriggerRef`.
 
@@ -473,7 +484,7 @@ The controller verifies repository reachability and manages the signing key life
 ed25519 keypair when `signing.generateWhenMissing` is set. The portable artifact across GitOps
 ecosystems is the credentials Secret, not a foreign repository object. The credentials reader accepts the
 Kubernetes native, Flux, and Argo CD Secret key dialects (see
-[design/git-credentials-interop.md](finished/git-credentials-interop.md)).
+[finished/git-credentials-interop.md](finished/git-credentials-interop.md)).
 
 ### ClusterProvider
 
@@ -536,7 +547,6 @@ flowchart LR
     CP -->|"source client"| DISC
     CP -->|"source client"| WATCH
     DISC --> OWN
-    NS -. "selector snapshot" .-> OWN
     WATCH --> OWN
     OWN --> RELEVANCE
     RELEVANCE --> RESOLVE
@@ -642,7 +652,7 @@ flowchart TD
 
     MATCH -->|no| FETCH[Fetch latest remote tip]
     FETCH --> RESET[Hard reset local clone to remote]
-    RESET --> REPLAY[Replay retained pending writes<br/>from sanitized API state]
+    RESET --> REPLAY[Apply each retained pending write's<br/>decided actions onto the new tip]
     REPLAY --> REFRESH[Create fresh commit hashes]
     REFRESH --> CHECK
 
@@ -655,24 +665,26 @@ local commit from before the retry.
 
 ### Somebody else pushed, and the cluster has to follow
 
-A rejected push is one of three ways the branch worker learns the branch gained a commit it did
-not push. The other two are a push-receiver delivery and the periodic refresh. All three set the
-same piece of worker state, **the applier is behind**, and the worker clears it by sending an apply
-request once the branch is quiet.
+A rejected push is one of four ways the branch worker learns the branch gained a commit it did
+not push. The others are a push-receiver delivery, the periodic refresh, and a Flux
+`GitRepository` that fetched another commit than the one an apply asked for, which the worker
+takes as a hint and checks the way it checks a delivery. All four set the same piece of worker
+state, **the applier is behind**, and the worker clears it by sending an apply request after a
+flush.
 
 ```mermaid
 flowchart TD
-    HINT["Receiver delivery"] --> ADV["Read the ref advertisement"]
+    HINT["Receiver delivery, or a source<br/>that fetched another commit"] --> ADV["Read the ref advertisement"]
     REJECT["Rejected compare-and-swap push"] --> SEEN
     REFRESH["Periodic refresh fetch"] --> SEEN
     ADV --> OURS{"Tip is a commit<br/>we pushed?"}
     OURS -->|yes| DROP["Nothing to do"]
     OURS -->|"no, or cannot tell"| SEEN["Applier is behind"]
-    SEEN --> PENDING{"Open windows or<br/>pending writes?"}
-    PENDING -->|yes| FLUSH["Close the windows, fetch,<br/>replay onto the foreign commit, push"]
-    FLUSH --> QUIET
-    PENDING -->|no| QUIET["Branch is quiet"]
-    QUIET --> REQ["Apply request to every applier on the branch,<br/>naming the tip, reason ForeignCommit"]
+    SEEN --> PENDING{"Open window or<br/>pending writes?"}
+    PENDING -->|yes| FLUSH["Close the window, publish the pending writes at once:<br/>a rejected push fetches and replays them onto the foreign commit"]
+    FLUSH --> FLUSHED
+    PENDING -->|no| FLUSHED["Flushed: every write decided<br/>before the apply came due is published"]
+    FLUSHED --> REQ["Apply request to every applier on the branch,<br/>naming the tip, reason ForeignCommit"]
 
     style DROP fill:#eeeeee,stroke:#9e9e9e
     style REQ fill:#fff3e0,stroke:#ff9800
@@ -681,12 +693,38 @@ flowchart TD
 A delivery is handled on the worker's own queue, so it is never judged while a push is in flight:
 the push has recorded its commit before the delivery is read. A rollback onto one of the worker's
 older commits is foreign, because the advertisement names a tip other than the last one observed.
+A delivery also closes the open commit window, unless a `CommitRequest` holds it, so its
+publication finds the move.
 
-The same quiet-branch rule sends three other requests: `Refusal`, to the refusing target's applier
+A Git-side push usually reaches the worker through the flush itself: the push of the pending writes
+is rejected, the fetch finds a commit the worker did not push, the pending writes' decided actions
+are applied onto it, and the applier is asked once, for the tip that holds both sides. Applying the
+foreign commit on its own first would revert the pending API edits on the cluster and need a second
+apply to put them back.
+
+The same flush comes before three other requests: `Refusal`, to the refusing target's applier
 when `spec.onRefusal: Reapply` is set; `Repair`, to an applier whose late write over a newer API
-edit the apply window withheld; and `CatchUp`, to every Flux `Kustomization` on the branch once it
-has been quiet for the trigger's `quietPeriod` after the worker's own pushes, or after a `GitTarget`
-first names the trigger.
+edit the apply window withheld; and `CatchUp`, to a `Kustomization` or an `Application` alike, to
+adopt an object the API created in a folder that applier applies (a live `ADDED` event whose newest
+managers are not an applier's, or an object a resync added to Git) and to converge, once when the
+worker starts and once when a `GitTarget` first names the trigger. A converge of the commit the
+applier last applied asks nothing; an adopt is sent even then, because applying the same commit
+again is what stamps the owner labels or tracking annotation on the new object. A push of the
+worker's own leaves nothing pending.
+
+Three states still hold an apply back, because in them no flush can be made: a registered
+`CommitRequest` (a save defines its own commit boundary, and the apply waits for it), a parent
+recovery, and a checkout a failed write left dirty. An apply also waits until every initial
+snapshot of the `GitTarget`s its applier covers is published (a `GitTarget` with no planned
+collection yet, or with a blocked watch, holds its applier the same way), and an empty tip (a
+remote that does not carry the branch) asks nothing until there is a commit to apply.
+
+The flush covers the **sibling** workers too: two `GitProvider`s naming one repository give its
+branch two workers, and their `GitTarget`s can name one trigger. When an apply comes due, the
+worker asks each sibling to close its window and publish up to a mark of its own at once, and
+sends only once every sibling it asked is done. The workers share what they observe of the
+branch, so each sends for the tip that holds the others' writes; a sibling's push is foreign to the
+others, as a fetch of it would be, because its appliers may apply another cluster.
 
 Which apply is due lives on the worker, per applier: one attempt out at a time, and its own retry
 clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
@@ -694,13 +732,13 @@ reports back. It reads each `GitTarget` again first (the same incarnation by uid
 applier through its trigger on this branch, still admitted, still consenting to a `Refusal`), checks that the
 `Kustomization`'s source fetches this repository and branch, has the `GitRepository` fetch the
 commit when its artifact lacks it, asks the worker whether its decision still holds (the commit is
-still the tip and nothing is waiting to be published), writes the operation through to the trigger's
+still the tip), writes the operation through to the trigger's
 `status.operation`, and only then resumes the `Kustomization` the trigger holds suspended, with a
 `requestedAt` token. It follows the apply until that token is handled, suspends the `Kustomization`
 again with a second token, and reports the operation complete once that one is handled
 ([`apply-trigger.md`](design/apply-trigger.md#the-flux-applier-suspended)). It never retries:
 an attempt that does not deliver gives the worker back what it carried, a refusal only while it still
-stands, and the worker decides the retry on a quiet branch after that applier's backoff. A delivered
+stands, and the worker decides the retry after a flush, once that applier's backoff has run out. A delivered
 request records an `ApplyRequested` Event, and the worker records the operation on the trigger's
 `status.operation`. A failed request never reaches back
 into the publication that caused it.
@@ -716,6 +754,7 @@ lives. A populated target seeded from empty looks like:
 ```text
 team-a-config/                              # GitTarget spec.path
 ├── README.md                               # operator-managed bootstrap file
+├── .gittargetignore                        # operator-managed bootstrap file
 ├── .sops.yaml                              # present only when encryption is configured
 ├── team-a/
 │   ├── configmaps/app-config.yaml
@@ -753,9 +792,10 @@ and an error such as `410 Gone` requires rebuilding from current state.
 ### Recovery: resume, replay, or list plus mark-and-sweep
 
 The first attempt after process startup or watch replacement requests initial state, even when
-Redis holds a cursor. `runTargetWatch` starts with `resumeFromCursor=false`: the new render-fidelity
-revision needs fresh observation. Subsequent attempts in the same loop may open a normal watch
-from the stored RV. If history has expired, or no usable cursor exists, initialization establishes
+Redis holds a cursor. `runTargetWatch` passes `resumeFromCursor=false` until this watch's own
+replay has completed: the new render-fidelity revision needs fresh observation. Attempts after that,
+in the same loop, may open a normal watch from the stored RV. If history has expired, or no
+usable cursor exists, initialization establishes
 current state again.
 
 Streaming initialization uses `sendInitialEvents=true` and `resourceVersionMatch=NotOlderThan`:
@@ -784,7 +824,7 @@ The relevance filter reproduces that filter in product code, on the hot path:
 
 - **Sanitization** ([internal/sanitize](../internal/sanitize/)) strips status, managedFields, and
   volatile metadata before diffing, so runtime churn never masquerades as a desired-state change.
-- **Followability** ([internal/typeset](../internal/typeset/)) encodes "controller-owned → don't mirror"
+- **Followability** ([internal/typeset](../internal/typeset/)) encodes "controller-owned → don't mirror".
   A type that is not followable never gets a watch.
 - **No-op suppression.** A `*/status` write bumps `resourceVersion` but its sanitized projection equals
   the prior commit; the writer diffs it to a no-op and discards it.
@@ -1131,8 +1171,8 @@ rather than being pruned. Both protect against accidental Git deletions on a dis
 its own catalog and registry, so a CRD served only by `prod-eu-1` is never resolved for a target mirroring
 `prod-us-1`. Catalogs refresh at startup and on the 30-second reconciliation cadence. CRD/APIService
 trigger informers run only in the **control plane**, where the operator's own CRDs live; a remote source's
-API-surface change is discovered on that periodic refresh or when a rule/target reconciliation explicitly
-refreshes that source.
+API-surface change is discovered on that periodic refresh. A target's plan pass never calls discovery
+itself; for a source nothing has observed yet, it asks for a refresh at once.
 
 ### TypeRegistry and followability
 
@@ -1210,8 +1250,9 @@ A rule or target change and an API-surface change arrive on two different paths.
 
 A WatchRule / ClusterWatchRule / GitTarget change reaches a GitTarget through the **GitTarget
 controller**, which `Watches` those objects (generation change predicates) and queues the affected
-GitTarget again. On reconcile the GitTarget refreshes its own source catalog and resolves its claimed
-`(GVR, scope)` set again; a type a new rule starts watching gets a new watch opened (with a
+GitTarget again. On reconcile the GitTarget declares its watch set again, and the watch plane's
+next plan pass resolves its claimed `(GVR, scope)` set against the source's current catalog; a type
+a new rule starts watching gets a new watch opened (with a
 `sendInitialEvents` replay) and a type no longer claimed has its watch closed.
 
 A **control-plane** CRD / APIService change reaches the same re-resolution through the watch manager
@@ -1235,7 +1276,11 @@ write side is shared with live writes):
   the whole apply is **refused**: nothing is committed, `GitPathAccepted=False`, `Stalled=True`, and
   `Ready=False` with reason `UnsupportedContent` until a human cleans the path;
 - desired resources are upserted through the same content derived path as live writes;
-- existing managed documents that are watched but absent from the desired set are deleted;
+- existing managed documents that are watched but absent from the desired set are deleted, under
+  `spec.prune.mode: Always` only;
+- in a folder an apply trigger applies, an object another applier owns (by Flux's owner labels or
+  Argo CD's tracking annotation, read before sanitize strips them) is neither upserted nor treated
+  as missing, so its document is left alone and counted in `apply_ownership_conflicts_total`;
 - the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary
   YAML are retained, not materialised and not refused;
 - nothing is committed if the apply cannot complete safely.
@@ -1253,10 +1298,20 @@ true from the path's structure alone block a GitTarget. The same gate runs on th
 refused path is never written into by a racing live event either. See
 [unsupported-folder-refusal-plan.md](spec/unsupported-folder-refusal-plan.md).
 
-A reconcile is **type scoped** (`ScopeGVR`): the sweep is restricted to one `(group, resource)`, so
-anchoring one type again never disturbs another's manifests. The desired set for the sweep is the
-`sendInitialEvents` replay (everything marked `ADDED` up to `initial-events-end`), so a delete is
-reconciled only after the replay completes.
+A reconcile is **collection scoped** (`ResyncScope`): the sweep is restricted to the
+`(group, resource, namespace)` the snapshot was gathered over, so anchoring one collection again
+never disturbs another's manifests. The desired set for the sweep is the `sendInitialEvents` replay
+(everything marked `ADDED` up to `initial-events-end`), so a delete is reconciled only after the
+replay completes.
+
+The snapshot decides once. The upserts and deletes its first commit decided are what a replay
+onto a newer tip applies, and the sweep never runs again there. On a branch an applier applies, a
+snapshot collected while Git was ahead of the cluster (a commit pushed and not applied yet),
+collected across an apply, or arriving while Git is ahead is discarded instead of decided, and a
+fresh one is asked for once Git is no longer ahead; it would otherwise revert the unapplied commit. A
+`GitTarget`'s initial snapshots are exempt, and after 5 minutes of discards the next snapshot is
+used anyway. See
+[stale snapshots](spec/reconcile-via-watchlist-mark-and-sweep.md#stale-snapshots-are-discarded).
 
 ***
 
@@ -1285,7 +1340,7 @@ that names a different repository does not move a live worker; it replaces it, a
 starts with no clone, no base trust and no observation.
 
 `GitTarget.status.remote` is a **branch** fact published per target, and it is worth being exact
-about that, because the reverse reading is tempting and wrong. The revision and its `lastVerifiedAt`
+about that, because the reverse reading is tempting and wrong. The commit and its `lastVerifiedAt`
 are the branch worker's single observation, shared by every `GitTarget` on that branch: a push by
 one target proves it for all of them. So a fresh `lastVerifiedAt` says the branch tip was recently
 proved. It does **not** say that this target's folder was scanned, that its documents were
@@ -1300,15 +1355,15 @@ the data plane wakes a target because a branch moved.
 
 So two targets on one branch can show different times. That is publication lag, not a difference in
 what was proved, and each tuple is internally consistent: one observation from one moment, never
-the newest revision beside a stale clock.
+the newest commit beside a stale clock.
 
 ### Everything about a branch happens on that branch's queue
 
 Reading or writing a branch's repository state is the branch worker's job, and the worker does it on
 one FIFO queue, on one goroutine. Live events, resyncs, `CommitRequest` attaches, periodic
-refreshes and push-receiver deliveries all enter the same queue and are served in order. Whether
-the branch is quiet is therefore a fact one goroutine holds, which is what lets the worker decide
-when an apply request may go out. Nothing else opens a connection on a
+refreshes and push-receiver deliveries all enter the same queue and are served in order. Which
+writes are decided and which of them are published is therefore a fact one goroutine holds, which
+is what lets the worker flush before an apply request goes out. Nothing else opens a connection on a
 branch's behalf, and nothing else touches its clone. That is what makes "the base is trusted" a
 statement one goroutine can hold.
 
@@ -1331,10 +1386,12 @@ pair at a time:
 
 The window finalizes when its `idleTimeout` passes with no new matching event, its `maxDuration` runs
 out, the retained buffer reaches `--branch-buffer-max-size` (default `8Mi`), an `attach: Next`
-`CommitRequest` closes it, or a resync request that is not a heal or shutdown arrives. The timers
+`CommitRequest` closes it, a resync, an atomic batch, a push-receiver delivery or shutdown arrives,
+or an apply comes due for an applier on the branch or on a sibling worker. The timers
 are the GitTarget's `spec.commit.window` until a `CommitRequest` attaches and replaces them. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
-bursts. Heal resyncs that arrive during a window are deferred and drained at the next idle boundary.
+bursts. The one exception is an apply's flush: the writes decided before the apply came due are
+pushed at once, cooldown or not, because the apply waits for them.
 
 ### Local clones and conflict retry
 
@@ -1354,6 +1411,14 @@ its own tree. [PushAtomic](../internal/git/git_atomic_push.go) checks the remote
 remote diverged it smart fetches the latest tip, hard resets the local clone, replays the retained pending
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.
+A write carries the actions its first commit decided, and a replay applies those and plans nothing
+else. An object whose plan changed nothing is no action, so its old content can never revert what
+the newer tip changed, and a write with no action left settles at once without a push. A resync
+keeps the upserts that changed the tree and the documents its sweep removed: a replay plans each
+upsert onto the new tree and removes each document if it is still there and the prune mode still
+sweeps, and never sweeps again, so a document the newer tip added survives. A save is the exception:
+a write carrying a `CommitRequest` keeps every object it captured, and the push decides its outcome.
+See [the pending-writes design](design/gittarget-branch-worker-pending-writes.md#a-write-carries-the-actions-decided-on-its-tree).
 
 A branch whose remote has been **deleted** takes the same path. The advertisement does not carry the
 branch at all, which is reported as a moved remote with a zero hash, so the replay re-roots on the remote's
@@ -1380,9 +1445,9 @@ with no refresher.
 is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans
 straight onto its own last push. Once writes are retained the guard flips off entirely, because a
 reset would destroy the local commits those writes already produced. Anything that needs a fresh
-tree with work in hand therefore resets **and replays** rather than resetting alone, re-planning the
-retained writes onto the new tip. One function on the event loop does that,
-[`materialize`](../internal/git/branch_worker.go): every commit and push the loop makes runs it
+tree with work in hand therefore resets **and replays** rather than resetting alone, applying the
+retained writes' decided actions onto the new tip. One function on the event loop does that,
+[`materialize`](../internal/git/pending_writes_loop.go): every commit and push the loop makes runs it
 first, and the loop's commit refuses a checkout that is not the projection of the retained writes.
 A worktree a failed write left dirty, retained writes whose commits a reset discarded, a parent
 change, and the snapshot a resync judges against all reach it.
@@ -1409,7 +1474,7 @@ the branch.
 
 The kept work is bounded at intake ([`intake.go`](../internal/git/intake.go)). While a retry is
 pending, `--branch-buffer-max-size` counts everything accepted and not yet published: queued items,
-the open window, the pending writes, deferred snapshots and waiting saves, each with a 1 KiB per-item charge.
+the open window, the pending writes and waiting saves, each with a 1 KiB per-item charge.
 The first payload that does not fit pauses the branch's intake until a push lands; room under the
 budget again, or a remote that can be read but refuses the push, keeps it paused. A paused branch's
 watch streams wait to be woken instead of reconnecting, and their cursors stay where the last
@@ -1466,9 +1531,6 @@ hydrates only touched files into buffers for the commit, and flushes only change
   [images-and-replicas edit-through design](design/support-boundary/finished/images-and-replicas-edit-through.md).
 - **Deletes:** use the manifest identity index, so a moved manifest can still be deleted even when it is
   not at the built-in path.
-- **Field patches** (currently `/scale` → parent `spec.replicas`) are intentionally narrow: they only
-  patch an existing parent manifest and never fabricate a parent object from partial subresource data; a
-  `spec.replicas` assignment governed by a `replicas:` override is routed to the entry instead.
 
 ### File placement
 
@@ -1506,8 +1568,12 @@ unsafely: logged per-resource, counted in the resync summary as `placementSkippe
 ### Bootstrap, encryption, and signing
 
 - **Bootstrap** ([bootstrapped_repo_template.go](../internal/git/bootstrapped_repo_template.go)): the
-  first write to a GitTarget path stages a `README.md` and, when encryption is configured, a `.sops.yaml`
-  with age recipient rules. Existing files are preserved.
+  first write to a GitTarget path stages a `README.md`, a `.gittargetignore` and, when encryption is
+  configured, a `.sops.yaml` with age recipient rules. Existing files are preserved. For a `GitTarget`
+  that names an apply trigger, a resync into a folder the branch does not hold yet commits these
+  files even with no object to write, because the folder has to exist before it is applied: Argo CD
+  retries a sync of a missing path for minutes, and Flux fails it. The bootstrap files are never
+  deleted, so the folder outlives its last resource.
 - **Encryption** ([encryption.go](../internal/git/encryption.go),
   [sops_encryptor.go](../internal/git/sops_encryptor.go),
   [sensitivity policy](../internal/types/sensitive_resource.go)): core Secrets are sensitive by default;
@@ -1546,7 +1612,7 @@ immediately. That is not a failure:
    If a finalize closes an open window, the worker always schedules a push, so a window closed by an
    otherwise no-op resync is not stranded.
 4. Outcomes resolve on push and are reported as conditions: a pushed commit sets `Ready=True` /
-   `Pushed=True` with `branch`/`sha`; a benign no-commit sets `Ready=True` with the reason on `Ready` and
+   `Pushed=True` with `branch`/`commit`; a benign no-commit sets `Ready=True` with the reason on `Ready` and
    `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message. **Between the window's
    finalize and that push the request is still in flight**, which matters because the controller keeps
    re-sending its attach until it reads an outcome: the worker marks the request committed rather than
@@ -1578,8 +1644,9 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   them, `GitProvider`s, `ClusterProvider`s and `Namespace` labels. It does not watch appliers: it
   reads the Flux `Kustomization` or Argo CD `Application` on its tick to set `Configured`, so a
   cluster without the Flux or Argo CD CRDs needs no informer for them.
-- `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
-  RuleStore, and trigger the rule-change reconcile.
+- `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget`, `GitProvider` and
+  `ClusterProvider` (a `ClusterWatchRule` also `Namespace` labels), populate the RuleStore, and
+  trigger the rule-change reconcile.
 - `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
 - `ClusterProviderReconciler` validates source-connection inputs and projects its readiness to dependent
   targets. It also removes the retired fact-purge finalizer from pre-release objects during an upgrade.
@@ -1605,8 +1672,13 @@ flowchart TD
     B --> C[Create controller runtime manager]
     C --> D[Create RuleStore]
     D --> E[Create WorkerManager + register Runnable]
-    E --> F[Create Watch Manager + EventRouter; inject TypeRegistry]
-    F --> G[Register WatchRule + ClusterWatchRule controllers]
+    E --> R{receiver-bind-address set?}
+    R -->|yes| Ri[Add push receiver listener; route deliveries to branch workers]
+    R -->|no| Rj[No receiver; foreign pushes found by rejection and refresh]
+    Ri --> F
+    Rj --> F
+    F[Create Watch Manager + EventRouter; inject TypeRegistry] --> P[Create apply dispatcher + trigger status writer; wire them to the workers]
+    P --> G[Register WatchRule + ClusterWatchRule controllers]
     G --> H{redis-addr set?}
     H -->|yes| Hi[Create Redis cursor store + wire WatchCursorStore + readiness gate]
     H -->|no| Hj[Skip cursor store; reconnects initialize again]
@@ -1616,12 +1688,7 @@ flowchart TD
     Hq -->|no| J[Configured-author: no fact streams or index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
-    K --> R{receiver-bind-address set?}
-    R -->|yes| Ri[Start push receiver listener; route deliveries to branch workers]
-    R -->|no| Rj[No receiver; foreign pushes found by rejection and refresh]
-    Ri --> L
-    Rj --> L
-    L[Register GitProvider + ClusterProvider + GitTarget + CommitRequest controllers]
+    K --> L[Register GitProvider + ClusterProvider + GitTarget + FluxTrigger + ArgoCDTrigger<br/>+ CommitRequest controllers; admission webhooks]
     L --> M[Add cert watchers + health checks]
     M --> N[mgr.Start]
 ```
@@ -1666,7 +1733,7 @@ as one funnel and its loss paths as one selector:
 - **Queue.** `gitopsreverser_git_queue_refusals_total{kind}` counts work a worker refused at enqueue,
   which its producer offers again, and `_git_queue_depth` is read at scrape time rather than published by the worker loop.
 - **Write.** `gitopsreverser_git_documents_total{gittarget_*,group,version,resource,outcome}` is the
-  per-document census (`written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained`), with
+  per-document census (`written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained`, `refused`), with
   `_placements_total`, `_placement_refusals_total` and `_placement_kustomization_entries_total`
   answering where a new document landed and which resources were refused.
 - **Commit and push.** `gitopsreverser_git_commits_total{provider_*,branch,author_kind,message_source}`
@@ -1684,13 +1751,17 @@ as one funnel and its loss paths as one selector:
 attempt the worker decided to send (`applier_kind` is `kustomization` or `application`; `reason` is
 `ForeignCommit`, `Refusal`, `Repair` or `CatchUp`), with `outcome` separating
 `sent` from `failed` (the worker decides the retry), `dropped` (no target may still ask for that
-reason) and `stale` (the decision no longer held at the patch). It counts attempts, not
-the requests still due.
+reason) and `stale` (the tip moved before the patch). It counts attempts, not
+the requests still due. `apply_echoes_total{outcome}` counts the applier's own writes the apply
+window kept out of Git (`not_mirrored`) or mirrored because no window was open (`late`);
+`apply_ownership_conflicts_total` counts objects another applier owns that were kept out of a
+triggered folder; and `stale_snapshots_total{outcome}` counts resync snapshots discarded because an
+apply made them stale, or used after the 5-minute bound.
 `receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`, `unmatched`,
 `ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
 The receiver cannot tell a foreign push from an own one; the worker decides that from the
-advertisement, which is why a `notified` delivery on an otherwise quiet branch is followed by a
-`CatchUp` and only a genuinely foreign one by a `ForeignCommit`. See
+advertisement, which is why a `notified` delivery of the worker's own push is followed by no
+request and only a foreign one by a `ForeignCommit`. See
 [Interpreting metrics](interpreting-metrics.md#apply-requests-and-the-push-receiver).
 
 **Authorship**, when `--author-attribution` is on:
@@ -1720,10 +1791,11 @@ counter, `_secret_encryptions_total{outcome}`.
 **Configuration state** is the one family that is not about flow.
 `gitopsreverser_resource_condition{kind,resource_namespace,resource_name,type,status,reason}`
 publishes the kstatus trio of every object a human declared (`GitTarget`, `WatchRule`,
-`ClusterWatchRule`, `GitProvider`, `ClusterProvider`) as one series per possible status, of which
-exactly one is `1`. It is recorded at `reconcileStatus.commit()`, the single status choke point all
-five controllers use, and the object's entry is dropped when the object goes: a condition series
-that outlives its object reports `Ready=False` forever and never clears. It is the only family
+`ClusterWatchRule`, `GitProvider`, `ClusterProvider`, `FluxTrigger`, `ArgoCDTrigger`) as one series
+per possible status, of which exactly one is `1`. It is recorded at `reconcileStatus.commit()`, the
+single status choke point every controller but the `CommitRequest` one uses, and the object's
+entry is dropped when the object goes: a condition series that outlives its object reports
+`Ready=False` forever and never clears. It is the only family
 carrying object names, which §7.1 of the plan permits for configuration objects and nothing else.
 
 Gauges here are **observable**: their value is read when Prometheus scrapes, not pushed from the
@@ -1770,7 +1842,9 @@ Current limitations:
 - **An apply request cannot reserve time.** An edit made while the requested apply runs, to a field
   the applier sets, is reverted on the cluster. Its value stays in Git, because the applier's write
   over it is not mirrored, and the next apply restores it; until then the cluster runs the older
-  value. See [the apply window](design/apply-trigger.md#the-apply-window).
+  value. A sibling worker (another `GitProvider` on the same repository and branch) has no apply
+  window, so an edit made in its folders while the apply runs is reverted, and the sibling mirrors
+  the revert as an edit of its own. See [the apply window](design/apply-trigger.md#the-apply-window).
 - **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
   certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not
@@ -1807,7 +1881,7 @@ Current limitations:
 | [internal/types/](../internal/types/) | shared resource identity/reference and sensitivity policy |
 | [internal/typeset/](../internal/typeset/) | type followability registry, lookup model, and the relevance filter (controller-owned → don't mirror) |
 | [internal/watch/](../internal/watch/) | discovery catalog, watch manager, per-`(GVR, scope)` raw watches with `sendInitialEvents` replay + mark-and-sweep, the author resolver, watched type tables, event router |
-| [internal/webhook/](../internal/webhook/) | `/audit-webhook` ingress and attribution fact extraction (no body joiner), and the `/git-push` receiver |
+| [internal/webhook/](../internal/webhook/) | `/audit-webhook` ingress and attribution fact extraction (no body joiner), the `/validate-operator-types` admission handler, and the `/git-push` receiver |
 
 ***
 
@@ -1832,7 +1906,7 @@ Deeper dives live under [docs/design/](design/):
 - [Type followability](spec/type-followability.md)
 - [Typeset owns discovery grace](spec/typeset-owns-discovery-grace.md)
 - [Kubernetes API resource catalog](facts/kubernetes-api-resource-catalog.md)
-- [GitTarget status design](spec/status-conditions-guide.md)
+- [Status and conditions guide](spec/status-conditions-guide.md)
 - [The support contract: what we edit, what we refuse, and why](design/support-boundary/support-contract.md)
 - [The apply trigger](design/apply-trigger.md)
 - [Git credentials interop](finished/git-credentials-interop.md)

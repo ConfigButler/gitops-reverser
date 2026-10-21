@@ -2,7 +2,12 @@
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: design direction, captured 2026-06-04.
+> Status: implemented. Captured 2026-06-04 as the design direction, and the sections up to
+> "Source Code Concepts That Could Be Thrown Away" keep that voice: the code they name for removal
+> (`FolderReconciler`, the path-derived identity, the two-snapshot handshake, the per-event locator,
+> `Manager.GetClusterStateForGitDest`) is gone, and the resync is `planResyncToWorktree` in
+> [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go). The sections from "Decided
+> once, replayed as decided" to "Stale snapshots are discarded" describe current behavior.
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),
 > [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
@@ -267,6 +272,103 @@ Do **not** delete these — their decision logic moves into Plan computation / A
 - Acceptance failures (duplicate / non-KRM / unwatched API-backed KRM / mixed
   managed-allowlisted file) short-circuit before any stream is opened: refuse,
   reconcile nothing.
+- The plan is evaluated on that pair only. When the push is rejected because the
+  remote moved, a newer tip receives the plan's decided actions, never a new sweep
+  (see [Decided once, replayed as decided](#decided-once-replayed-as-decided)).
+
+## Decided once, replayed as decided
+
+A resync uses its snapshot's full membership once, when its pending write is
+first committed. The plan above decides two things on that tree: the upserts that
+changed it, and the documents the sweep removed (by identity, under the target's
+`prune.mode`). The write then carries only those actions. An object whose upsert
+changed nothing is no action, and a resync that decided nothing settles at once
+and is never pushed. A resync into a folder an apply trigger applies that the
+branch does not hold yet also decides the folder's bootstrap files, with or
+without objects, so the applier is never asked to apply a missing path.
+
+A replay onto a newer tip, after a rejected push, applies exactly those actions:
+
+- each upsert is planned onto the new tree;
+- each delete removes its document if the new tree still holds it, and only while
+  the target's prune mode, read again before the replay, still sweeps, so a policy
+  tightened since is obeyed;
+- nothing else: the sweep never runs again.
+
+So a document the newer tip added, which the snapshot could not know about,
+survives the replay, under `prune.mode: Always` too. Before this rule a replayed
+resync folded its whole membership over the new tree and swept that addition as
+an orphan. The write-side mechanics are in
+[the pending-writes design](../design/gittarget-branch-worker-pending-writes.md#a-write-carries-the-actions-decided-on-its-tree).
+
+## Objects another applier owns
+
+In a folder an apply trigger applies (a `GitTarget` with `spec.applyTriggerRef`),
+an object another applier owns is outside the resync. Mirrored into the folder,
+it would be applied by this folder's applier too, and two appliers applying one
+object fight each other.
+
+- The watch side reads the owner from the raw object, before sanitize strips it:
+  Flux's owner labels (`kustomize.toolkit.fluxcd.io/name` and `/namespace`, naming
+  a `Kustomization`), else Argo CD's tracking annotation
+  (`argocd.argoproj.io/tracking-id`, naming an `Application`). It stamps the owner
+  on every snapshot entry and live event.
+- A snapshot entry owned by an applier other than the one the folder's trigger
+  holds is neither upserted nor treated as missing, so the sweep leaves its
+  document alone, under `prune.mode: Always` too. A live event for it is not
+  mirrored.
+- An object nobody owns, or the folder's own applier owns, is a member as before.
+  A folder with no trigger excludes nothing.
+- Each exclusion is counted in `apply_ownership_conflicts_total` and logged once
+  per object; see
+  [Interpreting metrics](../interpreting-metrics.md#apply-requests-and-the-push-receiver).
+
+Design: [applier echoes, F4](../design/applier-echoes.md#f4-an-object-another-applier-owns-is-not-mirrored-into-a-triggered-folder).
+
+## Stale snapshots are discarded
+
+On a branch an applier applies, a snapshot can hold a stale picture. While Git is
+ahead of the cluster (a commit pushed and not yet applied), a snapshot holds the
+old state of every object that commit changes, and one collected across an apply
+holds a mix. Deciding either would revert the push in Git and then on the cluster.
+
+The branch worker keeps an **apply epoch**, raised at every send and every end of
+an apply attempt, and knows whether **Git is ahead**: an applier on the branch has
+a `ForeignCommit`, `Repair` or `Refusal` pending, a converge it may be asked for,
+or an attempt out. An adopt does not count, because it applies objects the
+cluster already runs. The watch side reads both when a snapshot's collection
+starts (before the initial-events watch opens, or before the LIST fallback),
+and the resync request carries them.
+
+The worker discards a snapshot collected while Git was ahead, collected across an
+epoch change, or arriving while Git is ahead, and one whose pre-resync fetch finds
+a commit the worker did not push. A discarded snapshot is answered as discarded,
+which is not a failure and is not counted in `git_resync_failures_total`. Once Git
+is no longer ahead, the worker asks the watch plane to re-anchor that
+`GitTarget`'s streams, which collect a fresh snapshot after the apply. Until it
+lands, the `GitTarget`'s render-fidelity scope stays pending: its live writes are
+held back by the render-fidelity gate, and the fresh snapshot recovers them. No
+snapshot is ever parked.
+
+Three rules keep this from holding a resync forever:
+
+- A branch with no trigger never waits: nothing applies its commits.
+- A collection's initial snapshot is exempt: the first snapshot of each collection
+  a `GitTarget` watches, until one of them settles (applied, refused or failed; a
+  discarded or superseded one does not settle). The watch side tracks this per
+  collection. Initial snapshots are the startup baseline, and no applier is asked
+  for anything before they are in Git, so holding them for an apply would wait on
+  itself.
+- After a `GitTarget`'s snapshots have been held for 5 minutes, counted from its
+  first discard, a fresh snapshot is asked for at that moment and used anyway,
+  logged and counted. An apply that keeps
+  failing must not leave drift unmirrored for as long as it fails; whatever the
+  unapplied commit changed in those objects is then reverted, by the API-wins rule.
+
+Only the worker's own appliers count: other `GitProvider`s writing the same
+repository and branch are not consulted. Both outcomes are counted in
+`stale_snapshots_total` (`discarded`, and `used` for the 5-minute bound). Design:
+[applier echoes, F3](../design/applier-echoes.md#f3-a-resync-never-decides-from-a-snapshot-collected-while-git-was-ahead-or-across-an-apply).
 
 ## Lazy Materialization Synergy
 

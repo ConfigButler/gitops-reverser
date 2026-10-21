@@ -227,7 +227,7 @@ type CommitMode string
 const (
 	// CommitModePerEvent streams request events through the live commit window.
 	// With commitWindow=0 each event finalizes immediately; otherwise events
-	// coalesce by author, target, and quiet-window boundaries.
+	// coalesce by author and target until the window's idle timeout or maximum duration.
 	CommitModePerEvent CommitMode = "per_event"
 	// CommitModeAtomic creates one commit for all events in the request.
 	CommitModeAtomic CommitMode = "atomic"
@@ -313,6 +313,11 @@ type ResolvedTargetMetadata struct {
 	// against the right cluster's mapping.
 	SourceCluster string
 
+	// Applied is whether the GitTarget names an apply trigger: an applier applies its folder, which
+	// must then exist before it is asked to. A resync into a folder that does not exist yet commits
+	// the folder's bootstrap files even when it holds no object (executeResyncPendingWrite).
+	Applied bool
+
 	// Suspend suppresses the WRITE only; the scan still runs, which keeps a suspended target's
 	// status fresh. Being CAPTURED defines the cutover: a suspension arriving after this write was
 	// planned does not retract it, and a commit already made locally is still pushed. Reading the
@@ -382,6 +387,19 @@ type PendingWrite struct {
 	// render failed at commit time. Zero means "not stamped", so messageSource() recomputes.
 	committedMessageSource messageResolution
 
+	// actionsDecided is set once the write was planned on the tree it was first committed on. A
+	// write carries the actions that plan decided, never a picture of the cluster to plan again
+	// (docs/design/applier-echoes.md, F2): from then on Events holds only the objects whose plan
+	// changed that tree, except in a save (CommitRequest), which keeps every object it captured,
+	// and a resync carries resyncActions instead of its snapshot. A replay applies those actions to
+	// the newer tip, and plans nothing else again. Loop-goroutine only.
+	actionsDecided bool
+	// resyncActions is what a resync decided on its tree: the upserts that changed it and the
+	// documents its sweep removed. Nil until decided. See actionsDecided.
+	resyncActions *resyncActions
+	// ownedElsewhere names, by objectKey, the snapshot objects another applier owns, which a resync
+	// into a triggered folder neither upserts nor sweeps (apply_ownership.go).
+	ownedElsewhere map[string]bool
 	// committedOnce is set once the loop has committed this write at least once. It stays set after
 	// a reset discards that commit: whether the checkout holds it now is checkoutApplied's to say. A
 	// decided write the loop could not commit yet (the remote was unreachable) stays pending with it
@@ -397,6 +415,9 @@ type PendingWrite struct {
 	// decidedAt is when the write was decided, which dates the oldest kept write. Loop-goroutine
 	// only.
 	decidedAt time.Time
+	// decision numbers the write in the order the loop decided it: the flush an apply waits for is the
+	// writes up to a mark (serviceAppliers). Loop-goroutine only.
+	decision uint64
 	// origin is what the write's outcome is settled against. See writeOrigin.
 	origin writeOrigin
 
@@ -465,7 +486,7 @@ func (s *ResyncScope) GVR() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: s.Collection.Group, Version: s.Version, Resource: s.Collection.Resource}
 }
 
-// String renders the scope for logs and for the deferred-heal key. It is nil-safe: a nil
+// String renders the scope for logs and status messages. It is nil-safe: a nil
 // scope is the whole-GitTarget resync and renders empty.
 func (s *ResyncScope) String() string {
 	if s == nil {
@@ -493,6 +514,16 @@ func (s *ResyncScope) Overlaps(other *ResyncScope) bool {
 	return s.Collection.Overlaps(other.Collection)
 }
 
+// ApplyState is where a branch worker's appliers stand, as a snapshot's collection reads it when it
+// starts (docs/design/applier-echoes.md, F3).
+type ApplyState struct {
+	// Epoch is raised at every send of an apply attempt and at every end of one.
+	Epoch uint64
+	// GitAhead is whether Git holds a commit the cluster may not run yet: an applier on the branch
+	// has a ForeignCommit, Repair or Refusal pending, a converge due, or an attempt out.
+	GitAhead bool
+}
+
 // ResyncRequest is a synchronous resync of one GitTarget against a complete,
 // version-pinned desired snapshot (M8). It rides the worker queue so the single
 // git-mutating goroutine applies it in order with live events, and replies on
@@ -510,12 +541,6 @@ type ResyncRequest struct {
 	// removed type). Nil is a whole-GitTarget resync. See ResyncScope for the invariant
 	// binding this to Desired.
 	Scope *ResyncScope
-	// Heal marks a non-urgent drift-correcting resync the worker DEFERS while a commit window is
-	// open. One worker serves N GitTargets and the window is a worker singleton, so a
-	// force-finalizing heal can steal a DIFFERENT GitTarget's held CommitRequest window. Waiting
-	// for idle recurs on every silence timeout, so it never starves. A first-sync backfill is NOT
-	// a heal: it must establish initial state promptly.
-	Heal bool
 	// SourceCollection names the target-watch collection that gathered this snapshot. Zero for a
 	// whole-GitTarget resync, which speaks for no single collection. Diagnostic only: nothing
 	// filters the queue on it. See source_collection.go.
@@ -524,6 +549,19 @@ type ResyncRequest struct {
 	// replay this is, for the scope Scope.Collection names. Zero for a resync no stream replayed.
 	// The worker records that scope clean once the resync applies (recordReplayClean).
 	RenderFidelityRevision uint64
+	// Owners is the applier that owns each snapshot object some applier owns, read from the raw
+	// object (AppliedByOf). An object another applier owns is neither upserted into a triggered
+	// folder nor swept from it (apply_ownership.go).
+	Owners map[types.ResourceIdentifier]AppliedBy
+	// Initial marks the first snapshot of its collection for this GitTarget: none was applied for it
+	// before. It is the baseline the worker decides whatever Git holds, never held for an apply (F3
+	// in docs/design/applier-echoes.md).
+	Initial bool
+	// CollectionStart is the worker's ApplyState read when the snapshot's collection started. A
+	// snapshot collected while Git was ahead of the cluster, or across an apply, holds a picture
+	// the apply is about to make stale, and is discarded (docs/design/applier-echoes.md, F3). Nil
+	// when the producer read none: only the worker's state on arrival is then checked.
+	CollectionStart *ApplyState
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult
@@ -671,6 +709,12 @@ type Event struct {
 	// removes managedFields); empty for a DELETE and for producers that observed no object. The
 	// apply window reads it to tell an applier's write from an API edit (apply_window.go).
 	LastFieldManagers []string
+
+	// AppliedBy is the applier that owns the object, read from its raw labels and annotations
+	// (AppliedByOf). PROVENANCE like LastFieldManagers, stamped by the live watch; zero when no
+	// applier owns it. An object another applier owns is not mirrored into a folder a trigger applies
+	// (apply_ownership.go).
+	AppliedBy AppliedBy
 
 	// LastFieldManagedAt is when those entries were written, to the second; zero with no
 	// LastFieldManagers. The apply window compares it with the time of an API edit: a late apply

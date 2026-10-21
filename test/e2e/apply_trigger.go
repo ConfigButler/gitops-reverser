@@ -19,14 +19,9 @@ const (
 )
 
 // createFluxTrigger creates the FluxTrigger name in namespace, holding the Kustomization
-// flux-system/<kustomization> in the operator's own cluster (the "default" ClusterProvider). An
-// empty quietPeriod takes the default.
-func createFluxTrigger(namespace, name, kustomization, quietPeriod string) {
+// flux-system/<kustomization> in the operator's own cluster (the "default" ClusterProvider).
+func createFluxTrigger(namespace, name, kustomization string) {
 	GinkgoHelper()
-	quiet := ""
-	if quietPeriod != "" {
-		quiet = fmt.Sprintf("\n  quietPeriod: %q", quietPeriod)
-	}
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: FluxTrigger
 metadata:
@@ -37,8 +32,8 @@ spec:
     name: default
   kustomizationRef:
     namespace: flux-system
-    name: %s%s
-`, name, namespace, kustomization, quiet)
+    name: %s
+`, name, namespace, kustomization)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to create FluxTrigger %s/%s", namespace, name)
 }

@@ -9,6 +9,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -65,10 +66,9 @@ func addAlphaUnsentRefusal(loop *branchWorkerEventLoop) refusalKey {
 	return key
 }
 
-// TestApplier_ARetryIsDecidedAgainOnAQuietBranch: an attempt that failed is not replayed blind. It
-// waits out its backoff, then waits for a quiet branch like a first attempt, and names the tip as
-// it is then.
-func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
+// TestApplier_ARetryIsDecidedAgain: an attempt that failed is not replayed blind. It waits out its
+// backoff, then is decided like a first attempt, after a flush, and names the tip as it is then.
+func TestApplier_ARetryIsDecidedAgain(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -81,11 +81,11 @@ func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
 	assert.NotNil(t, loop.applierTimer, "the backoff is armed")
 
 	dueNow(loop)
-	loop.openWindow = &openWindow{}
+	holdApplies(loop)
 	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "not while the branch is busy")
+	assert.Empty(t, requester.taken(), "not while a save holds the flush")
 
-	loop.openWindow = nil
+	releaseApplies(loop)
 	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	loop.serviceAppliers()
 	retry := requester.taken()
@@ -99,11 +99,10 @@ func TestApplier_ARetryIsDecidedAgainOnAQuietBranch(t *testing.T) {
 // The requester used to turn a Refusal whose target withdrew consent into a CatchUp and send it at
 // once, skipping the quiet period, so a behind artifact was fetched over an unpublished edit. Now
 // the requester only reports that the reason no longer holds, and the worker decides: no Refusal,
-// and a CatchUp only after the quiet period.
+// only the converge the first naming left pending, as a CatchUp.
 func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
-	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying),
-		fluxTrigger("alpha", quietFor(time.Hour)))
-	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // leaves a CatchUp pending
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying))
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch}) // leaves a converge pending
 	addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
@@ -121,15 +120,18 @@ func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
 	dueNow(loop)
 	loop.serviceAppliers()
 
-	assert.Empty(t, requester.taken(), "the catch-up waits out the hour-long quiet period")
-	assert.Empty(t, loop.unsentRefusals, "and the Refusal is gone with the consent")
-	assert.True(t, loop.appliers[applierRef("alpha")].catchUp)
+	next := requester.taken()
+	require.Len(t, next, 1)
+	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, next[0].Reason, "the converge, never the Refusal")
+	assert.Empty(t, loop.unsentRefusals, "the Refusal is gone with the consent")
 }
 
 // TestApplier_ARecoveredRefusalIsNotRetried is the second review's second finding: a refusal that
 // recovered while its attempt was out came back with the failed attempt and was requested again.
 func TestApplier_ARecoveredRefusalIsNotRetried(t *testing.T) {
-	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying))
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying),
+		fluxTrigger("alpha", recording(recordedOperation(configv1alpha3.ApplyOperationSucceeded), false)))
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch}) // the tip it applied
 	key := addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
@@ -202,23 +204,15 @@ func TestApplier_EachApplierRetriesOnItsOwnClock(t *testing.T) {
 }
 
 // TestApplier_OneAttemptForEveryTargetNamingIt: GitTargets that share a trigger are asked for
-// together, each with its own reason, and wait for the trigger's quiet period, because its apply
-// reaches every one of their folders.
+// together, each with its own reason, because its apply reaches every one of their folders.
 func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
 	shared := func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("shared") }
 	loop, requester := applyTriggerLoop(t,
 		applierTestTarget("alpha", true, shared, reapplying),
 		applierTestTarget("bravo", true, shared),
-		fluxTrigger("shared", quietFor(time.Hour)),
+		fluxTrigger("shared"),
 	)
-	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
-	loop.serviceAppliers()
-	assert.Equal(t, time.Hour, loop.appliers[applierRef("shared")].quietPeriod())
-
-	loop.quietSince = time.Now().Add(-2 * time.Minute)
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "past alpha's quiet period, not bravo's")
-
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush}) // the startup converge
 	addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
 	out := requester.taken()
@@ -235,8 +229,8 @@ func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
 			UID:    "uid-bravo",
 			Reason: configv1alpha3.ApplyReasonCatchUp,
 		},
-	}, out[0].Targets, "a Refusal applies the tip, so it answers bravo's pending CatchUp as well")
-	assert.False(t, loop.appliers[applierRef("shared")].catchUp)
+	}, out[0].Targets, "a Refusal applies the tip, so it answers the pending converge as well")
+	assert.False(t, loop.appliers[applierRef("shared")].converge)
 }
 
 // TestApplier_AnAttemptOutHoldsTheNext: one attempt per applier at a time. A reason that becomes pending
@@ -280,74 +274,70 @@ func TestApplier_ATargetThatNoLongerNamesAnApplierHasNothingPending(t *testing.T
 	assert.Nil(t, loop.applierTimer)
 }
 
-// TestSiblings_ABusyWorkerOnTheSameBranchHoldsTheOther: two GitProviders naming one repository give
-// one branch two workers, and a Kustomization applies the tip whichever of them wrote it. So one
-// worker sends nothing while the other holds an open window, and is woken when it closes.
-func TestSiblings_ABusyWorkerOnTheSameBranchHoldsTheOther(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	loop.w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
-	loop.w.applyWake = make(chan struct{}, 1)
-	sibling := newMetricsTestWorker()
-	sibling.repo = RepoIdentity{URL: "git@github.com:acme/platform.git"}
-	sibling.applyWake = make(chan struct{}, 1)
-	other := newMetricsTestWorker()
-	other.repo = RepoIdentity{URL: "https://github.com/acme/elsewhere"}
-	siblings := newBranchSiblings()
-	for _, w := range []*BranchWorker{loop.w, sibling, other} {
-		siblings.add(w)
-	}
-
-	other.publishWriteBusy(true)
-	sibling.publishWriteBusy(true)
-	observeForeignCommit(loop.w)
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the sibling's open window is on this branch too")
-	assert.True(t, loop.quietSince.IsZero())
-
-	sibling.publishWriteBusy(false)
-	select {
-	case <-loop.w.applyWake:
-	default:
-		t.Fatal("a sibling going quiet must wake the worker it held back")
-	}
-	loop.serviceAppliers()
-	assert.Len(t, requester.taken(), 1, "a worker on another repository never held it")
-
-	siblings.remove(sibling)
-	writing, working := loop.w.siblingBusy()
-	assert.False(t, writing)
-	assert.False(t, working)
+// answerFlush is a sibling's wake answering the flush another worker asked of it, with no writes of
+// its own to publish beyond what the test put in its pending writes.
+func answerFlush(loop *branchWorkerEventLoop) {
+	loop.takeSiblingFlush()
+	loop.reportSiblingFlush()
 }
 
-// TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod: a sibling's queued or
-// in-hand item holds the attempt back the way this worker's own queued work does. It keeps
-// quietSince, because the branch is busy only once that work opens a window, and the sibling's
-// loop wakes this one as it releases its last item.
-func TestSiblings_AnItemOnASiblingHoldsTheAttemptButNotTheQuietPeriod(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	sibling := newMetricsTestWorker()
-	siblings := newBranchSiblings()
-	for _, w := range []*BranchWorker{loop.w, sibling} {
-		w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
-		w.applyWake = make(chan struct{}, 1)
-		siblings.add(w)
-	}
+// TestSiblings_AnApplyWaitsForItsSiblingsFlush: two GitProviders naming one repository give one
+// branch two workers, whose GitTargets can name one trigger. An apply sent while a sibling holds an
+// edit not yet published would revert it on the cluster, and the sibling, with no apply window, would
+// mirror the revert. So the flush covers the siblings: the worker waits until each has published the
+// writes it decided before it was asked, and a write decided after does not hold the send.
+func TestSiblings_AnApplyWaitsForItsSiblingsFlush(t *testing.T) {
+	first, firstRequests, second, _ := siblingLoops(t)
+	second.decisions = 1
+	second.pendingWrites = []PendingWrite{{decision: 1}}
 
-	require.True(t, sibling.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
-	observeForeignCommit(loop.w)
-	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "the sibling's item is a live edit not yet decided")
-	assert.False(t, loop.quietSince.IsZero(), "the quiet period runs on")
+	first.serviceAppliers()
+	assert.Empty(t, firstRequests.taken(), "the sibling has not flushed yet")
+	require.Positive(t, second.w.flushAsked.Load(), "it was asked to")
 
-	<-sibling.eventQueue // its loop takes the item, and then releases it, as run does
-	sibling.releaseInflightItem()
+	answerFlush(second)
+	assert.Equal(t, uint64(1), second.siblingFlushMark, "the mark is the last write it decided")
+	assert.True(t, second.publishesAtOnce(), "what the mark covers is pushed at once, cooldown or not")
+	first.serviceAppliers()
+	assert.Empty(t, firstRequests.taken(), "its write up to the mark is not published yet")
+
+	second.decisions = 2
+	second.pendingWrites = []PendingWrite{{decision: 2}} // published the first, decided another
+	second.reportSiblingFlush()
 	select {
-	case <-loop.w.applyWake:
+	case <-first.w.applyWake:
 	default:
-		t.Fatal("a sibling releasing its last item must wake the worker it held back")
+		t.Fatal("a sibling done flushing must wake the worker waiting for it")
 	}
-	loop.serviceAppliers()
-	assert.Len(t, requester.taken(), 1)
+	first.serviceAppliers()
+	assert.Len(t, firstRequests.taken(), 1, "a write decided after the mark does not hold the send")
+}
+
+// TestSiblings_ShareWhatTheyObserve: what a sibling observes of the branch moves the tip every
+// worker on it sends for, and wakes them. A sibling's push is somebody else's commit here, as a
+// fetch of it would say: the sibling's appliers may apply another cluster, so nothing says its
+// content is live where this worker's appliers apply.
+func TestSiblings_ShareWhatTheyObserve(t *testing.T) {
+	first, _, second, _ := siblingLoops(t)
+	first.w.inbox.take()
+	select {
+	case <-first.w.applyWake:
+	default:
+	}
+
+	second.w.recordRemoteObservation("ccc", ObservedByPush)
+	assert.Equal(t, "ccc", first.w.inbox.lastTip())
+	assert.True(t, first.w.inbox.foreignPending(), "a sibling's push is foreign here")
+	select {
+	case <-first.w.applyWake:
+	default:
+		t.Fatal("a shared observation must wake the sibling, so a ForeignCommit is decided at once")
+	}
+
+	first.w.inbox.take()
+	second.w.recordRemoteObservation("ddd", ObservedByFetch)
+	assert.Equal(t, "ddd", first.w.inbox.lastTip())
+	assert.True(t, first.w.inbox.foreignPending(), "and so is what a sibling fetched")
 }
 
 func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
@@ -362,15 +352,15 @@ func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
 }
 
 // TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff: an attempt whose decision no longer held
-// at the patch (the branch moved on, or became busy) asked nothing, and that is no failure. What it
-// carried comes back, and the next quiet moment decides again at the new tip.
+// at the patch (the branch moved on) asked nothing, and that is no failure. What it carried comes
+// back, and the next wake decides again at the new tip.
 func TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	out := requester.taken()
 	require.Len(t, out, 1)
-	require.True(t, out[0].Current(), "decided at the tip on a quiet branch")
+	require.True(t, out[0].Current(), "decided at the tip")
 
 	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	assert.False(t, out[0].Current(), "the branch moved on")
@@ -384,62 +374,16 @@ func TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff(t *testing.T) {
 	assert.Zero(t, retry[0].PriorFailures)
 }
 
-// TestDecisionHolds_OnlyAtTheTipOnAQuietBranch: the check the requester makes before it patches.
-func TestDecisionHolds_OnlyAtTheTipOnAQuietBranch(t *testing.T) {
+// TestDecisionHolds_OnlyAtTheTip: the check the requester makes before it patches. Only a moved tip
+// makes a decision stale: an edit is published before the send, or recorded in the apply window.
+func TestDecisionHolds_OnlyAtTheTip(t *testing.T) {
 	w := newMetricsTestWorker()
 	w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
 	assert.True(t, w.decisionHolds("aaa"))
 	assert.False(t, w.decisionHolds("older"), "another commit is not the tip")
 
-	w.publishWriteBusy(true)
-	assert.False(t, w.decisionHolds("aaa"), "a window open since")
-	w.publishWriteBusy(false)
-
 	require.True(t, w.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
-	assert.False(t, w.decisionHolds("aaa"), "a queued event is a live edit not yet decided")
-}
-
-// TestDecisionHolds_NotWhileTheLoopHandlesAnItem is the fifth review's second finding. The check
-// read the queue's length, and busyWriting, which a wake publishes only as it ends: once the loop
-// had taken its last item both said quiet, for as long as that item took to commit and push. The
-// item counts until its wake has published what it left behind, for this worker's attempts and for
-// a sibling's. The loop runs for real here, held inside the item by the render fidelity gate.
-func TestDecisionHolds_NotWhileTheLoopHandlesAnItem(t *testing.T) {
-	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
-	w := loop.w
-	sibling := newMetricsTestWorker()
-	siblings := newBranchSiblings()
-	for _, worker := range []*BranchWorker{w, sibling} {
-		worker.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
-		worker.applyWake = make(chan struct{}, 1)
-		worker.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
-		siblings.add(worker)
-	}
-	gate := NewRenderFidelityGate()
-	w.renderFidelityGate = gate
-	ctx, cancel := context.WithCancel(context.Background())
-	w.ctx = ctx
-	done := make(chan struct{})
-
-	gate.mu.Lock() // the loop's write check waits here
-	go func() {
-		defer close(done)
-		loop.run()
-	}()
-	require.True(t, w.Enqueue(windowEvent("alpha", "3", "kubectl-edit")))
-	require.Eventually(t, func() bool { return len(w.eventQueue) == 0 }, 5*time.Second, time.Millisecond)
-	assert.False(t, w.busyWriting.Load(), "the wake has published nothing yet")
-	assert.False(t, w.decisionHolds("aaa"), "the item the loop is handling is a live edit")
-	assert.False(t, sibling.decisionHolds("aaa"), "for a sibling too")
-	gate.mu.Unlock()
-
-	require.Eventually(t, func() bool { return w.inflightItems.Load() == 0 }, 5*time.Second, time.Millisecond)
-	assert.True(t, w.busyWriting.Load(), "the window it opened is published before the item is released")
-	assert.False(t, sibling.decisionHolds("aaa"))
-
-	restartAll(gate, itypes.NewResourceReference("alpha", "team-a"), fidelityScope("apps", "deployments"))
-	cancel()
-	<-done
+	assert.True(t, w.decisionHolds("aaa"), "a queued edit holds nothing")
 }
 
 // TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow is the customer review's third blocker: the
@@ -478,4 +422,67 @@ func TestWriteBusy_ASaveAnnouncedBeforeItsWrites(t *testing.T) {
 	assert.False(t, loop.writeBusy())
 	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{{}: {}}
 	assert.True(t, loop.writeBusy())
+}
+
+// queuedRefreshes takes the refreshes the worker queued for its loop.
+func queuedRefreshes(w *BranchWorker) []*RefreshRequest {
+	var refreshes []*RefreshRequest
+	for {
+		select {
+		case item := <-w.eventQueue:
+			if item.Refresh != nil {
+				refreshes = append(refreshes, item.Refresh)
+			}
+		default:
+			return refreshes
+		}
+	}
+}
+
+// TestApplyAttempt_ASourceElsewhereIsAHintToLook: an applier's source that fetched another commit
+// than the one asked for says the branch may have moved, past a decision made before the worker heard
+// of it. With no receiver, the worker would otherwise ask again for a commit the source no longer
+// serves, until its own push or the refresher found the move; it looks, as at a push notice. A source
+// at the tip known here says nothing new.
+func TestApplyAttempt_ASourceElsewhereIsAHintToLook(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+	observeForeignCommit(loop.w)
+	failWith := func(revision string) {
+		t.Helper()
+		loop.serviceAppliers()
+		sent := requester.taken()
+		require.Len(t, sent, 1)
+		sent[0].Report(ApplyResult{ID: sent[0].ID, Outcome: ApplyRequestFailed,
+			Err: errors.New("the source fetched another commit"), SourceRevision: revision})
+		loop.serviceAppliers()
+		dueNow(loop)
+	}
+
+	failWith("main@sha1:bbb")
+	assert.Empty(t, queuedRefreshes(loop.w), "the source holds the tip known here")
+
+	failWith("main@sha1:ccc")
+	refreshes := queuedRefreshes(loop.w)
+	require.Len(t, refreshes, 1, "the worker looks at the remote")
+	assert.True(t, refreshes[0].PushNotice)
+	assert.Equal(t, "ccc", refreshes[0].After)
+}
+
+// TestApplyAttempt_ANewFlushMarkStartsTheEditsOver: an applier can stay due without being sent (a
+// sibling holds its group), and the next flush takes a newer mark, which publishes the edits recorded
+// before it. Carried into the window, those would withhold the apply's own write of a commit that
+// holds them, with a false collision and an extra Repair. A flush in progress keeps its record.
+func TestApplyAttempt_ANewFlushMarkStartsTheEditsOver(t *testing.T) {
+	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
+	loop.followRecordedOperations(time.Now())
+	state := loop.appliers[applierRef("alpha")]
+	state.flushEdits = map[string]time.Time{"x": time.Now()}
+
+	loop.flushing = true
+	require.True(t, loop.flushed([]*applierState{state}))
+	assert.Len(t, state.flushEdits, 1, "the flush in progress keeps what it recorded")
+
+	loop.flushing = false
+	require.True(t, loop.flushed([]*applierState{state}))
+	assert.Empty(t, state.flushEdits, "a new mark published them")
 }

@@ -33,10 +33,10 @@ const (
 	// EventReasonApplyRequested is a request that reached the applier.
 	EventReasonApplyRequested = "ApplyRequested"
 	// EventReasonApplyRequestFailed is the first failed attempt of a run of them. The branch worker
-	// keeps the reason pending and asks again on a quiet branch; the Event is not repeated for its retries.
+	// keeps the reason pending and asks again after a flush; the Event is not repeated for its retries.
 	EventReasonApplyRequestFailed = "ApplyRequestFailed"
 	// EventReasonApplyFailed is a requested apply the applier ran and did not complete, the first of
-	// a run of failed attempts. The branch worker asks again on a quiet branch.
+	// a run of failed attempts. The branch worker asks again after a flush.
 	EventReasonApplyFailed = "ApplyFailed"
 	// EventReasonApplyUnresolved is a requested apply that did not complete within
 	// UnresolvedAfter. It is still followed, and its apply window stays open until it completes.
@@ -96,7 +96,7 @@ const pollTimeout = 10 * time.Second
 // carried out on its own goroutine and reported back to the worker that decided it: the request,
 // then the operation it started as it moves, until it completes or the worker abandons it. The
 // worker keeps the reason pending until an operation answers it, and decides every retry on a quiet
-// branch. So nothing goes out that a worker did not check on a quiet branch, and nothing here can
+// branch. So nothing goes out that a worker did not check after a flush, and nothing here can
 // turn a delayed decision into an apply nobody checked.
 //
 // What it does check is what can change between the worker's decision and the write. It reads each
@@ -384,14 +384,15 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	case isPermanent(err):
 		return d.failure(ctx, req, eligible, report(git.ApplyRejected, err), log), nil
 	case err != nil:
-		return d.failure(ctx, req, eligible, report(git.ApplyRequestFailed, err), log), nil
+		res := report(git.ApplyRequestFailed, err)
+		var elsewhere *sourceElsewhereError
+		if errors.As(err, &elsewhere) {
+			res.SourceRevision = elsewhere.revision
+		}
+		return d.failure(ctx, req, eligible, res, log), nil
 	}
 
 	d.count(ctx, req, outcomeSent)
-	if started.Outcome == OutcomeCurrent {
-		log.V(1).Info("the applier needs no request for this commit; asking nothing")
-		return report(git.ApplyCurrent, nil), nil
-	}
 	log.Info("apply requested", "outcome", started.Outcome)
 	if started.Unconfirmed != nil {
 		log.Info("the request may not have reached the applier; following it by its token",
@@ -673,7 +674,7 @@ func (d *Dispatcher) completed(
 		"after", took.String(), "message", progress.Message, "priorFailures", req.PriorFailures)
 	if req.PriorFailures == 0 {
 		d.event(ctx, req, corev1.EventTypeWarning, EventReasonApplyFailed,
-			"%s did not complete the apply of %s (%s), and will be asked again once the branch is quiet: %v",
+			"%s did not complete the apply of %s (%s), and will be asked again after its backoff: %v",
 			describeApplier(req.Applier), DescribeCommit(req.Commit), req.Reason, err)
 	}
 	result.Err = err
@@ -734,7 +735,7 @@ func (d *Dispatcher) failure(
 	if req.PriorFailures == 0 && d.recorder != nil {
 		for _, e := range eligible {
 			d.recorder.Eventf(e.target, corev1.EventTypeWarning, EventReasonApplyRequestFailed,
-				"could not ask %s to apply %s (%s), and will ask again once the branch is quiet: %v",
+				"could not ask %s to apply %s (%s), and will ask again after its backoff: %v",
 				describeApplier(req.Applier), DescribeCommit(req.Commit), e.reason, res.Err)
 		}
 	}
@@ -885,115 +886,4 @@ func applierKindOf(req git.ApplyRequest) string {
 		return applierKindApplication
 	}
 	return applierKindKustomization
-}
-
-// PrefetchSource asks the GitRepository a FluxTrigger's Kustomization applies to fetch now, ahead of
-// the apply, and returns at once. It asks nothing when the trigger's status.source.prefetch is not
-// true, when a FluxTrigger on the same source has an operation in flight (a resumed Kustomization
-// applies whatever the artifact becomes), or when the artifact already holds the commit. It applies
-// nothing, so it reports nothing.
-func (d *Dispatcher) PrefetchSource(req git.PrefetchRequest) {
-	if req.Applier.Kind != v1alpha3.ApplierKindKustomization {
-		return
-	}
-	d.runMu.RLock()
-	ctx := d.run
-	if ctx != nil {
-		d.attempts.Add(1)
-	}
-	d.runMu.RUnlock()
-	if ctx == nil {
-		return
-	}
-	go func() {
-		defer d.attempts.Done()
-		ctx, cancel := context.WithTimeout(ctx, d.AttemptTimeout)
-		defer cancel()
-		log := d.log.WithValues("applier", req.Applier.String(), "commit", req.Commit)
-		if err := d.prefetch(ctx, req); err != nil && !errors.Is(err, errNotPrefetched) {
-			log.V(1).Info("did not prefetch the source", "reason", err.Error())
-			return
-		}
-		log.V(1).Info("prefetched the source")
-	}()
-}
-
-// errPrefetchHeld is a prefetch held back by the trigger's source.
-var errPrefetchHeld = errors.New("the source may not be prefetched now")
-
-// prefetch checks the trigger and its source's other triggers, then the source's consumers as they
-// are now (heldNow), and stamps the source, which every check was of: status.source's GitRepository,
-// only while the Kustomization still applies it.
-func (d *Dispatcher) prefetch(ctx context.Context, req git.PrefetchRequest) error {
-	trigger := &v1alpha3.FluxTrigger{}
-	key := client.ObjectKey{Namespace: req.Applier.Trigger.Namespace, Name: req.Applier.Trigger.Name}
-	if err := d.reader.Get(ctx, key, trigger); err != nil {
-		return err
-	}
-	if trigger.Status.Source == nil || !trigger.Status.Source.Prefetch || git.ApplierOf(trigger) != req.Applier {
-		return errPrefetchHeld
-	}
-	var triggers v1alpha3.FluxTriggerList
-	if err := d.reader.List(ctx, &triggers); err != nil {
-		return err
-	}
-	for i := range triggers.Items {
-		other := &triggers.Items[i]
-		if other.ClusterProvider() != trigger.ClusterProvider() || other.Status.Source == nil ||
-			other.Status.Source.GitRepository != trigger.Status.Source.GitRepository {
-			continue
-		}
-		if operation := other.Status.Operation; operation != nil && !operation.Phase.Completed() {
-			return errPrefetchHeld
-		}
-	}
-	flux, err := d.heldNow(ctx, req, trigger, triggers.Items)
-	if err != nil {
-		return err
-	}
-	checked, _ := trigger.SharedSource()
-	return flux.Prefetch(ctx, applierName(req.Applier), checked, req.Commit)
-}
-
-// heldNow checks again, in the applier's cluster, what the trigger's status.source.prefetch said when
-// its reconciler last ran, up to a minute ago: every consumer of its GitRepository is a
-// Kustomization a FluxTrigger on the same cluster names, and is suspended, held by GitOps Reverser
-// with its suspend handled now. A consumer that appeared since, or one Flux applies on its own again, would apply
-// the prefetched artifact at once, over live edits not pushed yet (errPrefetchHeld). It returns the
-// Flux client of the applier's cluster.
-func (d *Dispatcher) heldNow(
-	ctx context.Context, req git.PrefetchRequest, trigger *v1alpha3.FluxTrigger, triggers []v1alpha3.FluxTrigger,
-) (*Flux, error) {
-	applierClient, err := d.applierClients(ctx, req.Applier.Cluster)
-	if err != nil {
-		return nil, err
-	}
-	flux := NewFlux(applierClient)
-	flux.Now = d.Now
-	named := map[types.NamespacedName]bool{}
-	for i := range triggers {
-		other := &triggers[i]
-		if other.DeletionTimestamp.IsZero() && other.ClusterProvider() == trigger.ClusterProvider() {
-			named[other.Applier()] = true
-		}
-	}
-	source := trigger.Status.Source.GitRepository
-	consumers, err := flux.Consumers(ctx, types.NamespacedName{Namespace: source.Namespace, Name: source.Name})
-	if err != nil {
-		return nil, err
-	}
-	for _, consumer := range consumers {
-		key := types.NamespacedName{Namespace: consumer.Namespace, Name: consumer.Name}
-		if consumer.Kind != v1alpha3.ApplierKindKustomization || !named[key] {
-			return nil, fmt.Errorf("%w: %s %s is not held by a FluxTrigger", errPrefetchHeld, consumer.Kind, key)
-		}
-		suspension, err := flux.Suspension(ctx, key)
-		if err != nil {
-			return nil, fmt.Errorf("read %s %s: %w", kindKustomization, key, err)
-		}
-		if !suspension.Suspended || !suspension.Held || !suspension.Handled {
-			return nil, fmt.Errorf("%w: %s %s is not held suspended now", errPrefetchHeld, kindKustomization, key)
-		}
-	}
-	return flux, nil
 }

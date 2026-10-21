@@ -92,11 +92,12 @@ type GitTargetSpec struct {
 
 	// ApplyTriggerRef names the apply trigger, in this GitTarget's namespace, that holds the applier
 	// of this folder: a FluxTrigger (a Flux Kustomization) or an ArgoCDTrigger (an Argo CD
-	// Application). With it set, GitOps Reverser decides when that applier applies: only when the
-	// branch holds no open commit window and no pending writes, after a commit it did not push,
-	// after a refused edit (spec.onRefusal: Reapply), after an apply reverted a newer API edit, and,
-	// for a Kustomization, once the branch has been quiet for the trigger's quietPeriod, to keep it
-	// current with its own pushes. The trigger's applier must apply this target's repository and
+	// Application). With it set, GitOps Reverser decides when that applier applies, always after
+	// publishing the edits it holds: after a commit it did not push, after a refused edit
+	// (spec.onRefusal: Reapply), after an apply reverted a newer API edit, after the API created an
+	// object in the folder (so the applier owns it and prunes it later), and once when the operator
+	// starts or the trigger is first named, after the folder's initial snapshots are in Git. Objects
+	// another applier owns are not mirrored into the folder. The trigger's applier must apply this target's repository and
 	// branch; the ApplyTriggerReady condition says whether it does. Several GitTargets may name one
 	// trigger, and it is asked once for all of them.
 	// +optional
@@ -109,8 +110,8 @@ type GitTargetSpec struct {
 	// "Ignore", the default, records the refusal in conditions and events and does nothing else.
 	//
 	// "Reapply" asks this target's applier (through spec.applyTriggerRef, which it requires) to
-	// apply the current tip once the branch holds no open window and no pending writes, which
-	// reverts the refused edit and nothing that is still waiting to be published. Only this
+	// apply the current tip after publishing the edits pending on the branch, which reverts the
+	// refused edit and nothing that was waiting to be published. Only this
 	// target's applier is asked. If its GitRepository has to fetch to reach the tip, the
 	// Kustomizations a FluxTrigger holds stay suspended and ignore the new artifact; only the
 	// consumers no trigger holds, listed in the trigger's status.source.otherConsumers, apply it, as
@@ -447,9 +448,9 @@ type GitTargetStatus struct {
 
 // GitTargetRemoteStatus is the answer to "where is my branch, and when did we last prove it".
 //
-// It is written whenever the commit changes — including one we pushed ourselves — and otherwise
-// only when the published timestamp is older than one refresh interval: the commit has to move
-// with the fact it dates.
+// It is sampled when the GitTarget reconciles, from what its branch worker last proved about the
+// branch, and written at most once a minute. The first observation, and a correction after the
+// repository changed under the target, are written at once.
 type GitTargetRemoteStatus struct {
 	// Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
 	// the remote at all, which is not an error: a branch does not exist without a commit, and a

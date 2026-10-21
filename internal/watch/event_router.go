@@ -262,8 +262,7 @@ func (r *EventRouter) resolveWorkerForGitDest(
 // the buffered reply channel and whether the resync actually entered the FIFO. The scope
 // restricts the worker's mark-and-sweep to one type, and to one namespace when it names one, so
 // desired MUST carry exactly that scope's objects (empty for a sweep) — passing a scope wider
-// than the gather deletes managed documents outside it. heal marks a drift-correcting resync the
-// worker defers while a commit window is open. enqueued is false when the worker's queue was full
+// than the gather deletes managed documents outside it. enqueued is false when the worker's queue was full
 // and dropped the request (its failure is still delivered on resultCh for the drain to record).
 // resourceVersion is the LIST's collection version the desired set is pinned to.
 func (r *EventRouter) enqueueScopedResync(
@@ -271,9 +270,8 @@ func (r *EventRouter) enqueueScopedResync(
 	gitDest types.ResourceReference,
 	scope git.ResyncScope,
 	sourceCollection types.CollectionKey,
-	desired []manifestanalyzer.DesiredResource,
+	snapshot replaySnapshot,
 	resourceVersion string,
-	heal bool,
 	renderFidelityRevision uint64,
 ) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resyncTarget(ctx, gitDest)
@@ -282,19 +280,48 @@ func (r *EventRouter) enqueueScopedResync(
 	}
 	resultCh := make(chan git.ResyncResult, 1)
 	enqueued := worker.EnqueueResync(&git.ResyncRequest{
-		Desired:            desired,
+		Desired:            snapshot.desired,
+		Owners:             snapshot.owners,
 		ResourceVersion:    resourceVersion,
 		GitTargetName:      gitDest.Name,
 		GitTargetNamespace: gitDest.Namespace,
 		Scope:              &scope,
 		SourceCollection:   sourceCollection,
-		Heal:               heal,
 		// The worker records the scope clean itself once the resync applies, before the drain
 		// below hears of it, so a live event queued behind the resync meets the gate it produced.
 		RenderFidelityRevision: renderFidelityRevision,
+		CollectionStart:        snapshot.start,
+		Initial:                r.initialSnapshot(gitDest, scope.Collection),
 		Result:                 resultCh,
 	})
 	return resultCh, enqueued, nil
+}
+
+// initialSnapshot reports whether no snapshot of the collection has settled yet: the worker then
+// uses it whatever its appliers are doing, since it is what an apply waits for (git.ResyncRequest.Initial).
+func (r *EventRouter) initialSnapshot(gitDest types.ResourceReference, collection types.CollectionKey) bool {
+	return r.WatchManager != nil && !r.WatchManager.snapshotsSettled(gitDest, []types.CollectionKey{collection})
+}
+
+// applyStateReader is the part of a branch worker that says where its appliers stand. See
+// git.BranchWorker.ApplyState.
+type applyStateReader interface {
+	ApplyState() git.ApplyState
+}
+
+// applyState reads the ApplyState of a GitTarget's branch worker, or nil when the worker cannot be
+// resolved or reports none.
+func (r *EventRouter) applyState(ctx context.Context, gitDest types.ResourceReference) *git.ApplyState {
+	worker, err := r.resyncTarget(ctx, gitDest)
+	if err != nil {
+		return nil
+	}
+	reader, ok := worker.(applyStateReader)
+	if !ok {
+		return nil
+	}
+	state := reader.ApplyState()
+	return &state
 }
 
 // resyncTarget is the branch worker a GitTarget's scoped resyncs enter.
@@ -349,6 +376,9 @@ func (r *EventRouter) drainScopedResync(
 ) {
 	select {
 	case result := <-resultCh:
+		if settlesSnapshot(result.Err) && r.WatchManager != nil {
+			r.WatchManager.markSnapshotSettled(gitDest, collection)
+		}
 		if result.Err != nil {
 			r.handleScopedResyncError(gitDest, collection, kind, renderFidelityEpoch, result.Err)
 			return
@@ -377,9 +407,19 @@ func (r *EventRouter) drainScopedResync(
 			)
 		}
 	case <-time.After(resyncSignalTimeout):
+		if r.WatchManager != nil {
+			r.WatchManager.markSnapshotSettled(gitDest, collection)
+		}
 		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "collection", collection.String())
 		r.recordBackgroundResyncFailure(gitDest)
 	}
+}
+
+// settlesSnapshot reports whether a resync's outcome settles its collection's snapshot: it was
+// applied, refused or failed. A discarded one is asked for again, and a superseded one is replaced by
+// the resync queued in its place; neither settles anything (docs/design/applier-echoes.md, S2).
+func settlesSnapshot(err error) bool {
+	return !errors.Is(err, git.ErrResyncDiscarded) && !errors.Is(err, git.ErrResyncSuperseded)
 }
 
 // handleScopedResyncError classifies a failed resync. A path the acceptance gate refused
@@ -411,6 +451,14 @@ func (r *EventRouter) handleScopedResyncError(
 			r.WatchManager.MarkTargetGitPathScopeRefused(
 				gitDest, collection, gitPathRefusalReason(refused), refused.BlockMessage())
 		}
+		return
+	}
+	if errors.Is(err, git.ErrResyncDiscarded) {
+		// An apply made the snapshot stale before the worker could use it. Nothing failed: the
+		// worker asks for a fresh snapshot of the GitTarget once the apply is done, and that one
+		// reports. See docs/design/applier-echoes.md, F3.
+		r.Log.Info("per-type "+kind+" discarded as stale; a fresh snapshot is asked for",
+			"gitDest", gitDest.String(), "collection", collection.String(), "detail", err.Error())
 		return
 	}
 	if errors.Is(err, git.ErrResyncSuperseded) {

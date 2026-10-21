@@ -576,7 +576,7 @@ func TestArgoCDRequest_RefusesWhatIsNotUnderControl(t *testing.T) {
 			wantErr: "has automated sync on", wantPerm: true},
 		{name: "the decision went stale", app: manualApp(), commit: testCommit,
 			current: func() bool { return false }, wantStale: true},
-		{name: "no commit to pin", app: manualApp(), wantOutcome: OutcomeCurrent},
+		{name: "no commit to pin", app: manualApp(), wantErr: "no commit to apply", wantPerm: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -781,10 +781,6 @@ func TestArgoCD_Progress(t *testing.T) {
 	assert.Equal(t, Progress{Outcome: git.ApplySucceeded}, progress(t))
 	setState(t, theirOperation(), "Succeeded", false)
 	assert.Equal(t, git.ApplyFailed, progress(t).Outcome, "ours was cleared before it recorded an outcome")
-
-	current, err := argo.Progress(context.Background(), platformApp, &Started{Outcome: OutcomeCurrent})
-	require.NoError(t, err)
-	assert.Equal(t, git.ApplySucceeded, current.Outcome, "nothing asked is nothing to wait for")
 }
 
 // TestArgoCD_ASyncWhoseOperationWasRemovedEnds is review 7's A1. Removing .operation is the

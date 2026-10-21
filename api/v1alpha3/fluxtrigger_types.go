@@ -3,8 +3,6 @@
 package v1alpha3
 
 import (
-	"time"
-
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -43,16 +41,6 @@ type FluxTriggerSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kustomizationRef is immutable; delete and recreate the FluxTrigger to hold another Kustomization"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kustomizationRef.name must not be empty"
 	KustomizationRef meta.NamespacedObjectReference `json:"kustomizationRef"`
-
-	// QuietPeriod is how long the branch must hold no open commit window and no pending writes,
-	// after GitOps Reverser's own pushes, before the Kustomization is asked to catch up with them.
-	// Every new write restarts the wait. A Go duration of at most "1h".
-	// +optional
-	// +kubebuilder:default="30s"
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
-	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('1h')",message="spec.quietPeriod must be a Go duration of at most 1h"
-	QuietPeriod *metav1.Duration `json:"quietPeriod,omitempty"`
 }
 
 // FluxTriggerStatus is what the trigger knows about its Kustomization, and the apply it started.
@@ -93,7 +81,7 @@ type FluxTriggerStatus struct {
 	Operation *ApplyOperation `json:"operation,omitempty"`
 
 	// RepairPending is true while a Repair apply is pending for the Kustomization: an apply reverted
-	// an API edit made after it was asked for, so the cluster runs an older value than Git until the
+	// an API edit made after its flush, so the cluster runs an older value than Git until the
 	// next apply.
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
@@ -123,13 +111,6 @@ type FluxTriggerSource struct {
 	// +optional
 	// +listType=atomic
 	OtherConsumers []meta.NamespacedObjectKindReference `json:"otherConsumers,omitempty"`
-
-	// Prefetch is true while GitOps Reverser fetches the GitRepository as soon as it learns of a push,
-	// before the apply: every consumer of it was listed and is held by a FluxTrigger, so a new
-	// artifact applies nothing on its own. False when otherConsumers is not empty, or the consumers
-	// could not be listed (the identity needs list on kustomizations, helmreleases and helmcharts).
-	// +optional
-	Prefetch bool `json:"prefetch,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -145,10 +126,10 @@ type FluxTriggerSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// FluxTrigger holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes:
-// only on a branch with nothing live missing from the commit, after a commit GitOps Reverser did
-// not push, after a refused edit, after a reverted edit, and to catch up with its own pushes.
-// GitTargets name it with spec.applyTriggerRef.
+// FluxTrigger holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes,
+// each after publishing the edits pending on the branch: after a commit GitOps Reverser did not
+// push, after a refused edit, after a reverted edit, and to adopt what the API created or converge
+// the Kustomization (CatchUp). GitTargets name it with spec.applyTriggerRef.
 type FluxTrigger struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -199,14 +180,6 @@ func (t *FluxTrigger) Applier() types.NamespacedName {
 	}
 }
 
-// EffectiveQuietPeriod is spec.quietPeriod, resolving an omitted field to the default.
-func (t *FluxTrigger) EffectiveQuietPeriod() time.Duration {
-	if t.Spec.QuietPeriod == nil {
-		return DefaultApplierQuietPeriod
-	}
-	return t.Spec.QuietPeriod.Duration
-}
-
 // SourceBinding is status.source's url and branch.
 func (t *FluxTrigger) SourceBinding() (string, string, bool) {
 	if t.Status.Source == nil {
@@ -223,9 +196,6 @@ func (t *FluxTrigger) SharedSource() (types.NamespacedName, bool) {
 	source := t.Status.Source.GitRepository
 	return types.NamespacedName{Namespace: source.Namespace, Name: source.Name}, true
 }
-
-// Prefetches is status.source.prefetch.
-func (t *FluxTrigger) Prefetches() bool { return t.Status.Source != nil && t.Status.Source.Prefetch }
 
 // Operation is status.operation.
 func (t *FluxTrigger) Operation() *ApplyOperation { return t.Status.Operation }

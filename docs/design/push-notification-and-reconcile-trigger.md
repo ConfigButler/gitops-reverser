@@ -4,7 +4,10 @@
 > current design and what is still open. This page is the record of how the apply trigger was
 > decided. It stays in `design/` because its Part 1 (how the branch worker reads the remote) is
 > still cited from the Git code by its section numbers, which predate the last restructuring of
-> this page.
+> this page. Parts 2 to 4 are the design as it was decided then, and much of it has changed since:
+> no apply waits for a quiet branch (an apply comes after a flush), `quietPeriod` is gone, an
+> Argo CD `Application` gets `CatchUp` too, and a push of the worker's own asks for no apply. Read
+> [`apply-trigger.md`](apply-trigger.md) for current behavior.
 
 GitOps Reverser and the applier (Flux or Argo CD) share a branch. This page is how they talk:
 how GitOps Reverser learns that somebody else pushed, and how it decides when the applier applies.

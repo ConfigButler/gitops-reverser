@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 )
@@ -43,8 +42,7 @@ const (
 	kindGitRepository = "GitRepository"
 )
 
-// OutcomeResumed resumed the Kustomization for one apply. OutcomeCurrent asks nothing: a CatchUp or
-// ForeignCommit found it suspended, with the commit both in its artifact and applied.
+// OutcomeResumed resumed the Kustomization for one apply.
 const OutcomeResumed Outcome = "Resumed"
 
 // SuspendFieldManager is the field manager GitOps Reverser holds a Kustomization's spec.suspend and
@@ -92,9 +90,10 @@ const fetchPollInterval = 100 * time.Millisecond
 // for that fetch. An artifact that ends on another commit is errStale when the decision no longer
 // holds, and a failure otherwise: the source cannot fetch the commit the worker checked.
 //
-// A ForeignCommit or a CatchUp asks nothing (OutcomeCurrent) when the Kustomization is suspended
-// and has applied commit: nothing applied since, and nothing will until it is resumed. A Refusal
-// and a Repair always run the operation, because they ask for an apply of an unchanged commit.
+// Every reason runs the operation. The branch worker decides what needs no apply: it follows every
+// operation, keeps the revision each applier last applied, and sends no converge of that commit
+// (docs/design/applier-echoes.md, S2). An adopt re-applies the same commit on purpose: that is what
+// stamps Flux's owner labels on an object the API created.
 //
 // Just before the resume it reads the Kustomization again, since the fetch can take a while: one
 // that was replaced, applies another source now, or has its spec.suspend applied by another
@@ -106,8 +105,8 @@ const fetchPollInterval = 100 * time.Millisecond
 // requestedAt, so it enqueues a reconcile that reads both, which applies. It is made over the
 // Kustomization as last read, and fails rather than land on one that changed since.
 //
-// An empty commit (the remote does not carry the branch) has nothing to apply: the GitRepository
-// is stamped, so Flux reports the missing branch itself, and nothing is resumed.
+// The worker never asks for an empty commit: when the remote does not carry the branch there is
+// nothing to apply, and the GitRepository reports the missing branch itself.
 func (f *Flux) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (Started, error) {
 	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
@@ -125,17 +124,10 @@ func (f *Flux) Request(ctx context.Context, ref types.NamespacedName, ask Ask) (
 		return Started{}, err
 	}
 	if ask.Commit == "" {
-		if _, err := f.stampSource(ctx, sourceRef); err != nil {
-			return Started{}, err
-		}
-		return Started{Outcome: OutcomeCurrent}, nil
+		return Started{}, permanentError{errors.New("no commit to apply: the remote does not carry the branch")}
 	}
 	if err := f.fetchCommit(ctx, sourceRef, source, ask); err != nil {
 		return Started{}, err
-	}
-	if (ask.Reason == v1alpha3.ApplyReasonForeignCommit || ask.Reason == v1alpha3.ApplyReasonCatchUp) &&
-		suspended(ks) && revisionHolds(statusString(ks, "lastAppliedRevision"), ask.Commit) {
-		return Started{Outcome: OutcomeCurrent}, nil
 	}
 	return f.resume(ctx, ref, ks, sourceRef, ask)
 }
@@ -158,8 +150,22 @@ func (f *Flux) fetchCommit(
 	if !ask.holds() {
 		return errStale
 	}
-	return fmt.Errorf("%s %s fetched %s, not commit %s", kindGitRepository, sourceRef,
-		statusString(source, "artifact", "revision"), ask.Commit)
+	return &sourceElsewhereError{
+		source: sourceRef, revision: statusString(source, "artifact", "revision"), commit: ask.Commit,
+	}
+}
+
+// sourceElsewhereError is a GitRepository that fetched, and holds another commit than the one asked
+// for: usually the branch moved on, past a decision the branch worker made before it heard of the
+// move. The dispatcher hands the revision to the worker (git.ApplyResult.SourceRevision), which looks
+// at the remote instead of asking again for a commit the source may no longer serve.
+type sourceElsewhereError struct {
+	source           types.NamespacedName
+	revision, commit string
+}
+
+func (e *sourceElsewhereError) Error() string {
+	return fmt.Sprintf("%s %s fetched %s, not commit %s", kindGitRepository, e.source, e.revision, e.commit)
 }
 
 // maxResumeConflicts bounds how often one request reads the Kustomization again after its resume
@@ -337,8 +343,7 @@ func (f *Flux) fetch(ctx context.Context, sourceRef types.NamespacedName) (*unst
 // `flux resume`) is suspended again. A Recovered or Unconfirmed operation whose token is nowhere on the
 // Kustomization was never resumed, or its token was stamped over (a suspend of its own the process
 // stopped before reporting, `flux reconcile`): it is suspended, and judged once that suspend is
-// handled on what ran since it was asked for. Nothing else is asked: an OutcomeCurrent request is
-// finished.
+// handled on what ran since it was asked for.
 func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Started) (Progress, error) {
 	if s.Outcome != OutcomeResumed {
 		return Progress{Outcome: git.ApplySucceeded}, nil

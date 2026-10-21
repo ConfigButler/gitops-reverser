@@ -3,8 +3,6 @@
 package v1alpha3
 
 import (
-	"time"
-
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,7 +61,9 @@ const (
 	// ApplyReasonRepair puts back an API edit that an earlier apply reverted on the cluster after
 	// the edit was made. Git kept the edit; the cluster runs the older value until the repair.
 	ApplyReasonRepair ApplyReason = "Repair"
-	// ApplyReasonCatchUp keeps the applier current with GitOps Reverser's own pushes.
+	// ApplyReasonCatchUp adopts what the API created in the applier's folders, so the applier owns
+	// and can later prune it, and converges the applier once at startup and when a GitTarget first
+	// names its trigger.
 	ApplyReasonCatchUp ApplyReason = "CatchUp"
 )
 
@@ -142,9 +142,6 @@ type ApplyOperation struct {
 	Message string `json:"message,omitempty"`
 }
 
-// DefaultApplierQuietPeriod is FluxTrigger.spec.quietPeriod when it is omitted.
-const DefaultApplierQuietPeriod = 30 * time.Second
-
 // ApplyTrigger is what every trigger kind answers, so the controllers, the branch workers and the
 // dispatcher handle a FluxTrigger and an ArgoCDTrigger alike.
 // +kubebuilder:object:generate=false
@@ -160,8 +157,6 @@ type ApplyTrigger interface {
 	ApplierKind() string
 	// Applier is the object the trigger holds, its namespace defaulted to the trigger's own.
 	Applier() types.NamespacedName
-	// EffectiveQuietPeriod is how long the branch must be quiet before a CatchUp.
-	EffectiveQuietPeriod() time.Duration
 	// SourceBinding is the repository and branch the applier applies, as the trigger last read
 	// them, and false when it has not read them.
 	SourceBinding() (repositoryURL, branch string, known bool)
@@ -169,9 +164,6 @@ type ApplyTrigger interface {
 	// false when the applier has none it shares this way or the trigger has not read it. Appliers
 	// sharing one have one operation at a time.
 	SharedSource() (source types.NamespacedName, known bool)
-	// Prefetches reports whether a push may be fetched into the shared source ahead of the apply:
-	// every other reader of it is held, so a new artifact applies nothing on its own.
-	Prefetches() bool
 	// Operation is status.operation, and SetOperation replaces it and status.repairPending.
 	Operation() *ApplyOperation
 	RepairPending() bool

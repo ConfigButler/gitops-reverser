@@ -8,23 +8,23 @@ import "go.opentelemetry.io/otel/metric"
 // object, labelled by {applier_kind, reason, outcome}.
 //
 // applier_kind names the applier: "kustomization" (a Flux Kustomization) or "application" (an Argo
-// CD Application). reason is the attempt's ApplyReason (ForeignCommit, Refusal, Repair, CatchUp;
-// never CatchUp for an application). outcome is a frozen enum:
+// CD Application). reason is the attempt's ApplyReason (ForeignCommit, Refusal, Repair, CatchUp),
+// for either kind. outcome is a frozen enum:
 //
 //	sent     — the applier was asked and the ask landed: a Kustomization was resumed with a
-//	           requestedAt token or a sync operation set. Or it needed no request: a ForeignCommit or
-//	           a CatchUp found the Kustomization suspended with the commit applied already, or the
-//	           remote no longer carries the branch, so there is no commit to apply.
+//	           requestedAt token or a sync operation set. What needs no apply (a converge of the commit
+//	           the applier last applied, an empty tip) the branch worker never sends, so it is not
+//	           counted.
 //	failed   — the attempt could not ask, including an applier that applies another repository or
-//	           branch. The branch worker keeps the reason pending and decides a retry on a quiet branch,
+//	           branch. The branch worker keeps the reason pending and decides a retry after a flush,
 //	           with a backoff of its own, so a failure that persists keeps counting. An
 //	           ApplyRequestFailed Event marks the first failure of a run.
 //	dropped  — the attempt asked nothing, because no GitTarget may still ask for its reason: each
 //	           was deleted or recreated, moved to another branch or applier, is no longer admitted by
 //	           its ClusterProvider, or withdrew its consent to a Refusal.
 //	stale    — the attempt asked nothing, because the decision no longer held when the write was due:
-//	           the branch had moved on or become busy. The worker decides again at the next quiet
-//	           moment. Frequent stale attempts mean edits keep arriving within an attempt's lifetime.
+//	           the branch had moved on. The worker decides again at once, at the new tip. Frequent
+//	           stale attempts mean the branch keeps moving within an attempt's lifetime.
 //
 // It counts attempts, so a request that fails twice and then lands is two "failed" and one "sent".
 // It says nothing about whether the applier APPLIED: the operation a sent request starts is

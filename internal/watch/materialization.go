@@ -102,6 +102,7 @@ func (m *Manager) tearDownGitTarget(gitDest types.ResourceReference) {
 	m.forgetGitTargetUID(gitDest)
 	m.forgetGitTargetCluster(gitDest)
 	m.forgetGitTargetPruneMode(gitDest)
+	m.forgetSettledSnapshots(gitDest)
 	m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		_, hadPass := s.passes[gitDest.Key()]
 		_, hadLayout := s.layouts[gitDest.Key()]

@@ -138,7 +138,7 @@ func TestResyncRefusal_DoesNotStageSOPSBootstrap(t *testing.T) {
 		},
 	}
 
-	_, err = w.executeResyncPendingWrite(context.Background(), repo, worktree, pending)
+	_, err = w.executeResyncPendingWrite(context.Background(), repo, worktree, &pending)
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	require.ErrorAs(t, err, &refused)
 

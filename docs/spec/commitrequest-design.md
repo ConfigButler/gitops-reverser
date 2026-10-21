@@ -1,6 +1,6 @@
 # CommitRequest window finalization
 
-> **spec**: current behavior, reviewed at `373bf8d7` on 2026-10-03.
+> **spec**: current behavior, reviewed at `c12f7970` on 2026-10-20.
 > The code depends on this document; change one, change the other.
 > Index: [`../INDEX.md`](../INDEX.md)
 
@@ -47,7 +47,13 @@ registration, `maxDuration` from the attach. Each is a pointer, so an omitted va
 `"0s"` stay distinguishable. A zero `attachTimeout` attaches to a window already open, or gives up at
 once, and never shortens the collection that follows; a zero `maxDuration` finalizes right after the
 attach.
-Other flush triggers can close an attached window early, carrying its message. Each request attaches
+Other window closers can close an attached window early, carrying its message: an author or target
+change, the byte cap, a resync, or shutdown. An apply coming due does not. While a request is
+registered, from its registration until it resolves, the branch worker makes no
+[flush](../design/apply-trigger.md#flush-then-apply) and sends no apply request, because a save
+defines its own commit boundary: an apply landing between the request and its writes would revert
+its first edits before they reach Git. A Git host's push notice leaves an attached window open too.
+Each request attaches
 to at most one window and cannot rename a finalized commit, including one waiting for push. A bundle
 provides no ordering guarantee. The wait does not reserve a transaction. Competing requests are
 served in registration order, first come, first served.
@@ -130,10 +136,10 @@ for a push to say. So is `NoWindow` under `Resolve`. Under `CommitEmpty` a `NoWi
 its message in an empty commit, and it resolves when that commit reaches the remote.) A window that
 produced no diff used to resolve `AlreadyPresent` at finalize, on the strength of the local plan.
 That was only sound while every cycle fetched before it planned. It no longer does (see
-[inbound push notification](../design/apply-trigger.md)), so the plan may have run
-against a tree the remote has moved past, and the replay that follows a rejected push can turn the
-same captured object into a commit. "Already present" is a claim about the remote, so the
-remote settles it: a no-diff request resolves `AlreadyPresent` when the push confirms there was
+[how the branch worker reads the remote](../design/push-notification-and-reconcile-trigger.md#12-the-push-is-the-read)),
+so the plan may have run against a tree the remote has moved past, and the replay that follows a
+rejected push can turn the same captured object into a commit. "Already present" is a claim about
+the remote, so the remote settles it: a no-diff request resolves `AlreadyPresent` when the push confirms there was
 nothing to add, and `Committed` when the replay produced a commit after all.
 
 **A request whose write is decided stays identifiable until publication.** It remains attached to

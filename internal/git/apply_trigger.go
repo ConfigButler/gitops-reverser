@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,39 +21,45 @@ import (
 )
 
 // This file is the branch worker's half of the apply trigger: deciding WHEN the appliers of the
-// GitTargets on this branch apply. See docs/design/apply-trigger.md.
+// GitTargets on this branch apply. See docs/design/apply-trigger.md and
+// docs/design/applier-echoes.md.
 //
-// An apply is safe only when nothing live is missing from the commit being applied, and only the
-// workers on this branch can see the edits that are live and not yet pushed: their open commit
-// windows and pending writes. So an attempt goes out only on a QUIET branch, with neither on this
-// worker or on any other worker writing the same repository and branch. Four reasons ask for one:
+// An apply must not revert an edit that is live and not yet in Git, and only the worker can see
+// those: its open commit window and pending writes. So an attempt goes out after a FLUSH: the open
+// window is closed, the writes decided up to that moment (the flush mark) are published, and the
+// attempt is sent for the tip that publication produced. An edit decided after the mark is recorded
+// in the apply window, so an apply that overwrites it is withheld and a Repair puts it back
+// (apply_window.go). Four reasons ask for an attempt:
 //
 //   - ForeignCommit: an observation of the remote found the branch somewhere this worker did not
-//     push it. Every applier on the branch is asked as soon as the branch is quiet, and an open
-//     window is closed rather than waited out, because a user who keeps editing would otherwise
-//     hold a Git-side change back for as long as they type.
+//     push it. Every applier on the branch is asked.
 //   - Refusal: a refused edit on a target with spec.onRefusal: Reapply (refusal_reapply.go).
-//   - CatchUp: this worker's own pushes. A suspended Kustomization applies nothing on its own, so
-//     this is convergence, not safety: Flux's inventory learns of an object only from an apply of a
-//     commit that holds it, and an object created through the API and never applied is not pruned
-//     when Git deletes it. Asked only once the branch has stayed quiet for the trigger's quiet
-//     period, and never of an Argo CD Application (decided without it; ApplierRef.CatchesUp).
+//   - CatchUp: ownership, not safety, the same for Flux and Argo CD. An applier prunes only what it
+//     applied: an object the API created in its folder carries no owner labels and no tracking
+//     annotation, so when Git later deletes its file the applier leaves it on the cluster. A CatchUp
+//     ADOPTS it: it is pending once the worker observes an API create in a folder an applier applies,
+//     or a resync adds an object to Git, and is never skipped as already applied, because applying
+//     the same commit again is what stamps the object. A CatchUp also CONVERGES: once when the worker
+//     starts, and once when a GitTarget first names the trigger; that one asks nothing of an applier
+//     that already applied the tip (S2 in docs/design/applier-echoes.md).
 //   - Repair: the apply window withheld a late apply over a newer API edit (apply_window.go), so
-//     the cluster runs an older value than Git. Asked like a Refusal: on a quiet branch, with no
-//     quiet period, and of either kind of applier, because nothing else would put the edit back on
-//     an Argo CD Application.
+//     the cluster runs an older value than Git. Asked like a Refusal, and of
+//     either kind of applier, because nothing else would put the edit back on an Argo CD
+//     Application.
 //
-// The three relations are kept apart on purpose. The BRANCH is the unit of quietness, because a
-// Kustomization applies the tip whichever GitTarget's folder an edit is in. The APPLIER is the unit
-// of pending reasons: one attempt in flight at a time, its own retry clock, and one attempt for all
-// the GitTargets that name it. The GITTARGET, by uid, is the unit of configuration and consent.
+// Two relations are kept apart on purpose. The APPLIER is the unit of pending reasons: one attempt in
+// flight at a time, its own retry clock, and one attempt for all the GitTargets that name it. The
+// GITTARGET, by uid, is the unit of configuration and consent.
+//
+// No applier is asked for anything, for any reason, before every initial snapshot of the GitTargets
+// it covers is published: at startup the edits made while the operator was down are then in Git, and
+// a newly named GitTarget's folder holds the cluster. An empty tip asks nothing.
 //
 // The worker keeps every pending reason until an operation answers it. The requester carries out one
 // attempt and reports its operation as it moves; it never retries, so a retry is decided here like
-// any first attempt, on a quiet branch, against what the targets are now. An operation is followed
-// for as long as it takes: one past the requester's budget is Unresolved, and keeps its window open
-// and its applier's next attempt back, because a timer that closes the window does not stop the
-// apply.
+// any first attempt, after a flush, against what the targets are now. An operation is followed for as
+// long as it takes: one past the requester's budget is Unresolved, and keeps its window open and its
+// applier's next attempt back, because a timer that closes the window does not stop the apply.
 
 // applyInbox holds what other goroutines tell the loop about applies: the reasons pending for the
 // branch's appliers because of what was OBSERVED about the remote, and the reports of attempts that
@@ -65,66 +72,53 @@ type applyInbox struct {
 	// means the remote does not carry the branch.
 	known bool
 	tip   string
-	// foreign and catchUp are pending until the loop takes them on a quiet branch. prefetch is a push
-	// somebody else made, until the loop takes it (apply_groups.go).
+	// foreign and converge are pending until the loop takes them onto the appliers.
 	foreign  bool
-	catchUp  bool
-	prefetch bool
+	converge bool
 	// results are the reports of finished attempts, until the loop reads them.
 	results []ApplyResult
 }
 
 // observe classifies one observation. The first one is a baseline, not a move: nothing says what
-// the appliers last applied, so a CatchUp is pending for them, never a ForeignCommit. A request on a
-// restart would otherwise apply the tip before the watches have captured the edits made while the
-// operator was down.
+// the appliers last applied, so the startup converge is pending for them, never a ForeignCommit. A
+// request on a restart would otherwise apply the tip before the watches have captured the edits made
+// while the operator was down.
 //
 // After that, a commit that differs from the last one observed is either this worker's push, proved
-// by the push itself, or somebody else's, because every other observation is a fetch. When in doubt
-// the classification errs towards foreign, which costs one apply of the tip on a quiet branch.
+// by the push itself, which leaves nothing pending, or somebody else's, because every other
+// observation is a fetch. When in doubt the classification errs towards foreign, which costs one
+// apply of the tip.
 func (d *applyInbox) observe(observed RemoteObservation) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.known {
-		d.known, d.tip, d.catchUp = true, observed.Commit, true
+		d.known, d.tip, d.converge = true, observed.Commit, true
 		return
 	}
 	if observed.Commit == d.tip {
 		return
 	}
 	d.tip = observed.Commit
-	if observed.By == ObservedByPush {
-		d.catchUp = true
-		return
+	if observed.By != ObservedByPush {
+		d.foreign = true
 	}
-	d.foreign, d.prefetch = true, true
-}
-
-// takePrefetch returns whether a push somebody else made is to be fetched ahead, with the tip, and
-// clears it.
-func (d *applyInbox) takePrefetch() (string, bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	due := d.prefetch
-	d.prefetch = false
-	return d.tip, due
 }
 
 // take returns the pending reasons and clears them. The caller restores it if it cannot act on it.
 func (d *applyInbox) take() (string, bool, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	tip, foreign, catchUp := d.tip, d.foreign, d.catchUp
-	d.foreign, d.catchUp = false, false
-	return tip, foreign, catchUp
+	tip, foreign, converge := d.tip, d.foreign, d.converge
+	d.foreign, d.converge = false, false
+	return tip, foreign, converge
 }
 
 // restore puts back what take returned, for a caller that could not act on it.
-func (d *applyInbox) restore(foreign, catchUp bool) {
+func (d *applyInbox) restore(foreign, converge bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.foreign = d.foreign || foreign
-	d.catchUp = d.catchUp || catchUp
+	d.converge = d.converge || converge
 }
 
 // foreignPending reports whether a ForeignCommit is pending, without taking it.
@@ -132,6 +126,14 @@ func (d *applyInbox) foreignPending() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.foreign
+}
+
+// lastTip is the last commit observed, empty before the first observation or when the remote does
+// not carry the branch.
+func (d *applyInbox) lastTip() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.tip
 }
 
 // tipIs reports whether the last commit observed is commit.
@@ -160,10 +162,9 @@ const applierRetryInterval = 10 * time.Second
 
 // branchTarget is one GitTarget on this branch that names an applier, as listed on this pass.
 type branchTarget struct {
-	ref         itypes.ResourceReference
-	uid         k8stypes.UID
-	applier     ApplierRef
-	quietPeriod time.Duration
+	ref     itypes.ResourceReference
+	uid     k8stypes.UID
+	applier ApplierRef
 	// consents is whether it asks for a Refusal request now (ConsentsToReapply).
 	consents bool
 	// recorded and repairPending are the trigger's status.operation and status.repairPending, as listed:
@@ -171,10 +172,8 @@ type branchTarget struct {
 	recorded      *v1alpha3.ApplyOperation
 	repairPending bool
 	// group names the GitRepository a Flux trigger's Kustomization applies, in its cluster; empty
-	// for an Argo CD Application or a source not read yet. prefetch is the trigger's
-	// status.source.prefetch (apply_groups.go).
-	group    string
-	prefetch bool
+	// for an Argo CD Application or a source not read yet (apply_groups.go).
+	group string
 }
 
 // appliersOnBranch lists the GitTargets on this worker's (provider, branch) that name an apply
@@ -205,12 +204,10 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 			ref:           itypes.NewResourceReference(target.Name, target.Namespace),
 			uid:           target.UID,
 			applier:       ApplierOf(trigger),
-			quietPeriod:   trigger.EffectiveQuietPeriod(),
 			consents:      ConsentsToReapply(target),
 			recorded:      trigger.Operation(),
 			repairPending: trigger.RepairPending(),
 			group:         sourceGroup(trigger),
-			prefetch:      trigger.Prefetches(),
 		})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ref.String() < listed[j].ref.String() })
@@ -222,10 +219,19 @@ type applierState struct {
 	ref ApplierRef
 	// targets are the GitTargets that name it, as listed on the last pass.
 	targets []branchTarget
-	// foreign, catchUp and repair are pending until an attempt carries them.
-	foreign bool
-	catchUp bool
-	repair  bool
+	// foreign, adopt, converge and repair are pending until an attempt carries them. adopt and
+	// converge are both asked as a CatchUp.
+	foreign  bool
+	adopt    bool
+	converge bool
+	repair   bool
+	// named is the GitTarget incarnations that named the applier so far: one naming it for the first
+	// time leaves a converge pending.
+	named map[k8stypes.UID]bool
+	// appliedRevision is the revision the last operation that succeeded applied, as the applier
+	// reported it, recovered on restart from the trigger's status.operation. A converge of the commit
+	// it names asks nothing.
+	appliedRevision string
 	// inflight is the attempt whose report has not ended it yet. While it is out, nothing else is
 	// sent to this applier: a reason that becomes pending meanwhile waits for it.
 	inflight *inflightAttempt
@@ -240,6 +246,10 @@ type applierState struct {
 	// finished it (apply_window.go). Nil when no attempt was sent, or the last asked for no apply
 	// after the window before it had closed.
 	window *applyWindow
+	// flushEdits records the API-side edits made since the flush mark of an attempt that is due and
+	// not sent yet, by objectKey: they are not in the commit the attempt applies, so its window holds
+	// them from the start (S1). Nil while no flush is waiting for this applier.
+	flushEdits map[string]time.Time
 	// operation is the last operation an attempt started, as its trigger's status.operation shows
 	// it, and operationID the attempt it belongs to. Nil until this worker started one.
 	operation   *v1alpha3.ApplyOperation
@@ -266,7 +276,8 @@ func (s *applierState) repairPending() bool {
 type inflightAttempt struct {
 	id       uint64
 	foreign  bool
-	catchUp  bool
+	adopt    bool
+	converge bool
 	repair   bool
 	refusals map[refusalKey]unsentRefusal
 	// phase is the last report of its operation, empty before the first.
@@ -286,45 +297,49 @@ type inflightAttempt struct {
 	abandon context.CancelFunc
 }
 
-// quietPeriod is how long the branch must be quiet before a CatchUp: the trigger's, as listed with
-// each GitTarget naming it. The longest wins should a listing straddle an edit of the trigger.
-func (s *applierState) quietPeriod() time.Duration {
-	var longest time.Duration
-	for _, target := range s.targets {
-		longest = max(longest, target.quietPeriod)
-	}
-	return longest
+// hasReason reports whether a reason is pending for the applier, given its unsent refusals.
+func (s *applierState) hasReason(refusals map[refusalKey]unsentRefusal) bool {
+	return s.foreign || s.repair || s.adopt || s.converge || len(refusals) > 0
 }
 
-// writeBusy reports whether the loop holds anything live that is not yet on the remote, or is in a
-// state where it cannot say. A request is never sent while it does. A registered CommitRequest
-// counts: a save is announced before its writes arrive, and an apply landing between the two would
-// revert the save's first edits before they reach Git.
+// barrierRecheckInterval is how soon a reason held back by the initial-snapshot barrier is looked at
+// again: the barrier lifts when the watch side and a publication say so, neither of which wakes the
+// loop on its own.
+const barrierRecheckInterval = time.Second
+
+// writeBusy reports whether the loop is in a state in which no flush can be made, and so no request
+// sent: a registered CommitRequest, whose save defines its own commit boundary (a save is announced
+// before its writes arrive, and an apply landing between the two would revert its first edits before
+// they reach Git), a parent recovery, or a checkout a failed write left dirty. In the last two the
+// worker cannot say what is published.
 func (l *branchWorkerEventLoop) writeBusy() bool {
-	return l.openWindow != nil || len(l.pendingWrites) > 0 || len(l.deferredHeals) > 0 ||
-		len(l.pendingCRs) > 0 || l.recovery.active || l.w.worktreeDirty()
+	return len(l.pendingCRs) > 0 || l.recovery.active || l.w.worktreeDirty()
 }
 
-// closeWindowForForeignCommit closes the open commit window early when the branch has moved under
-// it, or a Git host has said it may have, so its writes are published, and replayed onto the move,
-// now rather than when the window's timers allow. See the file comment for why not wait.
-func (l *branchWorkerEventLoop) closeWindowForForeignCommit() {
+// closeWindowForPushHint closes the open commit window early when a Git host has said the branch may
+// have moved, so its writes are published, and replayed onto the move, now rather than when the
+// window's timers allow. A window a CommitRequest holds is left to its save.
+func (l *branchWorkerEventLoop) closeWindowForPushHint() {
 	hinted := l.pushHinted
 	l.pushHinted = false
-	if l.openWindow == nil || l.w.applyRequester == nil {
+	if !hinted || l.openWindow == nil || l.openWindow.pendingCR != nil || l.w.applyRequester == nil {
 		return
 	}
-	if !hinted && !l.w.inbox.foreignPending() {
-		return
-	}
-	l.w.Log.Info("The branch moved, or may have; closing the commit window to publish it now",
+	l.w.Log.Info("A Git host reported a push; closing the commit window to publish it now",
 		"branch", l.w.Branch)
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonForeignCommit)
 }
 
-// serviceAppliers settles the reports that came back, and sends whatever attempts are due if the
-// branch is quiet. It runs at the end of every wake, after the wake's writes have been decided and
-// committed, so "quiet" is what the wake left behind.
+// serviceAppliers settles the reports that came back, and sends whatever attempts are due, after a
+// flush (docs/design/applier-echoes.md, S1). It runs at the end of every wake, after the wake's
+// writes have been decided and committed.
+//
+// When an apply comes due, the open commit window is closed, so its edits become a decided write,
+// and the flush mark is taken: the last write decided so far. From the mark, the edits the due
+// appliers' next apply windows will hold are recorded (withholdLateApply). The writes up to the mark
+// are published, at once, and the attempts are sent for the tip that publication produced. Writes
+// decided after the mark do not hold the send, so continuous editing cannot starve an apply: an edit
+// decided after it is recorded, and an apply that overwrites it is withheld and repaired.
 func (l *branchWorkerEventLoop) serviceAppliers() {
 	w := l.w
 	if w.applyRequester == nil {
@@ -335,59 +350,207 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
-	if !l.branchQuiet(now) || l.workWaiting() {
-		// Queued work, here or on a sibling: the next wake looks again, and a sibling's loop wakes
-		// this one once it has handled its last item. The branch is still quiet until that work
-		// opens a window, so quietSince is kept. A push observed meanwhile is fetched ahead of the
-		// apply.
-		l.prefetchSources()
+	work := l.takeReasons()
+	// A listing that failed is retried on the applier timer (listRetryAt), which every arming below
+	// keeps.
+	closing := earliest(earliest(l.reportApplyWindows(now), l.snapshotHoldDeadline()), l.listRetryAt)
+
+	if !work {
+		l.endFlush()
+		l.armApplierTimer(now, closing)
 		return
 	}
-	// Quiet: the attempts sent now fetch what they apply themselves.
-	w.inbox.takePrefetch()
-
-	tip, foreign, catchUp := w.inbox.take()
-	if !foreign && !catchUp && len(l.unsentRefusals) == 0 && !l.appliersHaveWork() {
-		l.stopApplierTimer()
+	due, wait := l.dueAppliers(now)
+	wait = earliest(wait, closing)
+	if len(due) == 0 {
+		l.endFlush()
+		l.armApplierTimer(now, wait)
 		return
+	}
+	if !l.flushed(due) {
+		// The publication wakes the loop when it lands (a push, or its retry); a save, a parent
+		// recovery or a dirty checkout end with a wake of their own, and so does a sibling's flush.
+		l.armApplierTimer(now, wait)
+		return
+	}
+	// Publishing may have observed news: a rejected push fetches, and a foreign commit it found is
+	// pending for every applier now. The attempts carry it, for the tip that holds both sides.
+	l.takeReasons()
+	tip := w.inbox.lastTip()
+	for _, state := range due {
+		if l.attemptOut(state) || !l.w.claimGroup(state.group()) {
+			// A sibling sent one for the group since; its end wakes this worker.
+			continue
+		}
+		l.sendAttempt(state, tip, l.unsentRefusalsFor(state))
+	}
+	l.endFlush()
+	l.armApplierTimer(now, wait)
+}
+
+// takeReasons moves the reasons the inbox holds onto the appliers listed now, and reports whether
+// any applier has work. A listing that fails leaves them in the inbox, and sets listRetryAt, when
+// the applier timer looks again; only a listing that succeeds clears it (followRecordedOperations
+// lists the same appliers first, every pass).
+func (l *branchWorkerEventLoop) takeReasons() bool {
+	w := l.w
+	_, foreign, converge := w.inbox.take()
+	if !foreign && !converge && len(l.unsentRefusals) == 0 && !l.appliersHaveWork() {
+		return false
 	}
 	targets, err := w.appliersOnBranch(w.ctx)
 	if err != nil {
-		w.inbox.restore(foreign, catchUp)
+		w.inbox.restore(foreign, converge)
 		w.Log.Error(err, "Cannot list the appliers on this branch; retrying", "branch", w.Branch)
-		l.resetApplierTimer(applierRetryInterval)
-		return
+		l.listRetryAt = time.Now().Add(applierRetryInterval)
+		return false
 	}
+	l.listRetryAt = time.Time{}
 	l.syncAppliers(targets)
 	for _, state := range l.appliers {
 		state.foreign = state.foreign || foreign
-		state.catchUp = state.catchUp || (catchUp && state.ref.CatchesUp())
-	}
-	l.armApplierTimer(now, l.sendDue(tip, now))
-}
-
-// branchQuiet reports whether the branch holds nothing live that is not yet on the remote, on this
-// worker or on any other writing the same repository and branch, and keeps quietSince: when it last
-// became quiet, zero while it is busy.
-func (l *branchWorkerEventLoop) branchQuiet(now time.Time) bool {
-	busy := l.writeBusy()
-	l.w.publishWriteBusy(busy)
-	siblingWriting, _ := l.w.siblingBusy()
-	if busy || siblingWriting {
-		l.quietSince = time.Time{}
-		l.stopApplierTimer()
-		return false
-	}
-	if l.quietSince.IsZero() {
-		l.quietSince = now
+		state.converge = state.converge || converge
 	}
 	return true
+}
+
+// dueAppliers is the appliers an attempt is due for now, in turn order, and the earliest time one
+// still waiting comes due. The appliers are taken in turn order, so in a group, which has one attempt
+// out at a time, the attempt goes to the applier whose turn is longest ago.
+//
+// A reason waits for the applier's backoff, and for the initial-snapshot barrier (pastBarrier). An
+// empty tip asks nothing: the remote does not carry the branch, and the source reports that itself;
+// the reason stays pending for when it does. A converge alone of the commit the applier last applied
+// asks nothing, and is answered.
+func (l *branchWorkerEventLoop) dueAppliers(now time.Time) ([]*applierState, time.Time) {
+	var due []*applierState
+	var wait time.Time
+	tip := l.w.inbox.lastTip()
+	for _, ref := range l.turnOrder() {
+		state := l.appliers[ref]
+		if l.attemptOut(state) {
+			continue
+		}
+		refusals := l.unsentRefusalsFor(state)
+		if l.alreadyConverged(state, refusals, tip) {
+			state.converge = false
+			l.w.Log.V(1).Info("The applier already applied the tip; the converge asks nothing",
+				"branch", l.w.Branch, "applier", state.ref.String(), "commit", tip)
+		}
+		switch {
+		case !state.hasReason(refusals) || tip == "":
+		case !l.pastBarrier(state):
+			wait = earliest(wait, now.Add(barrierRecheckInterval))
+		case now.Before(state.retryAt):
+			wait = earliest(wait, state.retryAt)
+		default:
+			due = append(due, state)
+		}
+	}
+	return due, wait
+}
+
+// alreadyConverged reports whether only a converge is pending for the applier, and it already applied
+// the tip. An adopt is never skipped this way: the applier may be at the tip and still not own an
+// object the API created, and applying the same commit again is what stamps it.
+func (l *branchWorkerEventLoop) alreadyConverged(
+	state *applierState, refusals map[refusalKey]unsentRefusal, tip string,
+) bool {
+	return state.converge && !state.adopt && !state.foreign && !state.repair && len(refusals) == 0 &&
+		revisionNamesCommit(state.appliedRevision, tip)
+}
+
+// pastBarrier reports whether every initial snapshot of every GitTarget the applier covers is
+// published (initialSnapshotsPublished), so it may be asked for something. Before, an apply would
+// destroy what is not mirrored yet: at startup the edits made while the operator was down, and for a
+// GitTarget that newly names the trigger, what its folder does not hold yet.
+func (l *branchWorkerEventLoop) pastBarrier(state *applierState) bool {
+	for _, target := range state.targets {
+		if !l.initialSnapshotsPublished(target.ref) {
+			return false
+		}
+	}
+	return true
+}
+
+// revisionNamesCommit reports whether an applier's revision names commit: Flux writes main@sha1:<hash>,
+// sha1:<hash>, main/<hash> or a bare hash, Argo CD a bare hash.
+func revisionNamesCommit(revision, commit string) bool {
+	if revision == "" || commit == "" {
+		return false
+	}
+	return strings.EqualFold(revisionCommit(revision), commit)
+}
+
+// revisionCommit is the commit an applier's revision names: the hash after its last ':' or '/'.
+func revisionCommit(revision string) string {
+	if i := strings.LastIndexAny(revision, ":/"); i >= 0 {
+		return revision[i+1:]
+	}
+	return revision
+}
+
+// flushed makes the flush an apply needs (see serviceAppliers), and reports whether the writes up to
+// its mark are published, so the attempts may go. The first call of a flush closes the open window
+// and takes the mark; later calls only look whether the publication landed.
+func (l *branchWorkerEventLoop) flushed(due []*applierState) bool {
+	if l.writeBusy() {
+		return false
+	}
+	for _, state := range due {
+		// A new mark publishes every edit recorded before it, so those are in the commit the
+		// attempt applies: carried into its window, they would withhold the apply's own write.
+		if state.flushEdits == nil || !l.flushing {
+			state.flushEdits = map[string]time.Time{}
+		}
+	}
+	if !l.flushing {
+		l.finalizeOpenWindowWithReason(windowFinalizeReasonApplyDue)
+		l.flushing, l.flushMark = true, l.decisions
+		// The siblings writing this branch flush too (apply_sibling_flush.go).
+		l.siblingAsk = l.w.siblings.askFlush(l.w)
+		if l.pendingUpTo(l.flushMark) {
+			l.w.Log.Info("An apply is due; publishing the pending writes first", "branch", l.w.Branch,
+				"pendingWrites", len(l.pendingWrites))
+			l.advance()
+		}
+	}
+	return !l.pendingUpTo(l.flushMark) && l.siblingsFlushed()
+}
+
+// pendingUpTo reports whether a write decided up to mark is still pending.
+func (l *branchWorkerEventLoop) pendingUpTo(mark uint64) bool {
+	for i := range l.pendingWrites {
+		if l.pendingWrites[i].decision <= mark {
+			return true
+		}
+	}
+	return false
+}
+
+// endFlush ends the flush once nothing is due: the edits recorded for an applier that has nothing
+// pending any more are dropped with it.
+func (l *branchWorkerEventLoop) endFlush() {
+	l.flushing, l.siblingAsk = false, 0
+	for _, state := range l.appliers {
+		if state.inflight == nil && !state.hasReason(l.unsentRefusalsFor(state)) {
+			state.flushEdits = nil
+		}
+	}
+}
+
+// earliest is the earlier of two deadlines, a zero one being none.
+func earliest(a, b time.Time) time.Time {
+	if a.IsZero() || (!b.IsZero() && b.Before(a)) {
+		return b
+	}
+	return a
 }
 
 // appliersHaveWork reports whether any applier has a reason pending or an attempt out.
 func (l *branchWorkerEventLoop) appliersHaveWork() bool {
 	for _, state := range l.appliers {
-		if state.foreign || state.catchUp || state.repair || state.inflight != nil {
+		if state.foreign || state.adopt || state.converge || state.repair || state.inflight != nil {
 			return true
 		}
 	}
@@ -396,13 +559,13 @@ func (l *branchWorkerEventLoop) appliersHaveWork() bool {
 
 // syncAppliers makes the applier states match the GitTargets listed now. An applier no GitTarget
 // names any more is forgotten, with whatever was pending for it: nobody asks for it, and its
-// operation, if one is out, is abandoned. An applier named for the first time starts where a first
-// observation does, with a CatchUp pending where its kind catches up: a commit observed before it
-// was named was pending for nobody, and was taken, so without one it would not be applied until
-// some later push. For a
-// Kustomization that already applied the tip it costs nothing (Current); an Application gets no
-// CatchUp, and waits for the next push. An unsent refusal of a GitTarget that is gone, or is now
-// another incarnation, is dropped the same way.
+// operation, if one is out, is abandoned. A GitTarget that names an applier for the first time leaves
+// a converge pending, for Flux and Argo CD alike: a commit observed before was pending for nobody,
+// and was taken, so without one it would not be applied until some later push. It waits for that
+// GitTarget's initial snapshots (pastBarrier), and asks nothing of an applier that already applied
+// the tip. An applier listed for the first time starts from what its trigger recorded as last
+// applied. An unsent refusal of a GitTarget that is gone, or is now another incarnation, is dropped
+// the same way.
 func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	if l.appliers == nil {
 		l.appliers = map[ApplierRef]*applierState{}
@@ -426,12 +589,7 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	}
 	l.publishUnresolved()
 	for ref, named := range named {
-		state := l.appliers[ref]
-		if state == nil {
-			state = &applierState{ref: ref, catchUp: ref.CatchesUp()}
-			l.appliers[ref] = state
-		}
-		state.targets = named
+		l.listApplier(ref, named)
 	}
 	for key, refusal := range l.unsentRefusals {
 		if uids[key.target] != refusal.uid {
@@ -440,47 +598,34 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	}
 }
 
-// sendDue sends an attempt to every applier that has a reason pending, is not waiting on one, and whose
-// retry and quiet periods have run out. The appliers are taken in turn order, so in a group, which
-// has one attempt out at a time, the attempt goes to the applier whose turn is longest ago. It
-// returns the earliest time one still waiting comes due.
-func (l *branchWorkerEventLoop) sendDue(tip string, now time.Time) time.Time {
-	var earliest time.Time
-	wait := func(at time.Time) {
-		if earliest.IsZero() || at.Before(earliest) {
-			earliest = at
+// listApplier records the GitTargets that name an applier now, and leaves a converge pending for each
+// one that names it for the first time.
+func (l *branchWorkerEventLoop) listApplier(ref ApplierRef, named []branchTarget) {
+	state := l.appliers[ref]
+	if state == nil {
+		state = &applierState{ref: ref, named: map[k8stypes.UID]bool{}, appliedRevision: lastApplied(named)}
+		l.appliers[ref] = state
+	}
+	state.targets = named
+	for _, target := range named {
+		if !state.named[target.uid] {
+			state.named[target.uid], state.converge = true, true
 		}
 	}
-	for _, ref := range l.turnOrder() {
-		state := l.appliers[ref]
-		if l.attemptOut(state) {
-			continue
-		}
-		refusals := l.unsentRefusalsFor(state)
-		if !state.foreign && !state.repair && len(refusals) == 0 && !state.catchUp {
-			continue
-		}
-		due := l.dueAt(state, refusals)
-		if now.Before(due) {
-			wait(due)
-			continue
-		}
-		if !l.w.claimGroup(state.group()) {
-			// A sibling sent one for the group since attemptOut looked; its end wakes this worker.
-			continue
-		}
-		l.sendAttempt(state, tip, refusals)
-	}
-	return earliest
 }
 
-// dueAt is when an applier's next attempt may go: once its backoff has run out, and, when only a
-// CatchUp is pending, once the branch has been quiet for the trigger's quiet period.
-func (l *branchWorkerEventLoop) dueAt(state *applierState, refusals map[refusalKey]unsentRefusal) time.Time {
-	if state.foreign || state.repair || len(refusals) > 0 {
-		return state.retryAt
+// lastApplied is the revision the last operation that succeeded applied, as an applier's trigger
+// recorded it in status.operation: its appliedRevision, or the commit it was asked for when the
+// applier reported none. Empty when the last recorded operation did not succeed.
+func lastApplied(targets []branchTarget) string {
+	recorded, _ := recordedStatus(&applierState{targets: targets})
+	if recorded == nil || recorded.Phase != v1alpha3.ApplyOperationSucceeded {
+		return ""
 	}
-	return latest(state.retryAt, l.quietSince.Add(state.quietPeriod()))
+	if recorded.AppliedRevision != "" {
+		return recorded.AppliedRevision
+	}
+	return recorded.Commit
 }
 
 // unsentRefusalsFor is the unsent refusals of the GitTargets naming this applier that still consent.
@@ -508,8 +653,8 @@ func (l *branchWorkerEventLoop) unsentRefusalsFor(state *applierState) map[refus
 // sendAttempt hands one attempt for an applier to the requester and moves what it carries out of
 // the applier's pending reasons, into the attempt. Each target is asked for its own reason: every
 // one for a ForeignCommit, then for a Repair; otherwise a Refusal for a target with an unsent
-// refusal, and a CatchUp for the rest when one is pending. Any operation that succeeds applies the
-// tip, so it answers a pending CatchUp or Repair too.
+// refusal, and a CatchUp for the rest when an adopt or a converge is pending. Any operation that
+// succeeds applies the tip, so it answers a pending CatchUp or Repair too.
 func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, refusals map[refusalKey]unsentRefusal) {
 	refused := map[itypes.ResourceReference]bool{}
 	for key := range refusals {
@@ -526,7 +671,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 			own = v1alpha3.ApplyReasonRepair
 		case refused[target.ref]:
 			own = v1alpha3.ApplyReasonRefusal
-		case state.catchUp:
+		case state.adopt || state.converge:
 			own = v1alpha3.ApplyReasonCatchUp
 		default:
 			continue
@@ -536,16 +681,24 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	}
 
 	l.nextApplyID++
+	l.w.raiseApplyEpoch()
 	abandoned, abandon := context.WithCancel(l.w.ctx)
 	sentAt := time.Now()
 	attempt := &inflightAttempt{
-		id: l.nextApplyID, foreign: state.foreign, catchUp: state.catchUp, repair: state.repair,
-		refusals: refusals, abandon: abandon,
+		id: l.nextApplyID, foreign: state.foreign, adopt: state.adopt, converge: state.converge,
+		repair: state.repair, refusals: refusals, abandon: abandon,
 		previous: state.operation, previousID: state.operationID,
 	}
-	state.foreign, state.catchUp, state.repair, state.inflight = false, false, false, attempt
+	state.foreign, state.adopt, state.converge, state.repair = false, false, false, false
+	state.inflight = attempt
 	state.lastTurn = attempt.id
+	l.reportApplyWindow(state)
 	state.openApplyWindow(attempt.id, tip, sentAt)
+	// The edits decided after the flush mark are not in the commit, and the apply may overwrite them.
+	for key, at := range state.flushEdits {
+		state.window.recordEdit(key, at)
+	}
+	state.flushEdits = nil
 	for key := range refusals {
 		delete(l.unsentRefusals, key)
 	}
@@ -583,7 +736,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 // settleApplyResults reads the reports that came back. A report of an operation still out records
 // where it stands, and holds the attempt. An operation that succeeded is done. Any other ending
 // gives back what the attempt carried and, unless it was only stale, waits out its applier's
-// backoff, so its retry is decided again on a quiet branch at whatever the tip is then, never
+// backoff, so its retry is decided again after a flush at whatever the tip is then, never
 // replayed blind. A report for an applier no GitTarget names any more is dropped with it.
 func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 	defer l.publishUnresolved()
@@ -600,17 +753,22 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 		}
 		state.inflight = nil
 		attempt.abandon()
+		l.w.raiseApplyEpoch()
 		state.settleApplyWindow(attempt.id, res.Outcome.Operated(), now)
 		if attempt.phase == ApplyUnresolved {
 			l.w.Log.Info("An unresolved apply completed; its apply window closes after the grace",
 				"branch", l.w.Branch, "applier", state.ref.String(), "outcome", string(res.Outcome))
 		}
 		switch res.Outcome {
-		case ApplySucceeded, ApplyCurrent:
+		case ApplySucceeded:
 			state.failures, state.retryAt = 0, time.Time{}
+			state.appliedRevision = res.AppliedRevision
+			if state.appliedRevision == "" && state.operation != nil {
+				state.appliedRevision = state.operation.Commit
+			}
 			continue
 		case ApplyStale:
-			// The decision went stale before the write: nothing failed, and the next quiet moment
+			// The decision went stale before the write: nothing failed, and the next wake
 			// decides again, at the tip as it is then.
 			l.restoreAttempt(state, attempt)
 			continue
@@ -620,14 +778,28 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 		state.failures++
 		state.retryAt = now.Add(applierRetryDelay(state.failures, res.Outcome == ApplyRejected))
 		l.restoreAttempt(state, attempt)
-		message := "An apply attempt did not deliver; deciding it again on a quiet branch"
+		l.lookIfSourceMoved(state, res)
+		message := "An apply attempt did not deliver; deciding it again after its backoff"
 		if res.Outcome == ApplyFailed {
-			message = "The applier did not complete the apply; deciding it again on a quiet branch"
+			message = "The applier did not complete the apply; deciding it again after its backoff"
 		}
 		l.w.Log.Info(message,
 			"branch", l.w.Branch, "applier", state.ref.String(), "outcome", string(res.Outcome),
 			"failures", state.failures, "retryIn", state.retryAt.Sub(now), "error", errString(res.Err))
 	}
+}
+
+// lookIfSourceMoved takes an applier's source holding another commit than the tip the worker knows
+// as a hint that the branch moved, and looks at the remote, as a Git host's push notice is looked at.
+// A worker with no receiver otherwise learns of a Git-side push only through its own rejected push,
+// or the refresher, and asks again for a commit the source no longer serves until then.
+func (l *branchWorkerEventLoop) lookIfSourceMoved(state *applierState, res ApplyResult) {
+	if res.SourceRevision == "" || revisionNamesCommit(res.SourceRevision, l.w.inbox.lastTip()) {
+		return
+	}
+	l.w.Log.Info("The applier's source holds another commit than the tip known here; looking at the remote",
+		"branch", l.w.Branch, "applier", state.ref.String(), "sourceRevision", res.SourceRevision)
+	l.w.EnqueuePushNotification(revisionCommit(res.SourceRevision))
 }
 
 // advanceOperation records where an attempt's operation stands. Unresolved is said once, and stays
@@ -662,7 +834,7 @@ func operationPhase(outcome ApplyOutcome) (v1alpha3.ApplyOperationPhase, bool) {
 		return v1alpha3.ApplyOperationSucceeded, true
 	case ApplyFailed:
 		return v1alpha3.ApplyOperationFailed, true
-	case ApplyCurrent, ApplyRequestFailed, ApplyRejected, ApplyDropped, ApplyStale:
+	case ApplyRequestFailed, ApplyRejected, ApplyDropped, ApplyStale:
 	}
 	return "", false
 }
@@ -792,7 +964,8 @@ func (l *branchWorkerEventLoop) publishUnresolved() {
 // revert.
 func (l *branchWorkerEventLoop) restoreAttempt(state *applierState, attempt *inflightAttempt) {
 	state.foreign = state.foreign || attempt.foreign
-	state.catchUp = state.catchUp || attempt.catchUp
+	state.adopt = state.adopt || attempt.adopt
+	state.converge = state.converge || attempt.converge
 	state.repair = state.repair || attempt.repair
 	for key, refusal := range attempt.refusals {
 		if !l.w.refusalStands(key) {
@@ -817,33 +990,17 @@ func (l *branchWorkerEventLoop) applierAwaiting(id uint64) *applierState {
 	return nil
 }
 
-// workWaiting reports whether work items are queued on this worker, or queued or in hand on another
-// writing this repository and branch.
-func (l *branchWorkerEventLoop) workWaiting() bool {
-	_, siblingWorking := l.w.siblingBusy()
-	return len(l.w.eventQueue) > 0 || siblingWorking
-}
-
 // branchKey is the repository and branch this worker writes.
 func (w *BranchWorker) branchKey() BranchKey {
 	return BranchKey{RepoNamespace: w.GitProviderNamespace, RepoName: w.GitProviderRef, Branch: w.Branch}
 }
 
 // decisionHolds is ApplyRequest.Current for an attempt decided at tip: the branch is still at that
-// commit, and nothing live is waiting to be published on this worker or a sibling. A work item
-// counts from its enqueue until its wake has published what it left behind (inflightItems), not
-// only while it waits in the queue: a queued watch event is an edit that is live and not yet
-// decided, and the item the loop is handling may be committing and pushing while busyWriting still
-// says what the last wake left. It is called from the requester's goroutine, so it reads only what
-// is safe to read there.
-//
-// An attempt sent from the wake of a queue item can find that item still counted, should the
-// requester ask within moments. It is then Stale, which costs no backoff, and the report wakes the
-// loop without an item, so the next attempt is not held by one of its own.
+// commit. Nothing else holds it: every edit is either published before the send, or recorded in the
+// apply window and repaired should the apply overwrite it (S1). It is called from the requester's
+// goroutine, so it reads only what is safe to read there.
 func (w *BranchWorker) decisionHolds(tip string) bool {
-	siblingWriting, siblingWorking := w.siblingBusy()
-	return w.inbox.tipIs(tip) && !w.busyWriting.Load() && w.inflightItems.Load() == 0 &&
-		!siblingWriting && !siblingWorking
+	return w.inbox.tipIs(tip)
 }
 
 // reportApplyResult is ApplyRequest.Report: it records the report and wakes the loop to settle it.

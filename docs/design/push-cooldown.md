@@ -43,7 +43,9 @@ a manager restart, or Redis. All targets sharing that worker share the pause; ot
 ```go
 if len(l.pendingWrites) == 0 { return }
 if l.awaitingRetry() { return }                          // a failed attempt has its own deadline
-if l.lastPushAt.IsZero() { l.pushPending(); return }      // never pushed: go now
+if l.lastPushAt.IsZero() || l.publishesAtOnce() {       // never pushed, or an apply waits: go now
+    l.pushPending(); return
+}
 if time.Since(l.lastPushAt) >= PushCooldown { l.pushPending(); return }
 if l.pushTimer == nil { l.pushTimer = time.NewTimer(...) } // otherwise wait out the remainder
 ```
@@ -51,7 +53,9 @@ if l.pushTimer == nil { l.pushTimer = time.NewTimer(...) } // otherwise wait out
 `lastPushAt` advances **only on a successful push**, so the cooldown paces successful publication
 and does not pace retries. The publication backoff does that separately. Parent recovery owns
 its attempts while active, and new commits wait for its deadline; see the
-[worker event model](branch-worker-event-model.md).
+[worker event model](branch-worker-event-model.md). A flush for an apply skips the cooldown: the
+writes up to the flush mark are pushed at once (`publishesAtOnce`), because the apply waits for
+them ([the apply trigger](apply-trigger.md#flush-then-apply)).
 
 ## 2. Ordinary timer closures already space a single identity
 
@@ -155,9 +159,9 @@ is half right.
 | `pushTimer` and its select arm | Success-cooldown scheduling only since step 3b |
 | `PushCooldown` constant and its documentation | 1 constant, several doc paragraphs |
 
-The failure backoff uses its own timer in `retrySchedule`. The worker currently has five timer
-sources: window, success push, attach, refusal action, and retry. Parent recovery uses the retry
-deadline. Removing the success cooldown would leave four sources.
+The failure backoff uses its own timer in `retrySchedule`. The worker currently has six timer
+sources: window, success push, attach, refusal action, applier, and retry. Parent recovery uses the
+retry deadline. Removing the success cooldown would leave five sources.
 
 **Stays exactly as it is:**
 
@@ -258,7 +262,7 @@ stateDiagram-v2
 
     note right of Idle
         No timer armed.
-        A healthy quiet branch is silent.
+        A healthy idle branch is silent.
     end note
 ```
 

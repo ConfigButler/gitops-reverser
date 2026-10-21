@@ -15,7 +15,7 @@ prunes and reports health; it never applies on its own.
 | Before | With GitOps Reverser |
 | --- | --- |
 | The `Kustomization` applies on its interval, on every new artifact, and on a controller restart | It is suspended, and applies only when GitOps Reverser resumes it for one apply |
-| A failed apply is retried after `retryInterval` | It is suspended again after a failure; GitOps Reverser retries on a quiet branch |
+| A failed apply is retried after `retryInterval` | It is suspended again after a failure; GitOps Reverser retries after its own backoff |
 | The Git host's push webhook goes to a Flux `Receiver` | It goes to GitOps Reverser's receiver; the Flux `Receiver` for this repository is removed |
 | Nothing ties a folder to its `Kustomization` | A `FluxTrigger` holds it, and the `GitTarget` names the trigger in `spec.applyTriggerRef` |
 | `flux get ks` shows it ready | It shows it `Suspended`, which is how it is held |
@@ -135,7 +135,6 @@ spec:
   kustomizationRef:
     namespace: flux-system
     name: checkout
-  quietPeriod: 30s
 ```
 
 No Flux `Receiver` for `acme/platform` appears, on purpose: remove yours if you have one, and point
@@ -170,12 +169,7 @@ source's other consumers in `status.source.otherConsumers`: the `Kustomization`s
 holds and the `HelmRelease`s whose chart comes from it, directly or through a `HelmChart` their
 `chartRef` names. Each of them applies a new artifact the moment it arrives. The list is
 information only and never affects `Ready`: one source for `apps` and `infra` is a normal setup.
-
-- While the list is empty and the trigger holds its own `Kustomization`, `status.source.prefetch` is
-  `true`: when GitOps Reverser learns of a push while the branch is busy, it has the source fetch at
-  once, so the artifact is ready when the apply is due. A consumer counts as held only while its
-  `FluxTrigger` reports `Held=True`, checked again on the cluster just before the fetch.
-- Appliers on one branch that share a source apply one at a time.
+Appliers on one branch that share a source apply one at a time.
 
 ## The `Kustomization`
 
@@ -201,8 +195,15 @@ information only and never affects `Ready`: one source for `apps` and `infra` is
   [what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
 - Several `GitTarget`s may name one `FluxTrigger`, for a `Kustomization` whose `path` covers several
   folders. It is applied once for all of them.
-- Two `GitProvider`s may name one repository. The branch counts as quiet only when both of their
-  workers are.
+- Two `GitProvider`s may name one repository. Before either branch worker asks, both flush: the
+  other worker publishes the writes it decided so far too, and a `GitRepository` they share serves
+  one operation at a time.
+- **An object another applier owns is not mirrored into the folder.** An object whose
+  `kustomize.toolkit.fluxcd.io/name` and `kustomize.toolkit.fluxcd.io/namespace` labels name
+  another `Kustomization`, or whose `argocd.argoproj.io/tracking-id` names an Argo CD
+  `Application`, is left out: a live change to it is not mirrored, and a resync neither writes it
+  nor removes its document. Two appliers applying one object fight each other. See
+  [objects another applier owns](bi-directional.md#objects-another-applier-owns).
 
 ## The `FluxTrigger`
 
@@ -218,16 +219,11 @@ spec:
   kustomizationRef:
     namespace: flux-system     # default: the trigger's namespace
     name: checkout
-  quietPeriod: 30s             # default 30s, at most 1h
 ```
 
 `clusterProviderRef` names the cluster that holds the `Kustomization`: the operator's own cluster
 for `default`, or a management cluster where Flux runs. Both references are immutable: delete and
 recreate the trigger to hold another `Kustomization`.
-
-`quietPeriod` is how long the branch must stay quiet after GitOps Reverser's own pushes before the
-`Kustomization` applies them (`CatchUp`), and before the first apply once a `GitTarget` names the
-trigger. Every new write restarts it.
 
 ### How the trigger holds the `Kustomization`
 
@@ -345,7 +341,7 @@ with the identity of that `ClusterProvider`. That identity needs:
 | --- | --- | --- |
 | `kustomize.toolkit.fluxcd.io` | `kustomizations` | `get`, `list`, `patch` |
 | `source.toolkit.fluxcd.io` | `gitrepositories` | `get`, `patch` |
-| `helm.toolkit.fluxcd.io` | `helmreleases` | `list`, to find the source's other consumers; without it the source is never prefetched |
+| `helm.toolkit.fluxcd.io` | `helmreleases` | `list`, to find the source's other consumers; without it `status.source.otherConsumers` stays empty |
 | `source.toolkit.fluxcd.io` | `helmcharts` | `list`, for the same reason |
 | `authorization.k8s.io` | `selfsubjectaccessreviews` | `create`, which every authenticated identity has |
 
@@ -358,11 +354,13 @@ grant is cluster-wide for convenience; GitOps Reverser only patches the `Kustomi
 ## One apply
 
 All four [reasons](bi-directional.md#when-gitops-reverser-asks-for-an-apply) reach a
-`Kustomization`. A `ForeignCommit` or `CatchUp` asks nothing when the `Kustomization` has already
-applied the commit; a `Refusal` and a `Repair` always apply, since they ask for an unchanged commit
-to be applied again. A `Kustomization` a `GitTarget` names for the first time gets a `CatchUp`, so
-a commit already on the branch reaches it once the branch is quiet. On a quiet branch, GitOps
-Reverser:
+`Kustomization`. A `CatchUp` that only converges asks nothing when the `Kustomization`'s last
+successful operation applied the tip. Every other request applies, even of a commit already applied:
+a `Refusal` and a `Repair` ask for an unchanged commit to be applied again, and a `CatchUp` that
+adopts re-applies it so that Flux stamps its owner labels on the objects the API created, and takes
+them into its inventory. A `Kustomization` a `GitTarget` names for the first time converges once that
+`GitTarget`'s initial snapshots are published, so a commit already on the branch reaches it. After a
+[flush](bi-directional.md#flush-then-apply), GitOps Reverser:
 
 1. Makes the `GitRepository`'s artifact hold the commit: when it does not, it stamps
    `reconcile.fluxcd.io/requestedAt` on the `GitRepository` and waits for that fetch. The suspended
@@ -411,11 +409,13 @@ as failed, and records an `OperationUnfollowed` Event. A resumed `Kustomization`
 nothing watching it.
 
 **The apply window.** From the moment an operation is asked for until 10 seconds after it completes,
-a write by `kustomize-controller` over a newer API edit is withheld from Git, and GitOps Reverser
-asks for a `Repair`; the trigger shows `repairPending` until that apply succeeds. Only a `kustomize-controller` entry newer
-than the edit counts: undoing an edit can leave an older one as the newest entry, and that undo is
-mirrored. When `kustomize-controller` and another manager, or the edit, wrote in the same second,
-the write is mirrored and counted as `ambiguous`.
+a write by `kustomize-controller` alone to an object nobody edited is the apply landing, and is not
+mirrored. A write by `kustomize-controller` over a newer API edit, one made after the flush included,
+is withheld from Git, and GitOps Reverser asks for a `Repair`; the trigger shows `repairPending`
+until that apply succeeds. Only a `kustomize-controller` entry as new as the edit or newer counts:
+undoing an edit can leave an older one as the newest entry, and that undo is mirrored. When
+`kustomize-controller` and another manager wrote in the same second, the write is mirrored and
+counted as `ambiguous`.
 
 **Reverting refused edits.** With `onRefusal: Reapply`, the target's `Kustomization` is resumed
 for one apply of the tip; no new commit is needed. If its `GitRepository` has to fetch to reach the
@@ -466,7 +466,8 @@ flux get ks checkout -n flux-system
 | Trigger `Configured=Unknown`, `NotBound` | A `GitTarget` names the trigger, but cannot be judged yet: its `GitProvider` or `ClusterProvider` does not exist | Create the missing object; the message names it |
 | Trigger `Ready=True`, `NotReferenced`, and the `Kustomization` is not suspended | No `GitTarget` names the trigger, so it holds nothing | Name it in the `GitTarget`'s `spec.applyTriggerRef` |
 | Trigger `Configured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.flux: true` |
-| A Warning `ApplyRequestFailed` Event | An apply could not be asked for; the message says why | GitOps Reverser keeps asking on a quiet branch, at most every five minutes |
+| A Warning `ApplyRequestFailed` Event | An apply could not be asked for; the message says why | GitOps Reverser keeps asking after its backoff, at most every five minutes |
+| An object in the folder is never mirrored, and the log says `Not mirroring an object another applier owns` | Another `Kustomization` or an Argo CD `Application` applies it; `apply_ownership_conflicts_total` counts it | Let one applier own it: take it out of the other applier's source, or stop watching it from this `GitTarget` |
 | A Warning `ApplyFailed` Event | Flux ran the apply and reported it failed | Read the `Kustomization`'s status; GitOps Reverser retries on its backoff |
 | A Warning `ApplyUnresolved` Event, trigger `OperationUnresolved` | The apply has not completed in 5 minutes | It is suspended and still followed; look at the `Kustomization`'s status and health checks |
 | A Warning `OperationUnfollowed` Event | An apply was left in flight with nothing following it | It was suspended and completed as failed. A recurring one is a bug worth reporting with the operator's logs |
@@ -490,9 +491,11 @@ it is back, or until somebody runs `flux resume`, after which GitOps Reverser su
 
 An apply that was running when it stopped is not lost. The operation is recorded on the trigger
 before the `Kustomization` is resumed, so the next process follows it to its end by its tokens, with
-the apply window open. After its first look at the remote it asks every `Kustomization` for a
-`CatchUp`, and for no `ForeignCommit`: an apply on startup could revert edits made while it was
-down, before its watches caught them.
+the apply window open. After its first look at the remote, a `CatchUp` that converges is pending for
+every `Kustomization`, and no `ForeignCommit`. It is asked only once every initial snapshot of the
+`GitTarget`s naming the trigger is published: an apply before that could revert edits made while the
+operator was down, before its watches caught them. A `Kustomization` whose last successful operation
+applied the tip is asked nothing.
 
 ## What the tests prove
 
@@ -505,17 +508,22 @@ down, before its watches caught them.
 | A trigger nothing names reads nothing and is `Ready`; the first eligible `GitTarget` adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; the binding over several `GitTarget`s; an older trigger not in line keeps none out, and a retiring holder stays first until its release is done; `ApplierNamespaceNotAllowed` | [`applytrigger_rule_test.go`](../internal/controller/applytrigger_rule_test.go) |
 | `allowAnySourceNamespace: true` is refused on create and on any spec change, a stored one included; `false` and its removal are accepted | [`removed_allow_any_source_namespace_test.go`](../internal/controller/removed_allow_any_source_namespace_test.go) |
 | Every operation checks the target again (incarnation, branch, admission, consent) and the source binding before it resumes, records itself first, and never asks for something weaker; a stop mid-apply suspends the `Kustomization` | [`dispatcher_test.go`](../internal/applier/dispatcher_test.go) |
-| A failed attempt is decided again on a quiet branch; each `Kustomization` keeps its own backoff; a shared one is asked once; appliers sharing a source apply one at a time; a push is prefetched only while the branch is busy; a newly named `Kustomization` gets a `CatchUp`; an undo of an edit in the apply window is mirrored | [`apply_attempt_test.go`](../internal/git/apply_attempt_test.go), [`apply_groups_test.go`](../internal/git/apply_groups_test.go), [`apply_trigger_test.go`](../internal/git/apply_trigger_test.go), [`apply_window_test.go`](../internal/git/apply_window_test.go) |
+| A failed attempt is decided again; each `Kustomization` keeps its own backoff; a shared one is asked once; appliers sharing a source apply one at a time; an apply waits for its sibling workers to flush; nothing is sent while no flush can be made; an undo of an edit in the apply window is mirrored, and the applier's own write is not | [`apply_attempt_test.go`](../internal/git/apply_attempt_test.go), [`apply_groups_test.go`](../internal/git/apply_groups_test.go), [`apply_trigger_test.go`](../internal/git/apply_trigger_test.go), [`apply_window_test.go`](../internal/git/apply_window_test.go) |
+| A newly named `Kustomization` converges once; the startup converge asks nothing of one at the tip; an API create is adopted even at the tip; nothing is asked before the initial snapshots are published, or for an empty tip | [`apply_catchup_test.go`](../internal/git/apply_catchup_test.go), [`apply_trigger_test.go`](../internal/git/apply_trigger_test.go) |
+| An object another applier owns is neither mirrored nor swept | [`apply_ownership_test.go`](../internal/git/apply_ownership_test.go) |
 | A trigger nothing names is `Ready` and holds nothing; named from a `GitTarget` on another branch than its source, it is `SourceMismatch` and adopts nothing | [Manager Flux Applier](../test/e2e/flux_applier_e2e_test.go) |
 | A `ForeignCommit` for a `SourceMismatch` applier never stamps the other branch's source and records `ApplyRequestFailed`; once the source is fixed the trigger adopts the `Kustomization` and Flux reaches the tip; dropping the reference hands it back, and naming the trigger again adopts it anew | Manager Flux Applier |
 | A Gitea push webhook to the operator's receiver gets a Git-side push applied; with no receiver and no API edit, the refresh finds one | Manager Flux Applier |
 | A failed apply is suspended again and retried; a `flux resume` is suspended again with a `ResumedElsewhere` Event; deleting the trigger hands the `Kustomization` back | Manager Flux Applier |
 | A manager restarted during an apply suspends the `Kustomization` as it stops; the new one completes that same operation and leaves it suspended | [Flux Restart Recovery](../test/e2e/flux_restart_recovery_e2e_test.go) |
-| Two API edits seconds apart end at the later value with no extra commit, and Flux catches up by itself | [Bi-directional (Flux)](../test/e2e/flux_bi_directional_e2e_test.go) |
+| Two API edits seconds apart end at the later value with no extra commit | [Bi-directional (Flux)](../test/e2e/flux_bi_directional_e2e_test.go) |
 | A Git-side push with an API edit on top lands both, and Flux applies the replayed commit | Bi-directional (Flux) |
 | A new `GitRepository` revision from a commit outside the applied folder is enough for the `Kustomization` to apply and revert drift | Bi-directional (Flux) |
 | A Git to cluster to Git round trip settles without a commit loop; a SOPS-encrypted Secret round-trips without a reverse commit; a Git revert removes the live object and the committed file | Bi-directional (Flux) |
 | A refused edit with `onRefusal: Reapply` is reverted by a resume, with no commit, and settles | [Manager Refusal Reapply](../test/e2e/refusal_reapply_e2e_test.go) |
+| An API create, and a delete and create with the same content, are adopted, so a Git-side delete prunes them; an edit made during an apply is in Git at once and back on the cluster after the `Repair`; a Git-side push is applied while edits keep arriving, and every edit is kept; a Git-side push survives a resync forced before its apply, and a Git-side addition survives one under `prune.mode: Always`; an API edit asks for no apply; another applier's object is neither mirrored nor adopted; a save made across a Git-side change resolves from the push | [Bi-directional applier echoes (Flux)](../test/e2e/bi_directional_echoes_e2e_test.go) |
+| A Git-side push made while the previous one is being applied stays in Git and on the cluster | [Bi-directional push race (Flux)](../test/e2e/bi_directional_push_race_e2e_test.go) |
+| After a restart, an API edit and an API create made while the operator was down end in Git and on the cluster, nothing reverts the edit, a Git-side push made meanwhile is applied, and the create is adopted | [Bi-directional restart (Flux)](../test/e2e/bi_directional_restart_e2e_test.go) |
 
 `task test-e2e` runs the Manager specs and Flux Restart Recovery, and
 `task test-e2e-bi-directional` the bi-directional corner. Not covered end to end yet: a remote

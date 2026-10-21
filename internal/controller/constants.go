@@ -78,10 +78,9 @@ const (
 	//
 	// It is deliberately distinct from GitTargetReady, which stays the health of the referenced
 	// GitTarget and must never be reused for source authorization. Its three values are not
-	// interchangeable: False is a refusal (terminal, Stalled=True), while Unknown covers both "the
-	// answer is still being established" and "a rule with an already-resolved scope has lost the
-	// ability to re-evaluate its policy and is retaining that scope" — neither of which may be
-	// rendered as a permanent failure.
+	// interchangeable: False is a refusal (terminal, Stalled=True), while Unknown means the answer is
+	// still being established (the rule is blocked by validation), which must not be rendered as a
+	// permanent failure.
 	ConditionTypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
 	// ConditionTypeAuthorAttributed indicates whether a CommitRequest's commit author
 	// was named from the submitter captured at admission. It is binary and immediately
@@ -213,7 +212,7 @@ const (
 	// this project already depends on. Sharing the vocabulary is the point: one alerting rule
 	// written against reason=Succeeded works across every kind here AND across every Flux kind in
 	// the same cluster, which is not true of a per-project spelling. Domain
-	// reasons (UnsupportedContent, WriteBoundaryRefused, NoAdmittedSourceNamespaces, ...) stay ours:
+	// reasons (UnsupportedContent, WriteBoundaryRefused, SourceMismatch, ...) stay ours:
 	// those carry information a generic reason cannot, and declaring them is exactly what the
 	// upstream vocabulary asks projects to do.
 

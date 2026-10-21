@@ -1,23 +1,24 @@
 # Refuse unsupported folder content — design + implementation plan
 
-> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+> **spec**, kept as design history. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: IMPLEMENTED — shipped as `GitPathAccepted` (internal/git/git_path_refusal.go,
-> test/e2e/unsupported_folder_e2e_test.go). Originally written 2026-06-26, revised 2026-06-27;
-> the "PROPOSAL" label was stale and was corrected 2026-07-11. The mechanics (refuse a GitTarget path the
-> operator cannot safely manage) are settled. The **status surface** is reopened: this revision records the
-> back-and-forth that turned a single overloaded `StreamsReady=Blocked` refusal into a deliberate
-> two-sided status model, and then — after the `k8s-crd-design-review` skill grew a `kstatus-readiness`
-> reference — into a **two-layer kstatus model** (positive `Ready` + abnormal-true `Reconciling`/`Stalled`
-> over domain conditions). §3 lays the discarded options next to the chosen one so the reasoning survives;
-> the goal is a status contract legible to Flux / Argo CD / `helm --wait`, not just to humans reading YAML.
+> Status: IMPLEMENTED. The refusal shipped as `GitPathAccepted`
+> ([`internal/git/git_path_refusal.go`](../../internal/git/git_path_refusal.go),
+> [`test/e2e/unsupported_folder_e2e_test.go`](../../test/e2e/unsupported_folder_e2e_test.go)), with
+> D1 to D4 in §7 as decided. Originally written 2026-06-26, revised 2026-06-27. The status surface is
+> settled, and [status-conditions-guide.md](status-conditions-guide.md) is its current contract: the
+> kstatus trio over domain conditions, as §3.5 recommends. Read the rest of this page as the record of
+> how that was decided. Where it differs from the code, the code wins: GitTarget has no `status.phase`
+> (so no `Degraded`), the printer columns carry no `Reconciling`/`Stalled`, the live writer runs
+> `AcceptStructureOnly` (the mapping-aware refusals are still deferred), and the line-number links
+> point at the code as it was in June 2026.
 >
 > **Decision recorded** in
 > [e2e-coverage-gaps-and-improvements-plan.md §4.1](../design/e2e-coverage-gaps-and-improvements-plan.md): the
 > operator must **refuse** a GitTarget path it cannot safely manage, for the cases where we already
-> know the content is a problem — not silently keep writing. Written against the **actual** current code,
-> not the superseded `Synced`/`materialization` model in
-> [status-design-git-target.md](status-conditions-guide.md).
+> know the content is a problem. It must not silently keep writing. This page was written against
+> the code of June 2026, after the `Synced`/`materialization` model of the since-deleted
+> `status-design-git-target.md` was superseded.
 
 ---
 

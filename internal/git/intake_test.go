@@ -69,8 +69,8 @@ func TestIntake_TheBudgetBoundsAcceptedWorkAtEnqueue(t *testing.T) {
 	assert.LessOrEqual(t, loop.heldBytes(), budget, "everything accepted fits the budget once the loop holds it")
 }
 
-// Everything the loop keeps counts against the budget: the open window, the pending writes, a deferred heal's
-// snapshot, and a save registered while it waits for a window.
+// Everything the loop keeps counts against the budget: the open window, the pending writes, and a
+// save registered while it waits for a window.
 func TestIntake_EveryKindOfHeldWorkCounts(t *testing.T) {
 	_, loop, _ := outageLoop(t, "intake-held-kinds")
 	held := loop.heldBytes()
@@ -82,16 +82,6 @@ func TestIntake_EveryKindOfHeldWorkCounts(t *testing.T) {
 	require.Contains(t, loop.pendingCRs, req.id())
 	assert.GreaterOrEqual(t, loop.heldBytes()-held, int64(pendingWriteOverheadBytes),
 		"a registered save is charged for what it keeps")
-	held = loop.heldBytes()
-
-	heal := &ResyncRequest{GitTargetName: ledgerTargetName, GitTargetNamespace: "default", Heal: true,
-		Desired: []manifestanalyzer.DesiredResource{{Object: bigConfigMap("deferred", 4096)}},
-		Result:  make(chan ResyncResult, 1)}
-	loop.openWindow = &openWindow{} // a heal waits for the window to close
-	loop.handleResyncRequest(heal)
-	loop.endWake(0)
-	require.Len(t, loop.deferredHeals, 1)
-	assert.GreaterOrEqual(t, loop.heldBytes()-held, int64(4096), "a deferred heal's snapshot is held")
 	held = loop.heldBytes()
 
 	loop.windowBytes = 2048

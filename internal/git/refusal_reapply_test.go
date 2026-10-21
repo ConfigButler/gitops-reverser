@@ -173,22 +173,23 @@ func TestRefusalReapply_UnreadableTargetIsNotConsent(t *testing.T) {
 		"a GitTarget that cannot be read must not be treated as opted in")
 }
 
-// TestRefusalReapply_OwedRequestWaitsForAQuietBranch is the claim the action rests on: the request
-// names the refusing target alone, and it is not sent while anything live is unpublished, because an
-// apply then would revert that too.
-func TestRefusalReapply_OwedRequestWaitsForAQuietBranch(t *testing.T) {
+// TestRefusalReapply_TheRequestWaitsForAFlush is the claim the action rests on: the request names the
+// refusing target alone, and it is sent only after a flush, so nothing live is left unpublished that
+// the apply would revert too.
+func TestRefusalReapply_TheRequestWaitsForAFlush(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{OnRefusal: configv1alpha3.RefusalActionReapply})
 	requester := &recordingRequester{}
 	w.applyRequester = requester
 	loop := newBranchWorkerEventLoop(w, time.Minute)
 	t.Cleanup(loop.stopTimers)
 
-	loop.openWindow = &openWindow{}
+	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
+	holdApplies(loop)
 	loop.addUnsentRefusal(editingKey(), unsentRefusal{detail: "a base-owned field", uid: editingUID}, "observation-1")
 	loop.serviceAppliers()
-	assert.Empty(t, requester.taken(), "nothing is sent while a commit window is open")
+	assert.Empty(t, requester.taken(), "nothing is sent while a save holds the flush")
 
-	loop.openWindow = nil
+	releaseApplies(loop)
 	loop.serviceAppliers()
 	requests := requester.taken()
 	require.Len(t, requests, 1)
@@ -495,11 +496,6 @@ func fluxTrigger(name string, mutate ...func(*configv1alpha3.FluxTrigger)) *conf
 	return trigger
 }
 
-// quietFor sets a FluxTrigger's quietPeriod.
-func quietFor(d time.Duration) func(*configv1alpha3.FluxTrigger) {
-	return func(t *configv1alpha3.FluxTrigger) { t.Spec.QuietPeriod = &metav1.Duration{Duration: d} }
-}
-
 // testTriggersFor adds to objects the trigger each GitTarget among them names that objects does not
 // hold already: a FluxTrigger as fluxTrigger builds it, or an ArgoCDTrigger holding the Application
 // argocd/<name>, each in the GitTarget's namespace.
@@ -558,18 +554,10 @@ func createTestTrigger(t *testing.T, c client.Client, target *configv1alpha3.Git
 type recordingRequester struct {
 	mu       sync.Mutex
 	requests []ApplyRequest
-	// prefetches are the PrefetchSource requests, in order.
-	prefetches []PrefetchRequest
 	// counted keeps the reasons of the requests taken, so refusals still sees them.
 	counted map[configv1alpha3.ApplyReason]int
 	outcome ApplyOutcome
 	manual  bool
-}
-
-func (r *recordingRequester) PrefetchSource(req PrefetchRequest) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.prefetches = append(r.prefetches, req)
 }
 
 func (r *recordingRequester) RequestApply(req ApplyRequest) {

@@ -2,11 +2,12 @@
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: greenfield proposal, captured 2026-06-08
+> Status: implemented in [`internal/typeset`](../../internal/typeset/model.go); captured
+> 2026-06-08 as a greenfield proposal. Where the code differs from the proposal, this page
+> says so in place, and the code wins.
 >
-> Supersedes the layered model in
-> [api-catalog-watched-type-architecture.md](type-followability.md).
-> That doc grounds in today's packages and ends up with seven layers and two
+> Supersedes the layered model of `api-catalog-watched-type-architecture.md` (since
+> deleted), which grounded in the packages of the time and ended up with seven layers and two
 > parallel reports (followability requirements + a health report). This one starts
 > from the question we actually want answered and works backward.
 
@@ -26,9 +27,9 @@ This matters because the layered model invented condition names that do not map 
 a real decision. A `Watch` condition that is `False` does not tell an operator
 anything actionable; the type is simply **not followable because it is missing a
 required verb**. Naming the check after the failure ("Watch: False") is less clear
-than naming it after the requirement and letting the reason speak ("not followable
-— missing required verb: patch"). So the model has one list of named requirement
-checks, and the failing check *is* the explanation.
+than naming it after the requirement and letting the reason speak
+(`not followable — missing required verb: watch`). So the model has one list of named
+requirement checks, and the failing check *is* the explanation.
 
 ## Fewer layers
 
@@ -52,16 +53,19 @@ cluster ─ scan ─▶  Observation          raw per-type facts: discovery + CR
 ```
 
 - **Scan** gathers raw facts and produces an `Observation` per served type. It
-  joins discovery with `CustomResourceDefinition` and `APIService` evidence and the
-  built-in scale registry. It makes no product decisions.
+  joins discovery with the built-in scale registry and the operator's resource
+  policies. It makes no product decisions. The proposal also joined
+  `CustomResourceDefinition` and `APIService` evidence; that is not built, so origin
+  is inferred from the API group (see `origin` below).
 - **`TypeRegistry`** is the only place that turns observations + policy into a
   followability verdict. It owns identity rules, the deny/sensitive policy, the live
   set, and the 60-second removal grace. Every consumer reads from it.
 - **`TargetView`** is a GitTarget's projection of *already-followable* records into
-  namespace scopes. It never recomputes followability.
+  namespace scopes. It never recomputes followability. As built it is the
+  `WatchedTypeTable` in `internal/watch`.
 
-The mapper is not a layer — it is `TypeRegistry.ByGVK`. WatchRule expansion is not a
-layer — it is a function that builds a `TargetView` by asking the registry.
+The mapper is not a layer: it is `TypeRegistry.ByGVK` (as built, `typeset.Lookup`).
+WatchRule expansion is not a layer: it is a function that builds a `TargetView` by asking the registry.
 
 ## Identity is 1:1, in both directions
 
@@ -111,11 +115,21 @@ always has the same machine-readable answer.
 | `stable` | the type is not mid-disappearance, or is inside the removal grace | `absence-expired` |
 | `identity` | GVK ↔ GVR is 1:1 in both directions | `gvk-not-unique`, `gvr-not-unique` |
 | `scope` | the type is known namespaced or cluster-scoped | `scope-unknown` |
-| `verbs` | discovery advertises `get`, `list`, `watch`, `patch` (detail names the missing verb) | `missing-verb` |
-| `origin` | classified `builtin`, `crd`, or `aggregated` with evidence | `origin-unknown` |
+| `verbs` | discovery advertises `get`, `list`, `watch` (detail names the missing verb) | `missing-verb` |
+| `origin` | classified `builtin`, `crd`, or `aggregated` | `origin-unknown` |
 | `policy` | product policy permits mirroring this type | `denied-by-policy` |
 | `sensitivity` | not sensitive, or sensitivity has supported encryption/write handling | `sensitive-unsupported` |
 | `scale` | scale is unused, or its parent replica path is known (not guessed) | `scale-path-unresolved` |
+
+As built, three checks are narrower than the proposal:
+
+- `verbs` does not require `patch`. Mirroring is a read path, so a type without
+  `patch` is still mirrorable.
+- `origin` is a shape heuristic on the API group: the core group, `*.k8s.io`, and the
+  legacy built-in groups are `builtin`, everything else is `crd`, both with confidence
+  `inferred`. It never fails for a served type, and nothing is classified `aggregated`.
+- `scale` binds a parent replica path only for built-ins. A CRD that serves `/scale`
+  has no path, so it fails with `scale-path-unresolved` and is refused.
 
 Verdict derivation is mechanical:
 
@@ -155,14 +169,14 @@ Refused for a missing verb — the case the old `Watch` condition described badl
 ```yaml
 gvk: metrics.k8s.io/v1beta1 PodMetrics
 gvr: metrics.k8s.io/v1beta1 pods
-origin: { kind: aggregated, confidence: observed, evidence: v1beta1.metrics.k8s.io }
+origin: { kind: builtin, confidence: inferred }
 verdict: refused
-summary: not followable — missing required verb: watch, patch
+summary: "not followable — missing required verb: watch"
 checks:
   - { requirement: served,   result: pass }
   - { requirement: trusted,  result: pass }
   - { requirement: identity, result: pass }
-  - { requirement: verbs,    result: fail, reason: missing-verb, detail: "watch, patch" }
+  - { requirement: verbs,    result: fail, reason: missing-verb, detail: "watch" }
 ```
 
 Refused for ambiguous identity:
@@ -170,7 +184,7 @@ Refused for ambiguous identity:
 ```yaml
 gvk: example.com/v1 Widget
 verdict: refused
-summary: not followable — GVK served by two GVRs
+summary: "not followable — GVK served by more than one resource: widgets, widgetz"
 checks:
   - { requirement: identity, result: fail, reason: gvk-not-unique, detail: "widgets, widgetz" }
 ```
@@ -210,7 +224,7 @@ type TypeRecord struct {
 
 type Followability struct {
     Verdict Verdict // followable | retained | refused | unknown
-    Summary string  // one line, e.g. "not followable — missing required verb: patch"
+    Summary string  // one line, e.g. "not followable — missing required verb: watch"
     Checks  []Check // every requirement, funnel order
 }
 
@@ -233,24 +247,34 @@ record — including the verdict and every check — so a caller never needs a s
 "inspect" call to render the reason.
 
 ```go
-type TypeRegistry interface {
-    Ready() bool
-    Generation() uint64
+// As built: the concrete *typeset.Registry, one per source cluster.
+func (r *Registry) Ready() bool
+func (r *Registry) Generation() uint64
+// Revision bumps when the followable set changes (a grace drop included) or the
+// scan generation moves: the cache key for per-GitTarget projections.
+func (r *Registry) Revision() uint64
 
-    // Always return the full record. The bool reports whether the type is known to
-    // the registry at all; callers gate behavior on record.Followable().
-    ByGVK(ctx context.Context, gvk schema.GroupVersionKind) (TypeRecord, bool, error)
-    ByGVR(ctx context.Context, gvr schema.GroupVersionResource) (TypeRecord, bool, error)
+// Always return the full record. The bool reports whether the type is known to
+// the registry at all; callers gate behavior on record.Followable().
+func (r *Registry) ByGVK(gvk schema.GroupVersionKind) (TypeRecord, bool)
+func (r *Registry) ByGVR(gvr schema.GroupVersionResource) (TypeRecord, bool)
 
-    // Followable returns only verdict in {followable, retained}. All returns every
-    // known type for inventory and "why not" views.
-    Followable(ctx context.Context) ([]TypeRecord, error)
-    All(ctx context.Context) ([]TypeRecord, error)
-}
+// Followable returns only verdict in {followable, retained}. All returns every
+// known type for inventory and "why not" views.
+func (r *Registry) Followable() []TypeRecord
+func (r *Registry) All() []TypeRecord
 ```
 
-Per-GitTarget projection consumes records; it does not recompute them. A rule that
-matches nothing followable returns the refused record so the operator sees why.
+Consumers outside `internal/watch` read the smaller `Lookup` interface: `Ready()` and
+`ByGVK`.
+
+Per-GitTarget projection consumes records; it does not recompute them. The proposal
+below is not built in this shape: the projection is `WatchedTypeTable`
+(`internal/watch/watched_type_table.go`), whose `WatchedType` copies GVK, GVR, scope, and
+served version from the record and maps each namespace scope to its object selector.
+There is no `Rejection`: a rule whose selector matches nothing followable resolves
+(`ResourcesResolved=True`) and watches zero types, and why a type is not followable is in
+its registry record and in the `type is not followable` log line.
 
 ```go
 type TargetView struct {
@@ -301,28 +325,34 @@ type ScaleBinding struct {
 }
 ```
 
-`SpecReplicasPath` comes from `CustomResourceDefinition` `spec.versions[*].subresources.scale`
-for CRDs and from a small built-in registry for built-ins, so both look identical to
-the writer. The CRD JSONPath rules live in
-[../../../facts/subresources.md](../facts/subresources.md) and are not repeated
-here. The scale write path depends only on `SpecReplicasPath`; selector facts are for
-reporting. The `scale` requirement is `skip` when scale is unused and only `fail`s
-(`scale-path-unresolved`) when a needed parent path is missing.
+The design takes `SpecReplicasPath` from `CustomResourceDefinition`
+`spec.versions[*].subresources.scale` for CRDs and from a small built-in registry for
+built-ins, so both look identical to the writer. The CRD JSONPath rules live in
+[subresources.md](../facts/subresources.md) and are not repeated here. As built, only
+the built-in registry ([`internal/typeset/scale.go`](../../internal/typeset/scale.go))
+fills the binding; a CRD parent with `/scale` gets `Usable: false`. The `scale`
+requirement is `skip` when the type serves no `/scale` and `fail`s
+(`scale-path-unresolved`) when it serves one without a known parent path. Nothing reads
+the binding yet: a `/scale` audit event only names who scaled the parent, and the
+replica count reaches Git through the parent's own watch event.
 
 ## Live set and the 60-second grace
 
 Additions are fast; removals are slow. A newly served type that passes every
 requirement enters the live set immediately. A previously live type that fails its
-next `served`/`trusted` observation is held as `retained` for a fixed **60 seconds**
-before it leaves the live set as `refused`/`unknown`. The grace is product safety,
-not tuning, so it is not configurable: it stops a short discovery blink from turning
-into a large Git sweep.
+next observation is held as `retained`. A type that discovery stops listing is held
+for a fixed **60 seconds** (`RemovalGrace`), after which the registry drops its record.
+A type whose group/version discovery reports as failed keeps its last-known facts,
+marked untrusted, and stays `retained` for as long as the failure persists. The grace
+is product safety, not tuning, so it is not configurable: it stops a short discovery
+blink from turning into a large Git sweep.
 
 While retained, `ByGVK`/`ByGVR` still return the record and `Followable()` is still
-true, so planning, snapshots, informers, and writer identity keep working. The
-verdict reads `retained` and the failing check explains why. Once the grace expires,
-the type drops from `Followable()` and a deliberate sweep can act on a stable
-absence.
+true, so the watched-type tables and writer identity keep the type. A GitTarget's watch
+setup does not run while one of its watched types is retained: it fails closed rather
+than act on a reduced view. The verdict reads `retained` and the failing check explains
+why. Once the grace expires, the record is gone: the type leaves `Followable()` and the
+lookups no longer know it.
 
 ## What each consumer asks
 
@@ -331,36 +361,30 @@ whether they need the non-followable ones.
 
 | Consumer | Reads | Needs refused records? |
 | --- | --- | --- |
-| Manifest mapper | `Identity`, `Followable()` | no |
-| WatchRule → `TargetView` | `Identity`, verbs, scope, `Followable()` | yes, as `Rejection` |
-| Snapshot / informer | `Identity`, scope, `retained` state | no |
-| Audit consumer | parent `Identity`, `Subresources.Scale.SpecReplicasPath` | no |
-| Git writer | `Sensitive`, `Origin`, `Subresources.Scale` | no |
-| CLI / status / GUI | the whole record, including `refused` | yes, via `All()` |
+| Manifest mapper (git writer, `manifest-analyzer`) | `Identity`, `Followable()` | no |
+| WatchRule → `WatchedTypeTable` | `Identity`, `Preferred`, `Followable()` | no |
+| Target watch setup | `retained` state | no |
+| Status, metrics, followability log | the whole record, including `refused` | yes, via `All()` |
 
-The `/scale` case is the pressure test: the audit consumer calls `ByGVR` for the
-parent, checks `Followable()`, and reads `Subresources.Scale.SpecReplicasPath`. If
-that path is empty the `scale` check is `fail` and the translator refuses rather than
-guessing `.spec.replicas`.
+The design also had the audit consumer and the git writer read `Subresources.Scale`,
+`Sensitive`, and `Origin`. Neither does: the audit path reads no type record, and the
+writer takes sensitivity from the operator's sensitive-resource policy.
 
-## Relationship to today's code
+## Where it lives in the code
 
-Greenfield names, but they land on existing packages:
-
-- **Scan / `Observation`** ← today's `APIResourceCatalog` refresh plus the new CRD /
-  `APIService` enrichment.
-- **`TypeRegistry`** ← the resolved surface that does not exist yet; absorbs
-  `CatalogMapper` (becomes `ByGVK`), the GVK/GVR ambiguity policy, the sensitive /
-  deny policy, and the live-set hysteresis currently scattered across
-  `RuleGVRResolver` and `WatchedTypeTable`.
-- **`TargetView`** ← today's `WatchedTypeTable`, stripped of identity, ambiguity, and
-  removal-grace logic now owned by the registry.
+- **Scan / `Observation`**: `APIResourceCatalog` in `internal/watch` normalizes one
+  discovery result into a `typeset.Scan`; `typeset.ObservationsFromEntries` turns its
+  entries into observations. There is no CRD or `APIService` enrichment.
+- **`TypeRegistry`**: `typeset.Registry`, one per source cluster, fed by
+  `UpdateFromScan` (see [typeset-owns-discovery-grace.md](typeset-owns-discovery-grace.md)).
+  It replaced `CatalogMapper` and `RuleGVRResolver`, and owns the GVK/GVR ambiguity
+  policy, the deny policy, and the removal grace.
+- **`TargetView`**: `WatchedTypeTable` in `internal/watch`, which carries no identity,
+  ambiguity, or removal-grace logic of its own.
 
 ## References
 
-- [api-catalog-watched-type-architecture.md](type-followability.md)
-- [catalog-mapper-vs-watched-type-table.md](type-followability.md)
-- [subresource-scope-reduction.md](scale-subresource-audit-rehydration.md)
+- [scale-subresource-audit-rehydration.md](scale-subresource-audit-rehydration.md)
 - [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md)
 - [resource-types.yaml](../facts/resource-types.yaml)
 - [subresources.md](../facts/subresources.md)

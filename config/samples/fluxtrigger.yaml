@@ -15,6 +15,3 @@ spec:
   kustomizationRef:
     namespace: flux-system
     name: example-apps
-  # How long the branch stays quiet after GitOps Reverser's own pushes before the Kustomization is
-  # asked to catch up with them.
-  quietPeriod: 30s

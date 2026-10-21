@@ -54,9 +54,8 @@ const (
 // Measurement names, shared by both appliers so the two tables read side by side.
 const (
 	measureAPIToCommit      = "API edit → commit on the branch"
-	measureCommitToApplied  = "commit on the branch → Flux applied it"
-	measureAPIToApplied     = "API edit → Flux applied it (includes the quiet period)"
-	measureAppliedToHeld    = "applied → trigger holds the applier again"
+	measureCreateToCommit   = "API create → commit on the branch"
+	measureCreateToAdopted  = "API create → adopted by the applier"
 	measurePushToLive       = "Git-side push → live object (receiver)"
 	measurePushToSyncDone   = "Git-side push → Argo CD sync finished (receiver)"
 	measurePushToFluxHeld   = "Git-side push → Flux applied it and is held again (receiver)"
@@ -74,18 +73,16 @@ func timingSamples() int {
 	return timingDefaultSamples
 }
 
-// timedUntil polls probe until it passes, at most budget after start, records the time from start
-// to the first passing probe under name, and returns that duration.
+// timedUntil polls probe until it passes, at most budget after start, and records the time from
+// start to the first passing probe under name.
 func timedUntil(
 	experiment *gmeasure.Experiment, name string, start time.Time, budget time.Duration, probe func(g Gomega),
-) time.Duration {
+) {
 	GinkgoHelper()
 	remaining := budget - time.Since(start)
 	Expect(remaining).To(BeNumerically(">", 0), "%s: the budget of %s was spent before the probe began", name, budget)
 	Eventually(probe, remaining, timingPoll).Should(Succeed(), "%s: over its budget of %s", name, budget)
-	elapsed := time.Since(start)
-	experiment.RecordDuration(name, elapsed, gmeasure.Precision(100*time.Millisecond))
-	return elapsed
+	experiment.RecordDuration(name, time.Since(start), gmeasure.Precision(100*time.Millisecond))
 }
 
 // timingPipeline is one GitTarget mirroring the labeled ConfigMap into the folder an applier
@@ -265,9 +262,9 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 			pipeline = newTimingPipeline(testNs, "flux-timing", repo)
 			pipeline.start()
 
-			By("letting Flux apply the shared folder once, then naming a trigger with the default quiet period")
+			By("letting Flux apply the shared folder once, then naming a trigger")
 			applyFluxApplier(testNs, repo, fluxName, fluxName+"-git", "main", "./"+pipeline.gitPath)
-			createFluxTrigger(testNs, fluxName, fluxName, "")
+			createFluxTrigger(testNs, fluxName, fluxName)
 			nameApplyTrigger(testNs, pipeline.targetName, "FluxTrigger", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
 				"ApplyTriggerReady", "True", "Succeeded", "")
@@ -291,6 +288,7 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 
 		// heldAgain passes once the trigger reports the operation for commit Succeeded, with the
 		// Kustomization suspended again.
+
 		heldAgain := func(g Gomega, commit string) {
 			operation := readTriggerOperation(g, testNs, fluxTriggerResource, fluxName)
 			g.Expect(operation.Commit).To(Equal(commit))
@@ -298,46 +296,14 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue())
 		}
 
-		// The API side: an edit is mirrored, the branch goes quiet, and the trigger asks Flux to catch
-		// up. The quiet period is the default, because that is the latency a user gets; it is part of
-		// the total by design, so the spec also proves it is honored: no apply lands before it ends.
-		It("times an API edit through Git to a Flux apply", func() {
-			experiment := gmeasure.NewExperiment("Flux: API edit round trip")
-			AddReportEntry(experiment.Name, experiment)
-			quiet := 30 * time.Second // DefaultApplierQuietPeriod; the trigger leaves spec.quietPeriod empty.
-			experiment.RecordNote(fmt.Sprintf("quietPeriod %s (the default), commit window 0s", quiet))
-
-			for i := range timingSamples() {
-				value := fmt.Sprintf(timingSampleValueFormat, "api", i)
-				By("sample " + strconv.Itoa(i) + ": editing the ConfigMap through the API")
-				start := pipeline.editThroughAPI(value)
-
-				var head string
-				timedUntil(experiment, measureAPIToCommit, start, timingCommitBudget, func(g Gomega) {
-					g.Expect(pipeline.committedValue(g)).To(Equal(value))
-					head = pipeline.remoteBranchHead(g)
-				})
-				committedAt := time.Now()
-
-				applied := timedUntil(experiment, measureAPIToApplied, start, timingCommitBudget+quiet+timingHeldBudget,
-					func(g Gomega) {
-						g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
-					})
-				experiment.RecordDuration(measureCommitToApplied, time.Since(committedAt),
-					gmeasure.Precision(100*time.Millisecond))
-				Expect(applied).To(BeNumerically(">=", quiet),
-					"Flux applied %s after the edit, before the branch had been quiet for %s", applied, quiet)
-				appliedAt := time.Now()
-
-				timedUntil(experiment, measureAppliedToHeld, appliedAt, timingHeldBudget, func(g Gomega) {
-					heldAgain(g, head)
-				})
-				Expect(pipeline.liveValue(Default)).To(Equal(value), "the catch-up must not revert the edit it applies")
-			}
+		// The API side: an edit is mirrored, and asks Flux for no apply; a create is mirrored, and
+		// adopted, so Flux owns it and prunes it once Git deletes it.
+		It("times an API edit to its commit, and an API create to its adoption", func() {
+			apiTimings(fluxEchoApplier(testNs, fluxName, pipeline.repo), pipeline, "Flux")
 		})
 
 		// The Git side: another writer pushes, Gitea tells the receiver, and the trigger asks Flux to
-		// apply that commit. A ForeignCommit waits for no quiet period.
+		// apply that commit. A ForeignCommit goes out after a flush.
 		It("times a Git-side push through the receiver to the live object", func() {
 			experiment := gmeasure.NewExperiment("Flux: Git-side push")
 			AddReportEntry(experiment.Name, experiment)
@@ -405,9 +371,12 @@ var _ = Describe("Bi Directional timing (Argo CD)", Label("bi-directional", "arg
 			cleanupNamespace(testNs)
 		})
 
-		// Argo CD is never asked to catch up with GitOps Reverser's own commits, so the API side has
-		// no apply to time: its latency is the commit, which the Flux table already measures. The Git
-		// side is a ForeignCommit sync pinned to the pushed commit.
+		// The API side, as for Flux: an edit asks for no sync, and a create is adopted by a CatchUp sync.
+		It("times an API edit to its commit, and an API create to its adoption", func() {
+			apiTimings(argoEchoApplier(run), pipeline, "Argo CD")
+		})
+
+		// The Git side is a ForeignCommit sync pinned to the pushed commit.
 		It("times a Git-side push through the receiver to the live object", func() {
 			experiment := gmeasure.NewExperiment("Argo CD: Git-side push")
 			AddReportEntry(experiment.Name, experiment)
@@ -431,3 +400,38 @@ var _ = Describe("Bi Directional timing (Argo CD)", Label("bi-directional", "arg
 			}
 		})
 	})
+
+// apiTimings times the API side for an applier: an edit to its commit, which asks for no apply, and a
+// create to its commit and to its adoption, the CatchUp that makes the applier own it.
+func apiTimings(applier echoApplier, pipeline *timingPipeline, name string) {
+	GinkgoHelper()
+	r := &echoRun{timingPipeline: pipeline, applier: applier}
+	experiment := gmeasure.NewExperiment(name + ": API round trip")
+	AddReportEntry(experiment.Name, experiment)
+	experiment.RecordNote("commit window 0s")
+
+	for i := range timingSamples() {
+		value := fmt.Sprintf(timingSampleValueFormat, "api", i)
+		By("sample " + strconv.Itoa(i) + ": editing the ConfigMap through the API")
+		start := pipeline.editThroughAPI(value)
+		timedUntil(experiment, measureAPIToCommit, start, timingCommitBudget, func(g Gomega) {
+			g.Expect(pipeline.committedValue(g)).To(Equal(value))
+		})
+
+		created := fmt.Sprintf("timing-created-%d", i)
+		By("sample " + strconv.Itoa(i) + ": creating a ConfigMap through the API")
+		start = time.Now()
+		r.createThroughAPI(created, value)
+		timedUntil(experiment, measureCreateToCommit, start, timingCommitBudget, func(g Gomega) {
+			committed, inGit := r.committedValue(g, created)
+			g.Expect(inGit).To(BeTrue())
+			g.Expect(committed).To(Equal(value))
+		})
+		timedUntil(experiment, measureCreateToAdopted, start, timingCommitBudget+timingReceiverBudget,
+			func(g Gomega) {
+				g.Expect(applier.owns(g, pipeline.testNs, created)).To(BeTrue())
+				g.Expect(applier.operation(g).Phase).To(Equal("Succeeded"))
+			})
+		Expect(pipeline.liveValue(Default)).To(Equal(value), "the adoption must not revert the edit")
+	}
+}

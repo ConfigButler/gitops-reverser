@@ -23,7 +23,7 @@ already carries Flux, because the shared e2e dependencies (Gitea, Valkey,
 Prometheus, cert-manager) are delivered as Flux `HelmRelease`s from
 [`test/e2e/setup/flux/`](../../test/e2e/setup/flux/) — Flux is load-bearing and
 cannot be removed. Argo CD is *not* load-bearing: only bi-directional tests need
-it. Installing it in all four CI legs would tax every leg to serve two specs.
+it. Installing it in every CI leg would tax every leg to serve the corner's specs.
 
 **Cohesion.** [`docs/bi-directional.md`](../bi-directional.md) said, under
 "What is not complete yet", when this corner was designed:
@@ -173,7 +173,7 @@ dedicated CI leg:
 | Piece | Value |
 | --- | --- |
 | Category label | `bi-directional` (already exists on the Flux spec) |
-| Sub-labels | `flux`, `argocd`, `provenance` |
+| Sub-labels | `flux`, `argocd`, `provenance`, `timing`, `applier-echoes`, `push-race` |
 | Env gate | `E2E_ENABLE_BI_DIRECTIONAL` |
 | Task | `task test-e2e-bi-directional` |
 | CI leg | `bi-directional` |
@@ -186,16 +186,36 @@ The other specs prove what the loop does and only bound how long it may take.
 Kustomization or an Argo CD Application applies, then times each sample from the stimulus
 (an API edit, or a Git-side push landing on Gitea) to the effect an operator would look for:
 
-- the commit on the branch;
-- Flux applying it after the default 30s quiet period;
-- the trigger holding its applier again;
-- the live object changing after a Git-side push through the receiver.
+- the commit on the branch, for an API edit and for an API create;
+- the create adopted by the applier (a `CatchUp`);
+- the live object changing after a Git-side push through the receiver;
+- the applier done with that push: an Argo CD sync finished, or Flux applied it and is held again.
 
-Each duration goes into a `gmeasure` experiment, which Ginkgo prints as an N/min/median/max
-table and writes into the JSON report. `task allure-e2e-report` attaches it to the spec as
+Each duration goes into a `gmeasure` experiment, which Ginkgo prints as a table (N, min,
+median, mean, stddev, max) and writes into the JSON report. `task allure-e2e-report` attaches it to the spec as
 "Measurements". Every sample also has a budget, and a sample over it fails the spec. The
 budgets catch a path that fell back to the 5-minute steady tick, not a slow runner.
 `E2E_TIMING_SAMPLES` sets the sample count (default 3).
+
+### The applier-echo specs
+
+Three more files run the scenarios of
+[applier echoes](../design/applier-echoes.md#new-end-to-end-scenarios) on the same kind of
+shared folder, each as one describe for Flux and one for Argo CD:
+
+- [`bi_directional_echoes_e2e_test.go`](../../test/e2e/bi_directional_echoes_e2e_test.go)
+  (label `applier-echoes`): adopting an API create (also one deleted and created again), an
+  edit made during an apply, a Git-side push under continuous edits, a resync forced before an
+  apply finishes, a Git-side addition across a resync under `prune.mode: Always`, no apply after
+  an API edit, an object another applier owns, and a save made across a Git-side change.
+- [`bi_directional_push_race_e2e_test.go`](../../test/e2e/bi_directional_push_race_e2e_test.go)
+  (label `push-race`): two Git-side pushes in quick succession both reach the cluster, and the
+  later one stays in Git.
+- [`bi_directional_restart_e2e_test.go`](../../test/e2e/bi_directional_restart_e2e_test.go)
+  (label `applier-echoes`): an API edit and an API create made while the operator is scaled to
+  zero are mirrored before anything is applied; then a Git-side push made meanwhile is applied,
+  and the new object is adopted. It scales the controller, so both describes are `Serial` (see
+  [the Serial registry](e2e-serial-registry.md)).
 
 ### The third spec: `provenance_markers_e2e_test.go`
 
@@ -226,14 +246,14 @@ results are written up in
 
 It shares the `argocd` namespace with the Argo CD spec but never patches
 `argocd-secret` and owns its own repo, namespace, and resource names, so it runs in
-parallel with both. `BI_DIRECTIONAL_GINKGO_PROCS` is therefore `3`.
+parallel with both.
 
-Filter changes so the default suite stops paying for it:
+The filters that keep the default suite from paying for it:
 
-- `test/e2e/Taskfile-e2e.yml`: `E2E_LABEL_FILTER` default `!image-refresh`
-  → `!image-refresh && !bi-directional`
-- `.github/workflows/ci.yml`, `full-core` leg: `!manager && !image-refresh`
-  → `!manager && !image-refresh && !bi-directional`
+- `test/e2e/Taskfile-e2e.yml`: `E2E_LABEL_FILTER` defaults to
+  `!image-refresh && !bi-directional && !source-cluster && !ado`
+- `.github/workflows/ci.yml`, `full-core` leg:
+  `!manager && !image-refresh && !bi-directional && !source-cluster`
 
 `full-manager` (`manager`) is unaffected — the bi-directional specs carry no
 `manager` label.
@@ -278,7 +298,7 @@ chart**. `_argocd-installed` `helm pull`s the pinned chart into
   the ServiceMonitors need.
 - **Only** `test-e2e-bi-directional` depends on `_argocd-installed`. `prepare-e2e`
   does not. The suite's own in-process `task prepare-e2e` call
-  (`e2e_suite_test.go:197`) stays untouched and no-ops on the warm stamp.
+  (`prepareE2EClusterOnce` in `e2e_suite_test.go`) stays untouched and no-ops on the warm stamp.
 
 Deliberately **not** a Flux `HelmRelease` alongside gitea/valkey, even though that
 is the local idiom: `hack/e2e/wait-flux-services.sh` waits on every `HelmRelease`
@@ -335,7 +355,8 @@ devcontainer**:
 Per the existing per-file CRD-group convention, add
 `crdGroupArgoBiDirectional = "argo-bi-directional.e2e.example.com"` to
 [`test/e2e/icecream.go`](../../test/e2e/icecream.go) and register it in the
-suite's CRD pre-clean loop (`e2e_suite_test.go:225`).
+suite's CRD pre-clean loop (`iceCreamCRDGroups`, which `prepareE2EClusterOnce` in
+`e2e_suite_test.go` walks).
 
 The Flux spec keeps its exact-commit-count discipline, which works because it
 drives Flux as a manually triggered applier until its last phase hands the
@@ -410,8 +431,9 @@ report `ApplyTriggerReady=True`.
 
 ### Spec A — a Git-side push is synced through a pinned `ForeignCommit`
 
-1. Assert Argo CD has run **no operation**: GitOps Reverser's own bootstrap push,
-   and its start, ask for nothing.
+1. Assert that naming the `Application` converges it **once**: a `CatchUp` that
+   succeeds after the folder's initial snapshot is in Git. After it, GitOps
+   Reverser's own bootstrap push asks for nothing more.
 2. Push a clean `order-1` from the Git side, and nothing else.
 3. Assert the `Application`'s operation state is GitOps Reverser's: initiated by
    `gitops-reverser` with `automated: true`, reason `ForeignCommit` in its info,
@@ -502,7 +524,8 @@ The Argo spec therefore covers `IceCreamOrder` CRs only, and
 
 ## Consequent code change: `internal/sanitize`
 
-*Implemented.*
+*Implemented* as an exact-key `switch` in `isOperationalAnnotation`, which also
+matches `kcp.io/cluster`. The sketch below is the design.
 
 Argo's tracking annotation is controller bookkeeping and must not reach Git.
 
@@ -511,8 +534,8 @@ that prefix are legitimate user intent that belongs in Git:
 `argocd.argoproj.io/sync-wave`, `sync-options`, `compare-options`, `hook`.
 Stripping the prefix would silently delete a user's sync ordering.
 
-`isOperationalAnnotation` is prefix-only today
-([`types.go:75-82`](../../internal/sanitize/types.go#L75-L82)); it gains an
+`isOperationalAnnotation` was prefix-only
+([`types.go`](../../internal/sanitize/types.go)); it gains an
 exact-key set:
 
 ```go
@@ -544,11 +567,10 @@ instance label will be committed to Git, and that is not fixable in the sanitize
 
 ### Adjacent gap found while auditing
 
-No test covers the `kro.run/` label prefix or the `applyset.kubernetes.io/`
-prefixes, though both are in the strip list. Also `kro.run/` is stripped from
-labels but **not** from annotations, while `applyset.kubernetes.io/` is stripped
-from both — an inconsistency that may or may not be intentional. Worth a
-table-driven case in `internal/sanitize/types_test.go` while the file is open.
+`internal/sanitize/types_test.go` now has table-driven cases for the `kro.run/`
+label prefix and the `applyset.kubernetes.io/` prefixes. `kro.run/` is still
+stripped from labels but **not** from annotations, while `applyset.kubernetes.io/`
+is stripped from both, an inconsistency that may or may not be intentional.
 
 ## CI wiring
 
@@ -563,8 +585,8 @@ New matrix entry in `.github/workflows/ci.yml`:
 ```
 
 No `e2e_label_filter` and no `e2e_ginkgo_procs`: the task pins its own label filter
-and Ginkgo procs (`BI_DIRECTIONAL_GINKGO_PROCS`, default `3`), so values here would
-be ignored.
+and Ginkgo procs (`BI_DIRECTIONAL_GINKGO_PROCS`, default `4`), so values here would
+be ignored. `BI_DIRECTIONAL_TIMEOUT` (default `35m`) bounds the run.
 
 `coverage: "1"` — the leg uses the default `config-dir` install, which carries the
 `GOCOVERDIR` overlay, so Codecov unions its `e2e` upload with the other legs and
@@ -575,8 +597,9 @@ check on `main` (only *Project image*, *Unit tests*, *Lint* are), so adding a le
 carries no merge-gating risk. The two specs are pulled out of `full-core`, so that
 leg gets faster.
 
-Three procs: the Flux, Argo CD and provenance spec files own separate Gitea repos,
-namespaces and resource names, and none is `Serial`.
+Four procs: the spec files own separate Gitea repos, namespaces and resource names,
+so they run side by side. The two restart describes are `Serial` and run alone after
+every parallel spec, so their runtime adds to the leg's.
 
 ## Risks
 
@@ -623,7 +646,11 @@ namespaces and resource names, and none is `Serial`.
 - [`docs/finished/e2e-ci-runner-sharding-plan.md`](../finished/e2e-ci-runner-sharding-plan.md): leg membership and rebalancing
 - [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and
   [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go):
-  the two specs in this corner
+  the two bi-directional specs
 - [`test/e2e/bi_directional_timing_e2e_test.go`](../../test/e2e/bi_directional_timing_e2e_test.go):
   the loop's latency, as numbers
+- [`test/e2e/bi_directional_echoes_e2e_test.go`](../../test/e2e/bi_directional_echoes_e2e_test.go),
+  [`test/e2e/bi_directional_push_race_e2e_test.go`](../../test/e2e/bi_directional_push_race_e2e_test.go)
+  and [`test/e2e/bi_directional_restart_e2e_test.go`](../../test/e2e/bi_directional_restart_e2e_test.go):
+  the applier-echo scenarios
 - [`internal/sanitize/types.go`](../../internal/sanitize/types.go): the strip lists

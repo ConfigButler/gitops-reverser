@@ -251,7 +251,8 @@ var (
 	// GitCommitWindowsTotal counts closed commit windows, labelled by {gittarget_namespace,
 	// gittarget_name, close_reason, timer_source}. close_reason says what ended the window
 	// (idle_timeout, max_duration, attach_next, identity_change, buffer_limit, resync_before_apply,
-	// atomic_before_apply, shutdown); timer_source says whose timers were in effect: the GitTarget's,
+	// atomic_before_apply, shutdown, foreign_commit for a Git host's push notice, apply_due for the
+	// flush before an apply); timer_source says whose timers were in effect: the GitTarget's,
 	// or a CommitRequest's that attached and replaced them. Every window is counted exactly once, at
 	// the start of its finalize, so a window that then produces no diff or fails to commit is counted
 	// too. A push replay rebuilds commits and closes no window, and a CommitEmpty record has none.
@@ -608,6 +609,9 @@ func registerCounters() error {
 		{"gitopsreverser_apply_requests_total", &ApplyRequestsTotal},
 		{"gitopsreverser_apply_revision_mismatches_total", &ApplyRevisionMismatchesTotal},
 		{"gitopsreverser_apply_window_collisions_total", &ApplyWindowCollisionsTotal},
+		{"gitopsreverser_apply_echoes_total", &ApplyEchoesTotal},
+		{"gitopsreverser_stale_snapshots_total", &StaleSnapshotsTotal},
+		{"gitopsreverser_apply_ownership_conflicts_total", &ApplyOwnershipConflictsTotal},
 		{"gitopsreverser_receiver_deliveries_total", &ReceiverDeliveriesTotal},
 	}
 	for _, s := range counters {

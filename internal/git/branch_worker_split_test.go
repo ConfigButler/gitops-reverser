@@ -5,6 +5,7 @@ package git
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1006,12 +1007,15 @@ func TestEventLoop_CrossAuthorSamePathPingPongUsesOnlyAuthorBoundaries(t *testin
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	loop.lastPushAt = time.Now()
 
-	for _, event := range []Event{
+	for i, event := range []Event{
 		configMapEvent("F", "alice", "team-a"),
 		configMapEvent("F", "bob", "team-a"),
 		configMapEvent("X", "alice", "team-a"),
 		configMapEvent("F", "alice", "team-a"),
 	} {
+		// Each write changes the object, so every window has something to commit: a write that
+		// changes nothing settles at once, and would leave no window to count.
+		event.Object.Object["data"] = map[string]interface{}{"key": fmt.Sprintf("v%d", i)}
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 			Events:     []Event{event},
 			CommitMode: CommitModePerEvent,
@@ -1124,11 +1128,11 @@ func TestEventLoop_AtomicPushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t 
 
 	pendingWrite, err := worker.buildAtomicPendingWrite(worker.ctx, request)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	loop := newBranchWorkerEventLoop(worker, time.Second)
-	loop.pendingWrites = []PendingWrite{*pendingWrite}
-	loop.pendingWritesBytes = pendingWrite.ByteSize
+	loop.decide(*pendingWrite)
+	loop.commitDecided()
+	require.Len(t, loop.pendingWrites, 1, "the atomic write is committed and pending its push")
 
 	remotePath := strings.TrimPrefix(remoteURL, "file://")
 	require.NoError(t, os.RemoveAll(remotePath))

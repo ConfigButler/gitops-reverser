@@ -1,23 +1,22 @@
 # Type lifecycle events, the wobble-settle phase, and consolidation
 
-> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-> Status: design direction, captured 2026-06-09. **Implemented 2026-06-09 (M12 first
-> slices):** Proposals 1–2 in [internal/typeset/lifecycle.go](../../internal/typeset/lifecycle.go)
-> (`LifecycleEvent`/`Observer`/`Subscribe`, `SettleWindow`, settle + flap coalescing in
-> `Registry.Update`); M12 per-type reconcile/sweep via
-> `manifestanalyzer.BuildScopedPlan`, the `ScopeGVR` resync request, the registry
-> subscription + drain goroutine in internal/watch/type_lifecycle.go,
-> and `EventRouter.EmitTypeReconcile/SweepForGitDest`. Proposal 3's consolidation is the
-> shared `Manager.typeWobbling` predicate. The per-type path is gated on `SnapshotSynced`,
-> so bootstrap is unchanged; `Unknown` granularity and bootstrap-decoupling remain open.
-> Origin: the per-type reconcile track ([dream.md](type-followability.md),
-> `per-type-reconcile-and-streaming-tail.md`)
-> and the [e2e flakiness findings](e2e-serial-registry.md).
-> Related:
-> [discovery-catalog-typeset-boundary.md](type-followability.md),
-> [type-followability.md](type-followability.md),
-> [catalog-mapper-vs-watched-type-table.md](type-followability.md),
-> [api-catalog-watched-type-architecture.md](type-followability.md).
+> **spec**, kept as design history for its consumer half. Index: [`../INDEX.md`](../INDEX.md)
+>
+> Status: captured 2026-06-09 as a design direction. **Built and current:** Proposals 1 and 2
+> in [internal/typeset/lifecycle.go](../../internal/typeset/lifecycle.go)
+> (`LifecycleEvent`/`Observer`/`Subscribe`, the 5-second `SettleWindow`, settle and flap
+> coalescing in the registry's update). The events are computed on every update and have no
+> production subscriber: the M12 consumers (a per-type reconcile and sweep driven by the events,
+> `internal/watch/type_lifecycle.go`, `EventRouter.EmitTypeReconcile/SweepForGitDest`, a
+> `ScopeGVR` resync request gated on `SnapshotSynced`) were deleted with the watch-first rewrite.
+> The planned consumer is the `stop` classification in
+> [target-watch-plan.md](../design/target-watch-plan.md#what-a-collection-leaving-means). Of
+> Proposal 3 what exists is the shared `typeWobbling` predicate in
+> `internal/watch/scope_resolve.go`: a GitTarget's watch setup fails closed while any of its
+> watched types is `retained`. `Unknown` granularity remains open.
+> Origin: the per-type reconcile track and the [e2e flakiness findings](e2e-serial-registry.md).
+> Related: [type-followability.md](type-followability.md),
+> [typeset-owns-discovery-grace.md](typeset-owns-discovery-grace.md).
 
 ## Why now
 
@@ -67,7 +66,7 @@ M10 projects this per-GitTarget into the `WatchedTypeTable`, re-resolved on a ru
 fingerprint or a catalog `Generation()` change, and already holds a type the
 catalog momentarily stops serving rather than dropping it (the pending-removal
 fail-closed in `resolveSnapshotGVRs`). GVK↔GVR is treated as **1:1** (a
-multi-resource GVK is a refused `TypeConflict`), giving the per-type work an
+multi-resource GVK is refused with `gvk-not-unique`), giving the per-type work an
 unambiguous key.
 
 None of that changes here. This design adds a transition layer on top of it and
@@ -154,7 +153,7 @@ changed?" is currently answered in three layers that each re-derive a slice of i
    pending-removal.
 
 Layer 1 and 2 are the right boundary and stay (see
-[discovery-catalog-typeset-boundary.md](type-followability.md)).
+[typeset-owns-discovery-grace.md](typeset-owns-discovery-grace.md)).
 **Layer 3's re-classification is the duplication to remove**: once the registry
 emits transitions, the watched-type store stops diffing and re-classifying — it
 *subscribes* to its types' transitions and updates membership directly. Concretely,
@@ -195,7 +194,7 @@ because adding events without removing the diffs would be strictly worse.
   `TypeRemoved` (`absence-expired`), never on `Retained`/`Unknown`/wobble.
 - **`RemovalGrace` still gates deletion.** The settle window only gates activation;
   it never shortens removal.
-- **GVK↔GVR is 1:1.** A multi-resource GVK stays a refused `TypeConflict`.
+- **GVK↔GVR is 1:1.** A multi-resource GVK stays refused with `gvk-not-unique`.
 - **`Unknown` (catalog unavailable) is global, not per-type.** When the registry
   cannot assess the surface at all, no per-type reconcile should proceed — this stays
   a fail-closed whole-surface gate (§Open questions refines it).

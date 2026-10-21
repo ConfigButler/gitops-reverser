@@ -11,7 +11,7 @@ under bounded Ginkgo parallelism (Phase 2.5 of
 > The two audit-consumer specs, `bi_directional`, and `aggregated_apiserver` have
 > all been de-serialized (see the "De-serialized" section). `crd_lifecycle` was
 > de-serialized and then **re-serialized** (commit `3d249e3`) when a residual
-> cluster-wide CRD-discovery churn re-flaked it. The current Serial set is the three
+> cluster-wide CRD-discovery churn re-flaked it. The current Serial set is the four
 > singleton-controller specs, `crd_lifecycle`, and `playground`.
 
 ## Rule
@@ -38,6 +38,7 @@ the `full-core` leg beside the restart specs instead of at the end of the longes
 |---|---|---|---|
 | [test/e2e/restart_reconcile_e2e_test.go](../../test/e2e/restart_reconcile_e2e_test.go) | `Restart Reconcile Safety` | Rollout-restarts the controller deployment. | The controller is a singleton; restarting it disrupts in-flight reconciles/commits for every other spec. |
 | [test/e2e/flux_restart_recovery_e2e_test.go](../../test/e2e/flux_restart_recovery_e2e_test.go) | `Flux Restart Recovery` | Rollout-restarts the controller deployment while a Flux apply runs, and labels a node so that apply's Deployment can schedule. | The controller is a singleton, as for `Restart Reconcile Safety`; a node label is cluster-wide. |
+| [test/e2e/bi_directional_restart_e2e_test.go](../../test/e2e/bi_directional_restart_e2e_test.go) | `Bi Directional restart with work made while down (Flux)`, `(Argo CD)` | Scales the controller deployment to zero and back, to make edits and a Git-side push while the operator is down. | The controller is a singleton, as for `Restart Reconcile Safety`. |
 | [test/e2e/image_refresh_test.go](../../test/e2e/image_refresh_test.go) | `image refresh dependency chain` | Changes the controller image / redeploys the controller. | Same singleton controller; an image swap perturbs all concurrent specs. |
 | [test/e2e/crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go) | `CRD Lifecycle` | Installs/deletes a cluster-scoped CRD and watches all `customresourcedefinitions` cluster-wide, asserting exact Git file presence/absence. | A concurrent CRD install/delete bumps the global discovery-catalog generation and re-resolves every GitTarget's watched-type tables, delaying this spec's reconcile (CRD file appears late / post-delete sweep lags — the 649↔673 flake). A cluster-wide catalog bump cannot be scoped by name. |
 | [test/e2e/tilt_playground_e2e_test.go](../../test/e2e/tilt_playground_e2e_test.go) | `playground` | Reusable manual-playground fixture: fixed (non-randomized) `tilt-playground` namespace and `playground` repo/provider names, preserved across runs. | A singleton by construction — its resource names are intentionally stable so `task playground-*` can re-attach, so per-run name isolation does not apply. |
@@ -46,10 +47,10 @@ the `full-core` leg beside the restart specs instead of at the end of the longes
 
 `CRD Lifecycle` ([crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go))
 **was de-serialized and then re-serialized** — it is in the Serial table above, not
-here. Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191)) —
-resnapshot a target only when its *resolved* plan hash changes — removed the worst
+here. Finding #2's fix ([`markInvalidatedTargets` in owner.go](../../internal/watch/owner.go)),
+which resnapshots a target only when its *resolved* plan hash changes, removed the worst
 symptom: a catalog refresh no longer drags unrelated targets into `reconcile: sync …`
-resnapshots, and per-file CRD groups ([icecream.go:30](../../test/e2e/icecream.go#L30))
+resnapshots, and per-file CRD groups ([icecream.go](../../test/e2e/icecream.go))
 keep the `IceCreamOrder` CRD name-isolated. But a residual effect remained — a
 concurrent CRD install/delete still bumps the cluster-wide discovery-catalog
 generation and re-resolves every GitTarget's watched-type tables, delaying this
@@ -89,22 +90,22 @@ was de-serialized too. It already owned a dedicated repo and per-file CRD group;
 its historical "+2 commits only under parallelism" came from cluster-wide GVR
 catalog churn (another spec installing/deleting a CRD) dragging unrelated targets
 into a resnapshot whose `reconcile: sync …` commits inflated its exact count.
-Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191)) —
-a target only resnapshots when its *resolved* plan hash changes — removed that
+Finding #2's fix ([`markInvalidatedTargets` in owner.go](../../internal/watch/owner.go)),
+under which a target only resnapshots when its *resolved* plan hash changes, removed that
 mechanism, the same fix that unblocked `crd_lifecycle`.
 
 `Aggregated API server` ([aggregated_apiserver_e2e_test.go](../../test/e2e/aggregated_apiserver_e2e_test.go))
 was de-serialized after its `Serial` justification proved **stale**. The note
 claimed it "installs/removes a cluster-scoped `APIService` while it is in flight",
 but the wardle APIService (`v1alpha1.wardle.example.com`) is installed once at
-cluster setup by the apiservice-audit-proxy HelmRelease
-(setup/flux/releases/aggregated-api.yaml)
-and stays Available for the whole suite. The spec only *reads* it — it never
-registers or removes it — so there is no in-flight discovery perturbation to
+cluster setup from `test/e2e/setup/manifests/sample-apiserver/`
+and stays Available for the whole suite. The spec only *reads* it (it never
+registers or removes it), so there is no in-flight discovery perturbation to
 serialize against. Everything the spec mutates is name-isolated (own namespace,
-own repo, namespace-scoped flunder WatchRule, namespaced Flunders), and its one
-cluster-wide assertion (`sum(gitopsreverser_audit_events_total{category="error"}) == 0`)
-is a global zero-invariant that is parallel-safe by design.
+own repo, namespace-scoped flunder WatchRule, namespaced Flunders). The global
+zero-invariant on `gitopsreverser_audit_events_total{category="error"}` runs once
+for the whole suite (`assertNoAnomalousAuditOutcomes` in
+[e2e_suite_test.go](../../test/e2e/e2e_suite_test.go)), not in this spec.
 
 ## Triage list (watch during stability runs)
 

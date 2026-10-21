@@ -104,9 +104,8 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 		types.NewResourceReference("team-a-config", "team-a"),
 		git.ResyncScopeFor(configmapsGVR, ""),
 		types.CollectionKey{},
-		nil,
+		replaySnapshot{},
 		"12",
-		false,
 		0,
 	)
 
@@ -138,9 +137,8 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 		types.NewResourceReference("deleted-target", "team-a"),
 		git.ResyncScopeFor(configmapsGVR, ""),
 		types.CollectionKey{},
-		nil,
+		replaySnapshot{},
 		"12",
-		false,
 		0,
 	)
 

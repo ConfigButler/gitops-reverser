@@ -1,6 +1,6 @@
 # Branch worker events, durable execution, and recovery
 
-A single failed push on a quiet branch used to leave a `CommitRequest` in `WaitingForPush`
+A single failed push on an idle branch used to leave a `CommitRequest` in `WaitingForPush`
 indefinitely, even after Git recovered. #412 repaired the retry half of that liveness gap, and #413
 finished the in-process half: bounded Git calls, a bounded outage backlog with explicit pause and
 resume, and a status that says so. The branch worker remains the owner of its checkout.
@@ -105,7 +105,7 @@ not enforce that exactly one alternative is set.
 | Attach a save | `CommitRequest` controller through the event router | `handleAttachCommitRequest` |
 | Withdraw a save | `CommitRequest` controller through the event router | `handleWithdrawCommitRequest` |
 | Complete scoped snapshot | Watch replay through `EnqueueResync` | `handleResyncRequest` |
-| Observe remote and folder | `GitTarget` reconcile through `EnqueueRefresh` | `handleRefreshRequest` |
+| Observe remote and folder | `GitTarget` reconcile through `EnqueueRefresh`; a push notice through `EnqueuePushNotification` | `handleRefreshRequest` |
 
 This inventory is the starting point for extracting explicit transitions. The atomic handler is
 supported, but it has no non-test producer; step 5a of the
@@ -164,7 +164,7 @@ These gaps are visible in the current code. Making the queue durable addresses o
 ### A failed push stranded a save in `WaitingForPush` (fixed in #412)
 
 Before #412, `pushPending` retained failed writes but stopped the push timer without arming a
-retry. If no more writes arrived, a quiet branch stayed unpublished indefinitely, and ordinary
+retry. If no more writes arrived, an idle branch stayed unpublished indefinitely, and ordinary
 refresh skips a branch with retained work, so periodic `GitTarget` reconciliation did not repair it.
 The failure now schedules its own retry. The rest of this section records why the fix had to be
 on the worker.
@@ -355,8 +355,9 @@ window membership, policy decisions, and operation results. The HA plan owns the
 Live interfaces, process pointers, and reply channels remain adapters outside that format.
 
 Snapshot replacement has execution semantics of its own. Live writes, overlapping snapshots,
-and save attachments can fence replacement of an earlier queue position. Deferred heals wait
-behind an open window. Preserve those decisions when persisting the
+and save attachments can fence replacement of an earlier queue position. A snapshot collected
+while Git was ahead of the cluster, or across an apply, is discarded and asked for again. Preserve
+those decisions when persisting the
 [snapshot protocol](../future/ha-gittarget-distribution-plan.md#snapshot-and-replay-delivery).
 [Resync handling](../../internal/git/resync_flush.go) still reports local application separately
 from publication.
@@ -420,7 +421,7 @@ The current worker has six timer sources:
 | Retry | Retry a failed publication on its backoff, or probe for a missing parent |
 | Attach timeout | Settle a save still waiting for an eligible window |
 | Refusal action | Recheck consent before a coalesced Refusal request is due |
-| Applier | Send an apply attempt that came due on a quiet branch |
+| Applier | Send an apply attempt once its backoff or the initial-snapshot barrier allows, close an apply window after its grace, and ask again for a snapshot held off for its limit |
 
 The retry schedule has its own timer; the push timer is only the success cooldown. Parent
 recovery has no timer of its own since #413: while recovery is open, the retry deadline is
@@ -518,7 +519,7 @@ Journal crashes, retention, encryption, and HA failure tests belong to the
 
 | Scenario | Required observation |
 |---|---|
-| Save's first push fails, then the branch goes quiet | Built (#412): retry publishes and resolves the same request without another edit |
+| Save's first push fails, then the branch goes idle | Built (#412): retry publishes and resolves the same request without another edit |
 | Held save outlives the controller's safety window | Built (#412): withdrawal cannot falsely fail it; recovery remains scheduled |
 | Push fails under continuous arrivals | Built (#412): arrivals cannot bypass the retry budget |
 | Parent returns, but publication still fails | Built (#413): new commits respect the one retry deadline while recovery remains open |
@@ -550,8 +551,8 @@ explicit transfer or terminal decision before that responsibility can be release
 
 Snapshots establish render fidelity even while ordinary live writes are refused. Suspension
 suppresses writes while allowing observation. A single dispatcher-level write gate would block
-the recovery that can reopen a target. `Heal=true` snapshots defer behind any open window; the
-inspected production replay producer uses `Heal=false`.
+the recovery that can reopen a target. Every resync closes the open commit window before it is
+decided.
 
 [Refresh handling](../../internal/git/refresh.go) normally skips a busy checkout. During parent
 recovery it can service a due probe and publish retained work. Disabling periodic refresh does

@@ -88,7 +88,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 
 		By("creating a trigger no GitTarget names: it is Ready, and does nothing")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		createFluxTrigger(testNs, fluxName, fluxName, "")
+		createFluxTrigger(testNs, fluxName, fluxName)
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Ready", "True", "NotReferenced", "")
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "False", "NotReferenced", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeFalse(), "Flux applies it on its own")
@@ -120,10 +120,13 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		pushAppliedColorFromOutside(repo, appliedNs, "green")
 		applyConfigMap(testNs, "applier-second-edit")
 
-		By("the ForeignCommit is refused at the patch, and the source on release is never stamped")
+		// Naming the trigger converges it once (a CatchUp), as soon as the branch has a tip, so that is
+		// the first ask refused; the ForeignCommit joins the same run of failures, and ApplyRequestFailed
+		// is recorded only for a run's first.
+		By("every ask is refused at the patch, and the source on release is never stamped")
 		Eventually(func(g Gomega) {
 			failed := gitTargetEventMessages(g, testNs, destName, "ApplyRequestFailed")
-			g.Expect(failed).To(ContainSubstring("(ForeignCommit)"))
+			g.Expect(failed).To(ContainSubstring("(CatchUp)"))
 			g.Expect(failed).To(ContainSubstring(`fetches branch "release", not main`))
 		}, 3*time.Minute, 2*time.Second).Should(Succeed())
 		Consistently(func(g Gomega) {
@@ -150,11 +153,10 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "the trigger holds its Kustomization")
-		prefetch, err := kubectlRunInNamespace(testNs, "get", fluxTriggerResource, fluxName,
-			"-o", "jsonpath={.status.source.prefetch}|{.status.source.otherConsumers}")
+		others, err := kubectlRunInNamespace(testNs, "get", fluxTriggerResource, fluxName,
+			"-o", "jsonpath={.status.source.otherConsumers}")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(strings.TrimSpace(prefetch)).To(Equal("true|"),
-			"its Kustomization is the GitRepository's only consumer, so the source is prefetched")
+		Expect(strings.TrimSpace(others)).To(BeEmpty(), "its Kustomization is the GitRepository's only consumer")
 
 		By("dropping the reference: the trigger hands the Kustomization back, and is idle again")
 		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", destName, "--type=merge", "-p",
@@ -300,6 +302,12 @@ const fluxApplierFolder = "flux/applier"
 // holds it. The Flux specs share it.
 func applyFluxApplier(testNs string, repo *RepoArtifacts, name, secretName, branch, path string) {
 	GinkgoHelper()
+	applyFluxApplierWithPrune(testNs, repo, name, secretName, branch, path, false)
+}
+
+// applyFluxApplierWithPrune is applyFluxApplier, with the Kustomization's spec.prune set to prune.
+func applyFluxApplierWithPrune(testNs string, repo *RepoArtifacts, name, secretName, branch, path string, prune bool) {
+	GinkgoHelper()
 	// The in-cluster Gitea test credential, read from the cluster at runtime, base64-encoded as the
 	// template's Secret expects.
 	fields := struct {
@@ -319,7 +327,7 @@ func applyFluxApplier(testNs string, repo *RepoArtifacts, name, secretName, bran
 		HasTargetNS                                            bool
 		DecryptionProvider, DecryptionSecretName               string
 	}{
-		Namespace: "flux-system", Name: name, Path: path, SourceName: name, Interval: "24h",
+		Namespace: "flux-system", Name: name, Path: path, SourceName: name, Interval: "24h", Prune: prune,
 	}, "flux-system")).To(Succeed(), "failed to apply the Flux Kustomization")
 	_, err := kubectlRunInNamespace("flux-system", "wait", "--for=condition=Ready",
 		"kustomization/"+name, "--timeout=3m")

@@ -119,6 +119,12 @@ func desiredStateHash(obj *unstructured.Unstructured) (string, bool) {
 type replaySnapshot struct {
 	desired   []manifestanalyzer.DesiredResource
 	baselines map[k8stypes.UID]string
+	// start is the branch worker's ApplyState read when the collection started, nil when it could
+	// not be read. The worker discards a snapshot an apply made stale (git.ResyncRequest).
+	start *git.ApplyState
+	// owners is the applier that owns each object some applier owns, read from the raw object
+	// before sanitize strips it (git.AppliedByOf).
+	owners map[types.ResourceIdentifier]git.AppliedBy
 }
 
 // add folds one observed object into the snapshot. An object desiredFromObject excludes (a
@@ -129,6 +135,12 @@ func (r *replaySnapshot) add(gvr schema.GroupVersionResource, u *unstructured.Un
 		return
 	}
 	r.desired = append(r.desired, desired)
+	if owner := git.AppliedByOf(u); !owner.IsZero() {
+		if r.owners == nil {
+			r.owners = map[types.ResourceIdentifier]git.AppliedBy{}
+		}
+		r.owners[desired.Resource] = owner
+	}
 	if r.baselines == nil {
 		r.baselines = map[k8stypes.UID]string{}
 	}

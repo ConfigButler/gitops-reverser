@@ -130,12 +130,13 @@ a publication succeeds. These clocks overlap.
 | Atomic write | Immediate local processing | A caller-defined batch arrives | Preserve a batch after finalizing earlier open work |
 | Retained-byte threshold | Default `8Mi` | Estimated open plus retained bytes reach the threshold | Close the open window under memory pressure |
 | Shutdown | Immediate attempt | The worker exits | Attempt to publish finalized work without waiting for cooldown |
+| Apply due | Immediate | An applier on the branch has an apply due | Close the open window and publish every write decided so far without waiting for cooldown, so the apply includes them |
 
 The first publication can push as soon as a commit is ready. There is no initial five-second
 push wait. Setting `commit.window.idleTimeout: 0s` makes local commits immediately; subsequent publications
 still share the branch cooldown. Multiple targets do not each receive a separate push allowance.
 
-For a healthy, quiet branch, a useful approximation is:
+For a healthy branch with no apply due, a useful approximation is:
 
 ```text
 commit ready = last matching event at the worker + commit window + local planning time
@@ -208,7 +209,7 @@ flowchart TD
     MATCH -->|yes| DONE["Publish and release retained writes"]
     MATCH -->|no| HASH["Use SHA already read by the rejected push"]
     HASH --> FETCH["Fetch current remote tip R and reset checkout"]
-    FETCH --> REPLAY["Re-plan every retained write, in order, on R"]
+    FETCH --> REPLAY["Apply every retained write's decided actions, in order, on R"]
     REPLAY --> DIFF{"Captured state still differs?"}
     DIFF -->|yes| COMMIT["Create replacement local commits"]
     DIFF -->|no| NOOP["Retain the no-op until remote confirmation"]
@@ -218,9 +219,14 @@ flowchart TD
     REPLAY -->|error| HOLD["Keep writes; require successful recovery"]
 ```
 
-Replay re-runs planning against the fetched tree. It can change unpublished commit SHAs or turn
-a write into a no-op. It retains the captured author, target, and resolved write configuration;
-prune permissions can tighten before replay. It does not perform a three-way field merge.
+Replay applies, against the fetched tree, the actions each write decided when it was first
+committed. A write keeps only the objects whose plan changed its tree then, so an object that
+changed nothing is never planned onto R, where its old content would revert what R changed; a
+write with no action left settles at once and is never replayed. A resync keeps its upserts and
+the documents its sweep removed, and never sweeps again on R. A save keeps every object it
+captured. Replay can change unpublished commit SHAs or turn a write into a no-op. It retains the
+captured author, target, and resolved write configuration; prune permissions can tighten before
+replay. It does not perform a three-way field merge.
 
 For example, Alice changes `replicas` through the API while Bob changes `image` in Git on the
 same object. Alice's captured object contains both fields. Replaying it writes her `replicas` and
@@ -347,7 +353,10 @@ fetched manifests, which is why a receiver delivery never triggers one.
 When Flux or Argo CD applies the same path on its own schedule, its refresh and apply cadence also
 affects whether a live edit survives long enough to be published. An
 [apply trigger](configuration.md#who-applies-this-folder-specapplytriggerref) takes that clock
-away: the applier then applies only when GitOps Reverser asks, on a quiet branch. The
+away: the applier then applies only when GitOps Reverser asks, after a flush that publishes every
+write decided before the apply came due. An edit decided after the flush is recorded in the apply
+window, so an apply that overwrites it is withheld and repaired. A push of GitOps Reverser's own
+asks for no apply. The
 [bi-directional guide](bi-directional.md) describes the integration choices and limitations.
 
 ## The other clocks around publication

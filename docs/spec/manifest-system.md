@@ -52,21 +52,34 @@ that is [`../layout/new-file-placement-rules.md`](../layout/new-file-placement-r
 **A GitTarget makes an all-or-nothing claim on its folder.** It either manages
 everything in the subtree or it refuses the folder. There is no partial ownership,
 because a partially-managed folder cannot be reasoned about — see
-[`current-manifest-support-review.md`](current-manifest-support-review.md).
+[`current-manifest-support-review.md`](current-manifest-support-review.md). The claim
+covers files that are not manifests too: a file in no recognized role refuses the
+folder ([`gitpath-foreign-content-stringency.md`](gitpath-foreign-content-stringency.md)).
 
 **Never partially materialize a multi-document file.** If one document in a file
 is out of scope, unparseable, or non-KRM, the file is not half-written. The refusal
 is the whole file.
 
-**Refuse the folder rather than prune unwatched KRM.** Encountering API-backed KRM
-in the folder that no WatchRule covers means the folder is refused
-(`GitPathAccepted=False`), *not* that the document is deleted as drift. Deleting a
+**Never prune unwatched KRM.** API-backed KRM in the folder that no WatchRule
+covers is *not* deleted as drift: a resync sweeps one resource collection at a
+time, so a document of a type nobody watches stays as Git holds it. Deleting a
 user's manifest because we were not told to watch its type is the worst thing this
-system could do.
+system could do. The operator does not refuse the folder for it either, because
+whether a type is watched is a discovery fact that can blink; its gate
+(`AcceptStructureOnly`) refuses on structure alone. The dry-run scan, which has an
+API source (`Accept`), does report a type it cannot follow, or a namespace outside
+the GitTarget's scope, as a refusal.
+
+**An object another applier owns stays out of a folder an applier applies.** When a
+GitTarget names an apply trigger, an object another applier owns (Flux's owner labels, or
+Argo CD's tracking annotation) is not mirrored into its folder, and the sweep
+leaves its document alone: two appliers applying one object fight each other. A
+folder with no trigger mirrors such objects as before.
 
 **At most one editable document per resource identity.** Two documents claiming the
-same identity is not a prune opportunity, it is an invalid repository state: it
-blocks startup and takes a live target down (`RepositoryValid=False`). The older
+same identity is not a prune opportunity, it is an invalid repository state: the
+GitTarget refuses the folder (`GitPathAccepted=False`) and writes nothing to it
+until a human removes one copy. The older
 "first-occurrence-wins, delete the losers" idea was explicitly abandoned.
 
 **The API wins — full-object ownership, never field-subset ownership.** When the
@@ -87,7 +100,9 @@ mix ciphertext with plaintext — [`sops-single-file-no-multidoc.md`](sops-singl
 **No bookmark, no sweep.** Initial reconcile is a streaming list-watch with
 mark-and-sweep. The sweep is a set-difference taken at the joined
 `initial-events-end` bookmark, and a partial mark must never drive a sweep — a
-missing bookmark fails closed. See
+missing bookmark fails closed. The sweep removes a document only under
+`spec.prune.mode: Always`; the default, `OnEvent`, mirrors an observed delete and
+infers none. See
 [`reconcile-via-watchlist-mark-and-sweep.md`](reconcile-via-watchlist-mark-and-sweep.md).
 
 **One grouped commit = exactly one (author, GitTarget) tuple** —
@@ -138,6 +153,10 @@ The cluster is the source of truth, and the pipeline is driven by cluster events
 So when something changes Git *out of band* — an external push, a human deleting
 files on the branch — **nothing re-runs the path's reconcile to bring Git back in
 line.** The drift is detected but not acted on.
+
+A folder an apply trigger applies is the exception, in the other direction: when
+the branch worker learns of a commit it did not push, it asks the applier to apply
+it (a `ForeignCommit`), so the cluster follows Git.
 
 The recommended fix, not yet built, is a per-GitTarget **subtree OID** compare that
 arms exactly one replay-mark session when the subtree moves underneath us. This is

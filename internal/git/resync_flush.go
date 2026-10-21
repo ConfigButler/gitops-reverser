@@ -10,6 +10,8 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -20,66 +22,8 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// handleResyncRequest applies one revision-pinned resync in order on the worker goroutine, or —
-// for a HEAL resync that arrives while a commit window is open — defers it until the worker is idle
-// so it never force-finalizes (steals) that window (Rec 1 / the 8f2ad84 regression). A non-heal
-// resync, and a heal that arrives with no open window, applies immediately via applyResync.
-func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
-	if req.Heal && l.openWindow != nil {
-		l.stashDeferredHeal(req)
-		return
-	}
-	l.applyResync(req)
-}
-
-// stashDeferredHeal parks a heal resync until the commit window is idle (applyDeferredHeals drains
-// it). It keeps one heal per (GitTarget, scope): a newer heal for the same key folds a fresher
-// desired set, so the older one is superseded and its caller replied to immediately — otherwise the
-// drainScopedResync goroutine waiting on the old request's channel would leak.
-func (l *branchWorkerEventLoop) stashDeferredHeal(req *ResyncRequest) {
-	key := resyncHealKey(req)
-	for i := range l.deferredHeals {
-		if resyncHealKey(l.deferredHeals[i]) == key {
-			l.deferredHeals[i].reply(ResyncResult{})
-			l.deferredHeals[i] = req
-			return
-		}
-	}
-	l.deferredHeals = append(l.deferredHeals, req)
-	l.w.Log.V(1).Info("heal resync deferred until the commit window is idle",
-		"scope", req.Scope.String(),
-		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
-		"deferred", len(l.deferredHeals))
-}
-
-// applyDeferredHeals drains every parked heal once no commit window is open, so a heal never
-// force-finalizes a window and never steals a sibling GitTarget's held CommitRequest window on a
-// shared branch worker. A no-op while a window is still open or nothing is parked; the loop calls it
-// at every idle boundary (silence timeout, identity switch, shutdown).
-func (l *branchWorkerEventLoop) applyDeferredHeals() {
-	if l.openWindow != nil || len(l.deferredHeals) == 0 {
-		return
-	}
-	heals := l.deferredHeals
-	l.deferredHeals = nil
-	for _, req := range heals {
-		l.applyResync(req)
-	}
-}
-
-// resyncHealKey identifies a deferred heal by the (GitTarget, scope) it corrects, so a re-stashed
-// heal for the same target+type replaces rather than duplicates the parked one.
-func resyncHealKey(req *ResyncRequest) healKey {
-	return healKey{
-		name:      req.GitTargetName,
-		namespace: req.GitTargetNamespace,
-		scope:     req.Scope.String(),
-	}
-}
-
 // applyResync decides one revision-pinned resync in order on the worker goroutine. It mirrors the
-// atomic-commit path: for a non-heal resync any open live window is finalized first so arrival order
-// is preserved (a heal reaches here only when no window is open, so it finalizes nothing); the
+// atomic-commit path: any open live window is finalized first so arrival order is preserved; the
 // resync is then decided like every other write, and its caller answered when its commit is made
 // or fails (settleResyncApplied, settleFailed), or as soon as the remote holds it back
 // (replyToDeferredResyncs). A resync that commits nothing stops being pending at once, so it never
@@ -95,19 +39,16 @@ func resyncHealKey(req *ResyncRequest) healKey {
 // design removes is the PUBLICATION one, and a resync is not a publication. That fetch also serves
 // a forced GitTarget recheck, whose trigger is often "I changed Git; look again".
 func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
+	l.snapshotUsed(req)
 	l.w.Log.Info("Handling resync request",
 		"resources", len(req.Desired),
 		"resourceVersion", req.ResourceVersion,
 		"scope", req.Scope.String(),
-		"heal", req.Heal,
 		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
 		"openWindow", l.openWindow != nil,
 		"pendingWrites", len(l.pendingWrites))
-	// A heal must never finalize a window (it only ever runs at idle); only a non-heal resync
-	// force-finalizes the open window to preserve arrival order before its mark-and-sweep.
-	if !req.Heal {
-		l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
-	}
+	// A resync force-finalizes the open window to preserve arrival order before its mark-and-sweep.
+	l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
 
 	pendingWrite, err := l.w.buildResyncPendingWrite(l.w.ctx, req, &ResyncStats{})
 	if err != nil {
@@ -115,6 +56,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		req.reply(ResyncResult{Err: err})
 		return
 	}
+	pendingWrite.Desired, pendingWrite.ownedElsewhere = l.withoutOwnedElsewhere(req)
 	pendingWrite.Committed = new(bool)
 	pendingWrite.origin.resync = req
 	l.decide(*pendingWrite)
@@ -186,11 +128,15 @@ func estimateDesiredSize(desired []manifestanalyzer.DesiredResource) int64 {
 // subtree's secret encryptor, folds the desired snapshot over the worktree, records
 // the plan stats on the caller's reply, and commits once when anything changed. A
 // resync that finds the mirror already in sync changes nothing and creates no commit.
+//
+// The snapshot is used once, to decide: the first execution records the upserts that changed the
+// tree and the documents the sweep removed (resyncActions), and a replay onto a newer tip applies
+// exactly those and never sweeps again (docs/design/applier-echoes.md, F2).
 func (w *BranchWorker) executeResyncPendingWrite(
 	ctx context.Context,
 	repo *gogit.Repository,
 	worktree *gogit.Worktree,
-	pendingWrite PendingWrite,
+	pendingWrite *PendingWrite,
 ) (int, error) {
 	target := pendingWrite.Target()
 	base := sanitizePath(target.Path)
@@ -213,14 +159,15 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	if target.Suspend {
 		log.FromContext(ctx).V(1).Info("resync suppressed: GitTarget is suspended",
 			"gitTarget", target.Namespace+"/"+target.Name, "path", base)
+		if !pendingWrite.actionsDecided {
+			// It decides nothing, so it is neither retained nor pushed.
+			pendingWrite.actionsDecided, pendingWrite.resyncActions = true, &resyncActions{}
+		}
 		return 0, nil
 	}
 
-	// Stage the path's bootstrap template (its directory and any .sops.yaml) before
-	// applying, exactly as the per-event path does via ensureBootstrapTemplateInPath.
-	// Without it a first resync into a fresh subtree has no directory for SOPS to chdir
-	// into when it encrypts a Secret.
-	if err := ensureBootstrapTemplateInPath(repo, base, target.BootstrapOptions); err != nil {
+	createsFolder, err := stageResyncFolder(repo, base, target)
+	if err != nil {
 		return 0, err
 	}
 
@@ -236,19 +183,39 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		*pendingWrite.Committed = false
 	}
 
-	stats, anyChanges, err := w.applyResyncToWorktree(
-		ctx, worktree, base, target, pendingWrite.Desired, pendingWrite.Scope,
-	)
+	stats, anyChanges, err := w.decideOrReplayResync(ctx, worktree, base, target, pendingWrite, createsFolder)
 	if err != nil {
 		return 0, err
 	}
-	if pendingWrite.ResyncStats != nil {
-		*pendingWrite.ResyncStats = stats
-	}
-	if !anyChanges {
+	if !anyChanges && (!createsFolder || !pendingWrite.resyncActions.bootstrap) {
 		return 0, nil
 	}
+	if err := commitResync(ctx, worktree, target, pendingWrite, stats); err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
 
+// stageResyncFolder stages the path's bootstrap template (its directory and any .sops.yaml) before
+// a resync applies, exactly as the per-event path does via ensureBootstrapTemplateInPath. Without it
+// a first resync into a fresh subtree has no directory for SOPS to chdir into when it encrypts a
+// Secret. It reports whether that creates a folder an applier applies: one must exist before the
+// applier is asked to apply it, since Argo CD retries a sync of a missing path for minutes and Flux
+// fails it, so the resync then commits it even with no object (resyncActions.bootstrap).
+func stageResyncFolder(repo *gogit.Repository, base string, target ResolvedTargetMetadata) (bool, error) {
+	// Read before the bootstrap creates the directory.
+	createsFolder := target.Applied && base != "" && !headHasDir(repo, base)
+	if err := ensureBootstrapTemplateInPath(repo, base, target.BootstrapOptions); err != nil {
+		return false, err
+	}
+	return createsFolder, nil
+}
+
+// commitResync commits what a resync changed in the worktree.
+func commitResync(
+	ctx context.Context, worktree *gogit.Worktree, target ResolvedTargetMetadata, pendingWrite *PendingWrite,
+	stats ResyncStats,
+) error {
 	// Render the provider's reconcile commit template (e.g. a custom reconcile message),
 	// counting the resources the resync changed and naming the scoped type + pinned
 	// revision — the resync carries no events, so it cannot reuse the event-count path.
@@ -258,15 +225,16 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	rendered, err := renderReconcileCommitMessage(
 		changed, target.Name, pendingWrite.Scope, pendingWrite.ResourceVersion, pendingWrite.CommitConfig)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	pendingWrite.CommitMessage = rendered
-	message, options, _, err := pendingWrite.commitMetadata()
+	committed := *pendingWrite
+	committed.CommitMessage = rendered
+	message, options, _, err := committed.commitMetadata()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if _, err := worktree.Commit(message, options); err != nil {
-		return 0, fmt.Errorf("failed to create resync commit: %w", err)
+		return fmt.Errorf("failed to create resync commit: %w", err)
 	}
 	if pendingWrite.Committed != nil {
 		*pendingWrite.Committed = true
@@ -275,7 +243,62 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		"created", stats.Created, "updated", stats.Updated,
 		"deleted", stats.Deleted, "skipped", stats.Skipped,
 		"placementSkipped", stats.PlacementSkipped, "resourceVersion", pendingWrite.ResourceVersion)
-	return 1, nil
+	return nil
+}
+
+// headHasDir reports whether the commit HEAD names, local commits included, holds the directory dir:
+// a file under it. The directory on disk is no answer, since a reset can leave an empty one behind,
+// and Git holds none. An unborn HEAD holds nothing. A HEAD that cannot be read says it holds it: the
+// bootstrap commit is then left out, rather than risked as an empty one.
+func headHasDir(repo *gogit.Repository, dir string) bool {
+	head, err := repo.Head()
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return true
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return true
+	}
+	_, err = tree.Tree(dir)
+	return !errors.Is(err, object.ErrDirectoryNotFound)
+}
+
+// decideOrReplayResync folds a resync into the worktree: the first time, it plans the snapshot and
+// records what it decided on the write, and the stats on the caller's reply; afterwards it applies
+// those decided actions.
+func (w *BranchWorker) decideOrReplayResync(
+	ctx context.Context,
+	worktree *gogit.Worktree,
+	base string,
+	target ResolvedTargetMetadata,
+	pendingWrite *PendingWrite,
+	createsFolder bool,
+) (ResyncStats, bool, error) {
+	if pendingWrite.actionsDecided {
+		return w.applyResyncActionsToWorktree(ctx, worktree, base, target, pendingWrite.resyncActions)
+	}
+	stats, anyChanges, actions, err := w.planResyncToWorktree(
+		ctx, worktree, base, target, pendingWrite.Desired, pendingWrite.Scope, pendingWrite.ownedElsewhere,
+	)
+	if err != nil {
+		return ResyncStats{}, false, err
+	}
+	if actions == nil {
+		actions = &resyncActions{}
+	}
+	actions.bootstrap = createsFolder
+	pendingWrite.actionsDecided, pendingWrite.resyncActions = true, actions
+	if pendingWrite.ResyncStats != nil {
+		*pendingWrite.ResyncStats = stats
+	}
+	return stats, anyChanges, nil
 }
 
 func (w *BranchWorker) refuseUnsafeWorktree(
@@ -306,7 +329,7 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 	return nil
 }
 
-// applyResyncToWorktree is the streaming mark-and-sweep resync apply (M8), described
+// planResyncToWorktree is the streaming mark-and-sweep resync apply (M8), described
 // in docs/spec/reconcile-via-watchlist-mark-and-sweep.md ("Two Paths, One
 // Plan Type" — the Resync path). It folds the COMPLETE desired snapshot over the
 // content-derived store of the GitTarget subtree:
@@ -332,23 +355,92 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 // set is narrowed by a bad scope, an outage, or a controller that does not understand a newer
 // scope field updates and creates but removes nothing. `always` is the opt-in that restores
 // the full convergence described above.
-func (w *BranchWorker) applyResyncToWorktree(
+//
+// It also returns what the resync decided: the actions a replay applies instead of planning the
+// snapshot again. keep names, by objectKey, the objects another applier owns: they are not in
+// desired, and their documents are not swept.
+func (w *BranchWorker) planResyncToWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,
 	base string,
 	target ResolvedTargetMetadata,
 	desired []manifestanalyzer.DesiredResource,
 	scope *ResyncScope,
-) (ResyncStats, bool, error) {
+	keep map[string]bool,
+) (ResyncStats, bool, *resyncActions, error) {
 	// Normalize the prune mode ONCE, here, on this function's own copy of the metadata: everything
 	// below asks the mode a question (may I sweep? what do I report?), and the empty string answers
 	// "Never" to all of them while meaning "OnEvent". Doing it at the single entry point is why no
 	// individual reader has to remember.
 	target.PruneMode = target.PruneMode.OrDefault()
+	batch, scoped, err := w.resyncBatch(ctx, worktree, base, target)
+	if err != nil {
+		return ResyncStats{}, false, nil, err
+	}
+	// The store is built from the same files the planner reads, so the plan and the apply
+	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
+	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
+	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
+	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope, target.PruneMode,
+		batch.unrenderedResources(), keep)
+	w.reportRetainedOrphans(ctx, plan, target, base, scope)
+
+	stats, actions, err := batch.applyResyncPlan(ctx, desired, plan)
+	if err != nil {
+		return ResyncStats{}, false, nil, err
+	}
+	stats.PruneMode = target.PruneMode
+	// Anchored at renderBase; the write jail (writeSubdir) is enforced inside the flush.
+	changed, err := batch.flush(ctx, worktree, scoped.root, scoped.renderBase)
+	return stats, changed, actions, err
+}
+
+// applyResyncActionsToWorktree replays what a resync decided onto a newer tree: each upsert is
+// planned onto it, and each document the sweep removed is removed again where it is still there,
+// while the target's prune mode still sweeps. Nothing else is planned, so an object that changed
+// nothing, and a document the newer tip added, are left alone (docs/design/applier-echoes.md, F2).
+func (w *BranchWorker) applyResyncActionsToWorktree(
+	ctx context.Context,
+	worktree *gogit.Worktree,
+	base string,
+	target ResolvedTargetMetadata,
+	actions *resyncActions,
+) (ResyncStats, bool, error) {
+	target.PruneMode = target.PruneMode.OrDefault()
+	if actions == nil || actions.empty() {
+		return ResyncStats{PruneMode: target.PruneMode}, false, nil
+	}
+	batch, scoped, err := w.resyncBatch(ctx, worktree, base, target)
+	if err != nil {
+		return ResyncStats{}, false, err
+	}
+	stats, err := batch.applyResyncActions(ctx, actions, target.PruneMode)
+	if err != nil {
+		return ResyncStats{}, false, err
+	}
+	stats.PruneMode = target.PruneMode
+	changed, err := batch.flush(ctx, worktree, scoped.root, scoped.renderBase)
+	return stats, changed, err
+}
+
+// resyncScoped is the scan a resync's batch was built from, and where its flush is anchored.
+type resyncScoped struct {
+	root       string
+	renderBase string
+	scan       manifestanalyzer.FolderScan
+}
+
+// resyncBatch builds the write batch a resync plans in, behind the gates every resync passes.
+func (w *BranchWorker) resyncBatch(
+	ctx context.Context,
+	worktree *gogit.Worktree,
+	base string,
+	target ResolvedTargetMetadata,
+) (*writeBatch, resyncScoped, error) {
 	root := worktree.Filesystem().Root()
 	scoped, err := scanRenderScope(root, base)
 	if err != nil {
-		return ResyncStats{}, false, err
+		return nil, resyncScoped{}, err
 	}
 
 	batch := newWriteBatch(
@@ -372,30 +464,15 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// so the watch layer surfaces it as a blocked stream instead of writing into a folder it
 	// does not understand.
 	if err := batch.refusal(); err != nil {
-		return ResyncStats{}, false, err
+		return nil, resyncScoped{}, err
 	}
 	// The same precondition the live path applies: a folder declared namespace-free that two
 	// source namespaces reach cannot tell its own documents apart, and a resync writes exactly
 	// what the live path writes.
 	if err := batch.sourceNamespaceRefusal(); err != nil {
-		return ResyncStats{}, false, err
+		return nil, resyncScoped{}, err
 	}
-	// The store is built from the same files the planner reads, so the plan and the apply
-	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
-	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
-	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
-	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope, target.PruneMode,
-		batch.unrenderedResources())
-	w.reportRetainedOrphans(ctx, plan, target, base, scope)
-
-	stats, err := batch.applyResyncPlan(ctx, desired, plan)
-	if err != nil {
-		return ResyncStats{}, false, err
-	}
-	stats.PruneMode = target.PruneMode
-	// Anchored at renderBase; the write jail (writeSubdir) is enforced inside the flush.
-	changed, err := batch.flush(ctx, worktree, root, scoped.renderBase)
-	return stats, changed, err
+	return batch, resyncScoped{root: root, renderBase: scoped.renderBase, scan: scoped.scan}, nil
 }
 
 // applyResyncPlan folds the desired set and the plan's managed drops into the
@@ -404,12 +481,16 @@ func (w *BranchWorker) applyResyncToWorktree(
 // re-derive each target's position from the live bytes, exactly as the steady-state
 // delete path does. An upsert error aborts before any flush, so a failed resync
 // writes nothing.
+//
+// It returns what the resync decided: every upsert that changed the tree, and every document the
+// sweep removed (resyncActions).
 func (wb *writeBatch) applyResyncPlan(
 	ctx context.Context,
 	desired []manifestanalyzer.DesiredResource,
 	plan manifestanalyzer.Plan,
-) (ResyncStats, error) {
+) (ResyncStats, *resyncActions, error) {
 	var stats ResyncStats
+	actions := &resyncActions{}
 	// Declared from the PLAN, before the first upsert: an upsert that refuses returns immediately,
 	// and the sweep below it would never run, so the refusal would carry evidence saying this
 	// flush removes nothing while the plan says otherwise. See writeBatch.plannedRemovals.
@@ -423,9 +504,13 @@ func (wb *writeBatch) applyResyncPlan(
 		// Count from what the upsert actually did, not from the plan: a sensitive
 		// resource is PlanSkip in the plan but applyUpsert re-encrypts and changes it,
 		// so plan-based stats would report a real commit as skipped.
+		wb.beginEvent()
 		outcome, err := wb.applyUpsert(ctx, eventForDesired(dr))
 		if err != nil {
-			return ResyncStats{}, err
+			return ResyncStats{}, nil, err
+		}
+		if wb.eventChanged() {
+			actions.upserts = append(actions.upserts, dr)
 		}
 		switch outcome {
 		case upsertCreated:
@@ -454,10 +539,12 @@ func (wb *writeBatch) applyResyncPlan(
 		}
 		removed, err := wb.removeDocument(ctx, action.Resource, target, documentDeletedSweep)
 		if err != nil {
-			return ResyncStats{}, err
+			return ResyncStats{}, nil, err
 		}
 		if removed {
 			stats.Deleted++
+			actions.deletes = append(actions.deletes,
+				resyncDelete{resource: action.Resource, identity: action.Identity})
 		}
 	}
 	// Skipped stays a plan view (documents present but not editable in place); it is
@@ -468,7 +555,90 @@ func (wb *writeBatch) applyResyncPlan(
 	// writer at all.
 	stats.Retained = plan.RetainedOrphans
 	wb.tallyPruneRetention(plan)
+	return stats, actions, nil
+}
+
+// resyncActions is what a resync decided on the tree it was first committed on
+// (docs/design/applier-echoes.md, F2): the snapshot's objects whose upsert changed that tree, and the
+// documents its sweep removed, by identity. The snapshot's full membership is used once, to decide;
+// a replay applies these and nothing else, so it never sweeps again.
+type resyncActions struct {
+	upserts []manifestanalyzer.DesiredResource
+	deletes []resyncDelete
+	// bootstrap is a folder an applier applies that did not exist: the resync creates it with its
+	// bootstrap files, objects or not, so the applier is never asked to apply a missing path.
+	bootstrap bool
+}
+
+// resyncDelete is one document a resync's sweep removed: its resource, and the manifest identity it
+// was found by.
+type resyncDelete struct {
+	resource itypes.ResourceIdentifier
+	identity manifestedit.Identity
+}
+
+// empty reports whether the resync decided nothing: it changed nothing in Git, so it does not exist.
+func (a *resyncActions) empty() bool {
+	return len(a.upserts) == 0 && len(a.deletes) == 0 && !a.bootstrap
+}
+
+// applyResyncActions replays a resync's decided actions onto this batch's tree. An upsert is
+// planned onto it as at first; a delete removes its document if the tree still holds it, located
+// by manifest identity first and by resource identity otherwise, as a live delete is, and only
+// while pruneMode still sweeps: a policy tightened since the resync was decided is obeyed.
+func (wb *writeBatch) applyResyncActions(
+	ctx context.Context,
+	actions *resyncActions,
+	pruneMode v1alpha3.PruneMode,
+) (ResyncStats, error) {
+	var stats ResyncStats
+	sweeps := pruneMode.SweepsOrphans()
+	if sweeps {
+		wb.declarePlannedRemovals(len(actions.deletes))
+	}
+	for _, dr := range actions.upserts {
+		outcome, err := wb.applyUpsert(ctx, eventForDesired(dr))
+		if err != nil {
+			return ResyncStats{}, err
+		}
+		switch outcome {
+		case upsertCreated:
+			stats.Created++
+		case upsertUpdated:
+			stats.Updated++
+		case upsertSkippedUnsafe:
+			stats.PlacementSkipped++
+		case upsertNoChange:
+		}
+	}
+	if !sweeps {
+		return stats, nil
+	}
+	for _, deleted := range actions.deletes {
+		target, found := wb.resolveResyncDelete(deleted)
+		if !found {
+			continue
+		}
+		removed, err := wb.removeDocument(ctx, deleted.resource, target, documentDeletedSweep)
+		if err != nil {
+			return ResyncStats{}, err
+		}
+		if removed {
+			stats.Deleted++
+		}
+	}
 	return stats, nil
+}
+
+// resolveResyncDelete locates, in this batch's tree, the document a resync's sweep removed.
+func (wb *writeBatch) resolveResyncDelete(deleted resyncDelete) (deleteTarget, bool) {
+	if dm := wb.store.ByManifestIdentity[deleted.identity]; dm != nil {
+		return deleteTarget{
+			filePath: wb.docLoc[dm].FilePath,
+			id:       rawManifestIDForCurrentBytes(deleted.identity, dm),
+		}, true
+	}
+	return wb.resolveDelete(Event{Identifier: deleted.resource})
 }
 
 // retentionLogInterval bounds how often ONE GitTarget subtree's suppressed sweep is reported at
@@ -577,7 +747,8 @@ func eventForDesired(dr manifestanalyzer.DesiredResource) Event {
 //
 // unrendered are the documents the folder holds but does not render (writeBatch.unrenderedResources).
 // They are outside what the target renders, so the sweep neither removes them again nor counts them
-// as retained.
+// as retained. keep, by objectKey, are the objects another applier owns (apply_ownership.go): the
+// sweep leaves their documents alone too.
 func resyncPlan(
 	store *manifestanalyzer.ManifestStore,
 	files []manifestedit.FileContent,
@@ -585,8 +756,11 @@ func resyncPlan(
 	scope *ResyncScope,
 	pruneMode v1alpha3.PruneMode,
 	unrendered map[itypes.ResourceIdentifier]bool,
+	keep map[string]bool,
 ) manifestanalyzer.Plan {
-	inScope := func(ri itypes.ResourceIdentifier) bool { return scope.Matches(ri) && !unrendered[ri] }
+	inScope := func(ri itypes.ResourceIdentifier) bool {
+		return scope.Matches(ri) && !unrendered[ri] && !keep[objectKey(ri)]
+	}
 	return manifestanalyzer.BuildScopedPlan(store, files, desired, resyncPlanPolicy(pruneMode), inScope)
 }
 

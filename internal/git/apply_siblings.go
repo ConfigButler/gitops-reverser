@@ -9,15 +9,16 @@ import (
 )
 
 // A branch worker is keyed by its GitProvider, so two GitProviders naming one repository give one
-// branch two workers. A Kustomization applies the tip of that branch whichever of them wrote it, so
-// the branch is quiet only when BOTH are: an apply one worker asks for while the other holds an open
-// window would revert that window's edits before they reach Git. branchSiblings is what lets each
-// see the other.
+// branch two workers. Their appliers can apply one GitRepository, and a source group has one
+// operation at a time (apply_groups.go), so the workers claim the group before they send.
+// branchSiblings is what lets each see the other's claims.
 
 // branchSiblings groups the live workers by the repository and branch they write.
 type branchSiblings struct {
 	mu    sync.Mutex
 	byKey map[string]map[*BranchWorker]struct{}
+	// flushGen numbers the flushes workers ask of their siblings (apply_sibling_flush.go).
+	flushGen uint64
 }
 
 func newBranchSiblings() *branchSiblings {
@@ -49,7 +50,7 @@ func (s *branchSiblings) add(w *BranchWorker) {
 	w.siblings = s
 }
 
-// remove forgets a worker that is stopping, and wakes the others: whatever it held busy is gone.
+// remove forgets a worker that is stopping, and wakes the others: the groups it claimed are released.
 func (s *branchSiblings) remove(w *BranchWorker) {
 	key, ok := siblingKey(w)
 	if s == nil || !ok {
@@ -64,29 +65,8 @@ func (s *branchSiblings) remove(w *BranchWorker) {
 	s.wakeOthers(w)
 }
 
-// othersBusy reports whether another worker on w's repository and branch is busy writing, and
-// whether one has work items queued or in hand: a queued watch event is an edit that is live and
-// not yet decided, and the item a loop is handling may be committing and pushing before the wake
-// that publishes it ends.
-func (s *branchSiblings) othersBusy(w *BranchWorker) (bool, bool) {
-	key, ok := siblingKey(w)
-	if !ok {
-		return false, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	writing, working := false, false
-	for sibling := range s.byKey[key] {
-		if sibling != w {
-			writing = writing || sibling.busyWriting.Load()
-			working = working || sibling.inflightItems.Load() > 0
-		}
-	}
-	return writing, working
-}
-
 // wakeOthers wakes every other worker on w's repository and branch, so one that held back an
-// attempt because w was busy looks again.
+// attempt for a group w had out looks again.
 func (s *branchSiblings) wakeOthers(w *BranchWorker) {
 	key, ok := siblingKey(w)
 	if !ok {
@@ -102,14 +82,6 @@ func (s *branchSiblings) wakeOthers(w *BranchWorker) {
 	s.mu.Unlock()
 	for _, sibling := range others {
 		sibling.wakeApplier()
-	}
-}
-
-// publishWriteBusy records whether this worker holds live writes not yet on the remote, and wakes
-// its siblings when it stops: they may have held an attempt back for it.
-func (w *BranchWorker) publishWriteBusy(busy bool) {
-	if was := w.busyWriting.Swap(busy); was && !busy && w.siblings != nil {
-		w.siblings.wakeOthers(w)
 	}
 }
 
@@ -185,19 +157,7 @@ func (w *BranchWorker) groupOutOnSibling(group string) bool {
 	return group != "" && w.siblings != nil && w.siblings.groupOutElsewhere(w, group)
 }
 
-// releaseInflightItem takes one item off the in-flight count, and wakes the siblings when it was
-// the last: they may have held an attempt back for it.
+// releaseInflightItem takes one item off the in-flight count, which the queue-depth gauge reads.
 func (w *BranchWorker) releaseInflightItem() {
-	if w.inflightItems.Add(-1) == 0 && w.siblings != nil {
-		w.siblings.wakeOthers(w)
-	}
-}
-
-// siblingBusy reports whether another worker on this repository and branch is busy writing, and
-// whether one has work items queued or in hand (othersBusy).
-func (w *BranchWorker) siblingBusy() (bool, bool) {
-	if w.siblings == nil {
-		return false, false
-	}
-	return w.siblings.othersBusy(w)
+	w.inflightItems.Add(-1)
 }

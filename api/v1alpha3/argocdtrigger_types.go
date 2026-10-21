@@ -4,15 +4,11 @@ package v1alpha3
 
 import (
 	"strings"
-	"time"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
-
-// Why no quietPeriod: it times a CatchUp, and an Application is never asked to catch up. With
-// automated sync off it applies nothing on its own, so it holds no stale state to correct.
 
 // ArgoCDTriggerSpec names the Argo CD Application the trigger holds, and the cluster it is in.
 type ArgoCDTriggerSpec struct {
@@ -77,7 +73,7 @@ type ArgoCDTriggerStatus struct {
 	Operation *ApplyOperation `json:"operation,omitempty"`
 
 	// RepairPending is true while a Repair sync is pending for the Application: a sync reverted an
-	// API edit made after it was asked for, so the cluster runs an older value than Git until the
+	// API edit made after its flush, so the cluster runs an older value than Git until the
 	// next sync.
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
@@ -108,9 +104,9 @@ type ArgoCDTriggerSource struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ArgoCDTrigger holds an Argo CD Application, with automated sync off, for GitOps Reverser, which
-// starts every sync it runs: only on a branch with nothing live missing from the commit, after a
-// commit GitOps Reverser did not push, after a refused edit, and after a reverted edit. GitTargets
-// name it with spec.applyTriggerRef.
+// starts every sync it runs, each after publishing the edits pending on the branch: after a commit
+// GitOps Reverser did not push, after a refused edit, after a reverted edit, and to adopt what the
+// API created or converge the Application (CatchUp). GitTargets name it with spec.applyTriggerRef.
 type ArgoCDTrigger struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -163,9 +159,6 @@ func (t *ArgoCDTrigger) Applier() types.NamespacedName {
 	}
 }
 
-// EffectiveQuietPeriod is the default: it only times a CatchUp, which an Application is never asked.
-func (t *ArgoCDTrigger) EffectiveQuietPeriod() time.Duration { return DefaultApplierQuietPeriod }
-
 // SourceBinding is status.source's repoURL, and the branch its targetRevision names ("HEAD" for an
 // empty one, which follows no branch GitOps Reverser writes).
 func (t *ArgoCDTrigger) SourceBinding() (string, string, bool) {
@@ -184,9 +177,6 @@ func (t *ArgoCDTrigger) SourceBinding() (string, string, bool) {
 func (t *ArgoCDTrigger) SharedSource() (types.NamespacedName, bool) {
 	return types.NamespacedName{}, false
 }
-
-// Prefetches is false: an Application has no source object to fetch ahead.
-func (t *ArgoCDTrigger) Prefetches() bool { return false }
 
 // Operation is status.operation.
 func (t *ArgoCDTrigger) Operation() *ApplyOperation { return t.Status.Operation }

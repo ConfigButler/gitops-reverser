@@ -288,7 +288,7 @@ func TestApplyTriggerReconcile_FluxVerdicts(t *testing.T) {
 			allowed: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded,
 			wantSource: &configbutleraiv1alpha3.FluxTriggerSource{
 				GitRepository: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "platform"},
-				URL:           "https://github.com/acme/platform", Branch: "main", Prefetch: true,
+				URL:           "https://github.com/acme/platform", Branch: "main",
 			}},
 		{name: "no such Kustomization, which may be on its way", allowed: true,
 			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonApplierNotFound},

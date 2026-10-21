@@ -5,10 +5,10 @@
 > Status: decided
 > Captured: 2026-06-08
 > Related:
-> [file-agnostic-placement.md](../layout/new-file-placement-rules.md),
+> [../layout/new-file-placement-rules.md](../layout/new-file-placement-rules.md),
 > [../layout/contextual-namespace.md](../layout/contextual-namespace.md),
-> [../sops-repo-bootstrap-and-key-management-architecture.md](../finished/sops-repo-bootstrap-and-key-management-architecture.md),
-> [../sops-repo-bootstrap-out-of-scope.md](../finished/sops-repo-bootstrap-out-of-scope.md)
+> [../finished/sops-repo-bootstrap-and-key-management-architecture.md](../finished/sops-repo-bootstrap-and-key-management-architecture.md),
+> [../finished/sops-repo-bootstrap-out-of-scope.md](../finished/sops-repo-bootstrap-out-of-scope.md)
 
 ## Decision
 
@@ -17,7 +17,7 @@ SOPS file**. We do **not** write SOPS-encrypted multi-document YAML (no
 `\n---\n`-separated documents inside an encrypted file).
 
 Plaintext manifests may still be multi-document where that is convenient (see
-[file-agnostic-placement.md](../layout/new-file-placement-rules.md)); this decision is
+[new-file-placement-rules.md](../layout/new-file-placement-rules.md)); this decision is
 scoped to files we encrypt with SOPS.
 
 ## Why this came up
@@ -146,7 +146,11 @@ and full compatibility with stock SOPS and Flux.
   it never appends an encrypted resource as an extra `---` document.
 - Placement logic for encrypted resources must therefore not co-locate multiple
   resources in a single encrypted file, even where the plaintext placement rules
-  would allow a multi-doc file.
+  would allow a multi-doc file. Placement refuses to append a sensitive resource
+  to a file that already holds a document (`sensitive_append`), and refuses to
+  append a plaintext resource to a file that holds an encrypted one
+  (`plaintext_onto_encrypted`), in
+  [`placement.go`](../../internal/manifestanalyzer/placement.go).
 - Re-encrypting a single-resource file is acceptable and expected when that
   resource's content changes; it is not the thing we are avoiding. What we avoid
   is one resource's change forcing a re-encrypt that touches *other* resources.
