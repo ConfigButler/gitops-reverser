@@ -140,7 +140,7 @@ func describeMissingParentRecoverySpec() {
 	AfterAll(func() {
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, providerName)
 		cleanupNamespace(testNs)
 	})
 
@@ -254,7 +254,7 @@ data:
 	AfterAll(func() {
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, providerName)
 		cleanupNamespace(testNs)
 	})
 

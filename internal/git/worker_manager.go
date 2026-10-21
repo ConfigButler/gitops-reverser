@@ -560,6 +560,11 @@ func (m *WorkerManager) notifyGitBranchLocked(gitBranch k8stypes.NamespacedName)
 	}
 }
 
+// WakeGitBranch asks the GitBranch reconciler to look at gitBranch now: a branch claim moved to it.
+func (m *WorkerManager) WakeGitBranch(gitBranch k8stypes.NamespacedName) {
+	m.notifyGitBranchLocked(gitBranch)
+}
+
 // GitBranchEvents carries a GitBranch whose branch worker proved something new about the remote or
 // whose publication report changed, so the GitBranch controller publishes status.remote within one
 // reconcile instead of at its next requeue. Nil for a manager not built by NewWorkerManager.

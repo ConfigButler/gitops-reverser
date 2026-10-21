@@ -100,7 +100,7 @@ func provisionValuesFileEnv(caseName string) valuesFileEnv {
 	verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
 	DeferCleanup(func() {
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, providerName)
 		cleanupNamespace(testNs)
 	})
 

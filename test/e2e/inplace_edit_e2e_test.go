@@ -188,7 +188,7 @@ var _ = Describe(
 			}
 			cleanupWatchRule(ruleName, testNs)
 			cleanupGitTarget(destName, testNs)
-			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+			deleteGitProvider(testNs, providerName)
 			cleanupNamespace(testNs)
 		})
 

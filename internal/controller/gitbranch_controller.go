@@ -344,8 +344,15 @@ func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutler
 		return nil
 	}
 	if r.WorkerManager != nil {
-		r.WorkerManager.Claims().Release(branch.UID)
+		claims := r.WorkerManager.Claims()
+		key, _, held := claims.HeldBy(client.ObjectKeyFromObject(branch))
+		claims.Release(branch.UID)
 		r.WorkerManager.RetireGitBranch(client.ObjectKeyFromObject(branch))
+		// The next candidate holds the branch now. It may be a GitBranch stalled on BranchConflict,
+		// which nothing else would reconcile before its steady requeue.
+		if next, taken := claims.Holder(key); held && taken {
+			r.WorkerManager.WakeGitBranch(next.GitBranch)
+		}
 	}
 	r.proofsMu.Lock()
 	delete(r.proofs, branch.UID)

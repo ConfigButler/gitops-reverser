@@ -204,6 +204,20 @@ func gitBranchName(providerName, branch string) string {
 	return providerName + "-" + strings.ReplaceAll(strings.ToLower(branch), "/", "-")
 }
 
+// gitBranchProviderLabel marks the GitBranches the helpers create with the GitProvider they name, so
+// deleting that GitProvider in a spec's cleanup deletes them too (deleteGitProvider). A GitBranch
+// left behind keeps holding its repository branch, and the next spec's GitBranch on that branch
+// would report BranchConflict.
+const gitBranchProviderLabel = "e2e.configbutler.ai/git-provider"
+
+// deleteGitProvider deletes a GitProvider and the GitBranches the helpers created for it, waiting
+// for the GitBranches' finalizers so their branch is free when the next spec claims it.
+func deleteGitProvider(namespace, name string) {
+	_, _ = kubectlRunInNamespace(namespace, "delete", "gitbranch", "-l", gitBranchProviderLabel+"="+name,
+		"--ignore-not-found=true", "--wait=true", "--timeout=60s")
+	_, _ = kubectlRunInNamespace(namespace, "delete", "gitprovider", name, "--ignore-not-found=true")
+}
+
 // gitBranchManifest is the GitBranch gitBranchName(providerName, "main") in namespace, as a YAML
 // document followed by a separator, for a spec that applies its GitTarget as an inline manifest.
 func gitBranchManifest(namespace, providerName string) string {
@@ -213,12 +227,14 @@ kind: GitBranch
 metadata:
   name: %s
   namespace: %s
+  labels:
+    %s: %s
 spec:
   gitProviderRef:
     name: %s
   branch: %s
 ---
-`, gitBranchName(providerName, branch), namespace, providerName, branch)
+`, gitBranchName(providerName, branch), namespace, gitBranchProviderLabel, providerName, providerName, branch)
 }
 
 // createGitTarget creates a GitTarget on the GitBranch of a GitProvider's branch, creating that
@@ -391,6 +407,10 @@ func cleanupNamespace(name string) {
 
 func cleanupNamespacedResource(namespace, resource, name string) {
 	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("%s %s/%s", resource, namespace, name), namespace) {
+		return
+	}
+	if resource == "gitprovider" {
+		deleteGitProvider(namespace, name)
 		return
 	}
 	_, _ = kubectlRunInNamespace(namespace, "delete", resource, name, "--ignore-not-found=true")

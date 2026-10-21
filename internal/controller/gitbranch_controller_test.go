@@ -274,6 +274,9 @@ func TestGitBranch_DeletionStopsTheWorkerAndReleasesTheBranch(t *testing.T) {
 	assert.False(t, live, "the worker stopped before the finalizer went")
 	require.Error(t, f.client.Get(context.Background(), holder, stored), "the finalizer is gone, and so is the object")
 
+	require.Len(t, f.workers.GitBranchEvents(), 1, "the next candidate is woken, not left stalled")
+	woken := (<-f.workers.GitBranchEvents()).Object
+	assert.Equal(t, "team-b/main", woken.GetNamespace()+"/"+woken.GetName())
 	next := f.reconcile(t, "team-b", "main")
 	assert.Equal(t, metav1.ConditionTrue, readyOf(next).Status, readyOf(next).Message)
 }

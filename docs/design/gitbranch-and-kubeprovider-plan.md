@@ -2,7 +2,7 @@
 
 Status: **plan**, 2026-10-21. Nothing here is built. The current contract stays in
 [architecture.md](../architecture.md) and [configuration.md](../configuration.md) until each phase
-ships. [ideal-shared-stuff.md](ideal-shared-stuff.md) is the analysis behind this plan; this page
+ships. `ideal-shared-stuff.md` is the analysis behind this plan; this page
 records what we decided from it and in what order we build it.
 
 The plan breaks the API on purpose, more than once. There are no production users to carry across,

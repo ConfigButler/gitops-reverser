@@ -69,7 +69,7 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 	AfterAll(func() {
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		deleteGitProvider(testNs, providerName)
 		cleanupNamespace(testNs)
 	})
 

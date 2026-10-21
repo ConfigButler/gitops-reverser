@@ -3,6 +3,8 @@ kind: GitBranch
 metadata:
   name: {{ .GitBranchName }}
   namespace: {{ .Namespace }}
+  labels:
+    e2e.configbutler.ai/git-provider: {{ .ProviderName }}
 spec:
   gitProviderRef:
     name: {{ .ProviderName }}
