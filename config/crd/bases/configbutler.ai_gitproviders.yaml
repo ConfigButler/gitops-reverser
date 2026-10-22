@@ -235,41 +235,10 @@ spec:
                 type: object
               receiver:
                 description: |-
-                  Receiver lets the Git host tell GitOps Reverser that somebody pushed. Point the host's push
-                  webhook at the receiver listener plus status.webhookPath, with the Secret's token as the
-                  webhook secret. A delivery is only a hint: it makes GitOps Reverser read where the branch is
-                  on the remote, and what the remote says decides whether a GitTarget's applier is asked to
-                  apply. Without a receiver, a foreign push is still found, by the next rejected push or by
-                  the periodic refresh.
-                properties:
-                  secretRef:
-                    description: |-
-                      SecretRef names a Secret in this namespace whose "token" key is the webhook secret. The
-                      token also derives status.webhookPath, so rotating it moves the path: register the new path
-                      with the new secret.
-                    properties:
-                      name:
-                        description: Name of the referent.
-                        type: string
-                    required:
-                    - name
-                    type: object
-                  type:
-                    description: |-
-                      Type is the payload and signature the Git host sends. "github" checks X-Hub-Signature-256,
-                      "gitlab" checks X-Gitlab-Token, "gitea" checks X-Gitea-Signature, and "generic-hmac" checks
-                      X-Signature: sha256=<hex HMAC of the body> over a {"repository", "branch", "after"} body,
-                      for a relay of your own.
-                    enum:
-                    - github
-                    - gitlab
-                    - gitea
-                    - generic-hmac
-                    type: string
-                required:
-                - secretRef
-                - type
+                  RemovedReceiver is the old place of a GitReceiver's type and secretRef. It is never read;
+                  setting it is refused.
                 type: object
+                x-kubernetes-preserve-unknown-fields: true
               secretRef:
                 description: |-
                   SecretRef for authentication credentials (may be nil for public repos)
@@ -303,6 +272,9 @@ spec:
             - message: spec.url is immutable; delete and recreate the GitProvider
                 to point at a different repository
               rule: self.url == oldSelf.url
+            - message: 'spec.receiver was replaced by a GitReceiver: create one with
+                this type and secretRef, and set spec.gitReceiverRef to it'
+              rule: '!has(self.receiver)'
           status:
             description: status defines the observed state of GitProvider
             properties:
@@ -390,12 +362,6 @@ spec:
                   SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
                   Register this as a signing key on your git platform.
                   Only populated when commit.signing is configured and a signing key is available.
-                type: string
-              webhookPath:
-                description: |-
-                  WebhookPath is the path spec.receiver is served on, under the receiver listener:
-                  /git-push/ and a hash of this provider's name and the receiver token. Empty without
-                  spec.receiver, and while the token Secret or its "token" key is missing.
                 type: string
             type: object
         required:

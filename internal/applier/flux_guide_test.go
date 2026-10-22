@@ -43,11 +43,13 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	objects := guideExampleObjects(t, fluxGuide)
 
 	var provider v1alpha3.GitProvider
+	var receiver v1alpha3.GitReceiver
 	var branch v1alpha3.GitBranch
 	var target v1alpha3.GitTarget
 	var trigger v1alpha3.FluxTrigger
 	var secret corev1.Secret
 	decodeStrict(t, objects, "GitProvider", &provider)
+	decodeStrict(t, objects, "GitReceiver", &receiver)
 	decodeStrict(t, objects, "GitBranch", &branch)
 	decodeStrict(t, objects, "GitTarget", &target)
 	decodeStrict(t, objects, v1alpha3.ApplyTriggerKindFlux, &trigger)
@@ -67,8 +69,11 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 		target.Namespace,
 		"the example's GitTarget names a GitBranch in its own namespace",
 	)
-	require.NotNil(t, provider.Spec.Receiver, "the example serves a push receiver")
-	assert.Equal(t, secret.Name, provider.Spec.Receiver.SecretRef.Name)
+	receiverKey, ok := provider.GitReceiverKey()
+	require.True(t, ok, "the example's provider is notified through a GitReceiver")
+	assert.Equal(t, receiver.Key(), receiverKey)
+	assert.Equal(t, secret.Name, receiver.Spec.SecretRef.Name)
+	assert.Equal(t, receiver.Namespace, secret.Namespace, "a GitReceiver reads its token in its own namespace")
 	assert.Equal(t, provider.Namespace, secret.Namespace)
 	assert.NotEmpty(t, secret.StringData[v1alpha3.ReceiverTokenKey], "the receiver reads the token key")
 	require.NotNil(t, target.Spec.ApplyTriggerRef)

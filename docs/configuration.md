@@ -73,7 +73,6 @@ fields that need more than a line.
 | `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
 | `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
 | `commit.signing` | off | SSH commit signing. See [commit signing](#commit-signing) |
-| `receiver` | off | Push webhook endpoint, so the Git host can say somebody pushed. See [receiving push notifications](#receiving-push-notifications-specreceiver) |
 | `gitReceiverRef` | off | The `GitReceiver` whose push deliveries wake this provider's branches: its own namespace, or `namespace` names one whose `accessFrom` admits it |
 
 ### `GitBranch` (namespaced): one branch of the repository

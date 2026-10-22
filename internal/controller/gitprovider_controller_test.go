@@ -308,49 +308,69 @@ var _ = Describe("GitProvider Controller", func() {
 			}
 		})
 
-		It("publishes status.webhookPath while spec.receiver is set, and clears it when removed", func() {
-			// Published ahead of every gate: the remote is unreachable here, and the path is still
-			// what an operator needs to wire the Git host's webhook.
+		It("reports GitReceiverReady from the GitReceiver it names, outside Ready", func() {
+			// Reported ahead of every gate: the remote is unreachable here, and whether a push would
+			// be noticed early is still worth saying while the provider is red.
+			receiver := &configbutleraiv1alpha3.GitReceiver{
+				ObjectMeta: metav1.ObjectMeta{Name: "provider-test-receiver", Namespace: "default"},
+				Spec: configbutleraiv1alpha3.GitReceiverSpec{
+					Type:      configbutleraiv1alpha3.ReceiverTypeGitHub,
+					SecretRef: meta.LocalObjectReference{Name: "provider-test-receiver-token"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, receiver)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, receiver) })
 			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-provider-receiver", Namespace: "default"},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "https://example.invalid/unreachable.git",
 					AllowedBranches: []string{"main"},
-					Receiver: &configbutleraiv1alpha3.GitProviderReceiver{
-						Type:      configbutleraiv1alpha3.ReceiverTypeGitHub,
-						SecretRef: meta.LocalObjectReference{Name: "receiver-token"},
-					},
+					GitReceiverRef:  &meta.NamespacedObjectReference{Name: receiver.Name},
 				},
 			}
-			token := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "receiver-token", Namespace: "default"},
-				Data:       map[string][]byte{configbutleraiv1alpha3.ReceiverTokenKey: []byte("receiver-test-token")},
-			}
-			Expect(k8sClient.Create(ctx, token)).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Delete(ctx, token) })
 			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
 
 			key := types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace}
-			webhookPath := func(g Gomega) string {
+			receiverReady := func(g Gomega) *metav1.Condition {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 				g.Expect(err).NotTo(HaveOccurred())
 				published := &configbutleraiv1alpha3.GitProvider{}
 				g.Expect(k8sClient.Get(ctx, key, published)).To(Succeed())
-				return published.Status.WebhookPath
+				g.Expect(conditionIsTrue(published.Status.Conditions, ConditionTypeReady)).To(BeFalse(),
+					"the remote is unreachable, whatever the receiver says")
+				return findCondition(published.Status.Conditions, GitProviderConditionGitReceiverReady)
+			}
+			reasonOf := func(g Gomega) string {
+				cond := receiverReady(g)
+				g.Expect(cond).NotTo(BeNil())
+				return string(cond.Status) + "/" + cond.Reason
 			}
 
-			Eventually(webhookPath, "30s", "500ms").Should(Equal(configbutleraiv1alpha3.ReceiverPath(
-				[]byte("receiver-test-token"), "default", "test-provider-receiver")))
+			Eventually(reasonOf, "30s", "500ms").Should(Equal("False/" + ReasonGitReceiverNotReady))
+
+			token := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "provider-test-receiver-token", Namespace: "default"},
+				Data:       map[string][]byte{configbutleraiv1alpha3.ReceiverTokenKey: []byte("receiver-test-token")},
+			}
+			Expect(k8sClient.Create(ctx, token)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, token) })
+			receiverReconciler := &GitReceiverReconciler{Client: k8sClient, ListenerEnabled: true}
+			Eventually(func(g Gomega) string {
+				_, err := receiverReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: receiver.Name, Namespace: receiver.Namespace},
+				})
+				g.Expect(err).NotTo(HaveOccurred())
+				return reasonOf(g)
+			}, "30s", "500ms").Should(Equal("True/" + ReasonSucceeded))
 
 			Eventually(func(g Gomega) {
 				current := &configbutleraiv1alpha3.GitProvider{}
 				g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
-				current.Spec.Receiver = nil
+				current.Spec.GitReceiverRef = nil
 				g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
 			}, "10s", "200ms").Should(Succeed())
-
-			Eventually(webhookPath, "30s", "500ms").Should(BeEmpty(),
-				"a stale path would point a Git host at a route that no longer serves")
+			Eventually(receiverReady, "30s", "500ms").Should(BeNil(),
+				"a provider that names no receiver carries no answer about one")
 		})
 
 		It("should fail when secret is not found", func() {

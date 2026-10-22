@@ -56,10 +56,7 @@ kinds:
         default: "off"
         doc: SSH commit signing. See [commit signing](#commit-signing)
       - path: receiver
-        default: "off"
-        doc: >-
-          Push webhook endpoint, so the Git host can say somebody pushed. See
-          [receiving push notifications](#receiving-push-notifications-specreceiver)
+        skip: replaced by `GitReceiver`, kept in the schema only so admission refuses it, naming `gitReceiverRef`
       - path: gitReceiverRef
         default: "off"
         doc: >-
