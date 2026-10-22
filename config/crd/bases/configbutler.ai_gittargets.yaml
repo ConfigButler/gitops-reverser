@@ -347,6 +347,30 @@ spec:
                 required:
                 - name
                 type: object
+              kubeProviderRef:
+                description: |-
+                  KubeProviderRef names the KubeProvider this GitTarget mirrors FROM: the source cluster, and the
+                  credential it is read with. Namespace omitted means this GitTarget's own namespace. A
+                  KubeProvider in another namespace is used only while its spec.accessFrom admits this
+                  GitTarget's namespace. Immutable: a folder's source cluster is part of what the folder means;
+                  delete and recreate the GitTarget to change it.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.kubeProviderRef.name must not be empty
+                  rule: self.name != ''
+                - message: spec.kubeProviderRef is immutable; delete and recreate
+                    the GitTarget to change the cluster it mirrors
+                  rule: self == oldSelf
               onRefusal:
                 default: Ignore
                 description: |-

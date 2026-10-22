@@ -9,4 +9,5 @@ resources:
   - bases/configbutler.ai_gitbranches.yaml
   - bases/configbutler.ai_gitproviders.yaml
   - bases/configbutler.ai_gittargets.yaml
+  - bases/configbutler.ai_kubeproviders.yaml
   - bases/configbutler.ai_watchrules.yaml

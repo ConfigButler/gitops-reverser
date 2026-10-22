@@ -1,0 +1,341 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: kubeproviders.configbutler.ai
+spec:
+  group: configbutler.ai
+  names:
+    kind: KubeProvider
+    listKind: KubeProviderList
+    plural: kubeproviders
+    singular: kubeprovider
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="AuditFactsReceived")].status
+      name: FactsReceived
+      type: string
+    - jsonPath: .status.auditRoute
+      name: Route
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Validated")].status
+      name: Validated
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha3
+    schema:
+      openAPIV3Schema:
+        description: |-
+          KubeProvider names a source cluster: the cluster a GitTarget mirrors from, or an apply trigger
+          reaches its applier in. It holds the credential that reaches it (a kubeconfig Secret in its own
+          namespace, or the operator's own identity where the installation allows it), which control-cluster
+          namespaces may use it (its own, and those spec.accessFrom admits), and the audit route its
+          attribution facts are partitioned under.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of KubeProvider.
+            properties:
+              accessFrom:
+                description: |-
+                  AccessFrom admits other control-cluster namespaces to reference this provider. Its own
+                  namespace is always admitted; omitted, no other namespace is. Its selector matches labels on
+                  Namespaces in the control cluster, never on the source cluster this provider names.
+                properties:
+                  names:
+                    description: |-
+                      Names is an explicit allow-list of namespace names. Entries are namespace names (DNS-1123
+                      labels), never patterns — `*` is rejected. To admit every namespace, declare `selector: {}`.
+                    items:
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  selector:
+                    description: |-
+                      Selector is a label selector matched against Namespace labels; a namespace whose labels
+                      match is admitted. ORed with Names.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
+              allowCrossNamespace:
+                description: |-
+                  AllowCrossNamespace grants what a namespace this provider admits may reach outside itself,
+                  through this provider's credential. Omitted, it may reach nothing outside itself.
+                properties:
+                  appliers:
+                    description: |-
+                      Appliers lets a FluxTrigger or ArgoCDTrigger reaching its applier through this provider name a
+                      Kustomization or Application in another namespace than its own. False (the default): only
+                      the trigger's own namespace, which in a remote cluster is the namespace of the same name; a
+                      trigger naming another is Configured=False (ApplierNamespaceNotAllowed).
+                    type: boolean
+                  sources:
+                    description: |-
+                      Sources lets a WatchRule mirroring through this provider watch namespaces other than its own,
+                      including a rules[].sourceNamespace of "*", which reaches every namespace the credential can
+                      read. False (the default): a WatchRule watches only its own namespace. It grants no access by
+                      itself: the source credential's RBAC remains the hard maximum. It does not apply to
+                      ClusterWatchRule, which selects no namespaces at all.
+                    type: boolean
+                type: object
+              attribution:
+                description: |-
+                  Attribution groups this cluster's author-attribution settings. The block is spelled
+                  "attribution" rather than "authorAttribution" even though the operator flags are
+                  --author-attribution-*: the prefix groups a flat flag namespace, and a block on a
+                  source-cluster object already supplies that scope.
+                properties:
+                  auditRoute:
+                    description: |-
+                      AuditRoute is the route this cluster's audit events arrive on. The sender is the API server's
+                      webhook backend (https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend),
+                      and this is the <route> segment its configured URL ends in: /audit-webhook/<route>. When
+                      several logical clusters share one backend it is instead the value of the audit-event
+                      annotation named by --author-attribution-audit-route-annotation-key.
+
+                      It partitions the attribution facts, so two KubeProviders carrying the same route read one
+                      cluster's facts, and two carrying different routes can never cross-credit an author.
+
+                      Empty means <namespace>.<name>, which no provider in another namespace can resolve to. Set it
+                      when several KubeProviders in this namespace name one cluster, since an API server has one
+                      webhook backend and so posts under one route. A route is held by one namespace: providers in
+                      another namespace that carry it report Stalled=True with reason AuditRouteConflict and are not
+                      used. The namespace a route starts with (<namespace>.) holds it when a provider there carries
+                      it; otherwise the namespace of the oldest provider carrying it does.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                type: object
+              client:
+                description: |-
+                  Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
+                  the built-in defaults apply (20 QPS, burst 30). Refused beside inCluster.
+                properties:
+                  burst:
+                    description: |-
+                      Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
+                      built-in default of 30 applies.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  qps:
+                    description: |-
+                      QPS overrides the operator's outgoing kube-client query-per-second throttle for this
+                      cluster's watches and discovery. Omitted, the built-in default of 20 applies.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+              inCluster:
+                description: |-
+                  InCluster makes this provider use the operator's own identity in the cluster it runs in. It is
+                  honored only for a KubeProvider the installation lists in --in-cluster-kube-providers; any
+                  other reports Stalled=True with reason InClusterNotAuthorized and is never used. Exactly one
+                  of secretRef and inCluster is set. Immutable.
+                type: object
+              secretRef:
+                description: |-
+                  SecretRef names a Secret in this KubeProvider's namespace holding a kubeconfig for the source
+                  cluster. When key is empty the kubeconfig is read from "value", then "value.yaml" (Flux's
+                  order). Unsafe kubeconfigs (exec auth, insecure-skip-tls-verify, credentials named by file
+                  path) are refused with Validated=False unless the operator opts in through its flags.
+                  Exactly one of secretRef and inCluster is set. Immutable.
+                properties:
+                  key:
+                    description: Key in the Secret, when not specified an implementation-specific
+                      default key is used.
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.secretRef.name must not be empty
+                  rule: size(self.name) > 0
+            type: object
+            x-kubernetes-validations:
+            - message: set exactly one of spec.secretRef and spec.inCluster
+              rule: has(self.secretRef) != has(self.inCluster)
+            - message: 'spec.client is refused beside spec.inCluster: the operator''s
+                own client is not throttled per provider'
+              rule: '!has(self.inCluster) || !has(self.client)'
+            - message: spec.secretRef and spec.inCluster are immutable; delete and
+                recreate the KubeProvider to point it at a different cluster
+              rule: has(self.inCluster) == has(oldSelf.inCluster) && (!has(self.secretRef)
+                || self.secretRef == oldSelf.secretRef)
+          status:
+            description: status defines the observed state of KubeProvider.
+            properties:
+              auditRoute:
+                description: |-
+                  AuditRoute is the route this provider's attribution facts are partitioned under, as resolved:
+                  spec.attribution.auditRoute, or <namespace>.<name> when that is empty. It is the route the
+                  AuditFactsReceived condition describes, so when it changes that condition starts over —
+                  proof that one route delivered says nothing about another.
+                type: string
+              conditions:
+                description: |-
+                  Conditions report the provider's readiness: Validated (the credential is safe and
+                  resolvable, asserted without a network dial) plus the aggregated Ready and the kstatus
+                  Reconciling/Stalled pair. Stalled=True with reason InClusterNotAuthorized or
+                  AuditRouteConflict means the provider is not used at all.
+
+                  AuditFactsReceived reports whether an attribution fact has ever been accepted and recorded on
+                  this provider's audit route. It is True (Received) from the first one on and never goes back:
+                  later silence is a quiet cluster, not a fault. Until then it is Unknown, with the reason
+                  naming which silence it is and therefore where to look: TransportUnavailable (the fact
+                  transport is refusing writes, so no route can be judged), NoAuditDelivery (nothing is posting
+                  audit to this operator at all), or RouteUnused (audit is arriving and has never carried this
+                  route). It is absent when the operator runs with author attribution disabled. It is not part
+                  of Ready.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

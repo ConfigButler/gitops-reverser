@@ -193,6 +193,15 @@ func defaultedNamespace(namespace, fallback string) string {
 	return namespace
 }
 
+// kubeProviderKey is ref, its namespace defaulted to the referrer's own, or the zero key when ref
+// names nothing.
+func kubeProviderKey(ref meta.NamespacedObjectReference, referrerNamespace string) types.NamespacedName {
+	if ref.Name == "" {
+		return types.NamespacedName{}
+	}
+	return types.NamespacedName{Namespace: defaultedNamespace(ref.Namespace, referrerNamespace), Name: ref.Name}
+}
+
 // clusterProviderName is ref's name, or DefaultClusterProviderName when ref names none, the way
 // GitTarget.SourceCluster resolves an omitted clusterProviderRef.
 func clusterProviderName(ref *meta.LocalObjectReference) string {

@@ -123,6 +123,29 @@ spec:
                 - message: spec.clusterProviderRef is immutable; delete and recreate
                     the ArgoCDTrigger to hold an Application elsewhere
                   rule: self == oldSelf
+              kubeProviderRef:
+                description: |-
+                  KubeProviderRef names the KubeProvider whose cluster holds the Application, such as a
+                  management cluster running Argo CD for the source cluster. Namespace omitted means this
+                  trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
+                  spec.accessFrom admits. Its identity needs get and update on the Application. Immutable.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.kubeProviderRef.name must not be empty
+                  rule: self.name != ''
+                - message: spec.kubeProviderRef is immutable; delete and recreate
+                    the ArgoCDTrigger to hold an Application elsewhere
+                  rule: self == oldSelf
             required:
             - applicationRef
             type: object

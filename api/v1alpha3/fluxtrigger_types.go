@@ -22,6 +22,15 @@ type FluxTriggerSpec struct {
 	// hands it back when deleted), so pointing it elsewhere would leave the first one held by
 	// nothing. Delete and recreate the trigger instead; its finalizer hands the old one back.
 
+	// KubeProviderRef names the KubeProvider whose cluster holds the Kustomization, such as a
+	// management cluster running Flux for the source cluster. Namespace omitted means this
+	// trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
+	// spec.accessFrom admits. Its identity needs get and patch on the Kustomization and its GitRepository. Immutable.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the FluxTrigger to hold a Kustomization elsewhere"
+	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef,omitzero"`
+
 	// ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as a
 	// management cluster running Flux for the source cluster. A provider without spec.kubeConfig is
 	// the operator's own cluster. The provider must admit this trigger's namespace
@@ -164,6 +173,11 @@ var _ ApplyTrigger = (*FluxTrigger)(nil)
 
 // TriggerKind is FluxTrigger.
 func (t *FluxTrigger) TriggerKind() string { return ApplyTriggerKindFlux }
+
+// KubeProviderKey is spec.kubeProviderRef, its namespace defaulted to the trigger's own.
+func (t *FluxTrigger) KubeProviderKey() types.NamespacedName {
+	return kubeProviderKey(t.Spec.KubeProviderRef, t.Namespace)
+}
 
 // ClusterProvider is spec.clusterProviderRef.name, or "default" when it is unset, as the schema
 // defaults it: a literal built in a test or by an older client still names a concrete provider.

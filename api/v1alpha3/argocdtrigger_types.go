@@ -14,6 +14,15 @@ import (
 type ArgoCDTriggerSpec struct {
 	// Immutable for the reason FluxTriggerSpec's references are: the trigger holds what it names.
 
+	// KubeProviderRef names the KubeProvider whose cluster holds the Application, such as a
+	// management cluster running Argo CD for the source cluster. Namespace omitted means this
+	// trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
+	// spec.accessFrom admits. Its identity needs get and update on the Application. Immutable.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the ArgoCDTrigger to hold an Application elsewhere"
+	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef,omitzero"`
+
 	// ClusterProviderRef names the ClusterProvider whose cluster holds the Application, such as a
 	// management cluster running Argo CD for the source cluster. A provider without
 	// spec.kubeConfig is the operator's own cluster. The provider must admit this trigger's
@@ -141,6 +150,11 @@ var _ ApplyTrigger = (*ArgoCDTrigger)(nil)
 
 // TriggerKind is ArgoCDTrigger.
 func (t *ArgoCDTrigger) TriggerKind() string { return ApplyTriggerKindArgoCD }
+
+// KubeProviderKey is spec.kubeProviderRef, its namespace defaulted to the trigger's own.
+func (t *ArgoCDTrigger) KubeProviderKey() types.NamespacedName {
+	return kubeProviderKey(t.Spec.KubeProviderRef, t.Namespace)
+}
 
 // ClusterProvider is spec.clusterProviderRef.name, or "default" when it is unset, as the schema
 // defaults it: a literal built in a test or by an older client still names a concrete provider.

@@ -202,6 +202,16 @@ type GitTargetSpec struct {
 	// +optional
 	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
 
+	// KubeProviderRef names the KubeProvider this GitTarget mirrors FROM: the source cluster, and the
+	// credential it is read with. Namespace omitted means this GitTarget's own namespace. A
+	// KubeProvider in another namespace is used only while its spec.accessFrom admits this
+	// GitTarget's namespace. Immutable: a folder's source cluster is part of what the folder means;
+	// delete and recreate the GitTarget to change it.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
+	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef,omitzero"`
+
 	// Defaults to a concrete {name: "default"}, not nil, so the persisted object names something a
 	// reader can jump to. The operator never creates that provider; a missing one holds the target
 	// unready rather than falling back to in-cluster access.
@@ -593,6 +603,13 @@ func (g *GitTarget) GitBranchKey() types.NamespacedName {
 		namespace = g.Namespace
 	}
 	return types.NamespacedName{Namespace: namespace, Name: g.Spec.GitBranchRef.Name}
+}
+
+// KubeProviderKey is the KubeProvider this GitTarget mirrors through: spec.kubeProviderRef, in this
+// GitTarget's own namespace unless the reference names another one. An unset reference names
+// nothing, and the zero key says exactly that.
+func (g *GitTarget) KubeProviderKey() types.NamespacedName {
+	return kubeProviderKey(g.Spec.KubeProviderRef, g.Namespace)
 }
 
 // IsLocalSource reports whether this GitTarget references the "default" ClusterProvider, which the
