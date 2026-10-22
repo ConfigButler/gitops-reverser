@@ -6,8 +6,9 @@ in the [quickstart](quickstart.md).
 The short version:
 
 - `GitProvider` defines where and how to push
+- `GitBranch` holds one branch of that repository, for every target that writes it
 - `KubeProvider` defines the Kubernetes source cluster a target mirrors from
-- `GitTarget` defines which branch and repository path to write into
+- `GitTarget` defines which source cluster to mirror, and which folder on a `GitBranch` to write into
 - `WatchRule` defines which namespaced resources should produce Git writes, and in which source
   namespaces
 - `ClusterWatchRule` does the same for cluster-scoped resources
@@ -30,21 +31,23 @@ attribution later only when you need named Kubernetes users or service accounts 
 The usual flow is:
 
 1. Create a `GitProvider` for repository access and commit behavior.
-2. Create a `GitTarget` that points at the Git provider, source cluster, branch, and repository path.
-3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
-4. Create a `CommitRequest` only when you want a save: your writes in one commit, on the request's
+2. Create a `GitBranch` naming that provider and the branch to write.
+3. Create a `GitTarget` that points at the `GitBranch`, the `KubeProvider` to mirror from, and a
+   folder in the repository.
+4. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
+5. Create a `CommitRequest` only when you want a save: your writes in one commit, on the request's
    timers rather than the target's, and optionally with your message.
-5. Only when Flux or Argo CD also applies that same folder back to the cluster: hold its
+6. Only when Flux or Argo CD also applies that same folder back to the cluster: hold its
    `Kustomization` or `Application` with an apply trigger, name the trigger on the `GitTarget`, and
    give the `GitProvider` a push receiver, so GitOps Reverser decides when Git is applied. See
    [who applies this folder](#who-applies-this-folder-specapplytriggerref) and
    [bi-directional GitOps](bi-directional.md). Flux and Argo CD applying other folders need nothing.
 
-That means one repository connection can back multiple targets, and one target can be fed by
-multiple watch rules.
+That means one repository connection can back multiple branches, one branch multiple targets, and
+one target can be fed by multiple watch rules.
 
-> **`KubeProvider` is not one of those steps.** Installing created `local` in the operator's
-> namespace, the operator's own cluster. A `GitTarget` names it with
+> **A `KubeProvider` usually exists already.** The chart creates `local` in its release namespace,
+> for the operator's own cluster, and a `GitTarget` names it with
 > `spec.kubeProviderRef: {name: local, namespace: gitops-reverser}`. Write your own to mirror a
 > remote cluster, or to keep a connection and its credential in a team's namespace.
 
@@ -506,7 +509,9 @@ A `KubeProvider` admits the `GitTarget`s and triggers in its own namespace. `acc
 other namespaces, and is evaluated against namespaces in the **control cluster**, where those
 objects live. In this example, a `GitTarget` in `platform-connections`, in `team-a`, or in a
 control-cluster namespace with the shown label may reference `prod-eu-1`. `names` and `selector` are
-ORed, and an omitted policy admits no other namespace. The check runs when the referrer is
+ORed, and an omitted policy admits no other namespace. A selector is only as strong as the right to
+set the labels it matches: anyone who can label a namespace can admit it, so select on labels only
+the platform can set, or use `names`. The check runs when the referrer is
 reconciled, not at admission: a `GitTarget` or trigger the provider does not admit is accepted by
 the API server and reports `NamespaceNotAuthorized`, and it recovers on its own once the provider
 admits it.
@@ -865,11 +870,14 @@ One policy governs both hops. A `GitBranch` that does not exist is `Validated=Fa
 `Ready=False` with reason `GitBranchNotReady` until it does. Either clears on its own once the
 `GitBranch` appears or proves itself, so manifests can be applied in any order.
 
-`spec.gitProviderRef`, `spec.branch` and `spec.parentBranch` are no longer `GitTarget` fields:
-setting one is refused at admission with a message naming `spec.gitBranchRef`.
+`spec.gitProviderRef`, `spec.branch` and `spec.parentBranch` belong to the `GitBranch`: setting one
+on a `GitTarget` is refused at admission with a message naming `spec.gitBranchRef`.
 
 Two `GitTarget`s on one `GitBranch` must not write the same or nested paths: the later-created one
-reports `Validated=False` with reason `TargetConflict`.
+reports `Validated=False` with reason `TargetConflict`. Only a `GitTarget` that its providers admit
+holds a path this way. One that its `GitBranch`'s `GitProvider` or its `KubeProvider` does not admit
+writes nothing and holds no path, so creating it first cannot block a folder on someone else's
+branch.
 
 `spec.kubeProviderRef` references a `KubeProvider` by `name`, in the `GitTarget`'s own namespace
 unless `namespace` names another, and is required and immutable. A provider in another namespace

@@ -76,7 +76,7 @@ The operator's own API surface and the reconcilers behind it.
 
 | Component | Path | Role |
 |---|---|---|
-| CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the eight kinds users apply |
+| CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the nine kinds users apply |
 | Reconcilers | [`internal/controller/`](../internal/controller/) | one per kind, plus shared condition and status helpers |
 | Admission handlers | [`internal/webhook/`](../internal/webhook/) | the always-allow observer and `validate-operator-types`, which captures a `CommitRequest` submitter |
 | Namespace admission | [`internal/authz/`](../internal/authz/) | the `KubeProvider` and `GitProvider` namespace-admission decisions (own namespace, then `spec.accessFrom`) and the `spec.allowCrossNamespace` gates, in their own package because several call sites need the same answer |

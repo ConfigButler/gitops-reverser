@@ -223,7 +223,7 @@ optional and only add *who* did something:
 |---|---|---|---|
 | **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface: served GVRs, scope, preferred version, subresources; rules resolve against it |
 | **Watch** (per claimed `(GVR, scope)`) | *what changed* | yes | the object body, ordered per type; the only object-state source, with deletes reconciled via `sendInitialEvents` replay + mark-and-sweep |
-| **Audit webhook** (`/audit-webhook/<provider>`) | *who changed mirrored state* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
+| **Audit webhook** (`/audit-webhook/<audit-route>`) | *who changed mirrored state* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
 | **Validating admission webhook** (`/validate-operator-types`) | *who issued a command* | no | the submitter of a `CommitRequest`, captured at admission and keyed 1:1 by UID ([CommitRequest Finalize](#commitrequest-finalize)) |
 
 With both optional sources off, the product still mirrors state correctly, and every commit is authored
@@ -272,11 +272,12 @@ capture audit and admission with **no** resulting watch event.
 
 ## Configuration model
 
-You configure GitOps Reverser through eight CRDs (group `configbutler.ai`, version `v1alpha3`).
+You configure GitOps Reverser through nine CRDs (group `configbutler.ai`, version `v1alpha3`).
 `WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
 `CommitRequest` can ask for the current window to be saved. `GitTarget` joins one source cluster to one
 Git destination. `KubeProvider` supplies the source connection and authorization boundary;
-`GitProvider` supplies the repository, credentials, commit settings, and push policy. `FluxTrigger`
+`GitProvider` supplies the repository, credentials, commit settings, and push policy, and a
+`GitBranch` holds one branch of that repository for every `GitTarget` that writes it. `FluxTrigger`
 and `ArgoCDTrigger` hold the Flux `Kustomization` or Argo CD `Application` that applies a folder back,
 so GitOps Reverser decides when it applies.
 
@@ -323,7 +324,7 @@ open their source watches through that context. The contexts are keyed by the pr
 `namespace/name` and are released when no `GitTarget` references them, so a provider deleted and
 recreated under the same name is a new connection.
 
-The applier is not one of the eight kinds. It belongs to Flux or Argo CD, lives in the cluster the
+The applier is not one of the nine kinds. It belongs to Flux or Argo CD, lives in the cluster the
 trigger's `spec.kubeProviderRef` names (the source cluster, or a management cluster), and is
 reached through that `KubeProvider`'s identity. The trigger is ours: it holds the applier, and
 records the apply operation it started.
@@ -333,8 +334,9 @@ records the apply operation it started.
 | `WatchRule` | namespaced | which NAMESPACED resources, in which source namespaces, route to a GitTarget |
 | `ClusterWatchRule` | cluster | which CLUSTER SCOPED resources route to a GitTarget |
 | `CommitRequest` | namespaced | a one shot "save the open window now" signal |
-| `GitTarget` | namespaced | one materialization from a source provider to `(provider, branch, path)` |
+| `GitTarget` | namespaced | one materialization from a `KubeProvider` to `(GitBranch, path)` |
 | `KubeProvider` | namespaced | one source-cluster connection plus namespace access policy |
+| `GitBranch` | namespaced | one repository branch, held for every `GitTarget` that writes it |
 | `GitProvider` | namespaced | a Git repo + credentials + commit/signing config |
 | `FluxTrigger` | namespaced | the Flux `Kustomization` GitOps Reverser asks to apply, and the apply in flight |
 | `ArgoCDTrigger` | namespaced | the Argo CD `Application` GitOps Reverser asks to sync, and the sync in flight |
@@ -564,9 +566,11 @@ otherwise the namespace of the oldest carrier. Providers in the holding namespac
 (`AuditRouteConflict`) and is not used. The `KubeProvider` validates its connection inputs, while a
 `GitTarget` projects provider readiness and live source reachability.
 
-Remote credentials are re-read on the catalog-refresh cadence, not on every watch reconnect. A rotated
-Secret or a `spec.client` change rebuilds that provider's clients and restarts only the watches using that
-provider; a definitively invalid or missing credential fails closed and stops those watches. An unreachable
+Credentials are re-resolved on the catalog-refresh cadence, not on every watch reconnect, `inCluster`
+ones included. A rotated Secret, a `spec.client` change, or a provider deleted and recreated under the
+same name rebuilds that provider's clients and restarts only the watches using that provider; a
+definitively invalid or missing credential, or an `inCluster` provider the installation stops
+listing, fails closed and stops those watches. An unreachable
 remote similarly makes only its dependent targets unready; it does not block discovery or watches for
 other source contexts.
 
@@ -648,7 +652,7 @@ Following the ConfigMap edit:
    the remote moved).
 
 Separately, the audit path (only when attribution is enabled): kube-apiserver POSTs audit events to
-`/audit-webhook/<provider>`; [AuditHandler](../internal/webhook/audit_handler.go) extracts the minimal
+`/audit-webhook/<audit-route>`; [AuditHandler](../internal/webhook/audit_handler.go) extracts the minimal
 attribution facts and appends them to that route's per-type fact stream. A follower on the watch side
 reads the streams for the types it watches into a bounded, TTL'd in-process index. That index is read
 only by the resolver in step 3; it never creates or repairs object state.
@@ -1911,9 +1915,9 @@ Current limitations:
   the applier sets, is reverted on the cluster. Its value stays in Git, because the applier's write
   over it is not mirrored, and the next apply restores it; until then the cluster runs the older
   value. See [the apply window](design/apply-trigger.md#the-apply-window).
-- **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
+- **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<audit-route>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
-  certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not
+  certificate is not bound to one audit route. This is an accepted privileged-control-plane assumption, not
   tenant isolation; see [SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model).
 - **`deletecollection`** is reconciled by the watch (each item arrives as its own `DELETED`, or the
   mark-and-sweep reconciles them on replay).
