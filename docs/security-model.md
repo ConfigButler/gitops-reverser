@@ -34,9 +34,10 @@ To mirror live state into Git the controller must:
   convenient, and it means the reverser can enumerate **every Secret in the cluster**. `mode:
   selected` grants only the types you name. See [`rbac.md`](rbac.md).
 - **Read referenced Secrets.** The git-creds Secret, and the SOPS/age key Secret when encryption
-  is configured, both named by a `GitProvider`/`GitTarget`, and a remote cluster's kubeconfig
-  Secret, named by a `KubeProvider` in its own namespace. So the controller reads Secrets in every
-  namespace that holds one of those objects. This is a `get` by name, never a `list` or a `watch`.
+  is configured, both named by a `GitProvider`/`GitTarget`; a remote cluster's kubeconfig Secret,
+  named by a `KubeProvider` in its own namespace; and a webhook token Secret, named by a
+  `GitReceiver` in its own namespace. So the controller reads Secrets in every namespace that holds
+  one of those objects. This is a `get` by name, never a `list` or a `watch`.
 - **Receive audit events.** The kube-apiserver audit webhook posts events to the audit ingress.
   Those carry object metadata and, for some resources, request/response bodies.
 - **Drive an applier, only with an apply trigger.** Holding a Flux `Kustomization` takes `get` and
