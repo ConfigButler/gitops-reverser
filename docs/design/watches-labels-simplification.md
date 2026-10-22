@@ -223,8 +223,15 @@ There is also an avoidable delay. When an exact PATCH/UPDATE wins lookup, `await
 still treats it as a write fallback and waits the remaining grace for delete evidence (default
 `3s`). This is not true of every exit: eligible delete evidence can finish the wait earlier.
 
-> **As built:** exactly this policy, and the mutationlab `selector-membership` capture explains its
-> cost: a deletion never carries the `DELETED` frame's resourceVersion (an immediate delete answers
+> **Superseded (2026-10-22).** The selector-aware policy below was replaced by one that never reads
+> the selector: a removal of an object that was not terminating is credited first to a write at its
+> exact UID/RV (the exit), then to deletion evidence, as any removal is. Real deletions on a selected
+> stream now resolve on their delete fact instead of waiting out the grace and shipping unresolved,
+> which stalled the stream for N x grace on a prune. The cost is one accepted wrong author, listed in
+> [what attribution gives up, on purpose](../spec/attribution.md#what-attribution-gives-up-on-purpose).
+>
+> **As built until then:** exactly this policy, and the mutationlab `selector-membership` capture
+> explains its cost: a deletion never carries the `DELETED` frame's resourceVersion (an immediate delete answers
 > with a `Status` holding only the uid; a finalizer-held one is stamped one step earlier), so a real
 > deletion from a selected collection is unresolved. A uid-keyed deletion fact is not accepted
 > instead: an object relabeled out and then deleted by someone else produces one that would name

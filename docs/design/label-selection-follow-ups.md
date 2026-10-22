@@ -1,6 +1,6 @@
 # Label selection: follow-ups
 
-> **design**: open. Nothing here blocks label selection from shipping.
+> **design**: open. Nothing here blocks label selection from shipping. Item 1 is resolved.
 > Index: [`../INDEX.md`](../INDEX.md). Parent: [`watches-labels-simplification.md`](watches-labels-simplification.md).
 > Checked: 2026-09-29, against `feat/watch-object-selector` (PR #399).
 
@@ -29,37 +29,21 @@ reaches it today.
 
 ### 1. Real deletions in a selected collection wait the full attribution grace
 
-**Today.** A `DELETED` frame from a collection with a selector is a *filtered removal*. It
-resolves only on the fact at the object's exact `(uid, resourceVersion)`. See
-[attribution.md, "A removal from a label-selected collection"](../spec/attribution.md). A label
-exit always produces that fact. A real deletion never does, because a delete response carries no
-resourceVersion that matches the frame's. So every real deletion from a selected collection waits
-out `DefaultAttributionGraceWindow` (3s) and then commits unresolved.
+**Resolved 2026-10-22.** A `DELETED` frame from a selected collection used to resolve only on the
+fact at the object's exact `(uid, resourceVersion)`, which a real deletion never fills. Every such
+deletion waited out the grace and committed unresolved, and a prune of N objects stalled its stream
+for N x grace (it made the Flux E12 save spec fail `NoWindow`).
 
-**Cost.** A stream is single-threaded, and attribution runs inline on it. Deleting a namespace
-with N selected objects therefore stalls that stream for about N × 3s. With 200 objects that is
-about 10 minutes behind, which risks a 410 and a relist. Collections without a selector are not
-affected. `gitopsreverser_watch_event_handling_seconds` shows the stall.
+Attribution no longer reads the selector. A removal of an object that was not terminating asks for
+a write at its exact version first (the exit), then for deletion evidence, so a real deletion
+resolves on its delete fact in about one audit batch. The one case this names wrongly, a
+relabel-out followed by someone else's delete whose fact is in the index first, is accepted and
+listed in
+[what attribution gives up, on purpose](../spec/attribution.md#what-attribution-gives-up-on-purpose).
 
-**Why it was not fixed.** The obvious fix does not work. It would tell a deletion from a label
-exit by checking whether the frame's labels still match the selector. They do in both cases: the
-mutationlab `selector-membership` scenario measured that a label exit's `DELETED` carries the
-object as it was *before* the relabeling write. Accepting a uid-only deletion fact is also wrong,
-for the reason attribution.md gives: a relabel-out followed by someone else's delete produces
-exactly that fact.
-
-**Options.**
-
-- End the wait early once a uid-only deletion fact has arrived *and* the exact slot is still
-  empty after a short sub-grace. This is still a guess about ordering, and
-  `TestFactIndex_FilteredRemovalWaitsForADelayedExitFactPastAUIDOnlyDeletion` pins the case it
-  would get wrong.
-- Take attribution off the stream goroutine. Buffer each event with its pending lookup, and
-  release events in order as their lookups settle. The per-event latency stays the same, but a
-  burst costs one grace window instead of N. This is the real fix, and it changes the ordering
-  spec in [`watch-event-ordering-and-attribution-grace.md`](../spec/watch-event-ordering-and-attribution-grace.md).
-- Accept the limitation and document it in the configuration reference, next to
-  `objectSelector`.
+Head-of-line blocking itself is still open: an event that legitimately waits out the grace still
+delays every later event on its stream. That is ranked in
+[`open-asks-priority.md`](open-asks-priority.md).
 
 ### 2. The resync fence stops overlapping collections from coalescing
 

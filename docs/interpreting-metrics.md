@@ -1035,10 +1035,10 @@ equally hold a write, and a value that could mean either must not claim a verb.
 
 | `tier` | Meaning |
 | --- | --- |
-| `delete_sticky` | The sticky removal pointer: a fact whose own verb is a delete, filed by UID into a slot no later *write* fact may overwrite. Only a removal consults it, and it is asked before `exact`, because a removal's resourceVersion is the one the deletion stamped — the version a finalizer patch's own fact carries too. It is the only tier the fact TTL does not bound: a UID is unique across space and time, so the statement can never be superseded. |
-| `exact` | Exact UID+resourceVersion match: this actor produced this exact version. |
+| `delete_sticky` | The sticky removal pointer: a fact whose own verb is a delete, filed by UID into a slot no later *write* fact may overwrite. Only a removal consults it. For a terminating object it is asked before `exact`, because the removal's resourceVersion is the one the deletion stamped, which a finalizer patch's own fact carries too. It is the only tier the fact TTL does not bound: a UID is unique across space and time, so the statement can never be superseded. |
+| `exact` | Exact UID+resourceVersion match: this actor produced this exact version. For a removal of an object that was not terminating, it is the write that took the object out of view: a label exit. |
 | `deletecollection_body_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. It outranks `latest`, because `latest` names whoever last *wrote* an object while a removal asks who *deleted* it. |
-| `latest` | The UID-latest tier: the object's own last fact, keyed by UID alone. A removal consults it, and a match here describing a *write* is held as a fallback while the wait continues for evidence about the deletion. |
+| `latest` | The UID-latest tier: the object's own last fact, keyed by UID alone. A removal accepts it only when that fact is a delete, which `delete_sticky` normally answers first, so it appears only when the sticky pointer was evicted under the index caps. A *write* here never answers a removal. |
 | `name` | A match on `(namespace, name)` for a fact carrying neither a UID nor a resourceVersion — the usual shape of an aggregated API's audit event, and of a delete the API server answered with a `Status`. |
 | `deletecollection_scope` | A removal matched to a `deletecollection` by scope alone — same type and namespace, the request's selector accepting the object's labels, within the collection window. The weakest evidence the join has, and the only one that can name the wrong actor, which is why it is reached only when every more specific tier missed. |
 | `resource_version` | The RV-only escape hatch: a fact that carried a resourceVersion and no UID, matched on that version alone. |
@@ -1064,9 +1064,10 @@ sum by (tier) (rate(gitopsreverser_attribution_resolutions_total[5m]))
 ```
 
 **Is the grace window paying for itself?** `event_kind` is `write` or `removal`, and the split is
-the point: a removal holds a fallback and keeps waiting for evidence about the deletion, a write
-does not. The removal wait is the number `--author-attribution-grace` is tuned from, and a p95
-approaching the configured grace means removals are sitting out the whole window:
+the point: a removal waits for evidence about what caused it, which may never come (a type the
+audit policy drops), while a write waits only for the fact at its own version. The removal wait is
+the number `--author-attribution-grace` is tuned from, and a p95 approaching the configured grace
+means removals are sitting out the whole window:
 
 ```promql
 histogram_quantile(0.95,
@@ -1355,6 +1356,7 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | `gitopsreverser_resource_condition{type="Ready", status="False"} == 1`, `for: 15m` | A declared object has not been accepted. The `== 1` is not optional: each condition publishes one series per status, so the selector alone matches the two zeroes too. |
 | `gitopsreverser_resource_condition{type="Stalled", status="True"} == 1` | Permanently wedged: `Stalled` is the kstatus "nothing will retry" signal, so this needs a human and will not clear on its own. `reason` names the gate. |
 | any `gitopsreverser_*` series with `otel_metric_overflow="true"` | A metric family exceeded its per-instrument cardinality cap, so the labels identifying those series are gone and every query over that family is under-reporting. Raise the cap or cut a label. |
+| `sum by (group, resource) (rate(gitopsreverser_attribution_resolutions_total{tier="absent"}[10m])) > 0`, `for: 15m` | Events of this type keep waiting out the whole `--author-attribution-grace` and shipping `unknown (attribution unresolved)`. Each one held its watch stream for the full grace, so every later event of the type, including a save's edit, reached its branch worker that much later. Check the audit policy for the type and the `KubeProvider`'s audit route before anything else. An occasional absence is ordinary; a sustained rate is a configuration problem or a fact that can never arrive. |
 | `sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types) == 0`, `for: 10m` | A GitTarget's rules resolve to no watchable type — a typo in `resources:`, or a type the default watch policy excludes. It mirrors nothing while looking healthy everywhere else. The 10 minutes let a freshly declared target settle. |
 
 ---

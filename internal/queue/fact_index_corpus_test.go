@@ -95,7 +95,8 @@ func TestFactIndex_FinalizerRemovalNamesTheDeleter(t *testing.T) {
 
 	// The watch event the deletion-as-intent rule renders as a removal: the object as it looked when
 	// deletionTimestamp appeared, so its resourceVersion is the colliding one. ExactCapable is false
-	// because the operator maps it to a DELETE (operationForLiveTargetWatchEvent).
+	// because the operator maps it to a DELETE (operationForLiveTargetWatchEvent), and Terminating is
+	// true because the object carries the deletionTimestamp that made it one.
 	removal := FactQuery{
 		AuditRoute:      "prod-eu-1",
 		GroupResource:   schema.GroupResource{Resource: "configmaps"},
@@ -104,6 +105,7 @@ func TestFactIndex_FinalizerRemovalNamesTheDeleter(t *testing.T) {
 		Namespace:       deleteFact.Namespace,
 		Name:            deleteFact.Name,
 		ExactCapable:    false,
+		Terminating:     true,
 	}
 
 	t.Run("the deleter is named while their fact is the only one filed", func(t *testing.T) {
