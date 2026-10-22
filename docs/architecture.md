@@ -525,8 +525,9 @@ it. Every field is immutable:
   creating the write branch (`ParentBranchNotFound`). It does not need to be in `allowedBranches`
   because it is only read.
 - `status.repository`: the normalized repository URL, half of the key one `GitBranch` holds.
-- `status.remote`: where the branch is on the remote, and when that was last proved; its
-  `lastPushNoticeAt` is when a `GitReceiver` last delivered a push to it.
+- `status.lastPushNoticeAt`: when a `GitReceiver` last delivered a push to it. It records receipt,
+  so it is published even when the look the delivery caused could not read the remote.
+- `status.remote`: where the branch is on the remote, and when that was last proved.
 - `status.gitTargetCount`: how many `GitTarget`s reference it, from any namespace.
 
 The controller proves the provider's credential by opening a receive-pack session (at most once per
@@ -553,7 +554,10 @@ repository URLs and the branch the payload names, compares the URLs with every `
 `spec.url` (normalized by `internal/repourl`), and wakes the branch worker writing that branch for
 each one that matches, once. The worker reads the remote with its own credential, so nothing in the
 payload chooses a URL, a credential or a commit, and it holds at most one pending look, so a run of
-deliveries costs one ref advertisement at a time. That is what makes waking across namespaces safe.
+deliveries costs one ref advertisement at a time and never crowds writes out of the queue. It does
+not bound the rate: deliveries arriving during successive reads keep a worker reading
+continuously. That availability cost of letting any namespace's receiver wake any matching worker
+is accepted, with no per-worker cooldown (see the [security model](security-model.md)).
 The `202` carries no body: a count of what was woken would tell the token holder whether another
 namespace tracks a repository.
 

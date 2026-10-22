@@ -229,10 +229,12 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 			"(ForeignCommit)")).To(BeNumerically(">", foreignBefore),
 			"the apply must come from a ForeignCommit request, not from Flux's own schedule")
 
-		By("the GitBranch says deliveries reach it, once the once-a-minute floor lets it")
+		By("the GitBranch records that the delivery reached it")
 		Eventually(func(g Gomega) {
-			g.Expect(gitBranchRemoteField(g, gitBranchName(providerName, "main"), testNs, "lastPushNoticeAt")).
-				NotTo(BeEmpty())
+			out, err := kubectlRunInNamespace(testNs, "get", "gitbranch", gitBranchName(providerName, "main"),
+				"-o", "jsonpath={.status.lastPushNoticeAt}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).NotTo(BeEmpty())
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 

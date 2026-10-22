@@ -899,9 +899,10 @@ func (m *WorkerManager) NeedLeaderElection() bool {
 	return true
 }
 
-// NotifyPush tells the worker for a provider's branch that the Git host reported a push to it. It
-// reports whether such a worker exists. after is the commit the delivery named; it is logged and
-// never trusted: the worker reads where the branch is from the remote itself.
+// NotifyPush tells the worker for a provider's branch that the Git host reported a push to it, and
+// wakes its GitBranch, so status.lastPushNoticeAt records the receipt even when the look it causes
+// cannot read the remote. It reports whether such a worker exists. after is the commit the delivery
+// named; it is logged and never trusted: the worker reads where the branch is from the remote itself.
 func (m *WorkerManager) NotifyPush(providerNamespace, providerName, branch, after string) bool {
 	provider := k8stypes.NamespacedName{Namespace: providerNamespace, Name: providerName}
 	m.mu.RLock()
@@ -917,6 +918,7 @@ func (m *WorkerManager) NotifyPush(providerNamespace, providerName, branch, afte
 		return false
 	}
 	found.EnqueuePushNotification(after)
+	m.notifyGitBranchLocked(found.GitBranch)
 	return true
 }
 

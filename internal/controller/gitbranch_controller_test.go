@@ -359,3 +359,49 @@ func TestGitBranch_ARepointedProviderMovesTheClaim(t *testing.T) {
 	require.True(t, held)
 	assert.Equal(t, "github.com/acme/other", key.Repository)
 }
+
+// TestGitBranch_ANoticeIsPublishedWithoutAnyLook: a delivery that reached the worker is published
+// on receipt, even when nothing has proved anything about the remote, and without a status.remote
+// stanza that would claim a look.
+func TestGitBranch_ANoticeIsPublishedWithoutAnyLook(t *testing.T) {
+	f := newGitBranchFixture(t, branchProvider("platform", "acme"),
+		branchObject("platform", "edits", "acme", "edits", time.Hour))
+	f.reconcile(t, "platform", "edits")
+	key := k8stypes.NamespacedName{Namespace: "platform", Name: "edits"}
+	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
+		GitBranch: key, Provider: "acme", Branch: "edits",
+		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
+	}))
+	assert.Nil(t, f.reconcile(t, "platform", "edits").Status.LastPushNoticeAt, "no delivery yet")
+
+	require.True(t, f.workers.NotifyPush("platform", "acme", "edits", "abc"))
+
+	got := f.reconcile(t, "platform", "edits")
+	require.NotNil(t, got.Status.LastPushNoticeAt)
+	assert.Nil(t, got.Status.Remote, "receipt is not a look at the remote")
+}
+
+// TestGitBranch_ARepointClearsTheNotice: a delivery for the repository a recreated GitProvider left
+// says nothing about the one it names now.
+func TestGitBranch_ARepointClearsTheNotice(t *testing.T) {
+	provider := branchProvider("platform", "acme")
+	f := newGitBranchFixture(t, provider, branchObject("platform", "main", "acme", "main", time.Hour))
+	got := f.reconcile(t, "platform", "main")
+	got.Status.LastPushNoticeAt = &metav1.Time{Time: time.Now().Add(-time.Hour)}
+	require.NoError(t, f.client.Status().Update(context.Background(), got))
+	require.NotNil(t, f.reconcile(t, "platform", "main").Status.LastPushNoticeAt,
+		"the same repository keeps it")
+
+	stored := &configbutleraiv1alpha3.GitProvider{}
+	require.NoError(t, f.client.Get(context.Background(), ctrlclient.ObjectKeyFromObject(provider), stored))
+	require.NoError(t, f.client.Delete(context.Background(), stored))
+	recreated := branchProvider("platform", "acme")
+	recreated.UID = "uid-acme-2"
+	recreated.ResourceVersion = ""
+	recreated.Spec.URL = "https://github.com/acme/other.git"
+	require.NoError(t, f.client.Create(context.Background(), recreated))
+
+	got = f.reconcile(t, "platform", "main")
+	assert.Equal(t, "github.com/acme/other", got.Status.Repository)
+	assert.Nil(t, got.Status.LastPushNoticeAt)
+}

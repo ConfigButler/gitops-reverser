@@ -465,13 +465,15 @@ port, a trailing `.git` and letter case are ignored, while the host and the path
 provider that matches, the branch worker writing that branch is woken, once. A repository that
 reaches the operator under another host name, such as an SSH alias, does not match.
 
-**Whether deliveries arrive** is on the `GitBranch`: `status.remote.lastPushNoticeAt` is when a
-`GitReceiver` last delivered a push to its branch, written at most once a minute. Absent after a push
-means the host does not reach the receiver, or names the repository by a URL other than the
-provider's `spec.url`. Without a receiver, the provider still writes, and a foreign push is still
-found, by the next rejected push or by the
-[periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval): the receiver makes it
-seconds instead of minutes.
+**Whether deliveries arrive** is on the `GitBranch`: `status.lastPushNoticeAt` is when a
+`GitReceiver` last delivered a push to its branch. It records receipt, so it is set even when the
+look the delivery caused could not read the remote; `status.remote` says what that look found. The
+first delivery is published at once and later ones at most once a minute, and the field is cleared
+when the `GitProvider` is recreated for another repository. Absent after a push means the host does
+not reach the receiver, or names the repository by a URL other than the provider's `spec.url`.
+Without a receiver, the provider still writes, and a foreign push is still found, by the next
+rejected push or by the [periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval):
+the receiver makes it seconds instead of minutes.
 
 A `GitReceiver` reports on `Ready` whether anything serves its path:
 
@@ -502,8 +504,9 @@ advertisement (one request) with its own provider's credential, and what the rem
 whether the branch gained a foreign commit. The repository the payload names is only compared, never
 fetched, so a delivery cannot choose a URL, a credential or a commit. A worker holds at most one
 pending look: deliveries that arrive while one waits are folded into it, so a run of them costs one
-ref advertisement at a time. That is why any namespace's `GitReceiver` may wake any matching
-provider. A late delivery for one of
+ref advertisement at a time. That bounds the queue, not the rate: a steady stream of deliveries,
+from any namespace's `GitReceiver`, can keep a matching worker reading its remote continuously, an
+availability cost that is accepted. A late delivery for one of
 GitOps Reverser's own pushes, a duplicate, or a rollback onto one of its older commits are all
 judged by the remote's answer, not by the commit the delivery names. Nothing fetches or plans until
 there is something to apply, and a delivery never triggers a cluster snapshot.

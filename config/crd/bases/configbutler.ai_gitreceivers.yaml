@@ -45,7 +45,7 @@ spec:
           through an alias (another host name or port) is not matched, and finds pushes by its periodic
           refresh. A delivery is only a hint: the branch worker reads the remote with its own provider's
           credential to find out what happened, so nothing a delivery says can choose a URL, a credential
-          or a commit. GitBranch.status.remote.lastPushNoticeAt shows that deliveries reach a branch.
+          or a commit. GitBranch.status.lastPushNoticeAt shows that deliveries reach a branch.
         properties:
           apiVersion:
             description: |-

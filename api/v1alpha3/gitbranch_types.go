@@ -77,6 +77,15 @@ type GitBranchStatus struct {
 	// +optional
 	Repository string `json:"repository,omitempty"`
 
+	// LastPushNoticeAt is when a GitReceiver last delivered a push to this branch, which made the
+	// branch worker look at once instead of at its next refresh. It records receipt only: whether
+	// that look reached the remote is status.remote's to say. Absent means no delivery has reached
+	// this branch: no GitReceiver is set up, the Git host's webhook does not reach one, or the
+	// delivery names the repository by a URL other than the GitProvider's spec.url. It advances at
+	// most once a minute, and is cleared when the GitProvider is recreated for another repository.
+	// +optional
+	LastPushNoticeAt *metav1.Time `json:"lastPushNoticeAt,omitempty"`
+
 	// Remote is where this branch is on the Git remote, and when that was last proved. It is
 	// renewed by every confirmed look: a successful push as well as a fetch. Absent means nothing
 	// has proved anything yet: nothing has looked, or the GitProvider was recreated against a
@@ -120,14 +129,6 @@ type GitBranchRemoteStatus struct {
 	// is omitted.
 	// +optional
 	Parent *GitBranchParentStatus `json:"parent,omitempty"`
-
-	// LastPushNoticeAt is when a GitReceiver last delivered a push to this branch, which made the
-	// branch worker look at once instead of at its next refresh. Absent means no delivery has
-	// reached this branch since this was published: no GitReceiver is set up, the Git host's
-	// webhook does not reach one, or the delivery names the repository by a URL other than the
-	// GitProvider's spec.url. Like the rest of this stanza it is written at most once a minute.
-	// +optional
-	LastPushNoticeAt *metav1.Time `json:"lastPushNoticeAt,omitempty"`
 }
 
 // GitBranchParentState is what a branch that does not exist yet would be created from.

@@ -106,9 +106,6 @@ func (r *GitBranchReconciler) observeRemote(key git.BranchKey) (git.RemoteObserv
 // observation, which is the difference between "nothing has looked" and an answer, and any
 // correction that involves the repository changing under the GitBranch.
 //
-// noticed is when a Git host last reported a push to the branch, zero when none has since the worker
-// started. It rides on an observation: the look a notice causes is what wakes this reconcile.
-//
 // It returns how long the floor is holding news back, zero when nothing is held. A held answer
 // must not wait for whatever reconcile happens to come next: see requeueForRemoteAnswer.
 func (r *GitBranchReconciler) publishRemote(
@@ -118,7 +115,6 @@ func (r *GitBranchReconciler) publishRemote(
 	seen bool,
 	repo git.RepoIdentity,
 	now time.Time,
-	noticed time.Time,
 ) time.Duration {
 	ref := gitBranchRef(branch)
 	published, everPublished := r.remotePublications.last(ref, branch.UID)
@@ -139,11 +135,10 @@ func (r *GitBranchReconciler) publishRemote(
 		return 0
 	}
 	next := &configbutleraiv1alpha3.GitBranchRemoteStatus{
-		Commit:           observed.Commit,
-		LastVerifiedAt:   &metav1.Time{Time: observed.At},
-		VerifiedBy:       string(observed.By),
-		Parent:           parentStatusOf(observed),
-		LastPushNoticeAt: laterPushNotice(branch.Status.Remote, noticed),
+		Commit:         observed.Commit,
+		LastVerifiedAt: &metav1.Time{Time: observed.At},
+		VerifiedBy:     string(observed.By),
+		Parent:         parentStatusOf(observed),
 	}
 	if !remoteStatusIsNews(branch.Status.Remote, next) {
 		return 0
@@ -202,28 +197,9 @@ func remoteStatusIsNews(published, next *configbutleraiv1alpha3.GitBranchRemoteS
 	if published.Commit != next.Commit || !equalParentStatus(published.Parent, next.Parent) {
 		return true
 	}
-	if next.LastPushNoticeAt != nil &&
-		(published.LastPushNoticeAt == nil || next.LastPushNoticeAt.After(published.LastPushNoticeAt.Time)) {
-		return true
-	}
 	// metav1.Time is second-granular on the wire, so this compares against what was PUBLISHED: a
 	// sub-second difference the API server would round away is not movement.
 	return next.LastVerifiedAt.Time.After(published.LastVerifiedAt.Time)
-}
-
-// laterPushNotice is the lastPushNoticeAt to publish: the worker's notice when it is later than what
-// is published, otherwise what is published. A worker that has seen no notice since it started
-// knows nothing newer, which is no reason to take back what was published.
-func laterPushNotice(published *configbutleraiv1alpha3.GitBranchRemoteStatus, noticed time.Time) *metav1.Time {
-	var kept *metav1.Time
-	if published != nil {
-		kept = published.LastPushNoticeAt
-	}
-	// metav1.Time is second-granular on the wire, so a notice is compared as it would be published.
-	if noticed.IsZero() || (kept != nil && !noticed.Truncate(time.Second).After(kept.Time)) {
-		return kept
-	}
-	return &metav1.Time{Time: noticed}
 }
 
 // parentStatusOf is the parent stanza of status.remote: present only while the observation found
@@ -244,4 +220,28 @@ func equalParentStatus(a, b *configbutleraiv1alpha3.GitBranchParentStatus) bool 
 		return a == b
 	}
 	return *a == *b
+}
+
+// publishPushNotice writes status.lastPushNoticeAt from noticed, the worker's last push notice, and
+// returns how long the floor holds a newer one back, zero when nothing is held.
+//
+// It is published on receipt, apart from status.remote: a delivery that reached the worker reached
+// it whether or not the look it caused then read the remote, and the field is how a user tells a
+// webhook that arrives from one that does not. A worker that has seen no notice since it started
+// knows nothing newer, which is no reason to take back what was published. The floor is the remote
+// stanza's interval, measured from the published notice: a busy repository is delivered to on every
+// push, and a write per push would invalidate every watcher's cached copy.
+func publishPushNotice(branch *configbutleraiv1alpha3.GitBranch, noticed, now time.Time) time.Duration {
+	published := branch.Status.LastPushNoticeAt
+	// metav1.Time is second-granular on the wire, so a notice is compared as it would be published.
+	if noticed.IsZero() || (published != nil && !noticed.Truncate(time.Second).After(published.Time)) {
+		return 0
+	}
+	if published != nil {
+		if wait := published.Add(RemotePublicationInterval).Sub(now); wait > 0 {
+			return wait
+		}
+	}
+	branch.Status.LastPushNoticeAt = &metav1.Time{Time: noticed}
+	return 0
 }

@@ -79,7 +79,7 @@ func TestPushNotice_ADroppedLookFreesTheSlot(t *testing.T) {
 }
 
 // TestPushNotice_LastPushNoticeIsWhenItWasReported records every report, folded or not, since that
-// is what GitBranch.status.remote.lastPushNoticeAt says: deliveries reach this branch.
+// is what GitBranch.status.lastPushNoticeAt says: deliveries reach this branch.
 func TestPushNotice_LastPushNoticeIsWhenItWasReported(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
 	assert.True(t, w.LastPushNotice().IsZero(), "no report yet")

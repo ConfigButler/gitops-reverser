@@ -319,13 +319,16 @@ Built with three corrections. **There is no reference and no `accessFrom`:** a d
 `GitProvider`, in any namespace, whose `spec.url` names its repository. Once the receiver routes by
 the payload's repository, a per-provider reference only narrowed a set the URL already narrows, and
 cost a line of wiring per provider plus an admission in every namespace for a GitHub App. Waking
-across namespaces is safe because a woken worker reads the remote with its own credential and holds
-at most one pending look, and the `202` carries no count, so it says nothing about other
-namespaces. Whether deliveries reach a branch is `GitBranch.status.remote.lastPushNoticeAt`, a fact
-rather than a condition about a reference. A receiver whose token Secret is missing looks again
-every 30 seconds, because Secrets are not watched and no delivery reaches it until its path is
-published. And a `generic-hmac` body must name its repository, which it used to be allowed to omit,
-because a shared receiver cannot route one that does not.
+across namespaces grants nothing, because a woken worker reads the remote with its own credential;
+it holds at most one pending look, and the `202` carries no count, so it says nothing about other
+namespaces. The one cost left is availability: a token holder who keeps delivering can keep a
+matching worker reading continuously. That is accepted for now; a per-worker cooldown with a
+deferred follow-up would bound it, without bringing the reference back. Whether deliveries reach a
+branch is `GitBranch.status.lastPushNoticeAt`, a fact rather than a condition about a reference. A
+receiver whose token Secret is missing looks again every 30 seconds, because Secrets are not watched
+and no delivery reaches it until its path is published. And a `generic-hmac` body must name its
+repository, which it used to be allowed to omit, because a shared receiver cannot route one that
+does not.
 
 ## Not in these phases
 

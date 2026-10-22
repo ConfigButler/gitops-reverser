@@ -42,7 +42,7 @@ Migrate in this order:
    `spec.receiver` from the provider.
 4. Check `kubectl get gitreceiver`: `Ready` is `True` once its token is readable and the listener is
    on. A receiver under another name publishes a new `status.webhookPath`; register that one. After
-   the next push, the `GitBranch`'s `status.remote.lastPushNoticeAt` shows the delivery reached it.
+   the next push, the `GitBranch`'s `status.lastPushNoticeAt` shows the delivery reached it.
 
 **A delivery is routed by the repository it names.** A route used to name one provider, so the
 receiver read only the branch. Now the repository URLs in the payload (`repository.clone_url`,
@@ -53,7 +53,9 @@ its foreign pushes are found by the next rejected push or the periodic refresh i
 
 **Any namespace's `GitReceiver` can wake any matching provider.** Waking only makes a branch worker
 read the remote with its own provider's credential, so a delivery cannot choose what is read, and a
-worker holds at most one pending look however many deliveries arrive.
+worker holds at most one pending look however many deliveries arrive. That bounds the queue, not the
+rate: a token holder who keeps delivering can keep a matching worker reading its remote
+continuously. That availability cost is accepted; there is no per-worker cooldown.
 
 **A `generic-hmac` body must name its repository.** One without `repository` is refused with `400`,
 because a receiver cannot tell which provider it is for.

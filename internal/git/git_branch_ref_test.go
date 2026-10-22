@@ -99,6 +99,22 @@ func TestWorkerForTarget_AndNotifyPushFindTheHoldersWorker(t *testing.T) {
 	assert.False(t, m.NotifyPush("team-b", "acme", "main", "abc"), "nor through that GitProvider")
 }
 
+// TestNotifyPush_WakesTheGitBranch: a delivery reaches the GitBranch's reconcile at once, so its
+// receipt is published even when the look it causes cannot read the remote.
+func TestNotifyPush_WakesTheGitBranch(t *testing.T) {
+	m := NewWorkerManager(nil, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+	gitBranch := testGitBranch("acme", "team-a", "main")
+	m.workers[BranchKeyFor(ownerTestURL, "main")] = &BranchWorker{
+		GitBranch: gitBranch, Branch: "main", GitProviderNamespace: "team-a", GitProviderRef: "acme",
+		Log: logr.Discard(), eventQueue: make(chan WorkItem, 1),
+	}
+
+	require.True(t, m.NotifyPush("team-a", "acme", "main", "abc"))
+
+	require.Len(t, m.GitBranchEvents(), 1)
+	assert.Equal(t, gitBranch, client.ObjectKeyFromObject((<-m.GitBranchEvents()).Object))
+}
+
 // TestRecordRemoteObservation_WakesTheGitBranch: what the worker proves reaches the GitBranch's
 // reconcile at once, so status.remote follows a push within one reconcile.
 func TestRecordRemoteObservation_WakesTheGitBranch(t *testing.T) {

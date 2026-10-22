@@ -328,8 +328,8 @@ To serve the receiver:
 
    The path is derived from the token, as a Flux `Receiver` path is. A wrong path and a wrong
    secret both answer `404`; the operator's log says which. Rotating the token moves the path.
-5. Push, and check the `GitBranch`: `status.remote.lastPushNoticeAt` is set once a delivery reached
-   it (written at most once a minute). Still absent means the host does not reach the receiver, or
+5. Push, and check the `GitBranch`: `status.lastPushNoticeAt` is set once a delivery reached
+   it, even if the look it caused could not read the remote. Still absent means the host does not reach the receiver, or
    names the repository by a URL other than the provider's `spec.url`, such as an SSH alias.
 
 A delivery is only a hint. It wakes the branch worker of each `GitProvider` whose repository and

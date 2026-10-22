@@ -175,7 +175,13 @@ func (r *GitBranchReconciler) evaluate(
 	}
 
 	key := git.BranchKeyFor(provider.Spec.URL, branch.Spec.Branch)
-	branch.Status.Repository = repourl.Normalize(provider.Spec.URL)
+	repository := repourl.Normalize(provider.Spec.URL)
+	if branch.Status.Repository != "" && branch.Status.Repository != repository {
+		// The GitProvider was recreated for another repository: a delivery for the one it left says
+		// nothing about this one.
+		branch.Status.LastPushNoticeAt = nil
+	}
+	branch.Status.Repository = repository
 	rd := newGitBranchReadiness(key)
 	claimant := git.BranchClaimant{
 		GitBranch: client.ObjectKeyFromObject(branch),
@@ -230,7 +236,12 @@ func (r *GitBranchReconciler) observeWorker(
 ) time.Duration {
 	repo := repoIdentityOf(provider)
 	observed, seen := r.observeRemote(key)
-	heldFor := r.publishRemote(st, branch, observed, seen, repo, r.clockNow(), r.lastPushNotice(branch))
+	now := r.clockNow()
+	heldFor := r.publishRemote(st, branch, observed, seen, repo, now)
+	if noticeHeldFor := publishPushNotice(branch, r.lastPushNotice(branch), now); noticeHeldFor > 0 &&
+		(heldFor == 0 || noticeHeldFor < heldFor) {
+		heldFor = noticeHeldFor
+	}
 
 	if seen && observed.ParentState == git.ParentMissing &&
 		observed.ParentRequested == branch.Spec.ParentBranch && !differentRepository(observed.Repo, repo) {

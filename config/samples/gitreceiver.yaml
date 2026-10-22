@@ -11,7 +11,7 @@
 #
 # A delivery wakes every GitProvider, in any namespace, whose spec.url names the repository it
 # reports; no GitProvider names the receiver. So a GitHub App or an organization webhook, which has
-# one endpoint for many repositories, needs only one. GitBranch.status.remote.lastPushNoticeAt shows
+# one endpoint for many repositories, needs only one. GitBranch.status.lastPushNoticeAt shows
 # that deliveries reach a branch.
 apiVersion: configbutler.ai/v1alpha3
 kind: GitReceiver

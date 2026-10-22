@@ -136,7 +136,7 @@ type ReceiverHandlerConfig struct {
 // GitReceiver, and a reply saying what was woken would tell its token holder whether some other
 // namespace tracks a repository and branch they name. What a delivery did is on the
 // gitopsreverser_receiver_deliveries_total outcome and on each woken GitBranch's
-// status.remote.lastPushNoticeAt.
+// status.lastPushNoticeAt.
 //
 // Authentication comes first. The signature (or GitLab's token) is checked over the raw bytes
 // before the body is parsed for anything, in constant time, so an unsigned request cannot make a

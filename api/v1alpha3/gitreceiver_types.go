@@ -94,8 +94,10 @@ type GitReceiverStatus struct {
 // A delivery is routed by the repository it names, not by a reference from each GitProvider: a push
 // event carries little more than a repository and a branch, and a reference bought nothing but a
 // line of wiring per provider and, for a GitHub App, an admission in every namespace. Waking across
-// namespaces is safe because a woken worker reads the remote with its own provider's credential,
-// and holds at most one pending look however many deliveries arrive.
+// namespaces grants nothing, because a woken worker reads the remote with its own provider's
+// credential, and it holds at most one pending look however many deliveries arrive. That bounds the
+// queue, not the rate: a stream of deliveries can keep a worker reading continuously, an
+// availability cost accepted without a per-worker cooldown.
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -112,7 +114,7 @@ type GitReceiverStatus struct {
 // through an alias (another host name or port) is not matched, and finds pushes by its periodic
 // refresh. A delivery is only a hint: the branch worker reads the remote with its own provider's
 // credential to find out what happened, so nothing a delivery says can choose a URL, a credential
-// or a commit. GitBranch.status.remote.lastPushNoticeAt shows that deliveries reach a branch.
+// or a commit. GitBranch.status.lastPushNoticeAt shows that deliveries reach a branch.
 type GitReceiver struct {
 	metav1.TypeMeta `json:",inline"`
 
