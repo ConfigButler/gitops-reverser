@@ -39,8 +39,9 @@ Migrate in this order:
    kubectl get gitproviders -A -o jsonpath='{range .items[?(@.spec.receiver)]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.receiver.type}{"\t"}{.spec.receiver.secretRef.name}{"\t"}{.status.webhookPath}{"\n"}{end}'
    ```
 
-2. Upgrade. A `GitProvider` that still carries `spec.receiver` keeps working as a provider, but every
-   edit to it is refused until the field is removed, and nothing is served on its old path.
+2. Upgrade. A `GitProvider` that still carries `spec.receiver` keeps working as a provider, and its
+   status keeps updating, but any write that changes its `spec` is refused until that same write
+   removes the field. Nothing is served on its old path.
 3. For each, create a `GitReceiver` in the provider's namespace with the same `type` and
    `secretRef`, and **give it the provider's name**: the path is the same HMAC of the namespace and
    name, keyed by the same token, so the Git host's webhook needs no change. Then remove
