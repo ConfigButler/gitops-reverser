@@ -76,7 +76,7 @@ func queryPrometheus(query string) (float64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:mnd // reasonable query timeout
 	defer cancel()
 
-	result, _, err := promAPI.Query(ctx, query, time.Now())
+	result, _, _, err := promAPI.Query(ctx, query, time.Now())
 	if err != nil {
 		return 0, fmt.Errorf("prometheus query failed: %w", err)
 	}
