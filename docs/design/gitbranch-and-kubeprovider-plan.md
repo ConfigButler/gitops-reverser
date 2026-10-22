@@ -1,6 +1,6 @@
 # GitBranch, KubeProvider, and a phased API break
 
-Status: **plan**, 2026-10-21. Phase 1 shipped in #429 and phase 2 in #430; phase 3 is not built.
+Status: **plan**, 2026-10-21. Phase 1 shipped in #429, phase 2 in #430, and phase 3 after them.
 The current contract is in [architecture.md](../architecture.md) and
 [configuration.md](../configuration.md). This page records what we decided and in what order we
 build it.
@@ -315,6 +315,13 @@ creating a `GitReceiver` in its own namespace, so there is one mechanism, not tw
 
 The name avoids Flux's `Receiver` kind, which sits in the same clusters.
 
+Built as above, with three corrections. The reference is `gitReceiverRef`, not `receiverRef`: rule 2
+of [definitions.md](../definitions.md) names a reference after the kind it points at. A receiver
+whose token Secret is missing looks again every 30 seconds, because Secrets are not watched and no
+delivery reaches it until its path is published. And a `generic-hmac` body must name its
+repository, which it used to be allowed to omit, because a shared receiver cannot route one that
+does not.
+
 ## Not in these phases
 
 Each of these needs its own design when it is next on the list. None blocks phases 1 to 3.
@@ -343,7 +350,9 @@ Phase 1:
 Phase 2 (settled): the `inCluster` list is `--in-cluster-kube-providers` (chart value
 `controllerManager.inClusterKubeProviders`), and the chart's provider is named `local`.
 
-Phase 3:
-
-- Whether `GitReceiver` needs `accessFrom` at all, or whether only providers in its own namespace
-  may reference it.
+Phase 3 (settled): `GitReceiver` has `accessFrom`, admitting its own namespace and the others it
+names, because a GitHub App has one endpoint for repositories whose providers live in many
+namespaces. A delivery only wakes a branch worker, so admitting a namespace grants it no credential.
+`GitProvider.status.conditions` carries `GitReceiverReady` (`GitReceiverNotFound`,
+`NamespaceNotAuthorized`, `GitReceiverNotReady`) outside `Ready`, since the refresh still works
+without a receiver.

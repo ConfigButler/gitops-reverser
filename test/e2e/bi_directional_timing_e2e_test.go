@@ -168,6 +168,7 @@ func (p *timingPipeline) cleanup() {
 	cleanupWatchRule(p.ruleName, p.testNs)
 	cleanupGitTarget(p.targetName, p.testNs)
 	cleanupNamespacedResource(p.testNs, "gitprovider", p.providerName)
+	cleanupNamespacedResource(p.testNs, "gitreceiver", p.receiverName)
 	cleanupNamespacedResource(p.testNs, "secret", p.receiverName)
 }
 

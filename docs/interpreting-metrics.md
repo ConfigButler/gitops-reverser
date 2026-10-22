@@ -82,7 +82,7 @@ without a kubeconfig.
 | `resource_condition` | gauge | `kind`, `resource_namespace`, `resource_name`, `type`, `status`, `reason` |
 
 - `kind` is `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider`, `GitBranch`,
-  `KubeProvider`, `FluxTrigger` or `ArgoCDTrigger`: the objects a human declares.
+  `GitReceiver`, `KubeProvider`, `FluxTrigger` or `ArgoCDTrigger`: the objects a human declares.
 - `type` is the kstatus trio: `Ready` (the summary), `Reconciling` (working on it) and `Stalled`
   (given up, and nothing will retry without a human).
 - `status` is `True`, `False` or `Unknown`.
@@ -842,7 +842,7 @@ else pushed. See [who applies this folder](configuration.md#who-applies-this-fol
 | `apply_ownership_conflicts_total` | counter | `provider_namespace`, `provider_name`, `branch` | One per object another applier owns that the branch worker kept out of a folder an apply trigger applies: a live write not mirrored, or a snapshot object neither upserted nor swept. The owner is read from Flux's owner labels (`kustomize.toolkit.fluxcd.io/name` and `/namespace`) or Argo CD's tracking annotation (`argocd.argoproj.io/tracking-id`). Any non-zero rate is a misconfiguration: another `Kustomization` or `Application` applies objects into a namespace the folder mirrors, and two appliers applying one object fight each other. The worker logs each object once, naming both appliers; narrow the `WatchRule`, or move the object to one applier |
 | `stale_snapshots_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per resync snapshot the branch worker found stale: collected while Git was ahead of the cluster (a commit pushed and not yet applied), collected across an apply, or arriving while Git is ahead. `outcome` is `discarded` (not decided; a fresh snapshot of its `GitTarget` is asked for once Git is no longer ahead, and the `GitTarget`'s live writes are held back by the render-fidelity gate until it lands) or `used` (the `GitTarget`'s snapshots had been held for 5 minutes while an apply kept failing, so this one was decided anyway, and whatever the unapplied commit changed in its objects is reverted, as the API-wins rule says). `discarded` comes in short bursts around applies and needs no action; a discard is not a resync failure and is not counted in `git_resync_failures_total`. Any `used` means an applier is failing for minutes at a time: read the trigger's `status.operation` and the `ApplyFailed` Events. See [stale snapshots](spec/reconcile-via-watchlist-mark-and-sweep.md#stale-snapshots-are-discarded) |
 | `apply_operations_unresolved` | gauge | `provider_namespace`, `provider_name`, `branch` | Apply operations on the branch that have not completed 5 minutes after they were requested. Each is still followed, holds its applier's apply window open, and holds back the applier's next request until it completes, so a value that stays above zero is an applier stuck mid-apply: read its status, and the `ApplyUnresolved` Event on the `GitTarget`s. Read at scrape time |
-| `receiver_deliveries_total` | counter | `type`, `outcome` | One per verified-or-refused delivery to `/git-push/`. `type` is the `GitProvider.spec.receiver.type`; `outcome` is `notified` (handed to the branch worker), `unmatched` (no worker for that branch), `ignored` (a ping, an event other than a push, a tag or other non-branch ref, or a `generic-hmac` body naming another repository), `rejected` (a missing or wrong signature or token, or an oversized body) or `invalid` (verified but unparseable) |
+| `receiver_deliveries_total` | counter | `receiver_namespace`, `receiver_name`, `type`, `outcome` | One per verified-or-refused delivery to a `GitReceiver`'s `/git-push/` path. `type` is its `spec.type`; `outcome` is `notified` (handed to at least one branch worker), `unreferenced` (no `GitProvider` the receiver admits references it, so it serves nobody), `unknown_repository` (no `GitProvider` it serves has the repository the delivery names), `unknown_branch` (one has, but no branch worker writes that branch for it), `ignored` (a ping, an event other than a push, or a tag or other non-branch ref), `rejected` (a missing or wrong signature or token, or an oversized body) or `invalid` (verified but unparseable, or naming no repository). Every outcome but `rejected` and `invalid` answers `202`. `unknown_repository` and `unknown_branch` are expected on an organization or GitHub App hook, which delivers for every repository and branch; a steady `unreferenced` rate is a receiver the host calls that no `GitProvider` uses: check each provider's `GitReceiverReady` |
 
 A delivery counted `notified` is only a hint: the worker reads the advertisement, and fetches under
 `git_fetches_total{reason="refresh"}` only when the branch actually moved. A `ForeignCommit` request
@@ -855,7 +855,11 @@ already runs the edits it holds.
 # worker's backoff of up to a few minutes, until the applier is fixed.
 sum by (reason) (rate(gitopsreverser_apply_requests_total{outcome="failed"}[15m]))
 # A receiver a Git host is calling with the wrong secret.
-sum by (type) (rate(gitopsreverser_receiver_deliveries_total{outcome="rejected"}[15m])) > 0
+sum by (receiver_namespace, receiver_name) (
+  rate(gitopsreverser_receiver_deliveries_total{outcome="rejected"}[15m])) > 0
+# A receiver the host calls that serves nobody: no GitProvider it admits references it.
+sum by (receiver_namespace, receiver_name) (
+  increase(gitopsreverser_receiver_deliveries_total{outcome="unreferenced"}[1h])) > 0
 # Edits landing while an apply runs, by branch. Withheld ones are reverted on the cluster until the
 # Repair that follows; ambiguous ones may have put the applier's revert in Git.
 sum by (provider_namespace, provider_name, branch, outcome) (

@@ -31,6 +31,9 @@ What the chart did for you:
 {{- else }}
 - started in configured-author mode (`attribution.enabled=false`)
 {{- end }}
+{{- if .Values.servers.receiver.enabled }}
+- started the push receiver, behind the `{{ include "gitops-reverser.receiverServiceName" . }}` Service
+{{- end }}
 {{- if .Values.quickstart.enabled }}
 {{- if .Values.quickstart.createNamespace }}
 - created the demo namespace `{{ .Values.quickstart.namespace }}`
@@ -51,6 +54,12 @@ What the chart did NOT do for you:
 - it did NOT create your Git credentials Secret
 {{- end }}
 - it did NOT install Valkey/Redis
+{{- if .Values.servers.receiver.enabled }}
+- it did NOT expose the push receiver to your Git host, nor create a GitReceiver. Route
+  `{{ include "gitops-reverser.receiverServiceName" . }}` from an Ingress or Gateway that terminates TLS, create a
+  GitReceiver with the webhook token, set `spec.gitReceiverRef` on each GitProvider it serves, and register
+  `https://<your route>` plus the GitReceiver's `status.webhookPath` as the host's push webhook.
+{{- end }}
 {{- if .Values.attribution.enabled }}
 - it did NOT write `/etc/kubernetes/...` files on your control-plane node(s)
 - it did NOT create your audit policy file

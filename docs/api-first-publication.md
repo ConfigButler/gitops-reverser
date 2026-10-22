@@ -29,7 +29,7 @@ worker can plan locally and spend its network budget on publication.
 
 This guide describes the shipped behavior. Retained work is retried on the worker's own backoff;
 [failure timing](#failure-timing-and-memory-limits) says what that means in practice. The
-[push receiver](configuration.md#receiving-push-notifications-specreceiver) lets a Git host report
+[push receiver](configuration.md#gitreceiver) lets a Git host report
 a push, the [apply trigger design](design/apply-trigger.md) covers what follows one, and
 [architecture](architecture.md) covers the wider operator.
 
@@ -338,7 +338,7 @@ idle target can hold an old view after a foreign push; `--git-refresh-interval=0
 and restores the old behaviour, where the view is corrected by a later publication, resync, or
 explicit recheck.
 
-The [push receiver](configuration.md#receiving-push-notifications-specreceiver) tells the worker
+The [push receiver](configuration.md#gitreceiver) tells the worker
 that somebody pushed, in seconds rather than at the next refresh. A delivery is queued on the
 worker like a refresh and is only a hint: on an idle branch the worker reads the advertisement and
 fetches only if the branch moved; on a busy one it closes its open window and publishes, and the

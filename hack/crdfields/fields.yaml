@@ -61,7 +61,8 @@ kinds:
         default: "off"
         doc: >-
           The `GitReceiver` whose push deliveries wake this provider's branches: its own namespace,
-          or `namespace` names one whose `accessFrom` admits it
+          or `namespace` names one whose `accessFrom` admits it. See
+          [receiving push notifications](#receiving-push-notifications-specgitreceiverref)
 
   - kind: GitBranch
     title: "`GitBranch` (namespaced): one branch of the repository"
@@ -87,7 +88,7 @@ kinds:
       - path: type
         doc: >-
           Payload and signature the host sends: `github`, `gitlab`, `gitea`, or `generic-hmac` for a
-          relay of your own
+          relay of your own. See [`GitReceiver`](#gitreceiver)
       - path: secretRef
         doc: >-
           Secret, in this namespace, whose `token` key is the webhook secret. It also derives

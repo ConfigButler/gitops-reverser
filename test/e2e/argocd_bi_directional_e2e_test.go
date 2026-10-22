@@ -158,6 +158,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		cleanupWatchRule(run.watchRuleName, testNs)
 		cleanupGitTarget(run.gitTargetName, testNs)
 		cleanupNamespacedResource(testNs, "gitprovider", run.gitProviderName)
+		cleanupNamespacedResource(testNs, "gitreceiver", run.receiverSecretName)
 		cleanupNamespacedResource(testNs, "secret", run.receiverSecretName)
 		cleanupClusterResource("crd", iceCreamCRDName(crdGroupArgoBiDirectional))
 		cleanupNamespace(testNs)

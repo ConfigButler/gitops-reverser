@@ -95,9 +95,9 @@ spec:
 ```
 
 The GitOps Reverser side. The `GitProvider` points at the same repository (any URL form of it) and
-names the `GitReceiver` the Git host's push webhook calls; an `ArgoCDTrigger` holds the `Application`, in the cluster the chart's
-`local` `KubeProvider` names (the operator's own, through `spec.inCluster`), and the `GitTarget`
-names the trigger. The `Application` is in `argocd` and the trigger in `team-a`, so the provider
+names the `GitReceiver` the Git host's push webhook calls; an `ArgoCDTrigger` holds the `Application`, in the
+cluster the chart's `local` `KubeProvider` names (the operator's own, through `spec.inCluster`), and
+the `GitTarget` names the trigger. The `Application` is in `argocd` and the trigger in `team-a`, so the provider
 lets `team-a`'s triggers reach another namespace (`allowCrossNamespace.appliers`); with the Helm
 chart, set `kubeProvider.allowCrossNamespace.appliers: true` instead of declaring it. A
 `KubeProvider` with `inCluster` that you declare yourself is honored only once it is listed in

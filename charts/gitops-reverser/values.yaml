@@ -244,8 +244,9 @@ servers:
         secretNameOverride: ""
 
   # The push receiver: the endpoint a Git host's push webhook points at, so GitOps Reverser learns in
-  # seconds, instead of at the next refresh, that somebody else pushed. A GitProvider opts in with
-  # spec.receiver and publishes its path as status.webhookPath (/git-push/<digest of the token>).
+  # seconds, instead of at the next refresh, that somebody else pushed. A GitReceiver publishes its
+  # path as status.webhookPath (/git-push/<digest of the token>), and each GitProvider that names it
+  # in spec.gitReceiverRef is woken by the deliveries for its repository.
   # Off by default: a foreign push is then still found, by the next rejected push or by
   # git.refreshInterval. Enabled, the chart adds a containerPort and a <release>-receiver Service
   # (port service.ports.receiver). The listener is plain HTTP, because a Git host cannot present the
