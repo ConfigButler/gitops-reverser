@@ -183,7 +183,7 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Serve the push receiver, over plain HTTP, for Git hosts' push webhooks to GitProvider.status.webhookPath, and render a <release>-receiver Service; expose it with an Ingress or Gateway route that terminates TLS."
+              "description": "Serve the push receiver, over plain HTTP, for Git hosts' push webhooks to GitReceiver.status.webhookPath, and render a <release>-receiver Service; expose it with an Ingress or Gateway route that terminates TLS."
             },
             "bindAddress": {
               "type": "string",

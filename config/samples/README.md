@@ -7,6 +7,8 @@ These samples are quick starting points for common GitOps Reverser setups.
   repository.
 - `quickstart-gittarget.yaml`: Minimal `GitTarget` using a non-root `spec.path` and SOPS encryption auto-generation.
 - `quickstart-watchrule.yaml`: Minimal `WatchRule` for ConfigMaps.
+- `gitreceiver.yaml`: A `GitReceiver` a Git host's push webhook points at, with its token Secret in
+  its own namespace. It wakes every `GitProvider` whose `spec.url` a delivery names.
 - `kubeprovider.yaml`: A `KubeProvider` for a remote cluster, with its kubeconfig Secret in its own
   namespace, showing `accessFrom` and `allowCrossNamespace`.
 - `clusterwatchrule.yaml`: Minimal `ClusterWatchRule` for cluster-scoped resources.

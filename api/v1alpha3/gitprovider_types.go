@@ -3,10 +3,6 @@
 package v1alpha3
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -23,6 +19,13 @@ import (
 // commit identity/signing.
 //
 // +kubebuilder:validation:XValidation:rule="self.url == oldSelf.url",message="spec.url is immutable; delete and recreate the GitProvider to point at a different repository"
+//
+// spec.receiver was replaced by the GitReceiver kind, which wakes every GitProvider whose spec.url
+// its deliveries name. A pruned field would apply cleanly and leave a provider that used to be
+// notified silently unnotified, so the old spelling stays in the schema only to be refused by name.
+// The rule sits on spec, not on the field, so CRD validation ratcheting cannot wave a stored value
+// through on the next edit.
+// +kubebuilder:validation:XValidation:rule="!has(self.receiver)",message="spec.receiver was replaced by a GitReceiver: create one with this type and secretRef, and remove spec.receiver; deliveries wake every GitProvider whose spec.url they name"
 type GitProviderSpec struct {
 	// URL of the repository (HTTP/SSH).
 	// Immutable: delete and recreate the GitProvider to point at a different repository.
@@ -66,68 +69,16 @@ type GitProviderSpec struct {
 	// +optional
 	Commit *CommitSpec `json:"commit,omitempty"`
 
-	// The names are Flux's Receiver's, type values included, so a Flux user already knows them.
-
-	// Receiver lets the Git host tell GitOps Reverser that somebody pushed. Point the host's push
-	// webhook at the receiver listener plus status.webhookPath, with the Secret's token as the
-	// webhook secret. A delivery is only a hint: it makes GitOps Reverser read where the branch is
-	// on the remote, and what the remote says decides whether a GitTarget's applier is asked to
-	// apply. Without a receiver, a foreign push is still found, by the next rejected push or by
-	// the periodic refresh.
+	// RemovedReceiver is the old place of a GitReceiver's type and secretRef. It is never read;
+	// setting it is refused.
 	// +optional
-	Receiver *GitProviderReceiver `json:"receiver,omitempty"`
+	RemovedReceiver *RemovedGitProviderReceiver `json:"receiver,omitempty"`
 }
 
-// GitProviderReceiver is the push-notification endpoint of a GitProvider.
-type GitProviderReceiver struct {
-	// Type is the payload and signature the Git host sends. "github" checks X-Hub-Signature-256,
-	// "gitlab" checks X-Gitlab-Token, "gitea" checks X-Gitea-Signature, and "generic-hmac" checks
-	// X-Signature: sha256=<hex HMAC of the body> over a {"repository", "branch", "after"} body,
-	// for a relay of your own.
-	// +required
-	// +kubebuilder:validation:Enum=github;gitlab;gitea;generic-hmac
-	Type ReceiverType `json:"type"`
-
-	// SecretRef names a Secret in this namespace whose "token" key is the webhook secret. The
-	// token also derives status.webhookPath, so rotating it moves the path: register the new path
-	// with the new secret.
-	// +required
-	SecretRef meta.LocalObjectReference `json:"secretRef"`
-}
-
-// ReceiverType is the payload format a receiver accepts. The values are Flux's Receiver types.
-type ReceiverType string
-
-const (
-	// ReceiverTypeGitHub is a GitHub push event.
-	ReceiverTypeGitHub ReceiverType = "github"
-	// ReceiverTypeGitLab is a GitLab push event.
-	ReceiverTypeGitLab ReceiverType = "gitlab"
-	// ReceiverTypeGitea is a Gitea push event.
-	ReceiverTypeGitea ReceiverType = "gitea"
-	// ReceiverTypeGenericHMAC is a {"repository", "branch", "after"} body signed as Flux's
-	// generic-hmac Receiver expects.
-	ReceiverTypeGenericHMAC ReceiverType = "generic-hmac"
-)
-
-// ReceiverTokenKey is the Secret key holding a receiver's token, the key a Flux Receiver Secret uses.
-const ReceiverTokenKey = "token"
-
-// ReceiverPathPrefix is the prefix every receiver path starts with.
-const ReceiverPathPrefix = "/git-push/"
-
-// A path that names the GitProvider would let anybody who can reach the listener list which
-// namespaces and providers exist. Like Flux's Receiver, the path is derived from the token, so
-// only whoever holds the token can find it; unlike Flux's sha256(token+name+namespace), it is an
-// HMAC over "namespace/name", which no two providers sharing a token can collide on.
-
-// ReceiverPath is the path a GitProvider's receiver is served on: the prefix and the hex
-// HMAC-SHA256 of "<namespace>/<name>", keyed by the receiver token.
-func ReceiverPath(token []byte, namespace, name string) string {
-	mac := hmac.New(sha256.New, token)
-	mac.Write([]byte(namespace + "/" + name))
-	return ReceiverPathPrefix + hex.EncodeToString(mac.Sum(nil))
-}
+// RemovedGitProviderReceiver keeps spec.receiver in the schema so that setting it is refused rather
+// than pruned. Any value is kept as written until the refusal names its replacement.
+// +kubebuilder:pruning:PreserveUnknownFields
+type RemovedGitProviderReceiver struct{}
 
 // KnownHostsReference points at a namespace-local ConfigMap or Secret that holds SSH known_hosts
 // host-trust material. The data is read from the "known_hosts" key, falling back to
@@ -223,12 +174,6 @@ type GitProviderStatus struct {
 	// that cadence. Providers are few and the check was already running; this adds no request.
 	// +optional
 	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
-
-	// WebhookPath is the path spec.receiver is served on, under the receiver listener:
-	// /git-push/ and a hash of this provider's name and the receiver token. Empty without
-	// spec.receiver, and while the token Secret or its "token" key is missing.
-	// +optional
-	WebhookPath string `json:"webhookPath,omitempty"`
 }
 
 // CommitSpec configures the commit identity and signing a GitProvider uses. Message formatting

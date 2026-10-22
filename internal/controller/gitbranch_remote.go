@@ -221,3 +221,27 @@ func equalParentStatus(a, b *configbutleraiv1alpha3.GitBranchParentStatus) bool 
 	}
 	return *a == *b
 }
+
+// publishPushNotice writes status.lastPushNoticeAt from noticed, the worker's last push notice, and
+// returns how long the floor holds a newer one back, zero when nothing is held.
+//
+// It is published on receipt, apart from status.remote: a delivery that reached the worker reached
+// it whether or not the look it caused then read the remote, and the field is how a user tells a
+// webhook that arrives from one that does not. A worker that has seen no notice since it started
+// knows nothing newer, which is no reason to take back what was published. The floor is the remote
+// stanza's interval, measured from the published notice: a busy repository is delivered to on every
+// push, and a write per push would invalidate every watcher's cached copy.
+func publishPushNotice(branch *configbutleraiv1alpha3.GitBranch, noticed, now time.Time) time.Duration {
+	published := branch.Status.LastPushNoticeAt
+	// metav1.Time is second-granular on the wire, so a notice is compared as it would be published.
+	if noticed.IsZero() || (published != nil && !noticed.Truncate(time.Second).After(published.Time)) {
+		return 0
+	}
+	if published != nil {
+		if wait := published.Add(RemotePublicationInterval).Sub(now); wait > 0 {
+			return wait
+		}
+	}
+	branch.Status.LastPushNoticeAt = &metav1.Time{Time: noticed}
+	return 0
+}

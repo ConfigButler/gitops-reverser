@@ -697,6 +697,20 @@ func (m *WorkerManager) WorkerForGitBranch(gitBranch k8stypes.NamespacedName) (*
 	return m.workers[key], true
 }
 
+// WorkerForGitBranchAt is WorkerForGitBranch, but only for the worker of key: while a GitProvider is
+// recreated for another repository, the worker of the repository it left still serves the GitBranch
+// until the GitTarget reconcile replaces it, and what it observed is not about key.
+func (m *WorkerManager) WorkerForGitBranchAt(gitBranch k8stypes.NamespacedName, key BranchKey) (*BranchWorker, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	worker, exists := m.workers[key]
+	if !exists || worker.GitBranch != gitBranch {
+		return nil, false
+	}
+	return worker, true
+}
+
 // WorkerForTarget is WorkerForGitBranch for the GitBranch a GitTarget references.
 func (m *WorkerManager) WorkerForTarget(target *configv1alpha3.GitTarget) (*BranchWorker, bool) {
 	return m.WorkerForGitBranch(target.GitBranchKey())
@@ -899,9 +913,10 @@ func (m *WorkerManager) NeedLeaderElection() bool {
 	return true
 }
 
-// NotifyPush tells the worker for a provider's branch that the Git host reported a push to it. It
-// reports whether such a worker exists. after is the commit the delivery named; it is logged and
-// never trusted: the worker reads where the branch is from the remote itself.
+// NotifyPush tells the worker for a provider's branch that the Git host reported a push to it, and
+// wakes its GitBranch, so status.lastPushNoticeAt records the receipt even when the look it causes
+// cannot read the remote. It reports whether such a worker exists. after is the commit the delivery
+// named; it is logged and never trusted: the worker reads where the branch is from the remote itself.
 func (m *WorkerManager) NotifyPush(providerNamespace, providerName, branch, after string) bool {
 	provider := k8stypes.NamespacedName{Namespace: providerNamespace, Name: providerName}
 	m.mu.RLock()
@@ -917,6 +932,7 @@ func (m *WorkerManager) NotifyPush(providerNamespace, providerName, branch, afte
 		return false
 	}
 	found.EnqueuePushNotification(after)
+	m.notifyGitBranchLocked(found.GitBranch)
 	return true
 }
 

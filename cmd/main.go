@@ -339,6 +339,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitProvider")
 		os.Exit(1)
 	}
+	if err := (&controller.GitReceiverReconciler{
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		ListenerEnabled: receiverEnabled(cfg),
+		Recorder:        mgr.GetEventRecorderFor("gitreceiver"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GitReceiver")
+		os.Exit(1)
+	}
 	kubeProviderReconciler := &controller.KubeProviderReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),

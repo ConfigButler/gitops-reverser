@@ -126,7 +126,7 @@ func (p *timingPipeline) start() {
 
 	createGitProviderWithURLInNamespace(p.providerName, p.testNs, p.repo.GitSecretHTTP, p.repo.RepoURLHTTP)
 	verifyResourceStatus("gitprovider", p.providerName, p.testNs, "True", "Succeeded", "")
-	p.hookID = registerOperatorReceiver(p.testNs, p.providerName, p.receiverName, p.repo.RepoName)
+	p.hookID = registerOperatorReceiver(p.testNs, p.receiverName, p.repo.RepoName)
 
 	createGitTarget(p.targetName, p.testNs, p.providerName, p.gitPath, "main")
 	_, err = kubectlRunWithStdin(p.testNs, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
@@ -168,6 +168,7 @@ func (p *timingPipeline) cleanup() {
 	cleanupWatchRule(p.ruleName, p.testNs)
 	cleanupGitTarget(p.targetName, p.testNs)
 	cleanupNamespacedResource(p.testNs, "gitprovider", p.providerName)
+	cleanupNamespacedResource(p.testNs, "gitreceiver", p.receiverName)
 	cleanupNamespacedResource(p.testNs, "secret", p.receiverName)
 }
 

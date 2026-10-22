@@ -1,0 +1,186 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: gitreceivers.configbutler.ai
+spec:
+  group: configbutler.ai
+  names:
+    kind: GitReceiver
+    listKind: GitReceiverList
+    plural: gitreceivers
+    singular: gitreceiver
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.webhookPath
+      name: Path
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha3
+    schema:
+      openAPIV3Schema:
+        description: |-
+          GitReceiver is the endpoint a Git host notifies on a push. A delivery to it authenticates against
+          its token, names a repository and a branch, and wakes the branch worker of every GitProvider, in
+          any namespace, whose spec.url the delivery names, for that branch. A provider reaching its host
+          through an alias (another host name or port) is not matched, and finds pushes by its periodic
+          refresh. A delivery is only a hint: the branch worker reads the remote with its own provider's
+          credential to find out what happened, so nothing a delivery says can choose a URL, a credential
+          or a commit. GitBranch.status.lastPushNoticeAt shows that deliveries reach a branch.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of GitReceiver
+            properties:
+              secretRef:
+                description: |-
+                  SecretRef names a Secret in this GitReceiver's namespace whose "token" key is the webhook
+                  secret. The token also derives status.webhookPath, so rotating it moves the path: register the
+                  new path with the new secret.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.secretRef.name must not be empty
+                  rule: self.name != ''
+              type:
+                description: |-
+                  Type is the payload and signature the Git host sends. "github" checks X-Hub-Signature-256,
+                  "gitlab" checks X-Gitlab-Token, "gitea" checks X-Gitea-Signature, and "generic-hmac" checks
+                  X-Signature: sha256=<hex HMAC of the body> over a {"repository", "branch", "after"} body,
+                  for a relay of your own.
+                enum:
+                - github
+                - gitlab
+                - gitea
+                - generic-hmac
+                type: string
+            required:
+            - secretRef
+            - type
+            type: object
+          status:
+            description: status defines the observed state of GitReceiver
+            properties:
+              conditions:
+                description: |-
+                  Conditions report whether this GitReceiver serves deliveries: the Ready summary plus the
+                  kstatus Reconciling/Stalled pair. Ready is True once the token Secret is readable and the
+                  receiver listener is on.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              webhookPath:
+                description: |-
+                  WebhookPath is the path this GitReceiver is served on, under the receiver listener:
+                  /git-push/ and an HMAC of this GitReceiver's namespace and name, keyed by the token. Point the
+                  Git host's push webhook at the listener plus this path. Empty while the token Secret or its
+                  "token" key is missing.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -7,6 +7,72 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `GitReceiver` replaces `GitProvider.spec.receiver`
+
+**Breaking.** The push receiver is a namespaced kind of its own, `GitReceiver`, and nothing names it:
+a delivery wakes every `GitProvider`, in any namespace, whose `spec.url` names the repository the
+delivery reports. One `GitReceiver` therefore serves every repository its Git host delivers for, so a
+GitHub App or an organization webhook, which has one endpoint for many repositories, needs one route.
+`GitProvider.spec.receiver` stays in the schema only so that setting it is refused at admission,
+with a message naming the replacement. `GitProvider.status.webhookPath` is gone; the path is the
+`GitReceiver`'s `status.webhookPath`.
+
+```yaml
+kind: GitReceiver
+metadata: {name: platform, namespace: team-a}   # the provider's name keeps the webhook's path
+spec:
+  type: github                           # the old spec.receiver.type
+  secretRef: {name: platform-receiver}   # the old spec.receiver.secretRef, in this namespace
+```
+
+Migrate in this order:
+
+1. Record what you have, before upgrading the CRDs:
+
+   ```bash
+   kubectl get gitproviders -A -o jsonpath='{range .items[?(@.spec.receiver)]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.receiver.type}{"\t"}{.spec.receiver.secretRef.name}{"\t"}{.status.webhookPath}{"\n"}{end}'
+   ```
+
+2. Upgrade. A `GitProvider` that still carries `spec.receiver` keeps working as a provider, and its
+   status keeps updating, but any write that changes its `spec` is refused until that same write
+   removes the field. Nothing is served on its old path.
+3. For each, create a `GitReceiver` in the provider's namespace with the same `type` and
+   `secretRef`, and **give it the provider's name**: the path is the same HMAC of the namespace and
+   name, keyed by the same token, so the Git host's webhook needs no change. Then remove
+   `spec.receiver` from the provider.
+4. Check `kubectl get gitreceiver`: `Ready` is `True` once its token is readable and the listener is
+   on. A receiver under another name publishes a new `status.webhookPath`; register that one. After
+   the next push, the `GitBranch`'s `status.lastPushNoticeAt` shows the delivery reached it.
+
+**A delivery is routed by the repository it names.** A route used to name one provider, so the
+receiver read only the branch. Now the repository URLs in the payload (`repository.clone_url`,
+`ssh_url` and `html_url` from GitHub and Gitea, `project.git_http_url` and `git_ssh_url` from GitLab)
+are compared with every provider's `spec.url` as a branch claim compares repositories. A provider that
+reaches the host under another name, such as an SSH alias (`ssh.github.com:443`), is not matched, and
+its foreign pushes are found by the next rejected push or the periodic refresh instead.
+
+**Any namespace's `GitReceiver` can wake any matching provider.** Waking only makes a branch worker
+read the remote with its own provider's credential, so a delivery cannot choose what is read, and a
+worker holds at most one pending look however many deliveries arrive. That bounds the queue, not the
+rate: a token holder who keeps delivering can keep a matching worker reading its remote
+continuously. That availability cost is accepted; there is no per-worker cooldown.
+
+**A `generic-hmac` body must name its repository.** One without `repository` is refused with `400`,
+because a receiver cannot tell which provider it is for.
+
+**A verified delivery is answered `202` with no body.** The `{"matched": N}` body is gone: any
+namespace can hold a `GitReceiver`, and a count would tell its token holder whether another namespace
+tracks a repository. A relay that read it reads the metric below or `lastPushNoticeAt` instead.
+
+**`ListenerDisabled`.** A `GitReceiver` reports `Ready=False` with this reason while the operator runs
+without `--receiver-bind-address` (chart value `servers.receiver.enabled=false`).
+
+**The delivery metric is per receiver.** `gitopsreverser_receiver_deliveries_total` gains the
+`receiver_namespace` and `receiver_name` labels, and its `unmatched` outcome is split into
+`unknown_repository` (no `GitProvider` has the repository the delivery names) and `unknown_branch`
+(one has, but no branch worker writes that branch). A query that read `outcome="unmatched"` reads
+both.
+
 ## `KubeProvider` replaces `ClusterProvider`; every reference names one with `spec.kubeProviderRef`
 
 **Breaking.** The source cluster is a namespaced `KubeProvider`. The cluster-scoped

@@ -68,13 +68,14 @@ spec:
   interval: 1h
 ```
 
-The GitOps Reverser side. The `GitProvider` points at the same repository (any URL form of it) and
-serves a push receiver; a `FluxTrigger` holds the `Kustomization`, in the cluster the chart's
-`local` `KubeProvider` names (the operator's own, through `spec.inCluster`), and the `GitTarget`
-names the trigger. The `Kustomization` is in `flux-system` and the trigger in `team-a`, so the
-provider lets `team-a`'s triggers reach another namespace (`allowCrossNamespace.appliers`); with the
-Helm chart, set `kubeProvider.allowCrossNamespace.appliers: true` instead of declaring it. A
-`KubeProvider` with `inCluster` that you declare yourself is honored only once it is listed in
+The GitOps Reverser side. The `GitProvider` points at the same repository (any URL form of it),
+which is how the `GitReceiver` the Git host's push webhook calls finds it; a `FluxTrigger` holds the
+`Kustomization`, in the cluster the chart's `local` `KubeProvider` names (the operator's own,
+through `spec.inCluster`), and the `GitTarget` names the trigger. The `Kustomization` is in
+`flux-system` and the trigger in `team-a`, so the provider lets `team-a`'s triggers reach another
+namespace (`allowCrossNamespace.appliers`); with the Helm chart, set
+`kubeProvider.allowCrossNamespace.appliers: true` instead of declaring it. A `KubeProvider` with
+`inCluster` that you declare yourself is honored only once it is listed in
 `--in-cluster-kube-providers`, which the chart does for its own:
 
 ```yaml
@@ -99,6 +100,16 @@ stringData:
   token: replace-with-a-long-random-string
 ---
 apiVersion: configbutler.ai/v1alpha3
+kind: GitReceiver
+metadata:
+  name: platform
+  namespace: team-a
+spec:
+  type: github
+  secretRef:
+    name: platform-receiver
+---
+apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider
 metadata:
   name: platform
@@ -108,10 +119,6 @@ spec:
   allowedBranches: ["main"]
   secretRef:
     name: platform-git
-  receiver:
-    type: github
-    secretRef:
-      name: platform-receiver
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitBranch

@@ -175,7 +175,13 @@ func (r *GitBranchReconciler) evaluate(
 	}
 
 	key := git.BranchKeyFor(provider.Spec.URL, branch.Spec.Branch)
-	branch.Status.Repository = repourl.Normalize(provider.Spec.URL)
+	repository := repourl.Normalize(provider.Spec.URL)
+	if branch.Status.Repository != "" && branch.Status.Repository != repository {
+		// The GitProvider was recreated for another repository: a delivery for the one it left says
+		// nothing about this one.
+		branch.Status.LastPushNoticeAt = nil
+	}
+	branch.Status.Repository = repository
 	rd := newGitBranchReadiness(key)
 	claimant := git.BranchClaimant{
 		GitBranch: client.ObjectKeyFromObject(branch),
@@ -230,7 +236,12 @@ func (r *GitBranchReconciler) observeWorker(
 ) time.Duration {
 	repo := repoIdentityOf(provider)
 	observed, seen := r.observeRemote(key)
-	heldFor := r.publishRemote(st, branch, observed, seen, repo, r.clockNow())
+	now := r.clockNow()
+	heldFor := r.publishRemote(st, branch, observed, seen, repo, now)
+	if noticeHeldFor := publishPushNotice(branch, r.lastPushNotice(branch, key), now); noticeHeldFor > 0 &&
+		(heldFor == 0 || noticeHeldFor < heldFor) {
+		heldFor = noticeHeldFor
+	}
 
 	if seen && observed.ParentState == git.ParentMissing &&
 		observed.ParentRequested == branch.Spec.ParentBranch && !differentRepository(observed.Repo, repo) {
@@ -247,6 +258,20 @@ func (r *GitBranchReconciler) observeWorker(
 	rd.progressingIf(open && found, metav1.ConditionFalse, GitBranchReasonRecoveringParentBranch,
 		"The parent branch is on the remote again; the branch worker is publishing the work it held back")
 	return heldFor
+}
+
+// lastPushNotice is when a Git host last reported a push to the repository branch key, which this
+// GitBranch holds, zero when its worker has seen none. A worker still serving the GitBranch for the
+// repository its GitProvider left has none to give: its notices are about that repository.
+func (r *GitBranchReconciler) lastPushNotice(branch *configbutleraiv1alpha3.GitBranch, key git.BranchKey) time.Time {
+	if r.WorkerManager == nil {
+		return time.Time{}
+	}
+	worker, live := r.WorkerManager.WorkerForGitBranchAt(client.ObjectKeyFromObject(branch), key)
+	if !live {
+		return time.Time{}
+	}
+	return worker.LastPushNotice()
 }
 
 // observeClaim records the proof with the claim registry and returns the holder.

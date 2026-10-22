@@ -34,9 +34,10 @@ To mirror live state into Git the controller must:
   convenient, and it means the reverser can enumerate **every Secret in the cluster**. `mode:
   selected` grants only the types you name. See [`rbac.md`](rbac.md).
 - **Read referenced Secrets.** The git-creds Secret, and the SOPS/age key Secret when encryption
-  is configured, both named by a `GitProvider`/`GitTarget`, and a remote cluster's kubeconfig
-  Secret, named by a `KubeProvider` in its own namespace. So the controller reads Secrets in every
-  namespace that holds one of those objects. This is a `get` by name, never a `list` or a `watch`.
+  is configured, both named by a `GitProvider`/`GitTarget`; a remote cluster's kubeconfig Secret,
+  named by a `KubeProvider` in its own namespace; and a webhook token Secret, named by a
+  `GitReceiver` in its own namespace. So the controller reads Secrets in every namespace that holds
+  one of those objects. This is a `get` by name, never a `list` or a `watch`.
 - **Receive audit events.** The kube-apiserver audit webhook posts events to the audit ingress.
   Those carry object metadata and, for some resources, request/response bodies.
 - **Drive an applier, only with an apply trigger.** Holding a Flux `Kustomization` takes `get` and
@@ -114,7 +115,7 @@ namespace it already knows. Narrowing that further is
 | SOPS/age key material | Decrypts (and the public key encrypts) Secret data written to Git. |
 | Redis/Valkey queue | Buffers decoded audit events in transit; not an audit archive. |
 | Audit ingress (`/audit-webhook/<route>`, such as `/audit-webhook/gitops-reverser.local` for the chart's provider) | Accepts audit traffic; protected by mutual TLS via cert-manager. A route is held by one namespace: a `KubeProvider` elsewhere that carries it is `Stalled` (`AuditRouteConflict`) and reads none of its facts. |
-| Push receiver (`--receiver-bind-address`, off by default) | Plain HTTP for Git hosts' push webhooks. Each `GitProvider` route is a path derived from its token, and a delivery must carry a valid signature or token for it. A delivery is only a hint that makes the branch worker read the remote, never a fact about the branch. |
+| Push receiver (`--receiver-bind-address`, off by default) | Plain HTTP for Git hosts' push webhooks. Each `GitReceiver` route is a path derived from its token, whose Secret lives in the receiver's own namespace, and a delivery must carry a valid signature or token for it before its body is read. A delivery is only a hint: it wakes the branch worker of every `GitProvider`, in any namespace, whose `spec.url` names the repository it reports, and that worker reads the remote with its own provider's credential. The payload's repository URL is only compared with `spec.url`, never fetched, so a delivery cannot choose a URL, a credential or a commit. A worker holds at most one pending look however many deliveries arrive, so deliveries never queue up behind its writes; but they are not rate-limited, so a token holder, in whatever namespace, who keeps delivering can keep a matching worker reading its remote continuously. That availability cost is accepted: there is no per-worker cooldown. The `202` carries no body, so it does not say whether another namespace tracks a repository. |
 | Generated Secret material | Signing keys and generated age keys live in cluster Secrets. |
 | `accessFrom` label selectors on `GitProvider` and `KubeProvider` | A selector admits every control-cluster namespace whose labels match, so it is only as strong as the right to set those labels. Whoever can label a namespace can admit it, including a tenant allowed to edit its own namespace. Select on labels only the platform can set, or list namespaces by `names`. |
 | `KubeProvider.spec.inCluster` and `--in-cluster-kube-providers` | `inCluster` wields the operator's own identity in the cluster it runs in. It is honored only for a `KubeProvider` the flag lists by exact `namespace/name` (no wildcards, empty by default); any other is `Stalled` (`InClusterNotAuthorized`) and never used. Anyone who can create a `KubeProvider` under a listed name wields that identity through it, so list only names in namespaces you control. |

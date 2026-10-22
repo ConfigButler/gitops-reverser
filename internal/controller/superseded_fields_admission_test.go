@@ -320,3 +320,65 @@ var _ = Describe("Retained and refused GitTarget branch fields", func() {
 		Expect(err.Error()).To(ContainSubstring("gitBranchRef"))
 	})
 })
+
+// GitProvider.spec.receiver became the GitReceiver kind. A pruned field would apply cleanly and leave
+// a provider that used to be notified silently unnotified, so the old spelling stays in the schema
+// and a CEL rule refuses it, naming the replacement.
+var _ = Describe("Retained and refused GitProvider receiver field", func() {
+	legacyProvider := func(name string, spec map[string]any) *unstructured.Unstructured {
+		spec["url"] = "https://github.com/acme/platform.git"
+		spec["allowedBranches"] = []any{"main"}
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "GitProvider",
+			"metadata":   map[string]any{"name": name, "namespace": "default"},
+			"spec":       spec,
+		}}
+	}
+
+	It("refuses spec.receiver in its old shape, or any other, naming the GitReceiver that replaces it", func() {
+		ctx := context.Background()
+
+		for name, receiver := range map[string]any{
+			"legacy-receiver": map[string]any{"type": "github", "secretRef": map[string]any{"name": "token"}},
+			"empty-receiver":  map[string]any{},
+		} {
+			err := k8sClient.Create(ctx, legacyProvider(name, map[string]any{"receiver": receiver}))
+			Expect(err).To(HaveOccurred(), "%s: the old field must not apply cleanly", name)
+			Expect(err.Error()).To(ContainSubstring("spec.receiver was replaced by a GitReceiver"), name)
+			Expect(err.Error()).To(ContainSubstring("whose spec.url they name"), name)
+		}
+	})
+
+	It("requires a GitReceiver's type and secretRef, and refuses an unknown type", func() {
+		ctx := context.Background()
+
+		receiver := func(name string, spec map[string]any) *unstructured.Unstructured {
+			return &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "configbutler.ai/v1alpha3",
+				"kind":       "GitReceiver",
+				"metadata":   map[string]any{"name": name, "namespace": "default"},
+				"spec":       spec,
+			}}
+		}
+		valid := receiver("valid-receiver", map[string]any{
+			"type": "gitea", "secretRef": map[string]any{"name": "token"},
+		})
+		Expect(k8sClient.Create(ctx, valid)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, valid) })
+
+		for name, tc := range map[string]struct {
+			spec map[string]any
+			want string
+		}{
+			"no-type":      {map[string]any{"secretRef": map[string]any{"name": "token"}}, "type"},
+			"no-secret":    {map[string]any{"type": "github"}, "secretRef"},
+			"empty-secret": {map[string]any{"type": "github", "secretRef": map[string]any{"name": ""}}, "secretRef.name"},
+			"bitbucket":    {map[string]any{"type": "bitbucket", "secretRef": map[string]any{"name": "token"}}, "type"},
+		} {
+			err := k8sClient.Create(ctx, receiver(name, tc.spec))
+			Expect(err).To(HaveOccurred(), name)
+			Expect(err.Error()).To(ContainSubstring(tc.want), name)
+		}
+	})
+})

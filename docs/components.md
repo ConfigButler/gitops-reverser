@@ -76,7 +76,7 @@ The operator's own API surface and the reconcilers behind it.
 
 | Component | Path | Role |
 |---|---|---|
-| CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the nine kinds users apply |
+| CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the ten kinds users apply |
 | Reconcilers | [`internal/controller/`](../internal/controller/) | one per kind, plus shared condition and status helpers |
 | Admission handlers | [`internal/webhook/`](../internal/webhook/) | the always-allow observer and `validate-operator-types`, which captures a `CommitRequest` submitter |
 | Namespace admission | [`internal/authz/`](../internal/authz/) | the `KubeProvider` and `GitProvider` namespace-admission decisions (own namespace, then `spec.accessFrom`) and the `spec.allowCrossNamespace` gates, in their own package because several call sites need the same answer |
@@ -125,7 +125,7 @@ write to that branch goes through its single event loop.
 | Manifest report | [`internal/manifestreport/`](../internal/manifestreport/) | projects a live object into a comparable manifest |
 | Encryption and signing | [`internal/git/sops_encryptor.go`](../internal/git/sops_encryptor.go), [`internal/sshsig/`](../internal/sshsig/) | SOPS for sensitive types, SSH signatures for commits |
 | Apply requests | [`internal/applier/`](../internal/applier/) | the Flux and Argo CD clients, the dispatcher that carries out each apply attempt a branch worker decides, and the trigger's `Configured` check |
-| Push receiver | [`internal/webhook/receiver.go`](../internal/webhook/receiver.go) | `/git-push/` deliveries from a Git host, handed to the branch worker as a hint to read the remote |
+| Push receiver | [`internal/webhook/receiver.go`](../internal/webhook/receiver.go) | `/git-push/` deliveries to a `GitReceiver`, routed by the repository and branch they name to the branch worker of each `GitProvider` whose `spec.url` matches, as a hint to read the remote |
 
 ### Attribution
 

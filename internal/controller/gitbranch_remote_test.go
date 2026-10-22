@@ -638,3 +638,31 @@ func TestPublishRemote_ARecreatedTargetDoesNotInheritTheCooldown(t *testing.T) {
 		"a target with nothing published has no rate to be limited to")
 	assert.Equal(t, "bbbb", successor.Status.Remote.Commit)
 }
+
+// TestPublishPushNotice publishes the worker's latest notice, holds a newer one behind the floor,
+// keeps what is published when the worker knows of none, and compares at the wire's granularity.
+func TestPublishPushNotice(t *testing.T) {
+	start := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	branch := remoteTestTarget()
+
+	assert.Zero(t, publishPushNotice(branch, time.Time{}, start))
+	assert.Nil(t, branch.Status.LastPushNoticeAt, "no notice, nothing published")
+
+	assert.Zero(t, publishPushNotice(branch, start, start), "the first notice is published at once")
+	require.NotNil(t, branch.Status.LastPushNoticeAt)
+	assert.Equal(t, start, branch.Status.LastPushNoticeAt.Time)
+
+	assert.Zero(t, publishPushNotice(branch, start.Add(500*time.Millisecond), start.Add(time.Second)),
+		"a sub-second difference the API server rounds away is not news")
+	assert.Equal(t, 55*time.Second, publishPushNotice(branch, start.Add(5*time.Second), start.Add(5*time.Second)),
+		"a newer notice waits out the floor")
+	assert.Equal(t, start, branch.Status.LastPushNoticeAt.Time)
+
+	later := start.Add(RemotePublicationInterval)
+	assert.Zero(t, publishPushNotice(branch, start.Add(5*time.Second), later))
+	assert.Equal(t, start.Add(5*time.Second), branch.Status.LastPushNoticeAt.Time)
+
+	assert.Zero(t, publishPushNotice(branch, time.Time{}, later.Add(time.Hour)))
+	assert.Equal(t, start.Add(5*time.Second), branch.Status.LastPushNoticeAt.Time,
+		"a worker that knows of no notice keeps what was published")
+}

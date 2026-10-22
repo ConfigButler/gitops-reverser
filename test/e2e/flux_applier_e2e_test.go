@@ -69,6 +69,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		cleanupGitTarget(destName, testNs)
 		cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
 		deleteGitProvider(testNs, providerName)
+		cleanupNamespacedResource(testNs, "gitreceiver", receiverSecretName)
 		cleanupNamespacedResource(testNs, "secret", receiverSecretName)
 		cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 		cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
@@ -207,8 +208,8 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 	// event, signed, to the operator's receiver Service, and nothing else happens on the branch: no
 	// API edit surfaces the push, and the refresher's tick is minutes away.
 	It("applies a Git-side push the Git host reports, with nothing else to surface it", func() {
-		By("configuring the GitProvider's receiver, and registering it as a Gitea webhook")
-		receiverHookID = registerOperatorReceiver(testNs, providerName, receiverSecretName, repo.RepoName)
+		By("creating a GitReceiver, and registering it as a Gitea webhook")
+		receiverHookID = registerOperatorReceiver(testNs, receiverSecretName, repo.RepoName)
 
 		Eventually(func(g Gomega) {
 			g.Expect(appliedColor(g, appliedNs)).To(Equal("orange"))
@@ -227,6 +228,14 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		Expect(strings.Count(gitTargetEventMessages(Default, testNs, destName, "ApplyRequested"),
 			"(ForeignCommit)")).To(BeNumerically(">", foreignBefore),
 			"the apply must come from a ForeignCommit request, not from Flux's own schedule")
+
+		By("the GitBranch records that the delivery reached it")
+		Eventually(func(g Gomega) {
+			out, err := kubectlRunInNamespace(testNs, "get", "gitbranch", gitBranchName(providerName, "main"),
+				"-o", "jsonpath={.status.lastPushNoticeAt}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).NotTo(BeEmpty())
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// The suspended lifecycle's two promises beyond an ordinary apply: a failed apply is suspended
@@ -414,24 +423,40 @@ func gitTargetEventMessages(g Gomega, testNs, gitTarget, reason string) string {
 	return out
 }
 
-// registerOperatorReceiver gives a GitProvider a gitea receiver whose token is a new Secret, and
-// registers the path it serves as a push webhook on the Gitea repository, pointed at the operator's
-// receiver Service. It returns the hook's id, for deleteRepoHook.
-func registerOperatorReceiver(testNs, providerName, secretName, repoName string) int64 {
+// registerOperatorReceiver creates a gitea GitReceiver named name in testNs, whose token is a new
+// Secret of that name too, and registers its path as a Gitea webhook on the repository, pointed at
+// the operator's receiver Service. The receiver routes by URL, so it wakes the repository's
+// GitProviders without either naming the other. It waits until the GitReceiver is Ready, so a push
+// from here on is delivered. It returns the hook's id, for deleteRepoHook; the caller deletes the
+// GitReceiver and the Secret, both named name.
+func registerOperatorReceiver(testNs, name, repoName string) int64 {
 	GinkgoHelper()
 	token := randomToken()
-	_, err := kubectlRunInNamespace(testNs, "create", "secret", "generic", secretName, "--from-literal=token="+token)
+	_, err := kubectlRunInNamespace(testNs, "create", "secret", "generic", name, "--from-literal=token="+token)
 	Expect(err).NotTo(HaveOccurred(), "failed to create the receiver Secret")
-	_, err = kubectlRunInNamespace(testNs, "patch", "gitprovider", providerName, "--type=merge", "-p",
-		fmt.Sprintf(`{"spec":{"receiver":{"type":"gitea","secretRef":{"name":%q}}}}`, secretName))
-	Expect(err).NotTo(HaveOccurred(), "failed to set spec.receiver")
+	receiver := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: GitReceiver
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  type: gitea
+  secretRef:
+    name: %s
+`, name, testNs, name)
+	_, err = kubectlRunWithStdin(testNs, receiver, "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "failed to create the GitReceiver")
 	var webhookPath string
 	Eventually(func(g Gomega) {
-		out, err := kubectlRunInNamespace(testNs, "get", "gitprovider", providerName,
+		out, err := kubectlRunInNamespace(testNs, "get", "gitreceiver", name,
 			"-o", "jsonpath={.status.webhookPath}")
 		g.Expect(err).NotTo(HaveOccurred())
 		webhookPath = strings.TrimSpace(out)
 		g.Expect(webhookPath).NotTo(BeEmpty())
+		ready, err := kubectlRunInNamespace(testNs, "get", "gitreceiver", name,
+			"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(ready)).To(Equal("True"), "the GitReceiver serves deliveries")
 	}, time.Minute, 2*time.Second).Should(Succeed())
 	gitea := giteaTestInstance()
 	ctx, cancel := gitea.Context()

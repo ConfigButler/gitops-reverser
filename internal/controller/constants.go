@@ -188,6 +188,12 @@ const (
 	// re-checks the conflict. It is a fallback: the stream-state event of the sibling rule that
 	// cleared it usually arrives first, but that event is best-effort.
 	RequeueCollectionOverlapInterval = 30 * time.Second
+	// RequeueReceiverTokenInterval is how often a GitReceiver whose token Secret or "token" key is
+	// missing looks again. Secrets are not watched, so nothing else tells it the token arrived, and
+	// until it does no delivery can reach the receiver: Flux or Argo CD applying a GitReceiver and
+	// its Secret in one pass, in either order, must not leave the path unpublished for a steady
+	// interval.
+	RequeueReceiverTokenInterval = 30 * time.Second
 	// RequeueWriteLostInterval is how soon a reconcile whose status write lost the optimistic-lock
 	// race comes back. It is short because there is nothing to wait FOR: the write was rejected
 	// against a resourceVersion this reconcile had already read, so the only thing that has to

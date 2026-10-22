@@ -42,18 +42,20 @@ type RefreshRequest struct {
 	PushNotice bool
 	// After is the commit a push notice named, or empty. It is never trusted as the branch's tip;
 	// it only spares an open window a notice that names the tip already observed (see
-	// EnqueuePushNotification).
+	// EnqueuePushNotification). A queued notice takes it when it is dispatched, since notices that
+	// arrived while it waited were folded into it.
 	After string
 }
 
-// EnqueueRefresh queues a refresh, dropping it if the queue is full.
+// EnqueueRefresh queues a refresh, dropping it if the queue is full or the worker is stopping, and
+// reports whether it was queued.
 //
 // The drop is safe in a way it is not for a write: the next reconcile asks again, and a refresh
 // must never occupy the slot a write needs. It is still counted, because a refresher that has
 // stopped running is otherwise invisible.
-func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
+func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) bool {
 	if req == nil {
-		return
+		return false
 	}
 	w.inflightItems.Add(1)
 	// Under the same lock as every other admission, for the reason on stoppingState: a check
@@ -63,15 +65,17 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 	if w.stoppingLocked() {
 		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalRefresh)
-		return
+		return false
 	}
 	select {
 	case w.eventQueue <- WorkItem{Refresh: req}:
+		return true
 	default:
 		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalRefresh)
 		w.Log.V(1).Info("Event queue full, refresh dropped; the next reconcile asks again",
 			"branch", w.Branch, "gitTarget", req.Target.String())
+		return false
 	}
 }
 

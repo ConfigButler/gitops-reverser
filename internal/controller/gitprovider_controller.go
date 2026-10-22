@@ -12,7 +12,6 @@ import (
 
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -113,10 +112,6 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"GitProvider is not stalled",
 	)
 
-	// Ahead of every gate, and after beginStatus, which snapshots the status the patch is computed
-	// against: an operator wiring a Git host's webhook needs the path while the provider is still red.
-	r.publishWebhookPath(ctx, log, gitProvider)
-
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {
 		rd.stalled(ReasonCommitConfigInvalid, err.Error())
 		return r.commitProvider(ctx, st, rd)
@@ -184,47 +179,6 @@ func (r *GitProviderReconciler) commitProvider(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: st.requeueAfter(RequeueSteadyInterval)}, nil
-}
-
-// publishWebhookPath sets status.webhookPath to the path spec.receiver is served on, and clears it
-// when there is no receiver or no token to derive the path from. It says where the route is, not
-// that anything serves it: the listener is a flag (--receiver-bind-address) this object cannot see.
-//
-// The token is read on every reconcile, so a rotated token moves the path at the next one. The
-// receiver recomputes the path from the token it reads per delivery, so the old path stops serving
-// at once, whatever this status still says.
-func (r *GitProviderReconciler) publishWebhookPath(
-	ctx context.Context,
-	log logr.Logger,
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-) {
-	if gitProvider.Spec.Receiver == nil {
-		gitProvider.Status.WebhookPath = ""
-		return
-	}
-	secretName := gitProvider.Spec.Receiver.SecretRef.Name
-	secret, err := r.fetchSecret(ctx, secretName, gitProvider.Namespace)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			// A read that failed says nothing about the token: keep the published path.
-			log.Error(err, "Could not read the push receiver token Secret; status.webhookPath is kept",
-				"secret", secretName)
-			return
-		}
-		log.Info("Push receiver token Secret not found; status.webhookPath is empty until it exists",
-			"secret", secretName)
-		gitProvider.Status.WebhookPath = ""
-		return
-	}
-	token := secret.Data[configbutleraiv1alpha3.ReceiverTokenKey]
-	if len(token) == 0 {
-		log.Info("Push receiver token Secret has no token; status.webhookPath is empty until it does",
-			"secret", secretName, "key", configbutleraiv1alpha3.ReceiverTokenKey)
-		gitProvider.Status.WebhookPath = ""
-		return
-	}
-	gitProvider.Status.WebhookPath = configbutleraiv1alpha3.ReceiverPath(token, gitProvider.Namespace,
-		gitProvider.Name)
 }
 
 // signingKeyFailureReason classifies an ensureSigningKey failure for the Stalled reason.

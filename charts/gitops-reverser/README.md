@@ -174,7 +174,7 @@ nodeSelector:
 | `servers.audit.timeouts.write` | Audit-server write timeout | `30s` |
 | `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
 | `servers.audit.tls.secretNameOverride` | Override Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
-| `servers.receiver.enabled` | Serve the push receiver, over plain HTTP, for Git hosts' push webhooks to `GitProvider.status.webhookPath`, and add a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `false` |
+| `servers.receiver.enabled` | Serve the push receiver, over plain HTTP, for Git hosts' push webhooks to `GitReceiver.status.webhookPath`, and add a `<release>-receiver` Service; expose it with an Ingress or Gateway route of your own that terminates TLS. See [push receiver settings](../../docs/configuration.md#push-receiver-settings) | `false` |
 | `servers.receiver.bindAddress` | host:port the push receiver binds to (`--receiver-bind-address`) | `:9292` |
 | `servers.receiver.port` | Push receiver container port; must match the port in `bindAddress` | `9292` |
 | `controllerManager.additionalSensitiveResources` | Extra Secret-shaped resource types encrypted as `resource` or `group/resource` | `[]` |
@@ -283,6 +283,7 @@ This chart automatically manages the following CRDs:
 - **`kubeproviders.configbutler.ai`** - Source-cluster connections and namespace access policy
 - **`gitproviders.configbutler.ai`** - Git repository connectivity and credentials
 - **`gitbranches.configbutler.ai`** - One branch of a repository, and which `GitProvider` writes it
+- **`gitreceivers.configbutler.ai`** - Push webhook endpoints that wake the matching `GitProvider`s
 - **`gittargets.configbutler.ai`** - Branch/path and optional encryption configuration
 - **`watchrules.configbutler.ai`** - Namespaced watch rules
 - **`clusterwatchrules.configbutler.ai`** - Cluster-scoped watch rules
@@ -308,7 +309,7 @@ kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/downlo
 To manually remove CRDs after uninstallation:
 
 ```bash
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
 ```
 
 Delete the triggers while the operator still runs, before this ([Uninstallation](#uninstallation)).
@@ -399,7 +400,7 @@ helm uninstall gitops-reverser --namespace gitops-reverser
 kubectl delete namespace gitops-reverser
 
 # Delete CRDs (optional, but removes all custom resources)
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
 ```
 
 ## Troubleshooting

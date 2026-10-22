@@ -1,6 +1,6 @@
 # GitBranch, KubeProvider, and a phased API break
 
-Status: **plan**, 2026-10-21. Phase 1 shipped in #429 and phase 2 in #430; phase 3 is not built.
+Status: **plan**, 2026-10-21. Phase 1 shipped in #429, phase 2 in #430, and phase 3 after them.
 The current contract is in [architecture.md](../architecture.md) and
 [configuration.md](../configuration.md). This page records what we decided and in what order we
 build it.
@@ -315,6 +315,21 @@ creating a `GitReceiver` in its own namespace, so there is one mechanism, not tw
 
 The name avoids Flux's `Receiver` kind, which sits in the same clusters.
 
+Built with three corrections. **There is no reference and no `accessFrom`:** a delivery wakes every
+`GitProvider`, in any namespace, whose `spec.url` names its repository. Once the receiver routes by
+the payload's repository, a per-provider reference only narrowed a set the URL already narrows, and
+cost a line of wiring per provider plus an admission in every namespace for a GitHub App. Waking
+across namespaces grants nothing, because a woken worker reads the remote with its own credential;
+it holds at most one pending look, and the `202` carries no count, so it says nothing about other
+namespaces. The one cost left is availability: a token holder who keeps delivering can keep a
+matching worker reading continuously. That is accepted for now; a per-worker cooldown with a
+deferred follow-up would bound it, without bringing the reference back. Whether deliveries reach a
+branch is `GitBranch.status.lastPushNoticeAt`, a fact rather than a condition about a reference. A
+receiver whose token Secret is missing looks again every 30 seconds, because Secrets are not watched
+and no delivery reaches it until its path is published. And a `generic-hmac` body must name its
+repository, which it used to be allowed to omit, because a shared receiver cannot route one that
+does not.
+
 ## Not in these phases
 
 Each of these needs its own design when it is next on the list. None blocks phases 1 to 3.
@@ -343,7 +358,5 @@ Phase 1:
 Phase 2 (settled): the `inCluster` list is `--in-cluster-kube-providers` (chart value
 `controllerManager.inClusterKubeProviders`), and the chart's provider is named `local`.
 
-Phase 3:
-
-- Whether `GitReceiver` needs `accessFrom` at all, or whether only providers in its own namespace
-  may reference it.
+Phase 3 (settled): routing is by URL alone, so a `GitReceiver` has no `accessFrom` and a
+`GitProvider` no `gitReceiverRef` or `GitReceiverReady` condition (see the corrections above).

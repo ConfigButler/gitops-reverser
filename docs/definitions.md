@@ -40,7 +40,7 @@ Almost every naming mistake in this project's history came from one ambiguity: t
 without a side, or "namespace" without a direction. Fix the side first and the rest of the
 vocabulary follows.
 
-**Control cluster.** The cluster the operator runs in, and where its own nine kinds live. When a
+**Control cluster.** The cluster the operator runs in, and where its own ten kinds live. When a
 document says "a namespace" with no qualifier, it means a control-cluster namespace.
 
 **Source cluster.** The cluster whose objects are mirrored into Git. A `KubeProvider` names one, by
@@ -275,8 +275,12 @@ it and asks for a fresh one once Git is no longer ahead. A `GitTarget`'s initial
 first of each collection until one of it settles, are exempt, and its snapshots are held off for at
 most 5 minutes.
 
-**Receiver.** `GitProvider.spec.receiver`, the endpoint a Git host notifies on a push. The word and
-its `type` values are Flux's. A delivery to it is a hint to look, never a fact about the branch.
+**Receiver.** A `GitReceiver`: the endpoint a Git host notifies on a push. Nothing references it: a
+delivery wakes every `GitProvider` whose `spec.url` names the repository it reports. The word and
+its `type` values are Flux's; the kind is `GitReceiver` because Flux's `Receiver` sits in the same
+clusters, and in prose "the receiver" is fine. A delivery to it is a hint to look, never a fact
+about the branch: it wakes the branch worker of each provider for the repository and branch it
+names, and the worker reads the remote itself.
 
 ## Attribution
 

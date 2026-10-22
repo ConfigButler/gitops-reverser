@@ -158,6 +158,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		cleanupWatchRule(run.watchRuleName, testNs)
 		cleanupGitTarget(run.gitTargetName, testNs)
 		cleanupNamespacedResource(testNs, "gitprovider", run.gitProviderName)
+		cleanupNamespacedResource(testNs, "gitreceiver", run.receiverSecretName)
 		cleanupNamespacedResource(testNs, "secret", run.receiverSecretName)
 		cleanupClusterResource("crd", iceCreamCRDName(crdGroupArgoBiDirectional))
 		cleanupNamespace(testNs)
@@ -508,7 +509,7 @@ func (r argoBiDirectionalRun) startReverserPipeline() int64 {
 	createGitProviderWithURLInNamespace(
 		r.gitProviderName, r.testNs, argoBiDirectionalRepo.GitSecretHTTP, r.repoURL)
 	verifyResourceStatus("gitprovider", r.gitProviderName, r.testNs, "True", "Succeeded", "")
-	hookID := registerOperatorReceiver(r.testNs, r.gitProviderName, r.receiverSecretName, r.repoName)
+	hookID := registerOperatorReceiver(r.testNs, r.receiverSecretName, r.repoName)
 
 	createGitTarget(r.gitTargetName, r.testNs, r.gitProviderName, r.livePath, "main")
 	createArgoCDTrigger(r.testNs, r.appName, r.argoNs, r.appName)

@@ -310,6 +310,13 @@ type BranchWorker struct {
 	// work the channel length alone cannot see.
 	hasUnpushedWork atomic.Bool
 
+	// pushNotices folds the push notices reported while one is already queued into it. See
+	// EnqueuePushNotification.
+	pushNotices pendingPushNotice
+	// lastPushNoticeAt is when a Git host last reported a push to this branch, in Unix nanoseconds,
+	// zero before the first. See LastPushNotice.
+	lastPushNoticeAt atomic.Int64
+
 	// inflightItems counts work items accepted onto eventQueue but not yet fully
 	// handled. It is incremented before the channel send (so it can never lag the
 	// loop's receive) and decremented only after handleQueueItem returns. Using
@@ -1386,6 +1393,12 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 		l.handleResyncRequest(req)
 		return charge
 	case item.Refresh != nil:
+		if item.Refresh.PushNotice {
+			// Before the remote is read, so a push reported from here on queues a look of its own.
+			if after, folded := l.w.pushNotices.take(); folded {
+				item.Refresh.After = after
+			}
+		}
 		l.handleRefreshRequest(item.Refresh)
 	case item.Request == nil:
 	case item.Request.CommitMode == CommitModeAtomic:

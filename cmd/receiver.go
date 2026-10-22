@@ -44,7 +44,7 @@ const (
 func bindReceiverFlags(fs *flag.FlagSet, cfg *appConfig) {
 	fs.StringVar(&cfg.receiverBindAddress, "receiver-bind-address", receiverOff,
 		"Address (host:port) the push receiver listens on, over plain HTTP: a Git host's push webhook "+
-			"points here plus a GitProvider's status.webhookPath (/git-push/<digest of the token>), so a "+
+			"points here plus a GitReceiver's status.webhookPath (/git-push/<digest of the token>), so a "+
 			"foreign push is noticed in seconds instead of at the next refresh. Expose it through an "+
 			"Ingress or Gateway that terminates TLS. Default 0 serves no receiver; foreign pushes are "+
 			"then still found by the next rejected push or --git-refresh-interval. Served by the pod that "+
@@ -78,13 +78,13 @@ func setupPushReceiver(mgr ctrl.Manager, cfg appConfig, notifier webhookhandler.
 			"next rejected push or the periodic refresh")
 		return
 	}
-	// A route is found through this index on the cached GitProviders, so a path nothing publishes
+	// A route is found through this index on the cached GitReceivers, so a path nothing publishes
 	// costs no API read.
-	fatalIfErr(mgr.GetFieldIndexer().IndexField(context.Background(), &configbutleraiv1alpha3.GitProvider{},
-		webhookhandler.GitProviderWebhookPathIndex, webhookhandler.IndexGitProviderWebhookPath),
-		"unable to index GitProviders by status.webhookPath")
-	// The manager client reads GitProviders from its cache and Secrets straight from the API
-	// server (Secrets are excluded from the cache), so a rotated token is used on the next delivery.
+	fatalIfErr(mgr.GetFieldIndexer().IndexField(context.Background(), &configbutleraiv1alpha3.GitReceiver{},
+		webhookhandler.GitReceiverWebhookPathIndex, webhookhandler.IndexGitReceiverWebhookPath),
+		"unable to index GitReceivers by status.webhookPath")
+	// The manager client reads the kinds from its cache and Secrets straight from the API server
+	// (Secrets are excluded from the cache), so a rotated token is used on the next delivery.
 	handler, err := webhookhandler.NewReceiverHandler(webhookhandler.ReceiverHandlerConfig{
 		Reader:   mgr.GetClient(),
 		Notifier: notifier,

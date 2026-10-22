@@ -54,6 +54,14 @@ resources:
     namespaced: true
   controller: true
   domain: configbutler.ai
+  kind: GitReceiver
+  path: github.com/ConfigButler/gitops-reverser/api/v1alpha3
+  version: v1alpha3
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: configbutler.ai
   kind: KubeProvider
   path: github.com/ConfigButler/gitops-reverser/api/v1alpha3
   version: v1alpha3

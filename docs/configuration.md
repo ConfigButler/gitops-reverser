@@ -39,7 +39,8 @@ The usual flow is:
    timers rather than the target's, and optionally with your message.
 6. Only when Flux or Argo CD also applies that same folder back to the cluster: hold its
    `Kustomization` or `Application` with an apply trigger, name the trigger on the `GitTarget`, and
-   give the `GitProvider` a push receiver, so GitOps Reverser decides when Git is applied. See
+   point the Git host's push webhook at a [`GitReceiver`](#gitreceiver), so GitOps Reverser decides
+   when Git is applied. See
    [who applies this folder](#who-applies-this-folder-specapplytriggerref) and
    [bi-directional GitOps](bi-directional.md). Flux and Argo CD applying other folders need nothing.
 
@@ -55,7 +56,7 @@ one target can be fed by multiple watch rules.
 
 ## Field overview
 
-Ready-made manifests for all nine objects live in [`config/samples/`](../config/samples/). They
+Ready-made manifests for all ten objects live in [`config/samples/`](../config/samples/). They
 cross-reference the same `example-provider` / `example-target` names, so the set can be applied
 together and edited down, rather than assembled from the fragments below.
 
@@ -73,7 +74,6 @@ fields that need more than a line.
 | `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
 | `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
 | `commit.signing` | off | SSH commit signing. See [commit signing](#commit-signing) |
-| `receiver` | off | Push webhook endpoint, so the Git host can say somebody pushed. See [receiving push notifications](#receiving-push-notifications-specreceiver) |
 
 ### `GitBranch` (namespaced): one branch of the repository
 
@@ -84,6 +84,13 @@ Every field is immutable: to change one, delete the `GitBranch` and create a new
 | `gitProviderRef` | **required** | The `GitProvider`, in this namespace, whose repository and credential write this branch |
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
 | `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
+
+### `GitReceiver` (namespaced): the endpoint a Git host notifies on a push
+
+| Field | Default | What it does |
+|---|---|---|
+| `type` | **required** | Payload and signature the host sends: `github`, `gitlab`, `gitea`, or `generic-hmac` for a relay of your own. See [`GitReceiver`](#gitreceiver) |
+| `secretRef` | **required** | Secret, in this namespace, whose `token` key is the webhook secret. It also derives `status.webhookPath` |
 
 ### `KubeProvider` (namespaced): the source cluster
 
@@ -198,8 +205,9 @@ grants nothing there.
 
 ## `GitProvider`
 
-`GitProvider` defines the Git remote, credentials, allowed branches, push receiver, and commit
-behavior.
+`GitProvider` defines the Git remote, credentials, allowed branches, and commit behavior. A
+[`GitReceiver`](#gitreceiver) tells it about pushes by matching its `spec.url`; the provider does not
+name one.
 
 The important fields are:
 
@@ -406,63 +414,112 @@ want custom `spec.commit` behavior because the starter values do not currently e
 For the platform-facing behavior behind "valid signature" versus "verified badge", see
 [commit-signing.md](commit-signing.md).
 
-### Receiving push notifications (`spec.receiver`)
+## `GitReceiver`
 
-`spec.receiver` lets the Git host tell GitOps Reverser that somebody else pushed. The names follow
-Flux's `Receiver`, so a Flux user already knows them:
+`GitReceiver` is the endpoint a Git host notifies on a push, so a push by somebody else is noticed in
+seconds instead of at the next refresh. No `GitProvider` names it: a delivery wakes every
+`GitProvider`, in any namespace, whose `spec.url` names the repository the delivery reports. So a
+GitHub App or an organization webhook, which has one endpoint for many repositories, needs only one,
+and a team that wants its own endpoint creates a `GitReceiver` in its own namespace. The names
+follow Flux's `Receiver`, so a Flux user already knows them; the kind is not called `Receiver`
+because Flux's sits in the same clusters.
 
 ```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: GitReceiver
+metadata:
+  name: github-app
+  namespace: platform
 spec:
-  url: https://github.com/acme/platform.git
-  receiver:
-    type: github            # github | gitlab | gitea | generic-hmac
-    secretRef:
-      name: platform-receiver-token   # key: token
+  type: github              # github | gitlab | gitea | generic-hmac
+  secretRef:
+    name: github-app-webhook-token   # in this namespace; key: token
 status:
   webhookPath: /git-push/3f9a…c41e   # 64 hex characters
 ```
 
 Point the host's push webhook at the receiver listener plus `status.webhookPath`, with the same
-token as the webhook secret. The path is an HMAC of the provider's namespace and name, keyed by the
+token as the webhook secret. The path is an HMAC of the receiver's namespace and name, keyed by the
 token, so it names neither and only whoever holds the token can find it. Rotating the token moves
-the path: the old one stops serving at once, and the new one is published at the next reconcile
-(within 5 minutes, since Secrets are not watched). `status.webhookPath` stays empty while the Secret
-or its `token` key is missing. Each type verifies the request the way its host signs it:
+the path: the old one stops serving at once, and the new one is published at the next reconcile.
+Secrets are not watched, so while the Secret or its `token` key is missing, `status.webhookPath` is
+empty and the receiver looks again every 30 seconds; once it has a token, every 5 minutes. Each type
+verifies the request the way its host signs it:
 
-| `type` | Verifies | Body |
+| `type` | Verifies | Repository read from |
 | --- | --- | --- |
-| `github` | `X-Hub-Signature-256`, an HMAC of the body | GitHub's push event |
-| `gitlab` | `X-Gitlab-Token`, compared with the token | GitLab's push event |
-| `gitea` | `X-Gitea-Signature`, an HMAC of the body | Gitea's push event |
-| `generic-hmac` | `X-Signature: sha256=<hex>`, an HMAC of the body | `{"repository": "...", "branch": "main", "after": "<commit>"}` |
+| `github` | `X-Hub-Signature-256`, an HMAC of the body | `repository.clone_url`, `ssh_url`, `git_url`, `html_url` |
+| `gitlab` | `X-Gitlab-Token`, compared with the token | `project.git_http_url`, `git_ssh_url`, `web_url` |
+| `gitea` | `X-Gitea-Signature`, an HMAC of the body | `repository.clone_url`, `ssh_url`, `html_url` |
+| `generic-hmac` | `X-Signature: sha256=<hex>`, an HMAC of the body | `repository` in `{"repository": "...", "branch": "main", "after": "<commit>"}` |
 
-`generic-hmac` is for a relay, such as one GitHub App webhook fanned out to many repositories. Its
-header is the one Flux's `generic-hmac` `Receiver` checks.
+`generic-hmac` is for a relay of your own. Its header is the one Flux's `generic-hmac` `Receiver`
+checks, and its body must name the repository and the branch.
 
-The signature is checked before anything in the body is read, so an unsigned request cannot probe
-which repositories or branches are tracked. Every request that reaches no verified receiver gets the
-same `404`, whether the path is unknown, from before a token rotation, or its signature is wrong, so
-the endpoint reveals nothing about which namespaces or providers exist; the operator's log says
-which it was. A verified delivery answers `202 Accepted` even when it names a branch no `GitTarget`
-writes, because that is not the host's fault and an error teaches a host to disable the hook. Pushes
-to other branches and tag pushes are accepted and ignored.
+**How a delivery is routed.** The signature is checked before anything in the body is read, so an
+unsigned request cannot probe which repositories or branches are tracked. A verified push names a
+branch and a repository, which a host spells several ways. Every spelling is compared with the
+`spec.url` of every `GitProvider`, in any namespace, the way
+[a branch claim](#who-writes-a-repository-branch) compares repositories: scheme, user, a default
+port, a trailing `.git` and letter case are ignored, while the host and the path are not. For each
+provider that matches, the branch worker writing that branch is woken, once. A repository that
+reaches the operator under another host name, such as an SSH alias, does not match.
+
+**Whether deliveries arrive** is on the `GitBranch`: `status.lastPushNoticeAt` is when a
+`GitReceiver` last delivered a push to its branch. It records receipt, so it is set even when the
+look the delivery caused could not read the remote; `status.remote` says what that look found. The
+first delivery is published at once and later ones at most once a minute, and the field is cleared
+when the `GitProvider` is recreated for another repository. Absent after a push has three causes,
+which the receiver's `gitopsreverser_receiver_deliveries_total` outcome tells apart:
+
+- The host does not reach the receiver: no delivery is counted, or it is counted as `rejected`.
+- The delivery names the repository by a URL other than the provider's `spec.url`, such as an SSH
+  alias: `unknown_repository`.
+- The repository matches, but no branch worker writes that branch, because no `GitTarget`
+  references this `GitBranch` or it does not hold the branch: `unknown_branch`.
+
+Without a receiver, the provider still writes, and a foreign push is still found, by the next
+rejected push or by the [periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval):
+the receiver makes it seconds instead of minutes.
+
+A `GitReceiver` reports on `Ready` whether anything serves its path:
+
+| `Ready` | Reason | Meaning |
+| --- | --- | --- |
+| `True` | `Succeeded` | The token is readable and the listener is on |
+| `False` | `SecretNotFound` | `spec.secretRef` names no Secret in the receiver's namespace |
+| `False` | `SecretMalformed` | The Secret has no `token` key |
+| `False` | `ListenerDisabled` | The operator serves no receiver (`--receiver-bind-address=0`). The path is still published |
+
+**What the host is told.** Every request that reaches no verified receiver gets the same `404`,
+whether the path is unknown, from before a token rotation, or its signature is wrong, so the
+endpoint reveals nothing about which namespaces or receivers exist. For a published path, the
+operator's log says which it was. A verified delivery answers `202 Accepted` with no body, even when
+it names a repository or a branch nothing writes, because that is not the host's fault and an error
+teaches a host to disable the hook. The answer does not say what was woken: any namespace can hold a
+`GitReceiver`, and a count would tell its token holder whether another namespace tracks a
+repository. Pushes to
+other branches, tag pushes and pings are accepted and ignored. Only a verified body that cannot be
+read, or one that names no repository, answers `400`.
 
 The listener handles at most 8 deliveries at once and answers `429` above that, and a body over
 2 MiB is refused with `413` before its signature is checked. A push event is a few kilobytes, and a
 delivery refused for either reason is still found by the periodic refresh.
 
-A delivery is a hint, never a fact. It makes the branch worker read the branch's ref advertisement
-(one request), and what the remote says decides whether the branch gained a foreign commit. A late
-delivery for one of GitOps Reverser's own pushes, a duplicate, or a rollback onto one of its older
-commits are all judged by the remote's answer, not by the commit the delivery names. Nothing fetches
-or plans until there is something to apply, and a delivery never triggers a cluster snapshot.
+A delivery is a hint, never a fact. It makes each woken branch worker read the branch's ref
+advertisement (one request) with its own provider's credential, and what the remote says decides
+whether the branch gained a foreign commit. The repository the payload names is only compared, never
+fetched, so a delivery cannot choose a URL, a credential or a commit. A worker holds at most one
+pending look: deliveries that arrive while one waits are folded into it, so a run of them costs one
+ref advertisement at a time. That bounds the queue, not the rate: a steady stream of deliveries,
+from any namespace's `GitReceiver`, can keep a matching worker reading its remote continuously, an
+availability cost that is accepted. A late delivery for one of
+GitOps Reverser's own pushes, a duplicate, or a rollback onto one of its older commits are all
+judged by the remote's answer, not by the commit the delivery names. Nothing fetches or plans until
+there is something to apply, and a delivery never triggers a cluster snapshot.
 
 The receiver needs its own listener, because the Git host cannot present the client certificate
 the audit listener requires. See [push receiver settings](#push-receiver-settings).
-
-Without a receiver, GitOps Reverser still learns of a foreign push, from its next rejected push or
-from the [periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval). The receiver
-makes it seconds instead of minutes.
 
 ## `KubeProvider`
 
@@ -989,7 +1046,7 @@ for that window.
 
 One branch worker holds one live window, bound to an author and target. Interleaved authors or
 targets split a burst. Atomic writes, a resync, buffer limits, shutdown, an `attach: Next` request,
-a push notice from the [receiver](#receiving-push-notifications-specreceiver), and the
+a push notice from the [receiver](#gitreceiver), and the
 [flush](bi-directional.md#flush-then-apply) before an apply can close a window early. Push cooldown
 is independent: a zero timer does not promise an immediate remote push. See the
 [complete trigger rules](spec/commit-window-refactor.md).
@@ -1316,7 +1373,7 @@ target's [applier](#who-applies-this-folder-specapplytriggerref) is asked to app
 That makes the refresh the backstop for deployments when no push webhook reaches the
 operator. It is not a latency mechanism: it buys bounded staleness with no inbound surface and no
 Git-host configuration. Seconds-fresh is the job of the
-[push receiver](#receiving-push-notifications-specreceiver).
+[push receiver](#gitreceiver).
 
 ### Who applies this folder (`spec.applyTriggerRef`)
 
@@ -2816,7 +2873,7 @@ attribution:
 
 ## Push receiver settings
 
-The [push receiver](#receiving-push-notifications-specreceiver) is its own HTTP listener, separate
+The [push receiver](#gitreceiver) is its own HTTP listener, separate
 from the audit listener. A Git host authenticates with an HMAC or a token over the body and cannot
 present the client certificate the audit listener requires, so the two cannot share one.
 
@@ -2829,7 +2886,7 @@ present the client certificate the audit listener requires, so the two cannot sh
 The chart creates a `<release>-receiver` Service when the listener is on. Expose it to your
 Git host with an Ingress or a Gateway route of your own that terminates TLS, the way Flux's
 `webhook-receiver` Service is exposed. Every request still has to carry a valid signature for the
-route it names; a route whose `GitProvider` has no `spec.receiver` does not serve.
+route it names, which is a `GitReceiver`'s `status.webhookPath`; any other path does not serve.
 
 The listener runs in the pod that runs the branch workers. The chart runs exactly one replica (it
 refuses `replicaCount` above `1`), so that is the only pod; running more than one needs ownership
