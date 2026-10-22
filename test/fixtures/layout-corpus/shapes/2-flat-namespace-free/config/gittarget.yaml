@@ -16,6 +16,9 @@ metadata:
 spec:
   gitBranchRef:
     name: artifacts-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: apps/checkout
   # One file per object, flat, and no {namespace} in the template: the folder is
   # single-namespace by construction.

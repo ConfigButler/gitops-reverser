@@ -29,6 +29,7 @@ const (
 	snTargetName = "acme"
 	snRuleName   = "repo-config-rule"
 	snProvider   = "workspaces"
+	snProviderNS = "platform"
 	snWildcard   = configv1alpha3.SourceNamespaceWildcard
 )
 
@@ -44,9 +45,9 @@ func snTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: snTargetName, Namespace: snTenantNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef:       meta.NamespacedObjectReference{Name: "acme-git-main"},
-			ClusterProviderRef: &meta.LocalObjectReference{Name: snProvider},
-			Path:               "tenants/acme",
+			GitBranchRef:    meta.NamespacedObjectReference{Name: "acme-git-main"},
+			KubeProviderRef: meta.NamespacedObjectReference{Name: snProvider, Namespace: snProviderNS},
+			Path:            "tenants/acme",
 		},
 	}
 }
@@ -68,14 +69,14 @@ func snRule(sourceNamespaces ...string) *configv1alpha3.WatchRule {
 	}
 }
 
-// snClusterProvider admits snTenantNS by name, so the "provider admits the target's namespace" leg
+// snKubeProvider admits snTenantNS by name, so the "provider admits the target's namespace" leg
 // of the gate passes and each case isolates the leg it is actually about.
-func snClusterProvider(delegate bool) *configv1alpha3.ClusterProvider {
-	return &configv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: snProvider},
-		Spec: configv1alpha3.ClusterProviderSpec{
+func snKubeProvider(delegate bool) *configv1alpha3.KubeProvider {
+	return &configv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: snProvider, Namespace: snProviderNS},
+		Spec: configv1alpha3.KubeProviderSpec{
 			AccessFrom:          &configv1alpha3.NamespaceMatcher{Names: []string{snTenantNS}},
-			AllowCrossNamespace: &configv1alpha3.ClusterProviderCrossNamespace{Sources: delegate},
+			AllowCrossNamespace: &configv1alpha3.KubeProviderCrossNamespace{Sources: delegate},
 		},
 	}
 }
@@ -88,7 +89,7 @@ func snReader(t *testing.T, objects ...client.Object) client.Reader {
 }
 
 // The gate is two rules and this is the table for both of them: an item on the rule's own namespace
-// is free, and anything else needs the ClusterProvider's delegation.
+// is free, and anything else needs the KubeProvider's delegation.
 //
 // There is deliberately no row for a GitTarget policy. There is no longer such a field: what it
 // bounded is bounded by the source credential's own RBAC, which this gate cannot and does not try
@@ -157,7 +158,7 @@ func TestResolveWatchRuleSourceScope(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := snReader(t, snTarget(), snClusterProvider(tt.delegate))
+			reader := snReader(t, snTarget(), snKubeProvider(tt.delegate))
 
 			resolved, err := authz.ResolveWatchRuleSourceScope(
 				context.Background(), reader, snRule(tt.items...), snTarget())
@@ -178,7 +179,7 @@ func TestResolveWatchRuleSourceScope(t *testing.T) {
 // A rule mixing a legacy item with an authorized override resolves each independently, and the
 // aggregate is the one condition the object publishes.
 func TestResolveWatchRuleSourceScope_MixedItemsResolveIndependently(t *testing.T) {
-	reader := snReader(t, snTarget(), snClusterProvider(true))
+	reader := snReader(t, snTarget(), snKubeProvider(true))
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), reader, snRule("", snSourceNS, snWildcard), snTarget())
@@ -196,7 +197,7 @@ func TestResolveWatchRuleSourceScope_MixedItemsResolveIndependently(t *testing.T
 // namespaces a rule asked for is worse than a loud failure: the operator would have no way to see
 // that the third was dropped.
 func TestResolveWatchRuleSourceScope_DeniedItemRefusesTheWholeRule(t *testing.T) {
-	reader := snReader(t, snTarget(), snClusterProvider(false))
+	reader := snReader(t, snTarget(), snKubeProvider(false))
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), reader, snRule("", snSourceNS), snTarget())
@@ -213,7 +214,7 @@ func TestResolveWatchRuleSourceScope_DeniedItemRefusesTheWholeRule(t *testing.T)
 // provider-side leg is checked before the flag, so a target outside accessFrom is refused even
 // through a provider that delegates freely.
 func TestResolveWatchRuleSourceScope_UnadmittedGitTargetCannotDelegate(t *testing.T) {
-	denying := snClusterProvider(true)
+	denying := snKubeProvider(true)
 	denying.Spec.AccessFrom = &configv1alpha3.NamespaceMatcher{Names: []string{"some-other-tenant"}}
 	reader := snReader(t, snTarget(), denying)
 
@@ -223,12 +224,12 @@ func TestResolveWatchRuleSourceScope_UnadmittedGitTargetCannotDelegate(t *testin
 	require.NoError(t, err)
 	assert.False(t, resolved.Admitted())
 	assert.Equal(t, authz.ReasonSourceNamespaceNotAllowed, resolved.Reason)
-	assert.Contains(t, resolved.Message, "may not mirror through ClusterProvider")
+	assert.Contains(t, resolved.Message, "may not mirror through KubeProvider")
 }
 
-// A missing ClusterProvider denies an override rather than erroring: a provider that does not exist
+// A missing KubeProvider denies an override rather than erroring: a provider that does not exist
 // delegates nothing, which is a decision the rule's owner can act on.
-func TestResolveWatchRuleSourceScope_MissingClusterProviderDeniesOverride(t *testing.T) {
+func TestResolveWatchRuleSourceScope_MissingKubeProviderDeniesOverride(t *testing.T) {
 	reader := snReader(t, snTarget())
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(
@@ -245,13 +246,13 @@ func TestResolveWatchRuleSourceScope_ProviderReadErrorIsRequeued(t *testing.T) {
 	boom := errors.New("apiserver unavailable")
 	reader := fake.NewClientBuilder().
 		WithScheme(snScheme(t)).
-		WithObjects(snTarget(), snClusterProvider(true)).
+		WithObjects(snTarget(), snKubeProvider(true)).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(
 				_ context.Context, _ client.WithWatch, key client.ObjectKey,
 				obj client.Object, _ ...client.GetOption,
 			) error {
-				if _, ok := obj.(*configv1alpha3.ClusterProvider); ok && key.Name == snProvider {
+				if _, ok := obj.(*configv1alpha3.KubeProvider); ok && key.Name == snProvider {
 					return boom
 				}
 				return nil
@@ -269,14 +270,14 @@ func TestResolveWatchRuleSourceScope_ProviderIsReadOncePerRule(t *testing.T) {
 	reads := 0
 	reader := fake.NewClientBuilder().
 		WithScheme(snScheme(t)).
-		WithObjects(snTarget(), snClusterProvider(true),
+		WithObjects(snTarget(), snKubeProvider(true),
 			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(
 				ctx context.Context, c client.WithWatch, key client.ObjectKey,
 				obj client.Object, opts ...client.GetOption,
 			) error {
-				if _, ok := obj.(*configv1alpha3.ClusterProvider); ok {
+				if _, ok := obj.(*configv1alpha3.KubeProvider); ok {
 					reads++
 				}
 				return c.Get(ctx, key, obj, opts...)
@@ -297,7 +298,7 @@ func TestResolveWatchRuleSourceScope_ProviderIsReadOncePerRule(t *testing.T) {
 // the RESOLVED set moves — including for the wildcard, whose resolved value is the empty string.
 func TestResolvedSourceScope_Fingerprint(t *testing.T) {
 	ctx := context.Background()
-	reader := snReader(t, snTarget(), snClusterProvider(true))
+	reader := snReader(t, snTarget(), snKubeProvider(true))
 
 	named, err := authz.ResolveWatchRuleSourceScope(ctx, reader, snRule(snSourceNS), snTarget())
 	require.NoError(t, err)
@@ -315,7 +316,7 @@ func TestResolvedSourceScope_Fingerprint(t *testing.T) {
 // An empty rule is vacuously authorized. It is reachable through the API only transiently, and a
 // gate that errored on it would turn an empty list into a stall.
 func TestResolveWatchRuleSourceScope_NoItems(t *testing.T) {
-	reader := snReader(t, snTarget(), snClusterProvider(false))
+	reader := snReader(t, snTarget(), snKubeProvider(false))
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), reader, snRule(), snTarget())
@@ -329,7 +330,7 @@ func TestResolveWatchRuleSourceScope_NoItems(t *testing.T) {
 // position by position. An out-of-range index returns nil rather than panicking: the resolved scope
 // and the spec are two objects, and a caller reading them apart must not take the process down.
 func TestResolvedSourceScope_NamespacesForIsBoundsChecked(t *testing.T) {
-	reader := snReader(t, snTarget(), snClusterProvider(true))
+	reader := snReader(t, snTarget(), snKubeProvider(true))
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), reader, snRule("", snSourceNS), snTarget())
@@ -344,7 +345,7 @@ func TestResolvedSourceScope_NamespacesForIsBoundsChecked(t *testing.T) {
 // same namespace twice, and the cluster-wide collection is spelled out rather than shown as the empty
 // string an operator would read as a missing value.
 func TestResolveWatchRuleSourceScope_AggregateMessageIsDeduplicatedAndLegible(t *testing.T) {
-	reader := snReader(t, snTarget(), snClusterProvider(true))
+	reader := snReader(t, snTarget(), snKubeProvider(true))
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), reader, snRule(snSourceNS, snSourceNS, snWildcard), snTarget())

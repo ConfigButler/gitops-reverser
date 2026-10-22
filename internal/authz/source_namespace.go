@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -23,7 +22,7 @@ import (
 // ANOTHER cluster: that read could be Forbidden, or still syncing, or permanently unevaluatable, so
 // the verdict had to be three-valued and two of the reasons described an inability to decide rather
 // than a decision. Nothing here reads another cluster any more. Every input is on the WatchRule, the
-// GitTarget and the ClusterProvider, all in the control plane, so the gate is a comparison and its
+// GitTarget and the KubeProvider, all in the control plane, so the gate is a comparison and its
 // answer is always allowed or denied.
 const (
 	// ReasonLegacySourceNamespace is the True reason when EVERY item watches the rule's OWN
@@ -36,7 +35,7 @@ const (
 	ReasonSourceNamespaceAllowed = "SourceNamespaceAllowed"
 
 	// ReasonSourceNamespaceNotAllowed is the TERMINAL False reason for a refusal: the referenced
-	// ClusterProvider does not exist, does not admit this GitTarget's namespace, or does not set
+	// KubeProvider does not exist, does not admit this GitTarget's namespace, or does not set
 	// spec.allowCrossNamespace.sources. It is a decision, never an inability to decide.
 	ReasonSourceNamespaceNotAllowed = "SourceNamespaceNotAllowed"
 )
@@ -106,7 +105,7 @@ func (s ResolvedSourceScope) Fingerprint() string {
 // ResolveWatchRuleSourceScope is the WatchRule source-namespace gate: may each of this rule's items
 // watch the source namespace it asks for?
 //
-// It is CROSS-OBJECT authorization — WatchRule → GitTarget → ClusterProvider — so it is not
+// It is CROSS-OBJECT authorization — WatchRule → GitTarget → KubeProvider — so it is not
 // expressible in CEL and is deliberately a reconciler check rather than a webhook
 // (docs/spec/where-validation-lives.md). Like GitTargetAdmitted it runs on every reconcile, so a
 // policy TIGHTENED after a rule was accepted revokes it.
@@ -117,7 +116,7 @@ func (s ResolvedSourceScope) Fingerprint() string {
 //     This is the legacy case and it must stay free: gating it would break every existing WatchRule
 //     on upgrade.
 //  2. Any OTHER namespace — a name, or "*" for every namespace the credential can read —
-//     additionally requires the GitTarget's namespace to be admitted by its ClusterProvider, and
+//     additionally requires the GitTarget's namespace to be admitted by its KubeProvider, and
 //     that provider to set spec.allowCrossNamespace.sources.
 //
 // There is no third rule. GitTarget.spec.allowedSourceNamespaces used to supply one, and what it
@@ -125,7 +124,7 @@ func (s ResolvedSourceScope) Fingerprint() string {
 // fails 403 at the apiserver if the credential cannot read that namespace, which is a better
 // answer than a policy field that restates the credential in the one place that cannot revoke it.
 //
-// A non-NotFound ClusterProvider read error is returned as err so the caller requeues instead of
+// A non-NotFound KubeProvider read error is returned as err so the caller requeues instead of
 // tearing down a running stream on a transient apiserver failure.
 func ResolveWatchRuleSourceScope(
 	ctx context.Context,
@@ -146,7 +145,7 @@ func ResolveWatchRuleSourceScope(
 }
 
 // itemGate carries the per-rule inputs so each item's decision reads as one step. The
-// ClusterProvider verdict is memoised: every overriding item asks the same question of the same
+// KubeProvider verdict is memoised: every overriding item asks the same question of the same
 // provider, and re-reading it per item would multiply apiserver reads by the rule's item count for
 // an answer that cannot differ within one compile.
 type itemGate struct {
@@ -193,7 +192,7 @@ func (g *itemGate) decide(
 		// named-namespace collection on the same type, never a replacement for one.
 		base.Namespaces = []string{""}
 		base.Message = fmt.Sprintf(
-			"%s: ClusterProvider %q sets spec.allowCrossNamespace.sources, so this item watches every "+
+			"%s: KubeProvider %s sets spec.allowCrossNamespace.sources, so this item watches every "+
 				"namespace its source credential can read, as one cluster-wide stream",
 			g.describeItem(index, item), g.target.SourceCluster())
 		return base, nil
@@ -202,7 +201,7 @@ func (g *itemGate) decide(
 	candidate := item.EffectiveSourceNamespace(g.rule.Namespace)
 	base.Namespaces = []string{candidate}
 	base.Message = fmt.Sprintf(
-		"%s: ClusterProvider %q sets spec.allowCrossNamespace.sources, so this item may watch source "+
+		"%s: KubeProvider %s sets spec.allowCrossNamespace.sources, so this item may watch source "+
 			"namespace %q; whether it can is decided by that credential's RBAC",
 		g.describeItem(index, item), g.target.SourceCluster(), candidate)
 	return base, nil
@@ -241,22 +240,22 @@ func (g *itemGate) overrideDelegated(
 // evaluateDelegation returns a refusal template when the provider side of the gate denies, or nil
 // when it permits. The message is item-agnostic; decide prefixes the item that asked.
 func (g *itemGate) evaluateDelegation(ctx context.Context) (*SourceNamespaceDecision, error) {
-	providerName := g.target.SourceCluster()
+	providerName := g.target.KubeProviderKey()
 
-	var provider configv1alpha3.ClusterProvider
-	if err := g.reader.Get(ctx, k8stypes.NamespacedName{Name: providerName}, &provider); err != nil {
+	var provider configv1alpha3.KubeProvider
+	if err := g.reader.Get(ctx, providerName, &provider); err != nil {
 		if apierrors.IsNotFound(err) {
 			return &SourceNamespaceDecision{
 				Reason: ReasonSourceNamespaceNotAllowed,
 				Message: fmt.Sprintf(
-					"referenced ClusterProvider %q was not found, so it delegates nothing; a "+
+					"referenced KubeProvider %s was not found, so it delegates nothing; a "+
 						"WatchRule may watch a namespace other than its own only through an "+
 						"existing provider that sets spec.allowCrossNamespace.sources",
 					providerName),
 			}, nil
 		}
 		// Transient: requeue rather than tear down a running stream.
-		return nil, fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
+		return nil, fmt.Errorf("read KubeProvider %s: %w", providerName, err)
 	}
 
 	// The GitTarget itself must be admitted by that provider before it can delegate anything.
@@ -268,7 +267,7 @@ func (g *itemGate) evaluateDelegation(ctx context.Context) (*SourceNamespaceDeci
 		return &SourceNamespaceDecision{
 			Reason: ReasonSourceNamespaceNotAllowed,
 			Message: fmt.Sprintf(
-				"GitTarget %s/%s may not mirror through ClusterProvider %q at all: %s",
+				"GitTarget %s/%s may not mirror through KubeProvider %s at all: %s",
 				g.target.Namespace, g.target.Name, providerName, admitted.Message),
 		}, nil
 	}
@@ -277,7 +276,7 @@ func (g *itemGate) evaluateDelegation(ctx context.Context) (*SourceNamespaceDeci
 		return &SourceNamespaceDecision{
 			Reason: ReasonSourceNamespaceNotAllowed,
 			Message: fmt.Sprintf(
-				"ClusterProvider %q does not set spec.allowCrossNamespace.sources; a WatchRule may "+
+				"KubeProvider %s does not set spec.allowCrossNamespace.sources; a WatchRule may "+
 					"watch only its own namespace %q until a platform admin delegates that choice",
 				providerName, g.rule.Namespace),
 		}, nil

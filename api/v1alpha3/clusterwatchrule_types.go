@@ -117,7 +117,7 @@ type ClusterWatchRuleStatus struct {
 
 // Cluster-scoped objects have no namespace, so no namespace policy bounds them: this is
 // cluster-global, limited only by its source credential's RBAC. Isolating tenants takes separate
-// ClusterProviders.
+// KubeProviders.
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -136,7 +136,7 @@ type ClusterWatchRuleStatus struct {
 // carried by the rule KIND, so it has no per-rule scope choice and no source-namespace selection.
 //
 // It is cluster-scoped and requires cluster-admin permissions. Its gitTargetRef names a GitTarget
-// (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
+// (namespace required), whose namespace must be admitted by that target's KubeProvider. To
 // mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
 // spec.rules[].sourceNamespace, whose "*" reaches every namespace the source credential can read.
 type ClusterWatchRule struct {

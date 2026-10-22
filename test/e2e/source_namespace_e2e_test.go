@@ -32,8 +32,8 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 	const (
 		providerName = "gitprovider-srcns"
 		// Two GitTargets: one whose provider delegates the override, one whose provider does not.
-		delegatingCP    = "srcns-delegating"
-		nonDelegatingCP = "srcns-non-delegating"
+		delegatingKP    = "srcns-delegating"
+		nonDelegatingKP = "srcns-non-delegating"
 		grantedTarget   = "srcns-granted"
 		wildcardTarget  = "srcns-wildcard"
 		refusedTarget   = "srcns-refused"
@@ -83,28 +83,30 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		verifyResourceStatus("gitprovider", providerName, configNS,
 			"True", "Succeeded", "Repository connectivity validated")
 
-		By("declaring two in-cluster ClusterProviders that differ ONLY in the delegation flag")
-		// Both omit kubeConfig, so both name the operator's own cluster: this is deliberately the
-		// SHARPER of the two cases the design describes, where an authorized override bypasses live
-		// namespace RBAC. Dedicated providers keep the shared "default" one untouched.
-		Expect(applyInClusterClusterProvider(delegatingCP, configNS, true)).Error().
-			NotTo(HaveOccurred(), "failed to apply delegating ClusterProvider")
-		Expect(applyInClusterClusterProvider(nonDelegatingCP, configNS, false)).Error().
-			NotTo(HaveOccurred(), "failed to apply non-delegating ClusterProvider")
+		By("declaring two KubeProviders on the operator's own cluster that differ ONLY in the delegation flag")
+		// Both reach the operator's own cluster with one cluster-admin kubeconfig: this is
+		// deliberately the SHARPER of the two cases the design describes, where an authorized override
+		// bypasses live namespace RBAC. Dedicated providers keep the install's one untouched, and
+		// live in the GitTargets' own namespace, which every KubeProvider admits.
+		writeKubeConfigSecret(configNS, "srcns-kubeconfig", "value", sameClusterKubeConfig())
+		Expect(applyKubeProviderWithAuditRoute(configNS, delegatingKP, "srcns-kubeconfig", nil, true, "")).Error().
+			NotTo(HaveOccurred(), "failed to apply delegating KubeProvider")
+		Expect(applyKubeProviderWithAuditRoute(configNS, nonDelegatingKP, "srcns-kubeconfig", nil, false, "")).
+			Error().NotTo(HaveOccurred(), "failed to apply non-delegating KubeProvider")
 
 		By("creating two GitTargets behind the delegating provider and one behind the refusing one")
-		// The targets are identical. The only thing that differs is which ClusterProvider they
+		// The targets are identical. The only thing that differs is which KubeProvider they
 		// mirror through, which is now the whole of the source-namespace policy: there is no
 		// per-target allow-list any more. The wildcard gets a target of its own because one
 		// GitTarget cannot watch a type both in all namespaces and in a named one.
-		Expect(applyGitTargetForClusterProvider(
-			configNS, grantedTarget, providerName, grantedPath, delegatingCP)).Error().
+		Expect(applyGitTargetForKubeProvider(
+			configNS, grantedTarget, providerName, grantedPath, configNS, delegatingKP)).Error().
 			NotTo(HaveOccurred(), "failed to apply granted GitTarget")
-		Expect(applyGitTargetForClusterProvider(
-			configNS, wildcardTarget, providerName, wildcardPath, delegatingCP)).Error().
+		Expect(applyGitTargetForKubeProvider(
+			configNS, wildcardTarget, providerName, wildcardPath, configNS, delegatingKP)).Error().
 			NotTo(HaveOccurred(), "failed to apply wildcard GitTarget")
-		Expect(applyGitTargetForClusterProvider(
-			configNS, refusedTarget, providerName, refusedPath, nonDelegatingCP)).Error().
+		Expect(applyGitTargetForKubeProvider(
+			configNS, refusedTarget, providerName, refusedPath, configNS, nonDelegatingKP)).Error().
 			NotTo(HaveOccurred(), "failed to apply refused GitTarget")
 
 		verifyResourceCondition("gittarget", grantedTarget, configNS, "Validated", "True", "Succeeded", "")
@@ -113,8 +115,6 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 	})
 
 	AfterAll(func() {
-		deleteClusterProvider(delegatingCP)
-		deleteClusterProvider(nonDelegatingCP)
 		cleanupNamespace(configNS)
 		cleanupNamespace(sourceNS)
 		cleanupNamespace(wildcardNS)
@@ -256,7 +256,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		}).Should(Succeed())
 	})
 
-	It("refuses an override the ClusterProvider does not delegate, and writes nothing", func() {
+	It("refuses an override the KubeProvider does not delegate, and writes nothing", func() {
 		By("recording the repository head before the refused rule exists")
 		var headBefore string
 		Eventually(func(g Gomega) {
@@ -295,23 +295,6 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		}, 20*time.Second, 4*time.Second).Should(Succeed())
 	})
 })
-
-// applyInClusterClusterProvider applies a ClusterProvider that OMITS kubeConfig — so it names the
-// operator's own cluster — admitting one namespace and optionally delegating source-namespace
-// selection to the GitTargets it admits.
-func applyInClusterClusterProvider(name, allowedNS string, delegate bool) (string, error) {
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: ClusterProvider
-metadata:
-  name: %s
-spec:
-  accessFrom:
-    names: [%s]
-  allowCrossNamespace:
-    sources: %t
-`, name, allowedNS, delegate)
-	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
-}
 
 // applyWildcardConfigMapWatchRule applies a WatchRule whose single item asks for ConfigMaps in
 // every namespace. One type, so the cluster-wide reach is observable without mirroring every

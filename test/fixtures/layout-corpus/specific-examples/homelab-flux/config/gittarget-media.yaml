@@ -20,5 +20,8 @@ metadata:
 spec:
   gitBranchRef:
     name: homelab-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: apps/home/media
   serializeNamespace: false   # the folder's own kustomization.yaml supplies it

@@ -304,6 +304,20 @@ func createGitTargetWithParentBranch(name, namespace, providerName, path, branch
 		e2eEncryptionRefName, false, gitTargetCommitOptions{Window: e2eCommitWindow})
 }
 
+// e2eKubeProviderName is the KubeProvider every install path renders in the operator's namespace,
+// with the operator's own identity: config/kubeprovider-local.yaml, and the chart's kubeProvider.
+const e2eKubeProviderName = "local"
+
+// localKubeProviderRef is the spec.kubeProviderRef block, indented for a GitTarget's spec, that
+// names the install's KubeProvider. Every GitTarget names its provider; nothing defaults.
+func localKubeProviderRef() string {
+	return fmt.Sprintf(
+		"  kubeProviderRef:\n    name: %s\n    namespace: %s",
+		e2eKubeProviderName,
+		resolveE2ENamespace(),
+	)
+}
+
 func applyGitTarget(
 	name,
 	namespace,
@@ -332,6 +346,7 @@ func applyGitTarget(
 		CommitMaxDuration    string
 		LiveTemplate         string
 		ReconcileTemplate    string
+		KubeProviderRef      string
 	}{
 		Name:                 name,
 		Namespace:            namespace,
@@ -346,6 +361,7 @@ func applyGitTarget(
 		CommitMaxDuration:    e2eCommitMaxDuration,
 		LiveTemplate:         commit.LiveTemplate,
 		ReconcileTemplate:    commit.ReconcileTemplate,
+		KubeProviderRef:      localKubeProviderRef(),
 	}
 
 	err := applyFromTemplate("test/e2e/templates/gittarget.tmpl", data, namespace)

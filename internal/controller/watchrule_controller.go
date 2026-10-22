@@ -56,7 +56,7 @@ type WatchRuleReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=watchrules/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=kubeproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -269,7 +269,7 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// write bumps resourceVersion and fires an Update watch event that EnqueueRequestForObject
 		// turns straight back into a queued request, un-rate-limited. reconcileStatus.commit()
 		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
-		// matches what GitProvider and ClusterProvider already do.
+		// matches what GitProvider and KubeProvider already do.
 		For(&configbutleraiv1alpha3.WatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// This rule MIRRORS the GitTarget's readiness into its own GitTargetReady, so the watch has
 		// to see the status-only update that carries a heal — GenerationChangedPredicate would drop
@@ -280,16 +280,16 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
 			builder.WithPredicates(gitTargetReadyProjectionChanged()),
 		).
-		// React to a ClusterProvider's allowCrossNamespace.sources (or accessFrom)
+		// React to a KubeProvider's allowCrossNamespace.sources (or accessFrom)
 		// changing. The GitTarget->WatchRules edge above still cannot be relied on to carry this: a
-		// ClusterProvider change reaches the GitTarget as a status update that need not move the
+		// KubeProvider change reaches the GitTarget as a status update that need not move the
 		// GitTarget's readiness at all, and only a readiness move re-enqueues the rules. Without
 		// this mapper, flipping the delegation flag would leave every affected WatchRule
 		// un-reconciled until its periodic requeue — so a REVOCATION would take minutes.
 		Watches(
-			&configbutleraiv1alpha3.ClusterProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToWatchRules),
-			builder.WithPredicates(clusterProviderReadyOrSpecChanged()),
+			&configbutleraiv1alpha3.KubeProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToWatchRules),
+			builder.WithPredicates(kubeProviderReadyOrSpecChanged()),
 		).
 		Named("watchrule")
 
@@ -308,10 +308,10 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return b.Complete(r)
 }
 
-// clusterProviderToWatchRules maps a ClusterProvider change to every WatchRule whose GitTarget
+// kubeProviderToWatchRules maps a KubeProvider change to every WatchRule whose GitTarget
 // mirrors through that provider, so a delegation grant or revocation converges on the event rather
 // than on the periodic reconcile.
-func (r *WatchRuleReconciler) clusterProviderToWatchRules(
+func (r *WatchRuleReconciler) kubeProviderToWatchRules(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
@@ -326,7 +326,7 @@ func (r *WatchRuleReconciler) clusterProviderToWatchRules(
 	affected := make(map[types.NamespacedName]struct{}, len(targets.Items))
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.SourceCluster() != obj.GetName() {
+		if t.KubeProviderKey() != client.ObjectKeyFromObject(obj) {
 			continue
 		}
 		affected[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}

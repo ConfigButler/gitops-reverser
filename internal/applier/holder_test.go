@@ -47,7 +47,7 @@ func rival(t *testing.T, f *dispatcherFixture, kind, name string, older bool) {
 }
 
 // referenceFrom puts a GitTarget in trigger's namespace that names it, and admits that namespace
-// on the ClusterProviders, so the trigger is in line for its applier.
+// on the KubeProviders, so the trigger is in line for its applier.
 func referenceFrom(t *testing.T, c client.Client, trigger v1alpha3.ApplyTrigger) {
 	t.Helper()
 	ctx := context.Background()
@@ -55,10 +55,10 @@ func referenceFrom(t *testing.T, c client.Client, trigger v1alpha3.ApplyTrigger)
 	target.Namespace = trigger.GetNamespace()
 	target.Spec.ApplyTriggerRef = &v1alpha3.ApplyTriggerReference{Kind: trigger.TriggerKind(), Name: trigger.GetName()}
 	require.NoError(t, c.Create(ctx, target))
-	for _, name := range []string{v1alpha3.DefaultClusterProviderName, "prod-eu-1", trigger.ClusterProvider()} {
-		provider := &v1alpha3.ClusterProvider{}
-		if err := c.Get(ctx, client.ObjectKey{Name: name}, provider); err != nil {
-			require.NoError(t, c.Create(ctx, clusterProvider(name, targetNS, trigger.GetNamespace())))
+	for _, name := range []string{localCluster, "prod-eu-1", trigger.KubeProviderKey().Name} {
+		provider := &v1alpha3.KubeProvider{}
+		if err := c.Get(ctx, client.ObjectKey{Namespace: kubeProviderNS, Name: name}, provider); err != nil {
+			require.NoError(t, c.Create(ctx, kubeProvider(name, targetNS, trigger.GetNamespace())))
 			continue
 		}
 		provider.Spec.AccessFrom.Names = append(provider.Spec.AccessFrom.Names, trigger.GetNamespace())
@@ -120,22 +120,22 @@ func TestHolder_FirstInLine(t *testing.T) {
 		return &v1alpha3.FluxTrigger{
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, CreationTimestamp: created},
 			Spec: v1alpha3.FluxTriggerSpec{
-				ClusterProviderRef: &fluxmeta.LocalObjectReference{Name: cluster},
-				KustomizationRef:   fluxmeta.NamespacedObjectReference{Namespace: "flux-system", Name: ks},
+				KubeProviderRef:  kubeProviderRef(cluster),
+				KustomizationRef: fluxmeta.NamespacedObjectReference{Namespace: "flux-system", Name: ks},
 			},
 		}
 	}
-	self := trigger("team-c", "mine", "default", "checkout", at(10))
-	deleting := trigger("team-z", "old", "default", "checkout", at(5))
+	self := trigger("team-c", "mine", localCluster, "checkout", at(10))
+	deleting := trigger("team-z", "old", localCluster, "checkout", at(5))
 	deleting.Finalizers = []string{v1alpha3.FluxTriggerFinalizer}
 	deleting.DeletionTimestamp = &metav1.Time{Time: time.Unix(100, 0)}
 	objects := []client.Object{
 		self,
 		trigger("team-a", "elsewhere", "hub", "checkout", at(1)),
-		trigger("team-a", "other", "default", "infra", at(1)),
-		trigger("team-b", "same-second", "default", "checkout", at(10)),
+		trigger("team-a", "other", localCluster, "infra", at(1)),
+		trigger("team-b", "same-second", localCluster, "checkout", at(10)),
 	}
-	unreferenced := trigger("team-a", "stray", "default", "checkout", at(1))
+	unreferenced := trigger("team-a", "stray", localCluster, "checkout", at(1))
 	f := newDispatcherFixture(t, nil)
 	for _, obj := range append(objects, unreferenced) {
 		require.NoError(t, f.control.Create(context.Background(), obj))

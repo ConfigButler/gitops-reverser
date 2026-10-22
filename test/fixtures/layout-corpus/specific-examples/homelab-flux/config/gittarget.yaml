@@ -16,6 +16,9 @@ metadata:
 spec:
   gitBranchRef:
     name: homelab-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   # Not clusters/home/flux-system. That directory belongs to `flux bootstrap`, and a
   # GitTarget must not point at a path another controller writes.
   path: infrastructure/home/sources

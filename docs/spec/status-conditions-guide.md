@@ -214,7 +214,7 @@ const (
     TypeEncryptionConfigured   = "EncryptionConfigured"
     TypeSourceClusterReachable = "SourceClusterReachable"
     TypeGitBranchReady         = "GitBranchReady"
-    TypeClusterProviderReady   = "ClusterProviderReady"
+    TypeKubeProviderReady      = "KubeProviderReady"
     TypeStreamsRunning         = "StreamsRunning"
     TypeGitPathAccepted        = "GitPathAccepted"
     TypeRenderMatchesLive      = "RenderMatchesLive"
@@ -313,7 +313,7 @@ Canonical reads:
   the trigger must not wait for the `GitTarget` that will name it
 - holding its applier: `Configured=True`, for a `FluxTrigger` `Held=True` (`Suspended` or
   `Applying`), and `Ready=True`
-- applier or `ClusterProvider` missing (`ApplierNotFound`, `ClusterProviderNotFound`):
+- applier or `KubeProvider` missing (`ApplierNotFound`, `KubeProviderNotFound`):
   `Ready=False`, `Reconciling=True`, `Stalled=False`, because Flux and Argo CD objects are often
   created after the trigger. Every other `Configured=False` reason is `Stalled=True`
 - an operation past its time (`status.operation.phase: Unresolved`): `Ready=False`,

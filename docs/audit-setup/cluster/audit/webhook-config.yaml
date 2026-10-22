@@ -7,7 +7,7 @@ clusters:
 - name: audit-webhook
   cluster:
     # Replace with a Service IP reachable from every control-plane host.
-    server: https://10.43.200.200:9444/audit-webhook/default
+    server: https://10.43.200.200:9444/audit-webhook/gitops-reverser.local
     tls-server-name: gitops-reverser-audit.gitops-reverser.svc
     certificate-authority-data: REPLACE_WITH_BASE64_AUDIT_ROOT_CA
 contexts:

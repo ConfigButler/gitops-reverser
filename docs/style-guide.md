@@ -15,16 +15,17 @@ Applies to every tracked `.md` file: product docs, design records, chart READMEs
 ## Voice
 
 **Write to an operator who is competent but new to this product.** They know Kubernetes. They do
-not know why a `ClusterProvider` is cluster-scoped. Explain the second thing, never the first.
+not know why a `KubeProvider` needs the installation's consent to use `inCluster`. Explain the
+second thing, never the first.
 
 **State what the software does, in present tense, active voice.** Not what it aims to do, is
 designed to do, or will do. A doc describes behavior that exists; a design record under
 [`docs/design/`](design/) is where intent belongs, and it says so explicitly.
 
 **Give the reason when the reason is not obvious.** This is the house signature and the main thing
-that makes these docs worth reading. `configuration.md` does not just say `ClusterProvider` is
-cluster-scoped; it has a section called "Why the two provider types have different scopes". Keep
-doing that. A rule with no rationale gets argued with later, or silently reverted.
+that makes these docs worth reading. `configuration.md` does not just say both provider types are
+namespaced; it has a section called "Why both provider types are namespaced". Keep doing that. A
+rule with no rationale gets argued with later, or silently reverted.
 
 **Do not sell.** No `powerful`, `seamless`, `robust`, `simply`, `effortlessly`. The docs currently
 contain 15 uses of `powerful` and 7 of `robust`; none of them carry information. If a capability
@@ -69,10 +70,10 @@ after:   the author becomes the real Kubernetes actor (user, service account, or
 **Definition or expansion → colon.**
 
 ```text
-before:  Two conditions stop the data plane and are worth recognizing — ClusterProviderNotFound
+before:  Two conditions stop the data plane and are worth recognizing — KubeProviderNotFound
          and NamespaceNotAuthorized
 after:   Two conditions stop the data plane and are worth recognizing:
-         ClusterProviderNotFound and NamespaceNotAuthorized
+         KubeProviderNotFound and NamespaceNotAuthorized
 ```
 
 **Two independent clauses → a period, or a semicolon when they are genuinely one thought.**

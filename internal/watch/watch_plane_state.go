@@ -75,8 +75,8 @@ type DeclareStatus struct {
 	// gate refused never reaches Declare, so it never appears here, which makes "an unauthorized
 	// namespace starts no watch" assertable from outside this package.
 	Declared bool
-	// ClusterID is the source cluster the declaration named — a ClusterProvider name, empty for
-	// the cluster the operator runs in. Meaningful only when Declared.
+	// ClusterID is the source cluster the declaration named — a KubeProvider's namespace/name,
+	// empty for the config plane. Meaningful only when Declared.
 	ClusterID string
 	// Pending reports whether a plan pass is pending — the target is dirty, or has never
 	// successfully applied a plan.

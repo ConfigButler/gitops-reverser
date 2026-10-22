@@ -20,7 +20,7 @@ import (
 )
 
 // Bootstrap runs BEFORE the first reconcile on every restart, so it is the second call site that
-// must apply the ClusterProvider admission gate. A helper only the reconciler used would leave the
+// must apply the KubeProvider admission gate. A helper only the reconciler used would leave the
 // whole startup window unguarded — long enough to compile a rule and plan a stream for a GitTarget
 // the provider never admitted.
 
@@ -29,15 +29,18 @@ const (
 	bootTargetName   = "prod-mirror"
 	bootTargetNS     = "team-a"
 	bootProviderName = "prod-eu-1"
+	// bootProviderNS is the KubeProvider's namespace, not the GitTarget's, so whether it admits the
+	// GitTarget is its spec.accessFrom's decision rather than the own-namespace rule's.
+	bootProviderNS = "platform"
 )
 
 func bootGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: bootTargetName, Namespace: bootTargetNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef:       meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
-			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
-			Path:               "clusters/prod",
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
+			KubeProviderRef: meta.NamespacedObjectReference{Namespace: bootProviderNS, Name: bootProviderName},
+			Path:            "clusters/prod",
 		},
 	}
 }
@@ -48,10 +51,13 @@ func bootGitProvider() *configv1alpha3.GitProvider {
 	}
 }
 
-func bootClusterProvider(policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.ClusterProvider {
-	return &configv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: bootProviderName},
-		Spec:       configv1alpha3.ClusterProviderSpec{AccessFrom: policy},
+func bootKubeProvider(policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.KubeProvider {
+	return &configv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: bootProviderNS, Name: bootProviderName},
+		Spec: configv1alpha3.KubeProviderSpec{
+			SecretRef:  &meta.SecretKeyReference{Name: "prod-eu-1-kubeconfig"},
+			AccessFrom: policy,
+		},
 	}
 }
 
@@ -90,7 +96,7 @@ func bootCompiledNames(m *Manager) []string {
 func TestBootstrapClusterWatchRule_RefusesUnauthorizedGitTargetNamespace(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"some-other-namespace"}}),
+		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"some-other-namespace"}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -101,9 +107,9 @@ func TestBootstrapClusterWatchRule_RefusesUnauthorizedGitTargetNamespace(t *test
 	assert.Empty(t, bootCompiledNames(m), "a refused rule must never reach the store")
 }
 
-// TestBootstrapClusterWatchRule_RefusesMissingClusterProvider covers the hard-gate half: an
+// TestBootstrapClusterWatchRule_RefusesMissingKubeProvider covers the hard-gate half: an
 // undeclared provider is not an implicit allow at startup either.
-func TestBootstrapClusterWatchRule_RefusesMissingClusterProvider(t *testing.T) {
+func TestBootstrapClusterWatchRule_RefusesMissingKubeProvider(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
@@ -120,7 +126,7 @@ func TestBootstrapClusterWatchRule_RefusesMissingClusterProvider(t *testing.T) {
 func TestBootstrapClusterWatchRule_SeedsAdmittedRule(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -141,9 +147,9 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 	admittedTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ok-mirror", Namespace: "team-ok"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef:       meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
-			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
-			Path:               "clusters/ok",
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
+			KubeProviderRef: meta.NamespacedObjectReference{Namespace: bootProviderNS, Name: bootProviderName},
+			Path:            "clusters/ok",
 		},
 	}
 	admittedRule := bootClusterWatchRule()
@@ -157,7 +163,7 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 		&configv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Name: "git", Namespace: "team-ok"}},
 		admittedRule,
 		// Admits team-ok only, so the team-a rule is refused.
-		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"team-ok"}}),
+		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"team-ok"}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-ok"}},
 	)
@@ -183,7 +189,7 @@ func TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes(t 
 
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -195,13 +201,13 @@ func TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes(t 
 
 // TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule is the REVOCATION contract for the
 // cluster kind: a rule accepted earlier and then refused must have its compiled rule REMOVED, not
-// merely reported unready. The refusal used here is the ClusterProvider withdrawing the target's
+// merely reported unready. The refusal used here is the KubeProvider withdrawing the target's
 // namespace, which is the one refusal the compile path can reach at runtime.
 func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.T) {
 	ctx := context.Background()
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -211,9 +217,10 @@ func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.
 	require.True(t, decision.Admitted)
 	require.Len(t, bootCompiledNames(m), 1, "precondition: the rule is compiled")
 
-	// The platform admin narrows the ClusterProvider so it no longer admits the target's namespace.
-	var provider configv1alpha3.ClusterProvider
-	require.NoError(t, m.Client.Get(ctx, client.ObjectKey{Name: bootProviderName}, &provider))
+	// The platform admin narrows the KubeProvider so it no longer admits the target's namespace.
+	var provider configv1alpha3.KubeProvider
+	providerKey := client.ObjectKey{Namespace: bootProviderNS, Name: bootProviderName}
+	require.NoError(t, m.Client.Get(ctx, providerKey, &provider))
 	provider.Spec.AccessFrom = &configv1alpha3.NamespaceMatcher{Names: []string{"someone-else"}}
 	require.NoError(t, m.Client.Update(ctx, &provider))
 

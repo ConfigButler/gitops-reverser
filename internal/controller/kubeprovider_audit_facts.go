@@ -8,7 +8,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8stypes "k8s.io/apimachinery/pkg/types"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -32,7 +32,7 @@ type AuditRouteFacts interface {
 	// FirstFactAt reports when the first fact was published on a route IN THIS PROCESS. A restart
 	// empties it, which is why the condition latches in the persisted status instead.
 	FirstFactAt(route string) (time.Time, bool)
-	// FirstFactEvents carries a ClusterProvider-shaped event naming the ROUTE whose first fact just
+	// FirstFactEvents carries a KubeProvider-shaped event naming the ROUTE whose first fact just
 	// landed, so the providers reading it re-reconcile within seconds.
 	FirstFactEvents() <-chan event.GenericEvent
 	// TransportFailing and AuditDelivered are PROCESS-WIDE, not per route. They exist only to say
@@ -57,15 +57,15 @@ type AuditRouteFacts interface {
 //
 // It never writes False. Silence BEFORE any proof is a misconfiguration signal; silence AFTER proof
 // is a quiet cluster, and no timer can tell those apart — the latch can, without one.
-func (r *ClusterProviderReconciler) applyAuditFactsCondition(
+func (r *KubeProviderReconciler) applyAuditFactsCondition(
 	st *reconcileStatus,
-	provider *configbutleraiv1alpha3.ClusterProvider,
+	provider *configbutleraiv1alpha3.KubeProvider,
 ) {
 	if r.AuditFacts == nil {
 		// Attribution is off operator-wide. Removing rather than leaving the last answer standing
 		// matters on the downgrade path: a True latched while attribution was on would otherwise
 		// claim facts are arriving on a route nothing posts to any more.
-		st.remove(ClusterProviderConditionAuditFactsReceived)
+		st.remove(KubeProviderConditionAuditFactsReceived)
 		return
 	}
 
@@ -77,22 +77,22 @@ func (r *ClusterProviderReconciler) applyAuditFactsCondition(
 	latchedRoute := provider.Status.AuditRoute
 	provider.Status.AuditRoute = route
 
-	existing := findCondition(provider.Status.Conditions, ClusterProviderConditionAuditFactsReceived)
+	existing := findCondition(provider.Status.Conditions, KubeProviderConditionAuditFactsReceived)
 	if existing != nil && existing.Status == metav1.ConditionTrue && latchedRoute == route {
 		reason, message := conditionReasonMessage(
 			existing, ReasonFactsReceived, auditFactsReceivedMessage(route, time.Time{}))
-		st.set(ClusterProviderConditionAuditFactsReceived, metav1.ConditionTrue, reason, message)
+		st.set(KubeProviderConditionAuditFactsReceived, metav1.ConditionTrue, reason, message)
 		return
 	}
 
 	if at, seen := r.AuditFacts.FirstFactAt(route); seen {
-		st.set(ClusterProviderConditionAuditFactsReceived, metav1.ConditionTrue,
+		st.set(KubeProviderConditionAuditFactsReceived, metav1.ConditionTrue,
 			ReasonFactsReceived, auditFactsReceivedMessage(route, at))
 		return
 	}
 
 	reason, message := r.auditFactsPending(route, provider.CreationTimestamp.Time)
-	st.set(ClusterProviderConditionAuditFactsReceived, metav1.ConditionUnknown, reason, message)
+	st.set(KubeProviderConditionAuditFactsReceived, metav1.ConditionUnknown, reason, message)
 }
 
 // auditFactsPending picks which of the three silences this provider is in, and says where to look.
@@ -105,7 +105,7 @@ func (r *ClusterProviderReconciler) applyAuditFactsCondition(
 // Only the first-fact transition is pushed (see FirstFactEvents); a transport recovery or a first
 // delivery changes only these MESSAGES, so they converge on the periodic requeue rather than
 // enqueueing every provider in the cluster.
-func (r *ClusterProviderReconciler) auditFactsPending(route string, createdAt time.Time) (string, string) {
+func (r *KubeProviderReconciler) auditFactsPending(route string, createdAt time.Time) (string, string) {
 	waited := auditFactsWaited(createdAt)
 	switch {
 	case r.AuditFacts.TransportFailing():
@@ -180,8 +180,8 @@ func auditFactsReceivedMessage(route string, at time.Time) string {
 
 // auditFactsPendingMessage is the RouteUnused message: audit is being delivered and the transport
 // is accepting writes, so this provider's route is the one thing left to look at. It names the
-// route explicitly because the route is usually NOT the field anyone set — it defaults to the
-// provider's name, which is exactly how a second provider on one cluster ends up reading a
+// route explicitly because the route is usually NOT the field anyone set — it defaults to
+// <namespace>.<name>, which is exactly how a second provider on one cluster ends up reading a
 // partition nothing writes.
 func auditFactsPendingMessage(route, waited string) string {
 	return fmt.Sprintf(
@@ -195,11 +195,11 @@ func auditFactsPendingMessage(route, waited string) string {
 		route, waited, route)
 }
 
-// auditRouteToClusterProviders maps a first-fact notification — whose object carries the ROUTE in
-// its name, not a provider — to every ClusterProvider reading that route. Several providers may
+// auditRouteToKubeProviders maps a first-fact notification — whose object carries the ROUTE in
+// its name, not a provider — to every KubeProvider reading that route. Several providers may
 // declare one route, and the one that most needs telling is the one that never set the field and
-// so reads its own name.
-func (r *ClusterProviderReconciler) auditRouteToClusterProviders(
+// so reads its default.
+func (r *KubeProviderReconciler) auditRouteToKubeProviders(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
@@ -207,7 +207,7 @@ func (r *ClusterProviderReconciler) auditRouteToClusterProviders(
 	if route == "" {
 		return nil
 	}
-	var providers configbutleraiv1alpha3.ClusterProviderList
+	var providers configbutleraiv1alpha3.KubeProviderList
 	if err := r.List(ctx, &providers); err != nil {
 		return nil
 	}
@@ -216,9 +216,7 @@ func (r *ClusterProviderReconciler) auditRouteToClusterProviders(
 		if providers.Items[i].AuditRoute() != route {
 			continue
 		}
-		requests = append(requests, ctrlreconcile.Request{
-			NamespacedName: k8stypes.NamespacedName{Name: providers.Items[i].Name},
-		})
+		requests = append(requests, ctrlreconcile.Request{NamespacedName: providers.Items[i].Key()})
 	}
 	return requests
 }

@@ -1,0 +1,33 @@
+# A remote source cluster, as a namespaced KubeProvider. Its kubeconfig Secret lives in this
+# provider's own namespace, never on the source cluster. secretRef is immutable: delete and
+# recreate the provider to point it at another cluster. key is optional; empty reads "value",
+# then "value.yaml".
+#
+# Its audit route defaults to <namespace>.<name> (default.prod-eu-1), so the source cluster's API
+# server posts audit events to /audit-webhook/default.prod-eu-1.
+#
+# For the operator's own cluster, set `inCluster: {}` instead of secretRef. That is honored only for
+# a provider the installation lists in --in-cluster-kube-providers; the chart renders one, `local`
+# in its release namespace, and lists it.
+apiVersion: configbutler.ai/v1alpha3
+kind: KubeProvider
+metadata:
+  name: prod-eu-1
+  namespace: default
+spec:
+  secretRef:
+    name: prod-eu-1-kubeconfig
+  # Consumers in this namespace are always admitted. accessFrom admits the others: here, every
+  # namespace labeled tier=trusted in the control cluster.
+  accessFrom:
+    selector:
+      matchLabels:
+        tier: trusted
+  # What those namespaces may reach outside themselves, each granted on purpose. sources: a
+  # WatchRule may choose which SOURCE namespaces to mirror; while false (the default) it watches
+  # only its own namespace, and `sourceNamespace: "*"` is refused outright. appliers: a trigger may
+  # suspend and apply a Kustomization or Application in another namespace. Both delegate to every
+  # admitted namespace; neither proves that a namespace owns what it reaches.
+  allowCrossNamespace:
+    sources: true
+    appliers: false

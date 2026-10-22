@@ -31,7 +31,7 @@ flowchart TD
 ```
 
 Everything bi-directional is opt-in and off by default: the apply triggers, the push receiver,
-`onRefusal: Reapply`, the chart's `applierAccess` grants, and the `ClusterProvider`'s
+`onRefusal: Reapply`, the chart's `applierAccess` grants, and the `KubeProvider`'s
 `allowCrossNamespace.appliers`, which a trigger needs to hold an applier outside its own namespace,
 such as one in `flux-system` or `argocd`. A `GitTarget` without `spec.applyTriggerRef` never reads,
 patches or syncs anything of Flux's or Argo CD's, and neither does a trigger no `GitTarget` names, so
@@ -54,7 +54,7 @@ things set that up:
 1. **An apply trigger holds the applier.** A `FluxTrigger` holds a Flux `Kustomization`, an
    `ArgoCDTrigger` an Argo CD `Application`, and the `GitTarget` names the trigger in
    `spec.applyTriggerRef`. A trigger acts only while an eligible `GitTarget` names it: one in its
-   namespace, admitted by its `ClusterProvider`s, that writes the repository and branch the applier
+   namespace, admitted by its `KubeProvider`s, that writes the repository and branch the applier
    fetches.
 2. **The applier's own triggers are off.** The `FluxTrigger` keeps its `Kustomization` suspended;
    the `Application` runs with automated sync off.
@@ -270,7 +270,7 @@ nothing else.
 
 - **Just before it asks, GitOps Reverser checks the decision again**: the commit is still the branch
   tip, each `GitTarget` still names this trigger on this branch, is still admitted by its
-  `ClusterProvider`s, and, for a `Refusal`, still consents; and the trigger still holds the applier.
+  `KubeProvider`s, and, for a `Refusal`, still consents; and the trigger still holds the applier.
   When any of that changed, it asks nothing and decides again, after a new flush. It never asks for
   something weaker than what it was told.
 - **The apply's own writes are not mirrored.** Inside the apply window, a write whose newest field
@@ -433,10 +433,10 @@ returns to `Ready=True` only after a resync covering the refused scope. The elig
   wait: a push reaches the cluster only through a manual sync or `flux resume`. A graceful stop
   suspends a `Kustomization` it had resumed; after a crash, the apply that was running finishes,
   and the next process suspends it. Monitor the operator the way you monitor the applier.
-- **A trigger may hold any applier its `ClusterProvider` reaches.** With
+- **A trigger may hold any applier its `KubeProvider` reaches.** With
   `allowCrossNamespace.appliers`, every namespace the provider admits may hold a `Kustomization` or
   `Application` in another namespace whose source is the repository its `GitProvider` names. That
-  is a delegation by the platform admin: nothing proves the namespace owns the applier, or may
+  is a delegation by the provider's owner: nothing proves the namespace owns the applier, or may
   write to the repository, since the binding compares URLs.
 - **Pending writes live in worker memory.** They do not survive a restart; recovery is a resync of
   the cluster as it is then.

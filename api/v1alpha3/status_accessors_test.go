@@ -27,7 +27,7 @@ func TestStatusAccessors_ReachTheLiveStatus(t *testing.T) {
 
 	gitTarget := &GitTarget{}
 	gitProvider := &GitProvider{}
-	clusterProvider := &ClusterProvider{}
+	kubeProvider := &KubeProvider{}
 	watchRule := &WatchRule{}
 	clusterWatchRule := &ClusterWatchRule{}
 
@@ -48,9 +48,9 @@ func TestStatusAccessors_ReachTheLiveStatus(t *testing.T) {
 			stored:   func() []metav1.Condition { return gitProvider.Status.Conditions },
 		},
 		{
-			name: "ClusterProvider", object: clusterProvider,
-			observed: func() int64 { return clusterProvider.Status.ObservedGeneration },
-			stored:   func() []metav1.Condition { return clusterProvider.Status.Conditions },
+			name: "KubeProvider", object: kubeProvider,
+			observed: func() int64 { return kubeProvider.Status.ObservedGeneration },
+			stored:   func() []metav1.Condition { return kubeProvider.Status.Conditions },
 		},
 		{
 			name: "WatchRule", object: watchRule,

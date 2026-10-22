@@ -79,8 +79,11 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("test-provider", "main")},
-					Path:         "default/test",
+					KubeProviderRef: testKubeProviderRef(),
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("test-provider", "main"),
+					},
+					Path: "default/test",
 				},
 			}
 			Expect(k8sClient.Create(ctx, target)).To(Succeed())
@@ -192,8 +195,11 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("local-provider", "main")},
-					Path:         "ns/default",
+					KubeProviderRef: testKubeProviderRef(),
+					GitBranchRef: meta.NamespacedObjectReference{
+						Name: gitBranchNameForTest("local-provider", "main"),
+					},
+					Path: "ns/default",
 				},
 			}
 			Expect(k8sClient.Create(ctx, target)).Should(Succeed())

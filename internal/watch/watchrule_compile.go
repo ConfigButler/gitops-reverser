@@ -96,7 +96,7 @@ func itemNamespaces(resolved authz.ResolvedSourceScope) [][]string {
 //
 // Two refusals, both terminal, in this order:
 //
-//  1. the referenced GitTarget's namespace must be admitted by that target's ClusterProvider — a
+//  1. the referenced GitTarget's namespace must be admitted by that target's KubeProvider — a
 //     ClusterWatchRule's gitTargetRef carries a namespace, so it can name a target in ANY namespace
 //     and widen that target's mirror scope cluster-wide;
 //  2. the rule must not carry a stored scope other than "Cluster". Admission rejects the value on
@@ -147,7 +147,7 @@ func CompileClusterWatchRule(
 // keeps the two from drifting.
 const (
 	// ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized is the terminal reason when the
-	// referenced GitTarget's namespace is not admitted by that target's ClusterProvider — either
+	// referenced GitTarget's namespace is not admitted by that target's KubeProvider — either
 	// because spec.accessFrom excludes it or because the provider does not exist at all.
 	//
 	// One rule-side reason covers both provider-side causes on purpose: from the ClusterWatchRule's

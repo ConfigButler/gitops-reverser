@@ -209,6 +209,9 @@ metadata:
 spec:
   gitBranchRef:
     name: platform-config-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: clusters/dev
 status:
   observedGeneration: 4

@@ -28,11 +28,11 @@ import (
 // ratcheting cannot wave a stored value through on the next edit.
 // +kubebuilder:validation:XValidation:rule="!has(self.gitProviderRef) && !has(self.branch) && !has(self.parentBranch)",message="spec.gitProviderRef, spec.branch and spec.parentBranch moved to a GitBranch; set spec.gitBranchRef to it"
 //
-// spec.clusterProviderRef names the SOURCE cluster a GitTarget mirrors FROM (see its field doc). It
-// is immutable — a folder's source cluster is part of what the folder means, like
-// gitBranchRef/path above — and defaults to a ClusterProvider named "default", so it is
-// always populated (never nil) and always jumpable.
-// +kubebuilder:validation:XValidation:rule="self.clusterProviderRef == oldSelf.clusterProviderRef",message="spec.clusterProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
+// spec.clusterProviderRef was replaced by spec.kubeProviderRef, with the cluster-scoped kind it
+// named. A pruned field would apply cleanly and leave a manifest written for the old API looking
+// accepted, so it stays in the schema only to be refused by name, on spec for the same ratcheting
+// reason as the branch fields above.
+// +kubebuilder:validation:XValidation:rule="!has(self.clusterProviderRef)",message="spec.clusterProviderRef was replaced by spec.kubeProviderRef, which names a namespaced KubeProvider"
 // +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applyTriggerRef)",message="spec.onRefusal: Reapply needs spec.applyTriggerRef, the trigger asked to reapply"
 type GitTargetSpec struct {
 	// GitBranchRef names the GitBranch this target writes: the repository branch, and the credential
@@ -202,19 +202,20 @@ type GitTargetSpec struct {
 	// +optional
 	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
 
-	// Defaults to a concrete {name: "default"}, not nil, so the persisted object names something a
-	// reader can jump to. The operator never creates that provider; a missing one holds the target
-	// unready rather than falling back to in-cluster access.
+	// KubeProviderRef names the KubeProvider this GitTarget mirrors FROM: the source cluster, and the
+	// credential it is read with. Namespace omitted means this GitTarget's own namespace. A
+	// KubeProvider in another namespace is used only while its spec.accessFrom admits this
+	// GitTarget's namespace. Immutable: a folder's source cluster is part of what the folder means;
+	// delete and recreate the GitTarget to change it.
+	// +required
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
+	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef"`
 
-	// ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
-	// cluster-scoped ClusterProvider by name. That ClusterProvider owns the cluster's connectivity
-	// credential, namespace-access authorization, and author-attribution mode. The default provider
-	// name is "default" and must exist; it may be in-cluster or remote.
-	// Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
-	// +kubebuilder:default={name: "default"}
+	// RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
+	// setting it is refused.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.clusterProviderRef.name must not be empty"
-	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
+	RemovedClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// Mutable, unlike the destination fields above: recovering from a scope mistake must not
 	// require recreating the GitTarget, which is the one operation that loses the folder's history.
@@ -568,17 +569,11 @@ type GitTarget struct {
 }
 
 // SourceCluster is the identity the watch data plane keys a GitTarget's source cluster on: the
-// referenced ClusterProvider's NAME. It defaults to "default" when clusterProviderRef is unset —
-// so a source-cluster-unaware caller still gets a concrete, non-empty name, and there is no ""
-// sentinel. That name is a convention, not a claim about which physical cluster it is. The name
-// keys the GVK→GVR registry and the watch context. It is NOT the attribution partition: facts are
-// keyed by the referenced ClusterProvider's AuditRoute(), which defaults to this name but may
-// differ when several providers share one cluster's single audit stream.
+// referenced KubeProvider's namespace/name, so two providers with one name in two namespaces are
+// two clusters. It keys the GVK→GVR registry and the watch context. It is NOT the attribution
+// partition: facts are keyed by the referenced KubeProvider's AuditRoute().
 func (g *GitTarget) SourceCluster() string {
-	if g.Spec.ClusterProviderRef == nil || g.Spec.ClusterProviderRef.Name == "" {
-		return DefaultClusterProviderName
-	}
-	return g.Spec.ClusterProviderRef.Name
+	return g.KubeProviderKey().String()
 }
 
 // GitBranchKey is the GitBranch this GitTarget writes: spec.gitBranchRef, in this GitTarget's own
@@ -595,12 +590,11 @@ func (g *GitTarget) GitBranchKey() types.NamespacedName {
 	return types.NamespacedName{Namespace: namespace, Name: g.Spec.GitBranchRef.Name}
 }
 
-// IsLocalSource reports whether this GitTarget references the "default" ClusterProvider, which the
-// watch data plane maps to its local cluster context. It is a NAME test, not a claim about the
-// physical cluster: a "default" provider may carry a kubeConfig. It only supplies the pre-discovery
-// default for SourceClusterReachable, which the watch manager overwrites as soon as it is wired.
-func (g *GitTarget) IsLocalSource() bool {
-	return g.SourceCluster() == DefaultClusterProviderName
+// KubeProviderKey is the KubeProvider this GitTarget mirrors through: spec.kubeProviderRef, in this
+// GitTarget's own namespace unless the reference names another one. An unset reference names
+// nothing, and the zero key says exactly that.
+func (g *GitTarget) KubeProviderKey() types.NamespacedName {
+	return kubeProviderKey(g.Spec.KubeProviderRef, g.Namespace)
 }
 
 // +kubebuilder:object:root=true

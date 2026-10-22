@@ -99,6 +99,9 @@ kind: GitTarget
 spec:
   gitBranchRef:
     name: platform-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: clusters/prod
   placement:
     byType:

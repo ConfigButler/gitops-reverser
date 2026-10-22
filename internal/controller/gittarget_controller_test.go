@@ -35,8 +35,9 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					GitBranchRef: meta.NamespacedObjectReference{Name: "missing-branch"},
-					Path:         "test-folder",
+					KubeProviderRef: testKubeProviderRef(),
+					GitBranchRef:    meta.NamespacedObjectReference{Name: "missing-branch"},
+					Path:            "test-folder",
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
@@ -85,6 +86,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-two-axis", "main"),
 					},
@@ -145,6 +147,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-conflict", "main"),
 					},
@@ -179,6 +182,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-conflict", "main"),
 					},
@@ -263,6 +267,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-no-conflict", "main"),
 					},
@@ -278,6 +283,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-no-conflict", "main"),
 					},
@@ -350,6 +356,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-nested", "main"),
 					},
@@ -383,6 +390,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-nested", "main"),
 					},
@@ -463,6 +471,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-generate-enc-secret", "main"),
 					},
@@ -528,6 +537,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-no-generate-enc-secret", "main"),
 					},
@@ -605,6 +615,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha3.GitTargetSpec{
+						KubeProviderRef: testKubeProviderRef(),
 						GitBranchRef: meta.NamespacedObjectReference{
 							Name: gitBranchNameForTest("test-provider-no-enc-recipients", "main"),
 						},
@@ -698,6 +709,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-update-enc-secret", "main"),
 					},
@@ -758,6 +770,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-recreate-enc-secret", "main"),
 					},
@@ -853,6 +866,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef: meta.NamespacedObjectReference{
 						Name: gitBranchNameForTest("test-provider-existing-agekey", "main"),
 					},

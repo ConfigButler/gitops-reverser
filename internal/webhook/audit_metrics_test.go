@@ -190,7 +190,7 @@ func TestServeHTTP_NonScaleSubresourceDropped(t *testing.T) {
 // A request refused at the door must still be counted.
 //
 // This was the ingress gap: method, path and route rejections returned BEFORE any instrument was
-// touched, so an apiserver posting audit to the wrong path — or under a route no ClusterProvider
+// touched, so an apiserver posting audit to the wrong path — or under a route no KubeProvider
 // claims, which is the likeliest audit misconfiguration there is — produced exactly the same
 // ingress metrics as an apiserver posting nothing at all.
 func TestServeHTTP_RejectedRequestsAreCounted(t *testing.T) {

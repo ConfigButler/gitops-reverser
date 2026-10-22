@@ -681,7 +681,7 @@ func targetStreamStateForSessionEnd(err error) (StreamState, string, bool) {
 // no-op in configured-author mode, where no follower runs and no subscription is meaningful.
 //
 // The route rather than the cluster id is what the stream is keyed on, for the same reason the join
-// is: an API server posts audit under ONE route, so several ClusterProviders naming one cluster all
+// is: an API server posts audit under ONE route, so several KubeProviders naming one cluster all
 // declare that route and share its facts.
 func (m *Manager) followFactsForWatch(gitDest types.ResourceReference, key targetWatchKey) func() {
 	if m.FactStreams == nil {
@@ -1281,7 +1281,7 @@ func (m *Manager) attachAuthor(
 	// author fact's post-write RV, so it may consult the /last pointer; a create/update is
 	// exact-capable and must not fall through to /last.
 	exactCapable := event.Operation != string(types.OperationDelete)
-	// event.SourceCluster (stamped just above, before this call) is the ClusterProvider NAME this
+	// event.SourceCluster (stamped just above, before this call) is the KubeProvider (namespace/name) this
 	// event was watched on; auditRouteForCluster turns it into the AUDIT ROUTE the handler filed
 	// facts under. The two differ whenever several providers name one cluster: an API server has one
 	// webhook backend and posts under one route, so every other provider for that cluster declares

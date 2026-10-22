@@ -106,8 +106,9 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 	existingGitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ops-target", Namespace: "ops"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("ops-provider", "main")},
-			Path:         "cluster-state",
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("ops-provider", "main")},
+			KubeProviderRef: meta.NamespacedObjectReference{Name: "local"},
+			Path:            "cluster-state",
 		},
 	}
 	existingGitProvider := &configv1alpha3.GitProvider{
@@ -118,17 +119,14 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 		},
 	}
 
-	// existingGitTarget omits clusterProviderRef, which resolves to the reserved "default"
-	// ClusterProvider. Bootstrap now applies that provider's namespace admission before seeding a
-	// ClusterWatchRule, so the fixture must ship the provider the way a real install does (an
-	// empty selector admits every namespace — the chart default). Without it the seed is correctly
-	// REFUSED, which is the behavior TestBootstrapClusterWatchRule_RefusesMissingClusterProvider
+	// existingGitTarget references the KubeProvider ops/local, in its own namespace. Bootstrap
+	// applies that provider's namespace admission before seeding a ClusterWatchRule, so the fixture
+	// must ship the provider (its own namespace is always admitted). Without it the seed is
+	// correctly REFUSED, which is the behavior TestBootstrapClusterWatchRule_RefusesMissingKubeProvider
 	// covers; this test is about the admitted path.
-	defaultClusterProvider := &configv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: configv1alpha3.DefaultClusterProviderName},
-		Spec: configv1alpha3.ClusterProviderSpec{
-			AccessFrom: &configv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}},
-		},
+	localKubeProvider := &configv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: "ops"},
+		Spec:       configv1alpha3.KubeProviderSpec{InCluster: &configv1alpha3.KubeProviderInCluster{}},
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -138,7 +136,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 			existingClusterWatchRule,
 			existingGitTarget,
 			existingGitProvider,
-			defaultClusterProvider,
+			localKubeProvider,
 		).
 		Build()
 

@@ -60,8 +60,8 @@ const shortCommitLength = 8
 // errNotRunning fails an attempt made before the dispatcher started or after it stopped.
 var errNotRunning = errors.New("the apply request dispatcher is not running")
 
-// Clients resolves the dynamic client of the cluster an applier lives in, by ClusterProvider
-// name (a trigger's spec.clusterProviderRef). In production it is
+// Clients resolves the dynamic client of the cluster an applier lives in, by KubeProvider
+// name (a trigger's spec.kubeProviderRef). In production it is
 // (*watch.Manager).ApplierDynamicClient.
 type Clients func(ctx context.Context, clusterID string) (dynamic.Interface, error)
 
@@ -102,7 +102,7 @@ const pollTimeout = 10 * time.Second
 // What it does check is what can change between the worker's decision and the write. It reads each
 // GitTarget again and asks only for those that are still the incarnation the worker decided for,
 // still name a trigger that holds this applier on this branch, are still admitted by their
-// ClusterProviders, and, for a Refusal, still consent. When no target still holds the request's
+// KubeProviders, and, for a Refusal, still consent. When no target still holds the request's
 // reason it asks nothing at all, rather than ask for something weaker: a weaker request is the
 // worker's to decide. Then the applier's client (Flux or Argo CD, by the applier's kind) checks the
 // source binding before it writes.
@@ -772,8 +772,8 @@ func (d *Dispatcher) recheck(ctx context.Context, req git.ApplyRequest) ([]eligi
 // recheckTarget reads one GitTarget again and returns it when it may still ask the applier for its
 // reason, or nil when it may not.
 //
-// A ClusterProvider's client is shared by every GitTarget that uses the cluster, so a client being
-// available is no permission to use it: a GitTarget its ClusterProviders do not admit (its own, and
+// A KubeProvider's client is shared by every GitTarget that uses the cluster, so a client being
+// available is no permission to use it: a GitTarget its KubeProviders do not admit (its own, and
 // its trigger's) would otherwise drive the applier on the strength of another GitTarget's admission.
 func (d *Dispatcher) recheckTarget(
 	ctx context.Context, req git.ApplyRequest, candidate git.ApplyTarget,
@@ -800,10 +800,10 @@ func (d *Dispatcher) recheckTarget(
 	}
 	decision, err := authz.ApplierAdmitted(ctx, d.reader, target, trigger)
 	if err != nil {
-		return nil, fmt.Errorf("check GitTarget %s against its ClusterProviders: %w", candidate.Ref, err)
+		return nil, fmt.Errorf("check GitTarget %s against its KubeProviders: %w", candidate.Ref, err)
 	}
 	if !decision.Allowed {
-		log.Info("GitTarget is not admitted by its ClusterProviders; not asking its applier",
+		log.Info("GitTarget is not admitted by its KubeProviders; not asking its applier",
 			"reason", decision.Reason, "message", decision.Message)
 		return nil, nil //nolint:nilnil // as above
 	}

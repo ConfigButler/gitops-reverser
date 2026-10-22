@@ -142,12 +142,12 @@ func main() {
 		RuleStore:          ruleStore,
 		EventRouter:        nil, // Will be set below
 		SensitiveResources: cfg.sensitiveResources,
-		// Resolve a source cluster (named by a GitTarget.spec.clusterProviderRef) into a
-		// rest.Config: look up the ClusterProvider by name, read its kubeConfig Secret from the
-		// operator namespace, and build the client. The manager client bypasses its cache for
-		// Secrets, so a rotated kubeconfig is seen without a Secret informer.
-		SourceClusters: watch.NewSecretSourceClusterResolver(
-			mgr.GetClient(), os.Getenv("POD_NAMESPACE"), cfg.kubeConfigSafety),
+		// Resolve a source cluster (named by a GitTarget.spec.kubeProviderRef) into a rest.Config:
+		// read the KubeProvider, then its kubeconfig Secret from the provider's own namespace, or
+		// the operator's own identity where --in-cluster-kube-providers allows it. The manager
+		// client bypasses its cache for Secrets, so a rotated kubeconfig is seen without a Secret
+		// informer.
+		SourceClusters: watch.NewSecretSourceClusterResolver(mgr.GetClient(), cfg.kubeConfigSafety),
 	}
 
 	// Initialize EventRouter with all dependencies. The streaming-snapshot resync
@@ -251,7 +251,7 @@ func main() {
 		auditCertWatcher *certwatcher.CertWatcher
 		// routeHealth is the ONE per-audit-route registry in the process: the audit ingress records
 		// each route's first published fact in it, the resolver keeps its never-resolved warning
-		// there, and the ClusterProvider controller latches AuditFactsReceived from it. It stays nil
+		// there, and the KubeProvider controller latches AuditFactsReceived from it. It stays nil
 		// in configured-author mode, where no fact was ever expected and the condition is absent.
 		routeHealth *attribution.RouteHealth
 	)
@@ -311,7 +311,7 @@ func main() {
 		}
 		if cfg.auditRouteAnnotationKey == "" {
 			setupLog.Info("audit routes are named: post to /audit-webhook/<audit-route>, where the route is " +
-				"ClusterProvider.spec.attribution.auditRoute and defaults to the provider's own name; " +
+				"KubeProvider.spec.attribution.auditRoute and defaults to <namespace>.<name>; " +
 				"the bare /audit-webhook endpoint is disabled")
 		} else {
 			setupLog.Info("shared audit stream enabled on the bare /audit-webhook endpoint: each event's "+
@@ -339,20 +339,19 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitProvider")
 		os.Exit(1)
 	}
-	clusterProviderReconciler := &controller.ClusterProviderReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
-		KubeConfigSafety:  cfg.kubeConfigSafety,
-		Recorder:          mgr.GetEventRecorderFor("clusterprovider"),
+	kubeProviderReconciler := &controller.KubeProviderReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		KubeConfigSafety: cfg.kubeConfigSafety,
+		Recorder:         mgr.GetEventRecorderFor("kubeprovider"),
 	}
 	// A nil registry must stay a nil INTERFACE, not one wrapping a nil pointer: the reconciler
 	// reads that field to decide whether AuditFactsReceived is reported at all.
 	if routeHealth != nil {
-		clusterProviderReconciler.AuditFacts = routeHealth
+		kubeProviderReconciler.AuditFacts = routeHealth
 	}
-	if err := clusterProviderReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ClusterProvider")
+	if err := kubeProviderReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KubeProvider")
 		os.Exit(1)
 	}
 	if err := (&controller.GitBranchReconciler{
@@ -497,9 +496,10 @@ type appConfig struct {
 	sensitiveResources types.SensitiveResourcePolicy
 	sshHostKeys        git.SSHHostKeyConfig
 	credentialPolicy   git.CredentialTransportPolicy
-	// kubeConfigSafety is the exec / insecure-TLS opt-in for source-cluster kubeconfigs. Both
-	// default OFF: an operator-supplied kubeconfig is attacker-adjacent input, so unsafe
-	// kubeconfigs are REJECTED (a legible Validated=False), diverging from Flux's silent strip.
+	// kubeConfigSafety is the exec / insecure-TLS opt-in for source-cluster kubeconfigs, and the
+	// KubeProviders allowed to use the operator's own identity. All default OFF: an
+	// operator-supplied kubeconfig is attacker-adjacent input, so unsafe kubeconfigs are REJECTED
+	// (a legible Validated=False), diverging from Flux's silent strip.
 	kubeConfigSafety kubeconfig.SafetyPolicy
 	zapOpts          zap.Options
 }
@@ -650,10 +650,11 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&cfg.auditRouteAnnotationKey, "author-attribution-audit-route-annotation-key", "",
 		"Audit-event annotation naming the AUDIT ROUTE each event belongs to. Setting it enables the "+
 			"bare /audit-webhook endpoint for a SHARED audit stream carrying several logical clusters: the "+
-			"route is read per event, so one batch may fan out to several routes. A ClusterProvider joins "+
+			"route is read per event, so one batch may fan out to several routes. A KubeProvider joins "+
 			"a route by setting spec.attribution.auditRoute to the same value (it defaults to the "+
-			"provider's own name). An event carrying no annotation is rejected (counted and logged) rather "+
-			"than credited to a fallback. Empty (the default) leaves the bare endpoint disabled, and every "+
+			"provider's <namespace>.<name>). An event carrying no annotation is rejected (counted and "+
+			"logged) rather than credited to a fallback. Empty (the default) leaves the bare endpoint "+
+			"disabled, and every "+
 			"producer must post to /audit-webhook/<audit-route>.")
 	fs.IntVar(&cfg.replicaCount, "replica-count", 1,
 		"How many replicas of this Deployment run (default 1). The process cannot see this itself, so "+
@@ -693,6 +694,12 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.BoolVar(&cfg.kubeConfigSafety.AllowInsecureTLS, "insecure-kubeconfig-tls", false,
 		"Allow a source-cluster kubeconfig to set insecure-skip-tls-verify (disables server cert "+
 			"validation). Rejected by default; enabling this is a deliberate trust decision.")
+	var inClusterKubeProviders string
+	fs.StringVar(&inClusterKubeProviders, "in-cluster-kube-providers", "",
+		"Comma-separated namespace/name of each KubeProvider allowed to set spec.inCluster, the "+
+			"operator's own identity in the cluster it runs in. Exact names only, no wildcards. Empty "+
+			"(the default): none may, and a KubeProvider that sets spec.inCluster reports Stalled "+
+			"(InClusterNotAuthorized) and is never used.")
 	fs.StringVar(&cfg.sshHostKeys.DefaultKnownHostsConfigMap, "default-known-hosts-configmap", "",
 		"Optional install-level ConfigMap (in the controller's namespace) supplying SSH known_hosts "+
 			"for Git hosts when neither the credentials Secret nor the GitProvider's knownHostsRef does.")
@@ -758,6 +765,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	}
 
 	cfg.sensitiveResources, err = types.ParseSensitiveResourcePolicy(additionalSensitiveResources)
+	if err != nil {
+		return appConfig{}, err
+	}
+	cfg.kubeConfigSafety.InClusterProviders, err = kubeconfig.ParseInClusterProviders(inClusterKubeProviders)
 	if err != nil {
 		return appConfig{}, err
 	}

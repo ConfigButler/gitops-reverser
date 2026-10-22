@@ -9,50 +9,52 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
-// IsInCluster must follow spec.kubeConfig ALONE. Nothing may key "is this the operator's own
-// cluster?" off the provider name: "default" is only the name an omitted clusterProviderRef
-// resolves to, and it may just as well carry a kubeConfig for a remote cluster. If a name ever
-// became a proxy for in-cluster-ness, a remote provider named "default" would be dialed with the
-// operator's own credentials against the wrong cluster.
-func TestIsInCluster_FollowsKubeConfigNotName(t *testing.T) {
+// IsInCluster must follow spec.inCluster ALONE. Nothing may key "is this the operator's own
+// cluster?" off the provider's name, and nothing may read an ABSENT credential as the operator's own
+// identity: a provider that sets neither arm (unvalidated, or malformed) is not in-cluster. If a
+// name or an omission ever became a proxy for in-cluster-ness, a provider meant for a remote cluster
+// would be served with the operator's own credentials against the wrong cluster.
+func TestIsInCluster_FollowsInClusterNotName(t *testing.T) {
 	t.Parallel()
 
-	secretRef := &meta.KubeConfigReference{
-		SecretRef: &meta.SecretKeyReference{Name: "remote-kubeconfig"},
-	}
+	secretRef := &meta.SecretKeyReference{Name: "remote-kubeconfig"}
 
 	tests := []struct {
 		name     string
-		provider ClusterProvider
+		provider KubeProvider
 		want     bool
 	}{
 		{
-			name:     "omitted kubeConfig means the operator's own cluster",
-			provider: ClusterProvider{ObjectMeta: metav1.ObjectMeta{Name: "prod"}},
-			want:     true,
-		},
-		{
-			name: "the name \"default\" does not by itself mean in-cluster",
-			provider: ClusterProvider{
-				ObjectMeta: metav1.ObjectMeta{Name: DefaultClusterProviderName},
-				Spec:       ClusterProviderSpec{KubeConfig: secretRef},
-			},
-			want: false,
-		},
-		{
-			name: "a non-default name without kubeConfig is still in-cluster",
-			provider: ClusterProvider{
-				ObjectMeta: metav1.ObjectMeta{Name: "some-remote-sounding-name"},
+			name: "spec.inCluster means the operator's own cluster",
+			provider: KubeProvider{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "prod"},
+				Spec:       KubeProviderSpec{InCluster: &KubeProviderInCluster{}},
 			},
 			want: true,
 		},
 		{
-			name: "any kubeConfig means remote",
-			provider: ClusterProvider{
-				ObjectMeta: metav1.ObjectMeta{Name: "prod"},
-				Spec:       ClusterProviderSpec{KubeConfig: secretRef},
+			name: "the name \"default\" does not by itself mean in-cluster",
+			provider: KubeProvider{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "default"},
+				Spec:       KubeProviderSpec{SecretRef: secretRef},
+			},
+			want: false,
+		},
+		{
+			name: "a provider setting neither arm never falls through to the operator's identity",
+			provider: KubeProvider{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "some-name"},
+			},
+			want: false,
+		},
+		{
+			name: "a secretRef means remote",
+			provider: KubeProvider{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "prod"},
+				Spec:       KubeProviderSpec{SecretRef: secretRef},
 			},
 			want: false,
 		},
@@ -67,12 +69,13 @@ func TestIsInCluster_FollowsKubeConfigNotName(t *testing.T) {
 	}
 }
 
-// AllowsNamespace is the authorization predicate behind the reconcile-time refusal, and there is
+// AdmitsNamespace is the authorization predicate behind the reconcile-time refusal, and there is
 // no admission webhook backstopping it — that reconcile call site is the ENTIRE boundary. So every
-// contract below is a security boundary rather than a routing convenience: a cluster-scoped
-// provider holds a credential that can read a whole remote cluster, and referencing it from a
-// GitTarget mirrors that cluster into the target's Git destination.
-func TestAllowsNamespace_Authorization(t *testing.T) {
+// contract below is a security boundary rather than a routing convenience: a provider holds a
+// credential that can read a whole remote cluster, and referencing it from a GitTarget mirrors that
+// cluster into the target's Git destination. Every namespace below is another than the provider's
+// own ("platform"), which is always admitted and is covered separately.
+func TestAdmitsNamespace_Authorization(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -220,9 +223,12 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			provider := &ClusterProvider{Spec: ClusterProviderSpec{AccessFrom: tc.policy}}
+			provider := &KubeProvider{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "remote"},
+				Spec:       KubeProviderSpec{AccessFrom: tc.policy},
+			}
 
-			allowed, err := provider.AllowsNamespace(tc.nsName, tc.labels)
+			allowed, err := provider.AdmitsNamespace(tc.nsName, tc.labels)
 			if tc.wantErr {
 				require.Error(t, err)
 			} else {
@@ -233,81 +239,52 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 	}
 }
 
-// SourceCluster must always return a concrete, non-empty name so callers never have to handle a ""
-// sentinel: it is the fact-index key, the GVK→GVR registry key, and the /audit-webhook/<name>
-// route. An empty value there would collapse distinct clusters onto one key.
-func TestSourceCluster_DefaultsToDefaultProviderName(t *testing.T) {
+// AdmitsNamespace admits the provider's own namespace before accessFrom is read at all: a tenant's
+// provider serves its own namespace with no policy written, and even a malformed policy (which fails
+// closed for every other namespace) cannot lock the owner out.
+func TestAdmitsNamespace_OwnNamespaceAlwaysAdmitted(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		ref  *meta.LocalObjectReference
-		want string
-	}{
-		{
-			name: "omitted ref resolves to the default provider name",
-			ref:  nil,
-			want: DefaultClusterProviderName,
-		},
-		{
-			// An empty Name is rejected by CRD validation, but the helper must not depend on
-			// admission having run — an unvalidated object still has to yield a usable key.
-			name: "empty name resolves to the default provider name",
-			ref:  &meta.LocalObjectReference{Name: ""},
-			want: DefaultClusterProviderName,
-		},
-		{
-			name: "explicit name is returned verbatim",
-			ref:  &meta.LocalObjectReference{Name: "prod-eu"},
-			want: "prod-eu",
-		},
-		{
-			name: "explicitly naming default is the same as omitting the ref",
-			ref: &meta.LocalObjectReference{
-				Name: DefaultClusterProviderName,
-			},
-			want: DefaultClusterProviderName,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			target := &GitTarget{Spec: GitTargetSpec{ClusterProviderRef: tc.ref}}
-
-			assert.Equal(t, tc.want, target.SourceCluster())
-			assert.NotEmpty(t, target.SourceCluster(), "SourceCluster must never return the empty sentinel")
-		})
+	invalid := &NamespaceMatcher{Selector: &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tier", Operator: "NotAnOperator"}},
+	}}
+	for _, policy := range []*NamespaceMatcher{nil, {}, invalid} {
+		provider := &KubeProvider{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "remote"},
+			Spec:       KubeProviderSpec{AccessFrom: policy},
+		}
+		admitted, err := provider.AdmitsNamespace("platform", nil)
+		require.NoError(t, err)
+		assert.True(t, admitted, "policy %+v", policy)
 	}
 }
 
-// IsLocalSource is a NAME test, not a claim about the physical cluster — a provider named
-// "default" is free to carry a kubeConfig and point at a remote cluster. It exists only to supply
-// the pre-discovery default for SourceClusterReachable, so it must stay a pure derivation of
-// SourceCluster and never be read as "this GitTarget is definitely watching the operator's own
-// cluster".
-func TestIsLocalSource_IsANameTest(t *testing.T) {
+// SourceCluster is the id the watch data plane keys a source cluster on: the referenced
+// KubeProvider's namespace/name, its namespace defaulted to the GitTarget's own. It keys the GVK→GVR
+// registry and the watch context, so two providers sharing a name in two namespaces must yield two
+// ids, or one tenant's watches would be served from another tenant's cluster.
+func TestSourceCluster_IsTheProvidersNamespacedName(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
-		ref  *meta.LocalObjectReference
-		want bool
+		ref  meta.NamespacedObjectReference
+		want string
 	}{
-		{name: "omitted ref is local", ref: nil, want: true},
-		{name: "empty name is local", ref: &meta.LocalObjectReference{Name: ""}, want: true},
 		{
-			name: "explicit default is local",
-			ref:  &meta.LocalObjectReference{Name: DefaultClusterProviderName},
-			want: true,
+			name: "an omitted namespace is the GitTarget's own",
+			ref:  meta.NamespacedObjectReference{Name: "prod-eu"},
+			want: "tenant-a/prod-eu",
 		},
-		{name: "any other name is not local", ref: &meta.LocalObjectReference{Name: "prod-eu"}, want: false},
 		{
-			// Near-miss names must not be treated as the default; the comparison is exact.
-			name: "a name that merely contains \"default\" is not local",
-			ref:  &meta.LocalObjectReference{Name: "default-eu"},
-			want: false,
+			name: "an explicit namespace is returned verbatim",
+			ref:  meta.NamespacedObjectReference{Namespace: "platform", Name: "prod-eu"},
+			want: "platform/prod-eu",
+		},
+		{
+			name: "restating the GitTarget's own namespace is the same as omitting it",
+			ref:  meta.NamespacedObjectReference{Namespace: "tenant-a", Name: "prod-eu"},
+			want: "tenant-a/prod-eu",
 		},
 	}
 
@@ -315,11 +292,26 @@ func TestIsLocalSource_IsANameTest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			target := &GitTarget{Spec: GitTargetSpec{ClusterProviderRef: tc.ref}}
+			target := &GitTarget{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-a"},
+				Spec:       GitTargetSpec{KubeProviderRef: tc.ref},
+			}
 
-			assert.Equal(t, tc.want, target.IsLocalSource())
+			assert.Equal(t, tc.want, target.SourceCluster())
 		})
 	}
+
+	other := &GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-b"},
+		Spec:       GitTargetSpec{KubeProviderRef: meta.NamespacedObjectReference{Name: "prod-eu"}},
+	}
+	assert.Equal(t, "tenant-b/prod-eu", other.SourceCluster(),
+		"one provider name in another namespace is another source cluster")
+
+	// The config plane's id is the empty string; even an unset reference must never collapse onto
+	// it, or a GitTarget naming no provider would be served the operator's own identity.
+	unset := &GitTarget{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-a"}}
+	assert.NotEmpty(t, unset.SourceCluster())
 }
 
 // TestApplyTrigger_AppliersDefaultToTheTriggersNamespace: a reference with no namespace names an
@@ -328,12 +320,12 @@ func TestApplyTrigger_AppliersDefaultToTheTriggersNamespace(t *testing.T) {
 	flux := &FluxTrigger{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
 		Spec: FluxTriggerSpec{
-			ClusterProviderRef: &meta.LocalObjectReference{Name: "hub"},
-			KustomizationRef:   meta.NamespacedObjectReference{Name: "apps"},
+			KubeProviderRef:  meta.NamespacedObjectReference{Name: "hub"},
+			KustomizationRef: meta.NamespacedObjectReference{Name: "apps"},
 		},
 	}
 	assert.Equal(t, "team-a/apps", flux.Applier().String())
-	assert.Equal(t, "hub", flux.ClusterProvider())
+	assert.Equal(t, "team-a/hub", flux.KubeProviderKey().String())
 
 	argo := &ArgoCDTrigger{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
@@ -408,10 +400,10 @@ func TestApplyTrigger_StatusAccessors(t *testing.T) {
 	assert.Equal(t, ApplierKindKustomization, flux.ApplierKind())
 	assert.Equal(t, ApplyTriggerKindArgoCD, argo.TriggerKind())
 	assert.Equal(t, ApplierKindApplication, argo.ApplierKind())
-	assert.Equal(t, DefaultClusterProviderName, argo.ClusterProvider(),
-		"an omitted clusterProviderRef is the default provider, as for a GitTarget")
-	argo.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: "hub"}
-	assert.Equal(t, "hub", argo.ClusterProvider())
+	assert.Equal(t, types.NamespacedName{}, argo.KubeProviderKey(),
+		"an omitted kubeProviderRef names nothing: there is no default provider")
+	argo.Spec.KubeProviderRef = meta.NamespacedObjectReference{Namespace: "platform", Name: "hub"}
+	assert.Equal(t, types.NamespacedName{Namespace: "platform", Name: "hub"}, argo.KubeProviderKey())
 
 	_, _, known := flux.SourceBinding()
 	assert.False(t, known)

@@ -47,6 +47,7 @@ rules:
   - configbutler.ai
   resources:
   - argocdtriggers
+  - kubeproviders
   verbs:
   - get
   - list
@@ -55,30 +56,18 @@ rules:
   - configbutler.ai
   resources:
   - argocdtriggers/status
-  - clusterproviders/status
   - clusterwatchrules/status
   - commitrequests/status
   - fluxtriggers/status
   - gitbranches/status
   - gitproviders/status
   - gittargets/status
+  - kubeproviders/status
   - watchrules/status
   verbs:
   - get
   - patch
   - update
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - clusterproviders
-  - fluxtriggers
-  - gitbranches
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
 - apiGroups:
   - configbutler.ai
   resources:
@@ -103,6 +92,17 @@ rules:
   - get
   - list
   - patch
+  - watch
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - fluxtriggers
+  - gitbranches
+  verbs:
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - configbutler.ai

@@ -22,8 +22,8 @@ import (
 type ApplierRef struct {
 	// Trigger is the apply trigger that holds the applier.
 	Trigger TriggerRef
-	// Cluster is the ClusterProvider whose cluster the applier lives in (the trigger's
-	// spec.clusterProviderRef).
+	// Cluster is the KubeProvider (namespace/name) whose cluster the applier lives in (the trigger's
+	// spec.kubeProviderRef).
 	Cluster string
 	// Kind is v1alpha3.ApplierKindKustomization or v1alpha3.ApplierKindApplication.
 	Kind string
@@ -50,7 +50,7 @@ func ApplierOf(trigger v1alpha3.ApplyTrigger) ApplierRef {
 	applier := trigger.Applier()
 	return ApplierRef{
 		Trigger: TriggerRef{Kind: trigger.TriggerKind(), Namespace: trigger.GetNamespace(), Name: trigger.GetName()},
-		Cluster: trigger.ClusterProvider(), Kind: trigger.ApplierKind(),
+		Cluster: trigger.KubeProviderKey().String(), Kind: trigger.ApplierKind(),
 		Namespace: applier.Namespace, Name: applier.Name,
 	}
 }
@@ -174,7 +174,7 @@ const (
 	// configuration changes: it applies another repository or branch, or no GitRepository.
 	ApplyRejected ApplyOutcome = "Rejected"
 	// ApplyDropped asked nothing, because none of the targets may still ask for the reason the
-	// request carried: each changed, is no longer admitted by its ClusterProvider, or withdrew its
+	// request carried: each changed, is no longer admitted by its KubeProvider, or withdrew its
 	// consent to a Refusal. The worker decides again from what the targets are now.
 	ApplyDropped ApplyOutcome = "Dropped"
 	// ApplyStale asked nothing, because the decision no longer held when the write was due: the

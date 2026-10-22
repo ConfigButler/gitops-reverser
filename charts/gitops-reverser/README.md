@@ -18,7 +18,7 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 
 - ✅ **Git synchronization**: Push Kubernetes changes back to Git repositories
 - ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
-- ✅ **Automatic CRD installation**: ClusterProvider, GitProvider, GitTarget, WatchRule,
+- ✅ **Automatic CRD installation**: KubeProvider, GitProvider, GitBranch, GitTarget, WatchRule,
   ClusterWatchRule, CommitRequest, FluxTrigger, and ArgoCDTrigger CRDs installed automatically
 - ✅ **Watch-based ingestion**: object state comes from the Kubernetes watch API
 - ✅ **Optional audit attribution**: name commit authors from kube-apiserver audit events over HTTPS
@@ -178,6 +178,7 @@ nodeSelector:
 | `servers.receiver.bindAddress` | host:port the push receiver binds to (`--receiver-bind-address`) | `:9292` |
 | `servers.receiver.port` | Push receiver container port; must match the port in `bindAddress` | `9292` |
 | `controllerManager.additionalSensitiveResources` | Extra Secret-shaped resource types encrypted as `resource` or `group/resource` | `[]` |
+| `controllerManager.inClusterKubeProviders` | `KubeProvider`s, as `namespace/name`, that may use `spec.inCluster`, the operator's own identity (`--in-cluster-kube-providers`). Exact names, no wildcards. The provider the chart renders is added on its own when it uses `inCluster`, so list only the others. One that sets `inCluster` and is not listed reports `InClusterNotAuthorized` and is never used | `[]` |
 | `controllerManager.insecureAllowGitHTTP` | Permit credentials with `http://` GitProvider URLs for trusted in-cluster development Git servers | `false` |
 | `controllerManager.branchWorkerQueueDepth` | Event queue depth per branch worker. A full queue refuses the write (`git_queue_refusals_total`) instead of stalling the watch path; the watch delivers it again from its cursor, and only a cursor that expires first loses that write's own commit (and, under `prune.mode: OnEvent`, a delete's removal). Costs queue depth × payload of pod memory, which `branchBufferMaxSize` does **not** cover | `1000` |
 | `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds. While the remote cannot be reached, retained writes that reach it close the worker to new writes, saves and resyncs until they are published; the watch delivers a refused event again | `8Mi` |
@@ -188,7 +189,7 @@ nodeSelector:
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |
-| `quickstart.enabled` | Create starter `GitProvider`, `GitBranch`, `GitTarget`, and `WatchRule` resources | `false` |
+| `quickstart.enabled` | Create starter `GitProvider`, `GitBranch`, `GitTarget`, and `WatchRule` resources. The `GitTarget` mirrors through the `KubeProvider` the chart renders, so it requires `kubeProvider.create` | `false` |
 | `quickstart.namespace` | Namespace for the starter quickstart resources (create it, and the git-creds Secret, before install) | `gitops-reverser-quickstart-demo` |
 | `quickstart.createNamespace` | Let the chart create `quickstart.namespace` (Helm then owns it) | `false` |
 | `quickstart.gitProvider.url` | Repository URL used by the starter `GitProvider` | `""` |
@@ -211,13 +212,14 @@ nodeSelector:
 | `attribution.maxFacts` | Cap on the facts held in memory across every type. Must be at least `maxFactsPerType`; overflow evicts from the type holding the most | `65536` |
 | `attribution.collectionWindow` | How long after a `deletecollection` a removal in its scope may still be credited to it. It only has to cover audit batching plus clock skew, since the removal is attributed at delete-request time | `30s` |
 | `attribution.collectionUIDCap` | How many object UIDs a `deletecollection` fact carries before the set is dropped and the join falls back to scope matching, which is already correct | `10000` |
-| `attribution.auditRouteAnnotationKey` | Audit-event annotation naming the **audit route** each event belongs to. Empty keeps audit routes named (`/audit-webhook/<audit-route>`). Set it only for a control plane emitting **one shared audit stream** for several logical clusters: it enables the bare `/audit-webhook`, which reads the route per event. A `ClusterProvider` joins a route via `spec.attribution.auditRoute` (default: its own name). An event with no annotation is rejected (counted and logged) and never credited to a fallback | `""` |
-| `clusterProvider.createDefault` | Render and own a `ClusterProvider` named `default`: the source cluster a `GitTarget` mirrors from when it omits `spec.clusterProviderRef`. The **operator never creates one**, so without this you commit the object yourself. Chart-owned: turning it off makes Helm delete the provider it created, and a `GitTarget` referencing a missing provider is held unready (`ClusterProviderNotFound`). The `quickstart` values never create one | `true` |
-| `clusterProvider.default.kubeConfig.secretRef.name` | Secret (release namespace) holding a kubeconfig for the rendered `default` provider. Empty means the operator's **own in-cluster** cluster; a name points `default` at a **remote** cluster instead. The name is a convention | `""` |
-| `clusterProvider.default.kubeConfig.secretRef.key` | Key within that Secret. Empty reads `value` then `value.yaml` | `""` |
-| `clusterProvider.default.accessFrom` | Deny-by-default policy (`names` and/or `selector`) for which **control-cluster** namespaces may reference this provider from a `GitTarget`. The default empty selector admits every namespace | `{selector: {}}` |
-| `clusterProvider.default.allowCrossNamespace.sources` | Let a `WatchRule` in an admitted namespace watch other namespaces, `"*"` included. A delegation to every admitted namespace, not proof that it owns what it reads | `false` |
-| `clusterProvider.default.allowCrossNamespace.appliers` | Let a `FluxTrigger` or `ArgoCDTrigger` in an admitted namespace suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`. A delegation to every admitted namespace, not proof that it owns the applier or the repository | `false` |
+| `attribution.auditRouteAnnotationKey` | Audit-event annotation naming the **audit route** each event belongs to. Empty keeps audit routes named (`/audit-webhook/<audit-route>`). Set it only for a control plane emitting **one shared audit stream** for several logical clusters: it enables the bare `/audit-webhook`, which reads the route per event. A `KubeProvider` joins a route via `spec.attribution.auditRoute` (default: `<namespace>.<name>`). An event with no annotation is rejected (counted and logged) and never credited to a fallback | `""` |
+| `kubeProvider.create` | Render and own a `KubeProvider` named `kubeProvider.name` in the release namespace. Every `GitTarget` names its provider in `spec.kubeProviderRef`, and nothing falls back to this one. The **operator never creates one**, so without this you commit the object yourself. Chart-owned: turning it off makes Helm delete the provider it created, and a `GitTarget` referencing a missing provider is held unready (`KubeProviderNotFound`). `quickstart` requires it | `true` |
+| `kubeProvider.name` | Name of the rendered provider. Its audit route is `<release namespace>.<name>`, the `/audit-webhook/<route>` path the API server posts to | `local` |
+| `kubeProvider.secretRef.name` | Secret in the release namespace holding a kubeconfig for a **remote** cluster. Empty renders `spec.inCluster`, the operator's **own** identity, and lists the provider in `--in-cluster-kube-providers`. Immutable once created: delete and recreate to repoint | `""` |
+| `kubeProvider.secretRef.key` | Key within that Secret. Empty reads `value` then `value.yaml` | `""` |
+| `kubeProvider.accessFrom` | Policy (`names` and/or `selector`) for which **other** control-cluster namespaces may reference this provider; the release namespace always may. The default empty selector admits every namespace | `{selector: {}}` |
+| `kubeProvider.allowCrossNamespace.sources` | Let a `WatchRule` in an admitted namespace watch other namespaces, `"*"` included. A delegation to every admitted namespace, not proof that it owns what it reads | `false` |
+| `kubeProvider.allowCrossNamespace.appliers` | Let a `FluxTrigger` or `ArgoCDTrigger` in an admitted namespace suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`. A delegation to every admitted namespace, not proof that it owns the applier or the repository | `false` |
 | `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
 | `rbac.create` | Create the manager ClusterRole and its binding | `true` |
 | `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything, including every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
@@ -257,9 +259,9 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 
 When `attribution.enabled=true`, `https://<service>:9444/audit-webhook/<audit-route>`
 receives audit events from `kube-apiserver`. The route is
-`ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name.
-Audit routes are **named**, including
-`/audit-webhook/default`. The bare `/audit-webhook` is rejected with **400** unless
+`KubeProvider.spec.attribution.auditRoute` and defaults to `<namespace>.<name>`.
+Audit routes are **named**, such as `/audit-webhook/gitops-reverser.local` for the chart's provider
+in a `gitops-reverser` release namespace. The bare `/audit-webhook` is rejected with **400** unless
 `attribution.auditRouteAnnotationKey` is set, which turns it into the shared-stream endpoint that
 resolves each event's source cluster from that annotation. The operator extracts a minimal attribution
 fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID, status, timestamps)
@@ -278,8 +280,9 @@ from scratch on restart.
 
 This chart automatically manages the following CRDs:
 
-- **`clusterproviders.configbutler.ai`** - Source-cluster connections and namespace access policy
+- **`kubeproviders.configbutler.ai`** - Source-cluster connections and namespace access policy
 - **`gitproviders.configbutler.ai`** - Git repository connectivity and credentials
+- **`gitbranches.configbutler.ai`** - One branch of a repository, and which `GitProvider` writes it
 - **`gittargets.configbutler.ai`** - Branch/path and optional encryption configuration
 - **`watchrules.configbutler.ai`** - Namespaced watch rules
 - **`clusterwatchrules.configbutler.ai`** - Cluster-scoped watch rules
@@ -305,7 +308,7 @@ kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/downlo
 To manually remove CRDs after uninstallation:
 
 ```bash
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai clusterproviders.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai
 ```
 
 Delete the triggers while the operator still runs, before this ([Uninstallation](#uninstallation)).
@@ -396,7 +399,7 @@ helm uninstall gitops-reverser --namespace gitops-reverser
 kubectl delete namespace gitops-reverser
 
 # Delete CRDs (optional, but removes all custom resources)
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai clusterproviders.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai
 ```
 
 ## Troubleshooting

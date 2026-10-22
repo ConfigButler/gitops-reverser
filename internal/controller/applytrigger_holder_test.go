@@ -28,13 +28,13 @@ import (
 var inLineKey = k8stypes.NamespacedName{Namespace: "team-b", Name: "checkout"}
 
 // duplicateFixture is the hold fixture with two FluxTriggers naming flux-system/checkout in the
-// default cluster: team-a/checkout, created first, and team-b/checkout, an hour later. The default
-// ClusterProvider admits both namespaces.
+// cluster of triggerLocalProvider: team-a/checkout, created first, and team-b/checkout, an hour
+// later. That KubeProvider admits both namespaces.
 func duplicateFixture(t *testing.T) *holdFixture {
 	t.Helper()
-	first := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	first := testFluxTrigger(triggerLocalProvider)
 	first.CreationTimestamp = metav1.NewTime(time.Unix(1_000_000, 0))
-	second := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	second := testFluxTrigger(triggerLocalProvider)
 	second.Namespace = inLineKey.Namespace
 	second.CreationTimestamp = metav1.NewTime(first.CreationTimestamp.Add(time.Hour))
 
@@ -47,11 +47,10 @@ func duplicateFixture(t *testing.T) *holdFixture {
 }
 
 // inLineClient is a control cluster holding triggers, in team-a and team-b, each referenced by an
-// eligible GitTarget of its namespace, with the default ClusterProvider admitting both.
+// eligible GitTarget of its namespace, with the KubeProvider triggerLocalProvider admitting both.
 func inLineClient(t *testing.T, kind string, triggers ...ctrlclient.Object) ctrlclient.Client {
 	t.Helper()
-	objects := append([]ctrlclient.Object{admitting(configbutleraiv1alpha3.DefaultClusterProviderName,
-		"team-a", "team-b")}, triggers...)
+	objects := append([]ctrlclient.Object{admitting(triggerLocalProvider, "team-a", "team-b")}, triggers...)
 	objects = append(objects, referencedIn("team-a", kind)...)
 	objects = append(objects, referencedIn("team-b", kind)...)
 	return triggerTestClient(t, objects...)
@@ -101,7 +100,7 @@ func TestFluxTrigger_OneTriggerHoldsAKustomization(t *testing.T) {
 	require.NotNil(t, configured)
 	assert.Equal(t, metav1.ConditionFalse, configured.Status)
 	assert.Equal(t, applier.ReasonHeldByAnotherTrigger, configured.Reason)
-	assert.Equal(t, "Kustomization flux-system/checkout in the cluster of ClusterProvider \"default\" is held by "+
+	assert.Equal(t, "Kustomization flux-system/checkout in the cluster of KubeProvider clusters/local is held by "+
 		"FluxTrigger team-a/checkout, which was created first; this trigger takes it over once that one is deleted "+
 		"or no eligible GitTarget references it", configured.Message)
 	ready := findCondition(second.Status.Conditions, ConditionTypeReady)
@@ -220,7 +219,7 @@ func TestFluxTrigger_DeletingTheHolderHandsOverToTheNextInLine(t *testing.T) {
 // trigger that holds its Kustomization comes before any that does not, so the Kustomization changes
 // hands only once the holder lets go of it.
 func TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt(t *testing.T) {
-	holderTrigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	holderTrigger := testFluxTrigger(triggerLocalProvider)
 	holderTrigger.Namespace = inLineKey.Namespace // team-b: after team-a by name
 	holderTrigger.CreationTimestamp = metav1.NewTime(time.Unix(1_000_000, 0))
 	holderKey := k8stypes.NamespacedName{Namespace: holderTrigger.Namespace, Name: holderTrigger.Name}
@@ -246,7 +245,7 @@ func TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt(t *testing.T) {
 		metav1.PatchOptions{FieldManager: applier.SuspendFieldManager})
 	require.NoError(t, err)
 	// The newcomer: same second, team-a.
-	newcomer := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	newcomer := testFluxTrigger(triggerLocalProvider)
 	newcomer.CreationTimestamp = holderTrigger.CreationTimestamp
 	require.NoError(t, f.r.Create(context.Background(), newcomer))
 
@@ -285,9 +284,9 @@ func TestFluxTrigger_AHolderWithAnApplyInFlightKeepsIt(t *testing.T) {
 // TestArgoCDTrigger_OneTriggerHoldsAnApplication: two ArgoCDTriggers on one Application would both
 // start syncs; the one created later is Configured=False (HeldByAnotherTrigger).
 func TestArgoCDTrigger_OneTriggerHoldsAnApplication(t *testing.T) {
-	first := testArgoCDTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	first := testArgoCDTrigger(triggerLocalProvider)
 	first.CreationTimestamp = metav1.NewTime(time.Unix(1_000_000, 0))
-	second := testArgoCDTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	second := testArgoCDTrigger(triggerLocalProvider)
 	second.Namespace = inLineKey.Namespace
 	second.CreationTimestamp = first.CreationTimestamp
 	c := inLineClient(t, configbutleraiv1alpha3.ApplyTriggerKindArgoCD, first, second)

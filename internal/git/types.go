@@ -332,9 +332,9 @@ type ResolvedTargetMetadata struct {
 	// when the current policy is stricter, because tightening exists to stop deletions that have
 	// not landed yet.
 	PruneMode v1alpha3.PruneMode
-	// SourceCluster is the NAME of the source cluster the GitTarget mirrors from —
-	// (api/v1alpha3).GitTarget.SourceCluster(), the referenced ClusterProvider's name
-	// ("default" for the in-cluster provider). The resync mark-and-sweep resolves this subtree's
+	// SourceCluster is the source cluster the GitTarget mirrors from —
+	// (api/v1alpha3).GitTarget.SourceCluster(), the referenced KubeProvider's namespace/name.
+	// The resync mark-and-sweep resolves this subtree's
 	// documents' GVK->GVR against that cluster's registry, so a folder mirroring a remote is swept
 	// against the right cluster's mapping.
 	SourceCluster string
@@ -767,9 +767,9 @@ type Event struct {
 	// GitTargetNamespace is the namespace of the target owning this event.
 	GitTargetNamespace string
 
-	// SourceCluster is the NAME of the source cluster this object was watched on —
-	// (api/v1alpha3).GitTarget.SourceCluster(), the referenced ClusterProvider's name
-	// ("default" for the in-cluster provider). The writer resolves this document's GVK->GVR
+	// SourceCluster is the source cluster this object was watched on —
+	// (api/v1alpha3).GitTarget.SourceCluster(), the referenced KubeProvider's namespace/name.
+	// The writer resolves this document's GVK->GVR
 	// against that cluster's type registry, so a folder mirroring a remote is never indexed
 	// against the local cluster's mapping.
 	SourceCluster string

@@ -102,12 +102,12 @@ type Manager struct {
 		opts metav1.ListOptions,
 	) (*unstructured.UnstructuredList, error)
 
-	// SourceClusters resolves a GitTarget's source cluster — a ClusterProvider NAME — into a
-	// rest.Config, reading the kubeconfig Secret the provider names from the config plane. It is
+	// SourceClusters resolves a GitTarget's source cluster — a KubeProvider's namespace/name — into
+	// a rest.Config, reading the kubeconfig Secret the provider names from its own namespace. It is
 	// required for any GitTarget to mirror, single-cluster installs included: a source cluster is
-	// always a ClusterProvider, and only this resolver can say whether that provider is in-cluster
-	// (kubeConfig omitted) or remote. Nil leaves every source cluster unresolvable; only the config
-	// plane, which needs no provider, still works.
+	// always a KubeProvider, and only this resolver can say whether that provider is in-cluster (and
+	// allowed to be) or remote. Nil leaves every source cluster unresolvable; only the config plane,
+	// which needs no provider, still works.
 	SourceClusters SourceClusterResolver
 
 	// snapshotsMu guards settledSnapshots: per GitTarget key, the collections a snapshot of which
@@ -117,7 +117,7 @@ type Manager struct {
 
 	// clusters holds one clusterContext per distinct cluster — its API catalog, type registry,
 	// and clients. configPlaneClusterID is the operator's own cluster (always present, never a
-	// source); every other key is a ClusterProvider name. See cluster_context.go.
+	// source); every other key is a KubeProvider's namespace/name. See cluster_context.go.
 	clustersMu sync.Mutex
 	clusters   map[string]*clusterContext
 	// clusterOrder is the published, ordered snapshot of clusters (local first). The git

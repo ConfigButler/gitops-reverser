@@ -5,7 +5,8 @@ throw it away afterwards is to delete the repo. It creates a starter `GitProvide
 `GitTarget`, and `WatchRule` in the `gitops-reverser-quickstart-demo` namespace, watching ConfigMaps
 there and writing them to
 `<your-repo>/live-cluster` on `main`. It runs in `configured-author` mode (no Redis) by default. The
-chart also renders the cluster-scoped `default` `ClusterProvider` the starter target resolves against.
+chart also renders the `local` `KubeProvider` in the `gitops-reverser` namespace, the operator's own
+cluster, which the starter target names as its source.
 
 ![Config basics diagram showing the relationship between GitProvider, GitTarget, and WatchRule](images/config-basics.excalidraw.svg)
 
@@ -128,7 +129,7 @@ kubectl get gittarget example-target -n gitops-reverser-quickstart-demo
 kubectl describe gittarget example-target -n gitops-reverser-quickstart-demo
 ```
 
-A `Reason` that names a missing or unauthorized dependency (`ClusterProviderNotFound`,
+A `Reason` that names a missing or unauthorized dependency (`KubeProviderNotFound`,
 `NamespaceNotAuthorized`, `InvalidConfig`) is a misconfiguration to fix. One that names discovery or
 streams still settling is initialization, and resolves on its own. `describe` prints every condition
 with its message, which is where the specific cause is written.
@@ -146,18 +147,18 @@ kubectl logs -n gitops-reverser deploy/gitops-reverser
 kubectl describe gitprovider,gittarget,watchrule -n gitops-reverser-quickstart-demo
 ```
 
-Two `GitTarget` conditions stop the data plane and are worth recognizing: `ClusterProviderNotFound`
-(the `default` `ClusterProvider` is missing) and `NamespaceNotAuthorized` (its `accessFrom`
-selector does not cover the demo namespace).
+Two `GitTarget` conditions stop the data plane and are worth recognizing: `KubeProviderNotFound`
+(the `local` `KubeProvider` in `gitops-reverser` is missing) and `NamespaceNotAuthorized` (its
+`accessFrom` selector does not cover the demo namespace).
 
 ## Clean up
 
 To tear the demo down: `helm uninstall gitops-reverser -n gitops-reverser` and
 `kubectl delete namespace gitops-reverser-quickstart-demo`.
 
-> **Note:** the `default` `ClusterProvider` is cluster-scoped and chart-owned, so uninstalling takes
-> it with it, holding *every* other `GitTarget` in the cluster unready. Mind that if you run the demo
-> alongside a real deployment.
+> **Note:** the `local` `KubeProvider` is chart-owned, so uninstalling takes it with it, holding
+> unready *every* other `GitTarget` that names it. Mind that if you run the demo alongside a real
+> deployment.
 
 ## Want named users on your commits?
 

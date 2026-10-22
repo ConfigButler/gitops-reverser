@@ -296,7 +296,7 @@ func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
 // health counter, so the warning path is exercised the way production reaches it: repeated events
 // on one audit route that never match a fact.
 //
-// This is the loud half of the audit-route fix. A ClusterProvider pointed at a route no API server
+// This is the loud half of the audit-route fix. A KubeProvider pointed at a route no API server
 // posts under mirrors correctly and loses only the commit author, which is why the original bug went
 // unnoticed until an explicit unresolved-author placeholder made it visible in Git.
 func TestAuthorResolver_WarnsOnceForARouteThatNeverResolves(t *testing.T) {

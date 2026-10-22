@@ -26,15 +26,18 @@ const (
 	snbTarget   = "acme"
 	snbRule     = "repo-config-rule"
 	snbProvider = "workspaces"
+	// snbProviderNS is the KubeProvider's namespace: another than the tenant's, so the tenant is
+	// admitted through spec.accessFrom.
+	snbProviderNS = "platform"
 )
 
 func snbGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: snbTarget, Namespace: snbTenantNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef:       meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
-			ClusterProviderRef: &meta.LocalObjectReference{Name: snbProvider},
-			Path:               "tenants/acme",
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
+			KubeProviderRef: meta.NamespacedObjectReference{Namespace: snbProviderNS, Name: snbProvider},
+			Path:            "tenants/acme",
 		},
 	}
 }
@@ -45,12 +48,13 @@ func snbGitProvider() *configv1alpha3.GitProvider {
 	}
 }
 
-func snbClusterProvider(delegate bool) *configv1alpha3.ClusterProvider {
-	return &configv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: snbProvider},
-		Spec: configv1alpha3.ClusterProviderSpec{
+func snbKubeProvider(delegate bool) *configv1alpha3.KubeProvider {
+	return &configv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: snbProviderNS, Name: snbProvider},
+		Spec: configv1alpha3.KubeProviderSpec{
+			InCluster:           &configv1alpha3.KubeProviderInCluster{},
 			AccessFrom:          &configv1alpha3.NamespaceMatcher{Names: []string{snbTenantNS}},
-			AllowCrossNamespace: &configv1alpha3.ClusterProviderCrossNamespace{Sources: delegate},
+			AllowCrossNamespace: &configv1alpha3.KubeProviderCrossNamespace{Sources: delegate},
 		},
 	}
 }
@@ -97,7 +101,7 @@ func snbCompiledNames(m *Manager) []string {
 func TestBootstrap_DeniedSourceNamespaceIsNotCompiledOnRestart(t *testing.T) {
 	m := snbManager(t,
 		// The provider does NOT delegate, so the override is refused.
-		snbGitTarget(), snbGitProvider(), snbClusterProvider(false),
+		snbGitTarget(), snbGitProvider(), snbKubeProvider(false),
 		snbWatchRule(snbSourceNS),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
 	)
@@ -116,7 +120,7 @@ func TestBootstrap_DeniedSourceNamespaceIsNotCompiledOnRestart(t *testing.T) {
 // exactly as before, with no provider involvement at all.
 func TestBootstrap_LegacyWatchRuleStillCompiles(t *testing.T) {
 	m := snbManager(t,
-		snbGitTarget(), snbGitProvider(), snbClusterProvider(false),
+		snbGitTarget(), snbGitProvider(), snbKubeProvider(false),
 		snbWatchRule(""),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
 	)
@@ -133,7 +137,7 @@ func TestBootstrap_LegacyWatchRuleStillCompiles(t *testing.T) {
 // The admitted override path seeds the EFFECTIVE namespace, not the rule's own.
 func TestBootstrap_AuthorizedOverrideCompilesWithItsSourceNamespace(t *testing.T) {
 	m := snbManager(t,
-		snbGitTarget(), snbGitProvider(), snbClusterProvider(true),
+		snbGitTarget(), snbGitProvider(), snbKubeProvider(true),
 		snbWatchRule(snbSourceNS),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
 	)
@@ -153,7 +157,7 @@ func TestBootstrap_AuthorizedOverrideCompilesWithItsSourceNamespace(t *testing.T
 func TestCompileWatchRule_WildcardCompilesToTheClusterWideCollection(t *testing.T) {
 	ctx := context.Background()
 	m := snbManager(t,
-		snbGitTarget(), snbGitProvider(), snbClusterProvider(true),
+		snbGitTarget(), snbGitProvider(), snbKubeProvider(true),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
 	)
 
@@ -173,7 +177,7 @@ func TestCompileWatchRule_WildcardCompilesToTheClusterWideCollection(t *testing.
 func TestCompileWatchRule_WildcardIsRefusedWithoutDelegation(t *testing.T) {
 	ctx := context.Background()
 	m := snbManager(t,
-		snbGitTarget(), snbGitProvider(), snbClusterProvider(false),
+		snbGitTarget(), snbGitProvider(), snbKubeProvider(false),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
 	)
 
@@ -193,7 +197,7 @@ func TestCompileWatchRule_WildcardIsRefusedWithoutDelegation(t *testing.T) {
 func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing.T) {
 	ctx := context.Background()
 	m := snbManager(t,
-		snbGitTarget(), snbGitProvider(), snbClusterProvider(true),
+		snbGitTarget(), snbGitProvider(), snbKubeProvider(true),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
 	)
 
@@ -206,8 +210,9 @@ func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing
 	require.Len(t, m.RuleStore.SnapshotWatchRules(), 1, "precondition: the rule is compiled")
 
 	// The platform admin withdraws the delegation.
-	var stored configv1alpha3.ClusterProvider
-	require.NoError(t, m.Client.Get(ctx, k8stypes.NamespacedName{Name: snbProvider}, &stored))
+	var stored configv1alpha3.KubeProvider
+	providerKey := k8stypes.NamespacedName{Namespace: snbProviderNS, Name: snbProvider}
+	require.NoError(t, m.Client.Get(ctx, providerKey, &stored))
 	stored.Spec.AllowCrossNamespace = nil
 	require.NoError(t, m.Client.Update(ctx, &stored))
 

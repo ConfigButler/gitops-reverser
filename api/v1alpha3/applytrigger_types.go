@@ -33,7 +33,7 @@ const (
 
 // Why a kind and a name, and no namespace: the kind keeps each trigger its own schema, the way
 // Flux's sourceRef names a kind, and the namespace is the GitTarget's own because the trigger's
-// ClusterProvider admits the namespace it is in (spec.accessFrom). A GitTarget that could name a
+// KubeProvider admits the namespace it is in. A GitTarget that could name a
 // trigger elsewhere would drive an applier that its own namespace was never admitted to.
 
 // ApplyTriggerReference names an apply trigger in the GitTarget's own namespace.
@@ -151,8 +151,8 @@ type ApplyTrigger interface {
 
 	// TriggerKind is the trigger's kind (ApplyTriggerKind*).
 	TriggerKind() string
-	// ClusterProvider is the name of the ClusterProvider whose cluster holds the applier.
-	ClusterProvider() string
+	// KubeProviderKey is the KubeProvider whose cluster holds the applier.
+	KubeProviderKey() types.NamespacedName
 	// ApplierKind is the kind of applier the trigger holds (ApplierKind*).
 	ApplierKind() string
 	// Applier is the object the trigger holds, its namespace defaulted to the trigger's own.
@@ -193,11 +193,11 @@ func defaultedNamespace(namespace, fallback string) string {
 	return namespace
 }
 
-// clusterProviderName is ref's name, or DefaultClusterProviderName when ref names none, the way
-// GitTarget.SourceCluster resolves an omitted clusterProviderRef.
-func clusterProviderName(ref *meta.LocalObjectReference) string {
-	if ref == nil || ref.Name == "" {
-		return DefaultClusterProviderName
+// kubeProviderKey is ref, its namespace defaulted to the referrer's own, or the zero key when ref
+// names nothing.
+func kubeProviderKey(ref meta.NamespacedObjectReference, referrerNamespace string) types.NamespacedName {
+	if ref.Name == "" {
+		return types.NamespacedName{}
 	}
-	return ref.Name
+	return types.NamespacedName{Namespace: defaultedNamespace(ref.Namespace, referrerNamespace), Name: ref.Name}
 }

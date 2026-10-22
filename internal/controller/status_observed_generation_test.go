@@ -35,8 +35,8 @@ func TestBeginStatus_StampsObservedGenerationForEveryKind(t *testing.T) {
 			object: &configbutleraiv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
 		},
 		{
-			name:   "ClusterProvider",
-			object: &configbutleraiv1alpha3.ClusterProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
+			name:   "KubeProvider",
+			object: &configbutleraiv1alpha3.KubeProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
 		},
 		{
 			name:   "WatchRule",
@@ -73,7 +73,7 @@ func observedGenerationOf(t *testing.T, object client.Object) int64 {
 		return o.Status.ObservedGeneration
 	case *configbutleraiv1alpha3.GitProvider:
 		return o.Status.ObservedGeneration
-	case *configbutleraiv1alpha3.ClusterProvider:
+	case *configbutleraiv1alpha3.KubeProvider:
 		return o.Status.ObservedGeneration
 	case *configbutleraiv1alpha3.WatchRule:
 		return o.Status.ObservedGeneration

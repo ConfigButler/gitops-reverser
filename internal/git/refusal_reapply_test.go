@@ -479,14 +479,18 @@ func testApplier(name string) *configv1alpha3.ApplyTriggerReference {
 	return &configv1alpha3.ApplyTriggerReference{Kind: configv1alpha3.ApplyTriggerKindFlux, Name: name}
 }
 
-// fluxTrigger is a FluxTrigger in team-a holding the Kustomization of its own name, in the default
-// cluster.
+// testKubeProvider is the KubeProvider the test triggers reach their appliers through, in the
+// trigger's own namespace.
+const testKubeProvider = "local"
+
+// fluxTrigger is a FluxTrigger in team-a holding the Kustomization of its own name, in the cluster of
+// testKubeProvider.
 func fluxTrigger(name string, mutate ...func(*configv1alpha3.FluxTrigger)) *configv1alpha3.FluxTrigger {
 	trigger := &configv1alpha3.FluxTrigger{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 		Spec: configv1alpha3.FluxTriggerSpec{
-			ClusterProviderRef: &meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
-			KustomizationRef:   meta.NamespacedObjectReference{Name: name},
+			KubeProviderRef:  meta.NamespacedObjectReference{Name: testKubeProvider},
+			KustomizationRef: meta.NamespacedObjectReference{Name: name},
 		},
 	}
 	for _, m := range mutate {
@@ -528,8 +532,8 @@ func testTrigger(namespace string, ref *configv1alpha3.ApplyTriggerReference) cl
 		return &configv1alpha3.ArgoCDTrigger{
 			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: namespace},
 			Spec: configv1alpha3.ArgoCDTriggerSpec{
-				ClusterProviderRef: &meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
-				ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: ref.Name},
+				KubeProviderRef: meta.NamespacedObjectReference{Name: testKubeProvider},
+				ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: ref.Name},
 			},
 		}
 	}

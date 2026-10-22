@@ -54,6 +54,9 @@ spec:
         # The push receiver, so the e2e suite can deliver a Git host's push webhook through the
         # gitops-reverser-receiver Service (receiver-service.yaml) instead of waiting for a refresh.
         - --receiver-bind-address=:9292
+        # The KubeProvider in kubeprovider-local.yaml uses the operator's own identity, which
+        # is honored only for a provider listed here. The namespace is this kustomization's.
+        - --in-cluster-kube-providers=gitops-reverser/local
         # Dev/e2e only: the in-cluster Gitea SSH host key is not pinned, so permit SSH
         # when no known_hosts source exists. Never set this in production.
         - --insecure-allow-missing-known-hosts

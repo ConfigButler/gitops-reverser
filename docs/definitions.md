@@ -40,13 +40,13 @@ Almost every naming mistake in this project's history came from one ambiguity: t
 without a side, or "namespace" without a direction. Fix the side first and the rest of the
 vocabulary follows.
 
-**Control cluster.** The cluster the operator runs in, and where its own eight kinds live. When a
+**Control cluster.** The cluster the operator runs in, and where its own nine kinds live. When a
 document says "a namespace" with no qualifier, it means a control-cluster namespace.
 
-**Source cluster.** The cluster whose objects are mirrored into Git. A `ClusterProvider` names one.
-It is the same cluster as the control cluster on a single-cluster install, which is why the two
-words have to stay distinct even when they point at one machine: `ClusterProvider.spec.kubeConfig`
-omitted means "the control cluster, acting as a source".
+**Source cluster.** The cluster whose objects are mirrored into Git. A `KubeProvider` names one, by
+its namespace and name. It is the same cluster as the control cluster on a single-cluster install,
+which is why the two words have to stay distinct even when they point at one machine:
+`KubeProvider.spec.inCluster` means "the control cluster, acting as a source".
 
 **Mirror.** The projection of source-cluster objects into a Git folder. It is a noun for the result
 and a verb for the act. The operator mirrors; it does not "sync", "export" or "back up", and those
@@ -58,10 +58,11 @@ folder has exactly one `GitTarget`, and one `GitTarget` has exactly one folder.
 The two directions, which share the word "source" and must not share anything else:
 
 - **Access** is the control-cluster direction: which control-cluster namespaces may reference a
-  `ClusterProvider` from a `GitTarget`. `spec.accessFrom` (the spelling is Flux's, on purpose).
+  provider (`KubeProvider` or `GitProvider`) from a `GitTarget` or trigger. A provider's own
+  namespace always may; `spec.accessFrom` admits the others (the spelling is Flux's, on purpose).
 - **Source namespace** is the source-cluster direction: which source-cluster namespace a rule reads
   objects from. `WatchRule.spec.rules[].sourceNamespace`, gated by
-  `ClusterProvider.spec.allowCrossNamespace.sources`.
+  `KubeProvider.spec.allowCrossNamespace.sources`.
 
 A sentence about namespace policy names one of those two. Never "namespace access" unqualified.
 
@@ -212,7 +213,7 @@ condition. The trigger is never called the applier: the applier is the object it
 "Argo trigger", which names a trigger of Argo Events.
 
 **Eligible.** A `GitTarget` is eligible for the trigger it names when it is in the trigger's
-namespace, not being deleted, admitted by its `ClusterProvider`s, and writes the repository and
+namespace, not being deleted, admitted by its `KubeProvider`s, and writes the repository and
 branch the applier fetches. A trigger acts only while an eligible `GitTarget` references it; one
 nothing references is `NotReferenced`. Eligibility is judged from those inputs alone, never from
 the `GitTarget`'s `Ready`. "Bound" names a trigger with at least one eligible `GitTarget`.
@@ -295,7 +296,10 @@ Inside author attribution:
 transport (Redis Streams, or an in-process ring) and are held in a bounded, TTL'd index.
 
 **Audit route.** The partition facts are keyed by, so two clusters never cross-credit an author. It
-is the `<name>` segment in `/audit-webhook/<name>`, and defaults to the `ClusterProvider`'s own name.
+is the `<route>` segment in `/audit-webhook/<route>`, and defaults to the `KubeProvider`'s
+`<namespace>.<name>`. A route is **held** by one namespace: the one its first dot-segment names when
+a provider there carries it, otherwise the namespace of the oldest provider carrying it. A provider
+elsewhere that carries it is not used (`AuditRouteConflict`), so no namespace reads another's facts.
 
 **Grace window.** The bounded wait for a matching fact before a watch event ships credited to the
 committer instead.
@@ -417,7 +421,7 @@ same type. A status mirror of a spec enum with no enum marker is a defect.
 **Which conditions get a column.** Every condition a controller sets gets one, at `priority=1` unless
 an operator needs it in the default four, with one exclusion: a condition that merely **projects
 another object's readiness** gets no column at all. `Ready`'s reason already names the dependency that
-is not ready (`GitProviderNotReady`, `ClusterProviderNotReady`), and the detail an operator then needs
+is not ready (`GitProviderNotReady`, `KubeProviderNotReady`), and the detail an operator then needs
 lives on the object being projected, which is where they have to go anyway. A column for it repeats
 the default output one place to the right and then sends the reader somewhere else.
 
@@ -437,10 +441,10 @@ length or about which end of the name is cut.
 source. `AuditFactsReceived` may print as `FactsReceived`, but not as `Facts`, which is a different
 word and does not lead back to the condition to describe.
 
-`GitProviderReady` may not print as `GitReady`, and `ClusterProviderReady` may not print as
-`ClusterReady`, which is the worked case for why the test is about subjects rather than length.
+`GitProviderReady` may not print as `GitReady`, and `KubeProviderReady` may not print as
+`KubeReady`, which is the worked case for why the test is about subjects rather than length.
 `GitReady` would sit beside `GitPathAccepted`, where `Git` means the repository, so it reads as a
-claim about Git rather than about the `GitProvider` object. `ClusterReady` would sit beside
+claim about Git rather than about the `GitProvider` object. `KubeReady` would sit beside
 `SourceReachable`, which is about the cluster itself, so it invites the reader to wonder how a cluster
 being ready differs from it being reachable. `Provider` is the token that says "the config object, not
 the thing it names", and it is the one token neither name can lose. Both are moot now that a

@@ -40,14 +40,14 @@ func TestGitTargetReadinessGates(t *testing.T) {
 		gitPath         watch.GitPathAcceptanceStatus
 		render          watch.RenderFidelityStatus
 		provider        conditionValue
-		clusterProvider conditionValue
+		kubeProvider    conditionValue
 		sourceReach     conditionValue
 		want            kstatus.Status
 		wantReadyReason string
 	}{
 		{
 			name: "everything healthy", streams: running, gitPath: accepted, render: matches,
-			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			provider: healthy, kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.CurrentStatus, wantReadyReason: ReasonSucceeded,
 		},
 		{
@@ -56,7 +56,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			name:    "no resolved types is converged, not perpetually reconciling",
 			streams: watch.StreamSummary{Reason: watch.StreamReasonNoResolvedTypes, Message: "0/0 streams running"},
 			gitPath: accepted, render: matches,
-			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			provider: healthy, kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.CurrentStatus, wantReadyReason: ReasonSucceeded,
 		},
 		{
@@ -65,7 +65,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 				Total: 2, Ready: 1, Replaying: 1, Reason: watch.StreamReasonReplaying,
 				Message: "1/2 streams running; 1 replaying",
 			},
-			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			provider: healthy, kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.InProgressStatus, wantReadyReason: watch.StreamReasonReplaying,
 		},
 		{
@@ -74,7 +74,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 				Total: 2, Ready: 1, Blocked: 1, Reason: watch.StreamReasonWatchError,
 				Message: "1/2 streams running; 1 blocked",
 			},
-			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			provider: healthy, kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.FailedStatus, wantReadyReason: watch.StreamReasonWatchError,
 		},
 		{
@@ -84,7 +84,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 				Reason:   GitTargetReasonUnsupportedContent,
 				Message:  "Git path refused at kustomization.yaml: uses patches",
 			},
-			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			provider: healthy, kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.FailedStatus, wantReadyReason: GitTargetReasonUnsupportedContent,
 		},
 		{
@@ -96,7 +96,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 				Reason:   GitTargetReasonWriteBoundaryRefused,
 				Message:  "Git path refused at base/deployment.yaml: write-fan-in must be 1",
 			},
-			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			provider: healthy, kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.FailedStatus, wantReadyReason: GitTargetReasonWriteBoundaryRefused,
 		},
 		{
@@ -104,7 +104,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			render: watch.RenderFidelityStatus{
 				State: git.RenderFidelityFalse, Reason: GitTargetReasonRenderDoesNotMatchLive, Message: "${REGION}",
 			},
-			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			provider: healthy, kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.FailedStatus, wantReadyReason: GitTargetReasonRenderDoesNotMatchLive,
 		},
 		{
@@ -112,7 +112,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			render: watch.RenderFidelityStatus{
 				State: git.RenderFidelityUnknown, Reason: GitTargetReasonRenderRechecking, Message: "waiting",
 			},
-			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			provider: healthy, kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.InProgressStatus, wantReadyReason: GitTargetReasonRenderRechecking,
 		},
 		{
@@ -121,7 +121,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			provider: conditionValue{
 				Status: metav1.ConditionFalse, Reason: GitTargetReasonGitBranchNotReady, Message: "no repo",
 			},
-			clusterProvider: healthy, sourceReach: healthy,
+			kubeProvider: healthy, sourceReach: healthy,
 			want: kstatus.InProgressStatus, wantReadyReason: GitTargetReasonGitBranchNotReady,
 		},
 		{
@@ -139,7 +139,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			provider: conditionValue{
 				Status: metav1.ConditionFalse, Reason: GitTargetReasonGitBranchNotReady, Message: "no repo",
 			},
-			clusterProvider: healthy,
+			kubeProvider: healthy,
 			sourceReach: conditionValue{
 				Status: metav1.ConditionUnknown, Reason: "AwaitingDiscovery", Message: "not discovered yet",
 			},
@@ -164,7 +164,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
 
 			rd := newGitTargetReadiness()
-			gitTargetReadinessGates(rd, observed, tt.provider, tt.clusterProvider, tt.sourceReach,
+			gitTargetReadinessGates(rd, observed, tt.provider, tt.kubeProvider, tt.sourceReach,
 				conditionValue{})
 			st.applyReadiness(rd)
 

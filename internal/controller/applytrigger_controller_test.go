@@ -97,46 +97,71 @@ func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
 	return fluxsim.New(t, client)
 }
 
-// admitting is a ClusterProvider whose accessFrom admits namespaces, and which lets a trigger name
-// an applier in another namespace (the test appliers live in flux-system and argocd).
-func admitting(name string, namespaces ...string) *configbutleraiv1alpha3.ClusterProvider {
-	return &configbutleraiv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
+// The trigger tests reach their appliers through KubeProviders in triggerProviderNamespace, a
+// namespace of their own, so a provider admits team-a only through spec.accessFrom: the namespace
+// policy is what those tests exercise. triggerLocalProvider is the operator's own cluster there.
+const (
+	triggerProviderNamespace = "clusters"
+	triggerLocalProvider     = "local"
+)
+
+// triggerProviderRef names the KubeProvider name in triggerProviderNamespace.
+func triggerProviderRef(name string) meta.NamespacedObjectReference {
+	return meta.NamespacedObjectReference{Namespace: triggerProviderNamespace, Name: name}
+}
+
+// triggerProviderKey is the key of the KubeProvider name in triggerProviderNamespace, as
+// ApplierClients is asked for it.
+func triggerProviderKey(name string) string {
+	return triggerProviderNamespace + "/" + name
+}
+
+// admitting is a KubeProvider in triggerProviderNamespace whose accessFrom admits namespaces, and
+// which lets a trigger name an applier in another namespace (the test appliers live in flux-system
+// and argocd).
+func admitting(name string, namespaces ...string) *configbutleraiv1alpha3.KubeProvider {
+	return &configbutleraiv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: triggerProviderNamespace},
+		Spec: configbutleraiv1alpha3.KubeProviderSpec{
+			InCluster:           &configbutleraiv1alpha3.KubeProviderInCluster{},
 			AccessFrom:          &configbutleraiv1alpha3.NamespaceMatcher{Names: namespaces},
-			AllowCrossNamespace: &configbutleraiv1alpha3.ClusterProviderCrossNamespace{Appliers: true},
+			AllowCrossNamespace: &configbutleraiv1alpha3.KubeProviderCrossNamespace{Appliers: true},
 		},
 	}
 }
 
-// testFluxTrigger is the FluxTrigger team-a/checkout holding flux-system/checkout in cluster.
+// testFluxTrigger is the FluxTrigger team-a/checkout holding flux-system/checkout in the cluster of
+// the KubeProvider cluster in triggerProviderNamespace.
 func testFluxTrigger(cluster string) *configbutleraiv1alpha3.FluxTrigger {
 	return &configbutleraiv1alpha3.FluxTrigger{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a", Generation: 1},
 		Spec: configbutleraiv1alpha3.FluxTriggerSpec{
-			ClusterProviderRef: &meta.LocalObjectReference{Name: cluster},
-			KustomizationRef:   meta.NamespacedObjectReference{Namespace: "flux-system", Name: "checkout"},
+			KubeProviderRef:  triggerProviderRef(cluster),
+			KustomizationRef: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "checkout"},
 		},
 	}
 }
 
-// testArgoCDTrigger is the ArgoCDTrigger team-a/checkout holding argocd/checkout in cluster.
+// testArgoCDTrigger is the ArgoCDTrigger team-a/checkout holding argocd/checkout in the cluster of
+// the KubeProvider cluster in triggerProviderNamespace.
 func testArgoCDTrigger(cluster string) *configbutleraiv1alpha3.ArgoCDTrigger {
 	return &configbutleraiv1alpha3.ArgoCDTrigger{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a", Generation: 1},
 		Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
-			ClusterProviderRef: &meta.LocalObjectReference{Name: cluster},
-			ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: "checkout"},
+			KubeProviderRef: triggerProviderRef(cluster),
+			ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: "checkout"},
 		},
 	}
 }
 
-// referencingTarget is a GitTarget team-a/name writing main of the test repository through the
-// GitProvider platform, naming the trigger kind/checkout.
+// referencingTarget is a GitTarget team-a/name mirroring through the KubeProvider
+// triggerLocalProvider and writing main of the test repository through the GitProvider platform,
+// naming the trigger kind/checkout.
 func referencingTarget(name, kind string) *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			KubeProviderRef: triggerProviderRef(triggerLocalProvider),
 			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("platform", "main")},
 			Path:            name,
 			ApplyTriggerRef: &configbutleraiv1alpha3.ApplyTriggerReference{Kind: kind, Name: "checkout"},
@@ -165,8 +190,8 @@ func referencedIn(namespace, kind string) []ctrlclient.Object {
 // unreferenced marks a triggerTestClient that holds no GitTarget naming the triggers.
 type unreferenced struct{ ctrlclient.Object }
 
-// triggerTestClient is a control cluster holding objects, the ClusterProviders "default" and "hub"
-// admitting team-a unless objects carries its own, the GitProvider platform unless objects carries a
+// triggerTestClient is a control cluster holding objects, the KubeProviders triggerLocalProvider and
+// "hub" admitting team-a unless objects carries its own, the GitProvider platform unless objects carries a
 // GitProvider, and a GitTarget naming each trigger kind's checkout unless objects carries a
 // GitTarget or unreferenced{}.
 func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Client {
@@ -179,7 +204,7 @@ func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Cl
 	kept := objects[:0:0]
 	for _, obj := range objects {
 		switch obj.(type) {
-		case *configbutleraiv1alpha3.ClusterProvider:
+		case *configbutleraiv1alpha3.KubeProvider:
 			held[obj.GetName()] = true
 		case *configbutleraiv1alpha3.GitTarget, unreferenced:
 			hasTarget = true
@@ -193,7 +218,7 @@ func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Cl
 		}
 	}
 	objects = kept
-	for _, name := range []string{configbutleraiv1alpha3.DefaultClusterProviderName, "hub"} {
+	for _, name := range []string{triggerLocalProvider, "hub"} {
 		if !held[name] {
 			objects = append(objects, admitting(name, "team-a"))
 		}
@@ -298,7 +323,7 @@ func TestApplyTriggerReconcile_FluxVerdicts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := triggerTestClient(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+			c := triggerTestClient(t, testFluxTrigger(triggerLocalProvider))
 			r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux,
 				applierFakeSource(t, tc.objects...), nil, tc.allowed)
 
@@ -348,7 +373,7 @@ func TestApplyTriggerReconcile_ArgoCDVerdicts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := triggerTestClient(t, testArgoCDTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+			c := triggerTestClient(t, testArgoCDTrigger(triggerLocalProvider))
 			r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindArgoCD,
 				applierFakeSource(t, tc.objects...), nil, tc.allowed)
 
@@ -372,7 +397,7 @@ func TestApplyTriggerReconcile_ArgoCDVerdicts(t *testing.T) {
 // applier's cluster says nothing about the applier, so it must not flip a True to Unknown and back on
 // every hiccup, nor drop the source the GitTargets bind against.
 func TestApplyTriggerReconcile_AnUnreachableClusterKeepsThePublishedVerdict(t *testing.T) {
-	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	trigger := testFluxTrigger(triggerLocalProvider)
 	c := triggerTestClient(t, trigger)
 	r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux, nil, errors.New("connection refused"), true)
 	got := reconcileTrigger(t, r)
@@ -380,7 +405,7 @@ func TestApplyTriggerReconcile_AnUnreachableClusterKeepsThePublishedVerdict(t *t
 	require.NotNil(t, configured)
 	assert.Equal(t, metav1.ConditionUnknown, configured.Status, "nothing published yet")
 
-	published := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	published := testFluxTrigger(triggerLocalProvider)
 	published.Status.Conditions = []metav1.Condition{{
 		Type: ApplyTriggerConditionConfigured, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
 		LastTransitionTime: metav1.Now(),
@@ -404,7 +429,7 @@ func TestApplyTriggerReconcile_AnUnreachableClusterKeepsThePublishedVerdict(t *t
 func TestApplyTriggerReconcile_AHangingClusterIsBounded(t *testing.T) {
 	var sawDeadline bool
 	source := applierFakeSource(t, applierFluxObjects()...)
-	published := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	published := testFluxTrigger(triggerLocalProvider)
 	published.Status.Conditions = []metav1.Condition{{
 		Type: ApplyTriggerConditionConfigured, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
 		LastTransitionTime: metav1.Now(),
@@ -436,25 +461,31 @@ func TestApplyTriggerReconcile_AHangingClusterIsBounded(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, configured.Status, "a timed-out check keeps the published verdict")
 }
 
-// TestApplyTriggerReconcile_TheTriggersClusterProviderAdmitsIt: the applier is reached with the
-// trigger's ClusterProvider's credential, so that provider's accessFrom gates the check before the
+// TestApplyTriggerReconcile_TheTriggersKubeProviderAdmitsIt: the applier is reached with the
+// trigger's KubeProvider's credential, so that provider's accessFrom gates the check before the
 // cluster is ever asked.
-func TestApplyTriggerReconcile_TheTriggersClusterProviderAdmitsIt(t *testing.T) {
+func TestApplyTriggerReconcile_TheTriggersKubeProviderAdmitsIt(t *testing.T) {
 	cases := []struct {
 		name        string
 		cluster     string
-		hub         *configbutleraiv1alpha3.ClusterProvider
+		hub         *configbutleraiv1alpha3.KubeProvider
 		wantStatus  metav1.ConditionStatus
 		wantReason  string
 		wantStalled bool
 		wantClients []string
 	}{
-		{name: "a provider that admits the namespace is asked", cluster: "hub", hub: admitting("hub", "team-a"),
-			wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded, wantClients: []string{"hub"}},
+		{
+			name:        "a provider that admits the namespace is asked",
+			cluster:     "hub",
+			hub:         admitting("hub", "team-a"),
+			wantStatus:  metav1.ConditionTrue,
+			wantReason:  ReasonSucceeded,
+			wantClients: []string{triggerProviderKey("hub")},
+		},
 		{name: "a provider that does not admit it is never asked", cluster: "hub", hub: admitting("hub", "team-b"),
 			wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonNamespaceNotAuthorized, wantStalled: true},
 		{name: "a provider that does not exist is never asked, and may be on its way", cluster: "absent",
-			wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonClusterProviderNotFound},
+			wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonKubeProviderNotFound},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -487,7 +518,7 @@ func TestApplyTriggerReconcile_TheTriggersClusterProviderAdmitsIt(t *testing.T) 
 // seen from the trigger: an operation past its budget keeps its window open, and the trigger says so
 // in Ready until the operation completes. It clears on its own, so it is never Stalled.
 func TestApplyTriggerReconcile_AnUnresolvedOperationIsNotReady(t *testing.T) {
-	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	trigger := testFluxTrigger(triggerLocalProvider)
 	trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
 		Phase: configbutleraiv1alpha3.ApplyOperationUnresolved, Reason: configbutleraiv1alpha3.ApplyReasonCatchUp,
 		Commit: "4f2c1ab9d00d", Token: "T1", RequestedAt: metav1.Now(), Message: "still applying",
@@ -513,7 +544,7 @@ func TestApplyTriggerReconcile_AnUnresolvedOperationIsNotReady(t *testing.T) {
 func TestApplyTriggerSpecOrOperationChanged_ReadsTheOperationPhase(t *testing.T) {
 	p := applyTriggerSpecOrOperationChanged()
 	at := func(phase configbutleraiv1alpha3.ApplyOperationPhase, generation int64) ctrlclient.Object {
-		trigger := testFluxTrigger("default")
+		trigger := testFluxTrigger(triggerLocalProvider)
 		trigger.Generation = generation
 		if phase != "" {
 			trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{Phase: phase}
@@ -531,16 +562,16 @@ func TestApplyTriggerSpecOrOperationChanged_ReadsTheOperationPhase(t *testing.T)
 	}), "a status write that moves nothing Ready reads")
 }
 
-// TestApplyTriggerReconcile_ClusterProviderAndNamespaceEventsFindTheirTriggers: a provider event
+// TestApplyTriggerReconcile_KubeProviderAndNamespaceEventsFindTheirTriggers: a provider event
 // re-runs every trigger, since it admits the GitTargets naming triggers too, and a namespace label
 // change the triggers in it.
-func TestApplyTriggerReconcile_ClusterProviderAndNamespaceEventsFindTheirTriggers(t *testing.T) {
+func TestApplyTriggerReconcile_KubeProviderAndNamespaceEventsFindTheirTriggers(t *testing.T) {
 	other := testFluxTrigger("other")
 	other.Name = "elsewhere"
 	c := triggerTestClient(t, testFluxTrigger("hub"), other)
 	r := &ApplyTriggerReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplyTriggerKindFlux}
 
-	assert.Len(t, r.clusterProviderToTriggers(context.Background(), admitting("hub")), 2)
+	assert.Len(t, r.kubeProviderToTriggers(context.Background(), admitting("hub")), 2)
 
 	ns := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}}
 	assert.Len(t, r.namespaceToTriggers(context.Background(), ns), 2)
@@ -550,7 +581,7 @@ func TestApplyTriggerReconcile_ClusterProviderAndNamespaceEventsFindTheirTrigger
 func TestApplyTriggerReconcile_ArgoCDEventsFindTheirTriggers(t *testing.T) {
 	c := triggerTestClient(t, testArgoCDTrigger("hub"), testFluxTrigger("hub"))
 	r := &ApplyTriggerReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplyTriggerKindArgoCD}
-	requests := r.clusterProviderToTriggers(context.Background(), admitting("hub"))
+	requests := r.kubeProviderToTriggers(context.Background(), admitting("hub"))
 	assert.Len(t, requests, 1, "a FluxTrigger of the same name is another kind's")
 }
 

@@ -90,7 +90,7 @@ All flags for one component share a prefix and don't drift. If the toggle is
 **The prefix is a flat-namespace device, so nested configuration drops it.** Chart values and CRD
 fields are already scoped by their block, and repeating the prefix inside one stutters:
 `attribution.ttl` in `values.yaml` maps to `--author-attribution-ttl`, and
-`ClusterProvider.spec.attribution` needs no `author` because a source-cluster object has no other
+`KubeProvider.spec.attribution` needs no `author` because a source-cluster object has no other
 kind of attribution. Flags have no such scope, which is why they keep the qualifier: this product
 has two attribution concepts, author attribution and
 [render attribution](design/support-boundary/render-attribution.md), and only the flat namespace has

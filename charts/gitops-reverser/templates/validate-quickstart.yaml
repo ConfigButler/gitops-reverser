@@ -17,6 +17,9 @@
 {{- if eq (trim .Values.quickstart.gitTarget.encryption.secretRef.name) "" -}}
 {{- fail "quickstart.gitTarget.encryption.secretRef.name must be set when quickstart.enabled=true" -}}
 {{- end -}}
+{{- if not .Values.kubeProvider.create -}}
+{{- fail "quickstart.enabled=true mirrors through the KubeProvider the chart renders; set kubeProvider.create=true" -}}
+{{- end -}}
 {{- if not .Values.quickstart.watchRule.rules -}}
 {{- fail "quickstart.watchRule.rules must contain at least one rule when quickstart.enabled=true" -}}
 {{- end -}}

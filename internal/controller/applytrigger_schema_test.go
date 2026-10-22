@@ -33,8 +33,8 @@ var _ = Describe("Apply trigger schema", func() {
 		return &configbutleraiv1alpha3.FluxTrigger{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 			Spec: configbutleraiv1alpha3.FluxTriggerSpec{
-				ClusterProviderRef: &meta.LocalObjectReference{Name: "hub"},
-				KustomizationRef:   meta.NamespacedObjectReference{Namespace: "flux-system", Name: "apps"},
+				KubeProviderRef:  meta.NamespacedObjectReference{Name: "hub"},
+				KustomizationRef: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "apps"},
 			},
 		}
 	}
@@ -42,22 +42,18 @@ var _ = Describe("Apply trigger schema", func() {
 		return &configbutleraiv1alpha3.ArgoCDTrigger{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 			Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
-				ClusterProviderRef: &meta.LocalObjectReference{Name: "hub"},
-				ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
+				KubeProviderRef: meta.NamespacedObjectReference{Name: "hub"},
+				ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
 			},
 		}
 	}
 
-	It("defaults the cluster to the default ClusterProvider, as a GitTarget does, and requires names", func() {
-		omitted := argo("argo-default-cluster")
-		omitted.Spec.ClusterProviderRef = nil
-		Expect(create(omitted)).To(Succeed())
-		Expect(omitted.Spec.ClusterProviderRef).To(Equal(
-			&meta.LocalObjectReference{Name: configbutleraiv1alpha3.DefaultClusterProviderName}))
-
+	It("requires names", func() {
+		// A reference naming only a namespace names no KubeProvider; there is no default to fall
+		// back to.
 		noCluster := flux("flux-no-cluster")
-		noCluster.Spec.ClusterProviderRef.Name = ""
-		Expect(create(noCluster)).To(MatchError(ContainSubstring("spec.clusterProviderRef.name must not be empty")))
+		noCluster.Spec.KubeProviderRef = meta.NamespacedObjectReference{Namespace: "default"}
+		Expect(create(noCluster)).To(MatchError(ContainSubstring("spec.kubeProviderRef.name must not be empty")))
 
 		noApplication := argo("argo-no-app")
 		noApplication.Spec.ApplicationRef.Name = ""
@@ -103,8 +99,8 @@ var _ = Describe("Apply trigger schema", func() {
 		Expect(create(fluxTrigger)).To(Succeed())
 		Expect(update(fluxTrigger, func() { fluxTrigger.Spec.KustomizationRef.Name = "other" })).
 			To(MatchError(ContainSubstring("spec.kustomizationRef is immutable")))
-		Expect(update(fluxTrigger, func() { fluxTrigger.Spec.ClusterProviderRef.Name = "other" })).
-			To(MatchError(ContainSubstring("spec.clusterProviderRef is immutable")))
+		Expect(update(fluxTrigger, func() { fluxTrigger.Spec.KubeProviderRef.Name = "other" })).
+			To(MatchError(ContainSubstring("spec.kubeProviderRef is immutable")))
 
 		argoTrigger := argo("argo-immutable")
 		Expect(create(argoTrigger)).To(Succeed())
@@ -117,6 +113,7 @@ var _ = Describe("Apply trigger schema", func() {
 			return &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("prov", "main")},
 					Path:            "apps/" + name,
 					ApplyTriggerRef: ref,
@@ -149,8 +146,8 @@ var _ = Describe("Apply trigger reconcile", func() {
 		trigger := &configbutleraiv1alpha3.ArgoCDTrigger{
 			ObjectMeta: metav1.ObjectMeta{Name: "reconciled", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
-				ClusterProviderRef: &meta.LocalObjectReference{Name: configbutleraiv1alpha3.DefaultClusterProviderName},
-				ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
+				KubeProviderRef: testKubeProviderRef(),
+				ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, trigger)).To(Succeed())
@@ -171,6 +168,7 @@ var _ = Describe("Apply trigger reconcile", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "names-reconciled", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
+				KubeProviderRef: testKubeProviderRef(),
 				GitBranchRef: meta.NamespacedObjectReference{
 					Name: gitBranchNameForTest("prov", "main"),
 				},

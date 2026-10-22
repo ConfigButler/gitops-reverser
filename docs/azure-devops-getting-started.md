@@ -65,6 +65,9 @@ metadata:
 spec:
   gitBranchRef:
     name: ado-branch
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: clusters/my-cluster
 ---
 apiVersion: configbutler.ai/v1alpha3

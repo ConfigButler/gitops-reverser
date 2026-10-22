@@ -209,11 +209,13 @@ metadata:
 spec:
   gitBranchRef:
     %s
+%s
   path: %s
   commit:
     window:
       idleTimeout: "%s"
       maxDuration: "%s"
-`, name, namespace, ref, targetPath, e2eCommitWindow, e2eCommitMaxDuration), "apply", "-f", "-")
+`, name, namespace, ref, localKubeProviderRef(), targetPath, e2eCommitWindow, e2eCommitMaxDuration),
+		"apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply GitTarget %s/%s", namespace, name)
 }

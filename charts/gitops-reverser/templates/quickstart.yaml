@@ -49,6 +49,9 @@ metadata:
 spec:
   gitBranchRef:
     name: {{ .Values.quickstart.gitBranch.name }}
+  kubeProviderRef:
+    name: {{ .Values.kubeProvider.name }}
+    namespace: {{ .Release.Namespace }}
   path: {{ .Values.quickstart.gitTarget.path | quote }}
   commit:
     window:

@@ -29,9 +29,9 @@ and watches cold-replay. For a disposable single-pod setup, `attribution.transpo
 no Redis but loses facts whenever the reverser restarts. It also leaves Redis-backed features such
 as `CommitRequest` author capture inactive unless you configure Redis separately.
 
-The chart's default `ClusterProvider` admits targets from every namespace. To restrict it, set
-`clusterProvider.default.accessFrom.names` and `selector: null`; Helm otherwise retains the
-permissive `selector: {}`. See [RBAC](rbac.md) for the controller's read permissions.
+The chart's `KubeProvider`, `local` in the release namespace, admits targets from every namespace.
+To restrict it, set `kubeProvider.accessFrom.names` and `selector: null`; Helm otherwise retains the
+permissive `selector: {}`. Its own namespace is always admitted. See [RBAC](rbac.md) for the controller's read permissions.
 
 The chart creates the audit Service and cert-manager certificates. Wait for the release to be
 ready, then read its Secret names and kubeconfig generator:
@@ -52,17 +52,19 @@ private key: encrypt it before committing it to Git.
 Set its `server` to an address reachable from each control-plane host, with a **named route**:
 
 ```yaml
-server: https://REACHABLE_ADDRESS:9444/audit-webhook/default
+server: https://REACHABLE_ADDRESS:9444/audit-webhook/gitops-reverser.local
 tls-server-name: gitops-reverser-audit.gitops-reverser.svc
 ```
 
-Use `/audit-webhook/default` for a normal installation. The chart creates the `default`
-`ClusterProvider`; older Helm notes may omit the `/default` suffix.
-For another provider, use its `spec.attribution.auditRoute`, which defaults to its name.
+Use `/audit-webhook/<release namespace>.local` for a normal installation: the chart creates the
+`local` `KubeProvider` in its release namespace, and a provider's route defaults to
+`<namespace>.<name>`. For another provider, use its `spec.attribution.auditRoute`, or
+`<namespace>.<name>` when it sets none. `kubectl get kubeprovider -A -o wide` prints each
+provider's resolved route in its `Route` column.
 
 Only installations explicitly using `attribution.auditRouteAnnotationKey` should keep the bare
-`/audit-webhook` endpoint. That mode selects a route from each event's annotation; appending
-`/default` would instead select the named `default` route for the entire request.
+`/audit-webhook` endpoint. That mode selects a route from each event's annotation; appending a
+route would instead select that one route for the entire request.
 
 A ClusterIP works only when the host can route to the service CIDR. Otherwise use a reachable
 NodePort or load balancer. Do not assume cluster DNS or a loopback NodePort works from the host.
@@ -124,7 +126,7 @@ Check receiver readiness and the route:
 
 ```bash
 kubectl -n gitops-reverser rollout status deployment/gitops-reverser
-kubectl get clusterprovider default
+kubectl -n gitops-reverser get kubeprovider local
 ```
 
 `FACTSRECEIVED=True` means the provider has received an attribution fact at least once. It is historical

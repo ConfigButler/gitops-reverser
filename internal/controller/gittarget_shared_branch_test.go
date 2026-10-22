@@ -31,6 +31,7 @@ func sharedProviderTarget(
 			CreationTimestamp: metav1.NewTime(time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-age)),
 		},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			KubeProviderRef: triggerProviderRef(triggerLocalProvider),
 			GitBranchRef: meta.NamespacedObjectReference{
 				Name:      gitBranchNameForTest("monorepo", "main"),
 				Namespace: providerNS,
@@ -45,13 +46,10 @@ func sharedProviderReconciler(t *testing.T, objects ...ctrlclient.Object) *GitTa
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
-	// The chart's default ClusterProvider admits every namespace.
-	objects = append(objects, &configbutleraiv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: configbutleraiv1alpha3.DefaultClusterProviderName},
-		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}},
-		},
-	})
+	// The KubeProvider every GitTarget here mirrors through admits every namespace.
+	local := admitting(triggerLocalProvider)
+	local.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}}
+	objects = append(objects, local)
 	for _, ns := range []string{"platform", "team-b"} {
 		objects = append(objects, &configbutleraiv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "monorepo"},
@@ -79,4 +77,39 @@ func TestCheckForConflicts_ASharedGitBranchIsOneBranchAcrossNamespaces(t *testin
 	assert.True(t, conflict, "a path nested in another namespace's folder on the same branch still overlaps")
 	assert.Equal(t, GitTargetReasonTargetConflict, reason)
 	assert.Contains(t, msg, "platform/apps")
+}
+
+// TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder: a GitTarget whose namespace the
+// GitBranch's GitProvider does not admit writes nothing, so it cannot hold a folder against the
+// targets that may. Without this, any namespace that knows a GitBranch's name could create a target
+// at "." first and block every folder on that branch. Once the provider admits it, the older target
+// owns its path as any other does.
+func TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder(t *testing.T) {
+	branch := &configbutleraiv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: gitBranchNameForTest("monorepo", "main")},
+		Spec: configbutleraiv1alpha3.GitBranchSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: "monorepo"}, Branch: "main",
+		},
+	}
+	squatter := sharedProviderTarget("intruder", "everything", "platform", ".", 2*time.Hour)
+	owner := sharedProviderTarget("platform", "apps", "", "apps", time.Hour)
+
+	r := sharedProviderReconciler(t, branch, squatter, owner)
+	conflict, msg, _, err := r.checkForConflicts(context.Background(), owner)
+	require.NoError(t, err)
+	assert.False(t, conflict, "a target its GitProvider does not admit must not hold a folder: %s", msg)
+
+	var provider configbutleraiv1alpha3.GitProvider
+	require.NoError(
+		t,
+		r.Get(context.Background(), ctrlclient.ObjectKey{Namespace: "platform", Name: "monorepo"}, &provider),
+	)
+	provider.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"intruder"}}
+	require.NoError(t, r.Update(context.Background(), &provider))
+
+	conflict, msg, reason, err := r.checkForConflicts(context.Background(), owner)
+	require.NoError(t, err)
+	assert.True(t, conflict, "an admitted older target owns its path")
+	assert.Equal(t, GitTargetReasonTargetConflict, reason)
+	assert.Contains(t, msg, "intruder/everything")
 }

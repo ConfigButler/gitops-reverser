@@ -40,15 +40,13 @@ import (
 // # source_cluster
 //
 // It carries the cluster the GitTarget mirrors FROM, so the same join answers "which tenant's
-// cluster" as well as "which GitTarget". The value is GitTarget.SourceCluster(), which is the
-// referenced ClusterProvider's NAME and defaults to "default" — a concrete, non-empty string, so
-// there is no empty label value that PromQL cannot tell apart from a missing one. It is NOT the
-// internal config-plane sentinel, which is deliberately the empty string and is a different
-// identity; see the doc on SourceCluster for why the name is a convention rather than a claim
-// about which physical cluster it is.
+// cluster" as well as "which GitTarget". The value is GitTarget.SourceCluster(), the referenced
+// KubeProvider's namespace/name, so two providers with one name in two namespaces are two values.
+// It is NOT the internal config-plane sentinel, which is deliberately the empty string and is a
+// different identity.
 //
 // It rides this series rather than being added to the nine GitTarget-labelled instruments because
-// spec.clusterProviderRef is CEL-immutable: a GitTarget's cluster is fixed for its life, so one
+// spec.kubeProviderRef is CEL-immutable: a GitTarget's cluster is fixed for its life, so one
 // join recovers the axis for all of them. The Git-side instruments cannot carry it at all — a
 // branch is shared by GitTargets that may mirror different clusters, so a single value there would
 // have to be invented, which is the same objection that keeps gittarget_* off git_commits_total.

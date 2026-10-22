@@ -47,7 +47,7 @@ func TestReconcile_WatchRuleWithAnInvalidObjectSelectorIsRefused(t *testing.T) {
 	rule := wrsnWatchRule("")
 	rule.Spec.Rules[0].ObjectSelector = invalidObjectSelector()
 	f := newWRSNFixture(t, []client.Object{
-		wrsnGitTarget(), wrsnGitProvider(), wrsnClusterProvider(false), rule,
+		wrsnGitTarget(), wrsnGitProvider(), wrsnKubeProvider(false), rule,
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: wrsnTenantNS}},
 	})
 
@@ -82,7 +82,7 @@ func TestReconcile_ClusterWatchRuleWithAnInvalidObjectSelectorIsRefused(t *testi
 	rule := cwaClusterWatchRule()
 	rule.Spec.Rules[0].ObjectSelector = invalidObjectSelector()
 	f := newCWAFixture(t, []client.Object{
-		rule, cwaGitTarget(), cwaGitProvider(), cwaClusterProvider(cwaAdmitting()),
+		rule, cwaGitTarget(), cwaGitProvider(), cwaKubeProvider(cwaAdmitting()),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
 	}, interceptor.Funcs{})
 
@@ -97,7 +97,7 @@ func TestReconcile_ClusterWatchRuleWithAnInvalidObjectSelectorIsRefused(t *testi
 func TestReconcile_ClusterWatchRuleWithAConflictingObjectSelectorIsRefused(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
-		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(), cwaClusterProvider(cwaAdmitting()),
+		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(), cwaKubeProvider(cwaAdmitting()),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
 	}, interceptor.Funcs{})
 	f.wm.collectionOverlap = "ClusterWatchRule mirror-everything is refused"

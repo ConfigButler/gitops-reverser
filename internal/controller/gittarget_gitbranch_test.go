@@ -48,12 +48,13 @@ func newDestinationFixture(t *testing.T) *destinationFixture {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
-			Path:         "apps",
+			KubeProviderRef: triggerProviderRef(triggerLocalProvider),
+			GitBranchRef:    meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
+			Path:            "apps",
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(provider, branch, target, admitting(configbutleraiv1alpha3.DefaultClusterProviderName, "team-a")).
+		WithObjects(provider, branch, target, admitting(triggerLocalProvider, "team-a")).
 		WithStatusSubresource(&configbutleraiv1alpha3.GitTarget{}).Build()
 	workers := git.NewWorkerManager(c, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -157,7 +158,8 @@ func TestGitBranchWatches_MapToWhatTheyChange(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
+			KubeProviderRef: testKubeProviderRef(),
+			GitBranchRef:    meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
 		},
 	}
 	assert.Equal(t, []string{"platform/main"}, requestsToKeys(gitTargetToGitBranch(context.Background(), target)))
@@ -200,7 +202,8 @@ func TestGitTargetsOn_FindsTheTargetsOfABranchOrItsProvider(t *testing.T) {
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: meta.NamespacedObjectReference{Name: branch, Namespace: branchNS},
+				KubeProviderRef: testKubeProviderRef(),
+				GitBranchRef:    meta.NamespacedObjectReference{Name: branch, Namespace: branchNS},
 			},
 		}
 	}

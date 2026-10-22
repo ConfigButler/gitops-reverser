@@ -12,7 +12,7 @@ command-line binaries that are never deployed with it. What makes the operator f
 programs is that the one process spans two clusters' worth of concerns:
 
 - the **config plane**, the cluster the operator runs in, where its own custom resources live;
-- one or more **source clusters**, each named by a `ClusterProvider`, whose objects are mirrored
+- one or more **source clusters**, each named by a `KubeProvider`, whose objects are mirrored
   into Git.
 
 The shortest description of the split of responsibility: rules and discovery decide *what* to watch,
@@ -23,7 +23,7 @@ the target watches supply *state*, the branch worker owns *Git*, and audit only 
 ```mermaid
 flowchart TB
     subgraph CFG["Config plane (operator's own cluster)"]
-        CRD["api/v1alpha3<br/>GitTarget · WatchRule · ClusterWatchRule<br/>GitProvider · ClusterProvider · CommitRequest<br/>FluxTrigger · ArgoCDTrigger"]
+        CRD["api/v1alpha3<br/>GitTarget · WatchRule · ClusterWatchRule<br/>GitProvider · GitBranch · KubeProvider · CommitRequest<br/>FluxTrigger · ArgoCDTrigger"]
         CTRL["internal/controller<br/>reconcilers"]
         ADM["internal/webhook<br/>admission handlers"]
         AUTHZ["internal/authz<br/>namespace admission"]
@@ -76,10 +76,10 @@ The operator's own API surface and the reconcilers behind it.
 
 | Component | Path | Role |
 |---|---|---|
-| CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the eight kinds users apply |
+| CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the nine kinds users apply |
 | Reconcilers | [`internal/controller/`](../internal/controller/) | one per kind, plus shared condition and status helpers |
 | Admission handlers | [`internal/webhook/`](../internal/webhook/) | the always-allow observer and `validate-operator-types`, which captures a `CommitRequest` submitter |
-| Namespace admission | [`internal/authz/`](../internal/authz/) | the `ClusterProvider.spec.accessFrom` decision and the `spec.allowCrossNamespace` gates, in their own package because several call sites need the same answer |
+| Namespace admission | [`internal/authz/`](../internal/authz/) | the `KubeProvider` and `GitProvider` namespace-admission decisions (own namespace, then `spec.accessFrom`) and the `spec.allowCrossNamespace` gates, in their own package because several call sites need the same answer |
 | Rule store | [`internal/rulestore/`](../internal/rulestore/) | compiled `WatchRule` and `ClusterWatchRule` cache the data plane reads |
 
 ### Type and scope resolution
@@ -259,7 +259,7 @@ Three gates can stop a type before it reaches a stream:
    come from trusted discovery. A degraded group version keeps its last-known record and is
    `Retained`, never treated as withdrawn.
 2. **The claim.** Some rule attached to the GitTarget must select it, and the GitTarget's namespace
-   must be admitted by the `ClusterProvider`.
+   must be admitted by the `KubeProvider`.
 3. **The acceptance gate.** The Git folder must be one the operator can own. A refusal is recorded
    as `GitPathAccepted=False` and nothing is committed. Writes are not the only thing that runs it:
    the periodic refresh reads the folder too, so content pushed by somebody else is reported

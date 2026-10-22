@@ -15,28 +15,34 @@ with the source, the source wins; deeper design records live under [docs/design/
 inventory rather than the mechanics, which package holds which responsibility and which components
 observe a Kubernetes API server, see [components.md](components.md).
 
-Source and destination connections deliberately have different scopes. A namespaced `GitProvider` is a
-team's Git write boundary: its credential, branch policy, and targets usually belong together.
-`ClusterProvider` is cluster-scoped because it represents one shared **logical source identity** whose
-client, discovery surface, watch state, and attribution partition must remain consistent across
-namespaces. `accessFrom` then explicitly controls which control-cluster namespaces may reference
-that shared source; it does not grant source-cluster RBAC or select source namespaces. The source identity
-is the `ClusterProvider` name alone, with no API-server identity probe: two providers configured for the same
-server deliberately remain separate source partitions.
+Both connection kinds are namespaced, for one reason: a connection carries a credential, and the
+credential belongs in the namespace of whoever owns it. A namespaced `GitProvider` is a team's Git
+write boundary: its credential, branch policy, and targets usually belong together. A namespaced
+`KubeProvider` is one **logical source identity**: one client, discovery surface, watch state, and
+attribution partition, shared by every target that names it. Its kubeconfig Secret lives in its own
+namespace, so a tenant's connection keeps its credential with the tenant. A provider admits
+consumers in its own namespace, and `accessFrom` admits other control-cluster namespaces; neither
+grants source-cluster RBAC or selects source namespaces. The source identity is the provider's
+namespace and name, with no API-server identity probe: two providers configured for the same server
+remain separate source partitions, and so do two providers with one name in two namespaces.
 
-The asymmetry is not an oversight. A source cluster is an inherent singleton; a Git destination is
-not, and a namespaced `GitProvider` keeps a repository's write credential in the namespace of
-whoever owns that repository, which is what makes a team able to start mirroring without a platform
-admin. Each branch of that repository is a `GitBranch` in the credential's namespace, and **one
-`GitBranch` holds a repository branch**, because one branch worker writes the branch, with one
-credential: the oldest `GitBranch` whose credential opens a push session on the remote holds it, and
-any other reports `BranchConflict`. A repository written from several namespaces needs no copy of
-the credential in each: their `GitTarget`s name the shared `GitBranch` with
-`spec.gitBranchRef.namespace`, admitted by its `GitProvider`'s `spec.accessFrom` (the
-`ClusterProvider` pattern, applied to the destination). Its own namespace is always admitted.
-Converting `GitProvider` to cluster scope is not an
-option: a CRD's `spec.scope` is immutable once the definition is `Established`, so the change would
-mean deleting the definition (and every `GitProvider` in the cluster with it) and recreating both.
+The operator's own identity is the one credential no namespace owns, so it is not an ordinary
+`secretRef`. A `KubeProvider` asks for it with `spec.inCluster: {}`, and the installation decides:
+only a provider listed by exact `namespace/name` in `--in-cluster-kube-providers` is honored. Any
+other reports `Stalled=True` (`InClusterNotAuthorized`) and is never used, so no omitted, malformed,
+or forbidden credential falls through to the operator's identity.
+
+Keeping a repository's write credential in the namespace of whoever owns that repository is what
+makes a team able to start mirroring without a platform admin. Each branch of that repository is a
+`GitBranch` in the credential's namespace, and **one `GitBranch` holds a repository branch**,
+because one branch worker writes the branch, with one credential: the oldest `GitBranch` whose
+credential opens a push session on the remote holds it, and any other reports `BranchConflict`. A
+repository written from several namespaces needs no copy of the credential in each: their
+`GitTarget`s name the shared `GitBranch` with
+`spec.gitBranchRef.namespace`, admitted by its `GitProvider`'s `spec.accessFrom`, the same pattern a
+`KubeProvider` uses. Its own namespace is always admitted. Neither kind can change scope later: a
+CRD's `spec.scope` is immutable once the definition is `Established`, so the change would mean
+deleting the definition (and every object of the kind with it) and recreating both.
 
 ***
 
@@ -49,7 +55,7 @@ API. State is ingested by **watch**; these paths never treat Git as authority. W
 with a newer remote commit, the operator fetches the new remote state, resets its local clone, and
 replays its retained writes from the API.
 
-**Watch is the only object-state source.** Each `GitTarget` names one `ClusterProvider` and opens one
+**Watch is the only object-state source.** Each `GitTarget` names one `KubeProvider` and opens one
 Kubernetes watch per claimed `(GVR, scope)` against that source, with `sendInitialEvents=true`. For a
 namespaced type, a scope is one concrete source namespace; cluster-scoped types use the cluster-wide
 scope. Every Git write derives from persisted state the watch observed. Audit never defines *what*
@@ -158,7 +164,7 @@ Redis as the shared store across replicas.
 
 **Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
 events to `/audit-webhook/<audit-route>` (or a configured annotation-routed shared endpoint). The route
-is `ClusterProvider.spec.attribution.auditRoute`, which defaults to the provider's own name.
+is `KubeProvider.spec.attribution.auditRoute`, which defaults to `<namespace>.<name>`.
 The operator appends a minimal fact to that route's per-type fact stream; every process watching the
 type follows that stream into a bounded, TTL'd in-process index, and a watch event joins against the
 index within a bounded grace window. A missing, late, or absent fact never blocks state capture; it
@@ -217,7 +223,7 @@ optional and only add *who* did something:
 |---|---|---|---|
 | **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface: served GVRs, scope, preferred version, subresources; rules resolve against it |
 | **Watch** (per claimed `(GVR, scope)`) | *what changed* | yes | the object body, ordered per type; the only object-state source, with deletes reconciled via `sendInitialEvents` replay + mark-and-sweep |
-| **Audit webhook** (`/audit-webhook/<provider>`) | *who changed mirrored state* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
+| **Audit webhook** (`/audit-webhook/<audit-route>`) | *who changed mirrored state* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
 | **Validating admission webhook** (`/validate-operator-types`) | *who issued a command* | no | the submitter of a `CommitRequest`, captured at admission and keyed 1:1 by UID ([CommitRequest Finalize](#commitrequest-finalize)) |
 
 With both optional sources off, the product still mirrors state correctly, and every commit is authored
@@ -266,11 +272,12 @@ capture audit and admission with **no** resulting watch event.
 
 ## Configuration model
 
-You configure GitOps Reverser through eight CRDs (group `configbutler.ai`, version `v1alpha3`).
+You configure GitOps Reverser through nine CRDs (group `configbutler.ai`, version `v1alpha3`).
 `WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
 `CommitRequest` can ask for the current window to be saved. `GitTarget` joins one source cluster to one
-Git destination. `ClusterProvider` supplies the source connection and authorization boundary;
-`GitProvider` supplies the repository, credentials, commit settings, and push policy. `FluxTrigger`
+Git destination. `KubeProvider` supplies the source connection and authorization boundary;
+`GitProvider` supplies the repository, credentials, commit settings, and push policy, and a
+`GitBranch` holds one branch of that repository for every `GitTarget` that writes it. `FluxTrigger`
 and `ArgoCDTrigger` hold the Flux `Kustomization` or Argo CD `Application` that applies a folder back,
 so GitOps Reverser decides when it applies.
 
@@ -281,21 +288,21 @@ graph LR
         CWR[ClusterWatchRule] -->|gitTargetRef| GT
         CR[CommitRequest] -->|gitTargetRef| GT
         GT -->|applyTriggerRef| TR["FluxTrigger /\nArgoCDTrigger"]
-        GT -->|clusterProviderRef| CP[ClusterProvider]
+        GT -->|kubeProviderRef| CP[KubeProvider]
         GT -->|gitBranchRef| GB[GitBranch]
         GB -->|gitProviderRef| GP[GitProvider]
-        KCFG[("Remote kubeconfig Secret\noperator namespace")]
+        KCFG[("Remote kubeconfig Secret\nprovider's namespace")]
         WM["Watch manager\nper-provider source context"]
     end
 
-    subgraph SOURCE["Source cluster selected by ClusterProvider"]
+    subgraph SOURCE["Source cluster selected by KubeProvider"]
         API["Kubernetes API\ndiscovery · watches"]
         APPLIER["Applier\nFlux Kustomization\nor Argo CD Application"]
     end
 
     HOST[("Git host")]
 
-    CP -. "optional kubeconfig reference" .-> KCFG
+    CP -. "secretRef (or inCluster)" .-> KCFG
     CP -->|"source identity + config"| WM
     WM -->|"source client"| API
     TR -. "kustomizationRef / applicationRef" .-> APPLIER
@@ -309,16 +316,17 @@ graph LR
     style CR fill:#f3e5f5,stroke:#8e24aa
 ```
 
-The diagram follows one `GitTarget`. A provider with no `spec.kubeConfig` selects the operator's own
-cluster as its source; any provider name, including `default`, can instead select a remote cluster through
-a kubeconfig Secret in the operator namespace. Each referenced `ClusterProvider` gets an independent
-source context: client, discovery catalog, followability registry, and reachability state. Its
-`GitTarget`s open their source watches through that context. The contexts are keyed
-by provider name and are released when no `GitTarget` references them.
+The diagram follows one `GitTarget`. A provider with `spec.secretRef` selects a remote cluster through a
+kubeconfig Secret in the provider's own namespace; one with `spec.inCluster` selects the operator's own
+cluster, when the installation lists it. Each referenced `KubeProvider` gets an independent source
+context: client, discovery catalog, followability registry, and reachability state. Its `GitTarget`s
+open their source watches through that context. The contexts are keyed by the provider's
+`namespace/name` and are released when no `GitTarget` references them, so a provider deleted and
+recreated under the same name is a new connection.
 
-The applier is not one of the eight kinds. It belongs to Flux or Argo CD, lives in the cluster the
-trigger's `spec.clusterProviderRef` names (the source cluster, or a management cluster), and is
-reached through that `ClusterProvider`'s identity. The trigger is ours: it holds the applier, and
+The applier is not one of the nine kinds. It belongs to Flux or Argo CD, lives in the cluster the
+trigger's `spec.kubeProviderRef` names (the source cluster, or a management cluster), and is
+reached through that `KubeProvider`'s identity. The trigger is ours: it holds the applier, and
 records the apply operation it started.
 
 | CRD | Scope | One line role |
@@ -326,8 +334,9 @@ records the apply operation it started.
 | `WatchRule` | namespaced | which NAMESPACED resources, in which source namespaces, route to a GitTarget |
 | `ClusterWatchRule` | cluster | which CLUSTER SCOPED resources route to a GitTarget |
 | `CommitRequest` | namespaced | a one shot "save the open window now" signal |
-| `GitTarget` | namespaced | one materialization from a source provider to `(provider, branch, path)` |
-| `ClusterProvider` | cluster | one source-cluster connection plus namespace access policy |
+| `GitTarget` | namespaced | one materialization from a `KubeProvider` to `(GitBranch, path)` |
+| `KubeProvider` | namespaced | one source-cluster connection plus namespace access policy |
+| `GitBranch` | namespaced | one repository branch, held for every `GitTarget` that writes it |
 | `GitProvider` | namespaced | a Git repo + credentials + commit/signing config |
 | `FluxTrigger` | namespaced | the Flux `Kustomization` GitOps Reverser asks to apply, and the apply in flight |
 | `ArgoCDTrigger` | namespaced | the Argo CD `Application` GitOps Reverser asks to sync, and the sync in flight |
@@ -367,9 +376,9 @@ event serves only to name who scaled the parent.
 
 The two namespace controls intentionally live in different planes:
 
-- `ClusterProvider.spec.accessFrom` authorizes **control-cluster** namespaces to reference the
-  provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
-- `ClusterProvider.spec.allowCrossNamespace.sources` delegates the CHOICE of source namespace to the
+- `KubeProvider.spec.accessFrom` authorizes **control-cluster** namespaces other than its own to
+  reference the provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
+- `KubeProvider.spec.allowCrossNamespace.sources` delegates the CHOICE of source namespace to the
   `GitTarget`s that provider admits. It grants nothing: what may actually be read from the source
   cluster is bounded by that credential's own Kubernetes RBAC, which is the only bound there is. The
   operator reads no `Namespace` objects in a source cluster for authorization.
@@ -408,12 +417,14 @@ How attribution and finalization interact is described under
 - **Source**: [api/v1alpha3/gittarget_types.go](../api/v1alpha3/gittarget_types.go)
 - **Controller**: [internal/controller/gittarget_controller.go](../internal/controller/gittarget_controller.go)
 
-One materialization from a source provider to a Git destination: `(cluster provider, GitBranch, path)`.
+One materialization from a source provider to a Git destination: `(KubeProvider, GitBranch, path)`.
 Key fields:
 
 - `spec.gitBranchRef`: required; a `GitBranch` by name, in the `GitTarget`'s own namespace unless
   `namespace` names another one, whose `GitProvider`'s `spec.accessFrom` must then admit it.
-- `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
+- `spec.kubeProviderRef`: required; the source `KubeProvider`, in the `GitTarget`'s own namespace
+  unless `namespace` names another one, whose `spec.accessFrom` must then admit it. There is no
+  default provider: a missing one reports `Validated=False` (`KubeProviderNotFound`).
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
   chosen explicitly).
 - `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
@@ -432,7 +443,7 @@ may batch and phrase their commits differently. A branch worker serves a reposit
 its `GitBranch`'s `GitProvider`, and resolves the window per open window, since a window is bound to
 exactly one target.
 
-`gitBranchRef`, `clusterProviderRef`, and `path` are immutable so a target cannot silently orphan an
+`gitBranchRef`, `kubeProviderRef`, and `path` are immutable so a target cannot silently orphan an
 old materialization or change its source cluster. Among GitTargets on one `GitBranch`, from any
 namespace, the controller rejects overlapping paths. `spec.gitProviderRef`, `spec.branch` and
 `spec.parentBranch` left the `GitTarget` for the `GitBranch`; the schema keeps them only so that
@@ -451,7 +462,7 @@ Status has a kstatus-compatible summary layer plus domain conditions:
 - `Validated` and `EncryptionConfigured` explain control-plane health.
 - `StreamsRunning` explains the source side: every tracked type is past initial replay and routing live
   events.
-- `ClusterProviderReady` and `SourceClusterReachable` distinguish valid source configuration from a
+- `KubeProviderReady` and `SourceClusterReachable` distinguish valid source configuration from a
   source API the data plane can currently reach.
 - `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
@@ -478,7 +489,7 @@ Represents a Git repository and the credentials/configuration used to write it. 
 - `spec.url`: immutable repository URL.
 - `spec.secretRef`: optional Secret in the same namespace for HTTP/SSH authentication.
 - `spec.accessFrom`: which other namespaces' `GitTarget`s may write through this provider's
-  `GitBranch`es, by name or label selector, as on a `ClusterProvider`. Its own namespace is always
+  `GitBranch`es, by name or label selector, as on a `KubeProvider`. Its own namespace is always
   admitted; omitted admits no other. A `GitTarget` admitted from another namespace writes with this
   provider's credential and identity. Checked on every reconcile, so a tightened policy revokes.
 - `spec.knownHostsRef`: optional SSH known hosts source.
@@ -520,26 +531,46 @@ The controller proves the provider's credential by opening a receive-pack sessio
 steady interval while it succeeds), keeps the branch claim, and publishes the worker's observation.
 See [Git write architecture](#git-write-architecture) for the branch claim.
 
-### ClusterProvider
+### KubeProvider
 
-`ClusterProvider` is the read-side peer of `GitProvider`. A `GitTarget` references it by the immutable
-`spec.clusterProviderRef`; omission defaults to the conventional name `default`. The name is only a
-defaulting convention: a provider without `spec.kubeConfig` uses the operator's in-cluster client, while
-any name (including `default`) may instead carry a remote kubeconfig resolved from the operator namespace.
+- **Source**: [api/v1alpha3/kubeprovider_types.go](../api/v1alpha3/kubeprovider_types.go)
+- **Controller**: [internal/controller/kubeprovider_controller.go](../internal/controller/kubeprovider_controller.go)
 
-Its cluster scope is intentional. Several namespaces may mirror through one provider, but that provider's
-source identity must not vary by target because it keys source clients, discovery, watches, and
-attribution. The identity is the provider name rather than a deduplicated physical-cluster identity, so
-two providers pointing at the same API server still have separate contexts and authorization boundaries.
-`spec.accessFrom` is therefore a deny-by-default control-cluster policy, enforced on every
-reconcile before watches start, so tightening it also stops an already-existing `GitTarget`, which an
-admission-time check could not do. It guards which tenant may cause the operator to export a shared source;
-it does not expand that source credential's Kubernetes permissions. The `ClusterProvider` validates its
-connection inputs, while a `GitTarget` projects provider readiness and live source reachability.
+`KubeProvider` is the read-side peer of `GitProvider`. A `GitTarget`, `FluxTrigger` or `ArgoCDTrigger`
+references it by the required, immutable `spec.kubeProviderRef`; an omitted `namespace` means the
+referrer's own, and nothing falls back to a default provider. Its credential is exactly one of two
+immutable arms (delete and recreate the provider to repoint it):
 
-Remote credentials are re-read on the catalog-refresh cadence, not on every watch reconnect. A rotated
-Secret or a `qps`/`burst` change rebuilds that provider's clients and restarts only the watches using that
-provider; a definitively invalid or missing credential fails closed and stops those watches. An unreachable
+- `spec.secretRef`: a kubeconfig Secret in the provider's own namespace (key `value`, then
+  `value.yaml`, unless `key` names one). The kubeconfig safety checks refuse credentials named by
+  file path, and exec auth and insecure TLS unless the operator opts in through its flags.
+- `spec.inCluster: {}`: the operator's own identity, honored only for a provider listed in
+  `--in-cluster-kube-providers`; any other is `Stalled=True` (`InClusterNotAuthorized`) and never
+  used. `spec.client` is refused beside it, because the operator's own client is not throttled per
+  provider.
+
+Several namespaces may mirror through one provider, but its source identity must not vary by target
+because it keys source clients, discovery, watches, and attribution. The identity is the provider's
+`namespace/name` rather than a deduplicated physical-cluster identity, so two providers pointing at the
+same API server still have separate contexts and authorization boundaries. A provider admits
+consumers in its own namespace; `spec.accessFrom` admits others, and an omitted one admits no other
+namespace. The check runs on every reconcile before watches start (`NamespaceNotAuthorized`), so
+tightening it also stops an already-existing `GitTarget`, which an admission-time check could not
+do. It guards which tenant may cause the operator to export a source; it does not expand that source
+credential's Kubernetes permissions.
+
+Its audit route, `spec.attribution.auditRoute`, defaults to `<namespace>.<name>` and is held by one
+namespace: the namespace the route's first dot-segment names when a provider there carries it,
+otherwise the namespace of the oldest carrier. Providers in the holding namespace may share a route
+(several connections to one API server); one in another namespace reports `Stalled=True`
+(`AuditRouteConflict`) and is not used. The `KubeProvider` validates its connection inputs, while a
+`GitTarget` projects provider readiness and live source reachability.
+
+Credentials are re-resolved on the catalog-refresh cadence, not on every watch reconnect, `inCluster`
+ones included. A rotated Secret, a `spec.client` change, or a provider deleted and recreated under the
+same name rebuilds that provider's clients and restarts only the watches using that provider; a
+definitively invalid or missing credential, or an `inCluster` provider the installation stops
+listing, fails closed and stops those watches. An unreachable
 remote similarly makes only its dependent targets unready; it does not block discovery or watches for
 other source contexts.
 
@@ -554,8 +585,8 @@ change takes.
 ```mermaid
 flowchart LR
     subgraph CONTROL["Control plane: operator cluster"]
-        CP[ClusterProvider]
-        KCFG[("Remote kubeconfig Secret\noperator namespace")]
+        CP[KubeProvider]
+        KCFG[("Remote kubeconfig Secret\nprovider's namespace")]
         OWN["GitTarget watch set\nclaimed ∩ followable (GVR, scope)"]
         RELEVANCE["Relevance filter\nsanitize · followability · no-op diff"]
         RESOLVE["Resolver\nbounded grace window"]
@@ -565,10 +596,10 @@ flowchart LR
         AINDEX[("In-process fact index\nbounded, TTL, keyed for join")]
     end
 
-    subgraph SOURCE["Source cluster selected by ClusterProvider\n(the control cluster when kubeConfig is omitted)"]
+    subgraph SOURCE["Source cluster selected by KubeProvider\n(the control cluster for spec.inCluster)"]
         WATCH["WATCH + sendInitialEvents replay<br/>(per claimed GVR + scope)"]
         DISC["Discovery: CRDs / APIServices"]
-        AUDIT["/audit-webhook/&lt;provider&gt; (optional)"]
+        AUDIT["/audit-webhook/&lt;route&gt; (optional)"]
     end
 
     subgraph GIT["Git writes: internal/git"]
@@ -577,7 +608,7 @@ flowchart LR
         PUSH["Atomic push"]
     end
 
-    CP -. "optional Secret reference" .-> KCFG
+    CP -. "secretRef" .-> KCFG
     CP -->|"source client"| DISC
     CP -->|"source client"| WATCH
     DISC --> OWN
@@ -621,7 +652,7 @@ Following the ConfigMap edit:
    the remote moved).
 
 Separately, the audit path (only when attribution is enabled): kube-apiserver POSTs audit events to
-`/audit-webhook/<provider>`; [AuditHandler](../internal/webhook/audit_handler.go) extracts the minimal
+`/audit-webhook/<audit-route>`; [AuditHandler](../internal/webhook/audit_handler.go) extracts the minimal
 attribution facts and appends them to that route's per-type fact stream. A follower on the watch side
 reads the streams for the types it watches into a bounded, TTL'd in-process index. That index is read
 only by the resolver in step 3; it never creates or repairs object state.
@@ -879,7 +910,7 @@ per-mutation change log.
 
 Attribution runs only when `--author-attribution=true`. A normal
 source posts audit `EventList` payloads to `/audit-webhook/<audit-route>`, where the route is
-`ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name. The bare
+`KubeProvider.spec.attribution.auditRoute` and defaults to `<namespace>.<name>`. The bare
 `/audit-webhook` endpoint is enabled only with `--author-attribution-audit-route-annotation-key`, for a
 trusted control plane that puts an audit route in each event. There is no supplementary body endpoint or
 body joiner, because watch (not audit) carries the object body. The handler applies an intrinsic accept
@@ -908,7 +939,7 @@ requests initial state with either configuration.
 
 | Endpoint | Role |
 |---|---|
-| `/audit-webhook/<audit-route>` | One audit route's stream; some ClusterProvider must carry that route |
+| `/audit-webhook/<audit-route>` | One audit route's stream; some `KubeProvider` must carry that route |
 | `/audit-webhook` | Shared stream only when annotation routing is configured; each event names its route |
 
 The handler accepts a client certificate signed by the audit CA, but it does not yet bind that certificate
@@ -1248,7 +1279,7 @@ because Git already holds current state. This section is the authoritative contr
 
 The watch manager is a controller runtime `Runnable` (`NeedLeaderElection`). It owns **type level**
 discovery, the per-GitTarget watch sets, and the watched type tables for GitTargets. Its object-state
-intake is the watches themselves. Every active `ClusterProvider` has an independent source context; its
+intake is the watches themselves. Every active `KubeProvider` has an independent source context; its
 catalog, registry, dynamic client, and reachability can fail or recover without borrowing facts from another
 source. Discovery trigger informers (CRDs / APIServices) run only in the control plane and accelerate its
 catalog refresh; remote source catalogs use the periodic refresh.
@@ -1672,7 +1703,7 @@ by the validating webhook, not derived from the audit attribution index.
 
 Controllers watch their dependencies so dependents reconcile quickly after spec changes:
 
-- `GitTargetReconciler` watches `GitProvider`, `ClusterProvider`, `Namespace`, `WatchRule`, and
+- `GitTargetReconciler` watches `GitProvider`, `KubeProvider`, `Namespace`, `WatchRule`, and
   `ClusterWatchRule`. Provider changes re-check connection and authorization inputs; control-cluster
   Namespace label changes re-check provider-reference access. Rule changes re-resolve selected
   collections. It deliberately does **not** watch encryption Secrets, so their recovery is picked up
@@ -1680,21 +1711,23 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   every Secret value in the control-plane cache. It watches the apply triggers its `GitTarget`s name,
   for `ApplyTriggerReady`.
 - `ApplyTriggerReconciler` (one per trigger kind) watches its triggers, the `GitTarget`s naming
-  them, `GitProvider`s, `ClusterProvider`s and `Namespace` labels. It does not watch appliers: it
+  them, `GitProvider`s, `KubeProvider`s and `Namespace` labels. It does not watch appliers: it
   reads the Flux `Kustomization` or Argo CD `Application` on its tick to set `Configured`, so a
   cluster without the Flux or Argo CD CRDs needs no informer for them.
 - `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget`, `GitProvider` and
-  `ClusterProvider` (a `ClusterWatchRule` also `Namespace` labels), populate the RuleStore, and
+  `KubeProvider` (a `ClusterWatchRule` also `Namespace` labels), populate the RuleStore, and
   trigger the rule-change reconcile.
 - `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
-- `ClusterProviderReconciler` validates source-connection inputs and projects its readiness to dependent
-  targets. It also removes the retired fact-purge finalizer from pre-release objects during an upgrade.
+- `KubeProviderReconciler` validates source-connection inputs, decides whether the provider may be used
+  at all (the installation's `inCluster` consent, and which namespace holds its audit route), and
+  projects its readiness to dependent targets. A provider created, deleted or moved to another route
+  wakes the others carrying that route, so an `AuditRouteConflict` clears without waiting for a requeue.
 - `CommitRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
   optional `AuthorLookup` is the command-author cache populated by the `/validate-operator-types` webhook
   (wired whenever the admission webhook is enabled, independent of `--author-attribution`, and nil
   otherwise, so the request claims no actor).
 
-Dependency watches use narrow predicates to avoid status-only heartbeat churn: a `ClusterProvider` also
+Dependency watches use narrow predicates to avoid status-only heartbeat churn: a `KubeProvider` also
 admits a `Ready` transition, and a `Namespace` admits only label changes. `GitProvider`, `GitTarget`, and
 `CommitRequest` carry immutability constraints where a spec change would orphan a materialized subtree or
 invalidate an in-flight finalize.
@@ -1727,7 +1760,7 @@ flowchart TD
     Hq -->|no| J[Configured-author: no fact streams or index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
-    K --> L[Register GitProvider + ClusterProvider + GitTarget + FluxTrigger + ArgoCDTrigger<br/>+ CommitRequest controllers; admission webhooks]
+    K --> L[Register GitProvider + KubeProvider + GitTarget + FluxTrigger + ArgoCDTrigger<br/>+ CommitRequest controllers; admission webhooks]
     L --> M[Add cert watchers + health checks]
     M --> N[mgr.Start]
 ```
@@ -1823,14 +1856,14 @@ request and only a foreign one by a `ForeignCommit`. See
   evidence named the author and who it named; `_resolution_wait_seconds{tier,event_kind}` says what
   the grace wait cost, split by write and removal.
 
-**Discovery** (`api_catalog_*`) carries a `source_cluster` label and is recorded for every source
-cluster, so a degraded `APIService` on a remote cluster is visible. **Secret encryption** is one
-counter, `_secret_encryptions_total{outcome}`.
+**Discovery** (`api_catalog_*`) carries a `source_cluster` label (the provider's
+`<namespace>/<name>`) and is recorded for every source cluster, so a degraded `APIService` on a
+remote cluster is visible. **Secret encryption** is one counter, `_secret_encryptions_total{outcome}`.
 
 **Configuration state** is the one family that is not about flow.
 `gitopsreverser_resource_condition{kind,resource_namespace,resource_name,type,status,reason}`
 publishes the kstatus trio of every object a human declared (`GitTarget`, `WatchRule`,
-`ClusterWatchRule`, `GitProvider`, `ClusterProvider`, `FluxTrigger`, `ArgoCDTrigger`) as one series
+`ClusterWatchRule`, `GitProvider`, `KubeProvider`, `FluxTrigger`, `ArgoCDTrigger`) as one series
 per possible status, of which exactly one is `1`. It is recorded at `reconcileStatus.commit()`, the
 single status choke point every controller but the `CommitRequest` one uses, and the object's
 entry is dropped when the object goes: a condition series that outlives its object reports
@@ -1877,14 +1910,14 @@ Current limitations:
   sync or `flux resume`, which the operator suspends again when it starts.
 - **Only Flux and Argo CD can be appliers yet,** and an Argo CD `Application` only with automated
   sync off: one that syncs on its own is refused, not driven. The applier may live in any cluster a
-  `ClusterProvider` reaches (the trigger's `spec.clusterProviderRef`), such as a management cluster.
+  `KubeProvider` reaches (the trigger's `spec.kubeProviderRef`), such as a management cluster.
 - **An apply request cannot reserve time.** An edit made while the requested apply runs, to a field
   the applier sets, is reverted on the cluster. Its value stays in Git, because the applier's write
   over it is not mirrored, and the next apply restores it; until then the cluster runs the older
   value. See [the apply window](design/apply-trigger.md#the-apply-window).
-- **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
+- **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<audit-route>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
-  certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not
+  certificate is not bound to one audit route. This is an accepted privileged-control-plane assumption, not
   tenant isolation; see [SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model).
 - **`deletecollection`** is reconciled by the watch (each item arrives as its own `DELETED`, or the
   mark-and-sweep reconciles them on replay).

@@ -18,7 +18,7 @@ import (
 )
 
 // A trigger acts only while an eligible GitTarget references it: one that names it, is admitted by
-// its ClusterProviders, and writes the repository and branch the applier fetches. A trigger nothing
+// its KubeProviders, and writes the repository and branch the applier fetches. A trigger nothing
 // eligible names serves nobody, so it reads and writes nothing in the applier's cluster, and is not
 // in line for its applier. Eligibility is judged from those inputs alone, never from the
 // GitTarget's Ready, which reads the trigger's own Ready back (ApplyTriggerReady) and would make
@@ -38,7 +38,7 @@ type ReferenceState int
 const (
 	// ReferenceEligible names the trigger, is admitted, and writes what the applier fetches.
 	ReferenceEligible ReferenceState = iota
-	// ReferenceUndecided cannot be judged yet: its GitProvider or a ClusterProvider is missing, or
+	// ReferenceUndecided cannot be judged yet: its GitProvider or a KubeProvider is missing, or
 	// the applier's source has not been read.
 	ReferenceUndecided
 	// ReferenceRefused is not admitted, or writes another repository or branch.
@@ -167,10 +167,10 @@ func judgeReference(
 	decision, err := authz.ApplierAdmitted(ctx, reader, target, trigger)
 	switch {
 	case err != nil:
-		return ref, fmt.Errorf("check GitTarget %s against its ClusterProviders: %w", ref.Target, err)
+		return ref, fmt.Errorf("check GitTarget %s against its KubeProviders: %w", ref.Target, err)
 	case decision.Allowed:
-	case decision.Reason == authz.ReasonClusterProviderNotFound:
-		// A provider may be on its way, as the trigger's own ClusterProviderNotFound may.
+	case decision.Reason == authz.ReasonKubeProviderNotFound:
+		// A provider may be on its way, as the trigger's own KubeProviderNotFound may.
 		ref.State, ref.Message = ReferenceUndecided, decision.Message
 		return ref, nil
 	default:

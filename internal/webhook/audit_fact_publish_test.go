@@ -421,7 +421,7 @@ func TestAuditHandler_AnEventThatProducesNoFactIsCountedAsSuch(t *testing.T) {
 }
 
 // TestAuditHandler_RecordsTheRouteOfEveryAppendedBatch pins the publish-side signal the
-// ClusterProvider AuditFactsReceived condition latches on: the route is recorded once a batch has
+// KubeProvider AuditFactsReceived condition latches on: the route is recorded once a batch has
 // actually appended, and it is the route the events were posted under.
 func TestAuditHandler_RecordsTheRouteOfEveryAppendedBatch(t *testing.T) {
 	publisher := &fakeFactPublisher{}
@@ -473,7 +473,7 @@ func TestAuditHandler_RecordsNoRouteWhenNothingAppends(t *testing.T) {
 }
 
 // TestAuditHandler_RecordsDeliveryAndTransportFailure pins the two process-wide signals the
-// ClusterProvider condition uses to say WHICH silence a provider with no facts is in. Delivery is
+// KubeProvider condition uses to say WHICH silence a provider with no facts is in. Delivery is
 // recorded for the request itself, independently of whether anything in it could name an author;
 // the transport flag follows the append.
 func TestAuditHandler_RecordsDeliveryAndTransportFailure(t *testing.T) {

@@ -26,6 +26,9 @@ metadata:
 spec:
   gitBranchRef:
     name: demo-coffeeconfig-demo-test
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: voter-coffee
   commit:
     window:

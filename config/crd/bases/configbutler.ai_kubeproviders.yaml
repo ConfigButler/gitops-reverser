@@ -4,15 +4,15 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.22.0
-  name: clusterproviders.configbutler.ai
+  name: kubeproviders.configbutler.ai
 spec:
   group: configbutler.ai
   names:
-    kind: ClusterProvider
-    listKind: ClusterProviderList
-    plural: clusterproviders
-    singular: clusterprovider
-  scope: Cluster
+    kind: KubeProvider
+    listKind: KubeProviderList
+    plural: kubeproviders
+    singular: kubeprovider
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
@@ -23,6 +23,10 @@ spec:
       type: string
     - jsonPath: .status.conditions[?(@.type=="AuditFactsReceived")].status
       name: FactsReceived
+      type: string
+    - jsonPath: .status.auditRoute
+      name: Route
+      priority: 1
       type: string
     - jsonPath: .status.conditions[?(@.type=="Validated")].status
       name: Validated
@@ -39,19 +43,11 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster a
-          GitTarget mirrors FROM, and owns that cluster's connectivity credential (spec.kubeConfig),
-          namespace-access authorization (spec.accessFrom), and per-cluster status. Its NAME is the
-          cluster's identity for the watch data plane, and the DEFAULT for its audit route: attribution
-          facts are partitioned by spec.attribution.auditRoute, which falls back to this name. Several
-          providers may name one cluster by declaring one route, which is what an API server with a single
-          audit webhook backend requires. No name is special: "default" is merely what an omitted
-          GitTarget.spec.clusterProviderRef points at, and it may just as well name a remote cluster, since
-          in-cluster-ness follows from spec.kubeConfig (omitted = in-cluster) rather than from the name.
-
-          It is cluster-scoped and requires platform-admin permissions to create. A GitTarget may reference
-          it only from a namespace spec.accessFrom admits — deny-by-default, enforced at admission
-          and again before any watch starts.
+          KubeProvider names a source cluster: the cluster a GitTarget mirrors from, or an apply trigger
+          reaches its applier in. It holds the credential that reaches it (a kubeconfig Secret in its own
+          namespace, or the operator's own identity where the installation allows it), which control-cluster
+          namespaces may use it (its own, and those spec.accessFrom admits), and the audit route its
+          attribution facts are partitioned under.
         properties:
           apiVersion:
             description: |-
@@ -71,14 +67,13 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of ClusterProvider.
+            description: spec defines the desired state of KubeProvider.
             properties:
               accessFrom:
                 description: |-
-                  AccessFrom is the deny-by-default policy for which CONTROL-CLUSTER namespaces may reference
-                  this provider from a GitTarget. Empty (or omitted) means no namespace may reference it. Its
-                  selector matches labels on Namespaces in the control cluster (the cluster the operator's own
-                  CRs live in), never on the source cluster this provider names.
+                  AccessFrom admits other control-cluster namespaces to reference this provider. Its own
+                  namespace is always admitted; omitted, no other namespace is. Its selector matches labels on
+                  Namespaces in the control cluster, never on the source cluster this provider names.
                 properties:
                   names:
                     description: |-
@@ -140,11 +135,6 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 type: object
-              allowAnySourceNamespace:
-                description: |-
-                  RemovedAllowAnySourceNamespace is the removed spelling of allowCrossNamespace.sources. It is
-                  never read; setting it to true is refused.
-                type: boolean
               allowCrossNamespace:
                 description: |-
                   AllowCrossNamespace grants what a namespace this provider admits may reach outside itself,
@@ -177,31 +167,27 @@ spec:
                     description: |-
                       AuditRoute is the route this cluster's audit events arrive on. The sender is the API server's
                       webhook backend (https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend),
-                      and this is the <name> segment its configured URL ends in: /audit-webhook/<name>. When several
-                      logical clusters share one backend it is instead the value of the audit-event annotation named
-                      by --author-attribution-audit-route-annotation-key.
+                      and this is the <route> segment its configured URL ends in: /audit-webhook/<route>. When
+                      several logical clusters share one backend it is instead the value of the audit-event
+                      annotation named by --author-attribution-audit-route-annotation-key.
 
-                      It partitions the attribution facts, so two ClusterProviders carrying the same route read one
+                      It partitions the attribution facts, so two KubeProviders carrying the same route read one
                       cluster's facts, and two carrying different routes can never cross-credit an author.
 
-                      Empty means metadata.name. Set it when several ClusterProviders name one cluster, since an API
-                      server has one webhook backend and so posts under one route: every other provider for that
-                      cluster must be pointed at the same route or it resolves no authors at all. Set it also when
-                      the events are labelled for something other than this object, such as a kcp logical cluster.
+                      Empty means <namespace>.<name>, which no provider in another namespace can resolve to. Set it
+                      when several KubeProviders in this namespace name one cluster, since an API server has one
+                      webhook backend and so posts under one route. A route is held by one namespace: providers in
+                      another namespace that carry it report Stalled=True with reason AuditRouteConflict and are not
+                      used. The namespace a route starts with (<namespace>.) holds it when a provider there carries
+                      it; otherwise the namespace of the oldest provider carrying it does.
                     maxLength: 253
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     type: string
                 type: object
-              burst:
-                description: RemovedBurst is the old spelling of client.burst. It
-                  is never read; setting it is refused.
-                format: int32
-                type: integer
               client:
                 description: |-
                   Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
-                  the built-in defaults apply (20 QPS, burst 30). Ignored when kubeConfig is omitted (the
-                  in-cluster client is not per-provider).
+                  the built-in defaults apply (20 QPS, burst 30). Refused beside inCluster.
                 properties:
                   burst:
                     description: |-
@@ -218,122 +204,61 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
-              kubeConfig:
+              inCluster:
                 description: |-
-                  KubeConfig names the SOURCE CLUSTER this provider represents and the credentials to reach it
-                  (Flux's meta.KubeConfigReference, embedded verbatim). OMITTED means the operator's own
-                  in-cluster cluster, for any provider name. IMMUTABLE.
-
-                  The referenced Secret is resolved from the operator's namespace, so a cluster's credential
-                  never has to live on that cluster. Only secretRef is honored; configMapRef is rejected. When
-                  secretRef.key is empty the resolver reads "value" then "value.yaml" (Flux's order). Unsafe
-                  kubeconfigs (exec auth, insecure-skip-tls-verify) are rejected with Validated=False unless the
-                  operator opts in via flags.
+                  InCluster makes this provider use the operator's own identity in the cluster it runs in. It is
+                  honored only for a KubeProvider the installation lists in --in-cluster-kube-providers; any
+                  other reports Stalled=True with reason InClusterNotAuthorized and is never used. Exactly one
+                  of secretRef and inCluster is set. Immutable.
+                type: object
+              secretRef:
+                description: |-
+                  SecretRef names a Secret in this KubeProvider's namespace holding a kubeconfig for the source
+                  cluster. When key is empty the kubeconfig is read from "value", then "value.yaml" (Flux's
+                  order). Unsafe kubeconfigs (exec auth, insecure-skip-tls-verify, credentials named by file
+                  path) are refused with Validated=False unless the operator opts in through its flags.
+                  Exactly one of secretRef and inCluster is set. Immutable.
                 properties:
-                  configMapRef:
-                    description: |-
-                      ConfigMapRef holds an optional name of a ConfigMap that contains
-                      the following keys:
-
-                      - `provider`: the provider to use. One of `aws`, `azure`, `gcp`, or
-                         `generic`. Required.
-                      - `cluster`: the fully qualified resource name of the Kubernetes
-                         cluster in the cloud provider API. Not used by the `generic`
-                         provider. Required when one of `address` or `ca.crt` is not set.
-                      - `address`: the address of the Kubernetes API server. Required
-                         for `generic`. For the other providers, if not specified, the
-                         first address in the cluster resource will be used, and if
-                         specified, it must match one of the addresses in the cluster
-                         resource.
-                         If audiences is not set, will be used as the audience for the
-                         `generic` provider.
-                      - `ca.crt`: the optional PEM-encoded CA certificate for the
-                         Kubernetes API server. If not set, the controller will use the
-                         CA certificate from the cluster resource.
-                      - `audiences`: the optional audiences as a list of
-                         line-break-separated strings for the Kubernetes ServiceAccount
-                         token. Defaults to the `address` for the `generic` provider, or
-                         to specific values for the other providers depending on the
-                         provider.
-                      -  `serviceAccountName`: the optional name of the Kubernetes
-                         ServiceAccount in the same namespace that should be used
-                         for authentication. If not specified, the controller
-                         ServiceAccount will be used.
-
-                      Mutually exclusive with SecretRef.
-                    properties:
-                      name:
-                        description: Name of the referent.
-                        type: string
-                    required:
-                    - name
-                    type: object
-                  secretRef:
-                    description: |-
-                      SecretRef holds an optional name of a secret that contains a key with
-                      the kubeconfig file as the value. If no key is set, the key will default
-                      to 'value'. Mutually exclusive with ConfigMapRef.
-                      It is recommended that the kubeconfig is self-contained, and the secret
-                      is regularly updated if credentials such as a cloud-access-token expire.
-                      Cloud specific `cmd-path` auth helpers will not function without adding
-                      binaries and credentials to the Pod that is responsible for reconciling
-                      Kubernetes resources. Supported only for the generic provider.
-                    properties:
-                      key:
-                        description: Key in the Secret, when not specified an implementation-specific
-                          default key is used.
-                        type: string
-                      name:
-                        description: Name of the Secret.
-                        type: string
-                    required:
-                    - name
-                    type: object
+                  key:
+                    description: Key in the Secret, when not specified an implementation-specific
+                      default key is used.
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    type: string
+                required:
+                - name
                 type: object
                 x-kubernetes-validations:
-                - message: exactly one of spec.kubeConfig.configMapRef or spec.kubeConfig.secretRef
-                    must be specified
-                  rule: has(self.configMapRef) || has(self.secretRef)
-                - message: exactly one of spec.kubeConfig.configMapRef or spec.kubeConfig.secretRef
-                    must be specified
-                  rule: '!has(self.configMapRef) || !has(self.secretRef)'
-              qps:
-                description: RemovedQPS is the old spelling of client.qps. It is never
-                  read; setting it is refused.
-                format: int32
-                type: integer
+                - message: spec.secretRef.name must not be empty
+                  rule: size(self.name) > 0
             type: object
             x-kubernetes-validations:
-            - message: spec.kubeConfig is immutable; delete and recreate the ClusterProvider
-                to point a name at a different cluster
-              rule: has(self.kubeConfig) == has(oldSelf.kubeConfig) && (!has(self.kubeConfig)
-                || self.kubeConfig == oldSelf.kubeConfig)
-            - message: spec.kubeConfig.configMapRef (workload-identity auth) is not
-                yet supported; use secretRef
-              rule: '!has(self.kubeConfig) || !has(self.kubeConfig.configMapRef)'
-            - message: spec.kubeConfig.secretRef.name must not be empty
-              rule: '!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name)
-                > 0'
-            - message: spec.qps and spec.burst moved to spec.client.qps and spec.client.burst
-              rule: '!has(self.qps) && !has(self.burst)'
-            - message: allowAnySourceNamespace was removed; set allowCrossNamespace.sources
-              rule: '!has(self.allowAnySourceNamespace) || !self.allowAnySourceNamespace'
+            - message: set exactly one of spec.secretRef and spec.inCluster
+              rule: has(self.secretRef) != has(self.inCluster)
+            - message: 'spec.client is refused beside spec.inCluster: the operator''s
+                own client is not throttled per provider'
+              rule: '!has(self.inCluster) || !has(self.client)'
+            - message: spec.secretRef and spec.inCluster are immutable; delete and
+                recreate the KubeProvider to point it at a different cluster
+              rule: has(self.inCluster) == has(oldSelf.inCluster) && (!has(self.secretRef)
+                || self.secretRef == oldSelf.secretRef)
           status:
-            description: status defines the observed state of ClusterProvider.
+            description: status defines the observed state of KubeProvider.
             properties:
               auditRoute:
                 description: |-
                   AuditRoute is the route this provider's attribution facts are partitioned under, as resolved:
-                  spec.attribution.auditRoute, or metadata.name when that is empty. It is the route the
+                  spec.attribution.auditRoute, or <namespace>.<name> when that is empty. It is the route the
                   AuditFactsReceived condition describes, so when it changes that condition starts over —
                   proof that one route delivered says nothing about another.
                 type: string
               conditions:
                 description: |-
-                  Conditions report the provider's readiness: Validated (kubeconfig inputs are safe and
+                  Conditions report the provider's readiness: Validated (the credential is safe and
                   resolvable, asserted without a network dial) plus the aggregated Ready and the kstatus
-                  Reconciling/Stalled pair. Runtime reachability/discovery health and a last-audit-event
-                  timestamp are deferred until authenticated remote ingest wires them from the watch engine.
+                  Reconciling/Stalled pair. Stalled=True with reason InClusterNotAuthorized or
+                  AuditRouteConflict means the provider is not used at all.
 
                   AuditFactsReceived reports whether an attribution fact has ever been accepted and recorded on
                   this provider's audit route. It is True (Received) from the first one on and never goes back:

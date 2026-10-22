@@ -10,7 +10,7 @@ resources:
 - deployment.yaml
 - certs
 - webhook
-- clusterprovider-default.yaml
+- kubeprovider-local.yaml
 images:
 - name: gitops-reverser
   newName: gitops-reverser

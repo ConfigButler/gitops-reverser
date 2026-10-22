@@ -19,9 +19,9 @@ const DefaultKeyPrefix = "gitops-reverser"
 
 // routeKeyInfix carries the AUDIT ROUTE dimension so a fact from cluster A never joins a watch
 // event from cluster B — the rv-only hatch especially, since RV is not globally unique. The route
-// is what the audit events arrived under, NOT the ClusterProvider's name: an API server has one
+// is what the audit events arrived under, NOT the KubeProvider's name: an API server has one
 // webhook backend and posts under one route, so several providers naming one cluster all declare
-// that route and share its facts (ClusterProvider.AuditRoute()). It is spelled "route" rather than
+// that route and share its facts (KubeProvider.AuditRoute()). It is spelled "route" rather than
 // "auditRoute" because the key already says audit one segment earlier, and it sits directly after
 // the domain suffix so one route's streams share a single glob prefix.
 const routeKeyInfix = "route:"

@@ -29,9 +29,10 @@ var _ = Describe("Duration fields", func() {
 	// newTargetWindow builds a GitTarget with the given commit.window block.
 	newTargetWindow := func(name string, window map[string]any) *unstructured.Unstructured {
 		spec := map[string]any{
-			"gitBranchRef": map[string]any{"name": "any-provider-main"},
-			"path":         "clusters/prod",
-			"commit":       map[string]any{"window": window},
+			"gitBranchRef":    map[string]any{"name": "any-provider-main"},
+			"kubeProviderRef": map[string]any{"name": "local"},
+			"path":            "clusters/prod",
+			"commit":          map[string]any{"window": window},
 		}
 		return &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "configbutler.ai/v1alpha3",
@@ -142,9 +143,10 @@ var _ = Describe("Duration fields", func() {
 			"kind":       "GitTarget",
 			"metadata":   map[string]any{"name": "window-empty-block", "namespace": "default"},
 			"spec": map[string]any{
-				"gitBranchRef": map[string]any{"name": "any-provider-main"},
-				"path":         "clusters/prod",
-				"commit":       map[string]any{"window": map[string]any{}},
+				"gitBranchRef":    map[string]any{"name": "any-provider-main"},
+				"kubeProviderRef": map[string]any{"name": "local"},
+				"path":            "clusters/prod",
+				"commit":          map[string]any{"window": map[string]any{}},
 			},
 		}}
 		Expect(k8sClient.Create(ctx, empty)).To(Succeed())
@@ -169,9 +171,10 @@ var _ = Describe("Duration fields", func() {
 			"kind":       "GitTarget",
 			"metadata":   map[string]any{"name": "window-legacy-string", "namespace": "default"},
 			"spec": map[string]any{
-				"gitBranchRef": map[string]any{"name": "any-provider-main"},
-				"path":         "clusters/prod",
-				"commit":       map[string]any{"window": "5s"},
+				"gitBranchRef":    map[string]any{"name": "any-provider-main"},
+				"kubeProviderRef": map[string]any{"name": "local"},
+				"path":            "clusters/prod",
+				"commit":          map[string]any{"window": "5s"},
 			},
 		}}
 		err := k8sClient.Create(ctx, legacy)

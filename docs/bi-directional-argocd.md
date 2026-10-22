@@ -56,7 +56,7 @@ starts and once when a `GitTarget` first names the trigger ([one sync](#one-sync
 | `targetRevision` is the `GitTarget`'s branch (`main` or `refs/heads/main`) | The tip GitOps Reverser checks is the tip of that branch | `SourceMismatch` for `HEAD`, an empty `targetRevision`, a tag or a commit |
 | The source renders the folder GitOps Reverser writes: `directory.recurse: true` for a plain directory, or a kustomization at the path | GitOps Reverser writes `<path>/<namespace>/<group>/<plural>/<name>.yaml` | A non-recursive directory sees no files, and the sync applies nothing |
 | Resource tracking by `annotation`, Argo CD's default | GitOps Reverser strips `argocd.argoproj.io/tracking-id`; it cannot strip `app.kubernetes.io/instance`, a label people set on purpose | With `label` or `annotation+label`, the tracking label reaches Git on every object |
-| `get` and `update` on the `Application`, for the identity of the `ClusterProvider` that reaches it | A sync is an update of the `Application` | `Forbidden` |
+| `get` and `update` on the `Application`, for the identity of the `KubeProvider` that reaches it | A sync is an update of the `Application` | `Forbidden` |
 | Nothing but GitOps Reverser syncs the `Application` while GitOps Reverser runs | See [what not to do](#what-not-to-do) | Not checked: an unchecked sync can revert live edits |
 
 ## A complete example
@@ -95,18 +95,22 @@ spec:
 ```
 
 The GitOps Reverser side. The `GitProvider` points at the same repository (any URL form of it) and
-serves a push receiver; an `ArgoCDTrigger` holds the `Application`, in the cluster the `default`
-`ClusterProvider` names, and the `GitTarget` names the trigger. The `Application` is in `argocd`
-and the trigger in `team-a`, so the provider lets `team-a`'s triggers reach another namespace
-(`allowCrossNamespace.appliers`); with the Helm chart, set
-`clusterProvider.default.allowCrossNamespace.appliers: true` instead of declaring it:
+serves a push receiver; an `ArgoCDTrigger` holds the `Application`, in the cluster the chart's
+`local` `KubeProvider` names (the operator's own, through `spec.inCluster`), and the `GitTarget`
+names the trigger. The `Application` is in `argocd` and the trigger in `team-a`, so the provider
+lets `team-a`'s triggers reach another namespace (`allowCrossNamespace.appliers`); with the Helm
+chart, set `kubeProvider.allowCrossNamespace.appliers: true` instead of declaring it. A
+`KubeProvider` with `inCluster` that you declare yourself is honored only once it is listed in
+`--in-cluster-kube-providers`, which the chart does for its own:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: ClusterProvider
+kind: KubeProvider
 metadata:
-  name: default
+  name: local
+  namespace: gitops-reverser
 spec:
+  inCluster: {}
   accessFrom:
     names: [team-a]
   allowCrossNamespace:
@@ -153,6 +157,9 @@ metadata:
 spec:
   gitBranchRef:
     name: platform-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: apps/checkout
   applyTriggerRef:
     kind: ArgoCDTrigger
@@ -165,8 +172,9 @@ metadata:
   name: checkout
   namespace: team-a
 spec:
-  clusterProviderRef:
-    name: default
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   applicationRef:
     namespace: argocd
     name: checkout
@@ -212,21 +220,22 @@ metadata:
   name: checkout
   namespace: team-a            # the GitTargets naming it are in this namespace
 spec:
-  clusterProviderRef:          # the cluster the Application lives in; default: "default"
-    name: management
+  kubeProviderRef:             # the cluster the Application lives in; required
+    name: management           # namespace omitted: the trigger's own
   applicationRef:
     namespace: argocd          # default: the trigger's namespace
     name: checkout
 ```
 
-`clusterProviderRef` names the cluster that holds the `Application`: the operator's own cluster for
-`default`, or a management cluster for a hub Argo CD that deploys to other clusters. The
-`GitTarget`'s own `spec.clusterProviderRef` stays the cluster it mirrors. An `Application` in
-another namespace than the trigger's, such as `argocd`, needs `allowCrossNamespace.appliers: true` on
-that `ClusterProvider`; without it the trigger reports `ApplierNamespaceNotAllowed`. That is a
-delegation, not owner consent: every namespace the provider admits may then sync any `Application`
-in reach of its identity whose source is the repository its `GitProvider` names, and nothing proves
-it owns the `Application` or may write to the repository. See
+`kubeProviderRef` names the cluster that holds the `Application`: the operator's own cluster for an
+`inCluster` provider such as the chart's `local`, or a management cluster for a hub Argo CD that
+deploys to other clusters. The provider must admit the trigger's namespace: its own, or one its
+`accessFrom` admits. The `GitTarget`'s own `spec.kubeProviderRef` stays the cluster it mirrors. An
+`Application` in another namespace than the trigger's, such as `argocd`, needs
+`allowCrossNamespace.appliers: true` on that `KubeProvider`; without it the trigger reports
+`ApplierNamespaceNotAllowed`. That is a delegation, not owner consent: every namespace the provider
+admits may then sync any `Application` in reach of its identity whose source is the repository its
+`GitProvider` names, and nothing proves it owns the `Application` or may write to the repository. See
 [what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
 Both references are immutable: delete and recreate the trigger to hold another `Application`. The
 trigger writes nothing to the `Application` until it syncs it, so deleting it, or no longer naming
@@ -256,7 +265,7 @@ stateDiagram-v2
 ```
 
 A trigger acts only while an eligible `GitTarget` references it: one in the trigger's namespace that
-names it, is admitted by its `ClusterProvider`s, and writes the repository and branch the
+names it, is admitted by its `KubeProvider`s, and writes the repository and branch the
 `Application` syncs. A trigger nothing eligible references starts no sync and is not in line for
 the `Application`; one no `GitTarget` names also reads nothing in the `Application`'s cluster. An
 `Application` has nothing to hold, so there is nothing to hand back either.
@@ -273,9 +282,10 @@ The trigger reports `Configured`, and its `Ready` includes it:
 | `UnsupportedSource` | The `Application` has several sources, a source hydrator, or no source | stalled |
 | `AutomatedSyncEnabled` | Automated sync is on | stalled |
 | `Forbidden` | The applier cluster's identity may not update the `Application` | stalled |
-| `NamespaceNotAuthorized` | The `clusterProviderRef` names a provider whose `accessFrom` does not admit the trigger's namespace | stalled |
-| `ClusterProviderNotFound` | The `clusterProviderRef` names a provider that does not exist | progressing |
-| `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger's, and the `ClusterProvider` does not set `allowCrossNamespace.appliers` | stalled |
+| `NamespaceNotAuthorized` | The `kubeProviderRef` names a provider in another namespace whose `accessFrom` does not admit the trigger's namespace | stalled |
+| `KubeProviderNotFound` | The `kubeProviderRef` names a provider that does not exist | progressing |
+| `AuditRouteConflict` | The provider carries an audit route another namespace holds, so it is not used | stalled |
+| `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger's, and the `KubeProvider` does not set `allowCrossNamespace.appliers` | stalled |
 | `HeldByAnotherTrigger` | Another `ArgoCDTrigger` in line for the same `Application` in the same cluster, one an eligible `GitTarget` references, was created first and holds it; this one starts no sync, and takes over once that one is deleted or no longer referenced | stalled: delete one of the two |
 
 A sync that has not completed within 5 minutes also makes the trigger `Ready=False` with
@@ -288,8 +298,8 @@ trigger has seen that the `GitTarget` names it, and otherwise the trigger's own 
 
 ## Permissions
 
-GitOps Reverser looks the `Application` up in the cluster of the trigger's `clusterProviderRef`,
-with the identity of that `ClusterProvider`. That identity needs:
+GitOps Reverser looks the `Application` up in the cluster of the trigger's `kubeProviderRef`,
+with the identity of that `KubeProvider`. That identity needs:
 
 | API group | Resource | Verbs |
 | --- | --- | --- |
@@ -299,7 +309,7 @@ with the identity of that `ClusterProvider`. That identity needs:
 A sync is started by an `update` of the `Application`, the way Argo CD's own automated sync starts
 one. For the operator's own cluster, install the chart with `applierAccess.argocd: true`, or apply
 [`config/rbac/argocd-applier-role.yaml`](../config/rbac/argocd-applier-role.yaml) and its binding.
-For a remote cluster, grant the same to the identity in the `ClusterProvider`'s kubeconfig. A `Role`
+For a remote cluster, grant the same to the identity in the `KubeProvider`'s kubeconfig. A `Role`
 in the `Application`'s namespace is enough. Argo CD's own RBAC does not apply: GitOps Reverser
 writes the `Application` through the Kubernetes API, as `kubectl` would, not through `argocd-server`.
 
@@ -464,8 +474,8 @@ it.
 | Trigger `Configured=False`, `AutomatedSyncEnabled` | `spec.syncPolicy.automated` is present without `enabled: false` | Set `automated.enabled: false` (keep `prune`), or remove the block |
 | Trigger `Configured=False`, `ApplierNotFound` | No `Application` with that namespace and name in the trigger's cluster, or Argo CD is not installed there | Create it, or recreate the trigger with the right `applicationRef`; an omitted namespace is the trigger's |
 | `ApplyTriggerReady=False`, `SourceMismatch`, or trigger `UnsupportedSource` | The message names the broken [`Application` rule](#the-application) | Fix the `Application`; a sync that was waiting is asked for afterward |
-| Trigger `Configured=False`, `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger, such as `argocd` | Set `allowCrossNamespace.appliers: true` on the trigger's `ClusterProvider` (Helm: `clusterProvider.default.allowCrossNamespace.appliers`), or move the trigger and `GitTarget` to the `Application`'s namespace |
-| Trigger `Configured=Unknown`, `NotBound` | A `GitTarget` names the trigger, but cannot be judged yet: its `GitProvider` or `ClusterProvider` does not exist | Create the missing object; the message names it |
+| Trigger `Configured=False`, `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger, such as `argocd` | Set `allowCrossNamespace.appliers: true` on the trigger's `KubeProvider` (Helm: `kubeProvider.allowCrossNamespace.appliers`), or move the trigger and `GitTarget` to the `Application`'s namespace |
+| Trigger `Configured=Unknown`, `NotBound` | A `GitTarget` names the trigger, but cannot be judged yet: its `GitProvider` or `KubeProvider` does not exist | Create the missing object; the message names it |
 | Trigger `Configured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.argocd: true` |
 | A Warning `ApplyRequestFailed` Event | A request could not be delivered, such as a sync somebody else started that did not end within 5 minutes | GitOps Reverser keeps asking after its backoff, at most every five minutes |
 | A Warning `ApplyFailed` Event | The sync ended `Failed` or `Error`; the message carries Argo CD's | Fix what the message names; GitOps Reverser asks again after its backoff |

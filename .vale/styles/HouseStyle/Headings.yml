@@ -53,7 +53,7 @@ exceptions:
   - GitProvider
   - WatchRule
   - ClusterWatchRule
-  - ClusterProvider
+  - KubeProvider
   - CommitRequest
   - APIResourceCatalog
   - HelmRelease

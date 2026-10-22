@@ -41,6 +41,21 @@ const (
 	targetNS            = "team-a"
 )
 
+// kubeProviderNS is where the tests' KubeProviders live: a namespace of their own, so whether one
+// admits targetNS is its spec.accessFrom's decision rather than the own-namespace rule's.
+const kubeProviderNS = "clusters"
+
+// localCluster is the KubeProvider a test GitTarget mirrors through when it names none.
+const localCluster = "local"
+
+// clusterID is the source-cluster id of the test KubeProvider called name: its namespace/name.
+func clusterID(name string) string { return kubeProviderNS + "/" + name }
+
+// kubeProviderRef references the test KubeProvider called name, spelling its namespace out.
+func kubeProviderRef(name string) fluxmeta.NamespacedObjectReference {
+	return fluxmeta.NamespacedObjectReference{Namespace: kubeProviderNS, Name: name}
+}
+
 var (
 	testBranchKey = git.BranchKeyFor(testRepoURL, testBranch)
 	testProvider  = types.NamespacedName{Namespace: targetNS, Name: "platform"}
@@ -48,14 +63,16 @@ var (
 )
 
 // Test-only annotations on a GitTarget, which newDispatcherFixture reads to create the trigger the
-// GitTarget names: the applier it holds ("namespace/name") and the cluster it is in.
+// GitTarget names: the applier it holds ("namespace/name") and the cluster it is in (a source-cluster
+// id, "namespace/name" of its KubeProvider).
 const (
 	testKustomizationAnnotation  = "test.gitops-reverser/kustomization"
 	testApplicationAnnotation    = "test.gitops-reverser/application"
 	testTriggerClusterAnnotation = "test.gitops-reverser/trigger-cluster"
 )
 
-// gitTarget builds a GitTarget on testBranchKey, mirroring cluster (the default when empty). A
+// gitTarget builds a GitTarget on testBranchKey, mirroring the KubeProvider cluster (localCluster
+// when empty). A
 // kustomizationRef makes it name the FluxTrigger of that Kustomization's name, which holds it in the
 // same cluster; nil names no trigger.
 func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference, cluster string) *v1alpha3.GitTarget {
@@ -66,9 +83,10 @@ func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference
 			Path:         name,
 		},
 	}
-	if cluster != "" {
-		target.Spec.ClusterProviderRef = &fluxmeta.LocalObjectReference{Name: cluster}
+	if cluster == "" {
+		cluster = localCluster
 	}
+	target.Spec.KubeProviderRef = kubeProviderRef(cluster)
 	if kustomizationRef != nil {
 		namesKustomization(target, kustomizationRef.Namespace, kustomizationRef.Name)
 		target.Annotations[testTriggerClusterAnnotation] = target.SourceCluster()
@@ -102,15 +120,16 @@ func triggersFor(objects []client.Object) []client.Object {
 		seen[key] = true
 		cluster := target.Annotations[testTriggerClusterAnnotation]
 		if cluster == "" {
-			cluster = v1alpha3.DefaultClusterProviderName
+			cluster = clusterID(localCluster)
 		}
 		meta := metav1.ObjectMeta{Namespace: target.Namespace, Name: target.Spec.ApplyTriggerRef.Name}
-		provider := &fluxmeta.LocalObjectReference{Name: cluster}
+		providerNS, providerName, _ := strings.Cut(cluster, "/")
+		provider := fluxmeta.NamespacedObjectReference{Namespace: providerNS, Name: providerName}
 		if app, ok := target.Annotations[testApplicationAnnotation]; ok {
 			namespace, name, _ := strings.Cut(app, "/")
 			triggers = append(triggers, &v1alpha3.ArgoCDTrigger{ObjectMeta: meta, Spec: v1alpha3.ArgoCDTriggerSpec{
-				ClusterProviderRef: provider,
-				ApplicationRef:     fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
+				KubeProviderRef: provider,
+				ApplicationRef:  fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
 			}})
 			continue
 		}
@@ -118,8 +137,8 @@ func triggersFor(objects []client.Object) []client.Object {
 			namespace, name, _ := strings.Cut(ks, "/")
 			// Its reconciler holds the Kustomization (Ask.Held), unless a test says otherwise.
 			triggers = append(triggers, &v1alpha3.FluxTrigger{ObjectMeta: meta, Spec: v1alpha3.FluxTriggerSpec{
-				ClusterProviderRef: provider,
-				KustomizationRef:   fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
+				KubeProviderRef:  provider,
+				KustomizationRef: fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
 			}, Status: v1alpha3.FluxTriggerStatus{Conditions: []metav1.Condition{{
 				Type: TriggerConditionHeld, Status: metav1.ConditionTrue, Reason: "Suspended",
 				LastTransitionTime: metav1.Now(),
@@ -135,20 +154,22 @@ func reapplying(target *v1alpha3.GitTarget) *v1alpha3.GitTarget {
 	return target
 }
 
-// clusterProvider admits the GitTargets in the named namespaces.
-func clusterProvider(name string, admits ...string) *v1alpha3.ClusterProvider {
-	return &v1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: v1alpha3.ClusterProviderSpec{
+// kubeProvider is the KubeProvider name in kubeProviderNS, admitting the GitTargets in the named
+// namespaces.
+func kubeProvider(name string, admits ...string) *v1alpha3.KubeProvider {
+	return &v1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: kubeProviderNS, Name: name},
+		Spec: v1alpha3.KubeProviderSpec{
+			InCluster:  &v1alpha3.KubeProviderInCluster{},
 			AccessFrom: &v1alpha3.NamespaceMatcher{Names: admits},
 			// The test appliers live in flux-system and argocd, not in the triggers' namespace.
-			AllowCrossNamespace: &v1alpha3.ClusterProviderCrossNamespace{Appliers: true},
+			AllowCrossNamespace: &v1alpha3.KubeProviderCrossNamespace{Appliers: true},
 		},
 	}
 }
 
 // controlPlane is what every dispatcher test reads besides its GitTargets: testProvider, the
-// GitProvider of testBranchKey, and the ClusterProviders the tests name, admitting targetNS.
+// GitProvider of testBranchKey, and the KubeProviders the tests name, admitting targetNS.
 func controlPlane() []client.Object {
 	return []client.Object{
 		&v1alpha3.GitProvider{
@@ -161,8 +182,8 @@ func controlPlane() []client.Object {
 				GitProviderRef: fluxmeta.LocalObjectReference{Name: testProvider.Name}, Branch: testBranch,
 			},
 		},
-		clusterProvider(v1alpha3.DefaultClusterProviderName, targetNS),
-		clusterProvider("prod-eu-1", targetNS),
+		kubeProvider(localCluster, targetNS),
+		kubeProvider("prod-eu-1", targetNS),
 	}
 }
 
@@ -176,17 +197,17 @@ func ref(name string) itypes.ResourceReference { return itypes.NewResourceRefere
 // uid is the uid gitTarget gives the GitTarget of that name.
 func uid(name string) types.UID { return types.UID("uid-" + name) }
 
-// kustomizationApplier is a Kustomization applier in a cluster, held by the FluxTrigger in targetNS
-// of the Kustomization's name.
+// kustomizationApplier is a Kustomization applier in the cluster of the test KubeProvider called
+// cluster, held by the FluxTrigger in targetNS of the Kustomization's name.
 func kustomizationApplier(cluster, namespace, name string) git.ApplierRef {
 	return git.ApplierRef{
 		Trigger: git.TriggerRef{Kind: v1alpha3.ApplyTriggerKindFlux, Namespace: targetNS, Name: name},
-		Cluster: cluster, Kind: v1alpha3.ApplierKindKustomization, Namespace: namespace, Name: name,
+		Cluster: clusterID(cluster), Kind: v1alpha3.ApplierKindKustomization, Namespace: namespace, Name: name,
 	}
 }
 
-// checkout is the applier most tests ask: flux-system/checkout in the default cluster.
-var checkout = kustomizationApplier(v1alpha3.DefaultClusterProviderName, fluxSystemNS, "checkout")
+// checkout is the applier most tests ask: flux-system/checkout in the local cluster.
+var checkout = kustomizationApplier(localCluster, fluxSystemNS, "checkout")
 
 // request is one attempt for an applier to apply testCommit, for the named targets, all asking for
 // reason.
@@ -383,7 +404,7 @@ func TestDispatcher_AsksOnceForEveryTarget(t *testing.T) {
 
 	assert.Equal(t, git.ApplyResult{ID: 1, Outcome: git.ApplyRequested}, res)
 	assert.Equal(t, fetchedAndResumed, f.patches(), "one fetch and one resume for the applier")
-	assert.Equal(t, []string{v1alpha3.DefaultClusterProviderName}, f.source.clusters)
+	assert.Equal(t, []string{clusterID(localCluster)}, f.source.clusters)
 	assert.ElementsMatch(t, []string{
 		"Normal ApplyRequested asked Kustomization flux-system/checkout to apply 4f2c1ab9 (Refusal)",
 		"Normal ApplyRequested asked Kustomization flux-system/checkout to apply 4f2c1ab9 (CatchUp)",
@@ -409,14 +430,14 @@ func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
 	)
 
 	assert.Equal(t, git.ApplyRequested, f.attempt(request(own, v1alpha3.ApplyReasonForeignCommit, "c")).Outcome)
-	assert.Equal(t, []string{"prod-eu-1"}, f.source.clusters)
+	assert.Equal(t, []string{clusterID("prod-eu-1")}, f.source.clusters)
 	assert.Equal(t, []string{"gitrepositories " + targetNS, "kustomizations " + targetNS + " (suspend=false)"},
 		f.patches())
 }
 
-// appliedFrom puts the applier of a GitTarget's trigger in the cluster another ClusterProvider names.
+// appliedFrom puts the applier of a GitTarget's trigger in the cluster of another test KubeProvider.
 func appliedFrom(target *v1alpha3.GitTarget, cluster string) *v1alpha3.GitTarget {
-	target.Annotations[testTriggerClusterAnnotation] = cluster
+	target.Annotations[testTriggerClusterAnnotation] = clusterID(cluster)
 	return target
 }
 
@@ -428,13 +449,13 @@ func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
 		t,
 		[]client.Object{
 			appliedFrom(gitTarget("a", checkoutRef(), "prod-eu-1"), "hub"),
-			clusterProvider("hub", targetNS),
+			kubeProvider("hub", targetNS),
 		},
 		behindSource()...,
 	)
 
 	assert.Equal(t, git.ApplyRequested, f.attempt(request(hub, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
-	assert.Equal(t, []string{"hub"}, f.source.clusters)
+	assert.Equal(t, []string{clusterID("hub")}, f.source.clusters)
 
 	// The same Kustomization asked as if it lived in the source cluster is not this target's applier.
 	f.source.clusters = nil
@@ -443,7 +464,7 @@ func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
 	assert.Empty(t, f.source.clusters)
 }
 
-// TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing: the applier's ClusterProvider gates who
+// TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing: the applier's KubeProvider gates who
 // may wield its credential exactly as a source's does, so a GitTarget its accessFrom does not admit
 // asks nothing, though its own source admits it.
 func TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing(t *testing.T) {
@@ -451,7 +472,7 @@ func TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing(t *testing.T) {
 	f := newDispatcherFixture(t,
 		[]client.Object{
 			appliedFrom(gitTarget("a", checkoutRef(), "prod-eu-1"), "hub"),
-			clusterProvider("hub", "some-other-namespace"),
+			kubeProvider("hub", "some-other-namespace"),
 		},
 		behindSource()...,
 	)
@@ -516,15 +537,15 @@ func TestDispatcher_ASourceMismatchIsRejectedAndNeverStamped(t *testing.T) {
 	assert.Empty(t, f.patches())
 }
 
-// TestDispatcher_ATargetItsClusterProviderDeniesAsksNothing is the first review's finding 1: the
+// TestDispatcher_ATargetItsKubeProviderDeniesAsksNothing is the first review's finding 1: the
 // source client is shared by every GitTarget that declared the cluster, so a GitTarget its
-// ClusterProvider does not admit drove the applier on another GitTarget's admission.
-func TestDispatcher_ATargetItsClusterProviderDeniesAsksNothing(t *testing.T) {
+// KubeProvider does not admit drove the applier on another GitTarget's admission.
+func TestDispatcher_ATargetItsKubeProviderDeniesAsksNothing(t *testing.T) {
 	restricted := kustomizationApplier("restricted", fluxSystemNS, "checkout")
 	f := newDispatcherFixture(t,
 		[]client.Object{
 			gitTarget("denied", checkoutRef(), "restricted"),
-			clusterProvider("restricted", "some-other-namespace"),
+			kubeProvider("restricted", "some-other-namespace"),
 		},
 		behindSource()...,
 	)
@@ -965,7 +986,7 @@ func argoTarget() *v1alpha3.GitTarget {
 // argoPlatform is the applier argoTarget's trigger holds.
 var argoPlatform = git.ApplierRef{
 	Trigger: git.TriggerRef{Kind: v1alpha3.ApplyTriggerKindArgoCD, Namespace: targetNS, Name: "platform"},
-	Cluster: v1alpha3.DefaultClusterProviderName, Kind: v1alpha3.ApplierKindApplication,
+	Cluster: clusterID(localCluster), Kind: v1alpha3.ApplierKindApplication,
 	Namespace: argoNS, Name: "platform",
 }
 
@@ -1030,7 +1051,7 @@ func TestDispatcher_AnApplicationWithAutomatedSyncIsRejectedAndNeverSynced(t *te
 // GitTarget names, so a request for a Kustomization of the same name asks nothing for it.
 func TestDispatcher_AnApplicationIsNotTheKustomizationOfItsName(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{argoTarget()}, manualApp())
-	sameName := kustomizationApplier(v1alpha3.DefaultClusterProviderName, argoNS, "platform")
+	sameName := kustomizationApplier(localCluster, argoNS, "platform")
 
 	assert.Equal(t, git.ApplyDropped, f.attempt(request(sameName, v1alpha3.ApplyReasonForeignCommit, "a")).Outcome)
 	assert.Empty(t, f.updates())

@@ -108,11 +108,11 @@ func startManager(t *testing.T, register func(manager.Manager) error) {
 	require.True(t, mgr.GetCache().WaitForCacheSync(mgrCtx))
 }
 
-// seedTarget creates a namespace, a GitProvider and a GitTarget, and returns the namespace. When
-// clusterProvider is non-empty it also creates that ClusterProvider admitting every namespace and
-// points the GitTarget at it: a ClusterWatchRule is refused (and its GitTargetReady overwritten with
-// the refusal) unless the source cluster admits the target's namespace.
-func seedTarget(ctx context.Context, t *testing.T, name, clusterProvider string) string {
+// seedTarget creates a namespace, a GitProvider, a KubeProvider and a GitTarget mirroring through
+// it, and returns the namespace. The KubeProvider is in the target's own namespace, which it always
+// admits: a ClusterWatchRule is refused (and its GitTargetReady overwritten with the refusal) unless
+// the source cluster admits the target's namespace.
+func seedTarget(ctx context.Context, t *testing.T, name string) string {
 	t.Helper()
 
 	namespace := name
@@ -127,26 +127,20 @@ func seedTarget(ctx context.Context, t *testing.T, name, clusterProvider string)
 			SecretRef:       &meta.LocalObjectReference{Name: "git-credentials"},
 		},
 	}))
-	target := &configbutleraiv1alpha3.GitTarget{
+	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: namespace},
+		Spec: configbutleraiv1alpha3.KubeProviderSpec{
+			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
+		},
+	}))
+	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: meta.NamespacedObjectReference{Name: "provider-main"},
-			Path:         "mirror",
+			KubeProviderRef: meta.NamespacedObjectReference{Name: "source"},
+			GitBranchRef:    meta.NamespacedObjectReference{Name: "provider-main"},
+			Path:            "mirror",
 		},
-	}
-	if clusterProvider != "" {
-		// selector: {} is the "every namespace" form; names: ["*"] would be a literal name.
-		require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.ClusterProvider{
-			ObjectMeta: metav1.ObjectMeta{Name: clusterProvider},
-			Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-				AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{
-					Selector: &metav1.LabelSelector{},
-				},
-			},
-		}))
-		target.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: clusterProvider}
-	}
-	require.NoError(t, k8sClient.Create(ctx, target))
+	}))
 	return namespace
 }
 
@@ -231,7 +225,7 @@ func TestWatchRule_FollowsGitTargetStatusOnlyRecovery(t *testing.T) {
 		}).SetupWithManager(m)
 	})
 
-	namespace := seedTarget(ctx, t, "wiring-watchrule", "")
+	namespace := seedTarget(ctx, t, "wiring-watchrule")
 	rule := &configbutleraiv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "rule", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.WatchRuleSpec{
@@ -267,7 +261,7 @@ func TestClusterWatchRule_FollowsGitTargetStatusOnlyRecovery(t *testing.T) {
 		}).SetupWithManager(m)
 	})
 
-	namespace := seedTarget(ctx, t, "wiring-clusterwatchrule", "wiring-source")
+	namespace := seedTarget(ctx, t, "wiring-clusterwatchrule")
 	rule := &configbutleraiv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster-rule"},
 		Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{

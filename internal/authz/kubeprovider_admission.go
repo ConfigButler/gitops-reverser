@@ -2,11 +2,9 @@
 
 // Package authz holds the namespace-admission decisions for the providers a GitTarget uses.
 //
-// A ClusterProvider is cluster-scoped and holds a credential that can read a lot of a source
-// cluster; its spec.accessFrom is that provider's explicit, deny-by-default admission of
-// the GitTarget NAMESPACES permitted to mirror through it. A GitProvider is namespaced and holds a
-// write credential; its spec.accessFrom admits the OTHER namespaces whose GitTargets may write
-// through it.
+// A KubeProvider holds a credential that can read a lot of a source cluster; it admits its own
+// namespace, and its spec.accessFrom admits the OTHER control-cluster namespaces permitted to use
+// it. A GitProvider holds a write credential, and admits namespaces the same way.
 //
 // The decision lives in its own package — outside both internal/controller and internal/watch —
 // because more than one call site compiles rules or starts a data plane for a GitTarget: the
@@ -28,28 +26,32 @@ import (
 )
 
 const (
-	// ReasonClusterProviderNotFound is the denial reason when a GitTarget's referenced
-	// ClusterProvider does not exist. This is a HARD GATE: a GitTarget may mirror a source cluster
-	// ONLY through an existing ClusterProvider, "default" included. The operator never creates one,
-	// so a target whose provider was never declared is denied rather than mirroring on an implicit
-	// local identity.
-	ReasonClusterProviderNotFound = "ClusterProviderNotFound"
+	// ReasonKubeProviderNotFound is the denial reason when a referenced KubeProvider does not
+	// exist. This is a HARD GATE: a GitTarget may mirror a source cluster ONLY through an existing
+	// KubeProvider. The operator never creates one, so a target whose provider was never declared
+	// is denied rather than mirroring on an implicit identity.
+	ReasonKubeProviderNotFound = "KubeProviderNotFound"
 
-	// ReasonNamespaceNotAuthorized is the denial reason when the GitTarget's namespace is not
-	// admitted by its ClusterProvider's spec.accessFrom — including the case where that
-	// policy carries a selector the apiserver accepted but that does not convert to a selector.
+	// ReasonNamespaceNotAuthorized is the denial reason when the consumer's namespace is neither the
+	// KubeProvider's own nor admitted by its spec.accessFrom — including the case where that policy
+	// carries a selector the apiserver accepted but that does not convert to a selector.
 	ReasonNamespaceNotAuthorized = "NamespaceNotAuthorized"
 
 	// ReasonApplierNamespaceNotAllowed is the denial reason when a trigger names an applier in
-	// another namespace than its own and its ClusterProvider does not set
+	// another namespace than its own and its KubeProvider does not set
 	// spec.allowCrossNamespace.appliers.
 	ReasonApplierNamespaceNotAllowed = "ApplierNamespaceNotAllowed"
+
+	// ReasonAuditRouteConflict is the denial reason when a KubeProvider's audit route is held by a
+	// namespace other than its own (v1alpha3.AuditRouteHolder). Such a provider is not used at all:
+	// mirroring through it would read the attribution facts of a tenant it was never admitted to.
+	ReasonAuditRouteConflict = "AuditRouteConflict"
 )
 
-// Decision is the outcome of a ClusterProvider namespace-admission check. A denial always carries
+// Decision is the outcome of a KubeProvider namespace-admission check. A denial always carries
 // a Reason and an operator-legible Message; an admission carries neither.
 type Decision struct {
-	// Allowed reports whether the GitTarget's namespace may mirror through its ClusterProvider.
+	// Allowed reports whether the consumer's namespace may use the KubeProvider.
 	Allowed bool
 	// Reason is a CamelCase condition reason, set only when Allowed is false.
 	Reason string
@@ -57,7 +59,7 @@ type Decision struct {
 	Message string
 }
 
-// GitTargetAdmitted reports whether target's namespace is admitted by the ClusterProvider that
+// GitTargetAdmitted reports whether target's namespace is admitted by the KubeProvider that
 // target references, reading both the provider and the target's Namespace through reader, and by
 // the GitProvider of the GitBranch it writes through (gitBranchAdmitted).
 //
@@ -75,12 +77,10 @@ func GitTargetAdmitted(
 	reader client.Reader,
 	target *configv1alpha3.GitTarget,
 ) (Decision, error) {
-	providerName := target.SourceCluster()
-	decision, _, err := namespaceAdmitted(ctx, reader, target.Namespace, providerName, fmt.Sprintf(
-		"referenced ClusterProvider %q was not found; a GitTarget may mirror a source cluster "+
-			"only through an existing ClusterProvider. The operator never creates one: declare it "+
-			"yourself, or let the chart render %q via clusterProvider.createDefault",
-		providerName, configv1alpha3.DefaultClusterProviderName))
+	key := target.KubeProviderKey()
+	decision, _, err := namespaceAdmitted(ctx, reader, target.Namespace, key, fmt.Sprintf(
+		"referenced KubeProvider %s was not found; a GitTarget may mirror a source cluster only "+
+			"through an existing KubeProvider, which the operator never creates", key))
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
@@ -139,8 +139,8 @@ func gitBranchAdmitted(
 	return Decision{Allowed: true}, nil
 }
 
-// ApplyTriggerAdmitted reports whether a trigger's namespace is admitted by the ClusterProvider it
-// names (spec.clusterProviderRef), and whether it may reach its applier there. The applier is
+// ApplyTriggerAdmitted reports whether a trigger's namespace is admitted by the KubeProvider it
+// names (spec.kubeProviderRef), and whether it may reach its applier there. The applier is
 // reached with that provider's credential, so the provider's accessFrom decides who may wield it,
 // exactly as for mirroring, and its allowCrossNamespace.appliers whether a namespace may suspend
 // and apply another namespace's applier. The trigger's own namespace is always allowed; in a remote
@@ -150,10 +150,10 @@ func ApplyTriggerAdmitted(
 	reader client.Reader,
 	trigger configv1alpha3.ApplyTrigger,
 ) (Decision, error) {
-	providerName := trigger.ClusterProvider()
-	decision, provider, err := namespaceAdmitted(ctx, reader, trigger.GetNamespace(), providerName, fmt.Sprintf(
-		"ClusterProvider %q named by %s %s/%s spec.clusterProviderRef was not found",
-		providerName, trigger.TriggerKind(), trigger.GetNamespace(), trigger.GetName()))
+	key := trigger.KubeProviderKey()
+	decision, provider, err := namespaceAdmitted(ctx, reader, trigger.GetNamespace(), key, fmt.Sprintf(
+		"KubeProvider %s named by %s %s/%s spec.kubeProviderRef was not found",
+		key, trigger.TriggerKind(), trigger.GetNamespace(), trigger.GetName()))
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
@@ -162,18 +162,18 @@ func ApplyTriggerAdmitted(
 		return Decision{
 			Reason: ReasonApplierNamespaceNotAllowed,
 			Message: fmt.Sprintf(
-				"%s %s is in another namespace than the trigger's own %q, and ClusterProvider %q does not "+
+				"%s %s is in another namespace than the trigger's own %q, and KubeProvider %s does not "+
 					"set spec.allowCrossNamespace.appliers", trigger.ApplierKind(), applier, trigger.GetNamespace(),
-				providerName),
+				key),
 		}, nil
 	}
 	return decision, nil
 }
 
 // ApplierAdmitted reports whether target may ask the applier its trigger holds to apply: its
-// namespace is admitted by its own ClusterProvider (GitTargetAdmitted) and by the trigger's
+// namespace is admitted by its own KubeProvider (GitTargetAdmitted) and by the trigger's
 // (ApplyTriggerAdmitted). A GitTarget names a trigger in its own namespace only, so the second
-// answers for the GitTarget's namespace too. A ClusterProvider's client is shared by every object
+// answers for the GitTarget's namespace too. A KubeProvider's client is shared by every object
 // that uses the cluster, so a client being available is no permission to use it.
 func ApplierAdmitted(
 	ctx context.Context,
@@ -185,26 +185,34 @@ func ApplierAdmitted(
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
-	if trigger.ClusterProvider() == target.SourceCluster() && trigger.GetNamespace() == target.Namespace {
+	if trigger.KubeProviderKey() == target.KubeProviderKey() && trigger.GetNamespace() == target.Namespace {
 		return decision, nil
 	}
 	return ApplyTriggerAdmitted(ctx, reader, trigger)
 }
 
-// namespaceAdmitted is the check both admissions share: the provider exists, and its accessFrom
-// admits namespace. notFound is the denial message for a provider that does not exist. It returns
-// the provider it read once it exists.
+// namespaceAdmitted is the check both admissions share: the provider exists, it admits namespace
+// (its own, or through spec.accessFrom), and it holds its audit route. notFound is the denial
+// message for a provider that does not exist. It returns the provider it read once it exists.
 func namespaceAdmitted(
 	ctx context.Context,
 	reader client.Reader,
-	namespace, providerName, notFound string,
-) (Decision, *configv1alpha3.ClusterProvider, error) {
-	provider := &configv1alpha3.ClusterProvider{}
-	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: providerName}, provider); err != nil {
+	namespace string,
+	key k8stypes.NamespacedName,
+	notFound string,
+) (Decision, *configv1alpha3.KubeProvider, error) {
+	if key.Name == "" {
+		return Decision{
+			Reason:  ReasonKubeProviderNotFound,
+			Message: "spec.kubeProviderRef names no KubeProvider",
+		}, nil, nil
+	}
+	provider := &configv1alpha3.KubeProvider{}
+	if err := reader.Get(ctx, key, provider); err != nil {
 		if apierrors.IsNotFound(err) {
-			return Decision{Reason: ReasonClusterProviderNotFound, Message: notFound}, nil, nil
+			return Decision{Reason: ReasonKubeProviderNotFound, Message: notFound}, nil, nil
 		}
-		return Decision{}, nil, fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
+		return Decision{}, nil, fmt.Errorf("read KubeProvider %s: %w", key, err)
 	}
 
 	nsLabels, err := namespaceLabels(ctx, reader, namespace)
@@ -212,24 +220,60 @@ func namespaceAdmitted(
 		return Decision{}, nil, err
 	}
 
-	allowed, selErr := provider.AllowsNamespace(namespace, nsLabels)
+	allowed, selErr := provider.AdmitsNamespace(namespace, nsLabels)
 	if selErr != nil {
 		return Decision{
-			Reason: ReasonNamespaceNotAuthorized,
-			Message: fmt.Sprintf(
-				"ClusterProvider %q accessFrom selector is invalid: %v", providerName, selErr),
+			Reason:  ReasonNamespaceNotAuthorized,
+			Message: fmt.Sprintf("KubeProvider %s accessFrom selector is invalid: %v", key, selErr),
 		}, provider, nil
 	}
 	if !allowed {
 		return Decision{
 			Reason: ReasonNamespaceNotAuthorized,
 			Message: fmt.Sprintf(
-				"namespace %q is not permitted to reference ClusterProvider %q (spec.accessFrom)",
-				namespace, providerName),
+				"namespace %q is not permitted to reference KubeProvider %s: it is not the provider's own "+
+					"namespace, and spec.accessFrom does not admit it", namespace, key),
 		}, provider, nil
 	}
 
+	routeDecision, err := AuditRouteHeld(ctx, reader, provider)
+	if err != nil || !routeDecision.Allowed {
+		return routeDecision, provider, err
+	}
 	return Decision{Allowed: true}, provider, nil
+}
+
+// AuditRouteHeld reports whether provider's namespace holds the audit route provider carries
+// (v1alpha3.AuditRouteHolder). A provider whose route another namespace holds is denied with
+// ReasonAuditRouteConflict: it is not used at all, by any consumer.
+//
+// It reads every KubeProvider through reader, which on the manager's client is the informer cache.
+// The holder is recomputed on every call rather than kept anywhere, so it can never disagree with
+// the providers as they are.
+func AuditRouteHeld(
+	ctx context.Context,
+	reader client.Reader,
+	provider *configv1alpha3.KubeProvider,
+) (Decision, error) {
+	var providers configv1alpha3.KubeProviderList
+	if err := reader.List(ctx, &providers); err != nil {
+		return Decision{}, fmt.Errorf("list KubeProviders: %w", err)
+	}
+	route := provider.AuditRoute()
+	// The provider itself is always a carrier, even when the cache has not seen it yet.
+	providers.Items = append(providers.Items, *provider)
+	holder, held := configv1alpha3.AuditRouteHolder(route, providers.Items)
+	if !held || holder == provider.Namespace {
+		return Decision{Allowed: true}, nil
+	}
+	return Decision{
+		Reason: ReasonAuditRouteConflict,
+		Message: fmt.Sprintf(
+			"KubeProvider %s carries audit route %q, which a KubeProvider in namespace %q holds, so it is "+
+				"not used: its attribution facts belong to that namespace. Set spec.attribution.auditRoute to "+
+				"another route, or omit it for the default %q",
+			provider.Key(), route, holder, configv1alpha3.DefaultAuditRoute(provider.Key())),
+	}, nil
 }
 
 // namespaceLabels reads a control-cluster Namespace's labels. A Namespace that does not exist has

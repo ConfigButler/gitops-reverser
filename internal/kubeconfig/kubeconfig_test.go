@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const validKubeConfig = `apiVersion: v1
@@ -181,4 +182,65 @@ func TestBuildRESTConfig(t *testing.T) {
 	rej, ok := AsRejection(err)
 	require.True(t, ok)
 	assert.Equal(t, ReasonExecNotAllowed, rej.Reason)
+}
+
+func TestParseInClusterProviders(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    []types.NamespacedName
+		wantErr string
+	}{
+		{name: "empty lists none", value: ""},
+		{name: "blank entries are ignored", value: " , ,"},
+		{
+			name:  "exact entries, trimmed",
+			value: "gitops-reverser/local, platform/ops",
+			want: []types.NamespacedName{
+				{Namespace: "gitops-reverser", Name: "local"}, {Namespace: "platform", Name: "ops"},
+			},
+		},
+		{name: "a bare name is refused", value: "local", wantErr: `"local" is not namespace/name`},
+		{name: "an empty namespace is refused", value: "/local", wantErr: `"/local"`},
+		{name: "an empty name is refused", value: "platform/", wantErr: `"platform/"`},
+		{name: "an extra segment is refused", value: "a/b/c", wantErr: `"a/b/c"`},
+		{name: "a wildcard is refused", value: "platform/*", wantErr: `"platform/*"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseInClusterProviders(tt.value)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, got, len(tt.want))
+			for _, key := range tt.want {
+				assert.Contains(t, got, key)
+			}
+		})
+	}
+}
+
+func TestCheckInCluster(t *testing.T) {
+	local := types.NamespacedName{Namespace: "gitops-reverser", Name: "local"}
+	other := types.NamespacedName{Namespace: "tenant-a", Name: "local"}
+
+	rej := CheckInCluster(local, SafetyPolicy{})
+	require.NotNil(t, rej, "an empty allow-list allows nobody")
+	assert.Equal(t, ReasonInClusterNotAuthorized, rej.Reason)
+	assert.Contains(t, rej.Message, "lists none")
+
+	policy := SafetyPolicy{InClusterProviders: map[types.NamespacedName]struct{}{local: {}}}
+	assert.Nil(t, CheckInCluster(local, policy))
+	assert.True(t, policy.AllowsInCluster(local))
+
+	rej = CheckInCluster(other, policy)
+	require.NotNil(t, rej, "the same name in another namespace is another provider")
+	assert.Contains(t, rej.Message, "tenant-a/local")
+	assert.Contains(t, rej.Message, "lists only gitops-reverser/local")
+
+	_, isRejection := AsRejection(rej)
+	assert.True(t, isRejection)
 }

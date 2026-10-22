@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
@@ -93,6 +94,27 @@ func TestParseFlagsWithArgs_InsecureCredentialedGitHTTP(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, cfg.credentialPolicy.AllowInsecureGitHTTP)
+}
+
+// TestParseFlagsWithArgs_InClusterKubeProviders: spec.inCluster is honored only for the
+// KubeProviders this flag lists, by exact namespace/name. Unset, none is.
+func TestParseFlagsWithArgs_InClusterKubeProviders(t *testing.T) {
+	cfg, err := parseFlagsWithArgs(flag.NewFlagSet("test-in-cluster-default", flag.ContinueOnError), nil)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.kubeConfigSafety.InClusterProviders, "no KubeProvider may use spec.inCluster by default")
+
+	cfg, err = parseFlagsWithArgs(flag.NewFlagSet("test-in-cluster", flag.ContinueOnError),
+		[]string{"--in-cluster-kube-providers=gitops-reverser/local, platform/mgmt"})
+	require.NoError(t, err)
+	assert.Equal(t, map[types.NamespacedName]struct{}{
+		{Namespace: "gitops-reverser", Name: "local"}: {},
+		{Namespace: "platform", Name: "mgmt"}:         {},
+	}, cfg.kubeConfigSafety.InClusterProviders)
+
+	_, err = parseFlagsWithArgs(flag.NewFlagSet("test-in-cluster-wildcard", flag.ContinueOnError),
+		[]string{"--in-cluster-kube-providers=platform/*"})
+	require.Error(t, err, "a wildcard would hand the operator's identity to anyone who can create a provider")
+	assert.Contains(t, err.Error(), "in-cluster-kube-providers")
 }
 
 func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {

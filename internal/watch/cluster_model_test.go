@@ -5,86 +5,108 @@ package watch
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
-	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
-
-	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// stubResolver is a SourceClusterResolver whose answer is fixed per provider name, so the
-// in-cluster verdict can be driven without a cluster or a Secret.
+// stubResolver is a SourceClusterResolver whose answer is fixed whatever provider is asked for, so
+// the in-cluster verdict can be driven without a cluster or a Secret. It records the providers it was
+// asked for.
 type stubResolver struct {
 	cfg     *rest.Config
 	version string
 	err     error
+	asked   *[]k8stypes.NamespacedName
 }
 
-func (s stubResolver) ResolveSourceCluster(context.Context, string) (*rest.Config, string, error) {
+func (s stubResolver) ResolveSourceCluster(
+	_ context.Context, provider k8stypes.NamespacedName,
+) (*rest.Config, string, error) {
+	if s.asked != nil {
+		*s.asked = append(*s.asked, provider)
+	}
 	return s.cfg, s.version, s.err
 }
 
+// operatorHost is the server of the operator's own cluster under useOperatorKubeconfig.
+const operatorHost = "https://operator.example:6443"
+
+// useOperatorKubeconfig points the operator's own config (ctrl.GetConfig) at a kubeconfig naming
+// operatorHost, so the in-cluster branch resolves without a cluster under the unit test.
+func useOperatorKubeconfig(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	require.NoError(t, os.WriteFile(path, []byte(replaceHost(resolverKubeConfig, operatorHost)), 0o600))
+	t.Setenv("KUBECONFIG", path)
+}
+
+// replaceHost is a test kubeconfig with its server replaced by host.
+func replaceHost(kubeconfig, host string) string {
+	return strings.Replace(kubeconfig, "https://192.0.2.1:6443", host, 1)
+}
+
 // TestResolveSourceConfig_InClusterIsResolvedFromTheProvider is the core of the cluster model: a
-// provider that omits spec.kubeConfig resolves to the operator's own cluster, and one that sets it
-// is remote — for ANY provider name. Nothing keys this off the name "default".
+// provider the resolver answers in-cluster (spec.inCluster, allowed by the installation) resolves to
+// the operator's own cluster, and one it answers with a config is remote — for ANY provider name.
+// Nothing keys this off a name such as "default".
 func TestResolveSourceConfig_InClusterIsResolvedFromTheProvider(t *testing.T) {
+	useOperatorKubeconfig(t)
 	remote := &rest.Config{Host: "https://192.0.2.1:6443"}
 
 	tests := []struct {
 		name          string
-		providerName  string
-		resolver      SourceClusterResolver
+		provider      k8stypes.NamespacedName
+		resolver      stubResolver
 		wantInCluster bool
 	}{
 		{
-			name:          "a provider with a kubeConfig is remote",
-			providerName:  configv1alpha3.DefaultClusterProviderName,
-			resolver:      stubResolver{cfg: remote, version: "v1"},
+			name:          "a provider with a secretRef is remote",
+			provider:      k8stypes.NamespacedName{Namespace: "team-a", Name: "team-a/prod-eu-1"},
+			resolver:      stubResolver{cfg: remote, version: "uid-1/1/7"},
 			wantInCluster: false,
 		},
 		{
 			name:          "even when it is named default",
-			providerName:  "default",
-			resolver:      stubResolver{cfg: remote, version: "v1"},
+			provider:      k8stypes.NamespacedName{Namespace: "team-a", Name: "default"},
+			resolver:      stubResolver{cfg: remote, version: "uid-1/1/7"},
 			wantInCluster: false,
 		},
 		{
-			name:          "a provider without a kubeConfig is in-cluster",
-			providerName:  "prod-eu-1",
-			resolver:      stubResolver{cfg: nil, version: inClusterConfigVersion},
+			name:          "an allowed inCluster provider is in-cluster",
+			provider:      k8stypes.NamespacedName{Namespace: "platform", Name: "team-a/prod-eu-1"},
+			resolver:      stubResolver{cfg: nil, version: inClusterConfigVersion + "/uid-1"},
 			wantInCluster: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var asked []k8stypes.NamespacedName
+			tt.resolver.asked = &asked
 			m := &Manager{Log: logr.Discard(), SourceClusters: tt.resolver}
-			cc := m.cluster(tt.providerName)
+			cc := m.cluster(SourceClusterID(tt.provider))
 
 			cfg, version, inCluster, err := m.resolveSourceConfig(context.Background(), cc.id)
+			require.NoError(t, err)
+			assert.Equal(t, []k8stypes.NamespacedName{tt.provider}, asked,
+				"the resolver is asked for the provider the cluster id names")
+			assert.Equal(t, tt.resolver.version, version, "the resolver's version token is kept as is")
+			assert.Equal(t, tt.wantInCluster, inCluster)
 			if tt.wantInCluster {
-				// There is no cluster under a unit test, so the in-cluster branch surfaces
-				// ctrl.GetConfig's failure. Either way it must have taken the in-cluster path
-				// rather than treating the provider as remote.
-				if err != nil {
-					assert.Contains(t, err.Error(), "operator's own cluster")
-					return
-				}
-				assert.True(t, inCluster)
-				assert.Equal(t, inClusterConfigVersion, version)
+				assert.Equal(t, operatorHost, cfg.Host, "the operator's own config")
 				return
 			}
-			require.NoError(t, err)
-			assert.False(t, inCluster, "a provider with a kubeConfig is never in-cluster")
 			assert.Equal(t, remote, cfg)
-			assert.Equal(t, "v1", version)
 		})
 	}
 }
@@ -95,7 +117,7 @@ func TestResolveSourceConfig_InClusterIsResolvedFromTheProvider(t *testing.T) {
 func TestResolveSourceConfig_Failures(t *testing.T) {
 	t.Run("no resolver configured", func(t *testing.T) {
 		m := &Manager{Log: logr.Discard()}
-		_, _, inCluster, err := m.resolveSourceConfig(context.Background(), "prod-eu-1")
+		_, _, inCluster, err := m.resolveSourceConfig(context.Background(), "team-a/prod-eu-1")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no source-cluster resolver configured")
 		assert.False(t, inCluster)
@@ -103,7 +125,7 @@ func TestResolveSourceConfig_Failures(t *testing.T) {
 
 	t.Run("resolver error is propagated, not defaulted to in-cluster", func(t *testing.T) {
 		m := &Manager{Log: logr.Discard(), SourceClusters: stubResolver{err: errors.New("boom")}}
-		_, _, inCluster, err := m.resolveSourceConfig(context.Background(), "prod-eu-1")
+		_, _, inCluster, err := m.resolveSourceConfig(context.Background(), "team-a/prod-eu-1")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "resolve source cluster")
 		assert.False(t, inCluster)
@@ -119,7 +141,7 @@ func TestClusterContext_IsLocal(t *testing.T) {
 	assert.True(t, cp.isLocal(), "the config plane is always the operator's own cluster")
 	assert.True(t, cp.isLocalLocked())
 
-	src := m.cluster("prod-eu-1")
+	src := m.cluster("team-a/prod-eu-1")
 	assert.False(t, src.isLocal(), "an unresolved source is treated as remote (fail-closed)")
 
 	src.clientsMu.Lock()
@@ -132,7 +154,7 @@ func TestClusterContext_IsLocal(t *testing.T) {
 // TestDescribeCluster keeps the config plane legible in logs without giving it a provider name.
 func TestDescribeCluster(t *testing.T) {
 	assert.Equal(t, "config-plane", describeCluster(configPlaneClusterID))
-	assert.Equal(t, "prod-eu-1", describeCluster("prod-eu-1"))
+	assert.Equal(t, "team-a/prod-eu-1", describeCluster("team-a/prod-eu-1"))
 }
 
 // TestSourceClusterReachable_Projection pins the GitTarget-facing status contract: the tri-state a
@@ -180,12 +202,12 @@ func TestSourceClusterReachable_Projection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &Manager{Log: logr.Discard()}
-			cc := m.cluster("prod-eu-1")
+			cc := m.cluster("team-a/prod-eu-1")
 			m.clustersMu.Lock()
 			cc.reachable = tt.reach
 			m.clustersMu.Unlock()
 
-			got := m.SourceClusterReachable("prod-eu-1")
+			got := m.SourceClusterReachable("team-a/prod-eu-1")
 			assert.Equal(t, tt.wantState, got.State)
 			assert.Equal(t, tt.wantReason, got.Reason)
 			assert.Equal(t, tt.wantMessage, got.Message)
@@ -208,40 +230,22 @@ func TestSourceClusterReachable_ConfigPlaneAlwaysReachable(t *testing.T) {
 func TestRecordClusterReachability_InClusterSourceReportsLocalCluster(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 
-	cc := m.cluster("prod-eu-1")
+	cc := m.cluster("team-a/prod-eu-1")
 	cc.clientsMu.Lock()
 	cc.inCluster = true
 	cc.clientsMu.Unlock()
 
 	m.recordClusterReachability(cc, nil)
-	assert.Equal(t, reasonLocalCluster, m.SourceClusterReachable("prod-eu-1").Reason)
+	assert.Equal(t, reasonLocalCluster, m.SourceClusterReachable("team-a/prod-eu-1").Reason)
 
-	remote := m.cluster("prod-us-1")
+	remote := m.cluster("team-a/prod-us-1")
 	m.recordClusterReachability(remote, nil)
-	assert.Equal(t, reasonSourceClusterReachable, m.SourceClusterReachable("prod-us-1").Reason)
+	assert.Equal(t, reasonSourceClusterReachable, m.SourceClusterReachable("team-a/prod-us-1").Reason)
 
 	// The config plane is skipped entirely: it is not a source and has no discovery verdict.
 	cp := m.configPlaneCluster()
 	m.recordClusterReachability(cp, errors.New("ignored"))
 	assert.Equal(t, "True", m.SourceClusterReachable(configPlaneClusterID).State)
-}
-
-// TestClusterProviderIsInCluster mirrors the API-side predicate the resolver implements, so the
-// two cannot drift: an absent kubeConfig is what makes a provider local, not its name.
-func TestClusterProviderIsInCluster(t *testing.T) {
-	local := &configv1alpha3.ClusterProvider{ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-1"}}
-	assert.True(t, local.IsInCluster(), "no kubeConfig means the operator's own cluster")
-
-	named := &configv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: configv1alpha3.DefaultClusterProviderName},
-		Spec:       configv1alpha3.ClusterProviderSpec{KubeConfig: remoteKubeConfigRef()},
-	}
-	assert.False(t, named.IsInCluster(), `"default" with a kubeConfig is a remote cluster`)
-}
-
-// remoteKubeConfigRef is a minimal kubeConfig reference marking a provider as remote.
-func remoteKubeConfigRef() *meta.KubeConfigReference {
-	return &meta.KubeConfigReference{SecretRef: &meta.SecretKeyReference{Name: "kc"}}
 }
 
 // TestOrderedClusters_ConfigPlaneFirstThenByName pins the published snapshot's ordering. The git
@@ -250,16 +254,16 @@ func remoteKubeConfigRef() *meta.KubeConfigReference {
 func TestOrderedClusters_ConfigPlaneFirstThenByName(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 	// Create out of order on purpose.
-	m.cluster("prod-us-1")
-	m.cluster("alpha")
+	m.cluster("team-a/prod-us-1")
+	m.cluster("team-a/alpha")
 	m.configPlaneCluster()
-	m.cluster("prod-eu-1")
+	m.cluster("team-a/prod-eu-1")
 
 	ids := make([]string, 0, 4)
 	for _, cc := range m.orderedClusters() {
 		ids = append(ids, cc.id)
 	}
-	assert.Equal(t, []string{configPlaneClusterID, "alpha", "prod-eu-1", "prod-us-1"}, ids)
+	assert.Equal(t, []string{configPlaneClusterID, "team-a/alpha", "team-a/prod-eu-1", "team-a/prod-us-1"}, ids)
 }
 
 // TestOrderedClusters_ForcesConfigPlaneIntoExistence: a Manager nobody has touched still publishes
@@ -287,14 +291,14 @@ func TestClusterDynamicClient_UsesInjectedClientForConfigPlane(t *testing.T) {
 func TestTeardownCluster_NeverDropsTheConfigPlane(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 	m.configPlaneCluster()
-	m.cluster("prod-eu-1")
+	m.cluster("team-a/prod-eu-1")
 
 	m.teardownCluster(configPlaneClusterID)
 	assert.NotNil(t, m.clusterContextByID(configPlaneClusterID), "the config plane is never torn down")
 
-	m.teardownCluster("prod-eu-1")
-	assert.Nil(t, m.clusterContextByID("prod-eu-1"), "a source cluster is torn down")
+	m.teardownCluster("team-a/prod-eu-1")
+	assert.Nil(t, m.clusterContextByID("team-a/prod-eu-1"), "a source cluster is torn down")
 
 	// Tearing down an id that is not live is a no-op, not a panic.
-	m.teardownCluster("never-created")
+	m.teardownCluster("team-a/never-created")
 }

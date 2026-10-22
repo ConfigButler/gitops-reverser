@@ -109,7 +109,8 @@ func TestGitBranch_AProvenGitBranchHoldsItsBranch(t *testing.T) {
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: meta.NamespacedObjectReference{Name: "main", Namespace: "platform"}, Path: name,
+				KubeProviderRef: testKubeProviderRef(),
+				GitBranchRef:    meta.NamespacedObjectReference{Name: "main", Namespace: "platform"}, Path: name,
 			},
 		}
 	}
@@ -119,7 +120,8 @@ func TestGitBranch_AProvenGitBranchHoldsItsBranch(t *testing.T) {
 		&configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "other"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: meta.NamespacedObjectReference{Name: "main"}, Path: "other",
+				KubeProviderRef: testKubeProviderRef(),
+				GitBranchRef:    meta.NamespacedObjectReference{Name: "main"}, Path: "other",
 			},
 		})
 

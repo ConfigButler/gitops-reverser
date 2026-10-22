@@ -224,7 +224,7 @@ const (
 //
 // The guards were correct when there was one cluster: the metrics carried no cluster label, so
 // publishing a remote's stats under them would have overwritten the local cluster's series. Since
-// the config-plane split a GitTarget can mirror a remote source cluster through spec.kubeConfig,
+// the config-plane split a GitTarget can mirror a remote source cluster through a KubeProvider,
 // and a degraded APIService THERE produced no signal at all — api_catalog_group_versions sat
 // reassuringly at zero degraded while part of that cluster's API surface was invisible. The label
 // is the fix; the guard was the bug.
