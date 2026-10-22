@@ -80,9 +80,10 @@ type GitBranchStatus struct {
 	// LastPushNoticeAt is when a GitReceiver last delivered a push to this branch, which made the
 	// branch worker look at once instead of at its next refresh. It records receipt only: whether
 	// that look reached the remote is status.remote's to say. Absent means no delivery has reached
-	// this branch: no GitReceiver is set up, the Git host's webhook does not reach one, or the
-	// delivery names the repository by a URL other than the GitProvider's spec.url. It advances at
-	// most once a minute, and is cleared when the GitProvider is recreated for another repository.
+	// this branch: no GitReceiver is set up, the Git host's webhook does not reach one, the delivery
+	// names the repository by a URL other than the GitProvider's spec.url, or no branch worker writes
+	// the branch because no GitTarget references this GitBranch. It advances at most once a minute,
+	// and is cleared when the GitProvider is recreated for another repository.
 	// +optional
 	LastPushNoticeAt *metav1.Time `json:"lastPushNoticeAt,omitempty"`
 

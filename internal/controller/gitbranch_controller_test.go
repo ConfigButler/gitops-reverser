@@ -382,7 +382,8 @@ func TestGitBranch_ANoticeIsPublishedWithoutAnyLook(t *testing.T) {
 }
 
 // TestGitBranch_ARepointClearsTheNotice: a delivery for the repository a recreated GitProvider left
-// says nothing about the one it names now.
+// says nothing about the one it names now, neither as published nor from the old repository's
+// worker, which still serves the GitBranch until a GitTarget reconcile replaces it.
 func TestGitBranch_ARepointClearsTheNotice(t *testing.T) {
 	provider := branchProvider("platform", "acme")
 	f := newGitBranchFixture(t, provider, branchObject("platform", "main", "acme", "main", time.Hour))
@@ -391,6 +392,12 @@ func TestGitBranch_ARepointClearsTheNotice(t *testing.T) {
 	require.NoError(t, f.client.Status().Update(context.Background(), got))
 	require.NotNil(t, f.reconcile(t, "platform", "main").Status.LastPushNoticeAt,
 		"the same repository keeps it")
+	key := k8stypes.NamespacedName{Namespace: "platform", Name: "main"}
+	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
+		GitBranch: key, Provider: "acme", Branch: "main",
+		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
+	}))
+	require.True(t, f.workers.NotifyPush("platform", "acme", "main", "abc"), "the old repository's worker")
 
 	stored := &configbutleraiv1alpha3.GitProvider{}
 	require.NoError(t, f.client.Get(context.Background(), ctrlclient.ObjectKeyFromObject(provider), stored))
@@ -403,5 +410,7 @@ func TestGitBranch_ARepointClearsTheNotice(t *testing.T) {
 
 	got = f.reconcile(t, "platform", "main")
 	assert.Equal(t, "github.com/acme/other", got.Status.Repository)
+	_, live := f.workers.WorkerForGitBranch(key)
+	require.True(t, live, "precondition: the old repository's worker still serves the GitBranch")
 	assert.Nil(t, got.Status.LastPushNoticeAt)
 }

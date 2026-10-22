@@ -238,7 +238,7 @@ func (r *GitBranchReconciler) observeWorker(
 	observed, seen := r.observeRemote(key)
 	now := r.clockNow()
 	heldFor := r.publishRemote(st, branch, observed, seen, repo, now)
-	if noticeHeldFor := publishPushNotice(branch, r.lastPushNotice(branch), now); noticeHeldFor > 0 &&
+	if noticeHeldFor := publishPushNotice(branch, r.lastPushNotice(branch, key), now); noticeHeldFor > 0 &&
 		(heldFor == 0 || noticeHeldFor < heldFor) {
 		heldFor = noticeHeldFor
 	}
@@ -260,13 +260,14 @@ func (r *GitBranchReconciler) observeWorker(
 	return heldFor
 }
 
-// lastPushNotice is when a Git host last reported a push to the branch this GitBranch holds, zero
-// when its worker has seen none.
-func (r *GitBranchReconciler) lastPushNotice(branch *configbutleraiv1alpha3.GitBranch) time.Time {
+// lastPushNotice is when a Git host last reported a push to the repository branch key, which this
+// GitBranch holds, zero when its worker has seen none. A worker still serving the GitBranch for the
+// repository its GitProvider left has none to give: its notices are about that repository.
+func (r *GitBranchReconciler) lastPushNotice(branch *configbutleraiv1alpha3.GitBranch, key git.BranchKey) time.Time {
 	if r.WorkerManager == nil {
 		return time.Time{}
 	}
-	worker, live := r.WorkerManager.WorkerForGitBranch(client.ObjectKeyFromObject(branch))
+	worker, live := r.WorkerManager.WorkerForGitBranchAt(client.ObjectKeyFromObject(branch), key)
 	if !live {
 		return time.Time{}
 	}

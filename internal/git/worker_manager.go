@@ -697,6 +697,20 @@ func (m *WorkerManager) WorkerForGitBranch(gitBranch k8stypes.NamespacedName) (*
 	return m.workers[key], true
 }
 
+// WorkerForGitBranchAt is WorkerForGitBranch, but only for the worker of key: while a GitProvider is
+// recreated for another repository, the worker of the repository it left still serves the GitBranch
+// until the GitTarget reconcile replaces it, and what it observed is not about key.
+func (m *WorkerManager) WorkerForGitBranchAt(gitBranch k8stypes.NamespacedName, key BranchKey) (*BranchWorker, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	worker, exists := m.workers[key]
+	if !exists || worker.GitBranch != gitBranch {
+		return nil, false
+	}
+	return worker, true
+}
+
 // WorkerForTarget is WorkerForGitBranch for the GitBranch a GitTarget references.
 func (m *WorkerManager) WorkerForTarget(target *configv1alpha3.GitTarget) (*BranchWorker, bool) {
 	return m.WorkerForGitBranch(target.GitBranchKey())

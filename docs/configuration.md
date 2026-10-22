@@ -469,8 +469,15 @@ reaches the operator under another host name, such as an SSH alias, does not mat
 `GitReceiver` last delivered a push to its branch. It records receipt, so it is set even when the
 look the delivery caused could not read the remote; `status.remote` says what that look found. The
 first delivery is published at once and later ones at most once a minute, and the field is cleared
-when the `GitProvider` is recreated for another repository. Absent after a push means the host does
-not reach the receiver, or names the repository by a URL other than the provider's `spec.url`.
+when the `GitProvider` is recreated for another repository. Absent after a push has three causes,
+which the receiver's `gitopsreverser_receiver_deliveries_total` outcome tells apart:
+
+- The host does not reach the receiver: no delivery is counted, or it is counted as `rejected`.
+- The delivery names the repository by a URL other than the provider's `spec.url`, such as an SSH
+  alias: `unknown_repository`.
+- The repository matches, but no branch worker writes that branch, because no `GitTarget`
+  references this `GitBranch` or it does not hold the branch: `unknown_branch`.
+
 Without a receiver, the provider still writes, and a foreign push is still found, by the next
 rejected push or by the [periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval):
 the receiver makes it seconds instead of minutes.
