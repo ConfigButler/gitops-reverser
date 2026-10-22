@@ -90,17 +90,12 @@ type FactQuery struct {
 	// resourceVersion. The watch side always knows it; only the audit side can be missing it.
 	Name string
 	// ExactCapable is true for ADDED and MODIFIED, whose resourceVersion is the one the write
-	// produced. A removal's is not, so it consults the weaker tiers the exact-capable events skip.
+	// produced. A removal's is not, so it consults the removal tiers the exact-capable events skip.
 	ExactCapable bool
-	// FilteredRemoval marks a DELETED frame from a label-selected collection. The object may have
-	// left the selection rather than been deleted, and every weaker tier, a uid-only deletion
-	// included, can name someone who did not cause THIS removal. It resolves only on the write at
-	// the exact (uid, resourceVersion) (see lookupFilteredRemoval), returns as soon as that arrives,
-	// and is otherwise unresolved. ExactCapable is ignored for it.
-	FilteredRemoval bool
-	// Terminating reports that the removed object carried a deletionTimestamp. For a filtered
-	// removal it narrows the eligible evidence to a deletion: a finalizer PATCH at the final
-	// resourceVersion says who cleared a finalizer, not who asked for the deletion.
+	// Terminating reports that the removed object carried a deletionTimestamp. It decides what a
+	// fact at the removal's own resourceVersion means: for an object that was not terminating it is
+	// the write that took the object out of view (a label exit), and for a terminating one it can be
+	// the finalizer PATCH, which says who cleared a finalizer, not who asked for the deletion.
 	Terminating bool
 }
 
@@ -184,12 +179,14 @@ func NewFactIndex(cfg FactIndexConfig) *FactIndex {
 // whole retention window on start, so stamping those with the read time would give each a second
 // full TTL and let a restart resurrect facts the horizon had retired. Reading the append time off
 // the entry's position is what makes SweepInterval bound memory rather than correctness.
+//
+// The whole entry is filed before anyone is woken, so a resolver never reads half a batch. One audit
+// batch can carry both the write that took an object out of a selection and a later delete of it,
+// and a removal woken between the two would credit the delete.
 func (i *FactIndex) Apply(ctx context.Context, entry FactEntry) {
 	scope := factScope{route: entry.Key.AuditRoute, groupResource: entry.Key.groupResource()}
 	at := entryAppendTime(entry.ID, time.Now())
-	for _, fact := range entry.Facts {
-		i.waiters.wake(i.store(ctx, scope, fact, at))
-	}
+	i.waiters.wake(i.store(ctx, scope, entry.Facts, at))
 }
 
 // entryAppendTime reads the append time out of a transport position. Stream IDs are millisecond
@@ -219,25 +216,21 @@ func entryAppendTime(id string, now time.Time) time.Time {
 // The order of the first two statements is the design: the waiter is registered BEFORE the index
 // is read, so a fact applied in the gap signals a waiter that is already listening.
 //
-// A match does not always end the wait. For a REMOVAL the strongest early fact is often the
-// object's last WRITE, which says who edited it and nothing about who deleted it. Returning on
-// that answered "who deleted this" with "who last edited it" whenever someone else touched the
-// object first. Such a match is held as a FALLBACK and returned only if the grace expires, so
-// waiting never loses attribution: the worst case is what returning early would have given.
+// Every match ends the wait. A removal used to hold the object's last WRITE as a fallback and return
+// it when the grace expired, which answered "who deleted this" with "who last edited it". Lookup now
+// returns only a fact about the request that caused the removal (see lookupRemoval), so there is
+// nothing to hold: a removal with no such fact is unresolved.
 func (i *FactIndex) Await(ctx context.Context, query FactQuery, grace time.Duration) AuthorResolution {
 	waiter := i.waiters.register(query.waiterKeys())
 	defer i.waiters.unregister(waiter)
 
-	fallback := AuthorResolution{Result: AttributionAbsent}
 	if resolution := i.Lookup(query); resolution.Result != AttributionAbsent {
-		if !query.awaitsBetterEvidence(resolution) {
-			recordFactEvent(ctx, factOpMatched)
-			return resolution
-		}
-		fallback = resolution
+		recordFactEvent(ctx, factOpMatched)
+		return resolution
 	}
+	absent := AuthorResolution{Result: AttributionAbsent}
 	if grace <= 0 {
-		return i.settle(ctx, fallback)
+		return absent
 	}
 
 	timer := time.NewTimer(grace)
@@ -245,50 +238,16 @@ func (i *FactIndex) Await(ctx context.Context, query FactQuery, grace time.Durat
 	for {
 		select {
 		case <-ctx.Done():
-			return i.settle(ctx, fallback)
+			return absent
 		case <-timer.C:
-			return i.settle(ctx, fallback)
+			return absent
 		case <-waiter.ch:
-			resolution := i.Lookup(query)
-			if resolution.Result == AttributionAbsent {
-				continue
-			}
-			if !query.awaitsBetterEvidence(resolution) {
+			if resolution := i.Lookup(query); resolution.Result != AttributionAbsent {
 				recordFactEvent(ctx, factOpMatched)
 				return resolution
 			}
-			fallback = resolution
 		}
 	}
-}
-
-// settle returns the fallback a removal was holding, counting it as the match it is. Waiting is
-// never allowed to turn an attribution into an absence: a removal whose only evidence is the last
-// write still names that writer once nothing better has arrived.
-func (i *FactIndex) settle(ctx context.Context, fallback AuthorResolution) AuthorResolution {
-	if fallback.Result != AttributionAbsent {
-		recordFactEvent(ctx, factOpMatched)
-	}
-	return fallback
-}
-
-// awaitsBetterEvidence reports whether a match should be held as a fallback rather than returned.
-//
-// True for exactly one shape: a REMOVAL matched to a fact that is not about a removal. The sticky
-// pointer holds only removal facts, so a match there ends the wait at once. The per-object tiers
-// are last-writer-wins, so for a collection member they hold whoever edited it last. Both
-// collection tiers, and a per-object fact whose own verb is a delete, end the wait.
-func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
-	if q.ExactCapable || q.FilteredRemoval || resolution.Result == AttributionAbsent {
-		return false
-	}
-	switch resolution.Result {
-	case AttributionDeleteSticky, AttributionDeleteCollectionBodyUID, AttributionDeleteCollectionScope:
-		return false
-	case AttributionExact, AttributionLatest, AttributionResourceVersion,
-		AttributionName, AttributionAbsent:
-	}
-	return !isRemovalVerb(resolution.Fact.Verb)
 }
 
 // isRemovalVerb reports whether a fact describes a deletion rather than a write.
@@ -296,28 +255,18 @@ func isRemovalVerb(verb string) bool {
 	return strings.EqualFold(verb, "delete") || strings.EqualFold(verb, deleteCollectionVerb)
 }
 
-// Lookup reads the index once, trying the tiers strongest-first:
+// Lookup reads the index once. A write (an ADDED or MODIFIED event) tries, strongest first:
 //
-//  1. the sticky removal pointer for that uid, for a removal only;
-//  2. the exact (uid, rv) fact, the only exact-capable join;
-//  3. a collection fact whose uid set contains this object;
-//  4. the last-writer-wins fact for that uid, for a removal whose rv never matches;
-//  5. a collection fact whose scope, selector, and window cover it;
-//  6. the rv-only escape hatch;
-//  7. the (namespace, name) floor.
+//  1. the exact (uid, rv) fact;
+//  2. the rv-only escape hatch;
+//  3. the (namespace, name) floor.
+//
+// A removal reads its own ladder (lookupRemoval), which returns only a fact about the request that
+// caused the removal.
 //
 // The name tier is last because a name is reused after a delete and recreate, so it can name the
 // author of a previous object that held it, where a uid cannot. Nothing carrying a uid or rv
 // reaches it, so ranking it last costs the stronger tiers nothing.
-//
-// The two collection tiers sit on OPPOSITE sides of the latest tier on purpose. Uid membership
-// outranks it because the two answer different questions: the latest tier says who last WROTE an
-// object, a removal asks who DELETED it, and a collection delete files one fact about the
-// collection, leaving the uid's latest entry holding whoever wrote the object last. Uid membership
-// is the API server stating THIS request deleted THIS object, so nothing weaker may answer first.
-//
-// Scope matching stays below because it can name the wrong human: an unrelated delete by another
-// actor in the same window is claimed by its own fact at tier 3 and never reaches tier 4.
 func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	now := time.Now()
 	cutoff := now.Add(-i.ttl)
@@ -328,34 +277,12 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	if !ok {
 		return AuthorResolution{Result: AttributionAbsent}
 	}
-	if query.FilteredRemoval {
-		return lookupFilteredRemoval(facts, query, cutoff)
-	}
-	return i.lookupTiers(facts, query, now, cutoff)
-}
-
-// lookupTiers is Lookup's ladder for every query but a filtered removal. The caller holds i.mu.
-func (i *FactIndex) lookupTiers(facts *scopeFacts, query FactQuery, now, cutoff time.Time) AuthorResolution {
-	// The removal pointer is consulted BEFORE the exact tier, and only for an event that is not
-	// exact-capable. That ordering is half of the fix and useless without the other half: the slot is
-	// what preserves the deleter's fact, and being asked first is what makes it reachable. A removal's
-	// own resourceVersion is the one the DELETION stamped, so the exact tier can hold a fact about the
-	// finalizer patch that carries the very same version — a stronger-looking answer to a question it
-	// is not about. An exact-capable event never reaches here, so a create or update still resolves at
-	// the exact tier exactly as before.
 	if !query.ExactCapable {
-		if resolution := stickyRemoval(facts, query); resolution.Result != AttributionAbsent {
-			return resolution
-		}
+		return i.lookupRemoval(facts, query, now, cutoff)
 	}
 	if query.UID != "" && query.ResourceVersion != "" {
 		if fact, found := facts.lookupExact(query.UID, query.ResourceVersion, cutoff); found {
 			return AuthorResolution{Fact: fact, Result: AttributionExact}
-		}
-	}
-	if !query.ExactCapable {
-		if resolution := i.lookupRemoval(facts, query, now, cutoff); resolution.Result != AttributionAbsent {
-			return resolution
 		}
 	}
 	if query.ResourceVersion != "" {
@@ -371,103 +298,109 @@ func (i *FactIndex) lookupTiers(facts *scopeFacts, query FactQuery, now, cutoff 
 	return AuthorResolution{Result: AttributionAbsent}
 }
 
-// lookupFilteredRemoval is the whole lookup for a filtered removal: the write at the removed
-// object's exact (uid, resourceVersion), and nothing else. See FactQuery.FilteredRemoval.
+// lookupRemoval answers "which request caused this removal" and nothing weaker. The caller holds
+// i.mu. Two kinds of fact can answer it:
 //
-// The shapes were measured against a real API server (test/mutationlab/e2e/selector_membership_test.go).
-// A label exit's DELETED carries the resourceVersion the relabeling PATCH or UPDATE produced, and
-// that write's audit response carries the same one, so the exit's actor is exactly findable.
+//   - A fact AT the removal's own resourceVersion, by a verb that produced that version. When the
+//     object was not terminating, a write there is what took the object out of view: a label exit,
+//     whose DELETED carries the resourceVersion the relabeling PATCH or UPDATE produced, which that
+//     write's audit response carries too (measured in test/mutationlab/e2e/selector_membership_test.go).
+//     A real deletion never fills that slot (an immediate delete is answered with a Status naming the
+//     uid alone), so on a stream with no selector it is simply empty. That is why nothing here asks
+//     whether the stream was label-selected.
+//   - A fact about a DELETION: the sticky removal pointer, a collection that named the uid, the
+//     object's own delete by uid or name, or a collection whose scope covers it.
 //
-// A deletion fact keyed by the uid alone is NOT evidence here, however tempting. It identifies the
-// object, not the removal: an object relabeled out and then deleted outright by someone else has a
-// uid-only deletion fact (an immediate delete is answered with a Status naming the uid and no
-// resourceVersion) that has nothing to do with the exit, and it can arrive before the exit's own
-// fact or instead of it. A deletion never carries the DELETED frame's resourceVersion, so a real
-// deletion from a selected collection is unresolved here; a finalizer-held one was already
-// attributed when its deletionTimestamp arrived (deletion as intent). Uncertain authorship costs
-// the commit its author, never the removal.
-func lookupFilteredRemoval(facts *scopeFacts, query FactQuery, cutoff time.Time) AuthorResolution {
-	if query.UID == "" || query.ResourceVersion == "" {
-		return AuthorResolution{Result: AttributionAbsent}
-	}
-	if fact, found := facts.lookupExact(query.UID, query.ResourceVersion, cutoff); found &&
-		filteredRemovalEvidence(fact.Verb, query.Terminating) {
-		return AuthorResolution{Fact: fact, Result: AttributionExact}
-	}
-	return AuthorResolution{Result: AttributionAbsent}
-}
-
-// filteredRemovalEvidence reports whether a fact at the removed object's exact version may name
-// the actor of a filtered removal.
-func filteredRemovalEvidence(verb string, terminating bool) bool {
-	if isRemovalVerb(verb) {
-		return true
-	}
-	return !terminating && (strings.EqualFold(verb, "patch") || strings.EqualFold(verb, "update"))
-}
-
-// stickyRemoval reads the head of the removal ladder: the uid-keyed slot holding the fact that this
-// object was DELETED, which no later fact about a write may overwrite. It is the one tier consulted
-// before the exact tier, and only for an event that is not exact-capable.
-func stickyRemoval(facts *scopeFacts, query FactQuery) AuthorResolution {
-	if query.UID == "" {
-		return AuthorResolution{Result: AttributionAbsent}
-	}
-	if fact, found := facts.lookupRemovalPointer(query.UID); found {
-		return AuthorResolution{Fact: fact, Result: AttributionDeleteSticky}
-	}
-	return AuthorResolution{Result: AttributionAbsent}
-}
-
-// lookupRemoval reads the tiers only a removal may consult, in the order they rank: the uid set of
-// a collection that named this object, the object's own delete fact (by uid, then by name), its
-// last-writer fact, and finally a collection whose scope covers it. See Lookup for why uid
-// membership and scope matching sit on opposite sides of the latest tier.
+// The order between the two depends only on the object. For one that was not terminating, the fact
+// at its version comes first: when an object is relabeled out and then deleted by someone else, the
+// relabel is the removal a selected stream saw. For a terminating object the sticky pointer comes
+// first, because a finalizer PATCH can carry the version the final DELETED shows, and only a delete
+// at that version counts.
 //
-// The ordering rule inside it is the one the whole removal path turns on: a fact about the DELETION
-// outranks a fact about a write, whichever key each happens to be filed under. A write fact answers
-// "who last edited this", which is not the question a removal asks.
+// A write fact anywhere else is not evidence. The object's last writer says who edited it, not who
+// removed it, and a removal with nothing better is unresolved: a wrong author is worse than none.
+//
+// The one case this ladder can get wrong is accepted and documented (docs/spec/attribution.md): an object
+// relabeled out of a selection and deleted by someone else within about one audit batch, where the
+// delete's fact is in the index before the relabel's (two API servers batching independently) or the
+// relabel's fact is lost. The deleter is named; she did delete the object.
 func (i *FactIndex) lookupRemoval(
 	facts *scopeFacts,
 	query FactQuery,
 	now, cutoff time.Time,
 ) AuthorResolution {
-	var writeFallback AuthorResolution
-	haveWriteFallback := false
+	atVersion := lookupAtVersion(facts, query, cutoff)
+	if !query.Terminating && atVersion.Result != AttributionAbsent {
+		return atVersion
+	}
+	if resolution := stickyRemoval(facts, query); resolution.Result != AttributionAbsent {
+		return resolution
+	}
+	if atVersion.Result != AttributionAbsent {
+		return atVersion
+	}
 	if query.UID != "" {
 		if fact, found := facts.matchCollectionUID(query, cutoff); found {
 			return AuthorResolution{Fact: fact, Result: AttributionDeleteCollectionBodyUID}
 		}
-		if fact, found := facts.lookupLatest(query.UID, cutoff); found {
-			resolution := AuthorResolution{Fact: fact, Result: AttributionLatest}
-			// The object's own delete fact: the strongest thing a removal can hope for below uid
-			// membership, so it ends the search here.
-			if isRemovalVerb(fact.Verb) {
-				return resolution
-			}
-			// A WRITE fact says who last edited the object, not who deleted it. Hold it and keep
-			// looking for evidence about the deletion rather than answering with it.
-			writeFallback, haveWriteFallback = resolution, true
+		if fact, found := facts.lookupLatest(query.UID, cutoff); found && isRemovalVerb(fact.Verb) {
+			return AuthorResolution{Fact: fact, Result: AttributionLatest}
 		}
 	}
 	// The object's own delete fact keyed by NAME, the only key it has when the audit event names no
 	// uid: an aggregated API's delete, whose body the API server never decodes. A delete answered
 	// with a Status on an ordinary type names the uid in its details, so that fact reaches the uid
 	// tiers above (auditutil.IdentityFromAuditEvent).
-	//
-	// It must be reachable HERE, above the write fallback, or not at all for a removal: returning
-	// the uid tier's write fact ends the lookup, and the caller then waits out the whole grace for
-	// evidence sitting in this tier. That wait blocks the watch shard's serial goroutine.
 	if query.Name != "" {
 		if fact, found := facts.lookupName(query.Namespace, query.Name, cutoff); found && isRemovalVerb(fact.Verb) {
 			return AuthorResolution{Fact: fact, Result: AttributionName}
 		}
 	}
-	if haveWriteFallback {
-		return writeFallback
-	}
+	// Scope matching is last because it can name the wrong human: an unrelated delete by another
+	// actor in the same window is claimed by its own fact above and never reaches here.
 	if fact, found := facts.matchCollectionScope(query, now, cutoff, i.collectionWindow); found {
 		return AuthorResolution{Fact: fact, Result: AttributionDeleteCollectionScope}
+	}
+	return AuthorResolution{Result: AttributionAbsent}
+}
+
+// lookupAtVersion reads the fact filed at the removal's own resourceVersion, by uid and rv or, for a
+// fact that carries no uid, by rv alone, and keeps it only when its verb can have caused the removal.
+func lookupAtVersion(facts *scopeFacts, query FactQuery, cutoff time.Time) AuthorResolution {
+	if query.ResourceVersion == "" {
+		return AuthorResolution{Result: AttributionAbsent}
+	}
+	if query.UID != "" {
+		if fact, found := facts.lookupExact(query.UID, query.ResourceVersion, cutoff); found &&
+			causedRemovalAtVersion(fact.Verb, query.Terminating) {
+			return AuthorResolution{Fact: fact, Result: AttributionExact}
+		}
+	}
+	if fact, found := facts.lookupRV(query.ResourceVersion, cutoff); found &&
+		causedRemovalAtVersion(fact.Verb, query.Terminating) {
+		return AuthorResolution{Fact: fact, Result: AttributionResourceVersion}
+	}
+	return AuthorResolution{Result: AttributionAbsent}
+}
+
+// causedRemovalAtVersion reports whether a fact at the removal's own resourceVersion names the
+// request that caused it. A delete always does. A PATCH or UPDATE does only for an object that was
+// not terminating: for a terminating one it is the finalizer being cleared.
+func causedRemovalAtVersion(verb string, terminating bool) bool {
+	if isRemovalVerb(verb) {
+		return true
+	}
+	return !terminating && (strings.EqualFold(verb, "patch") || strings.EqualFold(verb, "update"))
+}
+
+// stickyRemoval reads the uid-keyed slot holding the fact that this object was DELETED, which no
+// later fact about a write may overwrite.
+func stickyRemoval(facts *scopeFacts, query FactQuery) AuthorResolution {
+	if query.UID == "" {
+		return AuthorResolution{Result: AttributionAbsent}
+	}
+	if fact, found := facts.lookupRemovalPointer(query.UID); found {
+		return AuthorResolution{Fact: fact, Result: AttributionDeleteSticky}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
 }
@@ -543,18 +476,21 @@ func (i *FactIndex) Len() int {
 	return i.total
 }
 
-// store files one fact under every structure it can serve and returns the waiter keys it filled.
-// The policy mirrors the tiers Lookup reads: a collection fact is about a collection and lands only
-// there, a uid-bearing fact takes the exact and latest tiers, and the rv-only hatch exists for the
-// fact that has an rv and no uid — a uid-bearing fact's rv-only entry would be dead, since the watch
-// side always carries a uid.
-func (i *FactIndex) store(ctx context.Context, scope factScope, fact AuthorFact, now time.Time) []factWaiterKey {
+// store files one entry's facts under every structure each can serve and returns the waiter keys
+// they filled. The policy mirrors the tiers Lookup reads: a collection fact is about a collection and
+// lands only there, a uid-bearing fact takes the exact and latest tiers, and the rv-only hatch exists
+// for the fact that has an rv and no uid. A uid-bearing fact's rv-only entry would be dead, since the
+// watch side always carries a uid.
+func (i *FactIndex) store(ctx context.Context, scope factScope, batch []AuthorFact, now time.Time) []factWaiterKey {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
 	facts := i.scopeFor(scope)
 	before := facts.count
-	keys := i.file(facts, scope, fact, now)
+	var keys []factWaiterKey
+	for _, fact := range batch {
+		keys = append(keys, i.file(facts, scope, fact, now)...)
+	}
 	i.total += facts.count - before
 	i.enforceCaps(ctx, scope, facts)
 	return keys
@@ -702,13 +638,6 @@ func (q FactQuery) scope() factScope {
 func (q FactQuery) waiterKeys() []factWaiterKey {
 	scope := q.scope()
 	var keys []factWaiterKey
-	if q.FilteredRemoval {
-		// Only the exact slot can answer.
-		if q.UID == "" || q.ResourceVersion == "" {
-			return nil
-		}
-		return []factWaiterKey{{scope: scope, kind: factKindExact, value: exactWaiterValue(q.UID, q.ResourceVersion)}}
-	}
 	if q.UID != "" && q.ResourceVersion != "" {
 		keys = append(keys, factWaiterKey{scope: scope, kind: factKindExact,
 			value: exactWaiterValue(q.UID, q.ResourceVersion)})

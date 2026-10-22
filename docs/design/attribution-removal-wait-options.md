@@ -8,6 +8,12 @@
 > object's last write, which fixed a real mis-attribution. The cost is concentrated in one case —
 > a removal for which no delete fact will ever arrive — and there it spends the whole grace window
 > to return the answer it would have returned immediately.
+>
+> **Update 2026-10-22.** A removal no longer falls back to the object's last write at all: with no
+> evidence about what caused it, it is unresolved. Situations 4 and 5 below therefore end in the
+> deleter or in `absent`, never in the last writer. The cost this page is about is unchanged:
+> situation 5 still spends the whole grace. See
+> [what attribution gives up, on purpose](../spec/attribution.md#what-attribution-gives-up-on-purpose).
 
 ## The question
 

@@ -14,9 +14,8 @@
 > What is still **open** is not here. It is ranked in
 > [`../design/open-asks-priority.md`](../design/open-asks-priority.md). Removal-wait alternatives are in
 > [`../design/attribution-removal-wait-options.md`](../design/attribution-removal-wait-options.md).
-> The [filtered-removal policy](../design/watches-labels-simplification.md#attribution-for-filtered-removals)
-> for label-filtered `DELETED` events is built, and is the last of the
-> [four rules that are easy to miss](#four-rules-that-are-easy-to-miss) below.
+> What attribution deliberately gives up for speed, and the one wrong author it accepts, is listed in
+> [what attribution gives up, on purpose](#what-attribution-gives-up-on-purpose).
 >
 > Related: [`watch-event-ordering-and-attribution-grace.md`](watch-event-ordering-and-attribution-grace.md),
 > [`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md),
@@ -334,59 +333,63 @@ grace for one to arrive.
 flowchart TD
     A[Watch event] --> B[scope = audit route + group/resource]
     B --> C{scope known?}
-    C -->|no| Z[absent: committer-authored]
-    C -->|yes| AA{a removal, and a sticky<br/>removal pointer for its uid?}
-    AA -->|yes| AB[delete_sticky]
-    AA -->|no| D{a fact under<br/>this uid and rv?}
+    C -->|no| Z[absent: unresolved]
+    C -->|yes| F{is this a removal?}
 
+    F -->|no: a write| D{a fact under<br/>this uid and rv?}
     D -->|match| E[exact]
-    D -->|no match| F{is this a removal?}
-
-    F -->|yes| G{uid in a collection's<br/>uid set?}
-    G -->|yes| H[deletecollection_body_uid]
-    G -->|no| I{latest uid<br/>is a DELETE fact?}
-    I -->|yes| J[latest: the object's own delete]
-    I -->|no, it is a write| K[hold it as a fallback]
-    K --> L{name tier holds<br/>a DELETE fact?}
-    L -->|yes| M[name]
-    L -->|no| N{fallback held?}
-    N -->|yes| O[latest: last writer]
-    N -->|no| P{collection covers<br/>this scope + selector?}
-    P -->|yes| Q[deletecollection_scope]
-    P -->|no| R
-
-    F -->|no| R{rv-only hatch?}
+    D -->|no match| R{rv-only hatch?}
     R -->|match| S[resource_version]
     R -->|no match| T{name tier?}
     T -->|match| U[name]
     T -->|no match| Z
 
+    F -->|yes| V{object terminating?}
+    V -->|no| W{a patch, update or delete<br/>at this uid and rv?}
+    W -->|yes| E2[exact: what removed it]
+    W -->|no| AA
+    V -->|yes| AA{sticky removal pointer<br/>for its uid?}
+    AA -->|yes| AB[delete_sticky]
+    AA -->|no| X{terminating, and a delete<br/>at this uid and rv?}
+    X -->|yes| E2
+    X -->|no| G{uid in a collection's<br/>uid set?}
+    G -->|yes| H[deletecollection_body_uid]
+    G -->|no| L{a DELETE fact under<br/>its uid or name?}
+    L -->|yes| M[latest / name]
+    L -->|no| P{collection covers<br/>this scope + selector?}
+    P -->|yes| Q[deletecollection_scope]
+    P -->|no| Z
+
     style Z fill:#7f1d1d,color:#fff
     style AB fill:#14532d,color:#fff
     style E fill:#14532d,color:#fff
+    style E2 fill:#14532d,color:#fff
     style H fill:#14532d,color:#fff
-    style J fill:#14532d,color:#fff
     style M fill:#14532d,color:#fff
-    style O fill:#166534,color:#fff
     style Q fill:#166534,color:#fff
     style S fill:#166534,color:#fff
     style U fill:#14532d,color:#fff
 ```
 
+A removal's ladder is shown for an object that was not terminating; for a terminating one, the
+sticky pointer is asked first and only a delete at the exact version counts. A write fact anywhere
+else (the object's last edit under its uid, its name, or another version) never answers a removal.
+
 ### The tiers, strongest first
 
 | Tier | Key | `tier` label | What it asserts |
 |---|---|---|---|
+| exact | uid + rv | `exact` | this actor produced this exact version; for a removal, the write that took the object out of view |
 | delete, sticky | uid (a delete fact, sticky) | `delete_sticky` | who asked for this object's deletion |
-| exact | uid + rv | `exact` | this actor produced this exact version |
 | collection uid | uid in a collection's set | `deletecollection_body_uid` | the API server said this request deleted this object |
-| latest, delete | uid | `latest` | this object's own delete fact |
+| latest, delete | uid | `latest` | this object's own delete fact, if the sticky pointer was evicted |
 | name, delete | namespace + name | `name` | this object's own delete fact, when it has no uid |
-| latest, write | uid | `latest` | who last wrote it; a fallback for a removal |
 | collection scope | namespace + selector + window | `deletecollection_scope` | a collection request covering it was made |
 | rv-only | rv | `resource_version` | a fact with an rv but no uid |
 | name | namespace + name | `name` | the only key an aggregated write has |
-| absent | none | `absent` | committer-authored |
+| absent | none | `absent` | the explicit unresolved author |
+
+For a terminating object the sticky row ranks above the exact row; see the rules below.
 
 Who the evidence named is the separate `actor_kind` label (`user` / `serviceaccount` / `none`), so
 every row above can be asked about either kind of actor. `tier` names the evidence and `actor_kind`
@@ -400,33 +403,28 @@ here is last-writer-wins, and a finalizer patch's fact carries the resourceVersi
 stamped, so it lands under the deleter's exact key and the deleter's uid key alike. That used to
 attribute a finalized deletion to the cleanup controller rather than to the human who asked for it.
 A removal fact therefore also takes a **sticky removal pointer**, keyed by uid, that only another
-removal fact may fill, and a removal consults that pointer before the exact tier. It is the one
-structure the TTL does not bound: a uid is unique across space and time, so the statement can never
-be superseded, and its horizon is the index's caps instead. It is strictly uid-keyed, because the
-same stickiness on the name tier would be a defect: a name is reused after a delete and recreate.
+removal fact may fill, and a removal of a terminating object consults that pointer before the exact
+tier. It is the one structure the TTL does not bound: a uid is unique across space and time, so the
+statement can never be superseded, and its horizon is the index's caps instead. It is strictly
+uid-keyed, because the same stickiness on the name tier would be a defect: a name is reused after a
+delete and recreate.
 
-**A removal never returns on a write fact without looking further.** The per-object tiers are
-last-writer-wins, so for a removal they hold whoever last **edited** the object, which is not who
-deleted it. Such a match is held as a fallback while the search continues, and the caller keeps
-waiting for delete evidence until the grace expires. A fact about the deletion, filed under any key,
-ends the wait immediately. Waiting never costs an attribution: the worst case returns exactly what
-returning early would have returned, one grace later.
+**A removal is credited only to the request that caused it.** That is a fact at the removal's own
+resourceVersion by a verb that produced it, or a fact about a deletion, filed under any key. The
+object's last WRITE is not either: it says who edited the object, not who removed it, and a removal
+with nothing better is unresolved when the grace expires. Every match ends the wait at once.
 
 **An exact-capable event may not fall through to the removal tiers.** A create or update presents the
 resourceVersion its own write produced. If the exact tier misses, the `latest` pointer may name an
-older, different author, so the lookup skips straight to the rv hatch and the name tier. The gate is
-one-directional, and only one of the two tiers is gated: the exact tier is tried for *any* query
-carrying a uid and a resourceVersion, a removal included. What an exact-capable event may not do is
-the reverse, reaching the tiers below.
+older, different author, so the lookup skips straight to the rv hatch and the name tier.
 
-**A removal from a label-selected collection resolves on the exact write alone.** When a rule
+**A removal is told apart from a label exit by the facts, never by the selector.** When a rule
 carries `objectSelector`, a `DELETED` frame can mean the object stopped matching the selector rather
-than that it was deleted, and the watch cannot tell the two apart. Such a removal reads only the fact
-at the object's exact `(uid, resourceVersion)`: a `patch`, `update`, or `delete` there names the
-actor, and ends the wait the moment it arrives. For a terminating object only a deletion there
-counts, since that slot can hold the finalizer patch, which names whoever cleared a finalizer rather
-than who asked for the deletion. Nothing else is consulted, and without that fact the removal is
-unresolved when the grace expires.
+than that it was deleted, and the watch cannot tell the two apart. Attribution does not try to either,
+and it never asks whether the stream was selected. For an object that was **not** terminating, a
+`patch`, `update` or `delete` at the frame's exact `(uid, resourceVersion)` names the actor and is
+asked first; then deletion evidence, as for any removal. For a terminating object only a deletion at
+that version counts, since that slot can hold the finalizer patch.
 
 The shapes behind this were measured against a real API server in the mutationlab
 `selector-membership` scenario
@@ -438,15 +436,15 @@ replays them in every delivery order:
   relabeling write produced, and that write's audit response carries the same one. The exit is
   always attributable when its fact arrives.
 - A deletion never carries the `DELETED` frame's resourceVersion. An immediate delete is answered
-  with a `Status` naming only the uid, and a finalizer-held one is stamped one step before its
-  final `DELETED`. So a real deletion from a selected collection is unresolved here. A
-  finalizer-held one was already attributed when its `deletionTimestamp` arrived (§1).
-- A deletion fact keyed by the uid alone is not evidence, however close it looks. An object
-  relabeled out and then deleted by someone else leaves exactly such a fact, and it can arrive
-  before the exit's own fact, or instead of it. It identifies the object, not the removal.
+  with a `Status` naming only the uid, so on a stream with no selector the exact slot stays empty
+  for a removal and the rule above never fires there. A real deletion from a selected collection
+  resolves on its delete fact, exactly as it would on an unselected one.
+- An object relabeled out and then deleted by someone else leaves both a write at the exit's version
+  and a uid-only delete. When both are in the index, the exit's write is asked first and wins. When
+  only the delete is, the deleter is named: the one wrong author this design accepts, below.
 
-An unselected removal, and a `MODIFIED` frame carrying a `deletionTimestamp` (deletion as intent,
-§1), keep the rules above. Uncertain authorship costs the commit its author, never the removal.
+The index files a whole delivered batch before it wakes any waiting removal, so a relabel and a
+delete that arrive together are always read together.
 
 ### The wait
 
@@ -507,31 +505,54 @@ Four details do real work:
   The registry exposes a `len()` purely so a test can assert a resolver left nothing behind.
 
 The loop around the `select` matters too, because a wake-up is only a hint. The resolver re-runs the
-whole lookup, and if what arrived was not good enough (a write fact when it needs delete evidence) it
-keeps waiting rather than treating the signal as a result.
+whole lookup, and if what arrived does not answer this query (a write fact when a removal needs what
+caused it) it keeps waiting rather than treating the signal as a result.
 
 **The wait blocks its shard.** `attachAuthor` runs on the watch shard's own goroutine and a shard
-processes its events serially, so a removal that waits out its grace is head-of-line blocking for
+processes its events serially, so an event that waits out its grace is head-of-line blocking for
 every later event of that type: the commit window for a subsequent write cannot open until its event
 is processed. This is a known, measured limitation rather than a subtlety: three removals in one e2e
 run spent 20.18s between them, and a Deployment create queued behind them opened its window about
-ten seconds late. The lookup-ordering half of that is fixed (it is what the sticky pointer and the
-tier ordering did); the structural half is open, and both it and the question of when a removal
-should stop waiting are ranked in
-[`../design/open-asks-priority.md`](../design/open-asks-priority.md).
+ten seconds late. Later, a Flux prune on a label-selected stream did the same to a save's edit until
+removals stopped asking about the selector. The lookup half of that is fixed; the structural half is
+open, and both it and the question of when a removal should stop waiting are ranked in
+[`../design/open-asks-priority.md`](../design/open-asks-priority.md). An event that waits out the grace
+always resolves `absent`, so the
+[suggested alert](../interpreting-metrics.md#suggested-alerts) on that tier is the alert on this.
+
+## What attribution gives up, on purpose
+
+Attribution does not wait for every author it could eventually find. Each trade below is a choice,
+not an accident; anything that changes one changes this list.
+
+| Trade | What is lost | What is bought |
+|---|---|---|
+| Every event waits at most `--author-attribution-grace` (3s) for its fact | A fact that arrives later: the event ships unresolved | Bounded commit latency |
+| A fact that arrives after its commit does not rewrite it | That commit's author | Immutable history |
+| Initial snapshots, resyncs, and the relist after an expired watch cursor ship as the configured author | The author of anything changed during a watch gap that ends in a relist | No grace wait over every object of a type |
+| A removal is credited only to the request that caused it | A removal with no delete fact is unresolved rather than credited to the object's last editor | No wrong author on a deletion |
+| A removal waits for evidence it may never get: a type the audit policy drops, an aggregated create | The full grace on the shard, then unresolved | The right deleter whenever the fact is merely late. Ranked open in [removal-wait options](../design/attribution-removal-wait-options.md) |
+| Attribution runs inline on the shard | Every later event on the shard waits behind the slowest lookup | Delivery order within a watch, with no buffer |
+| **Accepted wrong author.** An object relabeled out of a selection and deleted by someone else within about one audit batch, where the delete's fact is in the index first (two API servers batching independently) or the relabel's fact is lost | The deleter is named for the exit. She did delete the object, but the relabel is what took it out of view | Every real deletion on a selected stream resolves on its delete fact in about one batch, instead of waiting out the grace and shipping unresolved |
+
+The last row is the one exception to "a wrong author is worse than no author", and it is narrow on
+purpose: it needs a relabel and a delete of one object by two actors within about a second, and then
+either an HA control plane reordering their audit, or a lost fact. Refusing it would have made every
+deletion in a label-selected collection pay the full grace, and stall its stream for that long.
 
 ## No branch anywhere depends on the type
 
 Verified across the whole path: `internal/queue`, `internal/auditutil`, and the resolver contain no
 comparison against a group, a resource, a kind or an API version. The only `Resource ==` in the path
-is `Resource == ""`, a presence check.
+is `Resource == ""`, a presence check. Nor does anything read the watch's label selector: what the
+API server selected is its business, and attribution only combines the facts that come in.
 
 Everything dispatches on one of three things:
 
 - **the verb**: `deletecollection` publishes a collection fact, and `delete` plus `deletecollection`
   are what `isRemovalVerb` recognizes as evidence about a deletion;
-- **the operation kind**: `ExactCapable` is false for a removal, which is what unlocks the weaker
-  tiers;
+- **the operation kind**: `ExactCapable` is false for a removal, which is what unlocks the removal
+  tiers, and `Terminating` (the object's `deletionTimestamp`) orders them;
 - **which fields are present**: uid, resourceVersion, name, request body, response body.
 
 **This is a requirement, not an accident**, and the corpus proves it. Two ConfigMap deletes, same

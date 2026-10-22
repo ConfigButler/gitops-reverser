@@ -71,16 +71,19 @@ const (
 	// AttributionDeleteSticky is the sticky removal pointer: a delete-verb fact filed by uid into a
 	// slot no later WRITE may overwrite. The stickiness is the whole reason it can answer at all —
 	// every other structure would have been overwritten by the finalizer patch following the
-	// delete. Consulted before the exact tier, and only by a removal.
+	// delete. Only a removal consults it: before the exact tier for a terminating object, after it
+	// for one that was not (see FactIndex.lookupRemoval).
 	//
 	// The only tier the TTL does not bound: a uid is unique across space and time, so the statement
 	// can never be superseded. See docs/spec/attribution.md.
 	AttributionDeleteSticky AttributionResult = "delete_sticky"
 	// AttributionExact is an exact UID+resourceVersion match: this actor produced this exact version.
+	// For a removal it is the write that took the object out of view, such as a label exit.
 	AttributionExact AttributionResult = "exact"
-	// AttributionLatest is the uid-latest tier — the object's own last write or its own delete fact,
-	// keyed by uid alone. It is the tier the removal path turns on: a match here that describes a
-	// WRITE is held as a fallback while the wait continues for evidence about the deletion.
+	// AttributionLatest is the uid-latest tier, the object's own last fact keyed by uid alone. A
+	// removal accepts it only when that fact is a delete, which the sticky pointer normally answers
+	// first, so it is reported only when the pointer was evicted. A write here is never an answer:
+	// it says who edited the object, not who removed it.
 	AttributionLatest AttributionResult = "latest"
 	// AttributionResourceVersion is the rv-only escape hatch: a fact that carried a resourceVersion
 	// and no uid, matched on that version alone. It and AttributionLatest were one value ("weak")

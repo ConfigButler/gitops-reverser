@@ -2535,6 +2535,12 @@ the reference configuration of `1s`). The default of `"2s"` clears that; a loade
 may want `"4s"` to `"5s"`, and a save created before its writes needs the time to its first write
 on top.
 
+The floor assumes the stream is not busy. A watch stream attributes its events in order, so a save's
+edit can also queue behind an earlier event of the same type that is still waiting for its fact, for
+up to `--author-attribution-grace` each. That is rare when the audit policy covers the type, and the
+[suggested alert](interpreting-metrics.md#suggested-alerts) on `tier="absent"` says when it is not.
+Widening `attachTimeout` hides that delay rather than removing it.
+
 `maxDuration`, and `idleTimeout` when set, cover the span of the save's own writes after the
 attach. The worst case from registration to the finalize is `attachTimeout` plus `maxDuration`; the
 push follows, with its cooldown and any retries.
@@ -2761,18 +2767,19 @@ When attribution is enabled, these flags tune the join:
   below it will lose actors systematically. The wait ends the moment the fact arrives, so a generous
   grace costs latency only when a fact never comes.
 
-  **A removal is the exception, and it is worth budgeting for.** It waits for evidence about the
-  DELETION rather than settling for the object's last write, so an object edited by one person and
-  deleted by another is credited to the deleter rather than to the editor. Sometimes no delete fact
-  ever arrives, most often because the cluster's **audit policy excludes the type** (which is true of
-  every type in the recommended policy's runtime-noise list). In that case the
-  removal spends the whole grace before naming the last writer, which is the same answer it would
-  have given immediately. Measured across one e2e run, where the grace is 10s, the cost lands on
-  exactly that case and nowhere else: a removal that finds its delete evidence resolves in about
-  70ms, while one that never does averages about 3.1s before falling back. Creates and updates do
-  not consult the deletion tiers at all. The watch shard is single-threaded, so the wait also delays
-  the events queued behind it on the same `(GitTarget, type, scope)`. Lowering this flag bounds both
-  directly.
+  **A removal is the exception, and it is worth budgeting for.** It is credited only to the request
+  that caused it: its delete, or, when the object left a rule's `objectSelector`, the write that
+  relabeled it. The object's last write never answers it, so an object edited by one person and
+  deleted by another is credited to the deleter, never to the editor. Sometimes no such fact ever
+  arrives, most often because the cluster's **audit policy excludes the type** (which is true of
+  every type in the recommended policy's runtime-noise list). In that case the removal spends the
+  whole grace and then ships unresolved. Measured across one e2e run, where the grace is 10s, the
+  cost lands on exactly that case and nowhere else: a removal that finds its evidence resolves in
+  about 70ms, while one that never does waits the grace. Creates and updates do not consult the
+  deletion tiers at all. The watch shard is single-threaded, so the wait also delays the events
+  queued behind it on the same `(GitTarget, type, scope)`. Lowering this flag bounds both directly.
+  [What attribution gives up, on purpose](spec/attribution.md#what-attribution-gives-up-on-purpose)
+  lists every trade of this kind, including the one wrong author it accepts.
 
   **Watching a type your audit policy excludes costs more than attribution.** Every removal on such
   a type spends the full grace before shipping unresolved, because the fact it is waiting for was

@@ -152,10 +152,9 @@ func TestFactIndex_JoinPolicyDependsOnTheEventKind(t *testing.T) {
 	// pointer may name a different, older author than the create or update this event represents.
 	harness.absent(objectQuery("prod-eu-1", "uid-1", "999", true))
 
-	// A removal's rv never matches the write's, so it is the event kind that consults latest.
-	removal := harness.resolve(objectQuery("prod-eu-1", "uid-1", "999", false))
-	require.Equal(t, AttributionLatest, removal.Result)
-	require.Equal(t, "alice", removal.Fact.Author)
+	// A removal's rv never matches the write's, and the object's last write says who edited it, not
+	// who removed it: a removal with only that is unresolved.
+	harness.absent(objectQuery("prod-eu-1", "uid-1", "999", false))
 }
 
 func TestFactIndex_RouteIsolatesOtherwiseIdenticalFacts(t *testing.T) {
@@ -189,8 +188,13 @@ func TestFactIndex_LatestTierIsLastWriterWins(t *testing.T) {
 	harness.publish(key, objectFact("alice", "101"), objectFact("bob", "102"))
 	harness.waitForFacts(3)
 
-	removal := harness.resolve(objectQuery("prod-eu-1", "uid-1", "999", false))
-	require.Equal(t, "bob", removal.Fact.Author, "the latest tier must name the last fact applied")
+	harness.index.mu.Lock()
+	latest, found := harness.index.scopes[factScope{
+		route: "prod-eu-1", groupResource: groupResourceKey("apps", "deployments"),
+	}].lookupLatest(factIndexTestUID, time.Now().Add(-time.Hour))
+	harness.index.mu.Unlock()
+	require.True(t, found)
+	require.Equal(t, "bob", latest.Author, "the latest tier must name the last fact applied")
 
 	// The exact tier is immutable per (uid, rv), so the earlier write is still exactly joinable.
 	require.Equal(t, "alice", harness.resolve(objectQuery("prod-eu-1", "uid-1", "101", true)).Fact.Author)
@@ -462,11 +466,13 @@ func TestFactIndex_CollectionScopeMatchStopsAtTheWindow(t *testing.T) {
 func TestFactIndex_CollectionScopeIsWeakerThanAnObjectsOwnFact(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
 	key := factIndexTestStream("prod-eu-1")
-	harness.publish(key, aliceCollectionFact(""), objectFact("bob", "101"))
-	harness.waitForFacts(3)
+	bobDeletes := objectFact("bob", "101")
+	bobDeletes.Verb = "delete"
+	harness.publish(key, aliceCollectionFact(""), bobDeletes)
+	harness.waitForFacts(4)
 
 	resolution := harness.resolve(objectQuery("prod-eu-1", "uid-1", "999", false))
-	require.Equal(t, AttributionLatest, resolution.Result)
+	require.Equal(t, AttributionDeleteSticky, resolution.Result)
 	require.Equal(t, "bob", resolution.Fact.Author)
 }
 
@@ -569,9 +575,8 @@ func TestFactIndex_NameTierRanksBelowEveryStrongerTier(t *testing.T) {
 	require.Equal(t, AttributionExact, exact.Result)
 	require.Equal(t, "uid-tier", exact.Fact.Author)
 
-	// And the latest tier, which a removal consults, also outranks it.
-	removal := harness.resolve(namedQuery(factIndexTestUID, "999", "fl-1", false))
-	require.Equal(t, "uid-tier", removal.Fact.Author)
+	// Neither write is evidence about a removal, whichever key it is filed under.
+	harness.absent(namedQuery(factIndexTestUID, "999", "fl-1", false))
 }
 
 func TestFactIndex_NameTierResolvesAnAggregatedRemovalToItsDeleter(t *testing.T) {
@@ -605,18 +610,17 @@ func TestFactIndex_ARemovalReachesItsDeleteFactKeyedByName(t *testing.T) {
 	require.Equal(t, "the-deleter", removal.Fact.Author)
 }
 
-func TestFactIndex_ANameKeyedWriteDoesNotOutrankTheObjectsOwnUIDFact(t *testing.T) {
+func TestFactIndex_ARemovalTakesNoWriteFactUnderAnyKey(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
-	// Only a fact about the DELETION may jump ahead of the uid tier. A name-keyed WRITE is not that,
-	// and must not displace the object's own uid-keyed evidence.
+	// Only a fact about the DELETION, or the write at the removal's own version, names a removal. A
+	// write under the uid or the name is neither.
 	harness.publish(factIndexTestStream("prod-eu-1"),
 		objectFact("uid-tier", "101"),
 		aggregatedFact("name-tier-write", "cm-parent", "update"),
 	)
 	harness.waitForFacts(3)
 
-	removal := harness.resolve(namedQuery(factIndexTestUID, "999", "cm-parent", false))
-	require.Equal(t, "uid-tier", removal.Fact.Author)
+	harness.absent(namedQuery(factIndexTestUID, "999", "cm-parent", false))
 }
 
 func TestFactIndex_ARemovalStillPrefersItsOwnUIDKeyedDeleteFact(t *testing.T) {
@@ -829,10 +833,10 @@ func TestFactIndex_ARemovalWaitsForEvidenceAboutTheDeletion(t *testing.T) {
 		"a removal must wait for evidence about the deletion, not settle for the last edit")
 }
 
-// Waiting must never cost an attribution. When nothing better arrives, the write fact that was held
-// back is returned exactly as it would have been returned immediately — the only difference is the
-// wait, and a removal that spends its grace is the case the grace window is for.
-func TestFactIndex_ARemovalStillNamesTheLastWriterWhenNothingBetterArrives(t *testing.T) {
+// The object's last writer is not who removed it. A removal whose only fact is a write waits out its
+// grace for evidence about the deletion and, when none arrives, is unresolved: a wrong author is
+// worse than none.
+func TestFactIndex_ARemovalWithOnlyAWriteFactIsUnresolved(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
 	harness.publish(factIndexTestStream("prod-eu-1"), objectFact("bob", "101"))
 	harness.waitForFacts(2)
@@ -841,10 +845,9 @@ func TestFactIndex_ARemovalStillNamesTheLastWriterWhenNothingBetterArrives(t *te
 	resolution := harness.index.Await(t.Context(),
 		removalFactQuery(factIndexTestUID), 150*time.Millisecond)
 
-	require.Equal(t, AttributionLatest, resolution.Result)
-	require.Equal(t, "bob", resolution.Fact.Author, "waiting must not turn a match into an absence")
+	require.Equal(t, AttributionAbsent, resolution.Result)
 	require.GreaterOrEqual(t, time.Since(start), 150*time.Millisecond,
-		"the fallback is only taken once the grace has actually elapsed")
+		"it still waits the grace, since a delete fact may be on its way")
 }
 
 // An object's OWN delete fact is the strongest evidence a removal can have, so it ends the wait
@@ -930,8 +933,7 @@ func TestFactIndex_ARecreatedNameDoesNotInheritThePreviousDeleter(t *testing.T) 
 	resolution := harness.index.Lookup(removal)
 	require.NotEqual(t, "alice", resolution.Fact.Author,
 		"the previous object's deleter must not be inherited through a reused name")
-	require.Equal(t, "bob", resolution.Fact.Author)
-	require.Equal(t, AttributionLatest, resolution.Result, "which leaves the ordinary fallback")
+	require.Equal(t, AttributionAbsent, resolution.Result, "and bob's write is not evidence of the removal")
 
 	// The first object's pointer is untouched by any of that: it is a statement about a uid.
 	previous := harness.index.Lookup(removalFactQuery("uid-old"))
@@ -951,21 +953,19 @@ func removalFactQuery(uid string) FactQuery {
 	}
 }
 
-// TestFactIndex_LatestAndResourceVersionAreDistinctTiers pins the split the metric surface turns
-// on. Both used to report "weak", and they are different evidence: the uid tier is the OBJECT's own
-// last write, while the rv-only hatch is a fact that carried a resourceVersion and no uid at all.
-// The removal path turns on the first specifically, so a reader that cannot tell them apart cannot
-// tell a held fallback from an unidentified match.
-func TestFactIndex_LatestAndResourceVersionAreDistinctTiers(t *testing.T) {
+// TestFactIndex_ExactAndResourceVersionAreDistinctTiers pins the split the metric surface turns on:
+// a removal's own version can be matched by a fact that carries the object's uid, or by one that
+// carried a resourceVersion and no uid at all. They are different evidence, so they report apart.
+func TestFactIndex_ExactAndResourceVersionAreDistinctTiers(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
 	key := factIndexTestStream("prod-eu-1")
 	rvOnly := AuthorFact{Namespace: "team-a", ResourceVersion: "202", Author: "rv-actor", Verb: "update"}
 	harness.publish(key, objectFact("alice", "101"), rvOnly)
 	harness.waitForFacts(3)
 
-	// A removal joins the object's own uid: the latest tier.
-	removal := harness.resolve(objectQuery("prod-eu-1", factIndexTestUID, "999", false))
-	require.Equal(t, AttributionLatest, removal.Result)
+	// A removal at the version alice's write produced joins her uid-bearing fact: the exact tier.
+	removal := harness.resolve(objectQuery("prod-eu-1", factIndexTestUID, "101", false))
+	require.Equal(t, AttributionExact, removal.Result)
 	require.Equal(t, "alice", removal.Fact.Author)
 
 	// A fact with no uid is reachable only through the resourceVersion it carried.

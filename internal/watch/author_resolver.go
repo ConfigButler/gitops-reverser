@@ -65,10 +65,9 @@ type AuthorQuery struct {
 	// ExactCapable is true for ADDED and MODIFIED, whose resourceVersion is the one the write
 	// produced. A removal's is not, so it consults the weaker tiers the exact-capable events skip.
 	ExactCapable bool
-	// FilteredRemoval and Terminating select the exact-evidence policy for a DELETED frame from a
-	// selected collection; see queue.FactQuery.FilteredRemoval.
-	FilteredRemoval bool
-	Terminating     bool
+	// Terminating reports that a removed object carried a deletionTimestamp; see
+	// queue.FactQuery.Terminating.
+	Terminating bool
 }
 
 // factQuery renders the query the way the index is keyed.
@@ -82,7 +81,6 @@ func (q AuthorQuery) factQuery() queue.FactQuery {
 		Labels:          q.Labels,
 		Name:            q.Name,
 		ExactCapable:    q.ExactCapable,
-		FilteredRemoval: q.FilteredRemoval,
 		Terminating:     q.Terminating,
 	}
 }
@@ -203,7 +201,7 @@ func (r *attributionResolver) userInfoForResolution(
 
 // attributionEventKindWrite and attributionEventKindRemoval are the bounded event kinds on the wait
 // histogram. They come from ExactCapable, which is the same split the wait design turns on: a
-// removal holds a fallback and keeps waiting for evidence about the deletion, a write does not. An
+// removal waits for evidence about what caused it, a write for the fact at its own version. An
 // absent write and an absent removal used to be one series, and the removal wait is the number
 // anyone tuning --author-attribution-grace actually needs.
 const (

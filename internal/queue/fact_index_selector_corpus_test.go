@@ -14,9 +14,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// These drive the filtered-removal policy with the shapes the selector-membership scenario captured
-// from a real API server (test/mutationlab/e2e/selector_membership_test.go, row 19), delivered in
-// the orders an audit stream can produce. See FactQuery.FilteredRemoval.
+// These drive the removal ladder with the shapes the selector-membership scenario captured from a
+// real API server (test/mutationlab/e2e/selector_membership_test.go, row 19), delivered in the orders
+// an audit stream can produce. The query carries no selector: the shapes alone decide. See
+// FactIndex.lookupRemoval.
 
 const corpusSelectorMembershipDir = "../../test/mutationlab/corpus/configmap/selector-membership"
 
@@ -85,7 +86,6 @@ func corpusRemovalQuery(route string, removal selectedRemoval) FactQuery {
 		UID:             removal.uid,
 		ResourceVersion: removal.resourceVersion,
 		Namespace:       "<ns-1>",
-		FilteredRemoval: true,
 		Terminating:     removal.terminating,
 	}
 }
@@ -95,10 +95,10 @@ func configMapFactStream(route string) FactStreamKey {
 }
 
 // Bob relabels cm-exit-deleted out of the selection; Carol then deletes the same uid. Carol's delete
-// is a Status naming that uid with no resourceVersion. It identifies the object and says nothing
-// about which removal it caused, so it may never name the author of Bob's exit: not when Bob's fact
-// is merely late, and not when it never arrives.
-func TestFilteredRemoval_CapturedExitThenDeletionNamesOnlyTheExit(t *testing.T) {
+// is a Status naming that uid with no resourceVersion, and Bob's write sits at the exit's exact
+// (uid, resourceVersion). When both are in hand, the exit is Bob's. When Carol's is in hand first,
+// the removal names her: the accepted risk documented in docs/spec/attribution.md.
+func TestRemoval_CapturedExitThenDeletion(t *testing.T) {
 	exits := corpusSelectedRemovals(t, "cm-exit-deleted")
 	require.Len(t, exits, 1, "the selected stream holds one removal: the exit")
 	exit := exits[0]
@@ -112,39 +112,31 @@ func TestFilteredRemoval_CapturedExitThenDeletionNamesOnlyTheExit(t *testing.T) 
 	require.Equal(t, exit.uid, bob.UID)
 	require.Equal(t, exit.resourceVersion, bob.ResourceVersion)
 
-	t.Run("the exit's fact arrives after the deletion's, within the grace", func(t *testing.T) {
-		const route = "corpus-exit-delayed"
-		h := newFactIndexHarness(t, FactIndexConfig{})
-		h.publish(configMapFactStream(route), carol)
-		h.waitForFacts(1)
-		done := make(chan AuthorResolution, 1)
-		go func() {
-			done <- h.index.Await(t.Context(), corpusRemovalQuery(route, exit), factIndexTestGrace)
-		}()
-		time.Sleep(50 * time.Millisecond)
-		h.publish(configMapFactStream(route), bob)
-
-		resolution := <-done
-		require.Equal(t, AttributionExact, resolution.Result)
-		require.Equal(t, "bob@example.com", resolution.Fact.Author, "the later deleter must not take the exit")
-	})
 	t.Run("both arrive in one batch, the deletion first", func(t *testing.T) {
 		const route = "corpus-exit-batched"
 		h := newFactIndexHarness(t, FactIndexConfig{})
 		h.publish(configMapFactStream(route), carol, bob)
 		require.Equal(t, "bob@example.com", h.resolve(corpusRemovalQuery(route, exit)).Fact.Author)
 	})
-	t.Run("the exit's fact never arrives", func(t *testing.T) {
+	t.Run("both in hand before the removal is attributed", func(t *testing.T) {
+		const route = "corpus-exit-both"
+		h := newFactIndexHarness(t, FactIndexConfig{})
+		h.publish(configMapFactStream(route), carol)
+		h.publish(configMapFactStream(route), bob)
+		h.waitForFacts(2)
+		require.Equal(t, "bob@example.com", h.resolve(corpusRemovalQuery(route, exit)).Fact.Author)
+	})
+	t.Run("accepted risk: only the deletion's fact is in hand", func(t *testing.T) {
 		const route = "corpus-exit-missing"
 		h := newFactIndexHarness(t, FactIndexConfig{})
 		h.publish(configMapFactStream(route), carol)
 		h.waitForFacts(1)
-		h.absent(corpusRemovalQuery(route, exit))
+		require.Equal(t, "carol@example.com", h.resolve(corpusRemovalQuery(route, exit)).Fact.Author)
 	})
 }
 
 // Both of cm-member's exits, a PUT and a PATCH, are named from the captured writes.
-func TestFilteredRemoval_CapturedExitsNameTheRelabelingWrite(t *testing.T) {
+func TestRemoval_CapturedExitsNameTheRelabelingWrite(t *testing.T) {
 	exits := corpusSelectedRemovals(t, "cm-member")
 	require.Len(t, exits, 2)
 	const route = "corpus-member-exits"
@@ -163,19 +155,20 @@ func TestFilteredRemoval_CapturedExitsNameTheRelabelingWrite(t *testing.T) {
 
 // A real deletion from a selected collection never carries its DELETED's resourceVersion: an
 // immediate delete answers with a Status, and a finalizer-held one is stamped a step earlier. Both
-// are unresolved here, by design; the finalizer-held one was already attributed when its
-// deletionTimestamp arrived.
-func TestFilteredRemoval_CapturedDeletionsAreUnresolved(t *testing.T) {
+// resolve on the deletion's own fact, naming who asked for it; the finalizer controller's PATCH is
+// not evidence.
+func TestRemoval_CapturedDeletionsNameTheDeleter(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		facts []AuthorFact
+		want  string
 	}{
-		{"cm-gone", []AuthorFact{corpusAuditFact(t, "cm-gone", "delete", "bob@example.com")}},
+		{"cm-gone", []AuthorFact{corpusAuditFact(t, "cm-gone", "delete", "bob@example.com")}, "bob@example.com"},
 		{"cm-held", []AuthorFact{
 			corpusAuditFact(t, "cm-held", "delete", "alice@example.com"),
 			corpusAuditFact(t, "cm-held", "patch",
 				"system:serviceaccount:lab-actors:membership-finalizer-controller"),
-		}},
+		}, "alice@example.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			removals := corpusSelectedRemovals(t, tc.name)
@@ -184,7 +177,7 @@ func TestFilteredRemoval_CapturedDeletionsAreUnresolved(t *testing.T) {
 			h := newFactIndexHarness(t, FactIndexConfig{})
 			h.publish(configMapFactStream(route), tc.facts...)
 			h.waitForFacts(len(tc.facts))
-			h.absent(corpusRemovalQuery(route, removals[0]))
+			require.Equal(t, tc.want, h.resolve(corpusRemovalQuery(route, removals[0])).Fact.Author)
 		})
 	}
 }

@@ -73,14 +73,12 @@ With attribution enabled, an unresolved event uses the explicit
 `unknown (attribution unresolved)` author. With attribution disabled, the configured committer
 also authors the change. A fact arriving after a commit is written does not rewrite it.
 
-The index determines what counts as a resolution. For a removal query, even an exact UID/RV
-PATCH match is held while [`FactIndex.Await`](../../internal/queue/fact_index.go) waits for deletion
-evidence, up to the grace deadline. `ExactCapable=false` does not disable the exact lookup.
-When the exact fact is missing, an earlier writer's fallback can be returned at expiry. A removal
-from a label-selected collection is the exception: under the
-[filtered-removal attribution policy](../design/watches-labels-simplification.md#attribution-for-filtered-removals)
-it reads only the fact at the object's exact UID/RV, returns as soon as that fact arrives, and is
-unresolved without it, so no earlier writer can author a label exit. Both paths keep the same
+The index determines what counts as a resolution. A removal resolves only on a fact about the
+request that caused it: the write at its own UID/RV (a label exit), or deletion evidence. Either ends
+the wait in [`FactIndex.Await`](../../internal/queue/fact_index.go) at once; an earlier writer is
+never returned, and without such a fact the removal is unresolved at the grace deadline. The policy
+is the same whether or not the watch carries a label selector
+([attribution contract](attribution.md#four-rules-that-are-easy-to-miss)), and it keeps the same
 inline ordering.
 
 ### Preserve ordered release if attribution becomes concurrent

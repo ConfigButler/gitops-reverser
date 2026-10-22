@@ -493,11 +493,18 @@ spec:
 }
 
 // applyCommitRequestWithGenerateName creates a CommitRequest using
-// metadata.generateName and returns the server-allocated name. It sets a generous attachTimeout
-// because the spec creates the Deployment and this CommitRequest back-to-back: authorship is
-// settled synchronously at admission (no controller-side wait), so a zero wait would race the
-// Deployment's watch event and could resolve NoWindow before the window opens. Waiting to attach
-// is the documented mechanism for a CommitRequest issued concurrently with its work (UC2).
+// metadata.generateName and returns the server-allocated name. The spec creates its work and this
+// CommitRequest back-to-back: authorship is settled synchronously at admission (no controller-side
+// wait), so a zero wait would race the work's watch event and could resolve NoWindow before the
+// window opens. Waiting to attach is the documented mechanism for a CommitRequest issued
+// concurrently with its work (UC2).
+//
+// The wait is deliberately tight: it covers audit delivery (--audit-webhook-batch-max-wait=1s) and
+// the join, within the 4s to 5s the configuration reference recommends for a loaded cluster, and
+// stays well under --author-attribution-grace (10s here, config/deployment.yaml). A watch stream
+// attributes its events in order, so a work event held behind another event that waits out the whole
+// grace fails the spec with NoWindow instead of passing slowly. Do not widen it to make such a
+// failure go away: that wait is the bug.
 func applyCommitRequestWithGenerateName(namespace, prefix, gitTargetName, message string) string {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
@@ -510,8 +517,8 @@ spec:
     name: %s
   message: %q
   window:
-    attachTimeout: "8s"
-    maxDuration: "8s"
+    attachTimeout: "4s"
+    maxDuration: "4s"
 `, prefix, namespace, gitTargetName, message)
 	out, err := kubectlRunWithStdin(namespace, manifest,
 		"create", "-f", "-", "-o", "jsonpath={.metadata.name}")

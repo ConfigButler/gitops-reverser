@@ -1206,9 +1206,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 				"resource", event.Identifier.String())
 			return rv, nil
 		}
-		// A DELETED frame on a selected collection may be the object leaving the selection rather
-		// than being deleted, so it is attributed under the filtered-removal policy.
-		m.attachAuthor(ctx, &event, stream.key.GVR, u, ev.Type == watch.Deleted && stream.key.LabelSelector != "")
+		m.attachAuthor(ctx, &event, stream.key.GVR, u)
 		// The gate re-checks after attribution, which waits on the audit grace: a stream retired or
 		// cancelled while an event was waiting for its author must not enqueue on the way out.
 		var routeErr error
@@ -1258,15 +1256,14 @@ func (m *Manager) routeLiveTargetWatchEvent(
 // the strongest available key. Configured-author mode (nil resolver) leaves UserInfo
 // zero, so the writer authors that commit as the configured committer.
 //
-// filteredRemoval marks a DELETED frame from a selected collection. It may be the object leaving
-// the selection, which no deletion fallback can attribute, so it resolves on exact evidence only
-// (see queue.FactQuery.FilteredRemoval).
+// Nothing here asks whether the stream carries a label selector. A DELETED frame from a selected
+// collection may be the object leaving the selection, and the index tells that apart from a
+// deletion by the shape of the facts alone (see queue.FactIndex.lookupRemoval).
 func (m *Manager) attachAuthor(
 	ctx context.Context,
 	event *git.Event,
 	gvr schema.GroupVersionResource,
 	u *unstructured.Unstructured,
-	filteredRemoval bool,
 ) {
 	// A nil resolver is configured-author mode: nothing is attempted, and the event's zero
 	// Attribution is already AttributionNotAttempted — the constant is the empty string so that
@@ -1302,7 +1299,6 @@ func (m *Manager) attachAuthor(
 		Labels:          u.GetLabels(),
 		Name:            u.GetName(),
 		ExactCapable:    exactCapable,
-		FilteredRemoval: filteredRemoval,
 		Terminating:     u.GetDeletionTimestamp() != nil,
 	})
 	// Stamp the outcome even when no actor was named: an unresolved attribution is a fact the
