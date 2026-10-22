@@ -17,7 +17,7 @@
 preamble: |
   ## Field overview
 
-  Ready-made manifests for all nine objects live in [`config/samples/`](../config/samples/). They
+  Ready-made manifests for all ten objects live in [`config/samples/`](../config/samples/). They
   cross-reference the same `example-provider` / `example-target` names, so the set can be applied
   together and edited down, rather than assembled from the fragments below.
 
@@ -60,6 +60,11 @@ kinds:
         doc: >-
           Push webhook endpoint, so the Git host can say somebody pushed. See
           [receiving push notifications](#receiving-push-notifications-specreceiver)
+      - path: gitReceiverRef
+        default: "off"
+        doc: >-
+          The `GitReceiver` whose push deliveries wake this provider's branches: its own namespace,
+          or `namespace` names one whose `accessFrom` admits it
 
   - kind: GitBranch
     title: "`GitBranch` (namespaced): one branch of the repository"
@@ -78,6 +83,23 @@ kinds:
           Branch a `branch` the remote does not have yet is created from. Only read, so it need not
           be allowed. See
           [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch)
+
+  - kind: GitReceiver
+    title: "`GitReceiver` (namespaced): the endpoint a Git host notifies on a push"
+    fields:
+      - path: type
+        doc: >-
+          Payload and signature the host sends: `github`, `gitlab`, `gitea`, or `generic-hmac` for a
+          relay of your own
+      - path: secretRef
+        doc: >-
+          Secret, in this namespace, whose `token` key is the webhook secret. It also derives
+          `status.webhookPath`
+      - path: accessFrom
+        default: "**no other namespace**"
+        doc: >-
+          Other namespaces whose `GitProvider`s may reference this receiver, by name or label
+          selector. Its own namespace is always admitted
 
   - kind: KubeProvider
     title: "`KubeProvider` (namespaced): the source cluster"

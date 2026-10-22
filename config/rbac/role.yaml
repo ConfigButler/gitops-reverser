@@ -47,6 +47,7 @@ rules:
   - configbutler.ai
   resources:
   - argocdtriggers
+  - gitreceivers
   - kubeproviders
   verbs:
   - get
@@ -61,6 +62,7 @@ rules:
   - fluxtriggers/status
   - gitbranches/status
   - gitproviders/status
+  - gitreceivers/status
   - gittargets/status
   - kubeproviders/status
   - watchrules/status

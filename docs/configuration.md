@@ -55,7 +55,7 @@ one target can be fed by multiple watch rules.
 
 ## Field overview
 
-Ready-made manifests for all nine objects live in [`config/samples/`](../config/samples/). They
+Ready-made manifests for all ten objects live in [`config/samples/`](../config/samples/). They
 cross-reference the same `example-provider` / `example-target` names, so the set can be applied
 together and edited down, rather than assembled from the fragments below.
 
@@ -74,6 +74,7 @@ fields that need more than a line.
 | `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
 | `commit.signing` | off | SSH commit signing. See [commit signing](#commit-signing) |
 | `receiver` | off | Push webhook endpoint, so the Git host can say somebody pushed. See [receiving push notifications](#receiving-push-notifications-specreceiver) |
+| `gitReceiverRef` | off | The `GitReceiver` whose push deliveries wake this provider's branches: its own namespace, or `namespace` names one whose `accessFrom` admits it |
 
 ### `GitBranch` (namespaced): one branch of the repository
 
@@ -84,6 +85,14 @@ Every field is immutable: to change one, delete the `GitBranch` and create a new
 | `gitProviderRef` | **required** | The `GitProvider`, in this namespace, whose repository and credential write this branch |
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
 | `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
+
+### `GitReceiver` (namespaced): the endpoint a Git host notifies on a push
+
+| Field | Default | What it does |
+|---|---|---|
+| `type` | **required** | Payload and signature the host sends: `github`, `gitlab`, `gitea`, or `generic-hmac` for a relay of your own |
+| `secretRef` | **required** | Secret, in this namespace, whose `token` key is the webhook secret. It also derives `status.webhookPath` |
+| `accessFrom` | **no other namespace** | Other namespaces whose `GitProvider`s may reference this receiver, by name or label selector. Its own namespace is always admitted |
 
 ### `KubeProvider` (namespaced): the source cluster
 

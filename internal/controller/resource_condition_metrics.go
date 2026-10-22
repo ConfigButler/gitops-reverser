@@ -32,6 +32,7 @@ const (
 	conditionKindClusterWatchRule = "ClusterWatchRule"
 	conditionKindGitProvider      = "GitProvider"
 	conditionKindGitBranch        = "GitBranch"
+	conditionKindGitReceiver      = "GitReceiver"
 	conditionKindKubeProvider     = "KubeProvider"
 	conditionKindFluxTrigger      = configbutleraiv1alpha3.ApplyTriggerKindFlux
 	conditionKindArgoCDTrigger    = configbutleraiv1alpha3.ApplyTriggerKindArgoCD
@@ -58,6 +59,8 @@ func conditionMetricKind(obj client.Object) string {
 		return conditionKindGitProvider
 	case *configbutleraiv1alpha3.GitBranch:
 		return conditionKindGitBranch
+	case *configbutleraiv1alpha3.GitReceiver:
+		return conditionKindGitReceiver
 	case *configbutleraiv1alpha3.KubeProvider:
 		return conditionKindKubeProvider
 	case *configbutleraiv1alpha3.FluxTrigger:

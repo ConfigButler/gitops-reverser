@@ -95,6 +95,20 @@ const (
 	// remote repository.
 	ConditionTypePushed = "Pushed"
 
+	// GitProviderConditionGitReceiverReady reports whether the GitReceiver a GitProvider names in
+	// spec.gitReceiverRef serves it: the GitReceiver exists, admits the provider's namespace, and is
+	// Ready. It is absent without a reference.
+	//
+	// It is deliberately NOT part of Ready: a receiver only makes a foreign push noticed sooner. A
+	// provider whose receiver is missing still writes, and its branch workers still find a foreign
+	// push by the next rejected push or the periodic refresh, so reporting it through Ready would
+	// tell every kstatus reader, and every GitBranch and GitTarget projecting the provider, that
+	// writing is broken when it is not.
+	GitProviderConditionGitReceiverReady = "GitReceiverReady"
+	// ReasonGitReceiverNotReady is the GitReceiverReady=False reason while the referenced
+	// GitReceiver exists and admits the provider but is not Ready itself.
+	ReasonGitReceiverNotReady = "GitReceiverNotReady"
+
 	// KubeProviderConditionValidated reports whether a KubeProvider's credential is safe and
 	// resolvable: an inCluster provider is Validated while the installation lists it in
 	// --in-cluster-kube-providers; a secretRef provider once its kubeconfig Secret is present,
@@ -188,6 +202,12 @@ const (
 	// re-checks the conflict. It is a fallback: the stream-state event of the sibling rule that
 	// cleared it usually arrives first, but that event is best-effort.
 	RequeueCollectionOverlapInterval = 30 * time.Second
+	// RequeueReceiverTokenInterval is how often a GitReceiver whose token Secret or "token" key is
+	// missing looks again. Secrets are not watched, so nothing else tells it the token arrived, and
+	// until it does no delivery can reach the receiver: Flux or Argo CD applying a GitReceiver and
+	// its Secret in one pass, in either order, must not leave the path unpublished for a steady
+	// interval.
+	RequeueReceiverTokenInterval = 30 * time.Second
 	// RequeueWriteLostInterval is how soon a reconcile whose status write lost the optimistic-lock
 	// race comes back. It is short because there is nothing to wait FOR: the write was rejected
 	// against a resourceVersion this reconcile had already read, so the only thing that has to

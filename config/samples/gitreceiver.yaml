@@ -1,0 +1,29 @@
+# A push receiver: the endpoint a Git host's push webhook points at, so GitOps Reverser notices a
+# push by somebody else in seconds instead of at the next refresh. Its token Secret lives in this
+# GitReceiver's own namespace, under the key "token":
+#
+#   kubectl -n default create secret generic example-receiver-token --from-literal=token=<random>
+#
+# Once the Secret exists, status.webhookPath carries the path (/git-push/<64 hex characters>).
+# Register the receiver listener's URL plus that path as the host's push webhook, with the same
+# token as its secret. The operator serves the listener only with --receiver-bind-address set (chart
+# value servers.receiver.enabled=true); without it this GitReceiver reports ListenerDisabled.
+#
+# One GitReceiver serves every GitProvider that names it in spec.gitReceiverRef, so a GitHub App or
+# an organization webhook, which has one endpoint for many repositories, needs only one.
+apiVersion: configbutler.ai/v1alpha3
+kind: GitReceiver
+metadata:
+  name: example-receiver
+  namespace: default
+spec:
+  type: github # github | gitlab | gitea | generic-hmac
+  secretRef:
+    name: example-receiver-token
+  # GitProviders in this namespace may always reference it. accessFrom admits the others: here, every
+  # namespace labeled tier=trusted. A delivery only wakes a branch worker, which reads the remote with
+  # its own GitProvider's credential, so admitting a namespace hands it no credential.
+  accessFrom:
+    selector:
+      matchLabels:
+        tier: trusted

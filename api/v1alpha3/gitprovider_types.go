@@ -3,12 +3,9 @@
 package v1alpha3
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // GitProviderSpec defines the desired state of GitProvider.
@@ -66,6 +63,18 @@ type GitProviderSpec struct {
 	// +optional
 	Commit *CommitSpec `json:"commit,omitempty"`
 
+	// GitReceiverRef names the GitReceiver whose push deliveries wake this provider's branch
+	// workers, so a push by somebody else is noticed in seconds instead of at the next refresh. A
+	// delivery is only a hint: it makes GitOps Reverser read where the branch is on the remote with
+	// this provider's credential, and what the remote says decides whether a GitTarget's applier is
+	// asked to apply. Namespace omitted means this GitProvider's own namespace; a GitReceiver in
+	// another namespace serves it only while its spec.accessFrom admits this namespace. Whether it
+	// does is reported on the GitReceiverReady condition, which is not part of Ready: without a
+	// receiver, a foreign push is still found, by the next rejected push or by the periodic refresh.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitReceiverRef.name must not be empty"
+	GitReceiverRef *meta.NamespacedObjectReference `json:"gitReceiverRef,omitempty"`
+
 	// The names are Flux's Receiver's, type values included, so a Flux user already knows them.
 
 	// Receiver lets the Git host tell GitOps Reverser that somebody pushed. Point the host's push
@@ -93,40 +102,6 @@ type GitProviderReceiver struct {
 	// with the new secret.
 	// +required
 	SecretRef meta.LocalObjectReference `json:"secretRef"`
-}
-
-// ReceiverType is the payload format a receiver accepts. The values are Flux's Receiver types.
-type ReceiverType string
-
-const (
-	// ReceiverTypeGitHub is a GitHub push event.
-	ReceiverTypeGitHub ReceiverType = "github"
-	// ReceiverTypeGitLab is a GitLab push event.
-	ReceiverTypeGitLab ReceiverType = "gitlab"
-	// ReceiverTypeGitea is a Gitea push event.
-	ReceiverTypeGitea ReceiverType = "gitea"
-	// ReceiverTypeGenericHMAC is a {"repository", "branch", "after"} body signed as Flux's
-	// generic-hmac Receiver expects.
-	ReceiverTypeGenericHMAC ReceiverType = "generic-hmac"
-)
-
-// ReceiverTokenKey is the Secret key holding a receiver's token, the key a Flux Receiver Secret uses.
-const ReceiverTokenKey = "token"
-
-// ReceiverPathPrefix is the prefix every receiver path starts with.
-const ReceiverPathPrefix = "/git-push/"
-
-// A path that names the GitProvider would let anybody who can reach the listener list which
-// namespaces and providers exist. Like Flux's Receiver, the path is derived from the token, so
-// only whoever holds the token can find it; unlike Flux's sha256(token+name+namespace), it is an
-// HMAC over "namespace/name", which no two providers sharing a token can collide on.
-
-// ReceiverPath is the path a GitProvider's receiver is served on: the prefix and the hex
-// HMAC-SHA256 of "<namespace>/<name>", keyed by the receiver token.
-func ReceiverPath(token []byte, namespace, name string) string {
-	mac := hmac.New(sha256.New, token)
-	mac.Write([]byte(namespace + "/" + name))
-	return ReceiverPathPrefix + hex.EncodeToString(mac.Sum(nil))
 }
 
 // KnownHostsReference points at a namespace-local ConfigMap or Secret that holds SSH known_hosts
@@ -336,6 +311,7 @@ type CommitSigningSpec struct {
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Verified",type=date,JSONPath=`.status.lastVerifiedAt`,priority=1
+// +kubebuilder:printcolumn:name="ReceiverReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitReceiverReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
@@ -364,6 +340,20 @@ type GitProviderList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []GitProvider `json:"items"`
+}
+
+// GitReceiverKey is the GitReceiver this GitProvider references: spec.gitReceiverRef, in this
+// GitProvider's own namespace when the reference names none. ok is false without a reference.
+func (p *GitProvider) GitReceiverKey() (types.NamespacedName, bool) {
+	ref := p.Spec.GitReceiverRef
+	if ref == nil || ref.Name == "" {
+		return types.NamespacedName{}, false
+	}
+	namespace := ref.Namespace
+	if namespace == "" {
+		namespace = p.Namespace
+	}
+	return types.NamespacedName{Namespace: namespace, Name: ref.Name}, true
 }
 
 // AdmitsNamespace reports whether a GitTarget in namespace (by name and labels) may write through

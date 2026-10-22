@@ -20,12 +20,16 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/go-logr/logr"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
@@ -63,6 +67,8 @@ type gitProviderLogFirsts struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders/finalizers,verbs=update
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=gitreceivers,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -116,6 +122,9 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 	// Ahead of every gate, and after beginStatus, which snapshots the status the patch is computed
 	// against: an operator wiring a Git host's webhook needs the path while the provider is still red.
 	r.publishWebhookPath(ctx, log, gitProvider)
+	if err := r.observeGitReceiver(ctx, st, gitProvider); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {
 		rd.stalled(ReasonCommitConfigInvalid, err.Error())
@@ -225,6 +234,39 @@ func (r *GitProviderReconciler) publishWebhookPath(
 	}
 	gitProvider.Status.WebhookPath = configbutleraiv1alpha3.ReceiverPath(token, gitProvider.Namespace,
 		gitProvider.Name)
+}
+
+// observeGitReceiver sets GitReceiverReady from spec.gitReceiverRef: whether the GitReceiver it
+// names exists, admits this provider's namespace, and is Ready. Without a reference the condition is
+// removed. It contributes nothing to Ready (see GitProviderConditionGitReceiverReady), so it runs
+// ahead of every gate and is reported even while the provider itself is failing.
+func (r *GitProviderReconciler) observeGitReceiver(
+	ctx context.Context,
+	st *reconcileStatus,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
+) error {
+	key, ok := gitProvider.GitReceiverKey()
+	if !ok {
+		st.remove(GitProviderConditionGitReceiverReady)
+		return nil
+	}
+	decision, receiver, err := authz.GitReceiverAdmitted(ctx, r.Client, gitProvider)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !decision.Allowed:
+		st.set(GitProviderConditionGitReceiverReady, metav1.ConditionFalse, decision.Reason, decision.Message)
+	case !conditionIsTrue(receiver.Status.Conditions, ConditionTypeReady):
+		reason, message := conditionReasonMessage(findCondition(receiver.Status.Conditions, ConditionTypeReady),
+			ReasonProgressing, "it has not been reconciled")
+		st.set(GitProviderConditionGitReceiverReady, metav1.ConditionFalse, ReasonGitReceiverNotReady,
+			fmt.Sprintf("GitReceiver %s is not Ready (%s): %s", key, reason, message))
+	default:
+		st.set(GitProviderConditionGitReceiverReady, metav1.ConditionTrue, ReasonSucceeded,
+			fmt.Sprintf("GitReceiver %s serves this provider's pushes", key))
+	}
+	return nil
 }
 
 // signingKeyFailureReason classifies an ensureSigningKey failure for the Stalled reason.
@@ -370,6 +412,89 @@ func (r *GitProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&configbutleraiv1alpha3.GitProvider{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		// The wake paths for GitReceiverReady, which clears only when another object changes: the
+		// GitReceiver appearing, going, changing its policy or its Ready, or the labels an accessFrom
+		// selector reads on this provider's Namespace. Without them a provider would wait out its
+		// steady requeue, five minutes, before it noticed.
+		Watches(
+			&configbutleraiv1alpha3.GitReceiver{},
+			handler.EnqueueRequestsFromMapFunc(r.gitReceiverToGitProviders),
+			builder.WithPredicates(gitReceiverReadyOrSpecChanged()),
+		).
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.namespaceToGitProviders),
+			builder.WithPredicates(predicate.LabelChangedPredicate{}),
+		).
 		Named("gitprovider").
 		Complete(r)
+}
+
+// gitReceiverToGitProviders enqueues every GitProvider, in any namespace, whose spec.gitReceiverRef
+// names the GitReceiver. Providers are few, so it lists them all rather than keeping an index.
+func (r *GitProviderReconciler) gitReceiverToGitProviders(
+	ctx context.Context, obj client.Object,
+) []ctrlreconcile.Request {
+	var providers configbutleraiv1alpha3.GitProviderList
+	if err := r.List(ctx, &providers); err != nil {
+		logDependencyListError(ctx, err, "GitProviders", obj)
+		return nil
+	}
+	receiver := client.ObjectKeyFromObject(obj)
+	var requests []ctrlreconcile.Request
+	for i := range providers.Items {
+		if key, ok := providers.Items[i].GitReceiverKey(); ok && key == receiver {
+			requests = append(requests, ctrlreconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(&providers.Items[i]),
+			})
+		}
+	}
+	return requests
+}
+
+// namespaceToGitProviders enqueues the GitProviders in a Namespace whose labels changed and that
+// reference a GitReceiver in another namespace: only those are admitted through an accessFrom
+// selector, which reads those labels.
+func (r *GitProviderReconciler) namespaceToGitProviders(
+	ctx context.Context, obj client.Object,
+) []ctrlreconcile.Request {
+	var providers configbutleraiv1alpha3.GitProviderList
+	if err := r.List(ctx, &providers, client.InNamespace(obj.GetName())); err != nil {
+		logDependencyListError(ctx, err, "GitProviders", obj)
+		return nil
+	}
+	var requests []ctrlreconcile.Request
+	for i := range providers.Items {
+		if key, ok := providers.Items[i].GitReceiverKey(); ok && key.Namespace != obj.GetName() {
+			requests = append(requests, ctrlreconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(&providers.Items[i]),
+			})
+		}
+	}
+	return requests
+}
+
+// gitReceiverReadyOrSpecChanged fires on create and delete, and on an update when the GitReceiver's
+// spec changed or its Ready condition's status or reason did. Its own status writes that move
+// neither are filtered.
+func gitReceiverReadyOrSpecChanged() predicate.Predicate {
+	readyOf := func(obj client.Object) string {
+		receiver, ok := obj.(*configbutleraiv1alpha3.GitReceiver)
+		if !ok {
+			return ""
+		}
+		if c := findCondition(receiver.Status.Conditions, ConditionTypeReady); c != nil {
+			return string(c.Status) + "/" + c.Reason
+		}
+		return ""
+	}
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() ||
+				readyOf(e.ObjectOld) != readyOf(e.ObjectNew)
+		},
+	}
 }
