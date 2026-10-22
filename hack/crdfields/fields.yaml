@@ -56,13 +56,7 @@ kinds:
         default: "off"
         doc: SSH commit signing. See [commit signing](#commit-signing)
       - path: receiver
-        skip: replaced by `GitReceiver`, kept in the schema only so admission refuses it, naming `gitReceiverRef`
-      - path: gitReceiverRef
-        default: "off"
-        doc: >-
-          The `GitReceiver` whose push deliveries wake this provider's branches: its own namespace,
-          or `namespace` names one whose `accessFrom` admits it. See
-          [receiving push notifications](#receiving-push-notifications-specgitreceiverref)
+        skip: replaced by `GitReceiver`, kept in the schema only so admission refuses it, naming the replacement
 
   - kind: GitBranch
     title: "`GitBranch` (namespaced): one branch of the repository"
@@ -93,11 +87,6 @@ kinds:
         doc: >-
           Secret, in this namespace, whose `token` key is the webhook secret. It also derives
           `status.webhookPath`
-      - path: accessFrom
-        default: "**no other namespace**"
-        doc: >-
-          Other namespaces whose `GitProvider`s may reference this receiver, by name or label
-          selector. Its own namespace is always admitted
 
   - kind: KubeProvider
     title: "`KubeProvider` (namespaced): the source cluster"

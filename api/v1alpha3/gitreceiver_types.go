@@ -31,18 +31,6 @@ type GitReceiverSpec struct {
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.secretRef.name must not be empty"
 	SecretRef meta.LocalObjectReference `json:"secretRef"`
-
-	// A delivery only wakes a branch worker, which then reads the remote with its own provider's
-	// credential, so admitting a namespace hands it no credential and no say over what is written.
-	// The policy exists so a namespace cannot attach its providers to an endpoint whose owner did
-	// not agree to serve them.
-
-	// AccessFrom admits GitProviders in OTHER namespaces to reference this GitReceiver from
-	// spec.gitReceiverRef. Its own namespace is always admitted; omitted, no other namespace is.
-	// One GitReceiver can then serve a GitHub App or an organization webhook, whose one endpoint
-	// delivers for repositories whose GitProviders live in many namespaces.
-	// +optional
-	AccessFrom *NamespaceMatcher `json:"accessFrom,omitempty"`
 }
 
 // ReceiverType is the payload format a receiver accepts. The values are Flux's Receiver types.
@@ -103,6 +91,12 @@ type GitReceiverStatus struct {
 	WebhookPath string `json:"webhookPath,omitempty"`
 }
 
+// A delivery is routed by the repository it names, not by a reference from each GitProvider: a push
+// event carries little more than a repository and a branch, and a reference bought nothing but a
+// line of wiring per provider and, for a GitHub App, an admission in every namespace. Waking across
+// namespaces is safe because a woken worker reads the remote with its own provider's credential,
+// and holds at most one pending look however many deliveries arrive.
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
@@ -113,10 +107,12 @@ type GitReceiverStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitReceiver is the endpoint a Git host notifies on a push. A delivery to it authenticates against
-// its token, names a repository and a branch, and wakes the branch worker of each GitProvider that
-// references this GitReceiver for that repository and branch. A delivery is only a hint: the branch
-// worker reads the remote with its own provider's credential to find out what happened, so nothing
-// a delivery says can choose a URL, a credential or a commit.
+// its token, names a repository and a branch, and wakes the branch worker of every GitProvider, in
+// any namespace, whose spec.url the delivery names, for that branch. A provider reaching its host
+// through an alias (another host name or port) is not matched, and finds pushes by its periodic
+// refresh. A delivery is only a hint: the branch worker reads the remote with its own provider's
+// credential to find out what happened, so nothing a delivery says can choose a URL, a credential
+// or a commit. GitBranch.status.remote.lastPushNoticeAt shows that deliveries reach a branch.
 type GitReceiver struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -136,16 +132,6 @@ type GitReceiver struct {
 // Key is this GitReceiver's namespace and name.
 func (r *GitReceiver) Key() types.NamespacedName {
 	return types.NamespacedName{Namespace: r.Namespace, Name: r.Name}
-}
-
-// AdmitsNamespace reports whether a GitProvider in namespace (by name and labels) may reference this
-// GitReceiver: its own namespace always, another one only as spec.accessFrom admits it. A malformed
-// selector is an error, never a silent allow.
-func (r *GitReceiver) AdmitsNamespace(nsName string, nsLabels map[string]string) (bool, error) {
-	if nsName == r.Namespace {
-		return true, nil
-	}
-	return r.Spec.AccessFrom.Matches(nsName, nsLabels)
 }
 
 // +kubebuilder:object:root=true

@@ -50,7 +50,7 @@ func publishPersisted(
 	defer func() { r.clock = previous }()
 
 	st := &reconcileStatus{}
-	r.publishRemote(st, target, observed, seen, repo, now)
+	r.publishRemote(st, target, observed, seen, repo, now, time.Time{})
 	st.runPersisted()
 }
 
@@ -424,16 +424,16 @@ func TestPublishRemote_ReportsHowLongTheFloorHoldsAnAnswer(t *testing.T) {
 
 	st := &reconcileStatus{}
 	first := observation("aaaa", start, git.ObservedByPush, none)
-	assert.Zero(t, r.publishRemote(st, target, first, true, none, start),
+	assert.Zero(t, r.publishRemote(st, target, first, true, none, start, time.Time{}),
 		"the first observation is published, so nothing is held")
 	st.runPersisted()
 
 	moved := observation("bbbb", later, git.ObservedByFetch, none)
-	assert.Equal(t, 58*time.Second, r.publishRemote(&reconcileStatus{}, target, moved, true, none, later),
+	assert.Equal(t, 58*time.Second, r.publishRemote(&reconcileStatus{}, target, moved, true, none, later, time.Time{}),
 		"news two seconds after a write waits out the rest of the floor")
 	assert.Equal(t, "aaaa", target.Status.Remote.Commit)
 
-	assert.Zero(t, r.publishRemote(&reconcileStatus{}, target, first, true, none, later),
+	assert.Zero(t, r.publishRemote(&reconcileStatus{}, target, first, true, none, later, time.Time{}),
 		"what is already published is not news, so the floor holds nothing back")
 }
 
@@ -485,7 +485,7 @@ func (f *remoteLedgerFixture) publish(
 ) bool {
 	t.Helper()
 	st := beginStatus(f.client, nil, target)
-	f.r.publishRemote(st, target, observed, true, repo, f.now)
+	f.r.publishRemote(st, target, observed, true, repo, f.now, time.Time{})
 	require.NoError(t, st.commit(context.Background()), "a conflict is recorded, not returned")
 	return !st.writeLost()
 }
@@ -568,7 +568,7 @@ func TestPublishRemote_TheCooldownStartsWhenTheWriteLands(t *testing.T) {
 	r.clock = func() time.Time { return landed }
 	st := &reconcileStatus{}
 	r.publishRemote(st, target, observation("aaaa", evaluated, git.ObservedByPush, firstRepo),
-		true, firstRepo, evaluated)
+		true, firstRepo, evaluated, time.Time{})
 	st.runPersisted()
 	require.NotNil(t, target.Status.Remote)
 
@@ -576,7 +576,7 @@ func TestPublishRemote_TheCooldownStartsWhenTheWriteLands(t *testing.T) {
 	r.clock = func() time.Time { return landed.Add(time.Second) }
 	st = &reconcileStatus{}
 	r.publishRemote(st, target, observation("bbbb", landed.Add(time.Second), git.ObservedByPush, firstRepo),
-		true, firstRepo, landed.Add(time.Second))
+		true, firstRepo, landed.Add(time.Second), time.Time{})
 	st.runPersisted()
 
 	assert.Equal(t, "aaaa", target.Status.Remote.Commit,
@@ -598,7 +598,8 @@ func TestPublishRemote_AWriteThatDidNotLandDoesNotAdvanceTheLedger(t *testing.T)
 
 	// The write is computed and lost: nothing settles.
 	lost := &reconcileStatus{}
-	r.publishRemote(lost, target, observation("aaaa", at, git.ObservedByPush, firstRepo), true, firstRepo, at)
+	r.publishRemote(lost, target, observation("aaaa", at, git.ObservedByPush, firstRepo), true, firstRepo, at,
+		time.Time{})
 	require.NotNil(t, target.Status.Remote, "precondition: the status change was computed")
 
 	_, had := r.remotePublications.last(types.NewResourceReference(target.Name, target.Namespace), target.UID)
@@ -637,4 +638,52 @@ func TestPublishRemote_ARecreatedTargetDoesNotInheritTheCooldown(t *testing.T) {
 	require.NotNil(t, successor.Status.Remote,
 		"a target with nothing published has no rate to be limited to")
 	assert.Equal(t, "bbbb", successor.Status.Remote.Commit)
+}
+
+// TestPublishRemote_LastPushNoticeAt says whether deliveries reach the branch: published with the
+// observation the notice's look made, kept when a restarted worker knows of no notice, and news on
+// its own when only the notice moved, under the same floor as the rest of the stanza.
+func TestPublishRemote_LastPushNoticeAt(t *testing.T) {
+	r := &GitBranchReconciler{}
+	target := remoteTestTarget()
+	start := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	observed := observation("aaaa", start, git.ObservedByFetch, firstRepo)
+	publish := func(now, noticed time.Time) time.Duration {
+		previous := r.clock
+		r.clock = func() time.Time { return now }
+		defer func() { r.clock = previous }()
+		st := &reconcileStatus{}
+		held := r.publishRemote(st, target, observed, true, firstRepo, now, noticed)
+		st.runPersisted()
+		return held
+	}
+
+	publish(start, time.Time{})
+	require.NotNil(t, target.Status.Remote)
+	assert.Nil(t, target.Status.Remote.LastPushNoticeAt, "no delivery has reached this branch")
+
+	noticed := start.Add(5 * time.Second)
+	assert.Equal(t, 55*time.Second, publish(start.Add(5*time.Second), noticed),
+		"a notice is news, held by the floor like any other")
+	later := start.Add(2 * RemotePublicationInterval)
+	assert.Zero(t, publish(later, noticed))
+	require.NotNil(t, target.Status.Remote.LastPushNoticeAt)
+	assert.True(t, target.Status.Remote.LastPushNoticeAt.Equal(&metav1.Time{Time: noticed}))
+
+	assert.Zero(t, publish(later.Add(2*RemotePublicationInterval), time.Time{}))
+	require.NotNil(t, target.Status.Remote.LastPushNoticeAt, "a worker that knows of no notice keeps it")
+	assert.True(t, target.Status.Remote.LastPushNoticeAt.Equal(&metav1.Time{Time: noticed}))
+}
+
+// TestLaterPushNotice compares a notice as it would be published: a sub-second difference the API
+// server rounds away is not later.
+func TestLaterPushNotice(t *testing.T) {
+	at := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	published := &configbutleraiv1alpha3.GitBranchRemoteStatus{LastPushNoticeAt: &metav1.Time{Time: at}}
+
+	assert.Nil(t, laterPushNotice(nil, time.Time{}))
+	assert.Equal(t, at, laterPushNotice(nil, at).Time)
+	assert.Same(t, published.LastPushNoticeAt, laterPushNotice(published, time.Time{}))
+	assert.Same(t, published.LastPushNoticeAt, laterPushNotice(published, at.Add(500*time.Millisecond)))
+	assert.Equal(t, at.Add(time.Second), laterPushNotice(published, at.Add(time.Second)).Time)
 }

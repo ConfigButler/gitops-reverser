@@ -120,8 +120,8 @@ human who wants one now. A refusal a write found is left alone: a structural rea
 write-boundary precondition, so only the resync that writes the affected type clears that one.
 
 Seconds-fresh is the push receiver's job: a `GitReceiver` accepts the Git host's push webhook, and
-wakes the branch worker of each `GitProvider` that references it for the repository and branch the
-delivery names. A delivery is only a hint: it makes the branch worker read the ref advertisement
+wakes the branch worker of every `GitProvider` whose `spec.url` names the repository the delivery
+names, for the branch it names. A delivery is only a hint: it makes the branch worker read the ref advertisement
 with its own provider's credential, and what the remote says decides whether the branch moved. It never triggers a
 cluster snapshot: the cluster still holds the values from before the push, so a snapshot would
 publish them over the incoming change.
@@ -279,10 +279,10 @@ You configure GitOps Reverser through ten CRDs (group `configbutler.ai`, version
 Git destination. `KubeProvider` supplies the source connection and authorization boundary;
 `GitProvider` supplies the repository, credentials, commit settings, and push policy, and a
 `GitBranch` holds one branch of that repository for every `GitTarget` that writes it. A
-`GitReceiver` is the endpoint the Git host's push webhook calls, for every `GitProvider` that
-references it. `FluxTrigger`
-and `ArgoCDTrigger` hold the Flux `Kustomization` or Argo CD `Application` that applies a folder back,
-so GitOps Reverser decides when it applies.
+`GitReceiver` is the endpoint the Git host's push webhook calls; nothing references it, because a
+delivery is routed by the repository it names. `FluxTrigger` and `ArgoCDTrigger` hold the Flux
+`Kustomization` or Argo CD `Application` that applies a folder back, so GitOps Reverser decides
+when it applies.
 
 ```mermaid
 graph LR
@@ -294,7 +294,7 @@ graph LR
         GT -->|kubeProviderRef| CP[KubeProvider]
         GT -->|gitBranchRef| GB[GitBranch]
         GB -->|gitProviderRef| GP[GitProvider]
-        GP -->|gitReceiverRef| GR[GitReceiver]
+        GR[GitReceiver] -.->|"wakes by spec.url"| GP
         KCFG[("Remote kubeconfig Secret\nprovider's namespace")]
         WM["Watch manager\nper-provider source context"]
     end
@@ -342,7 +342,7 @@ records the apply operation it started.
 | `KubeProvider` | namespaced | one source-cluster connection plus namespace access policy |
 | `GitBranch` | namespaced | one repository branch, held for every `GitTarget` that writes it |
 | `GitProvider` | namespaced | a Git repo + credentials + commit/signing config |
-| `GitReceiver` | namespaced | the endpoint a Git host notifies on a push, for every `GitProvider` that references it |
+| `GitReceiver` | namespaced | the endpoint a Git host notifies on a push, for every `GitProvider` whose `spec.url` a delivery names |
 | `FluxTrigger` | namespaced | the Flux `Kustomization` GitOps Reverser asks to apply, and the apply in flight |
 | `ArgoCDTrigger` | namespaced | the Argo CD `Application` GitOps Reverser asks to sync, and the sync in flight |
 
@@ -501,10 +501,6 @@ Represents a Git repository and the credentials/configuration used to write it. 
 - `spec.allowedBranches`: glob patterns that gate writable branches.
 - `spec.commit.committer`: committer identity (defaults to `GitOps Reverser` / `noreply@configbutler.ai`).
 - `spec.commit.signing`: SSH signing key reference and optional key generation.
-- `spec.gitReceiverRef`: the optional `GitReceiver` whose push deliveries wake this provider's
-  branches, in its own namespace or one whose `accessFrom` admits it. Reported on the
-  `GitReceiverReady` condition, which is not part of `Ready`: the receiver only makes a foreign push
-  noticed sooner.
 - `status.signingPublicKey`: populated when signing is configured and key material is available.
 
 The controller verifies repository reachability and manages the signing key lifecycle. It generates an
@@ -529,7 +525,8 @@ it. Every field is immutable:
   creating the write branch (`ParentBranchNotFound`). It does not need to be in `allowedBranches`
   because it is only read.
 - `status.repository`: the normalized repository URL, half of the key one `GitBranch` holds.
-- `status.remote`: where the branch is on the remote, and when that was last proved.
+- `status.remote`: where the branch is on the remote, and when that was last proved; its
+  `lastPushNoticeAt` is when a `GitReceiver` last delivered a push to it.
 - `status.gitTargetCount`: how many `GitTarget`s reference it, from any namespace.
 
 The controller proves the provider's credential by opening a receive-pack session (at most once per
@@ -542,21 +539,23 @@ See [Git write architecture](#git-write-architecture) for the branch claim.
 - **Controller**: [internal/controller/gitreceiver_controller.go](../internal/controller/gitreceiver_controller.go)
 - **Handler**: [internal/webhook/receiver.go](../internal/webhook/receiver.go)
 
-The endpoint a Git host notifies on a push, for every `GitProvider` that references it:
+The endpoint a Git host notifies on a push. No `GitProvider` names it: a delivery is routed by the
+repository it names, to providers in any namespace.
 
 - `spec.type`: `github`, `gitlab`, `gitea` or `generic-hmac`, named after Flux's `Receiver`.
 - `spec.secretRef`: a Secret in the receiver's own namespace whose `token` key is the webhook secret.
-- `spec.accessFrom`: which other namespaces' `GitProvider`s it serves. Its own namespace is always
-  admitted. A delivery only wakes a branch worker, so admitting a namespace grants no credential.
 - `status.webhookPath`: `/git-push/<hex HMAC of namespace/name, keyed by the token>`, once the token
   Secret holds a token. `Ready` is `False` with `ListenerDisabled` while the operator serves no
   listener.
 
 A delivery is authenticated against the token before its body is read. The handler then reads the
-repository URLs and the branch the payload names, compares the URLs with the `spec.url` of each
-`GitProvider` the receiver serves (normalized by `internal/repourl`), and wakes the branch worker
-writing that branch for each one that matches, once. The worker reads the remote with its own
-credential; nothing in the payload chooses a URL, a credential or a commit.
+repository URLs and the branch the payload names, compares the URLs with every `GitProvider`'s
+`spec.url` (normalized by `internal/repourl`), and wakes the branch worker writing that branch for
+each one that matches, once. The worker reads the remote with its own credential, so nothing in the
+payload chooses a URL, a credential or a commit, and it holds at most one pending look, so a run of
+deliveries costs one ref advertisement at a time. That is what makes waking across namespaces safe.
+The `202` carries no body: a count of what was woken would tell the token holder whether another
+namespace tracks a repository.
 
 ### KubeProvider
 
@@ -1857,8 +1856,8 @@ window kept out of Git (`not_mirrored`) or mirrored because no window was open (
 triggered folder; and `stale_snapshots_total{outcome}` counts resync snapshots discarded because an
 apply made them stale, or used after the 5-minute bound.
 `receiver_deliveries_total{receiver_namespace,receiver_name,type,outcome}` counts receiver
-deliveries per `GitReceiver`: `notified`, `unreferenced` (no provider it serves references it),
-`unknown_repository`, `unknown_branch`, `ignored` (a ping, a tag, another event type), `rejected`
+deliveries per `GitReceiver`: `notified`, `unknown_repository` (no `GitProvider` has the repository),
+`unknown_branch`, `ignored` (a ping, a tag, another event type), `rejected`
 (bad signature) and `invalid`.
 The receiver cannot tell a foreign push from an own one; the worker decides that from the
 advertisement, which is why a `notified` delivery of the worker's own push is followed by no

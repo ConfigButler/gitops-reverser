@@ -9,8 +9,10 @@
 # token as its secret. The operator serves the listener only with --receiver-bind-address set (chart
 # value servers.receiver.enabled=true); without it this GitReceiver reports ListenerDisabled.
 #
-# One GitReceiver serves every GitProvider that names it in spec.gitReceiverRef, so a GitHub App or
-# an organization webhook, which has one endpoint for many repositories, needs only one.
+# A delivery wakes every GitProvider, in any namespace, whose spec.url names the repository it
+# reports; no GitProvider names the receiver. So a GitHub App or an organization webhook, which has
+# one endpoint for many repositories, needs only one. GitBranch.status.remote.lastPushNoticeAt shows
+# that deliveries reach a branch.
 apiVersion: configbutler.ai/v1alpha3
 kind: GitReceiver
 metadata:
@@ -20,10 +22,3 @@ spec:
   type: github # github | gitlab | gitea | generic-hmac
   secretRef:
     name: example-receiver-token
-  # GitProviders in this namespace may always reference it. accessFrom admits the others: here, every
-  # namespace labeled tier=trusted. A delivery only wakes a branch worker, which reads the remote with
-  # its own GitProvider's credential, so admitting a namespace hands it no credential.
-  accessFrom:
-    selector:
-      matchLabels:
-        tier: trusted

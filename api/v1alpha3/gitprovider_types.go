@@ -5,7 +5,6 @@ package v1alpha3
 import (
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // GitProviderSpec defines the desired state of GitProvider.
@@ -21,11 +20,12 @@ import (
 //
 // +kubebuilder:validation:XValidation:rule="self.url == oldSelf.url",message="spec.url is immutable; delete and recreate the GitProvider to point at a different repository"
 //
-// spec.receiver was replaced by a GitReceiver of its own, which spec.gitReceiverRef names. A pruned
-// field would apply cleanly and leave a provider that used to be notified silently unnotified, so
-// the old spelling stays in the schema only to be refused by name. The rule sits on spec, not on the
-// field, so CRD validation ratcheting cannot wave a stored value through on the next edit.
-// +kubebuilder:validation:XValidation:rule="!has(self.receiver)",message="spec.receiver was replaced by a GitReceiver: create one with this type and secretRef, and set spec.gitReceiverRef to it"
+// spec.receiver was replaced by the GitReceiver kind, which wakes every GitProvider whose spec.url
+// its deliveries name. A pruned field would apply cleanly and leave a provider that used to be
+// notified silently unnotified, so the old spelling stays in the schema only to be refused by name.
+// The rule sits on spec, not on the field, so CRD validation ratcheting cannot wave a stored value
+// through on the next edit.
+// +kubebuilder:validation:XValidation:rule="!has(self.receiver)",message="spec.receiver was replaced by a GitReceiver: create one with this type and secretRef, and remove spec.receiver; deliveries wake every GitProvider whose spec.url they name"
 type GitProviderSpec struct {
 	// URL of the repository (HTTP/SSH).
 	// Immutable: delete and recreate the GitProvider to point at a different repository.
@@ -68,18 +68,6 @@ type GitProviderSpec struct {
 	// formatting moved to GitTarget.spec.commit.message.
 	// +optional
 	Commit *CommitSpec `json:"commit,omitempty"`
-
-	// GitReceiverRef names the GitReceiver whose push deliveries wake this provider's branch
-	// workers, so a push by somebody else is noticed in seconds instead of at the next refresh. A
-	// delivery is only a hint: it makes GitOps Reverser read where the branch is on the remote with
-	// this provider's credential, and what the remote says decides whether a GitTarget's applier is
-	// asked to apply. Namespace omitted means this GitProvider's own namespace; a GitReceiver in
-	// another namespace serves it only while its spec.accessFrom admits this namespace. Whether it
-	// does is reported on the GitReceiverReady condition, which is not part of Ready: without a
-	// receiver, a foreign push is still found, by the next rejected push or by the periodic refresh.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitReceiverRef.name must not be empty"
-	GitReceiverRef *meta.NamespacedObjectReference `json:"gitReceiverRef,omitempty"`
 
 	// RemovedReceiver is the old place of a GitReceiver's type and secretRef. It is never read;
 	// setting it is refused.
@@ -293,7 +281,6 @@ type CommitSigningSpec struct {
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Verified",type=date,JSONPath=`.status.lastVerifiedAt`,priority=1
-// +kubebuilder:printcolumn:name="ReceiverReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitReceiverReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
@@ -322,20 +309,6 @@ type GitProviderList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []GitProvider `json:"items"`
-}
-
-// GitReceiverKey is the GitReceiver this GitProvider references: spec.gitReceiverRef, in this
-// GitProvider's own namespace when the reference names none. ok is false without a reference.
-func (p *GitProvider) GitReceiverKey() (types.NamespacedName, bool) {
-	ref := p.Spec.GitReceiverRef
-	if ref == nil || ref.Name == "" {
-		return types.NamespacedName{}, false
-	}
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = p.Namespace
-	}
-	return types.NamespacedName{Namespace: namespace, Name: ref.Name}, true
 }
 
 // AdmitsNamespace reports whether a GitTarget in namespace (by name and labels) may write through

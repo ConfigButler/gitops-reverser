@@ -120,6 +120,14 @@ type GitBranchRemoteStatus struct {
 	// is omitted.
 	// +optional
 	Parent *GitBranchParentStatus `json:"parent,omitempty"`
+
+	// LastPushNoticeAt is when a GitReceiver last delivered a push to this branch, which made the
+	// branch worker look at once instead of at its next refresh. Absent means no delivery has
+	// reached this branch since this was published: no GitReceiver is set up, the Git host's
+	// webhook does not reach one, or the delivery names the repository by a URL other than the
+	// GitProvider's spec.url. Like the rest of this stanza it is written at most once a minute.
+	// +optional
+	LastPushNoticeAt *metav1.Time `json:"lastPushNoticeAt,omitempty"`
 }
 
 // GitBranchParentState is what a branch that does not exist yet would be created from.

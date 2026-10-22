@@ -58,8 +58,7 @@ folder has exactly one `GitTarget`, and one `GitTarget` has exactly one folder.
 The two directions, which share the word "source" and must not share anything else:
 
 - **Access** is the control-cluster direction: which control-cluster namespaces may reference a
-  provider (`KubeProvider` or `GitProvider`) from a `GitTarget` or trigger, or a `GitReceiver` from
-  a `GitProvider`. A provider's own
+  provider (`KubeProvider` or `GitProvider`) from a `GitTarget` or trigger. A provider's own
   namespace always may; `spec.accessFrom` admits the others (the spelling is Flux's, on purpose).
 - **Source namespace** is the source-cluster direction: which source-cluster namespace a rule reads
   objects from. `WatchRule.spec.rules[].sourceNamespace`, gated by
@@ -276,12 +275,12 @@ it and asks for a fresh one once Git is no longer ahead. A `GitTarget`'s initial
 first of each collection until one of it settles, are exempt, and its snapshots are held off for at
 most 5 minutes.
 
-**Receiver.** A `GitReceiver`: the endpoint a Git host notifies on a push, for every `GitProvider`
-that names it in `spec.gitReceiverRef`. The word and its `type` values are Flux's; the kind is
-`GitReceiver` because Flux's `Receiver` sits in the same clusters, and in prose "the receiver" is
-fine. A delivery to it is a hint to look, never a fact about the branch: it wakes the branch worker
-of each provider it serves for the repository and branch it names, and the worker reads the remote
-itself.
+**Receiver.** A `GitReceiver`: the endpoint a Git host notifies on a push. Nothing references it: a
+delivery wakes every `GitProvider` whose `spec.url` names the repository it reports. The word and
+its `type` values are Flux's; the kind is `GitReceiver` because Flux's `Receiver` sits in the same
+clusters, and in prose "the receiver" is fine. A delivery to it is a hint to look, never a fact
+about the branch: it wakes the branch worker of each provider for the repository and branch it
+names, and the worker reads the remote itself.
 
 ## Attribution
 

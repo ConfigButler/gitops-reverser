@@ -95,20 +95,6 @@ const (
 	// remote repository.
 	ConditionTypePushed = "Pushed"
 
-	// GitProviderConditionGitReceiverReady reports whether the GitReceiver a GitProvider names in
-	// spec.gitReceiverRef serves it: the GitReceiver exists, admits the provider's namespace, and is
-	// Ready. It is absent without a reference.
-	//
-	// It is deliberately NOT part of Ready: a receiver only makes a foreign push noticed sooner. A
-	// provider whose receiver is missing still writes, and its branch workers still find a foreign
-	// push by the next rejected push or the periodic refresh, so reporting it through Ready would
-	// tell every kstatus reader, and every GitBranch and GitTarget projecting the provider, that
-	// writing is broken when it is not.
-	GitProviderConditionGitReceiverReady = "GitReceiverReady"
-	// ReasonGitReceiverNotReady is the GitReceiverReady=False reason while the referenced
-	// GitReceiver exists and admits the provider but is not Ready itself.
-	ReasonGitReceiverNotReady = "GitReceiverNotReady"
-
 	// KubeProviderConditionValidated reports whether a KubeProvider's credential is safe and
 	// resolvable: an inCluster provider is Validated while the installation lists it in
 	// --in-cluster-kube-providers; a secretRef provider once its kubeconfig Secret is present,

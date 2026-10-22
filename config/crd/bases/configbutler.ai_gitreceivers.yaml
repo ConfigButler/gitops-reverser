@@ -40,10 +40,12 @@ spec:
       openAPIV3Schema:
         description: |-
           GitReceiver is the endpoint a Git host notifies on a push. A delivery to it authenticates against
-          its token, names a repository and a branch, and wakes the branch worker of each GitProvider that
-          references this GitReceiver for that repository and branch. A delivery is only a hint: the branch
-          worker reads the remote with its own provider's credential to find out what happened, so nothing
-          a delivery says can choose a URL, a credential or a commit.
+          its token, names a repository and a branch, and wakes the branch worker of every GitProvider, in
+          any namespace, whose spec.url the delivery names, for that branch. A provider reaching its host
+          through an alias (another host name or port) is not matched, and finds pushes by its periodic
+          refresh. A delivery is only a hint: the branch worker reads the remote with its own provider's
+          credential to find out what happened, so nothing a delivery says can choose a URL, a credential
+          or a commit. GitBranch.status.remote.lastPushNoticeAt shows that deliveries reach a branch.
         properties:
           apiVersion:
             description: |-
@@ -65,73 +67,6 @@ spec:
           spec:
             description: spec defines the desired state of GitReceiver
             properties:
-              accessFrom:
-                description: |-
-                  AccessFrom admits GitProviders in OTHER namespaces to reference this GitReceiver from
-                  spec.gitReceiverRef. Its own namespace is always admitted; omitted, no other namespace is.
-                  One GitReceiver can then serve a GitHub App or an organization webhook, whose one endpoint
-                  delivers for repositories whose GitProviders live in many namespaces.
-                properties:
-                  names:
-                    description: |-
-                      Names is an explicit allow-list of namespace names. Entries are namespace names (DNS-1123
-                      labels), never patterns — `*` is rejected. To admit every namespace, declare `selector: {}`.
-                    items:
-                      maxLength: 63
-                      minLength: 1
-                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-                      type: string
-                    type: array
-                    x-kubernetes-list-type: set
-                  selector:
-                    description: |-
-                      Selector is a label selector matched against Namespace labels; a namespace whose labels
-                      match is admitted. ORed with Names.
-                    properties:
-                      matchExpressions:
-                        description: matchExpressions is a list of label selector
-                          requirements. The requirements are ANDed.
-                        items:
-                          description: |-
-                            A label selector requirement is a selector that contains values, a key, and an operator that
-                            relates the key and values.
-                          properties:
-                            key:
-                              description: key is the label key that the selector
-                                applies to.
-                              type: string
-                            operator:
-                              description: |-
-                                operator represents a key's relationship to a set of values.
-                                Valid operators are In, NotIn, Exists and DoesNotExist.
-                              type: string
-                            values:
-                              description: |-
-                                values is an array of string values. If the operator is In or NotIn,
-                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                the values array must be empty. This array is replaced during a strategic
-                                merge patch.
-                              items:
-                                type: string
-                              type: array
-                              x-kubernetes-list-type: atomic
-                          required:
-                          - key
-                          - operator
-                          type: object
-                        type: array
-                        x-kubernetes-list-type: atomic
-                      matchLabels:
-                        additionalProperties:
-                          type: string
-                        description: |-
-                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                          map is equivalent to an element of matchExpressions, whose key field is "key", the
-                          operator is "In", and the values array contains only "value". The requirements are ANDed.
-                        type: object
-                    type: object
-                    x-kubernetes-map-type: atomic
-                type: object
               secretRef:
                 description: |-
                   SecretRef names a Secret in this GitReceiver's namespace whose "token" key is the webhook

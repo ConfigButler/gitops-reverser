@@ -79,13 +79,10 @@ func setupPushReceiver(mgr ctrl.Manager, cfg appConfig, notifier webhookhandler.
 		return
 	}
 	// A route is found through this index on the cached GitReceivers, so a path nothing publishes
-	// costs no API read, and the providers a delivery is for through the second one.
+	// costs no API read.
 	fatalIfErr(mgr.GetFieldIndexer().IndexField(context.Background(), &configbutleraiv1alpha3.GitReceiver{},
 		webhookhandler.GitReceiverWebhookPathIndex, webhookhandler.IndexGitReceiverWebhookPath),
 		"unable to index GitReceivers by status.webhookPath")
-	fatalIfErr(mgr.GetFieldIndexer().IndexField(context.Background(), &configbutleraiv1alpha3.GitProvider{},
-		webhookhandler.GitProviderGitReceiverIndex, webhookhandler.IndexGitProviderGitReceiver),
-		"unable to index GitProviders by spec.gitReceiverRef")
 	// The manager client reads the kinds from its cache and Secrets straight from the API server
 	// (Secrets are excluded from the cache), so a rotated token is used on the next delivery.
 	handler, err := webhookhandler.NewReceiverHandler(webhookhandler.ReceiverHandlerConfig{

@@ -315,12 +315,17 @@ creating a `GitReceiver` in its own namespace, so there is one mechanism, not tw
 
 The name avoids Flux's `Receiver` kind, which sits in the same clusters.
 
-Built as above, with three corrections. The reference is `gitReceiverRef`, not `receiverRef`: rule 2
-of [definitions.md](../definitions.md) names a reference after the kind it points at. A receiver
-whose token Secret is missing looks again every 30 seconds, because Secrets are not watched and no
-delivery reaches it until its path is published. And a `generic-hmac` body must name its
-repository, which it used to be allowed to omit, because a shared receiver cannot route one that
-does not.
+Built with three corrections. **There is no reference and no `accessFrom`:** a delivery wakes every
+`GitProvider`, in any namespace, whose `spec.url` names its repository. Once the receiver routes by
+the payload's repository, a per-provider reference only narrowed a set the URL already narrows, and
+cost a line of wiring per provider plus an admission in every namespace for a GitHub App. Waking
+across namespaces is safe because a woken worker reads the remote with its own credential and holds
+at most one pending look, and the `202` carries no count, so it says nothing about other
+namespaces. Whether deliveries reach a branch is `GitBranch.status.remote.lastPushNoticeAt`, a fact
+rather than a condition about a reference. A receiver whose token Secret is missing looks again
+every 30 seconds, because Secrets are not watched and no delivery reaches it until its path is
+published. And a `generic-hmac` body must name its repository, which it used to be allowed to omit,
+because a shared receiver cannot route one that does not.
 
 ## Not in these phases
 
@@ -350,9 +355,5 @@ Phase 1:
 Phase 2 (settled): the `inCluster` list is `--in-cluster-kube-providers` (chart value
 `controllerManager.inClusterKubeProviders`), and the chart's provider is named `local`.
 
-Phase 3 (settled): `GitReceiver` has `accessFrom`, admitting its own namespace and the others it
-names, because a GitHub App has one endpoint for repositories whose providers live in many
-namespaces. A delivery only wakes a branch worker, so admitting a namespace grants it no credential.
-`GitProvider.status.conditions` carries `GitReceiverReady` (`GitReceiverNotFound`,
-`NamespaceNotAuthorized`, `GitReceiverNotReady`) outside `Ready`, since the refresh still works
-without a receiver.
+Phase 3 (settled): routing is by URL alone, so a `GitReceiver` has no `accessFrom` and a
+`GitProvider` no `gitReceiverRef` or `GitReceiverReady` condition (see the corrections above).

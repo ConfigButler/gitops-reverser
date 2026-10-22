@@ -37,7 +37,6 @@ const (
 
 	platformRepo = "https://github.com/acme/platform.git"
 	tenantRepo   = "https://github.com/acme/tenant.git"
-	blockedRepo  = "https://github.com/acme/blocked.git"
 )
 
 // fakePushNotifier records every NotifyPush call and reports a worker for the "<namespace>/<name>
@@ -61,24 +60,19 @@ func (f *fakePushNotifier) NotifyPush(providerNamespace, providerName, branch, a
 func testWorkers() map[string]bool {
 	return map[string]bool{
 		"platform/gh-config@main":     true,
-		"platform/gl-config@main":     true,
 		"platform/gt-config@main":     true,
-		"platform/gen-config@main":    true,
 		"tenant-a/tenant-config@main": true,
 	}
 }
 
 // receiverTestReceiver is a GitReceiver in the test namespace whose status publishes the path
 // receiverTestToken derives, as the GitReceiver controller would.
-func receiverTestReceiver(
-	name string, receiverType v1alpha3.ReceiverType, secret string, accessFrom *v1alpha3.NamespaceMatcher,
-) *v1alpha3.GitReceiver {
+func receiverTestReceiver(name string, receiverType v1alpha3.ReceiverType, secret string) *v1alpha3.GitReceiver {
 	return &v1alpha3.GitReceiver{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: receiverTestNamespace},
 		Spec: v1alpha3.GitReceiverSpec{
-			Type:       receiverType,
-			SecretRef:  meta.LocalObjectReference{Name: secret},
-			AccessFrom: accessFrom,
+			Type:      receiverType,
+			SecretRef: meta.LocalObjectReference{Name: secret},
 		},
 		Status: v1alpha3.GitReceiverStatus{WebhookPath: route(name)},
 	}
@@ -91,20 +85,18 @@ func route(name string) string {
 
 // rotatedReceiver still publishes the path a token it no longer holds derived.
 func rotatedReceiver() *v1alpha3.GitReceiver {
-	receiver := receiverTestReceiver("rotated", v1alpha3.ReceiverTypeGitHub, "receiver-token", nil)
+	receiver := receiverTestReceiver("rotated", v1alpha3.ReceiverTypeGitHub, "receiver-token")
 	receiver.Status.WebhookPath = v1alpha3.ReceiverPath([]byte("the-old-token"), receiverTestNamespace, "rotated")
 	return receiver
 }
 
-// testProvider is a GitProvider for url whose spec.gitReceiverRef names the receiver in
-// receiverNamespace ("" leaves the reference's namespace to default to the provider's own).
-func testProvider(namespace, name, url, receiver, receiverNamespace string) *v1alpha3.GitProvider {
+// testProvider is a GitProvider for url.
+func testProvider(namespace, name, url string) *v1alpha3.GitProvider {
 	return &v1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: v1alpha3.GitProviderSpec{
 			URL:             url,
 			AllowedBranches: []string{"*"},
-			GitReceiverRef:  &meta.NamespacedObjectReference{Name: receiver, Namespace: receiverNamespace},
 		},
 	}
 }
@@ -116,39 +108,27 @@ func receiverTestSecret(name string, data map[string][]byte) *corev1.Secret {
 	}
 }
 
-// receiverTestObjects is one receiver per type sharing one token Secret, the providers that
-// reference them, and the receivers that must not serve or cannot verify yet.
+// receiverTestObjects is one receiver per type sharing one token Secret, the receivers that cannot
+// verify yet, and the providers every one of them routes to by URL.
 //
-// "gh" serves two providers for one repository, spelled two ways (only gh-config writes main), and
-// admits tenant-a, whose provider writes another repository; tenant-b is not admitted. "closed"
-// admits nobody outside its namespace, so its one provider is not served, and "unused" is
-// referenced by nobody.
+// The platform repository has two providers spelling it two ways (only gh-config writes main), the
+// tenant repository one provider in another namespace, and the Gitea repository one provider
+// spelling it by Gitea's SSH host.
 func receiverTestObjects() []client.Object {
-	tenantA := map[string]string{"tier": "trusted"}
 	return []client.Object{
 		receiverTestSecret("receiver-token", map[string][]byte{v1alpha3.ReceiverTokenKey: []byte(receiverTestToken)}),
 		receiverTestSecret("wrong-key", map[string][]byte{"password": []byte(receiverTestToken)}),
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-a", Labels: tenantA}},
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-b"}},
-		receiverTestReceiver("gh", v1alpha3.ReceiverTypeGitHub, "receiver-token", &v1alpha3.NamespaceMatcher{
-			Selector: &metav1.LabelSelector{MatchLabels: tenantA},
-		}),
-		receiverTestReceiver("gl", v1alpha3.ReceiverTypeGitLab, "receiver-token", nil),
-		receiverTestReceiver("gt", v1alpha3.ReceiverTypeGitea, "receiver-token", nil),
-		receiverTestReceiver("gen", v1alpha3.ReceiverTypeGenericHMAC, "receiver-token", nil),
-		receiverTestReceiver("unused", v1alpha3.ReceiverTypeGitHub, "receiver-token", nil),
-		receiverTestReceiver("closed", v1alpha3.ReceiverTypeGitHub, "receiver-token", nil),
-		receiverTestReceiver("no-secret", v1alpha3.ReceiverTypeGitHub, "absent", nil),
-		receiverTestReceiver("no-key", v1alpha3.ReceiverTypeGitHub, "wrong-key", nil),
+		receiverTestReceiver("gh", v1alpha3.ReceiverTypeGitHub, "receiver-token"),
+		receiverTestReceiver("gl", v1alpha3.ReceiverTypeGitLab, "receiver-token"),
+		receiverTestReceiver("gt", v1alpha3.ReceiverTypeGitea, "receiver-token"),
+		receiverTestReceiver("gen", v1alpha3.ReceiverTypeGenericHMAC, "receiver-token"),
+		receiverTestReceiver("no-secret", v1alpha3.ReceiverTypeGitHub, "absent"),
+		receiverTestReceiver("no-key", v1alpha3.ReceiverTypeGitHub, "wrong-key"),
 		rotatedReceiver(),
-		testProvider(receiverTestNamespace, "gh-config", platformRepo, "gh", ""),
-		testProvider(receiverTestNamespace, "ssh-config", "git@github.com:acme/platform", "gh", ""),
-		testProvider("tenant-a", "tenant-config", tenantRepo, "gh", receiverTestNamespace),
-		testProvider("tenant-b", "blocked-config", blockedRepo, "gh", receiverTestNamespace),
-		testProvider(receiverTestNamespace, "gl-config", platformRepo, "gl", ""),
-		testProvider(receiverTestNamespace, "gt-config", "ssh://git@gitea-ssh.example/acme/platform.git", "gt", ""),
-		testProvider(receiverTestNamespace, "gen-config", platformRepo, "gen", ""),
-		testProvider("tenant-b", "closed-config", platformRepo, "closed", receiverTestNamespace),
+		testProvider(receiverTestNamespace, "gh-config", platformRepo),
+		testProvider(receiverTestNamespace, "ssh-config", "git@github.com:acme/platform"),
+		testProvider("tenant-a", "tenant-config", tenantRepo),
+		testProvider(receiverTestNamespace, "gt-config", "ssh://git@gitea-ssh.example/acme/platform.git"),
 	}
 }
 
@@ -163,8 +143,7 @@ func newReceiverTestHandler(
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, v1alpha3.AddToScheme(scheme))
 	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(receiverTestObjects()...).
-		WithIndex(&v1alpha3.GitReceiver{}, GitReceiverWebhookPathIndex, IndexGitReceiverWebhookPath).
-		WithIndex(&v1alpha3.GitProvider{}, GitProviderGitReceiverIndex, IndexGitProviderGitReceiver)
+		WithIndex(&v1alpha3.GitReceiver{}, GitReceiverWebhookPathIndex, IndexGitReceiverWebhookPath)
 	if funcs != nil {
 		builder = builder.WithInterceptorFuncs(*funcs)
 	}
@@ -245,8 +224,6 @@ type receiverCase struct {
 	body    string
 
 	wantStatus int
-	// wantMatched is the 202 body's matched value; ignored for any other status.
-	wantMatched int
 	// wantCalls is every NotifyPush the delivery must make, in any order; nil asserts none was made.
 	wantCalls []fakePushCall
 	// wantReceiver/wantOutcome is the one delivery the metric must count; empty asserts none.
@@ -264,7 +241,6 @@ func receiverCases() map[string]receiverCase {
 	otherPush := hostPushBody("refs/heads/feature/x", platformRepo)
 	tagPush := hostPushBody("refs/tags/v1.0.0", platformRepo)
 	tenantPush := hostPushBody("refs/heads/main", tenantRepo)
-	blockedPush := hostPushBody("refs/heads/main", blockedRepo)
 	unknownPush := hostPushBody("refs/heads/main", "https://github.com/acme/other.git")
 	ghPlatform := []fakePushCall{call(receiverTestNamespace, "gh-config", "main"),
 		call(receiverTestNamespace, "ssh-config", "main")}
@@ -275,41 +251,26 @@ func receiverCases() map[string]receiverCase {
 		// github, and the routing every type shares
 		"a push wakes the worker of the provider that writes the branch, once": {
 			path: route("gh"), headers: githubHeaders("push", mainPush, receiverTestToken), body: mainPush,
-			wantStatus: http.StatusAccepted, wantMatched: 1, wantCalls: ghPlatform,
+			wantStatus: http.StatusAccepted, wantCalls: ghPlatform,
 			wantReceiver: "gh", wantType: "github", wantOutcome: deliveryNotified,
 		},
-		"a push for an admitted provider in another namespace is notified": {
+		"a push wakes a provider in any namespace": {
 			path: route("gh"), headers: githubHeaders("push", tenantPush, receiverTestToken), body: tenantPush,
-			wantStatus: http.StatusAccepted, wantMatched: 1,
+			wantStatus:   http.StatusAccepted,
 			wantCalls:    []fakePushCall{call("tenant-a", "tenant-config", "main")},
 			wantReceiver: "gh", wantType: "github", wantOutcome: deliveryNotified,
 		},
-		"a push for a provider the receiver does not admit wakes nothing": {
-			path: route("gh"), headers: githubHeaders("push", blockedPush, receiverTestToken), body: blockedPush,
-			wantStatus: http.StatusAccepted, wantMatched: 0,
-			wantReceiver: "gh", wantType: "github", wantOutcome: deliveryUnknownRepository,
-		},
 		"a push for a repository no provider has is still a success": {
 			path: route("gh"), headers: githubHeaders("push", unknownPush, receiverTestToken), body: unknownPush,
-			wantStatus: http.StatusAccepted, wantMatched: 0,
+			wantStatus:   http.StatusAccepted,
 			wantReceiver: "gh", wantType: "github", wantOutcome: deliveryUnknownRepository,
 		},
 		"a push to a branch nothing writes is still a success": {
 			path: route("gh"), headers: githubHeaders("push", otherPush, receiverTestToken), body: otherPush,
-			wantStatus: http.StatusAccepted, wantMatched: 0,
+			wantStatus: http.StatusAccepted,
 			wantCalls: []fakePushCall{call(receiverTestNamespace, "gh-config", "feature/x"),
 				call(receiverTestNamespace, "ssh-config", "feature/x")},
 			wantReceiver: "gh", wantType: "github", wantOutcome: deliveryUnknownBranch,
-		},
-		"a receiver no provider references is unreferenced": {
-			path: route("unused"), headers: githubHeaders("push", mainPush, receiverTestToken), body: mainPush,
-			wantStatus: http.StatusAccepted, wantMatched: 0,
-			wantReceiver: "unused", wantType: "github", wantOutcome: deliveryUnreferenced,
-		},
-		"a receiver referenced only by providers it does not admit is unreferenced": {
-			path: route("closed"), headers: githubHeaders("push", mainPush, receiverTestToken), body: mainPush,
-			wantStatus: http.StatusAccepted, wantMatched: 0,
-			wantReceiver: "closed", wantType: "github", wantOutcome: deliveryUnreferenced,
 		},
 		// GitHub's default content type wraps the JSON in a payload field, and signs the raw body.
 		"github form-encoded push reaches the worker": {
@@ -320,7 +281,7 @@ func receiverCases() map[string]receiverCase {
 				return h
 			}(),
 			body:       formEncoded(mainPush),
-			wantStatus: http.StatusAccepted, wantMatched: 1, wantCalls: ghPlatform,
+			wantStatus: http.StatusAccepted, wantCalls: ghPlatform,
 			wantReceiver: "gh", wantType: "github", wantOutcome: deliveryNotified,
 		},
 		"github wrong signature is rejected": {
@@ -385,8 +346,8 @@ func receiverCases() map[string]receiverCase {
 		// gitlab
 		"gitlab push names its repository in the project and is notified": {
 			path: route("gl"), headers: gitlabHeaders("Push Hook", receiverTestToken), body: gitlabMain,
-			wantStatus: http.StatusAccepted, wantMatched: 1,
-			wantCalls:    []fakePushCall{call(receiverTestNamespace, "gl-config", "main")},
+			wantStatus:   http.StatusAccepted,
+			wantCalls:    ghPlatform,
 			wantReceiver: "gl", wantType: "gitlab", wantOutcome: deliveryNotified,
 		},
 		"gitlab wrong token is rejected": {
@@ -404,10 +365,10 @@ func receiverCases() map[string]receiverCase {
 
 		// gitea
 		"gitea push reaches a provider spelling the repository by its SSH host": {
-			path:       route("gt"),
-			headers:    giteaHeaders("push", giteaPushBody("refs/heads/main"), receiverTestToken),
-			body:       giteaPushBody("refs/heads/main"),
-			wantStatus: http.StatusAccepted, wantMatched: 1,
+			path:         route("gt"),
+			headers:      giteaHeaders("push", giteaPushBody("refs/heads/main"), receiverTestToken),
+			body:         giteaPushBody("refs/heads/main"),
+			wantStatus:   http.StatusAccepted,
 			wantCalls:    []fakePushCall{call(receiverTestNamespace, "gt-config", "main")},
 			wantReceiver: "gt", wantType: "gitea", wantOutcome: deliveryNotified,
 		},
@@ -431,16 +392,16 @@ func receiverCases() map[string]receiverCase {
 		// generic-hmac
 		"generic-hmac push for the same repository spelled differently is notified": {
 			path: route("gen"), headers: genericHeaders(genMain, receiverTestToken), body: genMain,
-			wantStatus: http.StatusAccepted, wantMatched: 1,
-			wantCalls:    []fakePushCall{call(receiverTestNamespace, "gen-config", "main")},
+			wantStatus:   http.StatusAccepted,
+			wantCalls:    ghPlatform,
 			wantReceiver: "gen", wantType: "generic-hmac", wantOutcome: deliveryNotified,
 		},
 		"generic-hmac full ref is read as its branch": {
-			path:       route("gen"),
-			headers:    genericHeaders(genericBody(platformRepo, "refs/heads/main"), receiverTestToken),
-			body:       genericBody(platformRepo, "refs/heads/main"),
-			wantStatus: http.StatusAccepted, wantMatched: 1,
-			wantCalls:    []fakePushCall{call(receiverTestNamespace, "gen-config", "main")},
+			path:         route("gen"),
+			headers:      genericHeaders(genericBody(platformRepo, "refs/heads/main"), receiverTestToken),
+			body:         genericBody(platformRepo, "refs/heads/main"),
+			wantStatus:   http.StatusAccepted,
+			wantCalls:    ghPlatform,
 			wantReceiver: "gen", wantType: "generic-hmac", wantOutcome: deliveryNotified,
 		},
 		"generic-hmac another repository is counted and ignored": {
@@ -547,10 +508,7 @@ func TestReceiverHandler_ServeHTTP(t *testing.T) {
 
 			require.Equal(t, tc.wantStatus, rec.Code, "body: %s", rec.Body.String())
 			if tc.wantStatus == http.StatusAccepted {
-				var resp receiverResponse
-				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-				assert.Equal(t, tc.wantMatched, resp.Matched)
-				assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+				assert.Empty(t, rec.Body.String(), "a 202 says nothing about what the delivery woke")
 			}
 
 			if tc.wantCalls == nil {
@@ -603,9 +561,8 @@ func TestReceiverHandler_OversizedBodyIsRefusedBeforeVerification(t *testing.T) 
 }
 
 // TestReceiverHandler_UnreadableConfigurationIs503 separates "no such route" from "cannot tell
-// yet": an API error reading the GitReceiver, its token, the providers it serves or their
-// Namespaces must not answer 404, which a host may treat as a dead hook, nor a 202 that drops the
-// delivery.
+// yet": an API error reading the GitReceiver, its token or the providers must not answer 404, which
+// a host may treat as a dead hook, nor a 202 that drops the delivery.
 func TestReceiverHandler_UnreadableConfigurationIs503(t *testing.T) {
 	failing := errors.New("apiserver unavailable")
 	failListOf := func(match func(client.ObjectList) bool) *interceptor.Funcs {
@@ -644,10 +601,6 @@ func TestReceiverHandler_UnreadableConfigurationIs503(t *testing.T) {
 		"provider lookup fails": {
 			funcs: failListOf(func(l client.ObjectList) bool { _, ok := l.(*v1alpha3.GitProviderList); return ok }),
 			body:  hostPushBody("refs/heads/main", platformRepo),
-		},
-		"namespace read fails": {
-			funcs: failGetOf(func(o client.Object) bool { _, ok := o.(*corev1.Namespace); return ok }),
-			body:  hostPushBody("refs/heads/main", tenantRepo),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -745,21 +698,12 @@ func TestVerifyDelivery_UnknownTypeFailsClosed(t *testing.T) {
 	assert.False(t, verifyDelivery("bitbucket", header, body, []byte(receiverTestToken)))
 }
 
-// TestReceiverIndexes index only what they are for: a published path, and a reference resolved to
-// its namespace, so a delivery for one receiver can never list another receiver's providers.
-func TestReceiverIndexes(t *testing.T) {
+// TestReceiverIndex indexes only a published path.
+func TestReceiverIndex(t *testing.T) {
 	assert.Nil(t, IndexGitReceiverWebhookPath(&v1alpha3.GitProvider{}), "only GitReceivers carry a route")
 	assert.Nil(t, IndexGitReceiverWebhookPath(&v1alpha3.GitReceiver{}), "no published path, no route")
 	assert.Equal(t, []string{route("gh")}, IndexGitReceiverWebhookPath(
-		receiverTestReceiver("gh", v1alpha3.ReceiverTypeGitHub, "receiver-token", nil)))
-
-	assert.Nil(t, IndexGitProviderGitReceiver(&v1alpha3.GitReceiver{}))
-	assert.Nil(t, IndexGitProviderGitReceiver(&v1alpha3.GitProvider{}), "no reference, no receiver")
-	assert.Equal(t, []string{"tenant-a/hook"},
-		IndexGitProviderGitReceiver(testProvider("tenant-a", "p", platformRepo, "hook", "")),
-		"an omitted namespace is the provider's own")
-	assert.Equal(t, []string{"platform/hook"},
-		IndexGitProviderGitReceiver(testProvider("tenant-a", "p", platformRepo, "hook", "platform")))
+		receiverTestReceiver("gh", v1alpha3.ReceiverTypeGitHub, "receiver-token")))
 }
 
 // TestParseDelivery_ReadsEveryRepositorySpelling collects each URL a host fills, so a provider

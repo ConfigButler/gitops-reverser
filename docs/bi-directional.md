@@ -301,7 +301,7 @@ GitOps Reverser learns that the branch moved in four ways, and each feeds the sa
 
 | Signal | Latency | Configure |
 | --- | --- | --- |
-| A push webhook from the Git host | Seconds | A `GitReceiver`, named by `GitProvider.spec.gitReceiverRef` |
+| A push webhook from the Git host | Seconds | A `GitReceiver`, which wakes every `GitProvider` whose `spec.url` a delivery names |
 | A rejected compare-and-swap push | At the next publication | Nothing: it is how every push works |
 | A Flux `GitRepository` that fetched another commit than the one asked for | At the next apply attempt | Nothing: the branch worker then looks at the remote, as for a push webhook |
 | The periodic refresh | Within `--git-refresh-interval` (`10m`) plus the 5-minute reconcile tick | Nothing: on by default |
@@ -315,12 +315,10 @@ To serve the receiver:
 2. Create a Secret with the webhook secret under the key `token`. It is the key a Flux `Receiver`
    Secret uses, so an existing one can be copied over.
 3. Create a `GitReceiver` in the Secret's namespace, naming the Secret and the host's `type`:
-   `github`, `gitlab`, `gitea`, or `generic-hmac` for a relay of your own. One `GitReceiver` serves
-   every `GitProvider` that names it, so a GitHub App or an organization webhook needs one; its
-   `spec.accessFrom` admits providers in other namespaces.
-4. Set `GitProvider.spec.gitReceiverRef` to it. The provider's `GitReceiverReady` condition says
-   whether the receiver serves it.
-5. Read the path from the `GitReceiver`'s `status.webhookPath` and register
+   `github`, `gitlab`, `gitea`, or `generic-hmac` for a relay of your own. No `GitProvider` names
+   it: a delivery wakes every provider, in any namespace, whose `spec.url` names the repository the
+   delivery reports, so a GitHub App or an organization webhook needs one `GitReceiver`.
+4. Read the path from the `GitReceiver`'s `status.webhookPath` and register
    `https://<your route><path>` as a push webhook with the same secret:
 
    ```bash
@@ -330,9 +328,12 @@ To serve the receiver:
 
    The path is derived from the token, as a Flux `Receiver` path is. A wrong path and a wrong
    secret both answer `404`; the operator's log says which. Rotating the token moves the path.
+5. Push, and check the `GitBranch`: `status.remote.lastPushNoticeAt` is set once a delivery reached
+   it (written at most once a minute). Still absent means the host does not reach the receiver, or
+   names the repository by a URL other than the provider's `spec.url`, such as an SSH alias.
 
-A delivery is only a hint. It wakes the branch worker of each `GitProvider` the receiver serves
-whose repository and branch it names, and GitOps Reverser reads the branch's ref advertisement and
+A delivery is only a hint. It wakes the branch worker of each `GitProvider` whose repository and
+branch it names, and GitOps Reverser reads the branch's ref advertisement and
 decides from what the remote says, so a late delivery, a duplicate, or one for its own push applies
 nothing it should not. When it cannot tell whether a commit is its own, it treats it as foreign. The
 [configuration reference](configuration.md#gitreceiver) has every field.

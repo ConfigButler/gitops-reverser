@@ -28,10 +28,6 @@ spec:
       name: Verified
       priority: 1
       type: date
-    - jsonPath: .status.conditions[?(@.type=="GitReceiverReady")].status
-      name: ReceiverReady
-      priority: 1
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Message
       priority: 1
@@ -186,30 +182,6 @@ spec:
                     - secretRef
                     type: object
                 type: object
-              gitReceiverRef:
-                description: |-
-                  GitReceiverRef names the GitReceiver whose push deliveries wake this provider's branch
-                  workers, so a push by somebody else is noticed in seconds instead of at the next refresh. A
-                  delivery is only a hint: it makes GitOps Reverser read where the branch is on the remote with
-                  this provider's credential, and what the remote says decides whether a GitTarget's applier is
-                  asked to apply. Namespace omitted means this GitProvider's own namespace; a GitReceiver in
-                  another namespace serves it only while its spec.accessFrom admits this namespace. Whether it
-                  does is reported on the GitReceiverReady condition, which is not part of Ready: without a
-                  receiver, a foreign push is still found, by the next rejected push or by the periodic refresh.
-                properties:
-                  name:
-                    description: Name of the referent.
-                    type: string
-                  namespace:
-                    description: Namespace of the referent, when not specified it
-                      acts as LocalObjectReference.
-                    type: string
-                required:
-                - name
-                type: object
-                x-kubernetes-validations:
-                - message: spec.gitReceiverRef.name must not be empty
-                  rule: self.name != ''
               knownHostsRef:
                 description: |-
                   KnownHostsRef optionally points at a namespace-local ConfigMap or Secret holding SSH
@@ -273,7 +245,8 @@ spec:
                 to point at a different repository
               rule: self.url == oldSelf.url
             - message: 'spec.receiver was replaced by a GitReceiver: create one with
-                this type and secretRef, and set spec.gitReceiverRef to it'
+                this type and secretRef, and remove spec.receiver; deliveries wake
+                every GitProvider whose spec.url they name'
               rule: '!has(self.receiver)'
           status:
             description: status defines the observed state of GitProvider

@@ -321,9 +321,9 @@ var _ = Describe("Retained and refused GitTarget branch fields", func() {
 	})
 })
 
-// GitProvider.spec.receiver became a GitReceiver of its own. A pruned field would apply cleanly and
-// leave a provider that used to be notified silently unnotified, so the old spelling stays in the
-// schema and a CEL rule refuses it, naming spec.gitReceiverRef.
+// GitProvider.spec.receiver became the GitReceiver kind. A pruned field would apply cleanly and leave
+// a provider that used to be notified silently unnotified, so the old spelling stays in the schema
+// and a CEL rule refuses it, naming the replacement.
 var _ = Describe("Retained and refused GitProvider receiver field", func() {
 	legacyProvider := func(name string, spec map[string]any) *unstructured.Unstructured {
 		spec["url"] = "https://github.com/acme/platform.git"
@@ -336,7 +336,7 @@ var _ = Describe("Retained and refused GitProvider receiver field", func() {
 		}}
 	}
 
-	It("refuses spec.receiver in its old shape, or any other, naming spec.gitReceiverRef", func() {
+	It("refuses spec.receiver in its old shape, or any other, naming the GitReceiver that replaces it", func() {
 		ctx := context.Background()
 
 		for name, receiver := range map[string]any{
@@ -346,24 +346,8 @@ var _ = Describe("Retained and refused GitProvider receiver field", func() {
 			err := k8sClient.Create(ctx, legacyProvider(name, map[string]any{"receiver": receiver}))
 			Expect(err).To(HaveOccurred(), "%s: the old field must not apply cleanly", name)
 			Expect(err.Error()).To(ContainSubstring("spec.receiver was replaced by a GitReceiver"), name)
-			Expect(err.Error()).To(ContainSubstring("spec.gitReceiverRef"), name)
+			Expect(err.Error()).To(ContainSubstring("whose spec.url they name"), name)
 		}
-	})
-
-	It("accepts spec.gitReceiverRef, and refuses an empty name in it", func() {
-		ctx := context.Background()
-
-		provider := legacyProvider("receiver-ref", map[string]any{
-			"gitReceiverRef": map[string]any{"name": "github-app", "namespace": "platform"},
-		})
-		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
-		DeferCleanup(func() { _ = k8sClient.Delete(ctx, provider) })
-
-		err := k8sClient.Create(ctx, legacyProvider("empty-receiver-ref", map[string]any{
-			"gitReceiverRef": map[string]any{"name": ""},
-		}))
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("spec.gitReceiverRef.name must not be empty"))
 	})
 
 	It("requires a GitReceiver's type and secretRef, and refuses an unknown type", func() {
@@ -379,7 +363,6 @@ var _ = Describe("Retained and refused GitProvider receiver field", func() {
 		}
 		valid := receiver("valid-receiver", map[string]any{
 			"type": "gitea", "secretRef": map[string]any{"name": "token"},
-			"accessFrom": map[string]any{"names": []any{"team-a"}},
 		})
 		Expect(k8sClient.Create(ctx, valid)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, valid) })

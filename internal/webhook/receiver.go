@@ -27,7 +27,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
-	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
@@ -51,24 +50,6 @@ func IndexGitReceiverWebhookPath(obj client.Object) []string {
 		return nil
 	}
 	return []string{receiver.Status.WebhookPath}
-}
-
-// GitProviderGitReceiverIndex is the cache index the receiver finds the GitProviders a GitReceiver
-// serves by: the "<namespace>/<name>" of the GitReceiver each one's spec.gitReceiverRef names, with
-// an omitted namespace resolved to the provider's own.
-const GitProviderGitReceiverIndex = "spec.gitReceiverRef"
-
-// IndexGitProviderGitReceiver indexes a GitProvider by the GitReceiver it references.
-func IndexGitProviderGitReceiver(obj client.Object) []string {
-	provider, ok := obj.(*v1alpha3.GitProvider)
-	if !ok {
-		return nil
-	}
-	key, ok := provider.GitReceiverKey()
-	if !ok {
-		return nil
-	}
-	return []string{key.String()}
 }
 
 // DefaultReceiverMaxRequestBodyBytes caps a delivery's body before its signature is checked. A
@@ -102,7 +83,6 @@ const (
 // telemetry.ReceiverDeliveriesTotal for what each one means.
 const (
 	deliveryNotified          = "notified"
-	deliveryUnreferenced      = "unreferenced"
 	deliveryUnknownRepository = "unknown_repository"
 	deliveryUnknownBranch     = "unknown_branch"
 	deliveryIgnored           = "ignored"
@@ -121,8 +101,8 @@ type PushNotifier interface {
 
 // ReceiverHandlerConfig configures the push receiver.
 type ReceiverHandlerConfig struct {
-	// Reader looks up the GitReceiver a route names, the Secret holding its token, the GitProviders
-	// that reference it and their Namespaces. In the manager this is the manager client: the kinds
+	// Reader looks up the GitReceiver a route names, the Secret holding its token, and the
+	// GitProviders a delivery may be for. In the manager this is the manager client: the kinds
 	// come from its cache, and Secrets are excluded from that cache (Cache.DisableFor), so each
 	// delivery reads the token Secret directly by name. A rotated token therefore takes effect on
 	// the next delivery, and the receiver adds no Secret informer. See docs/rbac.md.
@@ -138,18 +118,25 @@ type ReceiverHandlerConfig struct {
 // ReceiverHandler serves POST /git-push/<digest>: the endpoint a Git host's push webhook
 // points at, so GitOps Reverser learns quickly that somebody pushed to a branch.
 //
-// One route is one GitReceiver, and one GitReceiver serves every GitProvider that references it
-// and that it admits, so a GitHub App or an organization webhook, which has one endpoint for many
-// repositories, needs one route. A delivery is routed by what it names: the branch worker of each
-// such provider whose repository the payload names, for the branch it names, is woken once.
+// One route is one GitReceiver, and one GitReceiver serves every GitProvider in the cluster, so a
+// GitHub App or an organization webhook, which has one endpoint for many repositories, needs one
+// route. A delivery is routed by what it names: the branch worker of each provider whose repository
+// the payload names, for the branch it names, is woken once.
 //
 // A delivery is a hint, never a fact. The handler authenticates it, extracts the repository and
 // the branch, and asks the branch worker to look; the worker then reads the remote's advertisement
 // with its own provider's credential and decides for itself whether the branch gained a foreign
 // commit. The repository the body names is only compared with the providers' spec.url, never
 // fetched, so a delivery cannot choose a URL, a credential or a commit, and a late, duplicated or
-// replayed one costs one ref advertisement per woken worker and can never make a worker believe
-// something the remote does not say.
+// replayed one costs at most one ref advertisement per woken worker (a worker holds one pending
+// look, however many deliveries arrive) and can never make a worker believe something the remote
+// does not say.
+//
+// A verified delivery is answered 202 with no body, whatever it woke. Any namespace can hold a
+// GitReceiver, and a reply saying what was woken would tell its token holder whether some other
+// namespace tracks a repository and branch they name. What a delivery did is on the
+// gitopsreverser_receiver_deliveries_total outcome and on each woken GitBranch's
+// status.remote.lastPushNoticeAt.
 //
 // Authentication comes first. The signature (or GitLab's token) is checked over the raw bytes
 // before the body is parsed for anything, in constant time, so an unsigned request cannot make a
@@ -179,12 +166,6 @@ func NewReceiverHandler(config ReceiverHandlerConfig) (*ReceiverHandler, error) 
 		config.MaxInFlight = DefaultReceiverMaxInFlight
 	}
 	return &ReceiverHandler{config: config, inFlight: make(chan struct{}, config.MaxInFlight)}, nil
-}
-
-// receiverResponse is the body of every 202. matched is how many branch workers were told to look;
-// it is a number so a relay fanning one event out to many receivers can sum the answers.
-type receiverResponse struct {
-	Matched int `json:"matched"`
 }
 
 // pushDelivery is what a verified delivery is acted on for.
@@ -325,7 +306,7 @@ func (h *ReceiverHandler) act(
 		// A host's ping (GitHub sends one when the hook is created) and any other event the hook
 		// was subscribed to are answered 202, so the host shows the hook as healthy.
 		log.V(1).Info("Ignored a verified delivery that is not a push", "event", event)
-		h.accept(w, 0)
+		accept(w)
 		h.record(ctx, receiver, deliveryIgnored)
 		return
 	}
@@ -334,7 +315,7 @@ func (h *ReceiverHandler) act(
 	switch {
 	case errors.Is(err, errDeliveryIgnored):
 		log.V(1).Info("Ignored a verified push delivery", "reason", err.Error())
-		h.accept(w, 0)
+		accept(w)
 		h.record(ctx, receiver, deliveryIgnored)
 		return
 	case err != nil:
@@ -344,7 +325,7 @@ func (h *ReceiverHandler) act(
 		return
 	}
 
-	matched, outcome, err := h.wake(ctx, log, receiver, delivery)
+	matched, outcome, err := h.wake(ctx, delivery)
 	if err != nil {
 		log.Error(err, "Could not look up the GitProviders a push delivery is for")
 		http.Error(w, "receiver not ready", http.StatusServiceUnavailable)
@@ -352,40 +333,25 @@ func (h *ReceiverHandler) act(
 	}
 	log.V(1).Info("Push delivery handled", "branch", delivery.branch, "after", delivery.after,
 		"outcome", outcome, "matched", matched)
-	h.accept(w, matched)
+	accept(w)
 	h.record(ctx, receiver, outcome)
 }
 
 // wake tells the branch worker of each GitProvider the delivery is for to look, and returns how many
-// were told and the delivery's outcome. A delivery is for a provider that references the receiver,
-// that the receiver admits (authz.ReceiverAdmitsNamespace, the policy its GitReceiverReady condition
-// reports), and whose repository the delivery names. Each provider is asked once, and only the
-// worker writing the branch for it answers, so a branch is woken once however many spellings of its
-// repository the delivery carries.
-func (h *ReceiverHandler) wake(
-	ctx context.Context,
-	log logr.Logger,
-	receiver *v1alpha3.GitReceiver,
-	delivery pushDelivery,
-) (int, string, error) {
+// were told and the delivery's outcome. A delivery is for every provider, in any namespace, whose
+// repository it names. Each provider is asked once, and only the worker writing the branch for it
+// answers, so a branch is woken once however many spellings of its repository the delivery carries.
+//
+// Providers are few, so they are listed from the cache and compared one by one rather than kept in
+// an index of normalized URLs.
+func (h *ReceiverHandler) wake(ctx context.Context, delivery pushDelivery) (int, string, error) {
 	var providers v1alpha3.GitProviderList
-	if err := h.config.Reader.List(ctx, &providers,
-		client.MatchingFields{GitProviderGitReceiverIndex: receiver.Key().String()}); err != nil {
+	if err := h.config.Reader.List(ctx, &providers); err != nil {
 		return 0, "", err
 	}
-	referenced, named, matched := 0, 0, 0
+	named, matched := 0, 0
 	for i := range providers.Items {
 		provider := &providers.Items[i]
-		decision, err := authz.ReceiverAdmitsNamespace(ctx, h.config.Reader, receiver, provider.Namespace)
-		if err != nil {
-			return 0, "", err
-		}
-		if !decision.Allowed {
-			log.V(1).Info("A GitProvider references this receiver and is not admitted",
-				"gitProvider", provider.Namespace+"/"+provider.Name, "reason", decision.Reason)
-			continue
-		}
-		referenced++
 		if !delivery.names(provider.Spec.URL) {
 			continue
 		}
@@ -395,8 +361,6 @@ func (h *ReceiverHandler) wake(
 		}
 	}
 	switch {
-	case referenced == 0:
-		return 0, deliveryUnreferenced, nil
 	case named == 0:
 		return 0, deliveryUnknownRepository, nil
 	case matched == 0:
@@ -691,11 +655,9 @@ func notFound(w http.ResponseWriter) {
 	http.Error(w, "no push receiver at this path", http.StatusNotFound)
 }
 
-// accept answers a verified delivery.
-func (h *ReceiverHandler) accept(w http.ResponseWriter, matched int) {
-	w.Header().Set("Content-Type", "application/json")
+// accept answers a verified delivery: 202, with no body (see ReceiverHandler).
+func accept(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(receiverResponse{Matched: matched})
 }
 
 // record counts one delivery to a GitReceiver.

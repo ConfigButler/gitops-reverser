@@ -39,8 +39,8 @@ The usual flow is:
    timers rather than the target's, and optionally with your message.
 6. Only when Flux or Argo CD also applies that same folder back to the cluster: hold its
    `Kustomization` or `Application` with an apply trigger, name the trigger on the `GitTarget`, and
-   give the `GitProvider` a [`GitReceiver`](#gitreceiver), so GitOps Reverser decides when Git is
-   applied. See
+   point the Git host's push webhook at a [`GitReceiver`](#gitreceiver), so GitOps Reverser decides
+   when Git is applied. See
    [who applies this folder](#who-applies-this-folder-specapplytriggerref) and
    [bi-directional GitOps](bi-directional.md). Flux and Argo CD applying other folders need nothing.
 
@@ -74,7 +74,6 @@ fields that need more than a line.
 | `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
 | `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
 | `commit.signing` | off | SSH commit signing. See [commit signing](#commit-signing) |
-| `gitReceiverRef` | off | The `GitReceiver` whose push deliveries wake this provider's branches: its own namespace, or `namespace` names one whose `accessFrom` admits it. See [receiving push notifications](#receiving-push-notifications-specgitreceiverref) |
 
 ### `GitBranch` (namespaced): one branch of the repository
 
@@ -92,7 +91,6 @@ Every field is immutable: to change one, delete the `GitBranch` and create a new
 |---|---|---|
 | `type` | **required** | Payload and signature the host sends: `github`, `gitlab`, `gitea`, or `generic-hmac` for a relay of your own. See [`GitReceiver`](#gitreceiver) |
 | `secretRef` | **required** | Secret, in this namespace, whose `token` key is the webhook secret. It also derives `status.webhookPath` |
-| `accessFrom` | **no other namespace** | Other namespaces whose `GitProvider`s may reference this receiver, by name or label selector. Its own namespace is always admitted |
 
 ### `KubeProvider` (namespaced): the source cluster
 
@@ -207,8 +205,9 @@ grants nothing there.
 
 ## `GitProvider`
 
-`GitProvider` defines the Git remote, credentials, allowed branches, the `GitReceiver` that tells it
-about pushes, and commit behavior.
+`GitProvider` defines the Git remote, credentials, allowed branches, and commit behavior. A
+[`GitReceiver`](#gitreceiver) tells it about pushes by matching its `spec.url`; the provider does not
+name one.
 
 The important fields are:
 
@@ -217,7 +216,6 @@ The important fields are:
 - `spec.knownHostsRef`: optional ConfigMap/Secret with SSH `known_hosts` shared across providers
 - `spec.allowedBranches`: branches this provider is allowed to write
 - `spec.commit`: committer identity and signing
-- `spec.gitReceiverRef`: the [`GitReceiver`](#gitreceiver) whose push deliveries wake its branches
 
 How writes are batched and phrased is **not** here: `spec.commit.window` and `spec.commit.message`
 belong to the [`GitTarget`](#gittargetspeccommit-how-writes-become-commits) that owns the folder.
@@ -416,34 +414,15 @@ want custom `spec.commit` behavior because the starter values do not currently e
 For the platform-facing behavior behind "valid signature" versus "verified badge", see
 [commit-signing.md](commit-signing.md).
 
-### Receiving push notifications (`spec.gitReceiverRef`)
-
-`spec.gitReceiverRef` names the [`GitReceiver`](#gitreceiver) whose push deliveries wake this
-provider's branches, so a push by somebody else is noticed in seconds instead of at the next
-refresh. An omitted `namespace` means the provider's own; a `GitReceiver` in another namespace
-serves the provider only while its `accessFrom` admits the provider's namespace. The provider
-reports whether it does on its `GitReceiverReady` condition:
-
-| `GitReceiverReady` | Reason | Meaning |
-| --- | --- | --- |
-| `True` | `Succeeded` | The `GitReceiver` exists, admits this namespace, and is `Ready` |
-| `False` | `GitReceiverNotFound` | No `GitReceiver` has that name |
-| `False` | `NamespaceNotAuthorized` | It is in another namespace and its `accessFrom` does not admit this one |
-| `False` | `GitReceiverNotReady` | It exists and admits this namespace, but is not `Ready`; the message carries its reason |
-
-The condition is not part of `Ready`. Without a receiver, the provider still writes, and a foreign
-push is still found, by the next rejected push or by the
-[periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval): the receiver makes it
-seconds instead of minutes. Its printer column is `ReceiverReady`, in
-`kubectl get gitprovider -o wide`.
-
 ## `GitReceiver`
 
-`GitReceiver` is the endpoint a Git host notifies on a push. One `GitReceiver` serves every
-`GitProvider` that references it and that it admits, so a GitHub App or an organization webhook,
-which has one endpoint for many repositories, needs only one. A team that wants its own endpoint
-creates a `GitReceiver` in its own namespace. The names follow Flux's `Receiver`, so a Flux user
-already knows them; the kind is not called `Receiver` because Flux's sits in the same clusters.
+`GitReceiver` is the endpoint a Git host notifies on a push, so a push by somebody else is noticed in
+seconds instead of at the next refresh. No `GitProvider` names it: a delivery wakes every
+`GitProvider`, in any namespace, whose `spec.url` names the repository the delivery reports. So a
+GitHub App or an organization webhook, which has one endpoint for many repositories, needs only one,
+and a team that wants its own endpoint creates a `GitReceiver` in its own namespace. The names
+follow Flux's `Receiver`, so a Flux user already knows them; the kind is not called `Receiver`
+because Flux's sits in the same clusters.
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -455,24 +434,8 @@ spec:
   type: github              # github | gitlab | gitea | generic-hmac
   secretRef:
     name: github-app-webhook-token   # in this namespace; key: token
-  accessFrom:
-    selector:
-      matchLabels:
-        platform.example.com/tenant: "true"
 status:
   webhookPath: /git-push/3f9a…c41e   # 64 hex characters
----
-apiVersion: configbutler.ai/v1alpha3
-kind: GitProvider
-metadata:
-  name: customer-config
-  namespace: tenant-a
-spec:
-  url: https://github.com/acme/customer-config.git
-  allowedBranches: ["main"]
-  gitReceiverRef:
-    name: github-app
-    namespace: platform
 ```
 
 Point the host's push webhook at the receiver listener plus `status.webhookPath`, with the same
@@ -496,11 +459,19 @@ checks, and its body must name the repository and the branch.
 **How a delivery is routed.** The signature is checked before anything in the body is read, so an
 unsigned request cannot probe which repositories or branches are tracked. A verified push names a
 branch and a repository, which a host spells several ways. Every spelling is compared with the
-`spec.url` of each `GitProvider` that references the receiver and that it admits, the way
+`spec.url` of every `GitProvider`, in any namespace, the way
 [a branch claim](#who-writes-a-repository-branch) compares repositories: scheme, user, a default
 port, a trailing `.git` and letter case are ignored, while the host and the path are not. For each
 provider that matches, the branch worker writing that branch is woken, once. A repository that
 reaches the operator under another host name, such as an SSH alias, does not match.
+
+**Whether deliveries arrive** is on the `GitBranch`: `status.remote.lastPushNoticeAt` is when a
+`GitReceiver` last delivered a push to its branch, written at most once a minute. Absent after a push
+means the host does not reach the receiver, or names the repository by a URL other than the
+provider's `spec.url`. Without a receiver, the provider still writes, and a foreign push is still
+found, by the next rejected push or by the
+[periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval): the receiver makes it
+seconds instead of minutes.
 
 A `GitReceiver` reports on `Ready` whether anything serves its path:
 
@@ -514,9 +485,11 @@ A `GitReceiver` reports on `Ready` whether anything serves its path:
 **What the host is told.** Every request that reaches no verified receiver gets the same `404`,
 whether the path is unknown, from before a token rotation, or its signature is wrong, so the
 endpoint reveals nothing about which namespaces or receivers exist. For a published path, the
-operator's log says which it was. A verified delivery answers `202 Accepted` with `{"matched": N}`,
-the number of branch workers woken, even when it names a repository or a branch nothing writes,
-because that is not the host's fault and an error teaches a host to disable the hook. Pushes to
+operator's log says which it was. A verified delivery answers `202 Accepted` with no body, even when
+it names a repository or a branch nothing writes, because that is not the host's fault and an error
+teaches a host to disable the hook. The answer does not say what was woken: any namespace can hold a
+`GitReceiver`, and a count would tell its token holder whether another namespace tracks a
+repository. Pushes to
 other branches, tag pushes and pings are accepted and ignored. Only a verified body that cannot be
 read, or one that names no repository, answers `400`.
 
@@ -527,15 +500,13 @@ delivery refused for either reason is still found by the periodic refresh.
 A delivery is a hint, never a fact. It makes each woken branch worker read the branch's ref
 advertisement (one request) with its own provider's credential, and what the remote says decides
 whether the branch gained a foreign commit. The repository the payload names is only compared, never
-fetched, so a delivery cannot choose a URL, a credential or a commit. A late delivery for one of
+fetched, so a delivery cannot choose a URL, a credential or a commit. A worker holds at most one
+pending look: deliveries that arrive while one waits are folded into it, so a run of them costs one
+ref advertisement at a time. That is why any namespace's `GitReceiver` may wake any matching
+provider. A late delivery for one of
 GitOps Reverser's own pushes, a duplicate, or a rollback onto one of its older commits are all
 judged by the remote's answer, not by the commit the delivery names. Nothing fetches or plans until
 there is something to apply, and a delivery never triggers a cluster snapshot.
-
-**What `accessFrom` admits.** A delivery only wakes a branch worker, which then reads the remote with
-its own provider's credential, so admitting a namespace hands it no credential and no say over what
-is written. The policy is the receiver owner's consent to serve that namespace's providers. Its own
-namespace is always admitted; omitted, no other namespace is.
 
 The receiver needs its own listener, because the Git host cannot present the client certificate
 the audit listener requires. See [push receiver settings](#push-receiver-settings).

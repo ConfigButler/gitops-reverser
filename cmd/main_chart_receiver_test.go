@@ -257,5 +257,5 @@ func TestChartReceiver_NotesSayWhatIsLeftToDo(t *testing.T) {
 	on := renderAuditNotes(t, "servers.receiver.enabled=true")
 	assert.Contains(t, on, "started the push receiver, behind the `gitops-reverser-receiver` Service")
 	assert.Contains(t, on, "nor create a GitReceiver")
-	assert.Contains(t, on, "`spec.gitReceiverRef`")
+	assert.Contains(t, on, "every GitProvider whose `spec.url` a\n  delivery names")
 }

@@ -53,9 +53,6 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 		target.Namespace,
 		"the example's GitTarget names a GitBranch in its own namespace",
 	)
-	receiverKey, ok := provider.GitReceiverKey()
-	require.True(t, ok, "the example's provider is notified through a GitReceiver")
-	assert.Equal(t, receiver.Key(), receiverKey)
 	assert.Equal(t, secret.Name, receiver.Spec.SecretRef.Name)
 	assert.Equal(t, receiver.Namespace, secret.Namespace, "a GitReceiver reads its token in its own namespace")
 	assert.NotEmpty(t, secret.StringData[v1alpha3.ReceiverTokenKey], "the receiver reads the token key")

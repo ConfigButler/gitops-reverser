@@ -4,8 +4,7 @@
 //
 // A KubeProvider holds a credential that can read a lot of a source cluster; it admits its own
 // namespace, and its spec.accessFrom admits the OTHER control-cluster namespaces permitted to use
-// it. A GitProvider holds a write credential, and admits namespaces the same way. A GitReceiver
-// admits the GitProviders it serves the same way too (gitreceiver_admission.go).
+// it. A GitProvider holds a write credential, and admits namespaces the same way.
 //
 // The decision lives in its own package — outside both internal/controller and internal/watch —
 // because more than one call site compiles rules or starts a data plane for a GitTarget: the

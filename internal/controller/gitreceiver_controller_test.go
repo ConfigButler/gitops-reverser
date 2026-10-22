@@ -19,23 +19,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
-	"github.com/ConfigButler/gitops-reverser/internal/authz"
 )
 
 // receiverNamespace is the namespace the GitReceiver fixtures below live in.
 const receiverNamespace = "platform"
 
 // testReceiver is the GitReceiver platform/github-app, whose token is the Secret "receiver-token".
-func testReceiver(accessFrom *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.GitReceiver {
+func testReceiver() *configbutleraiv1alpha3.GitReceiver {
 	return &configbutleraiv1alpha3.GitReceiver{
 		ObjectMeta: metav1.ObjectMeta{Name: "github-app", Namespace: receiverNamespace, Generation: 1},
 		Spec: configbutleraiv1alpha3.GitReceiverSpec{
-			Type:       configbutleraiv1alpha3.ReceiverTypeGitHub,
-			SecretRef:  meta.LocalObjectReference{Name: "receiver-token"},
-			AccessFrom: accessFrom,
+			Type:      configbutleraiv1alpha3.ReceiverTypeGitHub,
+			SecretRef: meta.LocalObjectReference{Name: "receiver-token"},
 		},
 	}
 }
@@ -61,7 +58,7 @@ func newReceiverTestClient(t *testing.T, objects ...client.Object) client.Client
 	return fake.NewClientBuilder().
 		WithScheme(receiverTestScheme(t)).
 		WithObjects(objects...).
-		WithStatusSubresource(&configbutleraiv1alpha3.GitReceiver{}, &configbutleraiv1alpha3.GitProvider{}).
+		WithStatusSubresource(&configbutleraiv1alpha3.GitReceiver{}).
 		Build()
 }
 
@@ -81,7 +78,7 @@ func reconcileReceiver(
 // so a stale path never points a Git host at a route that has stopped serving.
 func TestGitReceiverReconcile_PublishesPathFromToken(t *testing.T) {
 	ctx := context.Background()
-	receiver := testReceiver(nil)
+	receiver := testReceiver()
 	secret := receiverTokenSecret(map[string][]byte{configbutleraiv1alpha3.ReceiverTokenKey: []byte("first")})
 	c := newReceiverTestClient(t, receiver, secret)
 	r := &GitReceiverReconciler{Client: c, ListenerEnabled: true}
@@ -118,7 +115,7 @@ func TestGitReceiverReconcile_PublishesPathFromToken(t *testing.T) {
 // TestGitReceiverReconcile_ListenerDisabled publishes the path, so the hook can be registered, and
 // stalls: no delivery reaches a receiver the operator does not serve.
 func TestGitReceiverReconcile_ListenerDisabled(t *testing.T) {
-	receiver := testReceiver(nil)
+	receiver := testReceiver()
 	secret := receiverTokenSecret(map[string][]byte{configbutleraiv1alpha3.ReceiverTokenKey: []byte("t")})
 	r := &GitReceiverReconciler{Client: newReceiverTestClient(t, receiver, secret)}
 
@@ -131,7 +128,7 @@ func TestGitReceiverReconcile_ListenerDisabled(t *testing.T) {
 // TestGitReceiverReconcile_SecretReadFails keeps what is published and retries: a read that failed
 // says nothing about the token.
 func TestGitReceiverReconcile_SecretReadFails(t *testing.T) {
-	receiver := testReceiver(nil)
+	receiver := testReceiver()
 	receiver.Status.WebhookPath = "/git-push/kept"
 	c := fake.NewClientBuilder().
 		WithScheme(receiverTestScheme(t)).
@@ -173,182 +170,4 @@ func assertStalled(t *testing.T, conditions []metav1.Condition, reason string) {
 	assert.Equal(t, metav1.ConditionTrue, stalled.Status)
 	assert.Equal(t, reason, stalled.Reason)
 	assert.True(t, conditionIsFalse(conditions, ConditionTypeReady))
-}
-
-// providerReferencing is a GitProvider in namespace whose spec.gitReceiverRef names
-// platform/github-app (refNamespace "" leaves the reference's namespace to default).
-func providerReferencing(namespace, refNamespace string) *configbutleraiv1alpha3.GitProvider {
-	return &configbutleraiv1alpha3.GitProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: "customer-config", Namespace: namespace},
-		Spec: configbutleraiv1alpha3.GitProviderSpec{
-			URL:             "https://git.example.com/acme/config.git",
-			AllowedBranches: []string{"main"},
-			GitReceiverRef:  &meta.NamespacedObjectReference{Name: "github-app", Namespace: refNamespace},
-		},
-	}
-}
-
-// readyReceiver is testReceiver with Ready=True, as its reconciler would publish it.
-func readyReceiver(accessFrom *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.GitReceiver {
-	receiver := testReceiver(accessFrom)
-	receiver.Status.Conditions = []metav1.Condition{{
-		Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
-		LastTransitionTime: metav1.Now(),
-	}}
-	return receiver
-}
-
-// observeReceiverCondition runs observeGitReceiver on provider against objects and returns the
-// GitReceiverReady condition it left, or nil.
-func observeReceiverCondition(
-	t *testing.T, provider *configbutleraiv1alpha3.GitProvider, objects ...client.Object,
-) *metav1.Condition {
-	t.Helper()
-	r := &GitProviderReconciler{Client: newReceiverTestClient(t, objects...)}
-	st := beginStatus(r.Client, nil, provider)
-	require.NoError(t, r.observeGitReceiver(context.Background(), st, provider))
-	return findCondition(provider.Status.Conditions, GitProviderConditionGitReceiverReady)
-}
-
-func TestObserveGitReceiver(t *testing.T) {
-	tenant := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-a", Labels: map[string]string{
-		"tier": "trusted",
-	}}}
-	trusted := &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{
-		MatchLabels: map[string]string{"tier": "trusted"},
-	}}
-
-	tests := []struct {
-		name       string
-		provider   *configbutleraiv1alpha3.GitProvider
-		objects    []client.Object
-		wantStatus metav1.ConditionStatus
-		wantReason string
-	}{
-		{
-			name:       "same namespace, receiver Ready",
-			provider:   providerReferencing(receiverNamespace, ""),
-			objects:    []client.Object{readyReceiver(nil)},
-			wantStatus: metav1.ConditionTrue,
-			wantReason: ReasonSucceeded,
-		},
-		{
-			name:       "receiver missing",
-			provider:   providerReferencing(receiverNamespace, ""),
-			wantStatus: metav1.ConditionFalse,
-			wantReason: authz.ReasonGitReceiverNotFound,
-		},
-		{
-			name:       "receiver not reconciled",
-			provider:   providerReferencing(receiverNamespace, ""),
-			objects:    []client.Object{testReceiver(nil)},
-			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonGitReceiverNotReady,
-		},
-		{
-			name:       "another namespace without accessFrom",
-			provider:   providerReferencing("tenant-a", receiverNamespace),
-			objects:    []client.Object{readyReceiver(nil), tenant},
-			wantStatus: metav1.ConditionFalse,
-			wantReason: authz.ReasonNamespaceNotAuthorized,
-		},
-		{
-			name:       "another namespace the selector admits",
-			provider:   providerReferencing("tenant-a", receiverNamespace),
-			objects:    []client.Object{readyReceiver(trusted), tenant},
-			wantStatus: metav1.ConditionTrue,
-			wantReason: ReasonSucceeded,
-		},
-		{
-			name: "an omitted reference namespace is the provider's own",
-			// tenant-a/github-app does not exist; platform/github-app does and would admit it.
-			provider:   providerReferencing("tenant-a", ""),
-			objects:    []client.Object{readyReceiver(trusted), tenant},
-			wantStatus: metav1.ConditionFalse,
-			wantReason: authz.ReasonGitReceiverNotFound,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			cond := observeReceiverCondition(t, tc.provider, tc.objects...)
-			require.NotNil(t, cond)
-			assert.Equal(t, tc.wantStatus, cond.Status)
-			assert.Equal(t, tc.wantReason, cond.Reason)
-			assert.Nil(t, findCondition(tc.provider.Status.Conditions, ConditionTypeReady),
-				"GitReceiverReady is reported on its own and never writes the trio")
-		})
-	}
-}
-
-// TestObserveGitReceiver_RemovedWithoutReference drops the condition once the reference goes, so a
-// provider that no longer names a receiver carries no stale answer about one.
-func TestObserveGitReceiver_RemovedWithoutReference(t *testing.T) {
-	provider := providerReferencing(receiverNamespace, "")
-	provider.Spec.GitReceiverRef = nil
-	provider.Status.Conditions = []metav1.Condition{{
-		Type: GitProviderConditionGitReceiverReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
-	}}
-	assert.Nil(t, observeReceiverCondition(t, provider))
-}
-
-// TestGitReceiverToGitProviders enqueues every provider naming the receiver, from any namespace, and
-// resolves an omitted reference namespace to the provider's own before comparing.
-func TestGitReceiverToGitProviders(t *testing.T) {
-	same := providerReferencing(receiverNamespace, "")
-	same.Name = "same"
-	other := providerReferencing("tenant-a", receiverNamespace)
-	other.Name = "other"
-	unrelated := providerReferencing("tenant-a", "")
-	unrelated.Name = "unrelated" // names tenant-a/github-app
-	none := providerReferencing(receiverNamespace, "")
-	none.Name = "none"
-	none.Spec.GitReceiverRef = nil
-
-	r := &GitProviderReconciler{Client: newReceiverTestClient(t, same, other, unrelated, none)}
-	requests := r.gitReceiverToGitProviders(context.Background(), testReceiver(nil))
-	var got []string
-	for _, req := range requests {
-		got = append(got, req.String())
-	}
-	assert.ElementsMatch(t, []string{"platform/same", "tenant-a/other"}, got)
-}
-
-// TestNamespaceToGitProviders enqueues only the providers in the namespace whose receiver lives
-// elsewhere: a label change can grant or revoke only an accessFrom admission.
-func TestNamespaceToGitProviders(t *testing.T) {
-	crossNamespace := providerReferencing("tenant-a", receiverNamespace)
-	crossNamespace.Name = "cross"
-	ownNamespace := providerReferencing("tenant-a", "")
-	ownNamespace.Name = "own"
-	elsewhere := providerReferencing("tenant-b", receiverNamespace)
-	elsewhere.Name = "elsewhere"
-
-	r := &GitProviderReconciler{Client: newReceiverTestClient(t, crossNamespace, ownNamespace, elsewhere)}
-	requests := r.namespaceToGitProviders(context.Background(),
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-a"}})
-	require.Len(t, requests, 1)
-	assert.Equal(t, "tenant-a/cross", requests[0].String())
-}
-
-// TestGitReceiverReadyOrSpecChanged filters the receiver's own status writes that move neither its
-// spec nor its Ready verdict.
-func TestGitReceiverReadyOrSpecChanged(t *testing.T) {
-	p := gitReceiverReadyOrSpecChanged()
-	base := readyReceiver(nil)
-
-	assert.True(t, p.Create(event.CreateEvent{Object: base}))
-	assert.True(t, p.Delete(event.DeleteEvent{Object: base}))
-	assert.False(t, p.Generic(event.GenericEvent{Object: base}))
-
-	pathOnly := base.DeepCopy()
-	pathOnly.Status.WebhookPath = "/git-push/moved"
-	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: pathOnly}))
-
-	spec := base.DeepCopy()
-	spec.Generation = 2
-	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: spec}))
-
-	notReady := base.DeepCopy()
-	notReady.Status.Conditions[0].Status = metav1.ConditionFalse
-	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: notReady}))
 }

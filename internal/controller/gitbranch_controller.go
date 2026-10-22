@@ -230,7 +230,7 @@ func (r *GitBranchReconciler) observeWorker(
 ) time.Duration {
 	repo := repoIdentityOf(provider)
 	observed, seen := r.observeRemote(key)
-	heldFor := r.publishRemote(st, branch, observed, seen, repo, r.clockNow())
+	heldFor := r.publishRemote(st, branch, observed, seen, repo, r.clockNow(), r.lastPushNotice(branch))
 
 	if seen && observed.ParentState == git.ParentMissing &&
 		observed.ParentRequested == branch.Spec.ParentBranch && !differentRepository(observed.Repo, repo) {
@@ -247,6 +247,19 @@ func (r *GitBranchReconciler) observeWorker(
 	rd.progressingIf(open && found, metav1.ConditionFalse, GitBranchReasonRecoveringParentBranch,
 		"The parent branch is on the remote again; the branch worker is publishing the work it held back")
 	return heldFor
+}
+
+// lastPushNotice is when a Git host last reported a push to the branch this GitBranch holds, zero
+// when its worker has seen none.
+func (r *GitBranchReconciler) lastPushNotice(branch *configbutleraiv1alpha3.GitBranch) time.Time {
+	if r.WorkerManager == nil {
+		return time.Time{}
+	}
+	worker, live := r.WorkerManager.WorkerForGitBranch(client.ObjectKeyFromObject(branch))
+	if !live {
+		return time.Time{}
+	}
+	return worker.LastPushNotice()
 }
 
 // observeClaim records the proof with the claim registry and returns the holder.
