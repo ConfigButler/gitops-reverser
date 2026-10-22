@@ -1,7 +1,7 @@
 # Build the manager binary
 # Base images are pinned by digest (Scorecard "pinned dependencies");
 # Dependabot's docker ecosystem keeps version + digest current together.
-FROM golang:1.27.1@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244 AS builder
+FROM golang:1.27.2@sha256:820153096fda4de6ac1b7194d12e416b7dd8f4e9a33d17e0345b111b945162d8 AS builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
     -o manager ./cmd
 
-FROM golang:1.27.1@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244 AS sops-builder
+FROM golang:1.27.2@sha256:820153096fda4de6ac1b7194d12e416b7dd8f4e9a33d17e0345b111b945162d8 AS sops-builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
@@ -94,7 +94,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:debug@sha256:07148a6899406df51906b183f581cf66e5b05fd51aca438bdf1d3998df566961
+FROM gcr.io/distroless/static:debug@sha256:11c839f18a0d7b91b093cda53a5d4cee84f23ec450a6f6e1bf17ab12bf296333
 WORKDIR /
 COPY --from=builder /workspaces/manager .
 COPY --from=sops-builder /out/sops /usr/local/bin/sops
