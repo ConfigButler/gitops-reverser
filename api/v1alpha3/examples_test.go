@@ -128,8 +128,7 @@ func newExampleObject(kind string) any {
 		return &GitBranch{}
 	case "GitTarget":
 		return &GitTarget{}
-	case "ClusterProvider":
-		return &ClusterProvider{}
+
 	case "KubeProvider":
 		return &KubeProvider{}
 	case "WatchRule":

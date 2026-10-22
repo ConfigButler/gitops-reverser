@@ -235,41 +235,48 @@ var _ = Describe("Reference names must not be empty", func() {
 	})
 })
 
-// The one exception to deletion above. ClusterProvider.spec.qps and spec.burst moved to spec.client,
-// and pruning them would drop a deliberate throttle without a word, so the old spellings stay in the
-// schema, are never read, and a CEL rule refuses them by name.
-var _ = Describe("Retained and refused throttle fields", func() {
-	legacyProvider := func(name string, spec map[string]any) *unstructured.Unstructured {
+// spec.clusterProviderRef was replaced by spec.kubeProviderRef on every kind that named a source
+// cluster. A pruned field would apply cleanly and leave a manifest written for the old API looking
+// accepted, so the old spelling stays in each schema and a CEL rule refuses it, naming
+// kubeProviderRef.
+var _ = Describe("Retained and refused clusterProviderRef", func() {
+	referrer := func(kind, name string, spec map[string]any) *unstructured.Unstructured {
+		switch kind {
+		case "GitTarget":
+			spec["gitBranchRef"] = map[string]any{"name": "main"}
+			spec["path"] = "apps"
+		case "FluxTrigger":
+			spec["kustomizationRef"] = map[string]any{"name": "apps"}
+		case "ArgoCDTrigger":
+			spec["applicationRef"] = map[string]any{"name": "apps"}
+		}
 		return &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "configbutler.ai/v1alpha3",
-			"kind":       "ClusterProvider",
-			"metadata":   map[string]any{"name": name},
+			"kind":       kind,
+			"metadata":   map[string]any{"name": name, "namespace": "default"},
 			"spec":       spec,
 		}}
 	}
 
-	It("refuses spec.qps and spec.burst, naming spec.client", func() {
-		ctx := context.Background()
-
-		for name, spec := range map[string]map[string]any{
-			"legacy-qps":   {"qps": int64(5)},
-			"legacy-burst": {"burst": int64(7)},
-		} {
-			err := k8sClient.Create(ctx, legacyProvider(name, spec))
-			Expect(err).To(HaveOccurred(), "%s: the old spelling must not apply cleanly", name)
-			Expect(err.Error()).To(ContainSubstring("spec.client.qps and spec.client.burst"), name)
-		}
-	})
-
-	It("accepts spec.client", func() {
-		ctx := context.Background()
-
-		provider := legacyProvider("client-throttle", map[string]any{
-			"client": map[string]any{"qps": int64(5), "burst": int64(7)},
+	for _, kind := range []string{"GitTarget", "FluxTrigger", "ArgoCDTrigger"} {
+		It("refuses spec.clusterProviderRef on a "+kind+", naming spec.kubeProviderRef", func() {
+			ctx := context.Background()
+			obj := referrer(kind, "legacy-cluster-provider", map[string]any{
+				"kubeProviderRef":    map[string]any{"name": "local"},
+				"clusterProviderRef": map[string]any{"name": "default"},
+			})
+			err := k8sClient.Create(ctx, obj)
+			Expect(err).To(HaveOccurred(), "the old field must not apply cleanly")
+			Expect(err.Error()).To(ContainSubstring("spec.clusterProviderRef was replaced by spec.kubeProviderRef"))
 		})
-		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
-		DeferCleanup(func() { _ = k8sClient.Delete(ctx, provider) })
-	})
+
+		It("requires spec.kubeProviderRef on a "+kind+", with no default", func() {
+			ctx := context.Background()
+			err := k8sClient.Create(ctx, referrer(kind, "no-kube-provider-ref", map[string]any{}))
+			Expect(err).To(HaveOccurred(), "an omitted reference must not fall back to any provider")
+			Expect(err.Error()).To(ContainSubstring("kubeProviderRef"))
+		})
+	}
 })
 
 // GitTarget.spec.gitProviderRef, spec.branch and spec.parentBranch moved to a GitBranch. A pruned
@@ -278,6 +285,7 @@ var _ = Describe("Retained and refused throttle fields", func() {
 var _ = Describe("Retained and refused GitTarget branch fields", func() {
 	legacyTarget := func(name string, spec map[string]any) *unstructured.Unstructured {
 		spec["gitBranchRef"] = map[string]any{"name": "main"}
+		spec["kubeProviderRef"] = map[string]any{"name": "local"}
 		spec["path"] = "apps"
 		return &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "configbutler.ai/v1alpha3",

@@ -137,14 +137,9 @@ spec:
                   refused.
                 type: string
               clusterProviderRef:
-                default:
-                  name: default
                 description: |-
-                  ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
-                  cluster-scoped ClusterProvider by name. That ClusterProvider owns the cluster's connectivity
-                  credential, namespace-access authorization, and author-attribution mode. The default provider
-                  name is "default" and must exist; it may be in-cluster or remote.
-                  Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
+                  RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
+                  setting it is refused.
                 properties:
                   name:
                     description: Name of the referent.
@@ -152,9 +147,6 @@ spec:
                 required:
                 - name
                 type: object
-                x-kubernetes-validations:
-                - message: spec.clusterProviderRef.name must not be empty
-                  rule: self.name != ''
               commit:
                 description: |-
                   Commit configures how this target's writes are batched into commits, and how those commits
@@ -563,6 +555,7 @@ spec:
                 type: boolean
             required:
             - gitBranchRef
+            - kubeProviderRef
             - path
             type: object
             x-kubernetes-validations:
@@ -575,9 +568,9 @@ spec:
             - message: spec.gitProviderRef, spec.branch and spec.parentBranch moved
                 to a GitBranch; set spec.gitBranchRef to it
               rule: '!has(self.gitProviderRef) && !has(self.branch) && !has(self.parentBranch)'
-            - message: spec.clusterProviderRef is immutable; delete and recreate the
-                GitTarget to change the cluster it mirrors
-              rule: self.clusterProviderRef == oldSelf.clusterProviderRef
+            - message: spec.clusterProviderRef was replaced by spec.kubeProviderRef,
+                which names a namespaced KubeProvider
+              rule: '!has(self.clusterProviderRef)'
             - message: 'spec.onRefusal: Reapply needs spec.applyTriggerRef, the trigger
                 asked to reapply'
               rule: '!has(self.onRefusal) || self.onRefusal != ''Reapply'' || has(self.applyTriggerRef)'

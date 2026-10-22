@@ -79,17 +79,27 @@ kinds:
           be allowed. See
           [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch)
 
-  - kind: ClusterProvider
-    title: "`ClusterProvider` (cluster-scoped): the source cluster"
+  - kind: KubeProvider
+    title: "`KubeProvider` (namespaced): the source cluster"
+    intro: "Set exactly one of `secretRef` and `inCluster`. Both are immutable: delete and recreate to repoint."
     fields:
-      - path: kubeConfig
-        default: the operator's own cluster
-        doc: Points at a remote source cluster instead of the one the operator runs in
-      - path: accessFrom
-        default: "**no namespace**"
+      - path: secretRef
+        default: none; set `inCluster` instead
         doc: >-
-          Deny-by-default list of control-cluster namespaces that may reference this provider.
-          Omitted, none may; an empty `selector: {}` admits every namespace
+          Secret in this provider's namespace holding a kubeconfig for the source cluster. `key`
+          defaults to `value`, then `value.yaml`. See [`KubeProvider`](#kubeprovider)
+      - path: inCluster
+        default: none; set `secretRef` instead
+        doc: >-
+          `{}` uses the operator's own identity. Honored only for a provider listed in
+          `--in-cluster-kube-providers`. See
+          [the operator's own identity](#the-operators-own-identity-specincluster)
+      - path: accessFrom
+        default: "**no other namespace**"
+        doc: >-
+          Other control-cluster namespaces whose objects may use this provider, by name or label
+          selector. Its own namespace is always admitted; an empty `selector: {}` admits every
+          namespace
       - path: allowCrossNamespace.sources
         default: "`false`"
         doc: >-
@@ -100,23 +110,17 @@ kinds:
         doc: >-
           Whether triggers may name a `Kustomization` or `Application` in another namespace than
           their own
-      - path: attribution.auditRoute
-        default: the provider's own name
-        doc: >-
-          Audit route this provider joins. See
-          [audit route](#audit-route-and-auditfactsreceived)
       - path: client.qps
         default: "`20`"
-        doc: Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted
+        doc: Client rate limit for this source cluster. Refused beside `inCluster`
       - path: client.burst
         default: "`30`"
-        doc: Client burst for this source cluster. Ignored when `kubeConfig` is omitted
-      - path: qps
-        skip: the old spelling of `client.qps`, kept in the schema only so admission refuses it
-      - path: burst
-        skip: the old spelling of `client.burst`, kept in the schema only so admission refuses it
-      - path: allowAnySourceNamespace
-        skip: removed for `allowCrossNamespace.sources`, kept in the schema only so admission refuses `true`
+        doc: Client burst for this source cluster. Refused beside `inCluster`
+      - path: attribution.auditRoute
+        default: "`<namespace>.<name>`"
+        doc: >-
+          Audit route this provider joins. A route is held by one namespace. See
+          [audit route](#audit-route-and-auditfactsreceived)
 
   - kind: GitTarget
     title: "`GitTarget` (namespaced): which branch and folder"
@@ -134,8 +138,12 @@ kinds:
         skip: moved to `GitBranch`, kept in the schema only so admission refuses it, naming `gitBranchRef`
       - path: path
         doc: Folder within the repository. `.` targets the root; empty is rejected
+      - path: kubeProviderRef
+        doc: >-
+          The `KubeProvider` to mirror from: its own namespace, or `namespace` names one whose
+          `accessFrom` admits it
       - path: clusterProviderRef
-        doc: "Source cluster to mirror from. The default names a `ClusterProvider` called `default`"
+        skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: commit.window
         skip: a block; its two timers are listed below
       - path: commit.window.idleTimeout
@@ -243,10 +251,12 @@ kinds:
     title: "`FluxTrigger` (namespaced): the Flux `Kustomization` GitOps Reverser asks to apply"
     intro: "The references are immutable: to hold another `Kustomization`, delete the trigger and create a new one."
     fields:
-      - path: clusterProviderRef
+      - path: kubeProviderRef
         doc: >-
-          The `ClusterProvider` whose cluster holds the `Kustomization`. Its `accessFrom` must admit
-          the trigger's namespace
+          The `KubeProvider` whose cluster holds the `Kustomization`: the trigger's own namespace, or
+          `namespace` names one whose `accessFrom` admits it
+      - path: clusterProviderRef
+        skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: kustomizationRef
         doc: >-
           The `Kustomization` that applies the folders of the `GitTarget`s naming this trigger. See
@@ -256,10 +266,12 @@ kinds:
     title: "`ArgoCDTrigger` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync"
     intro: "The references are immutable: to hold another `Application`, delete the trigger and create a new one."
     fields:
-      - path: clusterProviderRef
+      - path: kubeProviderRef
         doc: >-
-          The `ClusterProvider` whose cluster holds the `Application`. Its `accessFrom` must admit
-          the trigger's namespace
+          The `KubeProvider` whose cluster holds the `Application`: the trigger's own namespace, or
+          `namespace` names one whose `accessFrom` admits it
+      - path: clusterProviderRef
+        skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: applicationRef
         doc: >-
           The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s

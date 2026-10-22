@@ -16,7 +16,12 @@ import (
 // Kustomization has none.
 const FluxTriggerFinalizer = "configbutler.ai/flux-trigger"
 
+// spec.clusterProviderRef was replaced by spec.kubeProviderRef, with the cluster-scoped kind it
+// named. It stays in the schema only to be refused by name; the rule sits on spec so CRD validation
+// ratcheting cannot wave a stored value through on the next edit.
+
 // FluxTriggerSpec names the Flux Kustomization the trigger holds, and the cluster it is in.
+// +kubebuilder:validation:XValidation:rule="!has(self.clusterProviderRef)",message="spec.clusterProviderRef was replaced by spec.kubeProviderRef, which names a namespaced KubeProvider"
 type FluxTriggerSpec struct {
 	// Why immutable: the trigger holds the Kustomization it names (it suspends it while idle and
 	// hands it back when deleted), so pointing it elsewhere would leave the first one held by
@@ -26,22 +31,15 @@ type FluxTriggerSpec struct {
 	// management cluster running Flux for the source cluster. Namespace omitted means this
 	// trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
 	// spec.accessFrom admits. Its identity needs get and patch on the Kustomization and its GitRepository. Immutable.
-	// +optional
+	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the FluxTrigger to hold a Kustomization elsewhere"
-	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef,omitzero"`
+	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef"`
 
-	// ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as a
-	// management cluster running Flux for the source cluster. A provider without spec.kubeConfig is
-	// the operator's own cluster. The provider must admit this trigger's namespace
-	// (spec.accessFrom). Its identity needs get and patch on the Kustomization and its
-	// GitRepository. Omitted,
-	// it is the ClusterProvider named "default", as for a GitTarget. Immutable.
+	// RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
+	// setting it is refused.
 	// +optional
-	// +kubebuilder:default={name: "default"}
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.clusterProviderRef.name must not be empty"
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.clusterProviderRef is immutable; delete and recreate the FluxTrigger to hold a Kustomization elsewhere"
-	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
+	RemovedClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// KustomizationRef is the Flux Kustomization that applies the folders of the GitTargets naming
 	// this trigger. Its spec.sourceRef must be a GitRepository that follows a branch. Its namespace
@@ -64,7 +62,7 @@ type FluxTriggerStatus struct {
 	// resumed for an apply GitOps Reverser started; Suspending: a suspend is not handled yet;
 	// Releasing: being handed back; NotReferenced; NotConfigured), and the kstatus
 	// Ready/Reconciling/Stalled trio. A trigger acts only while an eligible GitTarget references it:
-	// one in its namespace that names it, is admitted by its ClusterProviders, and writes the
+	// one in its namespace that names it, is admitted by its KubeProviders, and writes the
 	// repository and branch the GitRepository fetches. A trigger no GitTarget names reads nothing
 	// in the Kustomization's cluster and is Configured=Unknown, Ready=True, both NotReferenced; one
 	// named only by GitTargets that are not eligible is Configured NotBound or a refusal. Of the
@@ -130,7 +128,7 @@ type FluxTriggerSource struct {
 // +kubebuilder:printcolumn:name="Kustomization",type=string,JSONPath=`.spec.kustomizationRef.name`
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.phase`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1
-// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.clusterProviderRef.name`,priority=1
+// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.kubeProviderRef.name`,priority=1
 // +kubebuilder:printcolumn:name="RepairPending",type=boolean,JSONPath=`.status.repairPending`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

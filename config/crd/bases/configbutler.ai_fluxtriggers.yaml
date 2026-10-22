@@ -34,7 +34,7 @@ spec:
       name: Commit
       priority: 1
       type: string
-    - jsonPath: .spec.clusterProviderRef.name
+    - jsonPath: .spec.kubeProviderRef.name
       name: Cluster
       priority: 1
       type: string
@@ -79,15 +79,9 @@ spec:
             description: spec defines the Kustomization the trigger holds
             properties:
               clusterProviderRef:
-                default:
-                  name: default
                 description: |-
-                  ClusterProviderRef names the ClusterProvider whose cluster holds the Kustomization, such as a
-                  management cluster running Flux for the source cluster. A provider without spec.kubeConfig is
-                  the operator's own cluster. The provider must admit this trigger's namespace
-                  (spec.accessFrom). Its identity needs get and patch on the Kustomization and its
-                  GitRepository. Omitted,
-                  it is the ClusterProvider named "default", as for a GitTarget. Immutable.
+                  RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
+                  setting it is refused.
                 properties:
                   name:
                     description: Name of the referent.
@@ -95,12 +89,6 @@ spec:
                 required:
                 - name
                 type: object
-                x-kubernetes-validations:
-                - message: spec.clusterProviderRef.name must not be empty
-                  rule: self.name != ''
-                - message: spec.clusterProviderRef is immutable; delete and recreate
-                    the FluxTrigger to hold a Kustomization elsewhere
-                  rule: self == oldSelf
               kubeProviderRef:
                 description: |-
                   KubeProviderRef names the KubeProvider whose cluster holds the Kustomization, such as a
@@ -147,8 +135,13 @@ spec:
                 - message: spec.kustomizationRef.name must not be empty
                   rule: self.name != ''
             required:
+            - kubeProviderRef
             - kustomizationRef
             type: object
+            x-kubernetes-validations:
+            - message: spec.clusterProviderRef was replaced by spec.kubeProviderRef,
+                which names a namespaced KubeProvider
+              rule: '!has(self.clusterProviderRef)'
           status:
             description: status defines the observed state of FluxTrigger
             properties:
@@ -160,7 +153,7 @@ spec:
                   resumed for an apply GitOps Reverser started; Suspending: a suspend is not handled yet;
                   Releasing: being handed back; NotReferenced; NotConfigured), and the kstatus
                   Ready/Reconciling/Stalled trio. A trigger acts only while an eligible GitTarget references it:
-                  one in its namespace that names it, is admitted by its ClusterProviders, and writes the
+                  one in its namespace that names it, is admitted by its KubeProviders, and writes the
                   repository and branch the GitRepository fetches. A trigger no GitTarget names reads nothing
                   in the Kustomization's cluster and is Configured=Unknown, Ready=True, both NotReferenced; one
                   named only by GitTargets that are not eligible is Configured NotBound or a refusal. Of the

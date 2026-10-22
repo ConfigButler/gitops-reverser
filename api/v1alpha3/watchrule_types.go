@@ -12,7 +12,7 @@ import (
 // WatchRuleSpec defines the desired state of WatchRule.
 // WatchRule selects NAMESPACED resources on its GitTarget's source cluster. Each rules[] item
 // carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
-// or "*" for every namespace the source credential can read (refused unless the ClusterProvider
+// or "*" for every namespace the source credential can read (refused unless the KubeProvider
 // sets allowCrossNamespace.sources).
 type WatchRuleSpec struct {
 	// GitTargetRef names the GitTarget this rule feeds, in this WatchRule's own namespace.
@@ -110,7 +110,7 @@ type ResourceRule struct {
 	//
 	// "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
 	// is the credential's own RBAC and nothing else. Naming any namespace other than this rule's
-	// own, "*" included, requires the GitTarget's ClusterProvider to admit the target's namespace
+	// own, "*" included, requires the GitTarget's KubeProvider to admit the target's namespace
 	// AND to set spec.allowCrossNamespace.sources; while that is false, "*" is refused outright.
 	//
 	// This changes only which namespace is WATCHED, never where objects are written: Git placement
@@ -126,7 +126,7 @@ type ResourceRule struct {
 //
 // It kept its spelling and changed its meaning: it used to resolve live through
 // GitTarget.spec.allowedSourceNamespaces into a concrete set. That field is gone, so the token is
-// bounded by source-cluster RBAC alone and is refused while the ClusterProvider does not set
+// bounded by source-cluster RBAC alone and is refused while the KubeProvider does not set
 // spec.allowCrossNamespace.sources. See docs/design/source-scope-simplification.md, which is the
 // definition of record.
 const SourceNamespaceWildcard = "*"
@@ -152,7 +152,7 @@ func (r *ResourceRule) IsSourceNamespaceWildcard() bool {
 }
 
 // OverridesSourceNamespace reports whether this item asks for a source namespace OTHER than the
-// WatchRule's own — the case that needs the ClusterProvider's delegation flag. A sourceNamespace
+// WatchRule's own — the case that needs the KubeProvider's delegation flag. A sourceNamespace
 // that merely restates the rule's own namespace is not an override and stays the legacy case; "*"
 // always is one, since it reaches every namespace the credential can read.
 func (r *ResourceRule) OverridesSourceNamespace(ruleNamespace string) bool {

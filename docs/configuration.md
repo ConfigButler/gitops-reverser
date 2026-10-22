@@ -6,7 +6,7 @@ in the [quickstart](quickstart.md).
 The short version:
 
 - `GitProvider` defines where and how to push
-- `ClusterProvider` defines the Kubernetes source cluster a target mirrors from
+- `KubeProvider` defines the Kubernetes source cluster a target mirrors from
 - `GitTarget` defines which branch and repository path to write into
 - `WatchRule` defines which namespaced resources should produce Git writes, and in which source
   namespaces
@@ -43,9 +43,10 @@ The usual flow is:
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
 
-> **`ClusterProvider` is not one of those steps.** Installing created the `default` one, and that is
-> the source cluster a `GitTarget` mirrors from when it omits `spec.clusterProviderRef`. Write your
-> own only to mirror a second, remote cluster.
+> **`KubeProvider` is not one of those steps.** Installing created `local` in the operator's
+> namespace, the operator's own cluster. A `GitTarget` names it with
+> `spec.kubeProviderRef: {name: local, namespace: gitops-reverser}`. Write your own to mirror a
+> remote cluster, or to keep a connection and its credential in a team's namespace.
 
 <!-- BEGIN GENERATED: settings-index (task settings-index) -->
 
@@ -81,17 +82,20 @@ Every field is immutable: to change one, delete the `GitBranch` and create a new
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
 | `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 
-### `ClusterProvider` (cluster-scoped): the source cluster
+### `KubeProvider` (namespaced): the source cluster
+
+Set exactly one of `secretRef` and `inCluster`. Both are immutable: delete and recreate to repoint.
 
 | Field | Default | What it does |
 |---|---|---|
-| `kubeConfig` | the operator's own cluster | Points at a remote source cluster instead of the one the operator runs in |
-| `accessFrom` | **no namespace** | Deny-by-default list of control-cluster namespaces that may reference this provider. Omitted, none may; an empty `selector: {}` admits every namespace |
+| `secretRef` | none; set `inCluster` instead | Secret in this provider's namespace holding a kubeconfig for the source cluster. `key` defaults to `value`, then `value.yaml`. See [`KubeProvider`](#kubeprovider) |
+| `inCluster` | none; set `secretRef` instead | `{}` uses the operator's own identity. Honored only for a provider listed in `--in-cluster-kube-providers`. See [the operator's own identity](#the-operators-own-identity-specincluster) |
+| `accessFrom` | **no other namespace** | Other control-cluster namespaces whose objects may use this provider, by name or label selector. Its own namespace is always admitted; an empty `selector: {}` admits every namespace |
 | `allowCrossNamespace.sources` | `false` | Whether rules may watch namespaces other than their own, `*` included. See [cross-namespace grants](#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace) |
 | `allowCrossNamespace.appliers` | `false` | Whether triggers may name a `Kustomization` or `Application` in another namespace than their own |
-| `attribution.auditRoute` | the provider's own name | Audit route this provider joins. See [audit route](#audit-route-and-auditfactsreceived) |
-| `client.qps` | `20` | Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted |
-| `client.burst` | `30` | Client burst for this source cluster. Ignored when `kubeConfig` is omitted |
+| `client.qps` | `20` | Client rate limit for this source cluster. Refused beside `inCluster` |
+| `client.burst` | `30` | Client burst for this source cluster. Refused beside `inCluster` |
+| `attribution.auditRoute` | `<namespace>.<name>` | Audit route this provider joins. A route is held by one namespace. See [audit route](#audit-route-and-auditfactsreceived) |
 
 ### `GitTarget` (namespaced): which branch and folder
 
@@ -101,7 +105,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 |---|---|---|
 | `gitBranchRef` | **required** | The `GitBranch` this target writes: its own namespace, or `namespace` names one whose `GitProvider`'s `accessFrom` admits it |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
-| `clusterProviderRef` | `{"name":"default"}` | Source cluster to mirror from. The default names a `ClusterProvider` called `default` |
+| `kubeProviderRef` | **required** | The `KubeProvider` to mirror from: its own namespace, or `namespace` names one whose `accessFrom` admits it |
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
 | `commit.window.maxDuration` | `1m` | Close a commit window this long after it opened, however much keeps arriving |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
@@ -144,7 +148,7 @@ The references are immutable: to hold another `Kustomization`, delete the trigge
 
 | Field | Default | What it does |
 |---|---|---|
-| `clusterProviderRef` | `{"name":"default"}` | The `ClusterProvider` whose cluster holds the `Kustomization`. Its `accessFrom` must admit the trigger's namespace |
+| `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Kustomization`: the trigger's own namespace, or `namespace` names one whose `accessFrom` admits it |
 | `kustomizationRef` | **required** | The `Kustomization` that applies the folders of the `GitTarget`s naming this trigger. See [who applies this folder](#who-applies-this-folder-specapplytriggerref) |
 
 ### `ArgoCDTrigger` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync
@@ -153,7 +157,7 @@ The references are immutable: to hold another `Application`, delete the trigger 
 
 | Field | Default | What it does |
 |---|---|---|
-| `clusterProviderRef` | `{"name":"default"}` | The `ClusterProvider` whose cluster holds the `Application`. Its `accessFrom` must admit the trigger's namespace |
+| `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Application`: the trigger's own namespace, or `namespace` names one whose `accessFrom` admits it |
 | `applicationRef` | **required** | The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s naming this trigger. See [who applies this folder](#who-applies-this-folder-specapplytriggerref) |
 
 ### `CommitRequest` (namespaced): save now
@@ -170,21 +174,24 @@ The references are immutable: to hold another `Application`, delete the trigger 
 
 <!-- END GENERATED: settings-index -->
 
-## Why the two provider types have different scopes
+## Why both provider types are namespaced
 
 | Object | Scope | What it represents |
 |---|---|---|
 | `GitProvider` | Namespace | A Git destination and the credentials allowed to write it. A repository is normally one team's write boundary, so the provider and its Secret sit in that team's namespace. |
-| `ClusterProvider` | Cluster | One Kubernetes source cluster. It can feed targets in several namespaces, and its connection, watch state and attribution identity must mean the same thing to all of them. |
+| `KubeProvider` | Namespace | One connection to a Kubernetes source cluster and the credential it is read with. The credential is a Secret, so the provider sits beside it in its owner's namespace, and its owner decides who else may use it. |
 
-There is no default `GitProvider`: the operator cannot infer a safe repository, branch, or write
-credential, so every `GitTarget` names one. `GitTarget.spec.clusterProviderRef` does default, to the
-conventional name `default`. That is a concrete reference to jump to; it does not claim that
-`default` is the local cluster.
+Each admits the objects in its own namespace, and its `spec.accessFrom` admits other namespaces. A
+team can keep its own connection to a remote cluster in its own namespace, and a platform team can
+publish one connection that several namespaces use.
 
-`ClusterProvider.spec.accessFrom` decides which control-cluster namespaces may contain `GitTarget`s
-that reference the provider. It does not select namespaces in the source cluster and grants nothing
-there.
+Neither has a default. The operator cannot infer a safe repository, branch, or write credential, nor
+which cluster a folder means, so every `GitTarget` names its `GitBranch` and its `KubeProvider`.
+Nothing falls back to the provider the chart renders.
+
+`KubeProvider.spec.accessFrom` decides which control-cluster namespaces may contain `GitTarget`s
+and triggers that reference the provider. It does not select namespaces in the source cluster and
+grants nothing there.
 
 ## `GitProvider`
 
@@ -454,29 +461,28 @@ Without a receiver, GitOps Reverser still learns of a foreign push, from its nex
 from the [periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval). The receiver
 makes it seconds instead of minutes.
 
-## `ClusterProvider`
+## `KubeProvider`
 
-`ClusterProvider` names the Kubernetes cluster a `GitTarget` mirrors **from**. It is the read-side
-peer of `GitProvider`: a target has one source cluster and one Git destination.
+`KubeProvider` names the Kubernetes cluster a `GitTarget` mirrors **from**, and the cluster an apply
+trigger reaches its applier in. It is the read-side peer of `GitProvider`: a target has one source
+cluster and one Git destination. It is namespaced, and it sets exactly one credential:
 
-`default` is the conventionally opinionated provider name, not an operator-generated object and not
-a synonym for the local cluster. Its only special behavior is that a `GitTarget` which omits
-`spec.clusterProviderRef` references a user-created `ClusterProvider` named `default`. That provider
-may omit `spec.kubeConfig` to use the operator's in-cluster configuration, or set it to mirror a
-remote cluster.
+- `spec.secretRef`: a Secret in the provider's own namespace holding a kubeconfig for the source
+  cluster. `key` is optional; empty reads `value`, then `value.yaml` (Flux's order).
+- `spec.inCluster: {}`: the operator's own identity in the cluster it runs in, honored only where
+  the installation allows it. See [the operator's own identity](#the-operators-own-identity-specincluster).
 
-For a remote source cluster, create a provider with a kubeconfig Secret. The Secret is resolved from
-the operator's namespace; it is connection material for the operator, not a per-target setting.
+For a remote source cluster, create the provider beside its kubeconfig Secret:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: ClusterProvider
+kind: KubeProvider
 metadata:
   name: prod-eu-1
+  namespace: platform-connections
 spec:
-  kubeConfig:
-    secretRef:
-      name: default-source-kubeconfig
+  secretRef:
+    name: prod-eu-1-kubeconfig
   accessFrom:
     names: [team-a]
     selector:
@@ -484,13 +490,60 @@ spec:
         gitops.configbutler.ai/source-access: "true"
 ```
 
-`accessFrom` is evaluated against namespaces in the **control cluster**, where
-`GitTarget`s live. In this example, a `GitTarget` in `team-a`, or in a control-cluster namespace
-with the shown label, may reference `prod-eu-1`. `names` and `selector` are ORed, and an omitted
-policy admits no control-cluster namespace.
+The Secret is read in the provider's namespace, so a team's connection keeps its credential with the
+team, and the credential never has to live on the source cluster. The operator checks the kubeconfig
+before it uses it, without dialing the cluster, and reports the verdict as `Validated`:
+
+| Reason | What the kubeconfig does |
+|---|---|
+| `KubeConfigSecretNotFound`, `KubeConfigKeyNotFound` | nothing yet: the Secret, or the key in it, does not exist |
+| `KubeConfigInvalid` | does not parse as a kubeconfig |
+| `KubeConfigExecNotAllowed` | runs an exec auth plugin, a binary in the operator's Pod. Allowed with `--insecure-kubeconfig-exec` |
+| `KubeConfigInsecureTLSNotAllowed` | sets `insecure-skip-tls-verify`. Allowed with `--insecure-kubeconfig-tls` |
+| `KubeConfigFileReferenceNotAllowed` | names a token, certificate or key by file path, which the operator would read from its own Pod. Always refused: embed the `*-data` form instead |
+
+A `KubeProvider` admits the `GitTarget`s and triggers in its own namespace. `accessFrom` admits
+other namespaces, and is evaluated against namespaces in the **control cluster**, where those
+objects live. In this example, a `GitTarget` in `platform-connections`, in `team-a`, or in a
+control-cluster namespace with the shown label may reference `prod-eu-1`. `names` and `selector` are
+ORed, and an omitted policy admits no other namespace. The check runs when the referrer is
+reconciled, not at admission: a `GitTarget` or trigger the provider does not admit is accepted by
+the API server and reports `NamespaceNotAuthorized`, and it recovers on its own once the provider
+admits it.
 
 Which namespaces are read *from the source cluster* is bounded by the source connection's Kubernetes
 RBAC: the credential's own RBAC is the hard maximum, and there is no second allow-list beside it.
+
+### The operator's own identity (`spec.inCluster`)
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: KubeProvider
+metadata:
+  name: local
+  namespace: gitops-reverser
+spec:
+  inCluster: {}
+```
+
+`inCluster` is honored only for a `KubeProvider` listed by exact `namespace/name` in
+`--in-cluster-kube-providers`, a comma-separated list with no wildcards, empty by default. With the
+chart, add entries to `controllerManager.inClusterKubeProviders`; the provider the chart renders is
+listed on its own when it uses `inCluster`. A provider that sets `inCluster` and is not listed
+reports `Validated=False` and `Stalled=True` with reason `InClusterNotAuthorized`, and nothing uses
+it: a `GitTarget` naming it reports `KubeProviderReady=False`, and the watch side refuses to connect
+through it as well.
+
+The list exists because the operator's own identity reads far more than any one team should, and a
+namespaced kind can be created by anyone with write access to a namespace. Without the list, writing
+`inCluster: {}` would be enough to borrow that identity. The list puts the decision with whoever
+installs the operator. Entries are exact names, because whoever can create a `KubeProvider` with a
+listed name wields the identity through it. No path leads from an omitted, malformed, or refused
+`secretRef` to the operator's identity: that identity is a credential of its own that a provider has
+to ask for by name.
+
+`spec.client` is refused beside `inCluster`: the operator's own client is shared by everything that
+uses it, so it is not throttled per provider.
 
 ### What a namespace may reach outside itself (`spec.allowCrossNamespace`)
 
@@ -513,48 +566,57 @@ Both default to `false`, and each is a power of its own:
   `Configured=False` (`ApplierNamespaceNotAllowed`). The trigger's own namespace is always allowed;
   in a remote cluster that is the namespace of the same name.
 
-**It is a delegation, not owner consent.** You trust every namespace `accessFrom` admits with
-everything in reach of the provider's identity. Neither flag proves that a namespace owns the
-objects it reaches, or the repository its `GitTarget` writes. Setting either on an **in-cluster**
-provider is a much sharper decision than on a remote one: there the config plane *is* the watched
-cluster, so it deliberately bypasses live namespace RBAC and lets the owner of an admitted object
-act on another namespace through the operator's own credential. That is legitimate to grant on
-purpose, which is why each is explicit and defaults to false.
+**It is a delegation, not owner consent.** You trust every namespace the provider admits, its own
+and those `accessFrom` admits, with everything in reach of the provider's identity. Neither flag
+proves that a namespace owns the objects it reaches, or the repository its `GitTarget` writes.
+Setting either on an `inCluster` provider is a much sharper decision than on a remote one: there the
+config plane *is* the watched cluster, so it deliberately bypasses live namespace RBAC and lets the
+owner of an admitted object act on another namespace through the operator's own credential. That is
+legitimate to grant on purpose, which is why each is explicit and defaults to false.
 
-`allowAnySourceNamespace`, which `sources` replaces, is no longer read. Setting it to `true` is
-refused; see [UPGRADING](UPGRADING.md).
-
-`spec.kubeConfig` and `GitTarget.spec.clusterProviderRef` are immutable: changing either would silently
-make an existing materialization mean a different source cluster. Rotate credential *contents* in the
-referenced Secret instead. `client.qps` and `client.burst` optionally tune a remote provider's client; the
-`ClusterProvider` conditions validate its configuration, while the consuming `GitTarget` reports the
-live source reachability and stream state.
+`spec.secretRef` and `spec.inCluster` are immutable, switching from one to the other included, and
+so is `GitTarget.spec.kubeProviderRef`: changing either would silently make an existing
+materialization mean a different source cluster. To point a provider at another cluster, delete it
+and create a new one. Rotate credential *contents* in the referenced Secret instead. `client.qps`
+and `client.burst` optionally tune a `secretRef` provider's client; the `KubeProvider` conditions
+validate its configuration, while the consuming `GitTarget` reports the live source reachability and
+stream state.
 
 ### Audit route and `AuditFactsReceived`
 
-`spec.attribution.auditRoute` is the route this cluster's attribution facts arrive on: the `<name>`
-segment the apiserver's audit webhook URL ends in, `/audit-webhook/<name>`. It defaults to the
-provider's own `metadata.name`, and it is what partitions the facts, so two providers carrying the
-same route read one cluster's facts and two carrying different routes can never cross-credit an
-author.
+`spec.attribution.auditRoute` is the route this cluster's attribution facts arrive on: the
+`<route>` segment the apiserver's audit webhook URL ends in, `/audit-webhook/<route>`. It defaults
+to `<namespace>.<name>`, so the chart's provider listens on `/audit-webhook/gitops-reverser.local`.
+The route is what partitions the facts: two providers carrying the same route read one cluster's
+facts, and two carrying different routes can never cross-credit an author.
 
 An apiserver takes one audit webhook backend and therefore posts under one route. A second
-`ClusterProvider` naming the same cluster must be pointed at that route:
+`KubeProvider` naming the same cluster, in the same namespace, must be pointed at that route:
 
 ```yaml
 spec:
   attribution:
-    auditRoute: default
+    auditRoute: platform-connections.prod-eu-1
 ```
 
+**A route is held by one namespace.** Providers in the holding namespace may share it, as above;
+a provider in another namespace that carries it reports `Stalled=True` with reason
+`AuditRouteConflict` and is not used, and the GitTargets and triggers naming it are refused with the
+same reason. Its `Validated` stays what its credential earned. The namespace a route starts with,
+the segment before its first dot, holds it when a provider there carries it, so a default route is
+always its own provider's. Otherwise the namespace of the oldest provider carrying it holds it
+(by `creationTimestamp`, then UID). This is a status condition the reconcile sets, not an admission
+refusal, and it clears on its own once the holder lets the route go. Without it, a provider in one
+namespace could read the attribution facts of a cluster another namespace connected.
+
 The `AuditFactsReceived` condition reports whether that route has ever delivered, with a default
-`FACTSRECEIVED` printer column:
+`FACTSRECEIVED` printer column, and `-o wide` adds the resolved `ROUTE`:
 
 ```console
-$ kubectl get clusterprovider
-NAME               READY   REASON      FACTSRECEIVED   AGE
-default            True    Succeeded   True            31m
-srcns-delegating   True    Succeeded   Unknown         4m
+$ kubectl get kubeprovider -A
+NAMESPACE              NAME        READY   REASON      FACTSRECEIVED   AGE
+gitops-reverser        local       True    Succeeded   True            31m
+platform-connections   prod-eu-1   True    Succeeded   Unknown         4m
 ```
 
 - `True` / `Received`: a fact has arrived, and the message carries when the first one did.
@@ -566,11 +628,11 @@ srcns-delegating   True    Succeeded   Unknown         4m
 |---|---|---|
 | `TransportUnavailable` | the last append to the fact transport failed | the transport itself, named in the message: with `--author-attribution-transport=redis` (the default) the Redis/Valkey at `--redis-addr`, and with `memory` the operator's logs. No route can be judged while this holds: every route looks silent for the same reason |
 | `NoAuditDelivery` | no audit request has ever reached this operator, on any route | the API server's audit webhook backend and its connectivity to the operator. This provider's route is not at fault |
-| `RouteUnused` | audit is arriving and no fact has ever been published for this route | this provider's `spec.attribution.auditRoute` first, then the audit policy: a policy whose level or verbs leave nothing attributable produces no fact even when the route is correct |
+| `RouteUnused` | audit is arriving and no fact has ever been published for this route | this provider's route (`status.auditRoute`) first, then the audit policy: a policy whose level or verbs leave nothing attributable produces no fact even when the route is correct |
 
 The status stays `Unknown` for all three. A failing transport is a fault in the pipeline, not in
 this provider, and turning it into a per-object `False` would flip every not-yet-latched
-`ClusterProvider` at once: one outage, many verdicts. The reason carries the diagnosis instead.
+`KubeProvider` at once: one outage, many verdicts. The reason carries the diagnosis instead.
 
 It is a **one-way latch** for a given route: once `True` it stays `True`, across controller restarts
 and regardless of how long the route stays quiet afterward. Silence *after* proof is a quiet
@@ -586,45 +648,45 @@ The condition is **not part of `Ready`**: a provider reading a route nobody post
 perfectly and loses only the commit author. It is absent entirely when the operator runs with
 `--author-attribution=false`.
 
-### Creating and managing the `default` provider
+### Creating and managing a `KubeProvider`
 
-The operator **never creates a `ClusterProvider`**, and never re-creates one you delete. If a
-`GitTarget` references a provider that does not exist (including `default`), the target is held
-unready through the ordinary "provider not found" path. That is deliberate: a source cluster is a
-connection with credentials and an authorization policy, so it is yours to declare, review, and roll
-back like any other resource under GitOps.
+The operator **never creates a `KubeProvider`**, and never re-creates one you delete. A `GitTarget`
+whose provider does not exist reports `Validated=False` with reason `KubeProviderNotFound`, and
+recovers on its own once the provider appears, so manifests can be applied in any order. That is
+deliberate: a source cluster is a connection with credentials and an authorization policy, so it is
+yours to declare, review, and roll back like any other resource under GitOps.
 
 There are two supported ways to get one, and both are fully declarative:
 
-- **Commit it yourself.** The object above is ordinary YAML. Put it in the repository that manages
-  this install. This is the recommended path once you are past a first trial.
-- **Let the chart render it.** The chart can create and own a `ClusterProvider` named `default`,
-  including its `accessFrom`, from a single value. See
-  [charts/gitops-reverser/README.md](../charts/gitops-reverser/README.md). Turn that value off to
-  manage the object yourself. Helm then deletes the provider it created on the next upgrade, so
-  ownership never silently splits between Helm and you. Because a missing provider holds its targets
-  unready, plan that switch together with committing your own object.
+- **Commit it yourself.** The objects above are ordinary YAML. Put them in the repository that
+  manages this install. This is the recommended path once you are past a first trial.
+  [`config/kubeprovider-local.yaml`](../config/kubeprovider-local.yaml) is the plain-manifest form of
+  the provider the chart renders.
+- **Let the chart render it.** With `kubeProvider.create` (on by default), the chart creates and owns
+  a `KubeProvider` named `kubeProvider.name` (`local`) in the release namespace, using `inCluster`
+  unless `kubeProvider.secretRef.name` is set, with its `accessFrom` and `allowCrossNamespace`. See
+  [charts/gitops-reverser/README.md](../charts/gitops-reverser/README.md). Turn
+  `kubeProvider.create` off to manage the object yourself. Helm then deletes the provider it created
+  on the next upgrade, so ownership never silently splits between Helm and you. Because a missing
+  provider holds its targets unready, plan that switch together with committing your own object.
 
 The chart value is a rendering convenience, not runtime behavior: with it off, nothing in the
-operator brings the object back.
+operator brings the object back. The chart's optional `quickstart` starter resources mirror through
+that provider, so they require `kubeProvider.create`.
 
-The chart renders the `default` provider by default, including when its optional `quickstart` starter
-resources are enabled. It gives the starter `GitTarget` a declared in-cluster source without adding a
-source reference to its manifest. Turn `clusterProvider.createDefault` off only when you manage that
-provider yourself.
-
-Use another provider name when a target needs a different source cluster:
+Every `GitTarget` names its provider. Omit `namespace` for one in the `GitTarget`'s own namespace:
 
 ```yaml
 spec:
-  clusterProviderRef:
+  kubeProviderRef:
     name: prod-eu-1
+    namespace: platform-connections
 ```
 
-The provider name is deliberately stable. It is the source-cluster identity used for watches and,
-when audit attribution is enabled, for joining an audit event to the corresponding watch event.
-Changing a target's source cluster changes what its folder means, so `clusterProviderRef` is
-immutable.
+The provider's namespace and name are the source-cluster identity used for watches and in the
+`source_cluster` metric label (`platform-connections/prod-eu-1`). A provider deleted and recreated
+under the same name is a new connection. Changing a target's source cluster changes what its folder
+means, so `kubeProviderRef` is immutable.
 
 ## `GitBranch`
 
@@ -733,8 +795,7 @@ The important fields are:
 
 - `spec.gitBranchRef`: which `GitBranch` this target writes, and so which repository branch and
   credential
-- `spec.clusterProviderRef`: which `ClusterProvider` supplies resources; omit it to reference the
-  user-created `default` provider
+- `spec.kubeProviderRef`: which `KubeProvider` supplies resources; required
 - `spec.path`: required relative path inside the repository; use `.` only when you deliberately
   want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
@@ -777,8 +838,10 @@ metadata:
 spec:
   gitBranchRef:
     name: example-branch
-  # Omit clusterProviderRef to reference the user-created ClusterProvider named "default".
-  # clusterProviderRef: {name: prod-eu-1} selects a different source provider.
+  # The chart's provider. {name: prod-eu-1} names one in this GitTarget's own namespace.
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: live-cluster
 ```
 
@@ -808,11 +871,13 @@ setting one is refused at admission with a message naming `spec.gitBranchRef`.
 Two `GitTarget`s on one `GitBranch` must not write the same or nested paths: the later-created one
 reports `Validated=False` with reason `TargetConflict`.
 
-`spec.clusterProviderRef` references a cluster-scoped `ClusterProvider`. It defaults to
-`{name: default}` when omitted. That is intentionally different from `gitBranchRef`: a source cluster
-is a shared physical identity, while a Git destination and its credential normally belong to the
-target's namespace. The default name can represent either an in-cluster or remote source according
-to the `ClusterProvider` the user created.
+`spec.kubeProviderRef` references a `KubeProvider` by `name`, in the `GitTarget`'s own namespace
+unless `namespace` names another, and is required and immutable. A provider in another namespace
+must admit this `GitTarget`'s namespace in its `spec.accessFrom`, or the `GitTarget` is refused with
+`Validated=False` (`NamespaceNotAuthorized`). A provider that does not exist is `Validated=False`
+(`KubeProviderNotFound`), one whose audit route another namespace holds is refused with
+`AuditRouteConflict`, and one that is not `Ready` keeps the target at `KubeProviderReady=False`
+(`KubeProviderNotReady`). See [`KubeProvider`](#kubeprovider).
 
 The most useful status fields are:
 
@@ -851,10 +916,10 @@ summary reason, while the domain conditions name the axis to fix:
 
 | Condition | What to check |
 |---|---|
-| `Validated=False` | The referenced `GitBranch`, path conflicts, `ClusterProvider`, and namespace authorization. |
+| `Validated=False` | The referenced `GitBranch`, path conflicts, `KubeProvider`, and namespace authorization. |
 | `EncryptionConfigured=False` | The age/SOPS Secret and whether key generation is allowed. |
 | `GitBranchReady=False` | The `GitBranch`: whether it holds its branch, and its `GitProvider`'s URL, credential Secret, host keys, and push permissions. |
-| `ClusterProviderReady=False` or `SourceClusterReachable=False` | Source-cluster credentials and access. |
+| `KubeProviderReady=False` or `SourceClusterReachable=False` | Source-cluster credentials and access. |
 | `GitPathAccepted=False` | Repository files under `spec.path`; the message includes the issue kind, path, and actor when known. |
 | `RenderMatchesLive=False` | Fields that no longer match the rendered source, often transformer-owned values. |
 | `ApplyTriggerReady=False` | The trigger named in `spec.applyTriggerRef`, and its applier: its source, its automated sync (an `Application`), and the permission to write it. Commits still flow; apply requests may not. |
@@ -964,6 +1029,7 @@ spec:
 kind: GitTarget
 spec:
   gitBranchRef: {name: gitops-preview}
+  kubeProviderRef: {name: local, namespace: gitops-reverser}
   path: apps/checkout
 ```
 
@@ -1260,7 +1326,7 @@ lifecycle of an apply, every condition reason and the permissions, are
 the [apply trigger design](design/apply-trigger.md).
 
 **A trigger acts only while an eligible `GitTarget` references it**: one in its namespace that names
-it, is admitted by its `ClusterProvider`s, and writes the repository and branch the applier fetches.
+it, is admitted by its `KubeProvider`s, and writes the repository and branch the applier fetches.
 Until one does, the trigger reads and writes nothing in the applier's cluster, and reports
 `Configured=Unknown` and `Ready=True`, both `NotReferenced`, so the two may be created in either
 order. A `FluxTrigger` that held its `Kustomization` hands it back once no eligible `GitTarget`
@@ -1273,8 +1339,9 @@ metadata:
   name: checkout
   namespace: team-a
 spec:
-  clusterProviderRef:
-    name: default              # the cluster Flux runs in
+  kubeProviderRef:             # the cluster Flux runs in
+    name: local
+    namespace: gitops-reverser
   kustomizationRef:
     namespace: flux-system     # default: the trigger's namespace
     name: checkout
@@ -1285,7 +1352,7 @@ metadata:
   name: checkout
   namespace: team-a
 spec:
-  # gitBranchRef, path ...
+  # gitBranchRef, kubeProviderRef, path ...
   applyTriggerRef:
     kind: FluxTrigger          # or ArgoCDTrigger
     name: checkout
@@ -1293,7 +1360,7 @@ spec:
 
 | Field | Default | What it does |
 | --- | --- | --- |
-| `FluxTrigger.spec.clusterProviderRef`, `ArgoCDTrigger.spec.clusterProviderRef` | `{name: default}` | The `ClusterProvider` whose cluster holds the applier, defaulted as a `GitTarget`'s is. Immutable |
+| `FluxTrigger.spec.kubeProviderRef`, `ArgoCDTrigger.spec.kubeProviderRef` | required | The `KubeProvider` whose cluster holds the applier, in the trigger's namespace unless `namespace` names another. Immutable |
 | `FluxTrigger.spec.kustomizationRef` | required | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` that follows a branch. Immutable |
 | `ArgoCDTrigger.spec.applicationRef` | required | An Argo CD `Application` on a single source whose `targetRevision` names a branch, with automated sync off. Immutable |
 | `GitTarget.spec.applyTriggerRef` | none | The trigger, by `kind` and `name`, in the `GitTarget`'s namespace |
@@ -1306,11 +1373,11 @@ trigger: a second trigger of the same kind in line for the same applier in the s
 `HeldByAnotherTrigger` and does nothing. A trigger no eligible `GitTarget` references is not in line,
 so it keeps no other out.
 
-**Where the applier is looked up.** In the cluster the trigger's `spec.clusterProviderRef` names,
-with the identity that [`ClusterProvider`](#clusterprovider) uses. Name a provider for a management
-cluster when Flux or Argo CD runs there; a provider without `spec.kubeConfig` is the operator's own
-cluster. That provider's `spec.accessFrom` must admit the trigger's namespace, as for mirroring, or
-the trigger is `Configured=False` with `NamespaceNotAuthorized` (or `ClusterProviderNotFound`). An
+**Where the applier is looked up.** In the cluster the trigger's `spec.kubeProviderRef` names,
+with the identity that [`KubeProvider`](#kubeprovider) uses. Name a provider for a management
+cluster when Flux or Argo CD runs there; an `inCluster` provider is the operator's own cluster. That
+provider must admit the trigger's namespace, as for mirroring, or the trigger is `Configured=False`
+with `NamespaceNotAuthorized` (or `KubeProviderNotFound`). An
 applier in another namespace than the trigger's, such as `flux-system` in the example above, also
 needs the provider's [`allowCrossNamespace.appliers`](#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace),
 or the trigger is `Configured=False` with `ApplierNamespaceNotAllowed`. For the operator's own
@@ -1324,7 +1391,7 @@ metadata:
   name: prod-eu-1-apps
   namespace: team-a
 spec:
-  clusterProviderRef:
+  kubeProviderRef:
     name: management           # Flux runs here, and applies to prod-eu-1
   kustomizationRef:
     namespace: flux-system
@@ -1424,7 +1491,7 @@ yet, `False` once each is refused for different reasons), or as the refusal they
 `SourceMismatch` or `NamespaceNotAuthorized`, every `GitTarget` and its reason in the message. The
 other `False` reasons are `ApplierNotFound`, `UnsupportedSource`, `AutomatedSyncEnabled` (Argo CD),
 `SuspendOwnedElsewhere` (Flux), `Forbidden`, `NamespaceNotAuthorized` (the trigger's own namespace),
-`ClusterProviderNotFound`, `ApplierNamespaceNotAllowed` and `HeldByAnotherTrigger`; each guide's
+`KubeProviderNotFound`, `AuditRouteConflict`, `ApplierNamespaceNotAllowed` and `HeldByAnotherTrigger`; each guide's
 table says what they mean for its applier and how to fix them
 ([Flux](bi-directional-flux.md#the-fluxtrigger), [Argo CD](bi-directional-argocd.md#the-argocdtrigger)).
 The `GitTarget` reports `ApplyTriggerReady`, and its `Ready` aggregates it: `True` when the trigger
@@ -2001,7 +2068,7 @@ overwriting. A second `WatchRule` bringing another source namespace to such a ta
 `GitPathAccepted=False`, reason `MultipleSourceNamespaces`. A rule naming `sourceNamespace: "*"` is
 refused too, without enumerating anything, because a wildcard cannot be shown to be one namespace.
 The set counted is the target's own namespace plus the explicit `rules[].sourceNamespace` of every
-`WatchRule` pointing at it. It is unrelated to the `ClusterProvider` grants, which answer who may
+`WatchRule` pointing at it. It is unrelated to the `KubeProvider` grants, which answer who may
 write here rather than what the folder means.
 
 Inference is never fenced this way. A folder that is truly multi-namespace and namespace-free is
@@ -2163,8 +2230,9 @@ so one `WatchRule` can follow different resource types in different namespaces.
 Naming anything other than the rule's own namespace, **including `"*"`**, is authorized by two
 things, both of which must hold:
 
-1. the `GitTarget`'s namespace is admitted by its `ClusterProvider`'s `accessFrom`; and
-2. that `ClusterProvider` sets `allowCrossNamespace.sources: true`.
+1. the `GitTarget`'s namespace is admitted by its `KubeProvider`: the provider's own, or one its
+   `accessFrom` admits; and
+2. that `KubeProvider` sets `allowCrossNamespace.sources: true`.
 
 There is no third condition on the `GitTarget`. What a target may read from its source cluster is
 bounded by that cluster's RBAC for the provider's credential: a request these two conditions permit
@@ -2208,7 +2276,7 @@ object's own namespace, so the rule above writes secrets under `repo-config/…`
 
 A namespace allow-list cannot partition **cluster-scoped** objects, which have no namespace. A
 `ClusterWatchRule` receives every such object its source credential can read. If a tenant must not
-see another tenant's cluster-scoped objects, give each tenant its own `ClusterProvider` and
+see another tenant's cluster-scoped objects, give each tenant its own `KubeProvider` and
 credential, so that credential's RBAC is the boundary.
 
 Each entry in `spec.rules` is a logical OR. A resource matching any rule is watched. A rule selects
@@ -2345,7 +2413,7 @@ namespaced resources across namespaces, use a `WatchRule` with
 [`rules[].sourceNamespace`](#watching-a-different-source-namespace).
 
 Because it is cluster-scoped, its `gitTargetRef` must include the namespace of the referenced
-`GitTarget`, and that namespace must be admitted by the target's `ClusterProvider`.
+`GitTarget`, and that namespace must be admitted by the target's `KubeProvider`.
 
 Example:
 
@@ -2567,7 +2635,7 @@ never deleted.
 
 Object state comes from Kubernetes **watch**, not from audit. Audit is an optional attribution lookup:
 kube-apiserver posts audit events to a named path, `/audit-webhook/<audit-route>`, where the route is
-`ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name. The
+`KubeProvider.spec.attribution.auditRoute` and defaults to `<namespace>.<name>`. The
 operator extracts a minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID,
 status, timestamps) and appends it to a per-type **fact log**: one append per type per request, not one
 per event. The watch side follows the log for the types it is watching, holds the facts in a bounded,
@@ -2575,7 +2643,7 @@ TTL'd in-memory index, and attaches the commit author to each watch event by mat
 bounded grace window. Redis also stores per-watch resume cursors, so short reconnects can resume a
 normal watch from the last processed resourceVersion when the apiserver can still serve that history.
 
-Named ingress is authenticated to the shared audit CA. It is **not** gated on a `ClusterProvider`
+Named ingress is authenticated to the shared audit CA. It is **not** gated on a `KubeProvider`
 carrying that route, and deliberately so: a route is a partition name, not a claim about an object,
 and refusing unknown routes dropped audit batches in flight while a provider was being created or
 recreated, which the API server does not retry after a 404. A fact filed under a route nobody reads
@@ -2587,7 +2655,7 @@ needs that boundary should keep sources isolated until provider-bound ingress au
 ### Route a shared audit stream by event annotation
 
 Most audit streams represent one source cluster and must use a named route, including
-`/audit-webhook/default`. Some control planes emit one shared stream for several logical clusters.
+`/audit-webhook/gitops-reverser.local`. Some control planes emit one shared stream for several logical clusters.
 For that shape, the bare `/audit-webhook` endpoint is available only when the configuration model's
 annotation key is set:
 
@@ -2598,8 +2666,8 @@ attribution:
 
 When this option is set, the receiver reads `example.io/source-cluster` from each event. Its value is
 the **audit route** the event belongs to, so events in the same batch may route to different
-partitions. A `ClusterProvider` joins a route by setting `spec.attribution.auditRoute` to the same
-value; it defaults to the provider's own name.
+partitions. A `KubeProvider` joins a route by setting `spec.attribution.auditRoute` to the same
+value; it defaults to `<namespace>.<name>`.
 
 **The bare endpoint never guesses a route.** Rejection happens at two levels:
 
@@ -2608,7 +2676,7 @@ value; it defaults to the provider's own name.
 | A request reaches `/audit-webhook` while `auditRouteAnnotationKey` is unset | The whole request is rejected with **400**. The bare endpoint is not enabled, so a producer posting to it is misconfigured. This is the one route-shaped rejection there is, and it is counted as `gitopsreverser_audit_eventlist_duration_seconds_count{outcome="bare_endpoint_disabled"}`. |
 | An event carries no annotation | That **event** is rejected: it produces no attribution fact and is never credited to a fallback route. The request still returns 200, so correctly-annotated events in the same batch are kept. |
 
-An annotation naming a route no `ClusterProvider` has declared is **not** rejected. The route is a
+An annotation naming a route no `KubeProvider` has declared is **not** rejected. The route is a
 partition name rather than a claim about an object, so the fact is stored and expires unread if
 nothing joins it. That keeps ingestion free of Kubernetes reads, and lets a provider created after
 its events started flowing pick them up.

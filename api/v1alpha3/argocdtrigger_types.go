@@ -10,7 +10,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// spec.clusterProviderRef was replaced by spec.kubeProviderRef, with the cluster-scoped kind it
+// named. It stays in the schema only to be refused by name; the rule sits on spec so CRD validation
+// ratcheting cannot wave a stored value through on the next edit.
+
 // ArgoCDTriggerSpec names the Argo CD Application the trigger holds, and the cluster it is in.
+// +kubebuilder:validation:XValidation:rule="!has(self.clusterProviderRef)",message="spec.clusterProviderRef was replaced by spec.kubeProviderRef, which names a namespaced KubeProvider"
 type ArgoCDTriggerSpec struct {
 	// Immutable for the reason FluxTriggerSpec's references are: the trigger holds what it names.
 
@@ -18,21 +23,15 @@ type ArgoCDTriggerSpec struct {
 	// management cluster running Argo CD for the source cluster. Namespace omitted means this
 	// trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
 	// spec.accessFrom admits. Its identity needs get and update on the Application. Immutable.
-	// +optional
+	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the ArgoCDTrigger to hold an Application elsewhere"
-	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef,omitzero"`
+	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef"`
 
-	// ClusterProviderRef names the ClusterProvider whose cluster holds the Application, such as a
-	// management cluster running Argo CD for the source cluster. A provider without
-	// spec.kubeConfig is the operator's own cluster. The provider must admit this trigger's
-	// namespace (spec.accessFrom). Its identity needs get and update on the Application. Omitted,
-	// it is the ClusterProvider named "default", as for a GitTarget. Immutable.
+	// RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
+	// setting it is refused.
 	// +optional
-	// +kubebuilder:default={name: "default"}
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.clusterProviderRef.name must not be empty"
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.clusterProviderRef is immutable; delete and recreate the ArgoCDTrigger to hold an Application elsewhere"
-	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
+	RemovedClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// ApplicationRef is the Argo CD Application that applies the folders of the GitTargets naming
 	// this trigger. It must have a single spec.source whose targetRevision names a branch, and
@@ -57,7 +56,7 @@ type ArgoCDTriggerStatus struct {
 	// syncs a single source, has automated sync off, may be updated, and no other ArgoCDTrigger
 	// holds it) and the kstatus Ready/Reconciling/Stalled trio. A trigger acts only while an
 	// eligible GitTarget references it: one in its namespace that names it, is admitted by its
-	// ClusterProviders, and writes the repository and branch the Application syncs. A trigger no
+	// KubeProviders, and writes the repository and branch the Application syncs. A trigger no
 	// GitTarget names reads nothing in the Application's cluster and is Configured=Unknown,
 	// Ready=True, both NotReferenced; one named only by GitTargets that are not eligible is
 	// Configured NotBound or a refusal. Of the ArgoCDTriggers in line for one Application in one cluster, the one
@@ -107,7 +106,7 @@ type ArgoCDTriggerSource struct {
 // +kubebuilder:printcolumn:name="Application",type=string,JSONPath=`.spec.applicationRef.name`
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.phase`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1
-// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.clusterProviderRef.name`,priority=1
+// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.kubeProviderRef.name`,priority=1
 // +kubebuilder:printcolumn:name="RepairPending",type=boolean,JSONPath=`.status.repairPending`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

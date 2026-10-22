@@ -43,8 +43,9 @@ func legacyGitTarget(name string) *unstructured.Unstructured {
 		"apiVersion": "configbutler.ai/v1alpha3", "kind": "GitTarget",
 		"metadata": map[string]any{"name": name, "namespace": "default"},
 		"spec": map[string]any{
-			"gitBranchRef": map[string]any{"name": "provider-main"},
-			"path":         name,
+			"gitBranchRef":    map[string]any{"name": "provider-main"},
+			"kubeProviderRef": map[string]any{"name": "local"},
+			"path":            name,
 			"commit": map[string]any{
 				"message": map[string]any{"eventTemplate": "old event", "groupTemplate": "old group"},
 			},

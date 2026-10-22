@@ -16,7 +16,7 @@ import (
 // catastrophic one, so an absent field means "no policy declared" (which admits nothing here) while
 // a declared-but-empty one also admits nothing.
 //
-// One field uses it: ClusterProvider.spec.accessFrom, whose selector matches labels on Namespaces
+// One field uses it: KubeProvider.spec.accessFrom, whose selector matches labels on Namespaces
 // in the CONTROL cluster. It had a source-side twin, GitTarget.spec.allowedSourceNamespaces,
 // evaluated against Namespace labels in another cluster; that twin and everything it forced (a
 // three-valued verdict, a degradation path, source-cluster Namespace get/list/watch) were deleted.

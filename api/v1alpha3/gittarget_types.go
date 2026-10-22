@@ -28,11 +28,11 @@ import (
 // ratcheting cannot wave a stored value through on the next edit.
 // +kubebuilder:validation:XValidation:rule="!has(self.gitProviderRef) && !has(self.branch) && !has(self.parentBranch)",message="spec.gitProviderRef, spec.branch and spec.parentBranch moved to a GitBranch; set spec.gitBranchRef to it"
 //
-// spec.clusterProviderRef names the SOURCE cluster a GitTarget mirrors FROM (see its field doc). It
-// is immutable — a folder's source cluster is part of what the folder means, like
-// gitBranchRef/path above — and defaults to a ClusterProvider named "default", so it is
-// always populated (never nil) and always jumpable.
-// +kubebuilder:validation:XValidation:rule="self.clusterProviderRef == oldSelf.clusterProviderRef",message="spec.clusterProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
+// spec.clusterProviderRef was replaced by spec.kubeProviderRef, with the cluster-scoped kind it
+// named. A pruned field would apply cleanly and leave a manifest written for the old API looking
+// accepted, so it stays in the schema only to be refused by name, on spec for the same ratcheting
+// reason as the branch fields above.
+// +kubebuilder:validation:XValidation:rule="!has(self.clusterProviderRef)",message="spec.clusterProviderRef was replaced by spec.kubeProviderRef, which names a namespaced KubeProvider"
 // +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applyTriggerRef)",message="spec.onRefusal: Reapply needs spec.applyTriggerRef, the trigger asked to reapply"
 type GitTargetSpec struct {
 	// GitBranchRef names the GitBranch this target writes: the repository branch, and the credential
@@ -207,24 +207,15 @@ type GitTargetSpec struct {
 	// KubeProvider in another namespace is used only while its spec.accessFrom admits this
 	// GitTarget's namespace. Immutable: a folder's source cluster is part of what the folder means;
 	// delete and recreate the GitTarget to change it.
-	// +optional
+	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
-	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef,omitzero"`
+	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef"`
 
-	// Defaults to a concrete {name: "default"}, not nil, so the persisted object names something a
-	// reader can jump to. The operator never creates that provider; a missing one holds the target
-	// unready rather than falling back to in-cluster access.
-
-	// ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
-	// cluster-scoped ClusterProvider by name. That ClusterProvider owns the cluster's connectivity
-	// credential, namespace-access authorization, and author-attribution mode. The default provider
-	// name is "default" and must exist; it may be in-cluster or remote.
-	// Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
-	// +kubebuilder:default={name: "default"}
+	// RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
+	// setting it is refused.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.clusterProviderRef.name must not be empty"
-	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
+	RemovedClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// Mutable, unlike the destination fields above: recovering from a scope mistake must not
 	// require recreating the GitTarget, which is the one operation that loses the folder's history.

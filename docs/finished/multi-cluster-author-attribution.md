@@ -10,7 +10,7 @@
 > [`../design/multi-source-audit-ingress-hardening.md`](../design/multi-source-audit-ingress-hardening.md).
 > Purge-on-delete was answered separately and rejected, and its record has since been removed. The
 > reasoning that still binds lives on `LegacyClusterProviderFinalizer` in
-> [`clusterprovider_controller.go`](../../internal/controller/clusterprovider_controller.go): no
+> [`kubeprovider_controller.go`](../../internal/controller/kubeprovider_controller.go): no
 > finalizer, because `helm uninstall` would strand the object in `Terminating`.
 
 ## The problem
@@ -76,7 +76,7 @@ object. **None of that shipped.**
 
 What shipped: local-vs-remote follows from **`spec.kubeConfig` alone** — omitted means the
 operator's own cluster, for *any* name
-([`clusterprovider_types.go:174-178`](../../api/v1alpha3/clusterprovider_types.go#L174-L178)). A
+(`clusterprovider_types.go`, since replaced by [`kubeprovider_types.go`](../../api/v1alpha3/kubeprovider_types.go)). A
 provider named `default` may carry a `kubeConfig` and mirror a remote cluster; a provider named
 anything else may omit it and be in-cluster. `default` is only the value that
 `GitTarget.spec.clusterProviderRef` defaults to
@@ -172,7 +172,7 @@ no recent mutations must not read as unready.
 | Admission attribution | Cut entirely (above) — needs a source-side agent, not a webhook. |
 | Mutable `kubeConfig` / endpoint repointing | v1 promised it; a mutable *endpoint* silently retargets and misattributes. `kubeConfig` is immutable; Secret **contents** rotation stays transparent. |
 | Workload identity (`configMapRef`), ServiceAccount impersonation | Present in the embedded Flux type; rejected by CEL for now. |
-| Fact purge on delete | Answered separately and **rejected**. No finalizer: `helm uninstall` would strand the object in `Terminating`. See `LegacyClusterProviderFinalizer` in [`clusterprovider_controller.go`](../../internal/controller/clusterprovider_controller.go). |
+| Fact purge on delete | Answered separately and **rejected**. No finalizer: `helm uninstall` would strand the object in `Terminating`. See the `KubeProviderReconciler` doc comment in [`kubeprovider_controller.go`](../../internal/controller/kubeprovider_controller.go). |
 | Managed control planes (EKS/GKE/AKS) | Needs the source-side agent. |
 | `ReferenceGrant`-style per-namespace consent | `allowedNamespaces` is one object for the admin; revisit if self-service consent is wanted. |
 

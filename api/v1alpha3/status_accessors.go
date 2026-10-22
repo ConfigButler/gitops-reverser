@@ -40,14 +40,6 @@ func (p *GitProvider) SetObservedGeneration(generation int64) {
 func (p *GitProvider) StatusConditions() *[]metav1.Condition { return &p.Status.Conditions }
 
 // SetObservedGeneration records the generation this object's status describes.
-func (p *ClusterProvider) SetObservedGeneration(generation int64) {
-	p.Status.ObservedGeneration = generation
-}
-
-// StatusConditions returns the condition set to write through.
-func (p *ClusterProvider) StatusConditions() *[]metav1.Condition { return &p.Status.Conditions }
-
-// SetObservedGeneration records the generation this object's status describes.
 func (p *KubeProvider) SetObservedGeneration(generation int64) {
 	p.Status.ObservedGeneration = generation
 }
