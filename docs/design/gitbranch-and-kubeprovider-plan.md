@@ -156,7 +156,8 @@ way this API is installed. A missing or unauthorized reference is a status condi
 | `GitBranch` | `BranchConflict` | Another `GitBranch` holds the key (new) |
 
 Strict admission, which refuses a reference to an object that does not exist yet, was considered
-and rejected for that reason. `BranchConflict` is a new reason; the others exist today and change only which kind reports them.
+and rejected for that reason. `BranchConflict` is a new reason; the others exist today and change
+only which kind reports them.
 
 ### Lifecycle
 
