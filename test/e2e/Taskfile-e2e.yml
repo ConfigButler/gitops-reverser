@@ -349,7 +349,7 @@ tasks:
   test-e2e-source-cluster:
     desc: >-
       Run the source-cluster corner: kcp workspaces as remote source clusters
-      (GitTarget.spec.kubeConfig). Installs kcp into the cluster.
+      (KubeProvider.spec.secretRef). Installs kcp into the cluster.
     vars:
       # One process: the specs share the kcp front-proxy port-forward and the workspaces
       # they provision, and the suite is Ordered — parallel processes would contend on the
