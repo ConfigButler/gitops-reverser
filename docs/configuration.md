@@ -514,11 +514,11 @@ A `GitReceiver` reports on `Ready` whether anything serves its path:
 **What the host is told.** Every request that reaches no verified receiver gets the same `404`,
 whether the path is unknown, from before a token rotation, or its signature is wrong, so the
 endpoint reveals nothing about which namespaces or receivers exist. For a published path, the
-operator's log says which it was. A verified delivery answers `202 Accepted` with `{"matched": N}`, the number of branch workers
-woken, even when it names a repository or a branch nothing writes, because that is not the host's
-fault and an error teaches a host to disable the hook. Pushes to other branches, tag pushes and
-pings are accepted and ignored. Only a verified body that cannot be read, or one that names no
-repository, answers `400`.
+operator's log says which it was. A verified delivery answers `202 Accepted` with `{"matched": N}`,
+the number of branch workers woken, even when it names a repository or a branch nothing writes,
+because that is not the host's fault and an error teaches a host to disable the hook. Pushes to
+other branches, tag pushes and pings are accepted and ignored. Only a verified body that cannot be
+read, or one that names no repository, answers `400`.
 
 The listener handles at most 8 deliveries at once and answers `429` above that, and a body over
 2 MiB is refused with `413` before its signature is checked. A push event is a few kilobytes, and a
