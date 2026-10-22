@@ -53,7 +53,7 @@ change turn a real behavioral regression into a silent pass.
 
 `ARGOCD_CHART_VERSION` lives in [`test/e2e/Taskfile-e2e.yml`](../../Taskfile-e2e.yml) and
 pins the chart, which carries a specific Argo CD release (its appVersion; e.g.
-chart `10.1.3` ships `v3.4.5`). When bumping, re-verify against the upstream source
+chart `10.10.5` ships `v3.5.5`). When bumping, re-verify against the upstream source
 **at the appVersion the chart ships** (a checkout lives at
 `external-sources/argo-cd`; read the tag, not master):
 

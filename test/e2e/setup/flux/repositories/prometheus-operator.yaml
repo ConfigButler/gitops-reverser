@@ -7,4 +7,4 @@ spec:
   interval: 30m
   url: https://github.com/prometheus-operator/prometheus-operator
   ref:
-    tag: v0.89.0
+    tag: v0.94.1

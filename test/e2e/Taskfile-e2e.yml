@@ -143,7 +143,7 @@ vars:
   # an argocd binary — the specs drive Argo through kubectl alone — so pinning it
   # here avoids a container rebuild. test/e2e/setup/argocd/README.md lists what to
   # re-verify when bumping.
-  ARGOCD_CHART_VERSION: '{{.ARGOCD_CHART_VERSION | default "10.1.3"}}'
+  ARGOCD_CHART_VERSION: '{{.ARGOCD_CHART_VERSION | default "10.10.5"}}'
   ARGOCD_HELM_REPO: '{{.ARGOCD_HELM_REPO | default "https://argoproj.github.io/argo-helm"}}'
   ARGOCD_NAMESPACE: '{{.ARGOCD_NAMESPACE | default "argocd"}}'
   ARGOCD_DIR: '{{.ARGOCD_DIR | default "test/e2e/setup/argocd"}}'
