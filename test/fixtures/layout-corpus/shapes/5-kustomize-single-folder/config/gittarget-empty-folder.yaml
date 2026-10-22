@@ -18,6 +18,9 @@ metadata:
 spec:
   gitBranchRef:
     name: app-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: apps/checkout
   # There is nothing to infer from, so both halves are declared. useKustomize
   # writes the root; serializeNamespace: false is honest BECAUSE the operator owns

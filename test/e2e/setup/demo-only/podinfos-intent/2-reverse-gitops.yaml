@@ -26,6 +26,9 @@ metadata:
 spec:
   gitBranchRef:
     name: demo-nl-stuff
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: podinfos
   commit:
     window:

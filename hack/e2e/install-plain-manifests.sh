@@ -31,7 +31,7 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "${tmpdir}"' EXIT
 
 # CRDs ship as their own file and must exist (and be Established) BEFORE the bundle is applied:
-# dist/install.yaml contains the reserved `default` ClusterProvider, a custom resource kubectl
+# dist/install.yaml contains the `local` KubeProvider, a custom resource kubectl
 # cannot map if its CRD is created in the same apply. This mirrors the documented two-step user
 # flow (kubectl apply -f crds.yaml, then -f install.yaml), so the e2e exercises it for real.
 "${KUBECTL}" --context "${CTX}" apply -f dist/crds.yaml

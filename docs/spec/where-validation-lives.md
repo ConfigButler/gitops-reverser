@@ -10,8 +10,8 @@ Validate at the **first** rung that can express the rule:
 
 1. **OpenAPI schema** — types, enums, required, min/max, immutability where the shape allows.
 2. **CEL `XValidation`** — anything expressible from the object *itself*, including
-   transitions against `oldSelf`. Example: `spec.kubeConfig` immutability on `ClusterProvider`
-   ([`clusterprovider_types.go:25`](../../api/v1alpha3/clusterprovider_types.go#L25)).
+   transitions against `oldSelf`. Example: `spec.secretRef` and `spec.inCluster` immutability on
+   `KubeProvider` ([`kubeprovider_types.go:28`](../../api/v1alpha3/kubeprovider_types.go#L28)).
 3. **The reconciler** — everything **cross-object**, because CEL cannot read another object.
    Refusal surfaces as `Validated=False` with a reason, and **returns before** the object
    reaches the data plane.
@@ -37,12 +37,15 @@ Three things, in order of how often they get argued backwards:
   property, and it is worth less than the install cost of a webhook: cert wiring in the chart,
   a failure mode that can block tenant writes, and an extra moving part in every install path.
 
-The worked example is `ClusterProvider.spec.accessFrom`. An earlier design proposed
+The worked example is `KubeProvider.spec.accessFrom`. An earlier design proposed
 enforcing it "in two places", one of them a webhook. What shipped enforces it in **one**, on
 every reconcile, before `DeclareForGitTarget`
-([`gittarget_controller.go:473`](../../internal/controller/gittarget_controller.go#L473),
-[`gittarget_source_cluster.go:37`](../../internal/controller/gittarget_source_cluster.go#L37)),
-and that is why the quickstart is a single command again.
+([`gittarget_controller.go:479`](../../internal/controller/gittarget_controller.go#L479),
+[`gittarget_source_cluster.go:36`](../../internal/controller/gittarget_source_cluster.go#L36)),
+and that is why the quickstart is a single command again. The `KubeProvider` audit route follows
+the same rule: which namespace holds a route depends on every other provider carrying it, so a
+provider that loses it reports `Stalled=True` (`AuditRouteConflict`) on reconcile rather than
+being refused at admission.
 
 ## The one webhook we ship, and why it is not an exception to the rule
 

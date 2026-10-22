@@ -11,9 +11,9 @@ For what the controller can access and which pieces are sensitive, see
 ## Shared audit-ingress trust model
 
 Audit ingress uses mutual TLS, but the current multi-cluster routes use the client certificate to
-authenticate membership in the shared audit CA—not to bind a sender to one `ClusterProvider`. A
+authenticate membership in the shared audit CA, not to bind a sender to one `KubeProvider`. A
 source that holds the shared client credential can therefore submit audit facts for any configured
-provider, whether the provider is selected by `/audit-webhook/<provider>` or by shared-stream
+provider, whether the provider is selected by `/audit-webhook/<route>` or by shared-stream
 annotation routing.
 
 This is an explicit, accepted operating assumption for now: use shared ingress only when a highly

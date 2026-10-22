@@ -254,8 +254,13 @@ with no alias left behind.
   The provider named `default` that an omitted `clusterProviderRef` selects today goes away.
 - **Audit routes cannot be borrowed across namespaces.** An omitted `auditRoute` defaults to
   `<namespace>.<name>`, which cannot collide because a namespace name has no dots. An explicit
-  route may be shared by providers in one namespace (several connections to one API server) and is
-  refused at admission when a provider in another namespace already carries it.
+  route may be shared by providers in one namespace (several connections to one API server). It is
+  held by one namespace: the one its first segment names, when a provider there carries it, and
+  otherwise the namespace of the oldest provider carrying it. A provider in another namespace that
+  carries it reports `Stalled=True` (`AuditRouteConflict`) and is not used. This is a status
+  condition rather than an admission refusal, for the reasons `where-validation-lives.md` gives for
+  every cross-object check: the webhook is optional and fail-open, and it cannot see a provider that
+  changes its route later.
 
 The `allowCrossNamespace` grants keep today's meaning. Narrower per-tenant grants are a later
 design.
@@ -270,7 +275,8 @@ design.
   attribution facts, also after one is deleted and recreated.
 - A remote-source `GitTarget` with a local Flux applier (gitops-api ask #34) still exercises the
   apply window end to end.
-- An explicit audit route already used in another namespace is refused at admission.
+- A provider carrying an explicit audit route another namespace holds reports
+  `AuditRouteConflict`, and nothing mirrors or applies through it.
 
 ## Phase 3: one receiver for many repositories
 
@@ -333,12 +339,8 @@ Phase 1:
 - Is the receive-pack proof enough on the Git hosts the e2e suite covers, or does one of them need a
   documented exception?
 
-Phase 2:
-
-- The flag name and chart value for the `inCluster` list, per
-  [config-flag-conventions.md](../config-flag-conventions.md).
-- Whether the chart's local provider keeps the name `default` (less churn in examples) or becomes
-  `local` (no hint of a fallback).
+Phase 2 (settled): the `inCluster` list is `--in-cluster-kube-providers` (chart value
+`controllerManager.inClusterKubeProviders`), and the chart's provider is named `local`.
 
 Phase 3:
 

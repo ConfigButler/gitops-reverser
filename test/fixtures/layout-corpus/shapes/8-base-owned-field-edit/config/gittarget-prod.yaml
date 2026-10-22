@@ -16,6 +16,9 @@ metadata:
 spec:
   gitBranchRef:
     name: app-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   # The leaf overlay. The base one directory up is READ to render this folder and is
   # never written: read scope is wider than write scope, always.
   path: apps/checkout/overlays/prod

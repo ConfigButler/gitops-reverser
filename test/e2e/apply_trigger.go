@@ -19,7 +19,7 @@ const (
 )
 
 // createFluxTrigger creates the FluxTrigger name in namespace, holding the Kustomization
-// flux-system/<kustomization> in the operator's own cluster (the "default" ClusterProvider).
+// flux-system/<kustomization> in the operator's own cluster (the install's "local" KubeProvider).
 func createFluxTrigger(namespace, name, kustomization string) {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
@@ -28,12 +28,11 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  clusterProviderRef:
-    name: default
+%s
   kustomizationRef:
     namespace: flux-system
     name: %s
-`, name, namespace, kustomization)
+`, name, namespace, localKubeProviderRef(), kustomization)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to create FluxTrigger %s/%s", namespace, name)
 }
@@ -48,25 +47,24 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  clusterProviderRef:
-    name: default
+%s
   applicationRef:
     namespace: %s
     name: %s
-`, name, namespace, appNamespace, application)
+`, name, namespace, localKubeProviderRef(), appNamespace, application)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to create ArgoCDTrigger %s/%s", namespace, name)
 }
 
-// allowCrossNamespaceAppliers lets the triggers that reach their applier through the default
-// ClusterProvider name one in another namespace, as the e2e appliers are: in flux-system and
-// argocd, while each spec's triggers live in its own namespace. Granting it is idempotent, and no
-// spec relies on its absence on the default provider, so parallel specs may all ask for it.
+// allowCrossNamespaceAppliers lets the triggers that reach their applier through the install's
+// KubeProvider name one in another namespace, as the e2e appliers are: in flux-system and argocd,
+// while each spec's triggers live in its own namespace. Granting it is idempotent, and no spec
+// relies on its absence on that provider, so parallel specs may all ask for it.
 func allowCrossNamespaceAppliers() {
 	GinkgoHelper()
-	_, err := kubectlRun("patch", "clusterprovider", "default", "--type=merge", "-p",
-		`{"spec":{"allowCrossNamespace":{"appliers":true}}}`)
-	Expect(err).NotTo(HaveOccurred(), "failed to let the default ClusterProvider's triggers reach other namespaces")
+	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
+		"--type=merge", "-p", `{"spec":{"allowCrossNamespace":{"appliers":true}}}`)
+	Expect(err).NotTo(HaveOccurred(), "failed to let the install KubeProvider's triggers reach other namespaces")
 }
 
 // nameApplyTrigger points a GitTarget at the trigger of kind (FluxTrigger or ArgoCDTrigger) and

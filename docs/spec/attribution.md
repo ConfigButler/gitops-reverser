@@ -226,32 +226,46 @@ gain most.
 
 Facts are partitioned by `factScope{route, groupResource}`. Both halves are load-bearing.
 
-**The route** is where a cluster's audit events arrive, and it is **declared** rather than inferred
-from an object's name:
+**The route** is where a cluster's audit events arrive, and it can be **declared** rather than
+derived from the provider's identity:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: ClusterProvider
+kind: KubeProvider
 metadata:
   name: tenant-acme-delegating   # the name humans read and GitTargets reference
+  namespace: platform-connections
 spec:
+  secretRef:
+    name: prod-eu-1-kubeconfig
   attribution:
-    auditRoute: prod-eu-1        # the route this cluster's audit events arrive on
+    auditRoute: platform-connections.prod-eu-1   # the route this cluster's audit events arrive on
 ```
 
-`spec.attribution.auditRoute` is the `<name>` segment the API server's webhook URL ends in
-(`/audit-webhook/<name>`), or (when several logical clusters share one backend) the value of the
+`spec.attribution.auditRoute` is the `<route>` segment the API server's webhook URL ends in
+(`/audit-webhook/<route>`), or (when several logical clusters share one backend) the value of the
 audit-event annotation named by `--author-attribution-audit-route-annotation-key`. It defaults to
-`metadata.name` through [`ClusterProvider.AuditRoute()`](../../api/v1alpha3/clusterprovider_types.go),
-so no caller sees the empty case and every single-provider install keeps working unchanged.
+`<namespace>.<name>` through [`KubeProvider.AuditRoute()`](../../api/v1alpha3/kubeprovider_types.go),
+so no caller sees the empty case. A namespace name has no dots, so a default route always starts
+with the provider's own namespace, and no provider in another namespace resolves to it by default.
 
-It exists because an API server posts audit to exactly **one** route. Several `ClusterProvider`s may
-name one physical cluster, and without a declared route only one of those names is ever fed while
-every other one authors `unknown (attribution unresolved)`. Carrying the same route lets them share
-one cluster's facts; carrying different routes means a fact from cluster A can never name the author
-of an object watched on cluster B, which is also what keeps a cloned or restored cluster separate
-from its origin. It is **mutable**, unlike `spec.kubeConfig`: repointing it changes which partition
-is read, not which cluster is mirrored, so correcting a typo does not require deleting the object.
+It exists because an API server posts audit to exactly **one** route. Several `KubeProvider`s may
+name one physical cluster, and without a declared route only one of them is ever fed while every
+other one authors `unknown (attribution unresolved)`. Carrying the same route lets them share one
+cluster's facts; carrying different routes means a fact from cluster A can never name the author of
+an object watched on cluster B, which is also what keeps a cloned or restored cluster separate from
+its origin. It is **mutable**, unlike `spec.secretRef`: repointing it changes which partition is
+read, not which cluster is mirrored, so correcting a typo does not require deleting the object.
+
+**A route is held by one namespace**, so a provider cannot read facts that belong to a tenant it was
+never admitted to. The namespace the route's first dot-segment names holds it when a provider there
+carries it; otherwise the namespace of the oldest carrier does (`creationTimestamp`, then UID).
+Providers in the holding namespace may share the route: that is the case above, several
+connections to one API server. A provider in another namespace that carries it reports
+`Stalled=True` with reason `AuditRouteConflict` and is not used at all: `GitTarget`s and triggers
+through it are refused with the same reason. This is a status condition the controller recomputes on
+every reconcile, not an admission refusal, so the provider that loses a route is admitted and then
+reports why it is idle; `Validated` keeps what its credential earned.
 
 Ingestion makes **no Kubernetes API call**. The route is a partition name rather than a claim about
 an object that must exist, so an audit batch that arrives while a provider is being created is
@@ -600,11 +614,11 @@ maintained. This document deliberately does not repeat them: it carried its own 
 drifted from the code, which is the argument against a second inventory rather than for a better one.
 
 Metrics are not the whole surface. One misconfiguration is a **state**, not a rate, and it is
-reported as a condition on the object that carries it: `AuditFactsReceived` on `ClusterProvider`,
+reported as a condition on the object that carries it: `AuditFactsReceived` on `KubeProvider`,
 with a default `FACTSRECEIVED` printer column.
 
-A `ClusterProvider`'s readiness is watchable from Prometheus as
-`gitopsreverser_resource_condition{kind="ClusterProvider", type="Ready", status="False"} == 1`
+A `KubeProvider`'s readiness is watchable from Prometheus as
+`gitopsreverser_resource_condition{kind="KubeProvider", type="Ready", status="False"} == 1`
 ([interpreting-metrics.md](../interpreting-metrics.md#configuration-state)). `AuditFactsReceived` is
 deliberately not on that metric: it is a latch rather than a level, it is absent entirely when the
 operator runs without author attribution, and it is not part of `Ready` for the reason given below.
@@ -622,7 +636,7 @@ severity: a failing transport makes every route look silent, and with nothing de
 route can be the one at fault. Only the last is a statement about this provider's own
 configuration. The status stays `Unknown` for all three because the first two are faults in the
 pipeline rather than in the object carrying them; a per-object `False` would turn one outage into a
-verdict repeated on every `ClusterProvider` that has not yet latched. Pre-latch `Unknown` is
+verdict repeated on every `KubeProvider` that has not yet latched. Pre-latch `Unknown` is
 therefore inconclusive rather than an accusation: only `RouteUnused` points at the object's own
 configuration, and even it names the audit policy as a second candidate.
 
@@ -632,7 +646,7 @@ nothing attributable. The reason stays true for both, and its message names the 
 second thing to check once the route has been ruled out.
 
 The condition is a **one-way latch**, and that is what makes it readable without a threshold. A
-route that has never carried a fact is a route nobody posts to: a `ClusterProvider` that did not
+route that has never carried a fact is a route nobody posts to: a `KubeProvider` that did not
 declare `spec.attribution.auditRoute` on a cluster whose apiserver posts under a different one, and
 therefore every commit through it authored `unknown (attribution unresolved)`. A route that carried
 facts yesterday and none today is a quiet cluster. No timer separates those, so the condition does
@@ -720,5 +734,5 @@ The behavior above is pinned in three places, and the corpus is the one worth kn
 - **E2E** in `test/e2e/commit_author_attribution_e2e_test.go`,
   `test/e2e/audit_route_attribution_e2e_test.go` and
   `test/e2e/deletecollection_intent_e2e_test.go` prove the OIDC claim chain end to end, that a
-  declared `auditRoute` resolves where the object's name would not, and that a finalizer-guarded
+  declared `auditRoute` resolves where the default route would not, and that a finalizer-guarded
   object is removed and attributed at intent time while a *different* identity clears the finalizer.

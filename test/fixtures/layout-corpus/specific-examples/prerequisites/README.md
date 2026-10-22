@@ -21,17 +21,19 @@ namespace, and every `GitTarget` writing one repository branch must refer to the
 
 ## Source cluster authority
 
-The examples here use the operator's in-cluster source. A target that captures objects from a
-different source namespace needs one grant, and it belongs to the platform admin: the
-`ClusterProvider` delegates the *ability* to choose a source namespace
-(`allowCrossNamespace.sources`). What may actually be read is bounded by that provider credential's own
-RBAC in the source cluster. Concrete specimens are in
-[`../../shapes/1-flat-serialized/config/`](../../shapes/1-flat-serialized/config/clusterprovider.yaml)
-and [`../../shapes/3-tree-serialized/config/`](../../shapes/3-tree-serialized/config/clusterprovider.yaml).
+Every `GitTarget` names its source cluster with `spec.kubeProviderRef`. The examples here use the
+`KubeProvider` the chart renders, `local` in `gitops-reverser`, which uses the operator's own
+identity. A target that captures objects from a different source namespace needs one grant, and it
+belongs to the owner of the `KubeProvider`: the provider delegates the *ability* to choose a source
+namespace (`allowCrossNamespace.sources`). What may actually be read is bounded by that provider
+credential's own RBAC in the source cluster. Concrete specimens are in
+[`../../shapes/1-flat-serialized/config/`](../../shapes/1-flat-serialized/config/kubeprovider.yaml)
+and [`../../shapes/3-tree-serialized/config/`](../../shapes/3-tree-serialized/config/kubeprovider.yaml).
 
-The source-cluster rule and source-namespace authorization are separate checks. `accessFrom` decides
-which configuration namespaces may reference the provider at all; `allowCrossNamespace.sources` decides
-whether those namespaces' `GitTarget`s may look outside their own.
+The source-cluster rule and source-namespace authorization are separate checks. A `KubeProvider`
+admits consumers in its own namespace, and `accessFrom` decides which other configuration
+namespaces may reference it; `allowCrossNamespace.sources` decides whether those namespaces'
+`GitTarget`s may look outside their own.
 
 ## Credentials stay out of this design
 

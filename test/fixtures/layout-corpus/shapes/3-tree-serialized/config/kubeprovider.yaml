@@ -1,0 +1,16 @@
+# Required, because the WatchRule beside this file names source namespaces other
+# than its own. This is the ONE grant that permits that: the owner of the
+# KubeProvider delegates the choice of source namespace to the GitTargets it
+# admits, which here are those in its own namespace. What those targets can
+# actually read is bounded by the source credential's own RBAC.
+apiVersion: configbutler.ai/v1alpha3
+kind: KubeProvider
+metadata:
+  name: home
+  namespace: homelab-config
+spec:
+  # A kubeconfig Secret in this provider's own namespace.
+  secretRef:
+    name: home-kubeconfig
+  allowCrossNamespace:
+    sources: true

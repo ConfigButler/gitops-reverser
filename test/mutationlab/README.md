@@ -86,8 +86,8 @@ new audit policy, webhook config, or certificates. `task lab-e2e` does this on t
 already-prepared e2e cluster, then drives the scenarios serially.
 
 Reusing the wiring means reusing whatever the cluster's audit kubeconfig points at, and
-this one names its route: it posts to `/audit-webhook/default`, the "default"
-ClusterProvider, because the bare path is the product's shared annotation-routed
+this one names its route: it posts to `/audit-webhook/gitops-reverser.local`, the route of the
+`local` KubeProvider in `gitops-reverser`, because the bare path is the product's shared annotation-routed
 endpoint. The lab therefore serves the whole `/audit-webhook/` subtree and records what
 arrives whichever source it was addressed to. Serving only the exact bare path 404s every
 event the cluster sends — which reads as a lab that captures watches and admission but

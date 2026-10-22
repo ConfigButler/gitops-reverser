@@ -24,7 +24,7 @@ metadata:
 spec:
   gitBranchRef:
     name: artifacts-repository-main
-  clusterProviderRef:
+  kubeProviderRef:
     name: apps
   path: apps/checkout
   placement:

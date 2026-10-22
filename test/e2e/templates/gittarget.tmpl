@@ -21,6 +21,7 @@ metadata:
 spec:
   gitBranchRef:
     name: {{ .GitBranchName }}
+{{ .KubeProviderRef }}
   path: {{ .Path }}
   commit:
     window:

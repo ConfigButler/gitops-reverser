@@ -215,12 +215,13 @@ metadata:
 spec:
   gitBranchRef:
     name: %s
+%s
   path: %s
   commit:
     window:
       idleTimeout: "0s"
   suspend: %t
-`, name, namespace, gitBranchName(providerName, "main"), targetPath, suspend)
+`, name, namespace, gitBranchName(providerName, "main"), localKubeProviderRef(), targetPath, suspend)
 	out, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(),
 		"failed to apply GitTarget %q with suspend %t: %s", name, suspend, out)

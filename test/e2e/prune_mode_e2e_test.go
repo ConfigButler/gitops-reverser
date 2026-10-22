@@ -325,21 +325,23 @@ func retentionModeOf(g Gomega, name, namespace string) string {
 func applyPruneGitTarget(name, namespace, providerName, targetPath, mode string) {
 	GinkgoHelper()
 	data := struct {
-		Name          string
-		Namespace     string
-		GitBranchName string
-		ProviderName  string
-		Branch        string
-		Path          string
-		PruneMode     string
+		Name            string
+		Namespace       string
+		GitBranchName   string
+		ProviderName    string
+		Branch          string
+		Path            string
+		PruneMode       string
+		KubeProviderRef string
 	}{
-		Name:          name,
-		Namespace:     namespace,
-		GitBranchName: gitBranchName(providerName, "main"),
-		ProviderName:  providerName,
-		Branch:        "main",
-		Path:          targetPath,
-		PruneMode:     mode,
+		Name:            name,
+		Namespace:       namespace,
+		GitBranchName:   gitBranchName(providerName, "main"),
+		ProviderName:    providerName,
+		Branch:          "main",
+		Path:            targetPath,
+		PruneMode:       mode,
+		KubeProviderRef: localKubeProviderRef(),
 	}
 	Expect(applyFromTemplate("test/e2e/templates/manager/gittarget-prune.tmpl", data, namespace)).
 		To(Succeed(), "failed to apply GitTarget %q with prune mode %q", name, mode)
@@ -358,12 +360,13 @@ metadata:
 spec:
   gitBranchRef:
     name: %s
+%s
   path: %s
   commit:
     window:
       idleTimeout: "0s"
 %s
-`, name, namespace, gitBranchName(providerName, "main"), targetPath, pruneBlock)
+`, name, namespace, gitBranchName(providerName, "main"), localKubeProviderRef(), targetPath, pruneBlock)
 	out, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, out)

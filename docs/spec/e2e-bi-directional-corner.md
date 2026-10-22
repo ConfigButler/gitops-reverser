@@ -420,7 +420,8 @@ The `Application` lives in the `argocd` namespace, targets
 `spec.destination.namespace = <testNs>`, `spec.source.path = <livePath>`,
 `targetRevision: main`, `directory.recurse: true`. The trigger lives in the test
 namespace, so each describe first grants `allowCrossNamespace.appliers` on the
-`default` `ClusterProvider`, as a user must for an `Application` in `argocd`. The
+install's `local` `KubeProvider` in the operator's namespace, as a user must for an
+`Application` in `argocd`. The
 `GitProvider` has a `gitea` receiver, registered as a Gitea webhook next to Argo
 CD's own.
 

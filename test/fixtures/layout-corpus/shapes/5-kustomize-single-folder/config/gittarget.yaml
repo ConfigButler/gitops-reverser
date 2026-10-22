@@ -16,6 +16,9 @@ metadata:
 spec:
   gitBranchRef:
     name: app-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: apps/checkout
   # Nothing else is declared, and that is the shape: the folder already has one
   # kustomization.yaml, so a new file is placed beside it, registered in its

@@ -1304,9 +1304,9 @@ tasks:
 
   # _crds-installed applies the project CRDs and waits for them to be Established BEFORE any
   # kustomize/flat-file install applies a custom resource of them. The config-dir bundle (and,
-  # once regenerated, dist/install.yaml) ships the reserved `default` ClusterProvider CR in the
+  # once regenerated, dist/install.yaml) ships the `local` KubeProvider CR in the
   # SAME `kubectl apply` as its CRD; kubectl builds its RESTMapper up front, so a CR whose CRD
-  # is created in that same apply fails with `no matches for kind "ClusterProvider"`. Applying
+  # is created in that same apply fails with `no matches for kind "KubeProvider"`. Applying
   # the CRDs first — and waiting for Established — closes that race. Re-runs whenever the
   # generated CRDs change (sources). The Helm chart ships CRDs in charts/gitops-reverser/crds/
   # (helm's own first phase), so _install-helm deliberately does NOT depend on this: the
@@ -1325,8 +1325,9 @@ tasks:
       # Not a bare `kubectl wait`: on a CRD created by the apply above it can fail at once.
       - |
         CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/e2e/wait-crds-established.sh 60 \
-          crd/clusterproviders.configbutler.ai crd/clusterwatchrules.configbutler.ai \
+          crd/kubeproviders.configbutler.ai crd/clusterwatchrules.configbutler.ai \
           crd/commitrequests.configbutler.ai crd/gitproviders.configbutler.ai \
+          crd/gitbranches.configbutler.ai \
           crd/gittargets.configbutler.ai crd/watchrules.configbutler.ai \
           crd/fluxtriggers.configbutler.ai crd/argocdtriggers.configbutler.ai
       - touch "{{.CS}}/crds.installed"

@@ -16,11 +16,11 @@ metadata:
 spec:
   gitBranchRef:
     name: mirror-repository-main
-  clusterProviderRef:
+  kubeProviderRef:
     name: home
   path: clusters/home
   # The WatchRule beside this file names source namespaces other than its own. The
-  # ClusterProvider's allowCrossNamespace.sources is the only grant that needs, and the
+  # KubeProvider's allowCrossNamespace.sources is the only grant that needs, and the
   # source credential's RBAC bounds what it can actually read.
   # No placement declared and no kustomization anywhere in the subtree, so the
   # ladder falls through to the built-in identity path:

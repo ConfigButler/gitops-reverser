@@ -8,6 +8,12 @@ spec:
   # which its GitProvider's accessFrom has to admit.
   gitBranchRef:
     name: example-branch
+  # The KubeProvider this folder mirrors from: the chart's `local` provider in its release
+  # namespace, which admits every namespace by default. Omit `namespace:` for one in this
+  # GitTarget's own namespace. Immutable.
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   # Required relative repository path. Use "." only to deliberately write at repo root.
   path: live-cluster
   # How this folder's writes become commits. A commit window closes after

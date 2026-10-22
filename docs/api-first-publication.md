@@ -41,7 +41,7 @@ destination paths remain target-specific.
 
 ```mermaid
 flowchart LR
-    CP["ClusterProvider<br/>source connection and authorization"] --> API["Kubernetes API"]
+    CP["KubeProvider<br/>source connection and authorization"] --> API["Kubernetes API"]
     WR["WatchRule / ClusterWatchRule<br/>resource selection"] --> WATCH["Watch manager"]
     API -->|"persisted object events"| WATCH
     AUDIT["Optional audit facts<br/>actor attribution"] -.-> WATCH
@@ -61,7 +61,7 @@ flowchart LR
 
 | Structure | Responsibility |
 | --- | --- |
-| `ClusterProvider` | Selects the source cluster and its access boundary |
+| `KubeProvider` | Selects the source cluster and its access boundary |
 | `WatchRule`, `ClusterWatchRule` | Select resources and route them to a target |
 | `GitTarget` | Binds source state to a Git path and branch; sets commit shaping |
 | `GitProvider` | Supplies repository access and commit identity settings |

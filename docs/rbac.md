@@ -75,7 +75,7 @@ it, so the list must cover every type your rules name.
 ### `namespaces` on a REMOTE source cluster
 
 The operator needs **no `Namespace` access at all** in a source cluster. The manager role's
-`namespaces` `get`/`list`/`watch` covers the operator's own cluster, where `ClusterProvider.accessFrom`
+`namespaces` `get`/`list`/`watch` covers the operator's own cluster, where `KubeProvider.accessFrom`
 selectors match control-cluster labels.
 
 This used to be different: `GitTarget.spec.allowedSourceNamespaces` could carry a label selector
@@ -89,8 +89,8 @@ cluster-wide `list`/`watch` of its types, and gets a clean 403 if the credential
 
 It holds **no Secret informer**: Secrets are excluded from the manager's cache
 ([`cmd/main.go`](../cmd/main.go), `Cache.DisableFor`), so every read is a direct `get` of a
-Secret a `GitProvider` or `GitTarget` names. Nothing in the operator calls `list` or `watch`
-on Secrets. It creates and updates only the Secrets it owns (the generated signing key).
+Secret a `GitProvider`, `KubeProvider` or `GitTarget` names. Nothing in the operator calls `list`
+or `watch` on Secrets. It creates and updates only the Secrets it owns (the generated signing key).
 
 That is why the manager role asks for `get`, `create`, `update` and nothing more.
 
@@ -110,7 +110,7 @@ Be precise about what is left, because RBAC is additive and the manager role is 
 | Verb on `secrets` | Still granted? | Why |
 |---|---|---|
 | `list`, `watch` | **No** | The operator never enumerates Secrets. Removed from the manager role, and `selected` adds no wildcard to put them back. |
-| `get` | Yes, cluster-scoped | It reads the git-creds and age-key Secrets a `GitProvider`/`GitTarget` names — and those may live in any namespace. |
+| `get` | Yes, cluster-scoped | It reads the git-creds, kubeconfig and age-key Secrets a `GitProvider`, `KubeProvider` or `GitTarget` names, each in that object's own namespace — and those objects may live in any namespace. |
 | `create`, `update` | Yes, cluster-scoped | It generates the signing key and, with `generateWhenMissing`, the age key. |
 
 So a `selected` install can still **read a Secret whose name and namespace it already
@@ -118,8 +118,8 @@ knows**. It cannot discover one. That is a real reduction — enumeration is wha
 mirroring operator into a credential-harvesting one — but it is not zero Secret access, and
 this page will not pretend otherwise.
 
-Scoping `get`/`create`/`update` down to the namespaces a `GitProvider` actually references
-needs a namespaced `Role` the chart does not yet render. Until then the escape hatch is
+Scoping `get`/`create`/`update` down to the namespaces that hold a `GitProvider`, `KubeProvider`
+or `GitTarget` needs a namespaced `Role` the chart does not yet render. Until then the escape hatch is
 `rbac.create: false` plus your own role set. See
 [`future/least-privilege-remaining-work.md`](future/least-privilege-remaining-work.md).
 

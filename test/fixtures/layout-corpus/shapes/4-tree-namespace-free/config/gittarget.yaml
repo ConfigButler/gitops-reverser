@@ -16,6 +16,9 @@ metadata:
 spec:
   gitBranchRef:
     name: artifacts-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: apps/checkout
   # A tree WITHOUT {namespace}: the subfolders group by type, not by namespace,
   # so the folder stays single-namespace. That is the precondition for the flag

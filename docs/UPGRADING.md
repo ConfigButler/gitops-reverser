@@ -7,6 +7,83 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `KubeProvider` replaces `ClusterProvider`; every reference names one with `spec.kubeProviderRef`
+
+**Breaking.** The source cluster is a namespaced `KubeProvider`. The cluster-scoped
+`ClusterProvider` kind is gone, and nothing converts one: a CRD cannot change its scope. `GitTarget`,
+`FluxTrigger` and `ArgoCDTrigger` name their provider with the required, immutable
+`spec.kubeProviderRef`, whose omitted namespace means the referrer's own. There is no provider named
+`default` that an omitted reference falls back to. `spec.clusterProviderRef` stays in the schema only
+so that setting it is refused at admission, with a message naming `spec.kubeProviderRef`.
+
+```yaml
+kind: KubeProvider
+metadata: {name: prod-eu-1, namespace: platform}
+spec:
+  secretRef:
+    name: prod-eu-1-kubeconfig   # a Secret in this namespace; key defaults to value, then value.yaml
+  accessFrom:
+    names: [team-a]              # other namespaces; platform itself is always admitted
+---
+kind: GitTarget
+metadata: {name: apps, namespace: team-a}
+spec:
+  gitBranchRef: {name: platform-main, namespace: platform}
+  kubeProviderRef: {name: prod-eu-1, namespace: platform}
+  path: apps
+```
+
+Migrate in this order:
+
+1. Record what you have, before upgrading the CRDs:
+
+   ```bash
+   kubectl get clusterproviders -o yaml > clusterproviders.yaml
+   kubectl get gittargets,fluxtriggers,argocdtriggers -A -o jsonpath='{range .items[*]}{.kind}{"\t"}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.clusterProviderRef.name}{"\n"}{end}'
+   ```
+
+2. Upgrade. The chart renders a `KubeProvider` named `local` in the release namespace, using the
+   operator's own identity (see below). Its values are `kubeProvider.create`, `kubeProvider.name`,
+   `kubeProvider.secretRef`, `kubeProvider.accessFrom` and `kubeProvider.allowCrossNamespace`; the
+   `clusterProvider.*` values are gone.
+3. Create a `KubeProvider` for each other `ClusterProvider`, in the namespace that should own the
+   credential. **The kubeconfig Secret is read from the provider's own namespace**, not from the
+   operator's, so move or copy it there. `spec.kubeConfig.secretRef` is `spec.secretRef`.
+4. Delete and recreate each `GitTarget`, `FluxTrigger` and `ArgoCDTrigger` with
+   `spec.kubeProviderRef`. The reference is immutable and the old field is refused, so an edit cannot
+   do it. A `GitTarget`'s folder in Git is untouched: the new object takes it over on its first
+   snapshot. A `FluxTrigger` hands its `Kustomization` back to Flux when it is deleted, and the new
+   one takes hold of it again.
+5. Delete the old CRD, which Helm leaves installed: `kubectl delete crd clusterproviders.configbutler.ai`.
+
+**The operator's own identity is an explicit arm, and the installation must allow it.** A provider
+that omitted `kubeConfig` used the operator's identity. A `KubeProvider` sets exactly one of
+`spec.secretRef` and `spec.inCluster: {}`, and `spec.inCluster` is honored only for a provider listed
+by exact `namespace/name` in `--in-cluster-kube-providers`. The chart lists the provider it renders,
+and `controllerManager.inClusterKubeProviders` adds others. Any other provider that sets
+`spec.inCluster` reports `Validated=False` and `Stalled=True` (`InClusterNotAuthorized`) and is never
+used. `spec.client` is refused beside `spec.inCluster`, where it was ignored.
+
+**A provider admits its own namespace.** An empty `accessFrom` admitted nobody on a
+`ClusterProvider`. On a `KubeProvider` it admits only the provider's own namespace, and `accessFrom`
+admits the others. `allowCrossNamespace.sources` and `.appliers` keep their meaning.
+
+**Audit routes default to `<namespace>.<name>`, so the audit webhook URL changes.** The chart's
+provider posts under `/audit-webhook/<release namespace>.local`, `/audit-webhook/gitops-reverser.local`
+for a release in `gitops-reverser`. Point each API server's audit webhook configuration at its
+provider's new route, or set `spec.attribution.auditRoute` on the provider to the route it posts under
+today. A route belongs to one namespace: the namespace its first segment names, when a provider there
+carries it, and otherwise the namespace of the oldest provider carrying it. A provider in another
+namespace that carries it reports `Stalled=True` (`AuditRouteConflict`), and nothing mirrors or
+applies through it, so one tenant cannot read another namespace's attribution facts. Providers in one
+namespace may share a route, which several connections to one API server need.
+
+The reasons and conditions are renamed with the kind: `ClusterProviderNotFound` is
+`KubeProviderNotFound`, and a `GitTarget`'s `ClusterProviderReady` condition is `KubeProviderReady`,
+with reason `KubeProviderNotReady`. The resource-condition metrics report the kind as
+`KubeProvider`, and the `source_cluster` label carries `<namespace>/<name>` instead of the provider's
+name, so two providers with one name in two namespaces are two series.
+
 ## `GitBranch` holds a repository branch; a `GitTarget` names one with `spec.gitBranchRef`
 
 **Breaking.** A repository branch is its own object, `GitBranch`, in the namespace of the

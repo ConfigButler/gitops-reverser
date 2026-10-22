@@ -18,4 +18,7 @@ metadata:
 spec:
   gitBranchRef:
     name: app-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: apps/checkout/overlays/test

@@ -15,26 +15,25 @@ import (
 )
 
 // This spec pins the bug a downstream consumer reported: every object mirrored through a DEDICATED
-// in-cluster ClusterProvider committed as "unknown (attribution unresolved)", while the same actor's
-// writes through "default" attributed correctly.
+// KubeProvider on the operator's own cluster committed as "unknown (attribution unresolved)", while
+// the same actor's writes through the install's provider attributed correctly.
 //
 // The cause is structural rather than stochastic. A kube-apiserver takes one
 // --audit-webhook-config-file naming one server URL, so it posts audit under exactly ONE route (here
-// /audit-webhook/default). Attribution facts are partitioned by that route, so a second
-// ClusterProvider on the same cluster reads a partition nothing writes unless it declares the same
-// route via spec.attribution.auditRoute.
+// /audit-webhook/<operator namespace>.local). Attribution facts are partitioned by that route, so a
+// second KubeProvider on the same cluster reads a partition nothing writes unless it declares the
+// same route via spec.attribution.auditRoute — and only a provider in the namespace holding that
+// route may: one in another namespace reports AuditRouteConflict and is not used, so a tenant cannot
+// read another namespace's facts by naming its route.
 //
 // Nothing else in the suite catches this. commit_author_attribution_e2e_test.go proves the OIDC
-// claim chain, but only through the default provider, which is the one route the apiserver feeds.
+// claim chain, but only through the install's provider, which is the one route the apiserver feeds.
 // source_namespace_e2e_test.go creates dedicated in-cluster providers but asserts Git paths, not
 // commit authors. The gap between them is exactly where the loss lived.
 //
 // See docs/spec/attribution.md.
 var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 	const (
-		// The apiserver's webhook-config.yaml posts to /audit-webhook/default, so this is the only
-		// route that carries facts on this cluster (test/e2e/cluster/audit/webhook-config.yaml).
-		fedRoute  = "default"
 		basePath  = "e2e/audit-route-attribution"
 		claimName = "configbutler.ai/claims/display-name"
 		claimMail = "configbutler.ai/claims/email"
@@ -47,8 +46,13 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 		gitProvName   string
 		gitTargetName string
 		watchRuleName string
-		clusterProv   string
+		dedicatedProv string
 		quietProv     string
+		borrowingProv string
+		// fedRoute is the route the apiserver's webhook-config.yaml posts to, the only route that
+		// carries facts on this cluster (test/e2e/cluster/audit/webhook-config.yaml): the default
+		// route of the install's KubeProvider, which the operator's namespace therefore holds.
+		fedRoute = resolveE2ENamespace() + "." + e2eKubeProviderName
 	)
 
 	BeforeAll(func() {
@@ -71,40 +75,44 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 		gitProvName = fmt.Sprintf("audit-route-gitprovider-%d", seed)
 		gitTargetName = fmt.Sprintf("audit-route-gittarget-%d", seed)
 		watchRuleName = fmt.Sprintf("audit-route-watchrule-%d", seed)
-		clusterProv = fmt.Sprintf("audit-route-cp-%d", seed)
+		dedicatedProv = fmt.Sprintf("audit-route-kp-%d", seed)
 		quietProv = fmt.Sprintf("audit-route-quiet-%d", seed)
+		borrowingProv = fmt.Sprintf("audit-route-borrow-%d", seed)
 
-		By("declaring a DEDICATED in-cluster ClusterProvider that declares the fed audit route")
-		// kubeConfig is omitted, so this names the operator's own cluster, exactly as the reported
-		// srcns-delegating provider did. Its NAME is not the route the apiserver posts to, which is
-		// the whole point: without spec.attribution.auditRoute it would read a partition nothing
-		// writes. It also delegates source-namespace selection, so the second case below can watch
-		// a namespace other than the rule's own, reproducing the reported shape exactly.
-		Expect(applyInClusterClusterProviderWithAuditRoute(
-			clusterProv, testNs, sourceNs, true, fedRoute)).Error().
-			NotTo(HaveOccurred(), "failed to apply the dedicated ClusterProvider")
+		By("declaring a DEDICATED KubeProvider on the operator's own cluster that declares the fed route")
+		// It reaches this cluster through a kubeconfig, as a second connection to one API server
+		// does, and lives in the operator's namespace: that namespace holds the fed route, so it may
+		// share it. Its own default route (<namespace>.<name>) is not the route the apiserver posts
+		// to, which is the whole point: without spec.attribution.auditRoute it would read a partition
+		// nothing writes. It also delegates source-namespace selection, so the second case below can
+		// watch a namespace other than the rule's own, reproducing the reported shape exactly.
+		writeKubeConfigSecret(resolveE2ENamespace(), dedicatedProv, "value", sameClusterKubeConfig())
+		Expect(applyKubeProviderWithAuditRoute(resolveE2ENamespace(), dedicatedProv, dedicatedProv,
+			[]string{testNs, sourceNs}, true, fedRoute)).Error().
+			NotTo(HaveOccurred(), "failed to apply the dedicated KubeProvider")
 
-		By("declaring a ClusterProvider on an audit route NOBODY posts under")
+		By("declaring a KubeProvider on an audit route NOBODY posts under")
 		// The negative half of AuditFactsReceived, and the exact misconfiguration this whole spec
-		// exists for: a provider that never sets spec.attribution.auditRoute reads a partition named
-		// after ITSELF, which this apiserver — posting only to /audit-webhook/default — never writes.
-		Expect(applyInClusterClusterProviderWithoutAuditRoute(quietProv, testNs)).Error().
-			NotTo(HaveOccurred(), "failed to apply the quiet ClusterProvider")
+		// exists for: a provider that never sets spec.attribution.auditRoute reads its default
+		// partition, <namespace>.<name>, which this apiserver never writes.
+		writeKubeConfigSecret(testNs, "audit-route-kubeconfig", "value", sameClusterKubeConfig())
+		Expect(applyKubeProviderWithAuditRoute(testNs, quietProv, "audit-route-kubeconfig",
+			nil, false, "")).Error().NotTo(HaveOccurred(), "failed to apply the quiet KubeProvider")
 
 		// A 0s commit window makes every watched event its own commit, so each assertion reads an
 		// author scoped to its own file path and concurrent audit traffic cannot change it.
 		createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 
 		By("creating a GitTarget that mirrors through the dedicated provider")
-		Expect(applyGitTargetForClusterProvider(
-			testNs, gitTargetName, gitProvName, basePath, clusterProv)).Error().
+		Expect(applyGitTargetForKubeProvider(
+			testNs, gitTargetName, gitProvName, basePath, resolveE2ENamespace(), dedicatedProv)).Error().
 			NotTo(HaveOccurred(), "failed to apply the GitTarget")
 		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "Succeeded", "")
 	})
 
 	AfterAll(func() {
-		deleteClusterProvider(clusterProv)
-		deleteClusterProvider(quietProv)
+		deleteKubeProvider(resolveE2ENamespace(), dedicatedProv)
+		_, _ = kubectlRunInNamespace(resolveE2ENamespace(), "delete", "secret", dedicatedProv, "--ignore-not-found")
 		cleanupPipeline(testNs, gitProvName, gitTargetName, watchRuleName)
 		cleanupNamespace(testNs)
 		cleanupNamespace(sourceNs)
@@ -138,7 +146,7 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 			out, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%an <%ae>", "--", repoPath)
 			g.Expect(logErr).NotTo(HaveOccurred(), "git log author failed: %s", out)
 			g.Expect(strings.TrimSpace(out)).To(Equal(fmt.Sprintf("%s <%s>", displayName, email)),
-				"a commit through a dedicated ClusterProvider must carry the real actor, not the "+
+				"a commit through a dedicated KubeProvider must carry the real actor, not the "+
 					"unresolved-attribution placeholder")
 		}).Should(Succeed())
 
@@ -147,32 +155,49 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 
 	// The quiet provider is asserted BEFORE any write, because that is the state the condition has
 	// to report honestly: a route with no proof yet. It is a separate object from the mirroring one
-	// on purpose — this apiserver feeds /audit-webhook/default continuously, so the route the
+	// on purpose — this apiserver feeds the fed route continuously, so the route the
 	// mirroring provider declares is already latched by the time any spec here runs, and asserting
 	// "no facts yet" against it would assert a race.
-	It("says so when a ClusterProvider's audit route has never carried a fact", func() {
+	It("says so when a KubeProvider's audit route has never carried a fact", func() {
 		// RouteUnused, not one of the other two silences: this cluster's apiserver IS delivering
 		// audit (every other spec here depends on it) and the transport is accepting writes, so the
 		// only thing left to look at is this provider's own route. That is exactly the distinction
 		// the three reasons exist to make.
-		verifyResourceCondition("clusterprovider", quietProv, "",
-			"AuditFactsReceived", "Unknown", "RouteUnused", quietProv)
+		verifyResourceCondition("kubeprovider", quietProv, testNs,
+			"AuditFactsReceived", "Unknown", "RouteUnused", testNs+"."+quietProv)
 
 		// The whole reason this is not folded into Ready: nothing about the provider is broken.
 		// Mirroring through it would work; only the commit AUTHOR would be lost.
-		verifyResourceCondition("clusterprovider", quietProv, "", "Ready", "True", "", "")
+		verifyResourceCondition("kubeprovider", quietProv, testNs, "Ready", "True", "", "")
 
 		// And it stays Unknown rather than decaying to False on a timer: silence is not yet a
 		// verdict, and no grace window can tell a misconfigured route from a quiet cluster.
 		Consistently(func(g Gomega) {
-			out, err := kubectlRun("get", "clusterprovider", quietProv,
+			out, err := kubectlRunInNamespace(testNs, "get", "kubeprovider", quietProv,
 				"-o", `jsonpath={.status.conditions[?(@.type=="AuditFactsReceived")].status}`)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(out)).To(Equal("Unknown"))
 		}, 20*time.Second, 5*time.Second).Should(Succeed())
 	})
 
-	It("attributes a commit mirrored through a dedicated in-cluster ClusterProvider", func() {
+	// A tenant cannot read the facts of a route another namespace holds by spelling it out: the
+	// provider that tries is not used, and neither is anything that mirrors through it.
+	It("does not use a KubeProvider that borrows another namespace's audit route", func() {
+		Expect(applyKubeProviderWithAuditRoute(testNs, borrowingProv, "audit-route-kubeconfig",
+			nil, false, fedRoute)).Error().NotTo(HaveOccurred(), "failed to apply the borrowing KubeProvider")
+		DeferCleanup(func() { deleteKubeProvider(testNs, borrowingProv) })
+		verifyResourceCondition("kubeprovider", borrowingProv, testNs, "Validated", "True", "Succeeded", "")
+		verifyResourceCondition("kubeprovider", borrowingProv, testNs,
+			"Stalled", "True", "AuditRouteConflict", resolveE2ENamespace())
+
+		target := gitTargetName + "-borrowing"
+		Expect(applyGitTargetForKubeProvider(testNs, target, gitProvName, basePath+"-borrowing",
+			testNs, borrowingProv)).Error().NotTo(HaveOccurred())
+		DeferCleanup(func() { cleanupNamespacedResource(testNs, "gittarget", target) })
+		verifyResourceCondition("gittarget", target, testNs, "Validated", "False", "AuditRouteConflict", "")
+	})
+
+	It("attributes a commit mirrored through a dedicated KubeProvider", func() {
 		By("creating a WatchRule in the GitTarget's own namespace")
 		data := struct{ Name, Namespace, DestinationName string }{
 			Name: watchRuleName, Namespace: testNs, DestinationName: gitTargetName,
@@ -187,8 +212,8 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 
 		// The fact that named that author was published on the declared route, so the provider
 		// reading it latches True. This is the signal an operator gets in `kubectl get
-		// clusterprovider` (the Facts column) instead of having to read commit authors out of Git.
-		verifyResourceCondition("clusterprovider", clusterProv, "",
+		// kubeprovider` (the FactsReceived column) instead of having to read commit authors out of Git.
+		verifyResourceCondition("kubeprovider", dedicatedProv, resolveE2ENamespace(),
 			"AuditFactsReceived", "True", "Received", fedRoute)
 	})
 
@@ -213,47 +238,47 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 	})
 })
 
-// applyInClusterClusterProviderWithAuditRoute applies a ClusterProvider that OMITS kubeConfig (so it
-// names the operator's own cluster) and declares the audit route its facts arrive on. The route is
-// what lets several providers on one cluster share the single stream that cluster's apiserver posts.
-func applyInClusterClusterProviderWithAuditRoute(
-	name, allowedNS, extraNS string, delegate bool, auditRoute string,
+// sameClusterKubeConfig is a kubeconfig for the cluster the operator runs in, addressed the way a
+// Pod reaches it: a second connection to one API server, which is what a dedicated KubeProvider for
+// the operator's own cluster is when the installation does not list it for spec.inCluster.
+func sameClusterKubeConfig() string {
+	GinkgoHelper()
+	return rawKubeConfigWithServer("https://kubernetes.default.svc")
+}
+
+// applyKubeProviderWithAuditRoute applies a KubeProvider in namespace reaching its cluster through
+// the kubeconfig Secret secretName in that namespace, admitting the namespaces listed, and declaring
+// auditRoute when it is not empty. The route is what lets several providers on one cluster share
+// the single stream that cluster's apiserver posts.
+func applyKubeProviderWithAuditRoute(
+	namespace, name, secretName string, admits []string, delegate bool, auditRoute string,
 ) (string, error) {
+	extra := ""
+	if len(admits) > 0 {
+		extra += fmt.Sprintf("\n  accessFrom:\n    names: [%s]", strings.Join(admits, ", "))
+	}
+	if auditRoute != "" {
+		extra += fmt.Sprintf("\n  attribution:\n    auditRoute: %s", auditRoute)
+	}
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: ClusterProvider
+kind: KubeProvider
 metadata:
   name: %s
+  namespace: %s
 spec:
-  accessFrom:
-    names: [%s, %s]
+  secretRef:
+    name: %s
   allowCrossNamespace:
-    sources: %t
-  attribution:
-    auditRoute: %s
-`, name, allowedNS, extraNS, delegate, auditRoute)
-	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
+    sources: %t%s
+`, name, namespace, secretName, delegate, extra)
+	return kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 }
 
-// applyInClusterClusterProviderWithoutAuditRoute applies a ClusterProvider that OMITS both
-// kubeConfig and spec.attribution, so its audit route defaults to its own NAME. On a cluster whose
-// apiserver posts to a single other route, that is a provider reading a partition nothing writes.
-func applyInClusterClusterProviderWithoutAuditRoute(name, allowedNS string) (string, error) {
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: ClusterProvider
-metadata:
-  name: %s
-spec:
-  accessFrom:
-    names: [%s]
-`, name, allowedNS)
-	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
-}
-
-// applyGitTargetForClusterProvider applies a GitTarget that mirrors through a named
-// ClusterProvider. Which SOURCE namespaces may reach it is bounded by that provider's
+// applyGitTargetForKubeProvider applies a GitTarget that mirrors through the KubeProvider
+// providerNS/provider. Which SOURCE namespaces may reach it is bounded by that provider's
 // spec.allowCrossNamespace.sources plus the source credential's own RBAC, not by any field here.
-func applyGitTargetForClusterProvider(
-	ns, name, gitProvider, targetPath, clusterProvider string,
+func applyGitTargetForKubeProvider(
+	ns, name, gitProvider, targetPath, providerNS, provider string,
 ) (string, error) {
 	manifest := gitBranchManifest(ns, gitProvider) + fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
@@ -263,13 +288,14 @@ metadata:
 spec:
   gitBranchRef:
     name: %s
-  path: %s
-  clusterProviderRef:
+  kubeProviderRef:
     name: %s
+    namespace: %s
+  path: %s
   commit:
     window:
       idleTimeout: "0s"
-`, name, ns, gitBranchName(gitProvider, "main"), targetPath, clusterProvider)
+`, name, ns, gitBranchName(gitProvider, "main"), provider, providerNS, targetPath)
 	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }
 

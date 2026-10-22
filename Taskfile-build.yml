@@ -756,10 +756,10 @@ tasks:
     cmds:
       - |
         mkdir -p dist
-        # CRDs ship as their OWN file, applied FIRST. The bundle contains the reserved `default`
-        # ClusterProvider — a custom resource that cannot be applied in the same `kubectl apply` as
+        # CRDs ship as their OWN file, applied FIRST. The bundle contains the `local`
+        # KubeProvider — a custom resource that cannot be applied in the same `kubectl apply` as
         # the CRD defining it: kubectl builds its RESTMapper up front and fails with
-        # `no matches for kind "ClusterProvider"`. So: kubectl apply -f dist/crds.yaml, then
+        # `no matches for kind "KubeProvider"`. So: kubectl apply -f dist/crds.yaml, then
         # kubectl apply -f dist/install.yaml. `helm install` is unaffected — it installs
         # charts/gitops-reverser/crds/ in its own first phase, which is why --include-crds is gone
         # here. Each chart CRD file already begins with its own `---`, so a plain cat is valid
