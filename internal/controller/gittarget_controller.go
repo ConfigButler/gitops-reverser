@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -1058,6 +1059,13 @@ func repoIdentityOf(provider *configbutleraiv1alpha3.GitProvider) git.RepoIdenti
 	return git.RepoIdentity{ProviderUID: provider.UID, URL: provider.Spec.URL}
 }
 
+// checkForConflicts reports whether an older GitTarget on the same GitBranch already owns a path
+// that overlaps target's. Only a GitTarget that is itself admitted can own one: one whose namespace
+// its GitBranch's GitProvider or its KubeProvider does not admit writes nothing, so it reserves no
+// folder either. Otherwise any namespace that knows a GitBranch's name could create a GitTarget at
+// "." first and hold every folder on that branch against the targets allowed to write it. The
+// admission is read only for an existing target that would win, so a branch with no overlap costs
+// no reads.
 func (r *GitTargetReconciler) checkForConflicts(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
@@ -1075,7 +1083,20 @@ func (r *GitTargetReconciler) checkForConflicts(
 		if existing.GitBranchKey() != target.GitBranchKey() {
 			continue
 		}
-		if lost, msg := losesPathConflict(target, existing); lost {
+		lost, msg := losesPathConflict(target, existing)
+		if !lost {
+			continue
+		}
+		admitted, err := authz.GitTargetAdmitted(ctx, r.Client, existing)
+		if err != nil {
+			return false, "", "", fmt.Errorf(
+				"check GitTarget %s/%s admission: %w",
+				existing.Namespace,
+				existing.Name,
+				err,
+			)
+		}
+		if admitted.Allowed {
 			return true, msg, GitTargetReasonTargetConflict, nil
 		}
 	}

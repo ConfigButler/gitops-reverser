@@ -78,3 +78,38 @@ func TestCheckForConflicts_ASharedGitBranchIsOneBranchAcrossNamespaces(t *testin
 	assert.Equal(t, GitTargetReasonTargetConflict, reason)
 	assert.Contains(t, msg, "platform/apps")
 }
+
+// TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder: a GitTarget whose namespace the
+// GitBranch's GitProvider does not admit writes nothing, so it cannot hold a folder against the
+// targets that may. Without this, any namespace that knows a GitBranch's name could create a target
+// at "." first and block every folder on that branch. Once the provider admits it, the older target
+// owns its path as any other does.
+func TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder(t *testing.T) {
+	branch := &configbutleraiv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: gitBranchNameForTest("monorepo", "main")},
+		Spec: configbutleraiv1alpha3.GitBranchSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: "monorepo"}, Branch: "main",
+		},
+	}
+	squatter := sharedProviderTarget("intruder", "everything", "platform", ".", 2*time.Hour)
+	owner := sharedProviderTarget("platform", "apps", "", "apps", time.Hour)
+
+	r := sharedProviderReconciler(t, branch, squatter, owner)
+	conflict, msg, _, err := r.checkForConflicts(context.Background(), owner)
+	require.NoError(t, err)
+	assert.False(t, conflict, "a target its GitProvider does not admit must not hold a folder: %s", msg)
+
+	var provider configbutleraiv1alpha3.GitProvider
+	require.NoError(
+		t,
+		r.Get(context.Background(), ctrlclient.ObjectKey{Namespace: "platform", Name: "monorepo"}, &provider),
+	)
+	provider.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"intruder"}}
+	require.NoError(t, r.Update(context.Background(), &provider))
+
+	conflict, msg, reason, err := r.checkForConflicts(context.Background(), owner)
+	require.NoError(t, err)
+	assert.True(t, conflict, "an admitted older target owns its path")
+	assert.Equal(t, GitTargetReasonTargetConflict, reason)
+	assert.Contains(t, msg, "intruder/everything")
+}
