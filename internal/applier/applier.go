@@ -160,7 +160,7 @@ const (
 	// ReasonAutomatedSyncEnabled is an Argo CD Application with automated sync on, which syncs on
 	// its own and so is never asked to.
 	ReasonAutomatedSyncEnabled = "AutomatedSyncEnabled"
-	// ReasonForbidden is a ClusterProvider identity that may not read or write the applier.
+	// ReasonForbidden is a KubeProvider identity that may not read or write the applier.
 	ReasonForbidden = "Forbidden"
 	// ReasonCheckFailed is a check that could not complete: the applier's cluster did not answer.
 	// Verdict.Err carries the cause; it says nothing about the applier itself.
@@ -252,7 +252,7 @@ func BindingMismatch(trigger v1alpha3.ApplyTrigger, want Binding) string {
 	return bindingMismatch(trigger, url, branch, want)
 }
 
-// AccessCheck reports whether the ClusterProvider identity may perform attrs.
+// AccessCheck reports whether the KubeProvider identity may perform attrs.
 type AccessCheck func(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error)
 
 // permanentError marks a request no retry can make succeed: the applier is configured in a way a
@@ -324,7 +324,7 @@ func readFailure(
 	case apierrors.IsForbidden(err):
 		return Verdict{
 			Reason:  ReasonForbidden,
-			Message: fmt.Sprintf("the ClusterProvider identity may not get %s %s: %v", kind, ref, err),
+			Message: fmt.Sprintf("the KubeProvider identity may not get %s %s: %v", kind, ref, err),
 		}
 	default:
 		return Verdict{
@@ -369,7 +369,7 @@ func accessVerdict(
 	if !allowed {
 		return &Verdict{
 			Reason: ReasonForbidden,
-			Message: fmt.Sprintf("the ClusterProvider identity may not %s %s %s (%s)",
+			Message: fmt.Sprintf("the KubeProvider identity may not %s %s %s (%s)",
 				verb, kind, ref, gvr.GroupResource()),
 		}
 	}

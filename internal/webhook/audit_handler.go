@@ -69,7 +69,7 @@ type AuditHandlerConfig struct {
 	// dropped and the join falls back to scope matching. Zero means queue.DefaultCollectionUIDCap.
 	CollectionUIDCap int
 	// RouteHealth is the process-wide per-route registry. Every fact batch that actually appends
-	// records its route there, which is what latches the ClusterProvider AuditFactsReceived
+	// records its route there, which is what latches the KubeProvider AuditFactsReceived
 	// condition for the providers reading that route. Nil disables the bookkeeping.
 	RouteHealth *attribution.RouteHealth
 	// AuditRouteAnnotationKey enables the bare /audit-webhook endpoint for a SHARED audit stream
@@ -118,7 +118,7 @@ func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
 // not serve looked exactly like an apiserver posting nothing at all.
 //
 // bare_endpoint_disabled is named for what it actually covers, which is NOT "a route no
-// ClusterProvider claims": resolveRoute accepts any named route as-is, deliberately, because a
+// KubeProvider claims": resolveRoute accepts any named route as-is, deliberately, because a
 // route is a partition name rather than a claim about an object. The only route rejection that
 // exists is the bare /audit-webhook endpoint when no annotation key is configured.
 const (
@@ -180,7 +180,7 @@ func (h *AuditHandler) resolveRoute(w http.ResponseWriter, r *http.Request) (aud
 		return auditRoute{annotationKey: h.config.AuditRouteAnnotationKey}, true
 	}
 
-	// A named route is accepted as-is. Ingestion does NOT check that a ClusterProvider carries this
+	// A named route is accepted as-is. Ingestion does NOT check that a KubeProvider carries this
 	// route: the route is a partition name, not a claim about an object, and a fact filed under a
 	// route nobody reads costs one key that expires on the fact TTL. Refusing here instead dropped
 	// audit batches in flight while a provider was being created or recreated, which the API server
@@ -508,7 +508,7 @@ func (b *factStreamBatches) add(accepted acceptedFact) {
 // a wrong route would let a user from one logical cluster author a matching object in another. The
 // rejection is per EVENT so correctly-annotated events in the same batch still land.
 //
-// An annotation naming a route no ClusterProvider has declared is NOT rejected. The route is a
+// An annotation naming a route no KubeProvider has declared is NOT rejected. The route is a
 // partition name rather than a claim about an object, so the fact is stored and expires unread if
 // nothing ever joins it. That keeps ingestion free of Kubernetes reads on the hot path, and keeps a
 // provider that is created (or recreated) after its events have started flowing from losing them.
@@ -553,7 +553,7 @@ func (h *AuditHandler) rejectUnroutableEvent(
 	}
 	h.firsts.unroutableEvent.Do(func() {
 		log.Info("Rejected an unroutable audit event on the shared /audit-webhook endpoint; it names no "+
-			"audit route any ClusterProvider carries and is never credited to a fallback. Stamp the "+
+			"audit route any KubeProvider carries and is never credited to a fallback. Stamp the "+
 			"annotation, or point this producer at /audit-webhook/<audit-route>", fields...)
 	})
 	log.V(1).Info("Rejected unroutable audit event", fields...)
@@ -693,9 +693,9 @@ func effectiveAuditUsername(event auditv1.Event) string {
 }
 
 // validateAuditWebhookPath accepts the bare shared /audit-webhook and a single-segment
-// /audit-webhook/<audit-route>. The segment is an audit route, not necessarily a ClusterProvider
-// name: a provider joins a route through spec.attribution.auditRoute, which merely defaults to its
-// own name. It is a purely SYNTACTIC check; whether any provider carries the named route, and
+// /audit-webhook/<audit-route>. The segment is an audit route, not a KubeProvider name: a provider
+// joins a route through spec.attribution.auditRoute, which defaults to <namespace>.<name>. It is a
+// purely SYNTACTIC check; whether any provider carries the named route, and
 // whether the bare endpoint is enabled at all, is enforced in ServeHTTP. It rejects a trailing
 // slash and any extra path segment.
 func validateAuditWebhookPath(path string) error {
@@ -710,7 +710,7 @@ func validateAuditWebhookPath(path string) error {
 		return errors.New("audit webhook path must not include a trailing slash")
 	}
 	if strings.Contains(segment, "/") {
-		return errors.New("audit webhook path must name exactly one ClusterProvider: /audit-webhook/<name>")
+		return errors.New("audit webhook path must name exactly one audit route: /audit-webhook/<audit-route>")
 	}
 	return nil
 }

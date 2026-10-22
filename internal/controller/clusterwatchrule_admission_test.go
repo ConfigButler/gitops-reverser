@@ -106,15 +106,17 @@ const (
 	cwaTargetName   = "prod-mirror"
 	cwaTargetNS     = "team-a"
 	cwaProviderName = "prod-eu-1"
+	// cwaProviderNS holds the KubeProvider, so cwaTargetNS reaches it only through accessFrom.
+	cwaProviderNS = "platform"
 )
 
 func cwaGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaTargetName, Namespace: cwaTargetNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef:       meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
-			ClusterProviderRef: &meta.LocalObjectReference{Name: cwaProviderName},
-			Path:               "clusters/prod",
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
+			KubeProviderRef: meta.NamespacedObjectReference{Namespace: cwaProviderNS, Name: cwaProviderName},
+			Path:            "clusters/prod",
 		},
 	}
 }
@@ -125,10 +127,13 @@ func cwaGitProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-func cwaClusterProvider(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.ClusterProvider {
-	return &configbutleraiv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: cwaProviderName},
-		Spec:       configbutleraiv1alpha3.ClusterProviderSpec{AccessFrom: policy},
+func cwaKubeProvider(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.KubeProvider {
+	return &configbutleraiv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: cwaProviderName, Namespace: cwaProviderNS},
+		Spec: configbutleraiv1alpha3.KubeProviderSpec{
+			SecretRef:  &meta.SecretKeyReference{Name: "kc"},
+			AccessFrom: policy,
+		},
 	}
 }
 
@@ -238,13 +243,13 @@ func assertTerminalRefusal(t *testing.T, rule *configbutleraiv1alpha3.ClusterWat
 // --- tests ------------------------------------------------------------------------------------
 
 // TestReconcile_ClusterWatchRuleRefusedWhenTargetNamespaceUnauthorized is the direct-refusal case:
-// a ClusterWatchRule may not compile against a GitTarget whose namespace the ClusterProvider never
+// a ClusterWatchRule may not compile against a GitTarget whose namespace the KubeProvider never
 // admitted, even though the rule itself is cluster-scoped and names the target freely.
 func TestReconcile_ClusterWatchRuleRefusedWhenTargetNamespaceUnauthorized(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaClusterProvider(cwaDenying()),
+		cwaKubeProvider(cwaDenying()),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
 	}, interceptor.Funcs{})
 
@@ -256,10 +261,10 @@ func TestReconcile_ClusterWatchRuleRefusedWhenTargetNamespaceUnauthorized(t *tes
 	assertTerminalRefusal(t, f.reloadRule(ctx, t))
 }
 
-// TestReconcile_ClusterWatchRuleRefusedWhenClusterProviderMissing covers the other half of the
+// TestReconcile_ClusterWatchRuleRefusedWhenKubeProviderMissing covers the other half of the
 // shared gate: an undeclared provider is a hard denial, so an operator cannot sidestep
 // accessFrom by simply never creating the provider.
-func TestReconcile_ClusterWatchRuleRefusedWhenClusterProviderMissing(t *testing.T) {
+func TestReconcile_ClusterWatchRuleRefusedWhenKubeProviderMissing(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
@@ -293,7 +298,7 @@ func TestReconcile_RefusalStopsDataPlaneBeforePublishingStatus(t *testing.T) {
 	var f *cwaFixture
 	f = newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaClusterProvider(cwaDenying()),
+		cwaKubeProvider(cwaDenying()),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
 	}, interceptor.Funcs{
 		SubResourcePatch: func(
@@ -335,7 +340,7 @@ func TestReconcile_AdmittedClusterWatchRuleStillCompiles(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaClusterProvider(cwaAdmitting()),
+		cwaKubeProvider(cwaAdmitting()),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
 	}, interceptor.Funcs{})
 
@@ -357,7 +362,7 @@ func TestReconcile_AdmittedBySelectorOnNamespaceLabels(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaClusterProvider(&configbutleraiv1alpha3.NamespaceMatcher{
+		cwaKubeProvider(&configbutleraiv1alpha3.NamespaceMatcher{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
 		}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
@@ -377,7 +382,7 @@ func TestReconcile_RevocationRemovesCompiledRule(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaClusterProvider(cwaAdmitting()),
+		cwaKubeProvider(cwaAdmitting()),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
 	}, interceptor.Funcs{})
 
@@ -388,8 +393,9 @@ func TestReconcile_RevocationRemovesCompiledRule(t *testing.T) {
 	replansAfterAdmission := f.wm.replans
 
 	// Revoke: the namespace leaves accessFrom.
-	var provider configbutleraiv1alpha3.ClusterProvider
-	require.NoError(t, f.client.Get(ctx, k8stypes.NamespacedName{Name: cwaProviderName}, &provider))
+	var provider configbutleraiv1alpha3.KubeProvider
+	require.NoError(t, f.client.Get(ctx,
+		k8stypes.NamespacedName{Namespace: cwaProviderNS, Name: cwaProviderName}, &provider))
 	provider.Spec.AccessFrom = cwaDenying()
 	require.NoError(t, f.client.Update(ctx, &provider))
 
@@ -412,14 +418,14 @@ func TestReconcile_AdmissionReadErrorRequeuesAndKeepsCompiledRule(t *testing.T) 
 
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaClusterProvider(cwaAdmitting()),
+		cwaKubeProvider(cwaAdmitting()),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
 	}, interceptor.Funcs{
 		Get: func(
 			ctx context.Context, c client.WithWatch, key client.ObjectKey,
 			obj client.Object, opts ...client.GetOption,
 		) error {
-			if _, ok := obj.(*configbutleraiv1alpha3.ClusterProvider); ok {
+			if _, ok := obj.(*configbutleraiv1alpha3.KubeProvider); ok {
 				return boom
 			}
 			return c.Get(ctx, key, obj, opts...)
@@ -439,15 +445,23 @@ func TestReconcile_AdmissionReadErrorRequeuesAndKeepsCompiledRule(t *testing.T) 
 
 // --- mapper tests -----------------------------------------------------------------------------
 
-// TestClusterProviderToClusterWatchRules proves a provider policy change requeues ClusterWatchRules
+// TestKubeProviderToClusterWatchRules proves a provider policy change requeues ClusterWatchRules
 // and not only GitTargets. Without it a revocation converges only on the ~10m periodic reconcile,
 // because the GitTarget's resulting status flip is dropped by GenerationChangedPredicate.
-func TestClusterProviderToClusterWatchRules(t *testing.T) {
+func TestKubeProviderToClusterWatchRules(t *testing.T) {
 	mirrored := cwaGitTarget()
 	elsewhere := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "other-mirror", Namespace: "team-b"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ClusterProviderRef: &meta.LocalObjectReference{Name: "prod-us-1"},
+			KubeProviderRef: meta.NamespacedObjectReference{Namespace: cwaProviderNS, Name: "prod-us-1"},
+		},
+	}
+	// The same provider NAME in another namespace is another provider: a namespaced key, not a name,
+	// is what the map matches on.
+	sameName := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "same-name-mirror", Namespace: "team-b"},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			KubeProviderRef: meta.NamespacedObjectReference{Name: cwaProviderName},
 		},
 	}
 
@@ -460,14 +474,15 @@ func TestClusterProviderToClusterWatchRules(t *testing.T) {
 	}
 
 	cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(
-		mirrored, elsewhere,
+		mirrored, elsewhere, sameName,
 		ruleFor("rule-affected", cwaTargetName, cwaTargetNS),
 		ruleFor("rule-other-provider", "other-mirror", "team-b"),
+		ruleFor("rule-same-name-elsewhere", "same-name-mirror", "team-b"),
 		ruleFor("rule-dangling", "no-such-target", cwaTargetNS),
 	).Build()
 	r := &ClusterWatchRuleReconciler{Client: cl}
 
-	reqs := r.clusterProviderToClusterWatchRules(context.Background(), cwaClusterProvider(cwaAdmitting()))
+	reqs := r.kubeProviderToClusterWatchRules(context.Background(), cwaKubeProvider(cwaAdmitting()))
 
 	names := []string{}
 	for _, req := range reqs {
@@ -517,8 +532,8 @@ func TestClusterWatchRulesTargeting_NoMatchesEnqueuesNothing(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(cwaClusterWatchRule()).Build()
 	r := &ClusterWatchRuleReconciler{Client: cl}
 
-	assert.Empty(t, r.clusterProviderToClusterWatchRules(context.Background(),
-		cwaClusterProvider(cwaAdmitting())), "no GitTargets mirror through this provider")
+	assert.Empty(t, r.kubeProviderToClusterWatchRules(context.Background(),
+		cwaKubeProvider(cwaAdmitting())), "no GitTargets mirror through this provider")
 	assert.Empty(t, r.namespaceToClusterWatchRules(context.Background(),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "empty-ns"}}))
 }
@@ -529,5 +544,6 @@ func TestRefusalReasonIsStableForOperators(t *testing.T) {
 	assert.Equal(t, "GitTargetNamespaceNotAuthorized",
 		ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized)
 	assert.Equal(t, "NamespaceNotAuthorized", authz.ReasonNamespaceNotAuthorized)
-	assert.Equal(t, "ClusterProviderNotFound", authz.ReasonClusterProviderNotFound)
+	assert.Equal(t, "KubeProviderNotFound", authz.ReasonKubeProviderNotFound)
+	assert.Equal(t, "AuditRouteConflict", authz.ReasonAuditRouteConflict)
 }

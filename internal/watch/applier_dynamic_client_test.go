@@ -18,7 +18,7 @@ func TestApplierDynamicClient_RefusesTheConfigPlane(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 
 	_, err := m.ApplierDynamicClient(context.Background(), configPlaneClusterID)
-	require.Error(t, err, "the config plane is not a ClusterProvider")
+	require.Error(t, err, "the config plane is not a KubeProvider")
 }
 
 // TestApplierDynamicClient_ServesAnUndeclaredClusterWithoutKeepingIt: an applier may live in a
@@ -30,10 +30,10 @@ func TestApplierDynamicClient_ServesAnUndeclaredClusterWithoutKeepingIt(t *testi
 		SourceClusters: stubSourceClusterResolver{cfg: &rest.Config{Host: "https://hub.example"}, version: "v1"},
 	}
 
-	dc, err := m.ApplierDynamicClient(context.Background(), "hub")
+	dc, err := m.ApplierDynamicClient(context.Background(), "platform/hub")
 	require.NoError(t, err)
 	require.NotNil(t, dc)
-	assert.Nil(t, m.clusterContextByID("hub"), "an applier-only cluster creates no cluster context")
+	assert.Nil(t, m.clusterContextByID("platform/hub"), "an applier-only cluster creates no cluster context")
 }
 
 // TestApplierDynamicClient_ReusesADeclaredClustersClient: a cluster some GitTarget mirrors from
@@ -44,15 +44,15 @@ func TestApplierDynamicClient_ReusesADeclaredClustersClient(t *testing.T) {
 		Log:            logr.Discard(),
 		SourceClusters: stubSourceClusterResolver{cfg: &rest.Config{Host: "https://prod.example"}, version: "v1"},
 	}
-	m.rememberGitTargetCluster(gd("checkout"), "prod-eu-1")
+	m.rememberGitTargetCluster(gd("checkout"), "team-a/prod-eu-1")
 
-	first, err := m.ApplierDynamicClient(context.Background(), "prod-eu-1")
+	first, err := m.ApplierDynamicClient(context.Background(), "team-a/prod-eu-1")
 	require.NoError(t, err)
-	second, err := m.ApplierDynamicClient(context.Background(), "prod-eu-1")
+	second, err := m.ApplierDynamicClient(context.Background(), "team-a/prod-eu-1")
 	require.NoError(t, err)
 	assert.Same(t, first, second, "the cluster's cached client is reused, not rebuilt per call")
 
-	cc := m.clusterContextByID("prod-eu-1")
+	cc := m.clusterContextByID("team-a/prod-eu-1")
 	require.NotNil(t, cc)
 	assert.Same(t, first, cc.dynamicClient, "it is the client the cluster's watches run on")
 }

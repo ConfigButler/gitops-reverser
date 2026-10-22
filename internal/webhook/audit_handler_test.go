@@ -146,7 +146,7 @@ const acceptedCreateEvent = `{"kind":"Event","level":"RequestResponse","auditID"
 	`"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"default"}}}`
 
 // TestAuditHandler_NamedDefaultRouteThreadsItsProvider checks that /audit-webhook/default is an
-// ordinary named route: it records its facts under the "default" ClusterProvider name.
+// ordinary named route: it records its facts under the route "default", which no name privileges.
 func TestAuditHandler_NamedDefaultRouteThreadsItsProvider(t *testing.T) {
 	recorder := &fakeFactSink{}
 	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
@@ -160,7 +160,7 @@ func TestAuditHandler_NamedDefaultRouteThreadsItsProvider(t *testing.T) {
 }
 
 // TestAuditHandler_NamedRouting checks the /audit-webhook/<route> mapping: the route is taken from
-// the path verbatim and keys the facts, with NO check that a ClusterProvider declares it. Ingestion
+// the path verbatim and keys the facts, with NO check that a KubeProvider carries it. Ingestion
 // is a partition write, not a claim about an object, so a route nobody reads costs one expiring key
 // and a provider created later still joins its facts.
 func TestAuditHandler_NamedRouting(t *testing.T) {
@@ -175,7 +175,7 @@ func TestAuditHandler_NamedRouting(t *testing.T) {
 		assert.Equal(t, "prod-eu-1", recorder.lastProvider())
 	})
 
-	t.Run("a route no ClusterProvider declares is stored, not refused", func(t *testing.T) {
+	t.Run("a route no KubeProvider carries is stored, not refused", func(t *testing.T) {
 		recorder := &fakeFactSink{}
 		handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: recorder})
 		require.NoError(t, err)
@@ -229,7 +229,7 @@ func annotatedEvent(auditID string, annotations map[string]string) string {
 // TestAuditHandler_AnnotationRouting pins the shared-stream contract: with an annotation key
 // configured the bare endpoint reads the AUDIT ROUTE per event, so one batch fans out to several
 // routes, and an event that names none is rejected by itself, never credited to a fallback, while
-// the rest of the batch still lands. A route no ClusterProvider has declared is NOT a rejection.
+// the rest of the batch still lands. A route no KubeProvider carries is NOT a rejection.
 func TestAuditHandler_AnnotationRouting(t *testing.T) {
 	newHandler := func(t *testing.T, recorder *fakeFactSink) *AuditHandler {
 		t.Helper()
@@ -280,7 +280,7 @@ func TestAuditHandler_AnnotationRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("a route no ClusterProvider declares is stored like any other", func(t *testing.T) {
+	t.Run("a route no KubeProvider carries is stored like any other", func(t *testing.T) {
 		recorder := &fakeFactSink{}
 		handler := newHandler(t, recorder)
 
@@ -353,7 +353,7 @@ func TestAuditHandler_MethodAndPathValidation(t *testing.T) {
 		// The bare endpoint only means something with an annotation key configured; this handler has
 		// none, so a producer posting there is misconfigured rather than routed to a default.
 		{"bare endpoint rejected without an annotation key", http.MethodPost, "/audit-webhook", http.StatusBadRequest},
-		// A name with no ClusterProvider behind it is 404 — the gate applies to every name.
+		// Any one-segment route is served: ingestion does not check that a KubeProvider carries it.
 		{"any named route is served", http.MethodPost, "/audit-webhook/prod-eu-1", http.StatusOK},
 	}
 

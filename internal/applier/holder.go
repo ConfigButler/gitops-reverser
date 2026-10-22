@@ -26,15 +26,15 @@ import (
 // keeps no younger one out, and one that is retiring stays the holder until its release is done.
 
 // ReasonHeldByAnotherTrigger is Configured=False on a trigger whose applier another trigger of its
-// kind holds: one in line that names the same object in the same ClusterProvider's cluster, and has
+// kind holds: one in line that names the same object in the same KubeProvider's cluster, and has
 // an apply in flight, holds the Kustomization already, or was created first. The trigger takes the
 // applier over once it no longer comes first.
 const ReasonHeldByAnotherTrigger = "HeldByAnotherTrigger"
 
 // sameApplier reports whether two triggers name one applier: the same kind of object, in the same
-// ClusterProvider's cluster, with the same namespace and name.
+// KubeProvider's cluster, with the same namespace and name.
 func sameApplier(a, b v1alpha3.ApplyTrigger) bool {
-	return a.TriggerKind() == b.TriggerKind() && a.ClusterProvider() == b.ClusterProvider() &&
+	return a.TriggerKind() == b.TriggerKind() && a.KubeProviderKey() == b.KubeProviderKey() &&
 		a.Applier() == b.Applier()
 }
 
@@ -196,8 +196,8 @@ func ListApplyTriggers(
 
 // HeldByAnotherMessage is the Configured message of a trigger whose applier holder holds.
 func HeldByAnotherMessage(trigger, holder v1alpha3.ApplyTrigger) string {
-	held := fmt.Sprintf("%s %s in the cluster of ClusterProvider %q is held by %s %s/%s", trigger.ApplierKind(),
-		trigger.Applier(), trigger.ClusterProvider(), holder.TriggerKind(), holder.GetNamespace(), holder.GetName())
+	held := fmt.Sprintf("%s %s in the cluster of KubeProvider %s is held by %s %s/%s", trigger.ApplierKind(),
+		trigger.Applier(), trigger.KubeProviderKey(), holder.TriggerKind(), holder.GetNamespace(), holder.GetName())
 	switch {
 	case holdsAnApply(holder) && !holdsAnApply(trigger):
 		return held + ", whose apply is in flight; this trigger takes it over once that apply ends"

@@ -1,0 +1,34 @@
+{{- if .Values.kubeProvider.create }}
+---
+# The KubeProvider the chart renders and OWNS, in the release namespace: kubeProvider.create=false
+# makes Helm delete it again. Every GitTarget names its KubeProvider explicitly
+# (spec.kubeProviderRef); nothing falls back to this one. With kubeProvider.secretRef.name empty it
+# uses the operator's own identity (spec.inCluster), and the chart lists it in
+# --in-cluster-kube-providers, which is the only way an inCluster provider is honored. accessFrom
+# admits other namespaces; the chart default (an empty selector) admits every namespace — tighten
+# it via kubeProvider.accessFrom.
+apiVersion: configbutler.ai/v1alpha3
+kind: KubeProvider
+metadata:
+  name: {{ .Values.kubeProvider.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.kubeProvider.secretRef }}
+  {{- if .name }}
+  secretRef:
+    name: {{ .name }}
+    {{- with .key }}
+    key: {{ . }}
+    {{- end }}
+  {{- else }}
+  inCluster: {}
+  {{- end }}
+  {{- end }}
+  accessFrom:
+    {{- toYaml .Values.kubeProvider.accessFrom | nindent 4 }}
+  allowCrossNamespace:
+    sources: {{ .Values.kubeProvider.allowCrossNamespace.sources }}
+    appliers: {{ .Values.kubeProvider.allowCrossNamespace.appliers }}
+{{- end }}

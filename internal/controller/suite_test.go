@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,6 +25,7 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/attribution"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	// +kubebuilder:scaffold:imports
@@ -43,6 +46,20 @@ var (
 	// that needs a GitBranch to hold its branch claims it directly (holdGitBranchForTest).
 	testWorkerManager *git.WorkerManager
 )
+
+// The suite's shared KubeProvider: the operator's own identity, in the "default" namespace, listed
+// in the suite reconciler's --in-cluster-kube-providers equivalent and admitting every namespace,
+// the way an install that mirrors its own cluster ships one. A spec's GitTargets and triggers name
+// it through testKubeProviderRef.
+const (
+	testKubeProviderNamespace = "default"
+	testKubeProviderName      = "local"
+)
+
+// testKubeProviderRef names the suite's shared in-cluster KubeProvider.
+func testKubeProviderRef() meta.NamespacedObjectReference {
+	return meta.NamespacedObjectReference{Namespace: testKubeProviderNamespace, Name: testKubeProviderName}
+}
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -116,11 +133,13 @@ var _ = BeforeSuite(func() {
 
 	// Wired with a live route registry, as the operator is by default (--author-attribution=true):
 	// that is what exercises the first-fact channel source and the AuditFactsReceived condition.
-	err = (&ClusterProviderReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		OperatorNamespace: "default",
-		AuditFacts:        &attribution.RouteHealth{},
+	err = (&KubeProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		KubeConfigSafety: kubeconfig.SafetyPolicy{InClusterProviders: map[k8stypes.NamespacedName]struct{}{
+			{Namespace: testKubeProviderNamespace, Name: testKubeProviderName}: {},
+		}},
+		AuditFacts: &attribution.RouteHealth{},
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -169,13 +188,13 @@ var _ = BeforeSuite(func() {
 	// Note: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
 	// Webhook tests are handled separately in webhook package
 
-	// Ship the reserved "default" ClusterProvider the way a real install (chart / config SUT) does,
-	// so a GitTarget that references it (the schema default) passes the reconcile-time hard gate
-	// that now REQUIRES the referenced ClusterProvider to exist. Its empty selector admits every
-	// namespace, matching the chart default.
-	Expect(k8sClient.Create(ctx, &configbutleraiv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: configbutleraiv1alpha3.DefaultClusterProviderName},
-		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
+	// Ship the suite's shared in-cluster KubeProvider, so a GitTarget or trigger naming it
+	// (testKubeProviderRef) passes the reconcile-time hard gate that REQUIRES the referenced
+	// KubeProvider to exist. Its empty selector admits every namespace the specs create.
+	Expect(k8sClient.Create(ctx, &configbutleraiv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testKubeProviderNamespace, Name: testKubeProviderName},
+		Spec: configbutleraiv1alpha3.KubeProviderSpec{
+			InCluster:  &configbutleraiv1alpha3.KubeProviderInCluster{},
 			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}},
 		},
 	})).To(Succeed())

@@ -69,18 +69,22 @@ spec:
 ```
 
 The GitOps Reverser side. The `GitProvider` points at the same repository (any URL form of it) and
-serves a push receiver; a `FluxTrigger` holds the `Kustomization`, in the cluster the `default`
-`ClusterProvider` names, and the `GitTarget` names the trigger. The `Kustomization` is in
-`flux-system` and the trigger in `team-a`, so the provider lets `team-a`'s triggers reach another
-namespace (`allowCrossNamespace.appliers`); with the Helm chart, set
-`clusterProvider.default.allowCrossNamespace.appliers: true` instead of declaring it:
+serves a push receiver; a `FluxTrigger` holds the `Kustomization`, in the cluster the chart's
+`local` `KubeProvider` names (the operator's own, through `spec.inCluster`), and the `GitTarget`
+names the trigger. The `Kustomization` is in `flux-system` and the trigger in `team-a`, so the
+provider lets `team-a`'s triggers reach another namespace (`allowCrossNamespace.appliers`); with the
+Helm chart, set `kubeProvider.allowCrossNamespace.appliers: true` instead of declaring it. A
+`KubeProvider` with `inCluster` that you declare yourself is honored only once it is listed in
+`--in-cluster-kube-providers`, which the chart does for its own:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: ClusterProvider
+kind: KubeProvider
 metadata:
-  name: default
+  name: local
+  namespace: gitops-reverser
 spec:
+  inCluster: {}
   accessFrom:
     names: [team-a]
   allowCrossNamespace:
@@ -127,6 +131,9 @@ metadata:
 spec:
   gitBranchRef:
     name: platform-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   path: apps/checkout
   applyTriggerRef:
     kind: FluxTrigger
@@ -139,8 +146,9 @@ metadata:
   name: checkout
   namespace: team-a
 spec:
-  clusterProviderRef:
-    name: default
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
   kustomizationRef:
     namespace: flux-system
     name: checkout
@@ -194,10 +202,10 @@ Appliers on one branch that share a source apply one at a time.
   with its apply window open, for as long as it runs.
 - `spec.dependsOn`: a dependency whose apply failed is suspended with its generation unapplied, so
   its dependents wait until GitOps Reverser's retry of it succeeds.
-- It lives in the trigger's namespace unless the trigger's `ClusterProvider` sets
+- It lives in the trigger's namespace unless the trigger's `KubeProvider` sets
   `allowCrossNamespace.appliers: true`; a trigger naming one elsewhere without it reports
   `ApplierNamespaceNotAllowed`. A `Kustomization` in `flux-system` therefore needs the grant. It is
-  a delegation, not owner consent: every namespace the provider's `accessFrom` admits may then
+  a delegation, not owner consent: every namespace the provider admits may then
   suspend and apply any `Kustomization` in reach of the provider's identity whose source fetches the
   repository its `GitProvider` names. Nothing proves that the namespace owns the `Kustomization`, or
   may write to that repository: the binding compares URLs. See
@@ -223,21 +231,23 @@ metadata:
   name: checkout
   namespace: team-a            # the GitTargets naming it are in this namespace
 spec:
-  clusterProviderRef:          # the cluster Flux runs in; default: "default"
-    name: default
+  kubeProviderRef:             # the cluster Flux runs in; required
+    name: local
+    namespace: gitops-reverser # default: the trigger's namespace
   kustomizationRef:
     namespace: flux-system     # default: the trigger's namespace
     name: checkout
 ```
 
-`clusterProviderRef` names the cluster that holds the `Kustomization`: the operator's own cluster
-for `default`, or a management cluster where Flux runs. Both references are immutable: delete and
-recreate the trigger to hold another `Kustomization`.
+`kubeProviderRef` names the cluster that holds the `Kustomization`: the operator's own cluster for
+an `inCluster` provider such as the chart's `local`, or a management cluster where Flux runs. The
+provider must admit the trigger's namespace: its own, or one its `accessFrom` admits. Both
+references are immutable: delete and recreate the trigger to hold another `Kustomization`.
 
 ### How the trigger holds the `Kustomization`
 
 A trigger acts only while an eligible `GitTarget` references it: one in the trigger's namespace that
-names it in `spec.applyTriggerRef`, is admitted by its `ClusterProvider`s, and writes the repository
+names it in `spec.applyTriggerRef`, is admitted by its `KubeProvider`s, and writes the repository
 and branch the `Kustomization`'s `GitRepository` fetches. A trigger no `GitTarget` names holds
 nothing, reads nothing in the `Kustomization`'s cluster, and is `Ready`. One that only ineligible
 `GitTarget`s name holds nothing either, and its `Configured` says why.
@@ -293,8 +303,8 @@ stateDiagram-v2
   Until that is done it stays the holder, so no other trigger acts on the `Kustomization`. One
   whose `spec.suspend` another manager also applies stays suspended, and the Event names that
   manager. With another `FluxTrigger` in line, the `Kustomization` stays suspended for that one. A
-  `ClusterProvider` that is gone does not stop the hand-back: it goes on through whatever still
-  reaches the cluster, which for a provider without `kubeConfig` is the operator's own. When nothing
+  `KubeProvider` that is gone does not stop the hand-back: it goes on through whatever still
+  reaches the cluster, which for an `inCluster` provider is the operator's own. When nothing
   does, or the hand-back has not finished 10 minutes after `Held` turned `Releasing`, the trigger
   lets go with a `ReleaseFailed` Event saying where the `Kustomization` was left. A reference that
   returns before the release is done holds the `Kustomization` again; one that returns after adopts
@@ -319,9 +329,10 @@ The trigger reports `Configured` and `Held`, and its `Ready` includes both:
 | `Configured`: `UnsupportedSource` | The source is not a `GitRepository`, or breaks one of the [`GitRepository` rules](#the-gitrepository) | stalled |
 | `Configured`: `SuspendOwnedElsewhere` | Another field manager applies `spec.suspend` | stalled: remove the field from the manifest it applies |
 | `Configured`: `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository` | stalled |
-| `Configured`: `NamespaceNotAuthorized` | The `clusterProviderRef` names a provider whose `accessFrom` does not admit the trigger's namespace | stalled |
-| `Configured`: `ClusterProviderNotFound` | The `clusterProviderRef` names a provider that does not exist | progressing |
-| `Configured`: `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the trigger's, and the `ClusterProvider` does not set `allowCrossNamespace.appliers` | stalled |
+| `Configured`: `NamespaceNotAuthorized` | The `kubeProviderRef` names a provider in another namespace whose `accessFrom` does not admit the trigger's namespace | stalled |
+| `Configured`: `KubeProviderNotFound` | The `kubeProviderRef` names a provider that does not exist | progressing |
+| `Configured`: `AuditRouteConflict` | The provider carries an audit route another namespace holds, so it is not used | stalled |
+| `Configured`: `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the trigger's, and the `KubeProvider` does not set `allowCrossNamespace.appliers` | stalled |
 | `Configured`: `HeldByAnotherTrigger` | Another `FluxTrigger` holds this `Kustomization` | stalled: delete one of the two |
 | `Held`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
 | `Held`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |
@@ -343,8 +354,8 @@ trigger has seen that the `GitTarget` names it, and otherwise the trigger's own 
 
 ## Permissions
 
-GitOps Reverser looks the `Kustomization` up in the cluster of the trigger's `clusterProviderRef`,
-with the identity of that `ClusterProvider`. That identity needs:
+GitOps Reverser looks the `Kustomization` up in the cluster of the trigger's `kubeProviderRef`,
+with the identity of that `KubeProvider`. That identity needs:
 
 | API group | Resource | Verbs |
 | --- | --- | --- |
@@ -356,7 +367,7 @@ with the identity of that `ClusterProvider`. That identity needs:
 
 For the operator's own cluster, install the chart with `applierAccess.flux: true`, or apply
 [`config/rbac/flux-applier-role.yaml`](../config/rbac/flux-applier-role.yaml) and its binding. For a
-remote cluster, grant the same to the identity in the `ClusterProvider`'s kubeconfig. The chart's
+remote cluster, grant the same to the identity in the `KubeProvider`'s kubeconfig. The chart's
 grant is cluster-wide for convenience; GitOps Reverser only patches the `Kustomization` and
 `GitRepository` a trigger names.
 
@@ -471,8 +482,8 @@ flux get ks checkout -n flux-system
 | Trigger `Configured=False`, `ApplierNotFound` | No `Kustomization` with that namespace and name in the trigger's cluster, or Flux is not installed there | Create it, or recreate the trigger with the right `kustomizationRef`; an omitted namespace is the trigger's |
 | Trigger `Configured=False`, `SuspendOwnedElsewhere` | The manifest that applies the `Kustomization` sets `spec.suspend` | Remove the field from that manifest |
 | `ApplyTriggerReady=False`, `SourceMismatch`, or trigger `UnsupportedSource` | The message names the broken [`GitRepository` rule](#the-gitrepository) | Fix the `GitRepository`; the trigger then adopts the `Kustomization`, and the apply that was waiting is asked for |
-| Trigger `Configured=False`, `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the trigger, such as `flux-system` | Set `allowCrossNamespace.appliers: true` on the trigger's `ClusterProvider` (Helm: `clusterProvider.default.allowCrossNamespace.appliers`), or move the trigger and `GitTarget` to the `Kustomization`'s namespace |
-| Trigger `Configured=Unknown`, `NotBound` | A `GitTarget` names the trigger, but cannot be judged yet: its `GitProvider` or `ClusterProvider` does not exist | Create the missing object; the message names it |
+| Trigger `Configured=False`, `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the trigger, such as `flux-system` | Set `allowCrossNamespace.appliers: true` on the trigger's `KubeProvider` (Helm: `kubeProvider.allowCrossNamespace.appliers`), or move the trigger and `GitTarget` to the `Kustomization`'s namespace |
+| Trigger `Configured=Unknown`, `NotBound` | A `GitTarget` names the trigger, but cannot be judged yet: its `GitProvider` or `KubeProvider` does not exist | Create the missing object; the message names it |
 | Trigger `Ready=True`, `NotReferenced`, and the `Kustomization` is not suspended | No `GitTarget` names the trigger, so it holds nothing | Name it in the `GitTarget`'s `spec.applyTriggerRef` |
 | Trigger `Configured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.flux: true` |
 | A Warning `ApplyRequestFailed` Event | An apply could not be asked for; the message says why | GitOps Reverser keeps asking after its backoff, at most every five minutes |
@@ -480,7 +491,7 @@ flux get ks checkout -n flux-system
 | A Warning `ApplyFailed` Event | Flux ran the apply and reported it failed | Read the `Kustomization`'s status; GitOps Reverser retries on its backoff |
 | A Warning `ApplyUnresolved` Event, trigger `OperationUnresolved` | The apply has not completed in 5 minutes | It is suspended and still followed; look at the `Kustomization`'s status and health checks |
 | A Warning `OperationUnfollowed` Event | An apply was left in flight with nothing following it | It was suspended and completed as failed. A recurring one is a bug worth reporting with the operator's logs |
-| A Warning `ReleaseFailed` Event | A trigger being deleted, or no longer referenced, could not hand its `Kustomization` back: a write it may not make, a `ClusterProvider` gone with no way left to its cluster, or 10 minutes passed | The message says where it was left; `flux resume` it if it should apply on its own |
+| A Warning `ReleaseFailed` Event | A trigger being deleted, or no longer referenced, could not hand its `Kustomization` back: a write it may not make, a `KubeProvider` gone with no way left to its cluster, or 10 minutes passed | The message says where it was left; `flux resume` it if it should apply on its own |
 | A dependent `Kustomization` waits | Its dependency's last apply failed | Fix the dependency's failure; GitOps Reverser's retry unblocks it |
 | A Git-side push takes minutes to reach the cluster | No receiver, so the refresh finds it | Configure [the push webhook](bi-directional.md#telling-gitops-reverser-that-somebody-else-pushed) |
 | A refused edit is not reverted | The target is suspended, `onRefusal` is not `Reapply`, or the refusal is not eligible | See [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal) |
@@ -513,7 +524,7 @@ applied the tip is asked nothing.
 | The [complete example](#a-complete-example) decodes strictly, reports `Configured=True`, binds the `GitTarget`, and an apply fetches and resumes the `Kustomization`; the manifest omits `spec.suspend` | [`flux_guide_test.go`](../internal/applier/flux_guide_test.go) |
 | Every fact of kustomize-controller v1.9.6 the lifecycle relies on, in a fake that applies them | [`fluxsim`](../internal/applier/fluxsim/fluxsim_test.go) |
 | An operation is not finished when the revision is attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../internal/applier/flux_lifecycle_test.go), [`flux_consumers_test.go`](../internal/applier/flux_consumers_test.go) |
-| Adoption, an external resume suspended again with an Event each time, `SuspendOwnedElsewhere`, the hand-back on deletion (a `ClusterProvider` gone included), and the source's other consumers | [`fluxtrigger_hold_test.go`](../internal/controller/fluxtrigger_hold_test.go) |
+| Adoption, an external resume suspended again with an Event each time, `SuspendOwnedElsewhere`, the hand-back on deletion (a `KubeProvider` gone included), and the source's other consumers | [`fluxtrigger_hold_test.go`](../internal/controller/fluxtrigger_hold_test.go) |
 | A trigger nothing names reads nothing and is `Ready`; the first eligible `GitTarget` adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; the binding over several `GitTarget`s; an older trigger not in line keeps none out, and a retiring holder stays first until its release is done; `ApplierNamespaceNotAllowed` | [`applytrigger_rule_test.go`](../internal/controller/applytrigger_rule_test.go) |
 | `allowAnySourceNamespace: true` is refused on create and on any spec change, a stored one included; `false` and its removal are accepted | [`removed_allow_any_source_namespace_test.go`](../internal/controller/removed_allow_any_source_namespace_test.go) |
 | Every operation checks the target again (incarnation, branch, admission, consent) and the source binding before it resumes, records itself first, and never asks for something weaker; a stop mid-apply suspends the `Kustomization` | [`dispatcher_test.go`](../internal/applier/dispatcher_test.go) |

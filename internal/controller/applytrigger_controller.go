@@ -34,7 +34,7 @@ import (
 
 // ApplyTriggerConditionConfigured reports whether a trigger's applier is one GitOps Reverser can
 // drive: it exists in its cluster, applies a source that follows a branch, may be written, and (an
-// Argo CD Application) has automated sync off. The trigger's ClusterProvider must admit its
+// Argo CD Application) has automated sync off. The trigger's KubeProvider must admit its
 // namespace first, and no trigger in line before it may name the same applier
 // (applier.ReasonHeldByAnotherTrigger).
 const ApplyTriggerConditionConfigured = "Configured"
@@ -140,7 +140,7 @@ type ApplyTriggerReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers,verbs=update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers/status;argocdtriggers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=kubeproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets;gitproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -287,7 +287,7 @@ func (c triggerCheck) retiring(trigger *configbutleraiv1alpha3.FluxTrigger) bool
 func (r *ApplyTriggerReconciler) configuredVerdict(
 	ctx context.Context, trigger configbutleraiv1alpha3.ApplyTrigger,
 ) triggerCheck {
-	cluster := trigger.ClusterProvider()
+	cluster := trigger.KubeProviderKey()
 	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
 	defer cancel()
 	kept := func(message string) triggerCheck { return keptCheck(trigger, message) }
@@ -310,7 +310,7 @@ func (r *ApplyTriggerReconciler) configuredVerdict(
 	decision, err := authz.ApplyTriggerAdmitted(ctx, r.Client, trigger)
 	switch {
 	case err != nil:
-		return kept(fmt.Sprintf("Cannot check ClusterProvider %q: %v", cluster, err))
+		return kept(fmt.Sprintf("Cannot check KubeProvider %s: %v", cluster, err))
 	case !decision.Allowed:
 		return falseCheck(decision.Reason, decision.Message, refs)
 	case refs.Refused():
@@ -325,7 +325,7 @@ func (r *ApplyTriggerReconciler) applierVerdict(
 	ctx context.Context, trigger configbutleraiv1alpha3.ApplyTrigger, targets []*configbutleraiv1alpha3.GitTarget,
 	refs applier.References,
 ) triggerCheck {
-	kind, ref, cluster := trigger.ApplierKind(), trigger.Applier(), trigger.ClusterProvider()
+	kind, ref, cluster := trigger.ApplierKind(), trigger.Applier(), trigger.KubeProviderKey().String()
 	if r.ApplierClients == nil {
 		return triggerCheck{configured: conditionValue{
 			Status:  metav1.ConditionUnknown,
@@ -449,7 +449,7 @@ func (r *ApplyTriggerReconciler) triggerReadiness(
 
 // applyTriggerReadinessGates contributes Configured, the operation, and a FluxTrigger's Held
 // to the trio, in that order.
-// An applier that is missing, or a ClusterProvider that is, may be on its way (Flux and Argo CD
+// An applier that is missing, or a KubeProvider that is, may be on its way (Flux and Argo CD
 // objects are often created after the trigger); anything else Configured=False needs a human. An
 // operation that has not completed in time clears on its own once it does. A trigger no GitTarget
 // names is Ready (NotReferenced): it does all it is asked to, which is nothing, and a Flux health
@@ -462,7 +462,7 @@ func applyTriggerReadinessGates(
 			Message: "no GitTarget names this trigger, so it does nothing"})
 	}
 	waits := configured.Reason == applier.ReasonApplierNotFound ||
-		configured.Reason == authz.ReasonClusterProviderNotFound
+		configured.Reason == authz.ReasonKubeProviderNotFound
 	rd.stalledIf(configured.Status == metav1.ConditionFalse && !waits, configured.Reason, configured.Message)
 	rd.progressingIf(configured.Status == metav1.ConditionFalse, metav1.ConditionFalse,
 		configured.Reason, configured.Message)
@@ -508,11 +508,11 @@ func (r *ApplyTriggerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitDestinationToTriggers),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		// A ClusterProvider admits the trigger's namespace, and the namespaces of the GitTargets naming
+		// A KubeProvider admits the trigger's namespace, and the namespaces of the GitTargets naming
 		// triggers, so a provider created, deleted, or with its spec changed re-runs every check.
 		Watches(
-			&configbutleraiv1alpha3.ClusterProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToTriggers),
+			&configbutleraiv1alpha3.KubeProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToTriggers),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		// An accessFrom selector reads namespace labels.
@@ -684,10 +684,10 @@ func (r *ApplyTriggerReconciler) triggersInLine(ctx context.Context, obj client.
 	return requests
 }
 
-// clusterProviderToTriggers maps a ClusterProvider event to every trigger of this kind: a provider
+// kubeProviderToTriggers maps a KubeProvider event to every trigger of this kind: a provider
 // admits the triggers that name it, and the GitTargets that mirror through it, which may name any
 // trigger in their namespace.
-func (r *ApplyTriggerReconciler) clusterProviderToTriggers(
+func (r *ApplyTriggerReconciler) kubeProviderToTriggers(
 	ctx context.Context, obj client.Object,
 ) []ctrlreconcile.Request {
 	triggers, err := r.listTriggers(ctx, "")

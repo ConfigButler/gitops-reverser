@@ -66,7 +66,8 @@ func gitTarget(name, namespace, providerName string) *configbutleraiv1alpha3.Git
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest(providerName, "main")},
+			KubeProviderRef: testKubeProviderRef(),
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest(providerName, "main")},
 		},
 	}
 }

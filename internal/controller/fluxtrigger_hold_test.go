@@ -91,7 +91,7 @@ func suspendedSpec(ks *unstructured.Unstructured) bool {
 // Reverser's field manager, and is Ready only once that suspend's token is handled, so nothing that
 // ran before the adoption is still running.
 func TestFluxTrigger_AdoptsItsKustomization(t *testing.T) {
-	f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+	f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider))
 
 	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
 
@@ -115,7 +115,7 @@ func TestFluxTrigger_AdoptsItsKustomization(t *testing.T) {
 // Kustomization is suspended again with a token, every time, with a Normal Event each time, and
 // recorded as an Unresolved operation that completes once nothing that resume started is running.
 func TestFluxTrigger_AnExternalResumeIsSuspendedAgain(t *testing.T) {
-	f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+	f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider))
 	reconcileTrigger(t, f.r)
 	f.events()
 
@@ -155,7 +155,7 @@ func TestFluxTrigger_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 // resumes the Kustomization, so a resumed Kustomization with an operation of the worker's in flight
 // is that operation, not an external resume; the worker suspends it again itself.
 func TestFluxTrigger_LeavesABranchWorkersOperationAlone(t *testing.T) {
-	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	trigger := testFluxTrigger(triggerLocalProvider)
 	trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
 	trigger.Status.Conditions = []metav1.Condition{{
 		Type: ApplyTriggerConditionHeld, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
@@ -182,7 +182,7 @@ func (f followerStub) Following(_ git.TriggerRef, token string) bool { return f[
 // workerOperationTrigger is a held trigger whose worker recorded operation T1 in flight, the
 // Kustomization left resumed for it.
 func workerOperationTrigger() *configbutleraiv1alpha3.FluxTrigger {
-	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	trigger := testFluxTrigger(triggerLocalProvider)
 	trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
 	trigger.Status.Conditions = []metav1.Condition{{
 		Type: ApplyTriggerConditionHeld, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
@@ -279,7 +279,7 @@ func TestFluxTrigger_ASuspendAppliedElsewhereIsNeverHeld(t *testing.T) {
 	objs := applierFluxObjects()
 	ks := fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), false, git.FluxFieldManager,
 		metav1.ManagedFieldsOperationApply)
-	f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName), ks, objs[1])
+	f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider), ks, objs[1])
 
 	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
 
@@ -294,7 +294,7 @@ func TestFluxTrigger_ASuspendAppliedElsewhereIsNeverHeld(t *testing.T) {
 // once more when it is resumed, waits until that suspend is handled, and then releases spec.suspend,
 // so Flux applies on its own again; then the finalizer goes.
 func TestFluxTrigger_DeletionHandsTheKustomizationBack(t *testing.T) {
-	f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+	f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider))
 	reconcileTrigger(t, f.r)
 	f.events()
 	// A worker's apply is running as the trigger is deleted.
@@ -331,12 +331,12 @@ func TestFluxTrigger_DeletionHandsTheKustomizationBack(t *testing.T) {
 		events[0])
 }
 
-// TestFluxTrigger_DeletionLetsGoOfWhatIsGone: a Kustomization or a ClusterProvider that is gone has
+// TestFluxTrigger_DeletionLetsGoOfWhatIsGone: a Kustomization or a KubeProvider that is gone has
 // nothing to hand back, and must not hold the trigger.
 func TestFluxTrigger_DeletionLetsGoOfWhatIsGone(t *testing.T) {
 	for name, cluster := range map[string]string{
-		"the Kustomization is gone":   configbutleraiv1alpha3.DefaultClusterProviderName,
-		"the ClusterProvider is gone": "absent",
+		"the Kustomization is gone": triggerLocalProvider,
+		"the KubeProvider is gone":  "absent",
 	} {
 		t.Run(name, func(t *testing.T) {
 			trigger := testFluxTrigger(cluster)
@@ -355,22 +355,22 @@ func TestFluxTrigger_DeletionLetsGoOfWhatIsGone(t *testing.T) {
 	}
 }
 
-// TestFluxTrigger_AGoneClusterProviderStillHandsBack is review 7's C1: a folder holding both a
-// ClusterProvider and a FluxTrigger is removed, and the provider goes first. The hand-back was
+// TestFluxTrigger_AGoneKubeProviderStillHandsBack is review 7's C1: a folder holding both a
+// KubeProvider and a FluxTrigger is removed, and the provider goes first. The hand-back was
 // skipped with an Info log line, and the Kustomization stayed suspended under gitops-reverser for
-// good, though for a provider without kubeConfig its cluster is still reachable. Now the release
+// good, though for an inCluster provider its cluster is still reachable. Now the release
 // goes on through whatever client still resolves, and only when none does is the trigger let go,
 // with a Warning ReleaseFailed saying the Kustomization is left suspended.
-func TestFluxTrigger_AGoneClusterProviderStillHandsBack(t *testing.T) {
+func TestFluxTrigger_AGoneKubeProviderStillHandsBack(t *testing.T) {
 	held := func(t *testing.T) *holdFixture {
 		t.Helper()
-		f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+		f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider))
 		reconcileTrigger(t, f.r)
 		f.events()
 		require.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
-		provider := &configbutleraiv1alpha3.ClusterProvider{}
+		provider := &configbutleraiv1alpha3.KubeProvider{}
 		require.NoError(t, f.r.Get(context.Background(),
-			ctrlclient.ObjectKey{Name: configbutleraiv1alpha3.DefaultClusterProviderName}, provider))
+			ctrlclient.ObjectKey{Namespace: triggerProviderNamespace, Name: triggerLocalProvider}, provider))
 		require.NoError(t, f.r.Delete(context.Background(), provider))
 		require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
 		return f
@@ -397,14 +397,14 @@ func TestFluxTrigger_AGoneClusterProviderStillHandsBack(t *testing.T) {
 	t.Run("its cluster no longer answers, so the trigger lets go loudly", func(t *testing.T) {
 		f := held(t)
 		f.r.ApplierClients = func(context.Context, string) (dynamic.Interface, error) {
-			return nil, errors.New(`ClusterProvider "default" not found`)
+			return nil, errors.New(`KubeProvider clusters/local not found`)
 		}
 		gone(t, f)
 		assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "left suspended, as the Event says")
 		events := f.events()
 		require.Len(t, events, 1)
 		assert.True(t, strings.HasPrefix(events[0], "Warning ReleaseFailed could not hand Kustomization "+
-			"flux-system/checkout back to Flux: its ClusterProvider \"default\" is gone; it is left suspended, "+
+			"flux-system/checkout back to Flux: its KubeProvider clusters/local is gone; it is left suspended, "+
 			"and `flux resume` resumes it"), events[0])
 	})
 }
@@ -416,7 +416,7 @@ func TestFluxTrigger_TakesOverASuspendBySomebodyElse(t *testing.T) {
 	objs := applierFluxObjects()
 	ks := fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), true, "flux",
 		metav1.ManagedFieldsOperationUpdate)
-	f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName), ks, objs[1])
+	f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider), ks, objs[1])
 
 	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
 
@@ -428,7 +428,7 @@ func TestFluxTrigger_TakesOverASuspendBySomebodyElse(t *testing.T) {
 // TestFluxTrigger_AHandBackItMayNotMakeLetsGo: an identity that may not write the Kustomization
 // cannot hand it back; the trigger goes anyway, with a Warning that says what is left behind.
 func TestFluxTrigger_AHandBackItMayNotMakeLetsGo(t *testing.T) {
-	f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+	f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider))
 	reconcileTrigger(t, f.r)
 	f.events()
 	f.sim.Client.PrependReactor("patch", "kustomizations", func(k8stesting.Action) (bool, runtime.Object, error) {
@@ -470,7 +470,7 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 			"sourceRef": map[string]any{"kind": "GitRepository", "name": "platform", "namespace": "flux-system"},
 		}}},
 	}}
-	f := newHoldFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName),
+	f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider),
 		append(objs, infra, release)...)
 
 	source := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger).Status.Source
@@ -484,7 +484,7 @@ func TestFluxTrigger_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	// The fourth review's finding C: a trigger holds its Kustomization only once it says so
 	// (Held=True). One that is not Configured (SuspendOwnedElsewhere), or still suspending, leaves
 	// a Kustomization Flux applies on its own.
-	infraTrigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	infraTrigger := testFluxTrigger(triggerLocalProvider)
 	infraTrigger.Name, infraTrigger.Spec.KustomizationRef.Name = "infra", "infra"
 	require.NoError(t, f.r.Create(context.Background(), infraTrigger))
 	infraOther := []meta.NamespacedObjectKindReference{
@@ -537,7 +537,7 @@ func TestFluxTrigger_CompletesTheLiveExternalOperation(t *testing.T) {
 		metav1.ManagedFieldsOperationApply)
 	ks.SetAnnotations(map[string]string{meta.ReconcileRequestAnnotation: "T2"})
 	require.NoError(t, unstructured.SetNestedField(ks.Object, "T2", "status", "lastHandledReconcileAt"))
-	cached := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	cached := testFluxTrigger(triggerLocalProvider)
 	cached.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
 	f := newHoldFixture(t, cached, ks, objs[1])
 	live := cached.DeepCopy()
@@ -563,7 +563,7 @@ func TestFluxTrigger_ASuspendItMayNotMakeLetsGo(t *testing.T) {
 	objs := applierFluxObjects()
 	ks := fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), false, applier.SuspendFieldManager,
 		metav1.ManagedFieldsOperationApply)
-	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	trigger := testFluxTrigger(triggerLocalProvider)
 	trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
 	f := newHoldFixture(t, trigger, ks, objs[1])
 	f.sim.Client.PrependReactor("patch", "kustomizations", func(k8stesting.Action) (bool, runtime.Object, error) {
@@ -597,7 +597,7 @@ func TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
 			// No source: the simulated kustomize-controller never reconciles it, as one that is down.
 			unstructured.RemoveNestedField(ks.Object, "spec", "sourceRef")
 			ks.SetAnnotations(map[string]string{meta.ReconcileRequestAnnotation: "T2"})
-			trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+			trigger := testFluxTrigger(triggerLocalProvider)
 			trigger.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
 			trigger.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 			// The deadline counts from when Held turned Releasing, not from the deletion.

@@ -37,7 +37,7 @@ func sharedGitBranch(provider string) *configv1alpha3.GitBranch {
 // targetWriting is a GitTarget in testNS writing through the GitBranch namespace/name; an empty
 // namespace means its own.
 func targetWriting(namespace, name string) *configv1alpha3.GitTarget {
-	target := targetIn("")
+	target := targetIn("prod-eu-1")
 	target.Spec.GitBranchRef = meta.NamespacedObjectReference{Name: name, Namespace: namespace}
 	return target
 }
@@ -47,9 +47,8 @@ func targetWriting(namespace, name string) *configv1alpha3.GitTarget {
 // spec.accessFrom admits the GitTarget's namespace. A GitBranch in the GitTarget's own namespace
 // needs no policy.
 func TestGitTargetAdmitted_GitBranchsProviderAccessFrom(t *testing.T) {
-	// The ClusterProvider gate passes in every case, so only the GitProvider's decides.
-	source := providerNamed(configv1alpha3.DefaultClusterProviderName,
-		&configv1alpha3.NamespaceMatcher{Names: []string{testNS}})
+	// The KubeProvider gate passes in every case, so only the GitProvider's decides.
+	source := providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{Names: []string{testNS}})
 	tests := []struct {
 		name    string
 		objects []client.Object

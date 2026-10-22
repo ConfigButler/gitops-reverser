@@ -100,6 +100,11 @@
           "items": { "type": "string" },
           "description": "Resource or group/resource, e.g. core.cozystack.io/tenantsecrets."
         },
+        "inClusterKubeProviders": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" },
+          "description": "KubeProviders (namespace/name) besides the one the chart renders that may use spec.inCluster, the operator's own identity. Exact names, no wildcards."
+        },
         "insecureAllowGitHTTP": {
           "type": "boolean",
           "description": "Permit credentials with http:// GitProvider URLs for trusted in-cluster development Git servers."
@@ -361,65 +366,57 @@
         },
         "auditRouteAnnotationKey": {
           "type": "string",
-          "description": "Audit-event annotation naming the audit route each event belongs to. A ClusterProvider joins a route through spec.attribution.auditRoute, which defaults to its own name. Empty (default) keeps audit routes named (/audit-webhook/<audit-route>); set it only for one shared audit stream carrying several logical clusters, which enables the bare /audit-webhook endpoint."
+          "description": "Audit-event annotation naming the audit route each event belongs to. A KubeProvider joins a route through spec.attribution.auditRoute, which defaults to <namespace>.<name>. Empty (default) keeps audit routes named (/audit-webhook/<audit-route>); set it only for one shared audit stream carrying several logical clusters, which enables the bare /audit-webhook endpoint."
         }
       }
     },
 
-    "clusterProvider": {
+    "kubeProvider": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Rendering of the 'default' ClusterProvider — the source cluster a GitTarget mirrors from when it omits spec.clusterProviderRef. The operator never creates one.",
+      "description": "The KubeProvider the chart renders in the release namespace. Every GitTarget names its KubeProvider explicitly; nothing falls back to this one. The operator never creates one.",
       "properties": {
-        "createDefault": {
+        "create": {
           "type": "boolean",
-          "description": "Render and own a ClusterProvider named 'default'. Off means Helm deletes the one it created; you then commit the object yourself."
+          "description": "Render and own the KubeProvider. Off means Helm deletes the one it created; you then commit the object yourself."
         },
-        "default": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The KubeProvider's name. Its audit route is <release namespace>.<name>."
+        },
+        "secretRef": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Spec of the rendered 'default' ClusterProvider.",
+          "description": "Secret in the release namespace holding a kubeconfig for a remote cluster. An empty name renders spec.inCluster, the operator's own identity, and lists the provider in --in-cluster-kube-providers.",
           "properties": {
-            "kubeConfig": {
-              "type": "object",
-              "additionalProperties": false,
-              "description": "Which cluster 'default' names. An empty secretRef.name means the operator's own in-cluster cluster; a Secret name points it at a remote cluster instead.",
-              "properties": {
-                "secretRef": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "name": {
-                      "type": "string",
-                      "description": "Secret (in the release namespace) holding the kubeconfig. Empty means in-cluster."
-                    },
-                    "key": {
-                      "type": "string",
-                      "description": "Key within the Secret. Empty reads 'value' then 'value.yaml'."
-                    }
-                  }
-                }
-              }
+            "name": {
+              "type": "string",
+              "description": "Secret holding the kubeconfig. Empty means spec.inCluster."
             },
-            "accessFrom": {
-              "type": "object",
-              "description": "Deny-by-default control-cluster namespace policy (names and/or selector) for which namespaces may reference this provider from a GitTarget.",
-              "additionalProperties": true
+            "key": {
+              "type": "string",
+              "description": "Key within the Secret. Empty reads 'value' then 'value.yaml'."
+            }
+          }
+        },
+        "accessFrom": {
+          "type": "object",
+          "description": "Control-cluster namespace policy (names and/or selector) for which OTHER namespaces may reference this provider; the release namespace always may.",
+          "additionalProperties": true
+        },
+        "allowCrossNamespace": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "What an admitted namespace may reach outside itself through this provider.",
+          "properties": {
+            "sources": {
+              "type": "boolean",
+              "description": "A WatchRule may watch other namespaces, \"*\" included."
             },
-            "allowCrossNamespace": {
-              "type": "object",
-              "additionalProperties": false,
-              "description": "What an admitted namespace may reach outside itself through this provider.",
-              "properties": {
-                "sources": {
-                  "type": "boolean",
-                  "description": "A WatchRule may watch other namespaces, \"*\" included."
-                },
-                "appliers": {
-                  "type": "boolean",
-                  "description": "A FluxTrigger or ArgoCDTrigger may name a Kustomization or Application in another namespace."
-                }
-              }
+            "appliers": {
+              "type": "boolean",
+              "description": "A FluxTrigger or ArgoCDTrigger may name a Kustomization or Application in another namespace."
             }
           }
         }

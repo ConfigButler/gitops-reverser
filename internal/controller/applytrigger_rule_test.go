@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,7 +30,7 @@ import (
 // pin its three cases (never referenced or released, referenced, retiring), the binding verdict, and
 // the line of triggers for one applier.
 
-// ruleFixture is the hold fixture over a control cluster holding objects, the ClusterProviders and
+// ruleFixture is the hold fixture over a control cluster holding objects, the KubeProviders and
 // the GitProvider platform, and no GitTarget unless objects carries one.
 func ruleFixture(t *testing.T, objects ...ctrlclient.Object) *holdFixture {
 	t.Helper()
@@ -77,9 +76,9 @@ func heldReason(t *testing.T, trigger *configbutleraiv1alpha3.FluxTrigger) strin
 func TestApplyTriggerRule_AnUnreferencedTriggerDoesNothingAndIsReady(t *testing.T) {
 	for _, kind := range []string{configbutleraiv1alpha3.ApplyTriggerKindFlux, configbutleraiv1alpha3.ApplyTriggerKindArgoCD} {
 		t.Run(kind, func(t *testing.T) {
-			var trigger ctrlclient.Object = testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+			var trigger ctrlclient.Object = testFluxTrigger(triggerLocalProvider)
 			if kind == configbutleraiv1alpha3.ApplyTriggerKindArgoCD {
-				trigger = testArgoCDTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+				trigger = testArgoCDTrigger(triggerLocalProvider)
 			}
 			r := triggerReconciler(triggerTestClient(t, trigger, unreferenced{}), kind, nil, nil, true)
 			calls := 0
@@ -113,7 +112,7 @@ func TestApplyTriggerRule_AnUnreferencedTriggerDoesNothingAndIsReady(t *testing.
 // TestApplyTriggerRule_TheFirstEligibleReferenceAdoptsAndTheLastReleases: naming the trigger is the
 // adoption moment; the GitTarget going hands the Kustomization back, and the trigger is idle again.
 func TestApplyTriggerRule_TheFirstEligibleReferenceAdoptsAndTheLastReleases(t *testing.T) {
-	f := ruleFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+	f := ruleFixture(t, testFluxTrigger(triggerLocalProvider))
 	idle := f.settle(t, triggerKey)
 	assert.Equal(t, applier.ReasonNotReferenced, heldReason(t, idle))
 	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "Flux applies it on its own")
@@ -148,7 +147,7 @@ func TestApplyTriggerRule_TheFirstEligibleReferenceAdoptsAndTheLastReleases(t *t
 // TestApplyTriggerRule_ARecreatedGitTargetReleasesAndReadopts is the trade-off the rule accepts:
 // deleting and re-creating the GitTarget hands the Kustomization back, and adopts it again.
 func TestApplyTriggerRule_ARecreatedGitTargetReleasesAndReadopts(t *testing.T) {
-	f := ruleFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName), fluxTarget())
+	f := ruleFixture(t, testFluxTrigger(triggerLocalProvider), fluxTarget())
 	f.settle(t, triggerKey)
 	f.events()
 
@@ -180,7 +179,7 @@ func TestApplyTriggerRule_TheBindingAggregatesItsGitTargets(t *testing.T) {
 		return target
 	}
 	elsewhere := onBranch("elsewhere", "main")
-	elsewhere.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: "closed"}
+	elsewhere.Spec.KubeProviderRef = triggerProviderRef("closed")
 	cases := []struct {
 		name        string
 		objects     []ctrlclient.Object
@@ -206,16 +205,11 @@ func TestApplyTriggerRule_TheBindingAggregatesItsGitTargets(t *testing.T) {
 			wantReason: applier.ReasonNotBound, wantStalled: true,
 			wantNames: []string{"team-a/elsewhere", "team-a/release"},
 			objects: []ctrlclient.Object{onBranch("release", "release"), elsewhere,
-				&configbutleraiv1alpha3.ClusterProvider{
-					ObjectMeta: metav1.ObjectMeta{Name: "closed"},
-					Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-						AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-b"}},
-					},
-				}}},
+				admitting("closed", "team-b")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			objects := append([]ctrlclient.Object{testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName),
+			objects := append([]ctrlclient.Object{testFluxTrigger(triggerLocalProvider),
 				gitBranchOn("platform", "team-a", "release"), gitBranchOn("platform", "team-a", "staging")},
 				tc.objects...)
 			f := ruleFixture(t, objects...)
@@ -248,22 +242,22 @@ func TestApplyTriggerRule_AnOlderTriggerNotInLineKeepsNoneOut(t *testing.T) {
 			*objects = append(*objects, gitBranchOn("platform", target.Namespace, "release"))
 		},
 		"not admitted": func(target *configbutleraiv1alpha3.GitTarget, objects *[]ctrlclient.Object) {
-			target.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: "closed"}
+			target.Spec.KubeProviderRef = triggerProviderRef("closed")
 			*objects = append(*objects, admitting("closed", "team-a"))
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			stray := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+			stray := testFluxTrigger(triggerLocalProvider)
 			stray.Namespace = inLineKey.Namespace
 			stray.CreationTimestamp = metav1.NewTime(time.Unix(1_000_000, 0))
-			mine := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+			mine := testFluxTrigger(triggerLocalProvider)
 			mine.CreationTimestamp = metav1.NewTime(stray.CreationTimestamp.Add(time.Hour))
 			objects := []ctrlclient.Object{stray, mine}
 			strayRefs := referencedIn(inLineKey.Namespace, configbutleraiv1alpha3.ApplyTriggerKindFlux)
 			older(strayRefs[1].(*configbutleraiv1alpha3.GitTarget), &objects)
 			objects = append(objects, strayRefs...)
 			objects = append(objects, referencedIn("team-a", configbutleraiv1alpha3.ApplyTriggerKindFlux)...)
-			objects = append(objects, admitting(configbutleraiv1alpha3.DefaultClusterProviderName, "team-a", "team-b"))
+			objects = append(objects, admitting(triggerLocalProvider, "team-a", "team-b"))
 			f := ruleFixture(t, objects...)
 
 			got := f.settle(t, triggerKey)
@@ -285,13 +279,13 @@ func TestApplyTriggerRule_AnOlderTriggerNotInLineKeepsNoneOut(t *testing.T) {
 // it stays first in line, Held=False (Releasing), and the successor does nothing; then the holder
 // leaves the Kustomization suspended for it, and the successor takes it over.
 func TestApplyTriggerRule_ARetiringHolderStaysInLineUntilItsReleaseIsDone(t *testing.T) {
-	holder := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	holder := testFluxTrigger(triggerLocalProvider)
 	holder.CreationTimestamp = metav1.NewTime(time.Unix(1_000_000, 0))
-	successor := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	successor := testFluxTrigger(triggerLocalProvider)
 	successor.Namespace = inLineKey.Namespace
 	successor.CreationTimestamp = metav1.NewTime(holder.CreationTimestamp.Add(time.Hour))
 	objects := []ctrlclient.Object{holder, successor,
-		admitting(configbutleraiv1alpha3.DefaultClusterProviderName, "team-a", "team-b")}
+		admitting(triggerLocalProvider, "team-a", "team-b")}
 	objects = append(objects, referencedIn("team-a", configbutleraiv1alpha3.ApplyTriggerKindFlux)...)
 	objects = append(objects, referencedIn("team-b", configbutleraiv1alpha3.ApplyTriggerKindFlux)...)
 	f := ruleFixture(t, objects...)
@@ -348,7 +342,7 @@ func resume(t *testing.T, f *holdFixture) {
 // back, before the release finished: the trigger holds the Kustomization again, as it is, and
 // hands nothing back.
 func TestApplyTriggerRule_AReferenceReturningDuringTheReleaseHoldsAgain(t *testing.T) {
-	f := ruleFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName), fluxTarget())
+	f := ruleFixture(t, testFluxTrigger(triggerLocalProvider), fluxTarget())
 	f.settle(t, triggerKey)
 	f.events()
 	resume(t, f)
@@ -377,7 +371,7 @@ func TestApplyTriggerRule_AReferenceReturningDuringTheReleaseHoldsAgain(t *testi
 // apply has the Kustomization resumed, followed by nobody here. The release suspends it, waits until
 // that is handled, then hands it back, and completes the operation nobody would complete.
 func TestApplyTriggerRule_ReleasingWithAnApplyInFlightSuspendsFirst(t *testing.T) {
-	f := ruleFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName), fluxTarget())
+	f := ruleFixture(t, testFluxTrigger(triggerLocalProvider), fluxTarget())
 	f.settle(t, triggerKey)
 	f.events()
 	trigger := f.trigger(t)
@@ -406,7 +400,7 @@ func TestApplyTriggerRule_ReleasingWithAnApplyInFlightSuspendsFirst(t *testing.T
 // configuration turns invalid keeps its finalizer and the Kustomization suspended, and its Held
 // message says so.
 func TestApplyTriggerRule_AHolderLeftUnconfiguredSaysTheKustomizationIsSuspended(t *testing.T) {
-	f := ruleFixture(t, testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName), fluxTarget())
+	f := ruleFixture(t, testFluxTrigger(triggerLocalProvider), fluxTarget())
 	f.settle(t, triggerKey)
 	f.r.newApplier = triggerReconciler(nil, configbutleraiv1alpha3.ApplyTriggerKindFlux, nil, nil, false).newApplier
 
@@ -441,7 +435,7 @@ func TestApplyTriggerRule_AGitTargetEventRerunsTheTriggersItNames(t *testing.T) 
 	assert.Empty(t, argo.gitDestinationToTriggers(context.Background(), platformProvider()), "another kind's")
 }
 
-// TestApplyTriggerRule_AnApplierInAnotherNamespaceNeedsTheOptIn is B1: a namespace a ClusterProvider
+// TestApplyTriggerRule_AnApplierInAnotherNamespaceNeedsTheOptIn is B1: a namespace a KubeProvider
 // admits may suspend and apply an applier in another namespace only when the provider sets
 // spec.allowCrossNamespace.appliers; one in the trigger's own namespace needs nothing. Refused, the
 // trigger never asks the applier's cluster, and holds nothing.
@@ -482,16 +476,16 @@ func TestApplyTriggerRule_AnApplierInAnotherNamespaceNeedsTheOptIn(t *testing.T)
 
 // applierNamespaceReconciler is a reconciler of kind over the trigger team-a/checkout, whose
 // applier is in team-a when sameNamespace is set and in flux-system or argocd otherwise, with the
-// default ClusterProvider setting allowCrossNamespace.appliers when optIn is set. It counts the
+// KubeProvider triggerLocalProvider setting allowCrossNamespace.appliers when optIn is set. It counts the
 // lookups of the applier's cluster.
 func applierNamespaceReconciler(
 	t *testing.T, kind string, sameNamespace, optIn bool,
 ) (*ApplyTriggerReconciler, *int) {
 	t.Helper()
-	trigger := ctrlclient.Object(testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+	trigger := ctrlclient.Object(testFluxTrigger(triggerLocalProvider))
 	appliers := applierFluxObjects()
 	if kind == configbutleraiv1alpha3.ApplyTriggerKindArgoCD {
-		trigger = testArgoCDTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+		trigger = testArgoCDTrigger(triggerLocalProvider)
 		appliers = []runtime.Object{applierArgoApplication(nil)}
 	}
 	if sameNamespace {
@@ -505,7 +499,7 @@ func applierNamespaceReconciler(
 			obj.(*unstructured.Unstructured).SetNamespace("team-a")
 		}
 	}
-	provider := admitting(configbutleraiv1alpha3.DefaultClusterProviderName, "team-a")
+	provider := admitting(triggerLocalProvider, "team-a")
 	if !optIn {
 		provider.Spec.AllowCrossNamespace = nil
 	}

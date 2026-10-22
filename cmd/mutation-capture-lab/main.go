@@ -122,7 +122,7 @@ func buildServers(
 	auditMux := http.NewServeMux()
 	auditMux.Handle("/audit-webhook", audit)
 	// Audit routes are NAMED in the e2e cluster: its bootstrap kubeconfig posts to
-	// /audit-webhook/<source-name> (the "default" ClusterProvider), because the bare
+	// /audit-webhook/<source-name> (the chart's local KubeProvider), because the bare
 	// path is the product's shared annotation-routed endpoint. The lab records what
 	// arrives regardless of which source it was addressed to, so it takes the whole
 	// subtree — an exact-path-only mux 404s every event the cluster sends.

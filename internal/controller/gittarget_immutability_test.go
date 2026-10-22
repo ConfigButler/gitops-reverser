@@ -41,15 +41,16 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		}, timeout, interval).Should(Succeed())
 	}
 
-	It("rejects changes to gitBranchRef and path but allows a no-op update", func() {
+	It("rejects changes to gitBranchRef, kubeProviderRef and path but allows a no-op update", func() {
 		ctx := context.Background()
 		key := types.NamespacedName{Name: "immutable-target", Namespace: "default"}
 
 		gitTarget := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("prov-a", "main")},
-				Path:         "apps",
+				KubeProviderRef: testKubeProviderRef(),
+				GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("prov-a", "main")},
+				Path:            "apps",
 			},
 		}
 		Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
@@ -69,6 +70,8 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 			"spec.gitBranchRef is immutable")
 		expectImmutable(ctx, key, current, func() { current.Spec.GitBranchRef.Namespace = "platform" },
 			"spec.gitBranchRef is immutable")
+		expectImmutable(ctx, key, current, func() { current.Spec.KubeProviderRef.Name = "other" },
+			"spec.kubeProviderRef is immutable")
 	})
 
 	It("rejects any change to a GitBranch's spec, including adding or removing parentBranch", func() {
@@ -124,7 +127,8 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		base := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("prov-a", "main")},
+				KubeProviderRef: testKubeProviderRef(),
+				GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("prov-a", "main")},
 			},
 		}
 

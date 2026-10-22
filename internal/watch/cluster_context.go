@@ -13,11 +13,13 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
@@ -27,33 +29,45 @@ import (
 // in, where its own CRs live. It owns the operator's own duties (the CRD/APIService trigger
 // informers, the singleton catalog metrics, the injected test clients) and is always present.
 //
-// It is deliberately the empty string, which no ClusterProvider name can ever be (name is required,
-// MinLength=1), so the config plane can never collide with — or be mistaken for — a source cluster.
-// NO PROVIDER NAME IS SPECIAL: what makes a source cluster in-cluster is an absent
-// spec.kubeConfig, resolved per provider, never the name "default".
+// It is deliberately the empty string, which no source-cluster id can ever be (an id is a
+// KubeProvider's namespace/name), so the config plane can never collide with — or be mistaken for —
+// a source cluster. NO PROVIDER NAME IS SPECIAL: what makes a source cluster in-cluster is the
+// provider's spec.inCluster, resolved per provider and consented to by the installation.
 const configPlaneClusterID = ""
 
-// inClusterConfigVersion is the version token the resolver returns for a provider that omits
-// kubeConfig. It is constant because there is no Secret to rotate: the in-cluster config is fixed
-// for the process, so a credential refresh can never see it "change".
+// inClusterConfigVersion prefixes the version token the resolver returns for an inCluster provider.
+// There is no Secret to rotate, so only the provider's UID follows it.
 const inClusterConfigVersion = "in-cluster"
 
-// SourceClusterResolver turns a source-cluster NAME (a ClusterProvider's name) into a rest.Config
-// by looking up the ClusterProvider and reading the kubeconfig Secret it names from the operator
+// SourceClusterResolver turns a source cluster (a KubeProvider's namespace and name) into a
+// rest.Config by reading the KubeProvider and the kubeconfig Secret it names from its own
 // namespace. It is an interface so the watch manager grows no Kubernetes client of its own for
 // this, and so tests can stand up a remote cluster without a Secret. The concrete implementation
 // lives in source_cluster_resolver.go.
 type SourceClusterResolver interface {
-	// ResolveSourceCluster returns the rest.Config for a ClusterProvider name, and an opaque
-	// version token that changes when the resolved config changes (the provider generation and
-	// the kubeconfig Secret's resourceVersion). An unknown or unreadable name is an error:
+	// ResolveSourceCluster returns the rest.Config for a KubeProvider, and an opaque version token
+	// that changes when the resolved config changes (the provider's UID and generation, and the
+	// kubeconfig Secret's resourceVersion). An unknown or unreadable provider is an error:
 	// mirroring the wrong cluster into a folder is worse than mirroring none.
 	//
-	// A NIL config with a nil error means the provider omits spec.kubeConfig and therefore names
-	// the operator's OWN cluster — the in-cluster answer, available to every provider name. This
-	// is the ONLY authority on whether a source cluster is in-cluster; nothing keys that off the
-	// provider's name.
-	ResolveSourceCluster(ctx context.Context, providerName string) (cfg *rest.Config, version string, err error)
+	// A NIL config with a nil error means the provider sets spec.inCluster and the installation
+	// allows it: the operator's OWN cluster. This is the ONLY authority on whether a source cluster
+	// is in-cluster; nothing keys that off the provider's name, and a provider the installation does
+	// not allow is an error here, never the operator's identity.
+	ResolveSourceCluster(
+		ctx context.Context, provider k8stypes.NamespacedName,
+	) (cfg *rest.Config, version string, err error)
+}
+
+// SourceClusterID is the id the watch data plane keys a source cluster's context on: the
+// KubeProvider's namespace/name. Two providers with one name in two namespaces are two clusters.
+func SourceClusterID(provider k8stypes.NamespacedName) string { return provider.String() }
+
+// sourceClusterKey is the KubeProvider a source-cluster id names. Neither a namespace nor a name
+// can contain "/", so the id splits exactly once.
+func sourceClusterKey(clusterID string) k8stypes.NamespacedName {
+	namespace, name, _ := strings.Cut(clusterID, "/")
+	return k8stypes.NamespacedName{Namespace: namespace, Name: name}
 }
 
 // clusterContext holds everything that used to be a Manager-wide singleton and is in fact a
@@ -62,10 +76,10 @@ type SourceClusterResolver interface {
 //
 // There are two kinds. The CONFIG PLANE context (configPlaneClusterID) is the operator's own
 // cluster: it owns the API-surface trigger informers, the singleton catalog metrics, and the
-// injected test clients, and it is never torn down. A SOURCE context is one per ClusterProvider a
+// injected test clients, and it is never torn down. A SOURCE context is one per KubeProvider a
 // GitTarget mirrors from, created on first use and torn down when the last such GitTarget is gone;
 // whether it talks to the operator's own cluster or a remote is decided by RESOLVING its provider
-// (spec.kubeConfig absent ⇒ in-cluster), never by its name.
+// (spec.inCluster, where the installation allows it), never by its name.
 type clusterContext struct {
 	id string
 
@@ -74,7 +88,7 @@ type clusterContext struct {
 	configPlane bool
 
 	// inCluster records that this SOURCE cluster resolved to the operator's own cluster — its
-	// ClusterProvider omits spec.kubeConfig. It is RESOLVED, not inferred from the id: it is
+	// KubeProvider sets spec.inCluster and the installation allows it. It is RESOLVED, not inferred from the id: it is
 	// false until the first successful resolution, so an unreached provider is treated as remote
 	// (fail-closed — a cluster we have not resolved never silently borrows in-cluster
 	// credentials). Guarded by clientsMu alongside the config fields below.
@@ -135,7 +149,7 @@ const (
 // "Status and conditions"). The local cluster is reachable by definition; a remote failure
 // is classified by what the discovery attempt hit.
 const (
-	// reasonLocalCluster is the SourceClusterReachable=True reason when kubeConfig is omitted.
+	// reasonLocalCluster is the SourceClusterReachable=True reason for an inCluster provider.
 	reasonLocalCluster = "LocalCluster"
 	// reasonSourceClusterReachable is the SourceClusterReachable=True reason for a remote whose
 	// API discovery succeeded.
@@ -159,8 +173,8 @@ func newClusterContext(id string) *clusterContext {
 }
 
 // isLocal reports whether this context talks to the cluster the operator runs in — either because
-// it IS the config plane, or because its ClusterProvider resolved without a kubeConfig. It is never
-// a test on the provider's name.
+// it IS the config plane, or because its KubeProvider resolved to spec.inCluster. It is never a
+// test on the provider's name.
 func (c *clusterContext) isLocal() bool {
 	if c.configPlane {
 		return true
@@ -220,7 +234,7 @@ func (m *Manager) seedConfigPlaneLocked(cc *clusterContext) {
 
 // configPlaneCluster is the operator's OWN cluster: where its CRs live, what the API-surface
 // trigger informers watch, and what the singleton catalog metrics describe. It is not a source
-// cluster and has no ClusterProvider — a GitTarget mirrors from a provider, never from this.
+// cluster and has no KubeProvider — a GitTarget mirrors from a provider, never from this.
 func (m *Manager) configPlaneCluster() *clusterContext { return m.cluster(configPlaneClusterID) }
 
 // registryForGitTarget returns the followability registry of the cluster a GitTarget mirrors
@@ -247,7 +261,7 @@ func (m *Manager) ClusterTypeLookup(clusterID string) typeset.Lookup {
 // activeClusterIDs is every source cluster some GitTarget currently mirrors from, plus the config
 // plane. The config plane is always active: the operator's own CRs live there and its catalog arms
 // the API-surface trigger informers, so a rule-less install still refreshes it. The source ids come
-// from the Declare-time capture (gitTargetClusters), not from the rules — spec.clusterProviderRef
+// from the Declare-time capture (gitTargetClusters), not from the rules — spec.kubeProviderRef
 // is immutable and a GitTarget property, so there is no rules-disagree window to reconcile.
 func (m *Manager) activeClusterIDs() []string {
 	seen := map[string]struct{}{configPlaneClusterID: {}}
@@ -273,7 +287,7 @@ func (m *Manager) rememberDeclareCapture(gitDest types.ResourceReference, cluste
 
 // rememberGitTargetCluster captures the source cluster a GitTarget mirrors from, keyed by
 // GitTarget — the same capture-on-Declare pattern as rememberGitTargetUID. Because
-// spec.clusterProviderRef is immutable, this is learned once and never changes for a given
+// spec.kubeProviderRef is immutable, this is learned once and never changes for a given
 // GitTarget, so there is no per-rule propagation and no cross-rule disagreement window.
 func (m *Manager) rememberGitTargetCluster(gitDest types.ResourceReference, clusterID string) {
 	m.mutateWatchPlane(func(s *watchPlaneState) bool {
@@ -289,13 +303,13 @@ func (m *Manager) rememberGitTargetCluster(gitDest types.ResourceReference, clus
 }
 
 // rememberClusterAuditRoute captures the audit route a source cluster's attribution facts are keyed
-// under, from (api/v1alpha3).ClusterProvider.AuditRoute(). It is keyed by CLUSTER, not by GitTarget:
+// under, from (api/v1alpha3).KubeProvider.AuditRoute(). It is keyed by CLUSTER, not by GitTarget:
 // the route is a property of the provider, so every GitTarget mirroring from it writes the same
 // value and the last Declare wins harmlessly.
 //
 // Unlike the cluster id, this is MUTABLE — spec.attribution.auditRoute may be edited to correct a
-// misconfiguration. The GitTarget controller re-declares on a ClusterProvider spec change
-// (clusterProviderReadyOrSpecChanged), so an edit lands here without a restart.
+// misconfiguration. The GitTarget controller re-declares on a KubeProvider spec change
+// (kubeProviderReadyOrSpecChanged), so an edit lands here without a restart.
 func (m *Manager) rememberClusterAuditRoute(clusterID, auditRoute string) {
 	if auditRoute == "" {
 		return
@@ -310,14 +324,14 @@ func (m *Manager) rememberClusterAuditRoute(clusterID, auditRoute string) {
 }
 
 // auditRouteForCluster resolves the audit route a source cluster's facts are keyed under. An
-// uncaptured cluster falls back to the cluster id, which is the ClusterProvider's own name and
-// exactly what AuditRoute() defaults to, so a lookup racing the first Declare reads the same key a
+// uncaptured cluster falls back to its provider's default route (<namespace>.<name>), exactly what
+// AuditRoute() resolves when none is set, so a lookup racing the first Declare reads the same key a
 // provider with no auditRoute set would.
 func (m *Manager) auditRouteForCluster(clusterID string) string {
 	if route := m.watchPlane().auditRoutes[clusterID]; route != "" {
 		return route
 	}
-	return clusterID
+	return configv1alpha3.DefaultAuditRoute(sourceClusterKey(clusterID))
 }
 
 // clusterIDForGitTarget resolves the source cluster of a GitTarget from the Declare-time
@@ -387,7 +401,7 @@ func (m *Manager) teardownCluster(clusterID string) {
 // outcome of a discovery attempt. Only the CONFIG PLANE is skipped — it is the operator's own
 // cluster, reachable by definition and not a source. A source cluster that resolved in-cluster is
 // still recorded from its real attempt (it reports reasonLocalCluster on success), because "this
-// provider omits kubeConfig" is a resolved fact, not an assumption made from its name. A failure
+// provider is inCluster" is a resolved fact, not an assumption made from its name. A failure
 // class (unreachable / auth / access denied) is derived by classifySourceClusterReachFailure.
 func (m *Manager) recordClusterReachability(cc *clusterContext, err error) {
 	if cc.configPlane {
@@ -408,13 +422,18 @@ func (m *Manager) recordClusterReachability(cc *clusterContext, err error) {
 }
 
 // classifySourceClusterReachFailure maps a discovery-attempt error onto the
-// SourceClusterReachable reason it should surface. A 401 is an authentication failure (the
-// credential was rejected), a 403 is access denied (the identity lacks read on discovery), and
-// everything else — DNS, TCP, TLS, timeout — is "unreachable". The message carries the raw
-// error so the human fix is legible.
+// SourceClusterReachable reason it should surface. A credential the operator refused to use
+// (an unsafe kubeconfig, or an inCluster provider the installation does not list) keeps its own
+// reason: nothing was dialed, so calling it unreachable would send the reader to the network. A
+// 401 is an authentication failure (the credential was rejected), a 403 is access denied (the
+// identity lacks read on discovery), and everything else — DNS, TCP, TLS, timeout — is
+// "unreachable". The message carries the raw error so the human fix is legible.
 func classifySourceClusterReachFailure(err error) sourceClusterReachability {
 	reason := reasonSourceClusterUnreachable
+	rej, refused := kubeconfig.AsRejection(err)
 	switch {
+	case refused:
+		reason = rej.Reason
 	case apierrors.IsUnauthorized(err):
 		reason = reasonSourceClusterAuthFailed
 	case apierrors.IsForbidden(err):
@@ -505,7 +524,7 @@ func (m *Manager) clusterRESTConfigLocked(ctx context.Context, cc *clusterContex
 }
 
 // inClusterRESTConfig is the operator's own cluster config, used by the config plane and by any
-// ClusterProvider that omits spec.kubeConfig.
+// KubeProvider the installation allows to set spec.inCluster.
 func inClusterRESTConfig() (*rest.Config, error) {
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
@@ -514,10 +533,10 @@ func inClusterRESTConfig() (*rest.Config, error) {
 	return cfg, nil
 }
 
-// resolveSourceConfig resolves a SOURCE cluster's config from its ClusterProvider, and reports
+// resolveSourceConfig resolves a SOURCE cluster's config from its KubeProvider, and reports
 // whether that provider turned out to be in-cluster. This is the ONLY place in-cluster-ness is
-// decided for a source cluster: a provider that omits spec.kubeConfig resolves to the operator's
-// own config whatever it is named, and one that sets it is remote even if it is named "default".
+// decided for a source cluster: a provider that sets spec.inCluster, and that the installation
+// allows, resolves to the operator's own config whatever it is named.
 //
 // It returns the verdict rather than storing it, because one caller resolves OUTSIDE clientsMu
 // (the credential refresh) and must not race the field. The returns are, in order: the config, its
@@ -530,22 +549,23 @@ func (m *Manager) resolveSourceConfig(
 		return nil, "", false, fmt.Errorf(
 			"cannot reach source cluster %q: no source-cluster resolver configured", clusterID)
 	}
-	resolved, version, err := m.SourceClusters.ResolveSourceCluster(ctx, clusterID)
+	resolved, version, err := m.SourceClusters.ResolveSourceCluster(ctx, sourceClusterKey(clusterID))
 	if err != nil {
 		return nil, "", false, fmt.Errorf("resolve source cluster %q: %w", clusterID, err)
 	}
 	if resolved == nil {
-		// The provider omits kubeConfig: it names the operator's own cluster.
+		// The provider sets spec.inCluster and the installation allows it: the operator's own
+		// cluster.
 		local, localErr := inClusterRESTConfig()
 		if localErr != nil {
 			return nil, "", false, localErr
 		}
-		return local, inClusterConfigVersion, true, nil
+		return local, version, true, nil
 	}
 	return resolved, version, false, nil
 }
 
-// refreshClusterCredentials re-reads a remote cluster's kubeconfig Secret on the catalog-refresh
+// refreshClusterCredentials re-resolves a source cluster's credential on the catalog-refresh
 // cadence (every 30s and on every rule change), never on the hot watch reconnect path. It is the
 // data plane's half of the reconcile model: it does not watch Secrets, it RE-CHECKS them, and a
 // changed or vanished value is the moment to clean up. On a value CHANGE (rotation, or a repoint at
@@ -554,8 +574,13 @@ func (m *Manager) resolveSourceConfig(
 // unsafe/unparseable) it drops the clients fail-closed and invalidates the watches so mirroring
 // stops — the enqueued reconcile then holds each GitTarget Validated=False. A transient read error
 // (slow apiserver, momentary blip) changes nothing: the next refresh retries.
+//
+// An inCluster source is re-resolved too. Its version is its provider's UID, so a provider deleted
+// and recreated under the same name, possibly with the other credential arm, rebuilds the clients
+// and re-plans the watches instead of carrying the old object's identity forward; and a provider
+// dropped from the installation's allow-list loses the operator's identity on the next refresh.
 func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterContext) {
-	if cc.isLocal() {
+	if cc.configPlane {
 		return
 	}
 	cfg, version, inCluster, err := m.resolveSourceConfig(ctx, cc.id)
@@ -697,7 +722,7 @@ func (m *Manager) clusterDynamicClient(ctx context.Context, clusterID string) (d
 }
 
 // ApplierDynamicClient returns the client an applier in clusterID is asked through, with that
-// ClusterProvider's identity, so anything asked through it is asked as that identity and against
+// KubeProvider's identity, so anything asked through it is asked as that identity and against
 // that cluster, never the operator's own. A cluster some GitTarget mirrors from is asked through
 // the client its watches already run on.
 //
@@ -708,10 +733,10 @@ func (m *Manager) clusterDynamicClient(ctx context.Context, clusterID string) (d
 // process. The client is built for this call from the provider as it resolves now, and dropped
 // with it.
 //
-// The empty id is the config plane, which is not a ClusterProvider, and is refused.
+// The empty id is the config plane, which is not a KubeProvider, and is refused.
 func (m *Manager) ApplierDynamicClient(ctx context.Context, clusterID string) (dynamic.Interface, error) {
 	if clusterID == configPlaneClusterID {
-		return nil, errors.New("no cluster named: the config plane is not a ClusterProvider")
+		return nil, errors.New("no cluster named: the config plane is not a KubeProvider")
 	}
 	if m.sourceClusterDeclared(clusterID) {
 		return m.clusterDynamicClient(ctx, clusterID)

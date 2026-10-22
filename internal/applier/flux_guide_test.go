@@ -167,21 +167,21 @@ func decodeStrict(t *testing.T, objects map[string][]*unstructured.Unstructured,
 	require.NoError(t, decoder.Decode(into), "the guide's %s must decode with no unknown field", kind)
 }
 
-// exampleReachesItsApplier checks that the guide's example ClusterProvider admits the trigger's
+// exampleReachesItsApplier checks that the guide's example KubeProvider admits the trigger's
 // namespace and lets it reach its applier, through the admission the trigger reconciler runs.
 func exampleReachesItsApplier(
 	t *testing.T, objects map[string][]*unstructured.Unstructured, trigger v1alpha3.ApplyTrigger,
 ) {
 	t.Helper()
-	var provider v1alpha3.ClusterProvider
-	decodeStrict(t, objects, "ClusterProvider", &provider)
-	assert.Equal(t, trigger.ClusterProvider(), provider.Name, "the example declares the trigger's ClusterProvider")
+	var provider v1alpha3.KubeProvider
+	decodeStrict(t, objects, "KubeProvider", &provider)
+	assert.Equal(t, trigger.KubeProviderKey(), provider.Key(), "the example declares the trigger's KubeProvider")
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, v1alpha3.AddToScheme(scheme))
 	control := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&provider).Build()
 	decision, err := authz.ApplyTriggerAdmitted(context.Background(), control, trigger)
 	require.NoError(t, err)
-	assert.True(t, decision.Allowed, "the example's ClusterProvider lets the trigger reach its applier: %s: %s",
+	assert.True(t, decision.Allowed, "the example's KubeProvider lets the trigger reach its applier: %s: %s",
 		decision.Reason, decision.Message)
 }

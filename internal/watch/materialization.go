@@ -12,10 +12,10 @@ import (
 // DeclareForGitTarget submits the GitTarget's declaration to the watch-plane owner and returns.
 // It does no work on the caller's goroutine.
 //
-// clusterID is (api/v1alpha3).GitTarget.SourceCluster() — the referenced ClusterProvider's name,
-// "default" for the cluster the operator runs in. It is captured with the UID and the audit
-// route, because none of the three can be derived from the rule-derived watch tables the owner
-// plans from.
+// clusterID is (api/v1alpha3).GitTarget.SourceCluster() — the referenced KubeProvider's
+// namespace/name, whether it names a remote cluster or the operator's own. It is captured with the
+// UID and the audit route, because none of the three can be derived from the rule-derived watch
+// tables the owner plans from.
 //
 // pruneMode is (api/v1alpha3).GitTarget.EffectivePruneMode(). Unlike the other two it is mutable,
 // and widening it to a sweeping mode forces a fresh replay — see prune_declaration.go for why the

@@ -121,7 +121,7 @@ func streamReasonIsStalled(reason string) bool {
 // verdict, so the cadence can never disagree with what status says.
 //
 // Only a CONVERGING rule takes the fast loop; a stalled one falls back to RequeueSteadyInterval,
-// which is a backstop rather than the mechanism. What actually clears a stall — a ClusterProvider
+// which is a backstop rather than the mechanism. What actually clears a stall — a KubeProvider
 // policy change, a source-cluster Namespace label change, an edit to the rule — has a watch edge
 // registered in SetupWithManager, so the rule is woken by an event long before the steady tick;
 // polling it faster would find nothing.

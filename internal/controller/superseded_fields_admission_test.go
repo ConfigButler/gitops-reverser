@@ -66,11 +66,12 @@ var _ = Describe("Superseded source-scope fields", func() {
 		// With the removed fields gone there is nothing left to reject, so the only thing worth
 		// pinning is that what REPLACED them is really served. A typo in one of these names would
 		// otherwise surface as a silently pruned field and a mirror behaving as if unconfigured.
-		provider := &configbutleraiv1alpha3.ClusterProvider{
-			ObjectMeta: metav1.ObjectMeta{Name: "renamed-source-scope"},
-			Spec: configbutleraiv1alpha3.ClusterProviderSpec{
+		provider := &configbutleraiv1alpha3.KubeProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "renamed-source-scope", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.KubeProviderSpec{
+				SecretRef:  &meta.SecretKeyReference{Name: "kc"},
 				AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}},
-				AllowCrossNamespace: &configbutleraiv1alpha3.ClusterProviderCrossNamespace{
+				AllowCrossNamespace: &configbutleraiv1alpha3.KubeProviderCrossNamespace{
 					Sources: true, Appliers: true,
 				},
 			},
@@ -78,8 +79,8 @@ var _ = Describe("Superseded source-scope fields", func() {
 		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, provider) })
 
-		var storedProvider configbutleraiv1alpha3.ClusterProvider
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: provider.Name}, &storedProvider)).To(Succeed())
+		var storedProvider configbutleraiv1alpha3.KubeProvider
+		Expect(k8sClient.Get(ctx, provider.Key(), &storedProvider)).To(Succeed())
 		Expect(storedProvider.Spec.AccessFrom).NotTo(BeNil(), "accessFrom must round-trip, not be pruned")
 		Expect(storedProvider.AllowsCrossNamespaceSources()).To(BeTrue(), "allowCrossNamespace must round-trip")
 		Expect(storedProvider.AllowsCrossNamespaceAppliers()).To(BeTrue())
@@ -87,8 +88,9 @@ var _ = Describe("Superseded source-scope fields", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-commit", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("any-provider", "main")},
-				Path:         "clusters/prod",
+				KubeProviderRef: testKubeProviderRef(),
+				GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("any-provider", "main")},
+				Path:            "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
 					Window: &configbutleraiv1alpha3.CommitWindow{
 						IdleTimeout: &metav1.Duration{Duration: 30 * time.Second},
@@ -202,8 +204,9 @@ var _ = Describe("Reference names must not be empty", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "empty-branch-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				GitBranchRef: meta.NamespacedObjectReference{Name: ""},
-				Path:         "clusters/prod",
+				KubeProviderRef: testKubeProviderRef(),
+				GitBranchRef:    meta.NamespacedObjectReference{Name: ""},
+				Path:            "clusters/prod",
 			},
 		}
 		Expect(k8sClient.Create(ctx, target)).NotTo(Succeed(),

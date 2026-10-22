@@ -356,7 +356,8 @@ func TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+			KubeProviderRef: testKubeProviderRef(),
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
 	fresh := newCommitRequest("save-fresh")

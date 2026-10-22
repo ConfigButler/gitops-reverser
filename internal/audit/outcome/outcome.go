@@ -81,7 +81,7 @@ const (
 	// NonNumericRV — an RV that is not a uint64 (aggregated apiservers).
 	NonNumericRV Outcome = "non_numeric_rv"
 	// MissingClusterAnnotation — an event on the shared (annotation-routed) /audit-webhook endpoint
-	// that carries no source-cluster annotation, so it names no ClusterProvider. Never credited to a
+	// that carries no source-cluster annotation, so it names no KubeProvider. Never credited to a
 	// fallback; a rising rate means a producer is not stamping the annotation.
 	MissingClusterAnnotation Outcome = "missing_cluster_annotation"
 	// NoAttributionFact — the event passed the accept gate and produced no attribution fact, so

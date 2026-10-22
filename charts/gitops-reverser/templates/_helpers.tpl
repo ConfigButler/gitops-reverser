@@ -114,3 +114,26 @@ Name of the push receiver Service.
 {{- define "gitops-reverser.receiverServiceName" -}}
 {{- printf "%s-receiver" (include "gitops-reverser.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
+
+{{/*
+The --in-cluster-kube-providers value: the KubeProvider the chart renders, when it uses the
+operator's own identity, and every entry of controllerManager.inClusterKubeProviders. Empty when
+neither lists one.
+*/}}
+{{- define "gitops-reverser.inClusterKubeProviders" -}}
+{{- $entries := list -}}
+{{- if and .Values.kubeProvider.create (not .Values.kubeProvider.secretRef.name) -}}
+{{- $entries = append $entries (printf "%s/%s" .Release.Namespace .Values.kubeProvider.name) -}}
+{{- end -}}
+{{- range .Values.controllerManager.inClusterKubeProviders -}}
+{{- $entries = append $entries . -}}
+{{- end -}}
+{{- join "," (uniq $entries) -}}
+{{- end }}
+
+{{/*
+The audit route of the KubeProvider the chart renders: <release namespace>.<name>, its default.
+*/}}
+{{- define "gitops-reverser.kubeProviderAuditRoute" -}}
+{{- printf "%s.%s" .Release.Namespace .Values.kubeProvider.name -}}
+{{- end }}

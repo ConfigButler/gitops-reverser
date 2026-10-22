@@ -61,6 +61,13 @@ controllerManager:
   # Extra Secret-shaped resources that must use the encrypted Git write path.
   # Entries are resource or group/resource, for example core.cozystack.io/tenantsecrets.
   additionalSensitiveResources: []
+  # KubeProviders, as namespace/name, that may use spec.inCluster: the operator's own identity in
+  # the cluster it runs in. The KubeProvider the chart renders (kubeProvider, below) is added on its
+  # own when it uses inCluster, so list only the others. Exact names, no wildcards: anyone who can
+  # create a KubeProvider with a listed name wields the operator's identity through it. A
+  # KubeProvider that sets inCluster and is not listed reports InClusterNotAuthorized and is never
+  # used.
+  inClusterKubeProviders: []
   # Permit credentials with http:// GitProvider URLs. This is only for trusted
   # in-cluster development Git servers; production remotes should use HTTPS or SSH.
   insecureAllowGitHTTP: false
@@ -323,51 +330,51 @@ attribution:
   # precise path is taken; drops are counted on attribution_collection_without_uidset_total{reason}.
   collectionUIDCap: 10000
   # Audit-event annotation naming the AUDIT ROUTE each event belongs to. Audit routes are normally
-  # NAMED (/audit-webhook/<audit-route>, including /audit-webhook/default), and this is empty.
+  # NAMED (/audit-webhook/<audit-route>, such as /audit-webhook/gitops-reverser.local), and this is
+  # empty.
   # Set it only for a control plane that emits ONE shared audit stream for several logical
   # clusters: it enables the bare /audit-webhook endpoint, which reads this annotation from every
-  # event, so one batch may fan out to several routes. A ClusterProvider joins a route by setting
-  # spec.attribution.auditRoute to the same value; it defaults to the provider's own name. An event
+  # event, so one batch may fan out to several routes. A KubeProvider joins a route by setting
+  # spec.attribution.auditRoute to the same value; it defaults to <namespace>.<name>. An event
   # with no annotation is rejected (counted and logged) and never credited to a fallback.
   # See docs/configuration.md.
   auditRouteAnnotationKey: ""
 
-# The source cluster a GitTarget mirrors FROM is a ClusterProvider, and a GitTarget that omits
-# spec.clusterProviderRef references one named "default". The operator NEVER creates a
-# ClusterProvider, so that object has to come from somewhere: either you commit it yourself, or the
-# chart renders it from here. This is a rendering convenience, not runtime behavior — it is not
-# limited to attribution (every mirror needs a provider) and "default" is just a name, so the
-# provider it renders may be in-cluster or remote.
-clusterProvider:
-  # Render and OWN a ClusterProvider named "default". Chart-owned: turn this off and Helm deletes
-  # the provider it created on the next upgrade, so ownership never silently splits — plan that
-  # switch together with committing your own object, because a missing provider holds its
-  # GitTargets unready via the "provider not found" path. The `quickstart` values never create one.
-  createDefault: true
-  # Spec of the rendered "default" ClusterProvider.
-  default:
-    # Which cluster "default" names. Leave secretRef.name empty for the operator's OWN in-cluster
-    # cluster; set it to a Secret (in the release namespace) holding a kubeconfig to make "default"
-    # mirror a REMOTE cluster instead. Immutable once created: to repoint the name, delete and
-    # recreate. key is optional — empty reads "value" then "value.yaml".
-    kubeConfig:
-      secretRef:
-        name: ""
-        key: ""
-    # Which namespaces may reference this provider from a GitTarget — deny-by-default authorization
-    # in the CONTROL cluster (names OR selector), not a filter on the source cluster. The chart
-    # default is an empty selector, which matches EVERY namespace, so a single-cluster install works
-    # out of the box; tighten it to a names list or a label selector in a real install.
-    accessFrom:
-      selector: {}
-    # What a namespace accessFrom admits may reach OUTSIDE itself through this provider's identity.
-    # Each is a power of its own: sources lets a WatchRule read other namespaces' objects into its
-    # own Git ("*" included); appliers lets a FluxTrigger or ArgoCDTrigger suspend and apply a
-    # Kustomization or Application in another namespace. It is a delegation to every admitted
-    # namespace, not proof that a namespace owns what it reaches.
-    allowCrossNamespace:
-      sources: false
-      appliers: false
+# The source cluster a GitTarget mirrors FROM is a KubeProvider, which every GitTarget names
+# explicitly (spec.kubeProviderRef, with a namespace when it is not the GitTarget's own). The
+# operator NEVER creates one, so it has to come from somewhere: either you commit it yourself, or
+# the chart renders one from here, in the release namespace. Nothing falls back to it.
+kubeProvider:
+  # Render and OWN a KubeProvider named kubeProvider.name in the release namespace. Chart-owned:
+  # turn this off and Helm deletes the provider it created on the next upgrade, so ownership never
+  # silently splits — plan that switch together with committing your own object, because a
+  # GitTarget whose provider is missing is held unready (KubeProviderNotFound).
+  create: true
+  # The provider's name. Its audit route is <release namespace>.<name>, which is the
+  # /audit-webhook/<route> path the API server's audit webhook posts to.
+  name: local
+  # Which cluster the provider names. Leave name empty for the operator's OWN identity in the
+  # cluster it runs in (spec.inCluster; the chart lists the provider in
+  # --in-cluster-kube-providers). Set it to a Secret in the release namespace holding a kubeconfig
+  # to mirror a REMOTE cluster instead. Immutable once created: to repoint, delete and recreate.
+  # key is optional — empty reads "value" then "value.yaml".
+  secretRef:
+    name: ""
+    key: ""
+  # Which OTHER namespaces may reference this provider; the release namespace always may. It is
+  # authorization in the CONTROL cluster (names OR selector), not a filter on the source cluster.
+  # The chart default is an empty selector, which matches EVERY namespace, so a single-cluster
+  # install works out of the box; tighten it to a names list or a label selector in a real install.
+  accessFrom:
+    selector: {}
+  # What a namespace this provider admits may reach OUTSIDE itself through the provider's
+  # identity. Each is a power of its own: sources lets a WatchRule read other namespaces' objects
+  # into its own Git ("*" included); appliers lets a FluxTrigger or ArgoCDTrigger suspend and apply
+  # a Kustomization or Application in another namespace. It is a delegation to every admitted
+  # namespace, not proof that a namespace owns what it reaches.
+  allowCrossNamespace:
+    sources: false
+    appliers: false
 
 # RBAC configuration
 rbac:

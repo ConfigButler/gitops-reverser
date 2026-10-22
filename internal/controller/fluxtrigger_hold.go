@@ -357,7 +357,7 @@ func (r *ApplyTriggerReconciler) uncachedReader() client.Reader {
 func (r *ApplyTriggerReconciler) fluxClient(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) (*applier.Flux, error) {
-	dynamicClient, err := r.ApplierClients(ctx, trigger.ClusterProvider())
+	dynamicClient, err := r.ApplierClients(ctx, trigger.KubeProviderKey().String())
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +378,7 @@ const releaseDeadline = 10 * time.Minute
 // spec.suspend, unless a trigger in line takes the Kustomization over (releaseStep). Until that is
 // done the trigger stays the holder, Held=False (Releasing), so no successor acts on the
 // Kustomization meanwhile. A Kustomization that is gone has nothing to hand back; a cluster no
-// client reaches any more since its ClusterProvider went (releaseClient), and a Kustomization the
+// client reaches any more since its KubeProvider went (releaseClient), and a Kustomization the
 // identity may not write, are let go with a Warning Event: none should hold the trigger forever. Nor does anything else past releaseDeadline. A trigger behind another in line for the
 // Kustomization hands nothing back: the Kustomization is that one's. Letting go removes the
 // finalizer; a live trigger then holds nothing until an eligible GitTarget references it again,
@@ -630,10 +630,10 @@ func (r *ApplyTriggerReconciler) releaseFailed(
 }
 
 // releaseClient is the Flux client a retiring trigger hands its Kustomization back through, or nil
-// when there is nothing to reach: no cluster clients are wired, or the ClusterProvider is gone and
+// when there is nothing to reach: no cluster clients are wired, or the KubeProvider is gone and
 // no client reaches its cluster any more, which lets the trigger go with a Warning Event. A
-// ClusterProvider that is gone does not end the hand-back by itself: one without kubeConfig names
-// the operator's own cluster, which still answers, and a remote one may still be reached through the
+// KubeProvider that is gone does not end the hand-back by itself: an inCluster one named the
+// operator's own cluster, which may still answer, and a remote one may still be reached through the
 // client it left.
 func (r *ApplyTriggerReconciler) releaseClient(
 	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
@@ -641,8 +641,8 @@ func (r *ApplyTriggerReconciler) releaseClient(
 	if r.ApplierClients == nil {
 		return nil, nil //nolint:nilnil // nothing to reach is no error
 	}
-	provider := &configbutleraiv1alpha3.ClusterProvider{}
-	err := r.Get(ctx, client.ObjectKey{Name: trigger.ClusterProvider()}, provider)
+	provider := &configbutleraiv1alpha3.KubeProvider{}
+	err := r.Get(ctx, trigger.KubeProviderKey(), provider)
 	gone := apierrors.IsNotFound(err)
 	if err != nil && !gone {
 		return nil, err
@@ -651,8 +651,8 @@ func (r *ApplyTriggerReconciler) releaseClient(
 	switch {
 	case err != nil && gone:
 		r.event(trigger, corev1.EventTypeWarning, EventReasonReleaseFailed,
-			"could not hand Kustomization %s back to Flux: its ClusterProvider %q is gone; it is left suspended, "+
-				"and `flux resume` resumes it", trigger.Applier(), trigger.ClusterProvider())
+			"could not hand Kustomization %s back to Flux: its KubeProvider %s is gone; it is left suspended, "+
+				"and `flux resume` resumes it", trigger.Applier(), trigger.KubeProviderKey())
 		return nil, nil //nolint:nilnil // nothing to reach, and the Event says so
 	case err != nil:
 		return nil, fmt.Errorf("reach the cluster of Kustomization %s to hand it back: %w", trigger.Applier(), err)
@@ -669,7 +669,7 @@ func (r *ApplyTriggerReconciler) event(object client.Object, eventType, reason, 
 
 // publishConsumers sets the trigger's status.source.otherConsumers: the consumers of its GitRepository
 // in the applier's cluster, other than its own Kustomization, that no FluxTrigger on the same
-// ClusterProvider holds. A listing that fails publishes none. Information only (decision 2): it never
+// KubeProvider holds. A listing that fails publishes none. Information only (decision 2): it never
 // affects Ready.
 func (r *ApplyTriggerReconciler) publishConsumers(ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger) {
 	source := trigger.Status.Source
@@ -691,7 +691,7 @@ func (r *ApplyTriggerReconciler) publishConsumers(ctx context.Context, trigger *
 			"gitRepository", source.GitRepository.Namespace+"/"+source.GitRepository.Name, "error", err.Error())
 		return
 	}
-	others, err := r.heldKustomizations(ctx, trigger.ClusterProvider())
+	others, err := r.heldKustomizations(ctx, trigger.KubeProviderKey())
 	if err != nil {
 		return
 	}
@@ -705,12 +705,12 @@ func (r *ApplyTriggerReconciler) publishConsumers(ctx context.Context, trigger *
 	}
 }
 
-// heldKustomizations is every Kustomization a FluxTrigger on the ClusterProvider holds: one whose
+// heldKustomizations is every Kustomization a FluxTrigger on the KubeProvider holds: one whose
 // Held condition is True. A trigger that is not Configured (SuspendOwnedElsewhere), or whose
 // Kustomization has not handled its suspend yet, does not hold it: Flux may still apply a new artifact on its own.
 func (r *ApplyTriggerReconciler) heldKustomizations(
 	ctx context.Context,
-	cluster string,
+	cluster k8stypes.NamespacedName,
 ) (map[k8stypes.NamespacedName]bool, error) {
 	var triggers configbutleraiv1alpha3.FluxTriggerList
 	if err := r.List(ctx, &triggers); err != nil {
@@ -719,7 +719,7 @@ func (r *ApplyTriggerReconciler) heldKustomizations(
 	held := map[k8stypes.NamespacedName]bool{}
 	for i := range triggers.Items {
 		trigger := &triggers.Items[i]
-		if trigger.DeletionTimestamp.IsZero() && trigger.ClusterProvider() == cluster && heldBefore(trigger) {
+		if trigger.DeletionTimestamp.IsZero() && trigger.KubeProviderKey() == cluster && heldBefore(trigger) {
 			held[trigger.Applier()] = true
 		}
 	}

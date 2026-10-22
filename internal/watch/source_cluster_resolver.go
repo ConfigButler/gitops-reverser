@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -30,80 +31,67 @@ const sourceClusterDialTimeout = 15 * time.Second
 const sourceClusterKeepAlive = 30 * time.Second
 
 // defaultSourceClusterQPS / -Burst are the client-side throttle for a remote source cluster whose
-// ClusterProvider sets no spec.client: a remote is reached over a network the in-cluster config is
+// KubeProvider sets no spec.client: a remote is reached over a network the in-cluster config is
 // not, and is only read (list/watch/get).
 const (
 	defaultSourceClusterQPS   = 20
 	defaultSourceClusterBurst = 30
 )
 
-// secretSourceClusterResolver resolves a source-cluster NAME — a ClusterProvider's name, as
-// (api/v1alpha3).GitTarget.SourceCluster() carries it — into a rest.Config by looking up the
-// cluster-scoped ClusterProvider and reading its kubeConfig Secret from the OPERATOR NAMESPACE
-// (the config plane): the cluster the operator runs in.
+// secretSourceClusterResolver resolves a source cluster — a KubeProvider's namespace and name, as
+// (api/v1alpha3).GitTarget.KubeProviderKey() carries it — into a rest.Config, reading the
+// kubeconfig Secret the provider names from the PROVIDER'S OWN namespace. A tenant's connection
+// keeps its credential with the tenant, and the watched cluster holds nothing but the watched
+// resources.
 //
-// This is the whole point of the split. The credential for a cluster never has to live on that
-// cluster, and the watched cluster holds nothing but the watched resources — no Secret, no
-// configbutler.ai CRDs at all. The resolver is only ever asked to resolve a REMOTE provider;
-// the in-cluster "default" provider is served by the manager's own in-cluster config and never
-// reaches here.
+// It is also the one place the operator's own identity is handed out: a provider that sets
+// spec.inCluster resolves to it only while the installation lists it, so every credential use (the
+// watches, discovery, and the appliers) passes the same consent check.
 type secretSourceClusterResolver struct {
-	// client reads the ClusterProvider (cluster-scoped) and its kubeConfig Secret. Secret reads
-	// bypass the controller-runtime cache (the manager client sets Cache.DisableFor on Secrets),
-	// so a rotated kubeconfig is seen without a Secret informer — the same reasoning as the SOPS
-	// age-key reads.
+	// client reads the KubeProvider and its kubeconfig Secret. Secret reads bypass the
+	// controller-runtime cache (the manager client sets Cache.DisableFor on Secrets), so a rotated
+	// kubeconfig is seen without a Secret informer — the same reasoning as the SOPS age-key reads.
 	client client.Client
 
-	// operatorNamespace is where a ClusterProvider's kubeConfig Secret is pinned. A cluster-scoped
-	// provider has no namespace of its own, so the credential for a cluster is always read from
-	// here — never from the source cluster.
-	operatorNamespace string
-
-	// safety is the operator's exec / insecure-TLS opt-in. Both default off: an
-	// operator-supplied kubeconfig is attacker-adjacent input, so we REJECT rather than
+	// safety is the operator's exec / insecure-TLS opt-in and its inCluster allow-list. All default
+	// off: an operator-supplied kubeconfig is attacker-adjacent input, so we REJECT rather than
 	// silently strip (diverging from Flux) unless a flag opts in.
 	safety kubeconfig.SafetyPolicy
 }
 
 // NewSecretSourceClusterResolver builds the production source-cluster resolver.
-func NewSecretSourceClusterResolver(
-	c client.Client,
-	operatorNamespace string,
-	safety kubeconfig.SafetyPolicy,
-) SourceClusterResolver {
-	return &secretSourceClusterResolver{
-		client:            c,
-		operatorNamespace: operatorNamespace,
-		safety:            safety,
-	}
+func NewSecretSourceClusterResolver(c client.Client, safety kubeconfig.SafetyPolicy) SourceClusterResolver {
+	return &secretSourceClusterResolver{client: c, safety: safety}
 }
 
 func (r *secretSourceClusterResolver) ResolveSourceCluster(
 	ctx context.Context,
-	providerName string,
+	key k8stypes.NamespacedName,
 ) (*rest.Config, string, error) {
-	var provider configv1alpha3.ClusterProvider
-	if err := r.client.Get(ctx, client.ObjectKey{Name: providerName}, &provider); err != nil {
-		return nil, "", fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
+	var provider configv1alpha3.KubeProvider
+	if err := r.client.Get(ctx, key, &provider); err != nil {
+		return nil, "", fmt.Errorf("read KubeProvider %s: %w", key, err)
 	}
-	if provider.Spec.KubeConfig == nil {
-		// No kubeConfig means the operator's OWN cluster — legal for every provider name, so this
-		// is the in-cluster answer (nil config), never an error. The name is irrelevant: what makes
-		// a provider local is the absent kubeConfig, not being called "default".
-		return nil, inClusterConfigVersion, nil
+	if provider.IsInCluster() {
+		if rej := kubeconfig.CheckInCluster(key, r.safety); rej != nil {
+			return nil, "", rej
+		}
+		// The UID is the whole version: there is no Secret to rotate, and a provider deleted and
+		// recreated under the same name is a different object whose arm may differ.
+		return nil, inClusterConfigVersion + "/" + string(provider.UID), nil
 	}
-	if provider.Spec.KubeConfig.SecretRef == nil {
+	if provider.Spec.SecretRef == nil {
 		return nil, "", &kubeconfig.RejectionError{
 			Reason:  kubeconfig.ReasonInvalid,
-			Message: fmt.Sprintf("ClusterProvider %q sets kubeConfig without a secretRef", providerName),
+			Message: fmt.Sprintf("KubeProvider %s sets neither spec.secretRef nor spec.inCluster", key),
 		}
 	}
-	ref := provider.Spec.KubeConfig.SecretRef
+	ref := provider.Spec.SecretRef
 
 	var secret corev1.Secret
-	secretKey := client.ObjectKey{Namespace: r.operatorNamespace, Name: ref.Name}
+	secretKey := client.ObjectKey{Namespace: provider.Namespace, Name: ref.Name}
 	if err := r.client.Get(ctx, secretKey, &secret); err != nil {
-		return nil, "", fmt.Errorf("read kubeconfig Secret %s for ClusterProvider %q: %w", secretKey, providerName, err)
+		return nil, "", fmt.Errorf("read kubeconfig Secret %s for KubeProvider %s: %w", secretKey, key, err)
 	}
 	raw, usedKey, ok := kubeconfig.ResolveKey(secret.Data, ref.Key)
 	if !ok {
@@ -115,7 +103,7 @@ func (r *secretSourceClusterResolver) ResolveSourceCluster(
 	}
 
 	// Parse and REJECT unsafe kubeconfigs before building the config — a legible failure that the
-	// ClusterProvider's Validated gate reports with the same typed reason. Never dials.
+	// KubeProvider's Validated gate reports with the same typed reason. Never dials.
 	cfg, err := kubeconfig.BuildRESTConfig(raw, r.safety)
 	if err != nil {
 		return nil, "", fmt.Errorf("kubeconfig Secret %s key %q: %w", secretKey, usedKey, err)
@@ -130,15 +118,16 @@ func (r *secretSourceClusterResolver) ResolveSourceCluster(
 	cfg.Dial = (&net.Dialer{Timeout: sourceClusterDialTimeout, KeepAlive: sourceClusterKeepAlive}).DialContext
 
 	// The version token changes exactly when the resolved config could change: on a kubeconfig
-	// Secret rotation (its resourceVersion) OR on a provider spec change that alters qps/burst
-	// (its generation). A change in either re-resolves and rebuilds the clients.
-	version := fmt.Sprintf("%d/%s", provider.Generation, secret.ResourceVersion)
+	// Secret rotation (its resourceVersion), on a provider spec change that alters qps/burst (its
+	// generation), and on a provider deleted and recreated under the same name (its UID, since a new
+	// object starts at generation 1 again). A change in any re-resolves and rebuilds the clients.
+	version := fmt.Sprintf("%s/%d/%s", provider.UID, provider.Generation, secret.ResourceVersion)
 	return cfg, version, nil
 }
 
 // throttleFor returns the effective client QPS/burst for a provider: its spec.client override
 // when set, else the built-in default.
-func (r *secretSourceClusterResolver) throttleFor(provider *configv1alpha3.ClusterProvider) (float32, int) {
+func (r *secretSourceClusterResolver) throttleFor(provider *configv1alpha3.KubeProvider) (float32, int) {
 	qps := float32(defaultSourceClusterQPS)
 	burst := defaultSourceClusterBurst
 	client := provider.Spec.Client

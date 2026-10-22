@@ -47,7 +47,7 @@ type AttributionLookup interface {
 // old six arguments, so that tier would have been unreachable from the resolver.
 type AuthorQuery struct {
 	// AuditRoute partitions the facts. It is the route the API server posts audit under, NOT the
-	// ClusterProvider's name: several providers may name one cluster and all read its facts.
+	// KubeProvider's name: several providers may name one cluster and all read its facts.
 	AuditRoute string
 	// GVR is the watched type. The version serves the metric labels only; the join is keyed on the
 	// group/resource, which is what a fact carries.
@@ -250,7 +250,7 @@ func attributionEventKind(query AuthorQuery) string {
 }
 
 // warnIfRouteNeverResolves says, once per audit route, that a route has produced a run of
-// unresolved events and has never resolved one. That is the shape of a ClusterProvider pointed at a
+// unresolved events and has never resolved one. That is the shape of a KubeProvider pointed at a
 // route no API server posts under, which is otherwise invisible: mirroring stays correct and only
 // the commit author is lost. The message names the fix rather than the symptom.
 func (r *attributionResolver) warnIfRouteNeverResolves(auditRoute string, gvr schema.GroupVersionResource) {
@@ -260,7 +260,7 @@ func (r *attributionResolver) warnIfRouteNeverResolves(auditRoute string, gvr sc
 	}
 	r.log.Info("no audit facts have ever arrived on this audit route; every commit through it is "+
 		"authored as attribution-unresolved. An API server posts audit under ONE route, so a second "+
-		"ClusterProvider naming the same cluster must set spec.attribution.auditRoute to the route "+
-		"that cluster actually posts to (it defaults to the provider's own name)",
+		"KubeProvider naming the same cluster must set spec.attribution.auditRoute to the route "+
+		"that cluster actually posts to (it defaults to <namespace>.<name>)",
 		"auditRoute", auditRoute, "unresolvedInARow", streak, "gvr", gvr.String())
 }

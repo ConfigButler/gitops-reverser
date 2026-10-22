@@ -578,17 +578,11 @@ type GitTarget struct {
 }
 
 // SourceCluster is the identity the watch data plane keys a GitTarget's source cluster on: the
-// referenced ClusterProvider's NAME. It defaults to "default" when clusterProviderRef is unset —
-// so a source-cluster-unaware caller still gets a concrete, non-empty name, and there is no ""
-// sentinel. That name is a convention, not a claim about which physical cluster it is. The name
-// keys the GVK→GVR registry and the watch context. It is NOT the attribution partition: facts are
-// keyed by the referenced ClusterProvider's AuditRoute(), which defaults to this name but may
-// differ when several providers share one cluster's single audit stream.
+// referenced KubeProvider's namespace/name, so two providers with one name in two namespaces are
+// two clusters. It keys the GVK→GVR registry and the watch context. It is NOT the attribution
+// partition: facts are keyed by the referenced KubeProvider's AuditRoute().
 func (g *GitTarget) SourceCluster() string {
-	if g.Spec.ClusterProviderRef == nil || g.Spec.ClusterProviderRef.Name == "" {
-		return DefaultClusterProviderName
-	}
-	return g.Spec.ClusterProviderRef.Name
+	return g.KubeProviderKey().String()
 }
 
 // GitBranchKey is the GitBranch this GitTarget writes: spec.gitBranchRef, in this GitTarget's own
@@ -610,14 +604,6 @@ func (g *GitTarget) GitBranchKey() types.NamespacedName {
 // nothing, and the zero key says exactly that.
 func (g *GitTarget) KubeProviderKey() types.NamespacedName {
 	return kubeProviderKey(g.Spec.KubeProviderRef, g.Namespace)
-}
-
-// IsLocalSource reports whether this GitTarget references the "default" ClusterProvider, which the
-// watch data plane maps to its local cluster context. It is a NAME test, not a claim about the
-// physical cluster: a "default" provider may carry a kubeConfig. It only supplies the pre-discovery
-// default for SourceClusterReachable, which the watch manager overwrites as soon as it is wired.
-func (g *GitTarget) IsLocalSource() bool {
-	return g.SourceCluster() == DefaultClusterProviderName
 }
 
 // +kubebuilder:object:root=true

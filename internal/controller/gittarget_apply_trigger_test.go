@@ -19,13 +19,15 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
 )
 
-// triggerTarget is the GitTarget team-a/checkout on branch main, naming the FluxTrigger checkout
-// when named is set.
+// triggerTarget is the GitTarget team-a/checkout mirroring through the KubeProvider
+// triggerLocalProvider on branch main, naming the FluxTrigger checkout when named is set.
 func triggerTarget(named bool) *configbutleraiv1alpha3.GitTarget {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("platform", "main")}, Path: "apps",
+			KubeProviderRef: triggerProviderRef(triggerLocalProvider),
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("platform", "main")},
+			Path:            "apps",
 		},
 	}
 	if named {
@@ -52,7 +54,7 @@ func triggerDestination() gitDestination {
 // readyTrigger is the FluxTrigger checkout, as its reconciler published it: Ready with status,
 // Stalled when stalled, and applying branch of the test repository.
 func readyTrigger(status metav1.ConditionStatus, reason string, stalled bool, branch string) ctrlclient.Object {
-	trigger := testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName)
+	trigger := testFluxTrigger(triggerLocalProvider)
 	stalledStatus := metav1.ConditionFalse
 	if stalled {
 		stalledStatus = metav1.ConditionTrue
@@ -115,7 +117,7 @@ func TestObserveApplyTrigger_Verdicts(t *testing.T) {
 			wantStatus: metav1.ConditionUnknown, wantReason: applier.ReasonNotReferenced,
 			wantMessage: "has not observed that this GitTarget names it yet"},
 		{name: "a trigger not checked yet",
-			trigger:    testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName),
+			trigger:    testFluxTrigger(triggerLocalProvider),
 			wantStatus: metav1.ConditionUnknown, wantReason: ReasonProgressing},
 	}
 	for _, tc := range cases {
@@ -175,7 +177,7 @@ func TestApplyTriggerToGitTargets_FindsTheTargetsNamingIt(t *testing.T) {
 	r := &GitTargetReconciler{Client: triggerTestClient(t, triggerTarget(true), argo, unnamed)}
 
 	requests := r.applyTriggerToGitTargets(context.Background(),
-		testFluxTrigger(configbutleraiv1alpha3.DefaultClusterProviderName))
+		testFluxTrigger(triggerLocalProvider))
 
 	require.Len(t, requests, 1)
 	assert.Equal(t, "checkout", requests[0].Name)

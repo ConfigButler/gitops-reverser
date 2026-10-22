@@ -59,7 +59,7 @@ func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionV
 // (generation) OR the readiness those rules MIRROR changed.
 //
 // GenerationChangedPredicate alone is wrong on this edge, for the same reason it cannot carry a
-// ClusterProvider change to a GitTarget: a GitTarget that heals publishes its recovery as a
+// KubeProvider change to a GitTarget: a GitTarget that heals publishes its recovery as a
 // status-only update, which that predicate deliberately drops. The rule's mirrored GitTargetReady
 // then stayed frozen on the failing snapshot until the rule's own periodic requeue — leaving an
 // object that contradicts itself for minutes, with StreamsRunning already back to True because the

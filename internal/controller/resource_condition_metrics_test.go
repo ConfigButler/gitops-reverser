@@ -123,7 +123,7 @@ func TestConditionMetricKind_CoversTheFiveConfigKindsAndNothingElse(t *testing.T
 	assert.Equal(t, conditionKindWatchRule, conditionMetricKind(&configbutleraiv1alpha3.WatchRule{}))
 	assert.Equal(t, conditionKindClusterWatchRule, conditionMetricKind(&configbutleraiv1alpha3.ClusterWatchRule{}))
 	assert.Equal(t, conditionKindGitProvider, conditionMetricKind(&configbutleraiv1alpha3.GitProvider{}))
-	assert.Equal(t, conditionKindClusterProvider, conditionMetricKind(&configbutleraiv1alpha3.ClusterProvider{}))
+	assert.Equal(t, conditionKindKubeProvider, conditionMetricKind(&configbutleraiv1alpha3.KubeProvider{}))
 	assert.Empty(t, conditionMetricKind(&configbutleraiv1alpha3.CommitRequest{}))
 }
 

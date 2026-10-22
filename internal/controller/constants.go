@@ -95,16 +95,16 @@ const (
 	// remote repository.
 	ConditionTypePushed = "Pushed"
 
-	// ClusterProviderConditionValidated reports whether a ClusterProvider's inputs are safe and
-	// resolvable: the in-cluster "default" provider is trivially Validated; a remote provider is
-	// Validated once its kubeconfig Secret is present, keyed, and passes the exec/TLS safety
-	// policy. It is asserted WITHOUT a network dial — runtime reachability/discovery health are
-	// deferred until authenticated remote ingest wires them from the watch engine.
-	ClusterProviderConditionValidated = "Validated"
+	// KubeProviderConditionValidated reports whether a KubeProvider's credential is safe and
+	// resolvable: an inCluster provider is Validated while the installation lists it in
+	// --in-cluster-kube-providers; a secretRef provider once its kubeconfig Secret is present,
+	// keyed, and passes the exec/TLS/file-reference safety policy. It is asserted WITHOUT a network
+	// dial — runtime reachability is the GitTarget's SourceClusterReachable.
+	KubeProviderConditionValidated = "Validated"
 
-	// ClusterProviderConditionAuditFactsReceived reports whether an attribution fact has ever been
-	// published on this provider's audit route (spec.attribution.auditRoute, defaulting to the
-	// provider's name). It is Unknown from creation until the first fact, with the reason naming
+	// KubeProviderConditionAuditFactsReceived reports whether an attribution fact has ever been
+	// published on this provider's audit route (spec.attribution.auditRoute, defaulting to
+	// <namespace>.<name>). It is Unknown from creation until the first fact, with the reason naming
 	// which silence it is (see the three below), and True (ReasonFactsReceived) from then on. It
 	// NEVER regresses: the persisted status is the latch, so a restart — or the memory transport,
 	// whose in-process state is lost with the process — keeps it True. Later silence is a quiet cluster, not a fault, which is why there is
@@ -114,7 +114,7 @@ const (
 	// perfectly and loses only the commit AUTHOR, so reporting it through Ready would tell every
 	// kstatus reader the object is broken. It is absent entirely when the operator runs with
 	// --author-attribution=false, where no fact was ever expected.
-	ClusterProviderConditionAuditFactsReceived = "AuditFactsReceived"
+	KubeProviderConditionAuditFactsReceived = "AuditFactsReceived"
 
 	// The three AuditFactsReceived=Unknown reasons below separate the silences by SCOPE, because
 	// they send the reader to three different places. None of them repeats "AuditFacts" (the
@@ -142,8 +142,8 @@ const (
 	// and that answer is latched.
 	ReasonFactsReceived = "Received"
 
-	// ReasonInCluster is the Validated=True reason for the in-cluster "default" provider. A remote
-	// provider that validates reports the shared ReasonSucceeded instead.
+	// ReasonInCluster is the Validated=True reason for an inCluster provider the installation
+	// allows. A secretRef provider that validates reports the shared ReasonSucceeded instead.
 	ReasonInCluster = "InCluster"
 	// ReasonKubeConfigInvalid is the Validated=False reason for a malformed or unsafe kubeconfig
 	// whose specific cause is carried in the message.

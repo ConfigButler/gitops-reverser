@@ -23,7 +23,7 @@ func sourceGroup(trigger v1alpha3.ApplyTrigger) string {
 	if !ok {
 		return ""
 	}
-	return trigger.ClusterProvider() + "/" + source.Namespace + "/" + source.Name
+	return trigger.KubeProviderKey().String() + "/" + source.Namespace + "/" + source.Name
 }
 
 // group is the applier's group, as listed with any GitTarget naming it.

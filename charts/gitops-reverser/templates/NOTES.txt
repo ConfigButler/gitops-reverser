@@ -6,7 +6,7 @@
 {{- $auditNodePort := .Values.auditService.nodePort -}}
 {{- $auditClusterIP := .Values.auditService.clusterIP -}}
 {{- $tlsServerName := printf "%s.%s.svc" $auditServiceName .Release.Namespace -}}
-{{- $auditPath := "/audit-webhook/default" -}}
+{{- $auditPath := printf "/audit-webhook/%s" (include "gitops-reverser.kubeProviderAuditRoute" .) -}}
 {{- if .Values.attribution.auditRouteAnnotationKey -}}
 {{- $auditPath = "/audit-webhook" -}}
 {{- end -}}
@@ -95,8 +95,9 @@ Suggested audit webhook server URL from the control-plane node:
 {{- if .Values.attribution.auditRouteAnnotationKey }}
 The bare audit endpoint reads the route from each event's `{{ .Values.attribution.auditRouteAnnotationKey }}` annotation.
 {{- else }}
-The URL uses the named route `default`. For another ClusterProvider, replace `default` with
-its `spec.attribution.auditRoute` (or its name when that field is omitted).
+The URL uses the audit route of the chart's KubeProvider, `{{ include "gitops-reverser.kubeProviderAuditRoute" . }}`.
+For another KubeProvider, use its `spec.attribution.auditRoute`, or `<namespace>.<name>` when that
+field is omitted.
 {{- end }}
 The address must be reachable from every control-plane host. A loopback NodePort depends on
 your service implementation; use a reachable node address when loopback is unsupported.

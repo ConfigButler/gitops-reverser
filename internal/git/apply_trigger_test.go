@@ -90,7 +90,7 @@ func TestApplyInbox_RestorePutsBackWhatWasTaken(t *testing.T) {
 func applierRef(name string) ApplierRef {
 	return ApplierRef{
 		Trigger: TriggerRef{Kind: configv1alpha3.ApplyTriggerKindFlux, Namespace: "team-a", Name: name},
-		Cluster: configv1alpha3.DefaultClusterProviderName, Kind: configv1alpha3.ApplierKindKustomization,
+		Cluster: "team-a/" + testKubeProvider, Kind: configv1alpha3.ApplierKindKustomization,
 		Namespace: "team-a", Name: name,
 	}
 }
@@ -99,7 +99,7 @@ func applierRef(name string) ApplierRef {
 func argoApplierRef(name string) ApplierRef {
 	return ApplierRef{
 		Trigger: TriggerRef{Kind: configv1alpha3.ApplyTriggerKindArgoCD, Namespace: "team-a", Name: name},
-		Cluster: configv1alpha3.DefaultClusterProviderName, Kind: configv1alpha3.ApplierKindApplication,
+		Cluster: "team-a/" + testKubeProvider, Kind: configv1alpha3.ApplierKindApplication,
 		Namespace: "argocd", Name: name,
 	}
 }
@@ -312,8 +312,8 @@ func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
 	require.NoError(t, loop.w.Client.Create(context.Background(), &configv1alpha3.ArgoCDTrigger{
 		ObjectMeta: metav1.ObjectMeta{Name: "argo", Namespace: "team-a"},
 		Spec: configv1alpha3.ArgoCDTriggerSpec{
-			ClusterProviderRef: &meta.LocalObjectReference{Name: configv1alpha3.DefaultClusterProviderName},
-			ApplicationRef:     meta.NamespacedObjectReference{Namespace: "argocd", Name: "argo"},
+			KubeProviderRef: meta.NamespacedObjectReference{Name: testKubeProvider},
+			ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: "argo"},
 		},
 	}))
 	loop.serviceAppliers()
@@ -438,19 +438,25 @@ func TestApplyTrigger_ARejectedPushAsksForTheReplayedTip(t *testing.T) {
 }
 
 // TestApplierOf_KeysTheApplierByItsTriggerClusterAndKind: one name in two clusters is two appliers,
-// and the trigger's spec.clusterProviderRef, not the GitTarget's source, decides which cluster. A
-// Kustomization and an Application of one name are two appliers too.
+// and the trigger's spec.kubeProviderRef, not the GitTarget's source, decides which cluster: the
+// KubeProvider's namespace/name, its namespace defaulted to the trigger's own. A Kustomization and
+// an Application of one name are two appliers too.
 func TestApplierOf_KeysTheApplierByItsTriggerClusterAndKind(t *testing.T) {
 	flux := fluxTrigger("apps", func(t *configv1alpha3.FluxTrigger) {
-		t.Spec.ClusterProviderRef.Name = "prod-eu-1"
+		t.Spec.KubeProviderRef.Name = "prod-eu-1"
 	})
 	kustomization := configv1alpha3.ApplierKindKustomization
 	byFlux := TriggerRef{Kind: configv1alpha3.ApplyTriggerKindFlux, Namespace: "team-a", Name: "apps"}
-	assert.Equal(t, ApplierRef{Trigger: byFlux, Cluster: "prod-eu-1", Kind: kustomization, Namespace: "team-a",
-		Name: "apps"}, ApplierOf(flux))
+	assert.Equal(t, ApplierRef{Trigger: byFlux, Cluster: "team-a/prod-eu-1", Kind: kustomization,
+		Namespace: "team-a", Name: "apps"}, ApplierOf(flux))
 
-	flux.Spec.ClusterProviderRef.Name = "hub"
-	assert.NotEqual(t, ApplierRef{Trigger: byFlux, Cluster: "prod-eu-1", Kind: kustomization,
+	flux.Spec.KubeProviderRef.Name = "hub"
+	assert.NotEqual(t, ApplierRef{Trigger: byFlux, Cluster: "team-a/prod-eu-1", Kind: kustomization,
+		Namespace: "team-a", Name: "apps"}, ApplierOf(flux))
+
+	// One provider name in another namespace is another cluster.
+	flux.Spec.KubeProviderRef = meta.NamespacedObjectReference{Namespace: "platform", Name: "prod-eu-1"}
+	assert.Equal(t, ApplierRef{Trigger: byFlux, Cluster: "platform/prod-eu-1", Kind: kustomization,
 		Namespace: "team-a", Name: "apps"}, ApplierOf(flux))
 
 	argo := testTrigger("team-a", &configv1alpha3.ApplyTriggerReference{

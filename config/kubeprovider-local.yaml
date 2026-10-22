@@ -1,0 +1,19 @@
+# The KubeProvider for the SUT / config-dir install, mirroring what the Helm chart renders when
+# kubeProvider.create is true: "local" in the operator's namespace, using the operator's own
+# identity. Every GitTarget names its KubeProvider (spec.kubeProviderRef), and the reconcile-time
+# hard gate REQUIRES it to exist, so local mirroring needs this object — the operator never creates
+# it. spec.inCluster is honored only because deployment.yaml lists gitops-reverser/local in
+# --in-cluster-kube-providers. The empty selector admits every other namespace (matching the chart
+# default); tighten in a real install.
+apiVersion: configbutler.ai/v1alpha3
+kind: KubeProvider
+metadata:
+  name: local
+spec:
+  inCluster: {}
+  accessFrom:
+    selector: {}
+  # Nothing outside the admitted namespaces, as the chart renders it.
+  allowCrossNamespace:
+    sources: false
+    appliers: false

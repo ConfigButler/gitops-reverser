@@ -21,7 +21,7 @@ import "go.opentelemetry.io/otel/metric"
 //	           ApplyRequestFailed Event marks the first failure of a run.
 //	dropped  — the attempt asked nothing, because no GitTarget may still ask for its reason: each
 //	           was deleted or recreated, moved to another branch or applier, is no longer admitted by
-//	           its ClusterProvider, or withdrew its consent to a Refusal.
+//	           its KubeProvider, or withdrew its consent to a Refusal.
 //	stale    — the attempt asked nothing, because the decision no longer held when the write was due:
 //	           the branch had moved on. The worker decides again at once, at the new tip. Frequent
 //	           stale attempts mean the branch keeps moving within an attempt's lifetime.

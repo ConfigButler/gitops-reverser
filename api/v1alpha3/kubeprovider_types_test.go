@@ -8,6 +8,7 @@ import (
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -40,16 +41,16 @@ func TestKubeProvider_AdmitsNamespace(t *testing.T) {
 	p := kubeProvider("platform", "remote", "", time.Now())
 
 	admitted, err := p.AdmitsNamespace("platform", nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, admitted, "a provider admits its own namespace without accessFrom")
 
 	admitted, err = p.AdmitsNamespace("tenant-a", nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.False(t, admitted, "omitted accessFrom admits no other namespace")
 
 	p.Spec.AccessFrom = &NamespaceMatcher{Names: []string{"tenant-a"}}
 	admitted, err = p.AdmitsNamespace("tenant-a", nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, admitted)
 }
 

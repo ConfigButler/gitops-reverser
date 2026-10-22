@@ -106,19 +106,19 @@ func TestBranchTargets_RepeatedRecordStaysOneSeries(t *testing.T) {
 	assert.Equal(t, int64(1), value)
 }
 
-// The cluster axis. A local and a remote target publish distinguishable values, and the local one
-// is a concrete name rather than an empty string: GitTarget.SourceCluster() defaults to "default",
-// so PromQL never has to tell an empty label value apart from a missing label.
+// The cluster axis. A local and a remote target publish distinguishable values, each a concrete
+// KubeProvider namespace/name (GitTarget.SourceCluster()) rather than an empty string, so PromQL
+// never has to tell an empty label value apart from a missing label.
 func TestBranchTargets_SourceClusterDistinguishesLocalFromRemote(t *testing.T) {
 	reader, err := InitTestExporter()
 	require.NoError(t, err)
 	defer ForgetBranchTarget("team-a", "local")
 	defer ForgetBranchTarget("team-a", "remote")
 
-	RecordBranchTarget("team-a", "local", "team-a", "acme", "main", "default")
-	RecordBranchTarget("team-a", "remote", "team-a", "acme", "main", "tenant-eu-1")
+	RecordBranchTarget("team-a", "local", "team-a", "acme", "main", "gitops-reverser/local")
+	RecordBranchTarget("team-a", "remote", "team-a", "acme", "main", "team-a/tenant-eu-1")
 
-	for name, cluster := range map[string]string{"local": "default", "remote": "tenant-eu-1"} {
+	for name, cluster := range map[string]string{"local": "gitops-reverser/local", "remote": "team-a/tenant-eu-1"} {
 		value, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{
 			"gittarget_name": name,
 			"source_cluster": cluster,
@@ -156,7 +156,7 @@ func TestBranchTargets_OneBranchCanSpanTwoClusters(t *testing.T) {
 	}
 }
 
-// A GitTarget's cluster is fixed for its life (spec.clusterProviderRef is CEL-immutable), which is
+// A GitTarget's cluster is fixed for its life (spec.kubeProviderRef is CEL-immutable), which is
 // what makes one join series enough for every GitTarget-labelled instrument. The recording site is
 // still a replace, so a re-reconcile cannot leave two clusters published for one target.
 func TestBranchTargets_RerecordReplacesTheClusterRatherThanAdding(t *testing.T) {

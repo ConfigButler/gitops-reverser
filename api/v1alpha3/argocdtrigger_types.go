@@ -156,12 +156,6 @@ func (t *ArgoCDTrigger) KubeProviderKey() types.NamespacedName {
 	return kubeProviderKey(t.Spec.KubeProviderRef, t.Namespace)
 }
 
-// ClusterProvider is spec.clusterProviderRef.name, or "default" when it is unset, as the schema
-// defaults it: a literal built in a test or by an older client still names a concrete provider.
-func (t *ArgoCDTrigger) ClusterProvider() string {
-	return clusterProviderName(t.Spec.ClusterProviderRef)
-}
-
 // ApplierKind is Application.
 func (t *ArgoCDTrigger) ApplierKind() string { return ApplierKindApplication }
 

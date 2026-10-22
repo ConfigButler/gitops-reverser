@@ -12,7 +12,10 @@ package kubeconfig
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -41,15 +44,78 @@ const (
 	// Secrets and ship them to a remote API server it names. Always rejected — there is no safe
 	// opt-in, unlike exec/insecure-TLS: require the embedded *-data (or inline token) forms.
 	ReasonFileReferenceNotAllowed = "KubeConfigFileReferenceNotAllowed"
+	// ReasonInClusterNotAuthorized: a KubeProvider sets spec.inCluster, the operator's own
+	// identity, and --in-cluster-kube-providers does not list it.
+	ReasonInClusterNotAuthorized = "InClusterNotAuthorized"
 )
 
-// SafetyPolicy is the operator's opt-in to the two footguns this package rejects by default.
-// Both default to false — the safe posture, diverging from Flux's silent strip.
+// SafetyPolicy is the operator's opt-in to what this package rejects by default: the two kubeconfig
+// footguns, and the operator's own identity. All default off — the safe posture, diverging from
+// Flux's silent strip.
 type SafetyPolicy struct {
 	// AllowExec permits exec auth providers (--insecure-kubeconfig-exec).
 	AllowExec bool
 	// AllowInsecureTLS permits insecure-skip-tls-verify (--insecure-kubeconfig-tls).
 	AllowInsecureTLS bool
+	// InClusterProviders are the KubeProviders allowed to use spec.inCluster
+	// (--in-cluster-kube-providers). Empty, none is.
+	InClusterProviders map[types.NamespacedName]struct{}
+}
+
+// The allow-list is an exact set of names on purpose. A wildcard, a prefix or a namespace-wide
+// grant would let anyone who can create a KubeProvider in that scope pick up the operator's own
+// identity, which is exactly the path this list exists to close.
+
+// ParseInClusterProviders parses the --in-cluster-kube-providers value: a comma-separated list of
+// exact namespace/name entries. Empty entries are ignored; anything else that is not one
+// namespace/name pair is an error naming the entry.
+func ParseInClusterProviders(value string) (map[types.NamespacedName]struct{}, error) {
+	out := map[types.NamespacedName]struct{}{}
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		namespace, name, ok := strings.Cut(entry, "/")
+		if !ok || namespace == "" || name == "" || strings.Contains(name, "/") || strings.Contains(entry, "*") {
+			return nil, fmt.Errorf(
+				"in-cluster-kube-providers entry %q is not namespace/name; list each KubeProvider allowed to "+
+					"use spec.inCluster exactly, for example gitops-reverser/local", entry)
+		}
+		out[types.NamespacedName{Namespace: namespace, Name: name}] = struct{}{}
+	}
+	return out, nil
+}
+
+// AllowsInCluster reports whether the KubeProvider named provider may use the operator's own
+// identity.
+func (p SafetyPolicy) AllowsInCluster(provider types.NamespacedName) bool {
+	_, ok := p.InClusterProviders[provider]
+	return ok
+}
+
+// CheckInCluster is the consent check for a KubeProvider that sets spec.inCluster: nil when the
+// installation lists it, and a RejectionError naming the flag when it does not.
+func CheckInCluster(provider types.NamespacedName, policy SafetyPolicy) *RejectionError {
+	if policy.AllowsInCluster(provider) {
+		return nil
+	}
+	allowed := make([]string, 0, len(policy.InClusterProviders))
+	for key := range policy.InClusterProviders {
+		allowed = append(allowed, key.String())
+	}
+	sort.Strings(allowed)
+	listed := "lists none"
+	if len(allowed) > 0 {
+		listed = "lists only " + strings.Join(allowed, ", ")
+	}
+	return &RejectionError{
+		Reason: ReasonInClusterNotAuthorized,
+		Message: fmt.Sprintf(
+			"KubeProvider %s sets spec.inCluster, the operator's own identity, and the installation does not "+
+				"allow it: --in-cluster-kube-providers %s. It is never used; set spec.secretRef instead, or ask "+
+				"the installation's owner to list it", provider, listed),
+	}
 }
 
 // RejectionError is a typed, legible reason a kubeconfig was not accepted. It carries both the

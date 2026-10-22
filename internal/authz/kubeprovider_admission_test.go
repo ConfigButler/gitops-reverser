@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
@@ -20,7 +21,11 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-const testNS = "team-a"
+const (
+	testNS       = "team-a"
+	platformNS   = "platform"
+	platformPrev = "platform-old"
+)
 
 func admissionScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -30,22 +35,24 @@ func admissionScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// targetIn builds a GitTarget in testNS referencing providerName ("" omits
-// clusterProviderRef entirely, which resolves to the reserved "default" provider).
+// targetIn builds a GitTarget in testNS referencing the KubeProvider providerName in platformNS
+// ("" sets no kubeProviderRef at all).
 func targetIn(providerName string) *configv1alpha3.GitTarget {
 	t := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "mirror", Namespace: testNS},
 	}
 	if providerName != "" {
-		t.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: providerName}
+		t.Spec.KubeProviderRef = meta.NamespacedObjectReference{Name: providerName, Namespace: platformNS}
 	}
 	return t
 }
 
-func providerNamed(name string, policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.ClusterProvider {
-	return &configv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       configv1alpha3.ClusterProviderSpec{AccessFrom: policy},
+// providerNamed builds a KubeProvider in platformNS, so the GitTarget in testNS is admitted only
+// through policy.
+func providerNamed(name string, policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.KubeProvider {
+	return &configv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: platformNS},
+		Spec:       configv1alpha3.KubeProviderSpec{AccessFrom: policy},
 	}
 }
 
@@ -67,31 +74,35 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			objects:     []client.Object{namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: false,
-			wantReason:  ReasonClusterProviderNotFound,
-			wantMessage: `referenced ClusterProvider "prod-eu-1" was not found`,
+			wantReason:  ReasonKubeProviderNotFound,
+			wantMessage: "referenced KubeProvider platform/prod-eu-1 was not found",
 		},
 		{
-			// A GitTarget with no clusterProviderRef resolves to "default"; that name is not a
-			// bypass — an undeclared "default" is denied exactly like any other missing provider.
-			name:        "omitted clusterProviderRef resolves to default and is still gated",
+			// No reference names nothing; there is no provider an omitted reference falls back to.
+			name:        "an unset kubeProviderRef is denied, never defaulted",
 			objects:     []client.Object{namespaceLabeled(nil)},
 			target:      targetIn(""),
 			wantAllowed: false,
-			wantReason:  ReasonClusterProviderNotFound,
-			wantMessage: `referenced ClusterProvider "default" was not found`,
+			wantReason:  ReasonKubeProviderNotFound,
+			wantMessage: "spec.kubeProviderRef names no KubeProvider",
 		},
 		{
-			name: "omitted clusterProviderRef is admitted by an admitting default provider",
+			// A provider admits its own namespace without any accessFrom, like a GitProvider.
+			name: "a provider in the target's own namespace is admitted without accessFrom",
 			objects: []client.Object{
-				providerNamed(configv1alpha3.DefaultClusterProviderName,
-					&configv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
+				&configv1alpha3.KubeProvider{ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS}},
 				namespaceLabeled(nil),
 			},
-			target:      targetIn(""),
+			target: &configv1alpha3.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "mirror", Namespace: testNS},
+				Spec: configv1alpha3.GitTargetSpec{
+					KubeProviderRef: meta.NamespacedObjectReference{Name: "local"},
+				},
+			},
 			wantAllowed: true,
 		},
 		{
-			name: "nil accessFrom denies by default",
+			name: "nil accessFrom denies another namespace by default",
 			objects: []client.Object{
 				providerNamed("prod-eu-1", nil),
 				namespaceLabeled(nil),
@@ -99,7 +110,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: false,
 			wantReason:  ReasonNamespaceNotAuthorized,
-			wantMessage: `namespace "team-a" is not permitted to reference ClusterProvider "prod-eu-1"`,
+			wantMessage: `namespace "team-a" is not permitted to reference KubeProvider platform/prod-eu-1`,
 		},
 		{
 			name: "empty policy struct denies by default",
@@ -253,12 +264,12 @@ func TestGitTargetAdmitted_ReadErrorsSurfaceAsError(t *testing.T) {
 		wantMsg string
 	}{
 		{
-			name: "ClusterProvider read failure",
+			name: "KubeProvider read failure",
 			failOn: func(_ client.ObjectKey, obj client.Object) bool {
-				_, ok := obj.(*configv1alpha3.ClusterProvider)
+				_, ok := obj.(*configv1alpha3.KubeProvider)
 				return ok
 			},
-			wantMsg: `read ClusterProvider "prod-eu-1"`,
+			wantMsg: "read KubeProvider platform/prod-eu-1",
 		},
 		{
 			name: "Namespace read failure",
@@ -301,16 +312,18 @@ func TestGitTargetAdmitted_ReadErrorsSurfaceAsError(t *testing.T) {
 	}
 }
 
-// TestApplierAdmitted: an applier is reached with its trigger's ClusterProvider's credential, so
-// that provider's accessFrom must admit the namespace too, and the source's denial comes first.
+// TestApplierAdmitted: an applier is reached with its trigger's KubeProvider's credential, so
+// that provider must admit the namespace too, and the source's denial comes first.
 func TestApplierAdmitted(t *testing.T) {
-	admits := func(name string, namespaces ...string) *configv1alpha3.ClusterProvider {
+	admits := func(name string, namespaces ...string) *configv1alpha3.KubeProvider {
 		return providerNamed(name, &configv1alpha3.NamespaceMatcher{Names: namespaces})
 	}
 	triggerOn := func(cluster string) configv1alpha3.ApplyTrigger {
 		return &configv1alpha3.FluxTrigger{
 			ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "apps"},
-			Spec:       configv1alpha3.FluxTriggerSpec{ClusterProviderRef: &meta.LocalObjectReference{Name: cluster}},
+			Spec: configv1alpha3.FluxTriggerSpec{
+				KubeProviderRef: meta.NamespacedObjectReference{Name: cluster, Namespace: platformNS},
+			},
 		}
 	}
 	tests := []struct {
@@ -338,21 +351,21 @@ func TestApplierAdmitted(t *testing.T) {
 			objects:     []client.Object{admits("prod-eu-1", testNS), admits("hub", "elsewhere")},
 			trigger:     triggerOn("hub"),
 			wantReason:  ReasonNamespaceNotAuthorized,
-			wantMessage: `ClusterProvider "hub"`,
+			wantMessage: "KubeProvider platform/hub",
 		},
 		{
 			name:        "another provider that does not exist",
 			objects:     []client.Object{admits("prod-eu-1", testNS)},
 			trigger:     triggerOn("hub"),
-			wantReason:  ReasonClusterProviderNotFound,
-			wantMessage: "FluxTrigger " + testNS + "/apps spec.clusterProviderRef",
+			wantReason:  ReasonKubeProviderNotFound,
+			wantMessage: "FluxTrigger " + testNS + "/apps spec.kubeProviderRef",
 		},
 		{
 			name:        "the source's denial comes first",
 			objects:     []client.Object{admits("prod-eu-1", "elsewhere"), admits("hub", testNS)},
 			trigger:     triggerOn("hub"),
 			wantReason:  ReasonNamespaceNotAuthorized,
-			wantMessage: `ClusterProvider "prod-eu-1"`,
+			wantMessage: "KubeProvider platform/prod-eu-1",
 		},
 	}
 	for _, tc := range tests {
@@ -365,4 +378,62 @@ func TestApplierAdmitted(t *testing.T) {
 			assert.Contains(t, decision.Message, tc.wantMessage)
 		})
 	}
+}
+
+// TestAuditRouteHeld pins that a provider whose route another namespace holds is not used by any
+// consumer, and that the holder and its own namespace's siblings are.
+func TestAuditRouteHeld(t *testing.T) {
+	older := metav1.NewTime(metav1.Now().Add(-time.Hour))
+	withRoute := func(namespace, name, route string, created metav1.Time) *configv1alpha3.KubeProvider {
+		p := &configv1alpha3.KubeProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, CreationTimestamp: created},
+			Spec: configv1alpha3.KubeProviderSpec{
+				AccessFrom: &configv1alpha3.NamespaceMatcher{Names: []string{testNS}},
+			},
+		}
+		if route != "" {
+			p.Spec.Attribution = &configv1alpha3.KubeProviderAttribution{AuditRoute: route}
+		}
+		return p
+	}
+	holder := withRoute(platformPrev, "prod", "shared", older)
+	sibling := withRoute(platformPrev, "prod-2", "shared", metav1.Now())
+	borrower := withRoute(platformNS, "prod-eu-1", "shared", metav1.Now())
+
+	reader := fake.NewClientBuilder().WithScheme(admissionScheme(t)).
+		WithObjects(holder, sibling, borrower, namespaceLabeled(nil)).Build()
+
+	for _, p := range []*configv1alpha3.KubeProvider{holder, sibling} {
+		decision, err := AuditRouteHeld(context.Background(), reader, p)
+		require.NoError(t, err)
+		assert.True(t, decision.Allowed, "%s shares a route its own namespace holds", p.Key())
+	}
+
+	decision, err := AuditRouteHeld(context.Background(), reader, borrower)
+	require.NoError(t, err)
+	assert.False(t, decision.Allowed)
+	assert.Equal(t, ReasonAuditRouteConflict, decision.Reason)
+	assert.Contains(t, decision.Message, `namespace "platform-old"`)
+	assert.Contains(t, decision.Message, `"platform.prod-eu-1"`, "the message names the default to fall back to")
+
+	// The consumer of the borrowing provider is refused with the same reason, before any watch.
+	admitted, err := GitTargetAdmitted(context.Background(), reader, targetIn("prod-eu-1"))
+	require.NoError(t, err)
+	assert.False(t, admitted.Allowed)
+	assert.Equal(t, ReasonAuditRouteConflict, admitted.Reason)
+}
+
+// TestAuditRouteHeld_ListErrorSurfacesAsError: a failed list must requeue, never refuse.
+func TestAuditRouteHeld_ListErrorSurfacesAsError(t *testing.T) {
+	boom := errors.New("apiserver unavailable")
+	reader := fake.NewClientBuilder().WithScheme(admissionScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return boom
+			},
+		}).Build()
+	decision, err := AuditRouteHeld(context.Background(), reader, providerNamed("prod-eu-1", nil))
+	require.ErrorIs(t, err, boom)
+	assert.False(t, decision.Allowed)
+	assert.Empty(t, decision.Reason)
 }

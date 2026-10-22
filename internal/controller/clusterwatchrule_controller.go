@@ -42,7 +42,7 @@ const (
 	ClusterWatchRuleReasonCatalogNotReady = "CatalogNotReady"
 
 	// ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized is the terminal reason when the
-	// referenced GitTarget's namespace is not admitted by that target's ClusterProvider. It is
+	// referenced GitTarget's namespace is not admitted by that target's KubeProvider. It is
 	// re-exported from internal/watch, where the shared compile path both bootstrap and this
 	// reconciler call decides it, so the two can never drift.
 	ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized = watch.ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized
@@ -63,7 +63,7 @@ type ClusterWatchRuleReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterwatchrules/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=kubeproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -216,7 +216,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 }
 
 // gateClusterWatchRule is the ClusterWatchRule gate and the ONE place this controller compiles a
-// cluster rule. It runs the shared compile path, whose refusal is the ClusterProvider namespace
+// cluster rule. It runs the shared compile path, whose refusal is the KubeProvider namespace
 // admission of the referenced GitTarget: a ClusterWatchRule is cluster-scoped and its gitTargetRef
 // carries a REQUIRED namespace, so it may name a GitTarget in ANY namespace and widen that target's
 // mirror scope cluster-wide. Compiling such a rule without re-applying the target's own provider
@@ -277,7 +277,7 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 // able to assert the rule is already gone.
 //
 // The refusal is terminal (Stalled=True, Reconciling=False) rather than a retry: nothing this
-// controller does will change the verdict. Recovery arrives as an event — a ClusterProvider policy
+// controller does will change the verdict. Recovery arrives as an event — a KubeProvider policy
 // change or a Namespace label change — through the mappers registered in SetupWithManager, or as an
 // edit converting the rule to the cluster-only model.
 func (r *ClusterWatchRuleReconciler) refuseClusterWatchRule(
@@ -368,7 +368,7 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// write bumps resourceVersion and fires an Update watch event that EnqueueRequestForObject
 		// turns straight back into a queued request, un-rate-limited. reconcileStatus.commit()
 		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
-		// matches what GitProvider and ClusterProvider already do.
+		// matches what GitProvider and KubeProvider already do.
 		For(&configbutleraiv1alpha3.ClusterWatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// This rule MIRRORS the GitTarget's readiness into its own GitTargetReady, so the watch has
 		// to see the status-only update that carries a heal — GenerationChangedPredicate would drop
@@ -379,16 +379,16 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
 			builder.WithPredicates(gitTargetReadyProjectionChanged()),
 		).
-		// React to a ClusterProvider's accessFrom changing. Without this, REVOKING a
-		// namespace stops the GitTarget (which does watch ClusterProvider) but leaves this rule's
+		// React to a KubeProvider's accessFrom changing. Without this, REVOKING a
+		// namespace stops the GitTarget (which does watch KubeProvider) but leaves this rule's
 		// compiled entry resident until the next periodic reconcile, so the admission gate would
 		// converge on a ~10m delay instead of on the event. The GitTarget's own status flip cannot
 		// be relied on to carry it: the edge above re-enqueues only on a move in the MIRRORED
 		// readiness, and a revocation need not move it.
 		Watches(
-			&configbutleraiv1alpha3.ClusterProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToClusterWatchRules),
-			builder.WithPredicates(clusterProviderReadyOrSpecChanged()),
+			&configbutleraiv1alpha3.KubeProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToClusterWatchRules),
+			builder.WithPredicates(kubeProviderReadyOrSpecChanged()),
 		).
 		// React to a Namespace's LABELS changing: accessFrom may admit by selector, so a
 		// label change on a GitTarget's namespace grants or revokes every ClusterWatchRule pointing
@@ -416,10 +416,10 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return b.Complete(r)
 }
 
-// clusterProviderToClusterWatchRules maps a ClusterProvider policy change to every ClusterWatchRule
+// kubeProviderToClusterWatchRules maps a KubeProvider policy change to every ClusterWatchRule
 // whose referenced GitTarget mirrors through that provider, so an admission grant or revocation
 // converges on the event rather than on the periodic reconcile.
-func (r *ClusterWatchRuleReconciler) clusterProviderToClusterWatchRules(
+func (r *ClusterWatchRuleReconciler) kubeProviderToClusterWatchRules(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
@@ -432,7 +432,7 @@ func (r *ClusterWatchRuleReconciler) clusterProviderToClusterWatchRules(
 	affected := make(map[types.NamespacedName]struct{}, len(targets.Items))
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.SourceCluster() != obj.GetName() {
+		if t.KubeProviderKey() != client.ObjectKeyFromObject(obj) {
 			continue
 		}
 		affected[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}

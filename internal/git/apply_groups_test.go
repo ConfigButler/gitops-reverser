@@ -74,3 +74,19 @@ func TestGroups_TheSourceIsSharedInTurn(t *testing.T) {
 		loop.serviceAppliers()
 	}
 }
+
+// TestSourceGroup_KeysByTheTriggersKubeProvider: a group is one GitRepository in one cluster, and a
+// cluster is a KubeProvider's namespace/name, so the same GitRepository reached through providers
+// sharing a name in two namespaces is two groups. A trigger that has read no source shares none.
+func TestSourceGroup_KeysByTheTriggersKubeProvider(t *testing.T) {
+	assert.Empty(t, sourceGroup(fluxTrigger("alpha")), "a trigger with no source shares nothing")
+
+	own := fluxTrigger("alpha", applying("platform"))
+	assert.Equal(t, "team-a/"+testKubeProvider+"/flux-system/platform", sourceGroup(own))
+
+	elsewhere := fluxTrigger("alpha", applying("platform"), func(trigger *configv1alpha3.FluxTrigger) {
+		trigger.Spec.KubeProviderRef.Namespace = "platform"
+	})
+	assert.Equal(t, "platform/"+testKubeProvider+"/flux-system/platform", sourceGroup(elsewhere))
+	assert.NotEqual(t, sourceGroup(own), sourceGroup(elsewhere))
+}

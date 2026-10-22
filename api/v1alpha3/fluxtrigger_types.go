@@ -179,10 +179,6 @@ func (t *FluxTrigger) KubeProviderKey() types.NamespacedName {
 	return kubeProviderKey(t.Spec.KubeProviderRef, t.Namespace)
 }
 
-// ClusterProvider is spec.clusterProviderRef.name, or "default" when it is unset, as the schema
-// defaults it: a literal built in a test or by an older client still names a concrete provider.
-func (t *FluxTrigger) ClusterProvider() string { return clusterProviderName(t.Spec.ClusterProviderRef) }
-
 // ApplierKind is Kustomization.
 func (t *FluxTrigger) ApplierKind() string { return ApplierKindKustomization }
 

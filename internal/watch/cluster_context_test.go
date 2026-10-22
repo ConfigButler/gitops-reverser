@@ -4,6 +4,7 @@ package watch
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -13,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -34,12 +36,13 @@ func TestConfigPlaneCluster_SeededAndReachable(t *testing.T) {
 }
 
 // TestSourceClusterInClusterIsResolvedNotNamed pins the model: a source cluster is in-cluster
-// because its ClusterProvider omits kubeConfig, never because of what it is called. A provider
-// named "default" is an ordinary source context and starts out un-resolved (fail-closed).
+// because its KubeProvider resolved to spec.inCluster (and the installation allows it), never
+// because of what it is called. A provider named "default" is an ordinary source context and starts
+// out un-resolved (fail-closed).
 func TestSourceClusterInClusterIsResolvedNotNamed(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 
-	named := m.cluster("default")
+	named := m.cluster("platform/default")
 	assert.False(t, named.configPlane, "no provider name is the config plane")
 	assert.False(t, named.isLocal(),
 		"un-resolved source clusters are treated as remote until their provider says otherwise")
@@ -148,6 +151,13 @@ func TestClassifySourceClusterReachFailure(t *testing.T) {
 		{"unauthorized", apierrors.NewUnauthorized("bad token"), reasonSourceClusterAuthFailed},
 		{"forbidden", apierrors.NewForbidden(gvr, "x", errors.New("nope")), reasonSourceClusterAccessDenied},
 		{"other", errors.New("dial tcp: i/o timeout"), reasonSourceClusterUnreachable},
+		{
+			"a refused credential keeps its own reason",
+			fmt.Errorf("resolve source cluster %q: %w", "team-a/local", &kubeconfig.RejectionError{
+				Reason: kubeconfig.ReasonInClusterNotAuthorized, Message: "not listed",
+			}),
+			kubeconfig.ReasonInClusterNotAuthorized,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -40,7 +41,7 @@ type stubSourceClusterResolver struct {
 }
 
 func (s stubSourceClusterResolver) ResolveSourceCluster(
-	context.Context, string,
+	context.Context, k8stypes.NamespacedName,
 ) (*rest.Config, string, error) {
 	return s.cfg, s.version, s.err
 }
@@ -92,7 +93,7 @@ func TestIsDefinitiveCredentialFailure_ClassifiesCredentialDeath(t *testing.T) {
 	}{
 		{
 			"secret deleted is definitive",
-			fmt.Errorf("resolve source cluster %q: %w", "team-a/kc/value", notFound),
+			fmt.Errorf("resolve source cluster %q: %w", "team-a/prod", notFound),
 			true,
 		},
 		{
@@ -122,7 +123,7 @@ func TestIsDefinitiveCredentialFailure_ClassifiesCredentialDeath(t *testing.T) {
 func TestRefreshClusterCredentials_DropsClientsWhenCredentialGone(t *testing.T) {
 	notFound := apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, "kc")
 	m := &Manager{Log: logr.Discard(), SourceClusters: stubSourceClusterResolver{err: notFound}}
-	cc := m.cluster("team-a/kc/value")
+	cc := m.cluster("team-a/prod")
 	cc.restConfig = &rest.Config{Host: "https://192.0.2.1:6443"}
 	cc.dynamicClient = dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	cc.configVersion = "7"
@@ -139,7 +140,7 @@ func TestRefreshClusterCredentials_KeepsClientsOnTransientError(t *testing.T) {
 		Log:            logr.Discard(),
 		SourceClusters: stubSourceClusterResolver{err: errors.New("dial tcp: i/o timeout")},
 	}
-	cc := m.cluster("team-a/kc/value")
+	cc := m.cluster("team-a/prod")
 	cc.restConfig = &rest.Config{Host: "https://192.0.2.1:6443"}
 	cc.dynamicClient = dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	cc.configVersion = "7"
@@ -187,7 +188,7 @@ func drainEnqueuedNames(ch <-chan event.GenericEvent, limit int) []string {
 
 func TestInvalidateClusterWatches_CancelsAndEnqueuesOnlyThatClusterTargets(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	const clusterA, clusterB = "team-a/kc/value", "team-b/kc/value"
+	const clusterA, clusterB = "team-a/prod", "team-b/prod"
 	m.rememberGitTargetCluster(gd("a1"), clusterA)
 	m.rememberGitTargetCluster(gd("a2"), clusterA)
 	m.rememberGitTargetCluster(gd("b1"), clusterB)
@@ -222,7 +223,7 @@ func TestRefreshClusterCredentials_InvalidatesWatchesOnRotation(t *testing.T) {
 		Log:            logr.Discard(),
 		SourceClusters: stubSourceClusterResolver{cfg: &rest.Config{Host: "h"}, version: "v2"},
 	}
-	const cluster = "team-a/kc/value"
+	const cluster = "team-a/prod"
 	cc := m.cluster(cluster)
 	cc.restConfig = &rest.Config{Host: "h"}
 	cc.configVersion = "v1" // the watches were built on the old version
@@ -246,12 +247,12 @@ func TestClusterMappingFingerprint_MovesOnRetarget(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 	base := m.clusterMappingFingerprint()
 
-	m.rememberGitTargetCluster(gd("t"), "team-a/kc/value")
+	m.rememberGitTargetCluster(gd("t"), "team-a/prod")
 	afterA := m.clusterMappingFingerprint()
 	assert.NotEqual(t, base, afterA, "capturing a source cluster moves the fingerprint")
 	assert.Equal(t, afterA, m.clusterMappingFingerprint(), "stable while the mapping is unchanged")
 
-	m.rememberGitTargetCluster(gd("t"), "team-b/kc2/value")
+	m.rememberGitTargetCluster(gd("t"), "team-b/prod")
 	afterB := m.clusterMappingFingerprint()
 	assert.NotEqual(t, afterA, afterB, "a GitTarget switching source clusters must move the fingerprint")
 }
@@ -264,7 +265,7 @@ func TestRefreshWatchedTypeTables_RetargetReResolvesAtEqualRevisions(t *testing.
 	store := rulestore.NewStore()
 	m := &Manager{Log: logr.Discard(), RuleStore: store, resourceCatalog: newCommonTestCatalog(t)}
 
-	const clusterA, clusterB = "team-a/kc/value", "team-b/kc/value"
+	const clusterA, clusterB = "team-a/prod", "team-b/prod"
 	ccA := seedClusterCatalog(t, m, clusterA, oneScopedResourceDiscovery("", "namespaces", "Namespace", false))
 	ccB := seedClusterCatalog(t, m, clusterB, oneScopedResourceDiscovery("", "nodes", "Node", false))
 	require.Equal(t, ccA.registry.Revision(), ccB.registry.Revision(),
@@ -297,7 +298,7 @@ func TestRefreshWatchedTypeTables_RetargetReResolvesAtEqualRevisions(t *testing.
 
 func TestResolveWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 	m := &Manager{Log: logr.Discard(), resourceCatalog: newCommonTestCatalog(t)}
-	const remote = "team-a/kc/value"
+	const remote = "team-a/prod"
 	seedClusterCatalog(t, m, remote, oneResourceDiscovery("example.com", "widgets", "Widget"))
 	m.rememberGitTargetCluster(types.NewResourceReference("t", "test-ns"), remote)
 
@@ -330,7 +331,7 @@ func TestResolveWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 
 func TestResolveClusterWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 	m := &Manager{Log: logr.Discard(), resourceCatalog: newCommonTestCatalog(t)}
-	const remote = "team-a/kc/value"
+	const remote = "team-a/prod"
 	seedClusterCatalog(t, m, remote,
 		oneScopedResourceDiscovery("example.com", "widgetclasses", "WidgetClass", false))
 	m.rememberGitTargetCluster(types.NewResourceReference("t", "test-ns"), remote)

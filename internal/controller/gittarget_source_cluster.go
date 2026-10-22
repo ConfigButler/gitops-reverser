@@ -7,26 +7,25 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
 )
 
 // GitTargetReasonNamespaceNotAuthorized is the Validated=False reason when a GitTarget's namespace
-// is not admitted by its referenced ClusterProvider's spec.accessFrom. It runs on every
+// is not admitted by its referenced KubeProvider's spec.accessFrom. It runs on every
 // reconcile, so a policy tightened AFTER a GitTarget was created stops that target's watches too.
 const GitTargetReasonNamespaceNotAuthorized = authz.ReasonNamespaceNotAuthorized
 
-// GitTargetReasonClusterProviderNotFound is the Validated=False reason when a GitTarget's
-// referenced ClusterProvider does not exist. This is a HARD GATE: a GitTarget may mirror a source
-// cluster ONLY through an existing ClusterProvider, "default" included. The operator never creates
-// one, so a target whose provider was never declared is held NotReady and its data plane stopped
-// rather than mirroring on an implicit local identity.
-const GitTargetReasonClusterProviderNotFound = authz.ReasonClusterProviderNotFound
+// GitTargetReasonKubeProviderNotFound is the Validated=False reason when a GitTarget's
+// referenced KubeProvider does not exist. This is a HARD GATE: a GitTarget may mirror a source
+// cluster ONLY through an existing KubeProvider. The operator never creates one, so a target whose
+// provider was never declared is held NotReady and its data plane stopped rather than mirroring on
+// an implicit identity.
+const GitTargetReasonKubeProviderNotFound = authz.ReasonKubeProviderNotFound
 
 // checkSourceAuthorization is the GitTarget reconciler's view of the shared source-cluster gate:
-// the referenced ClusterProvider must exist, and it must admit the GitTarget's namespace. The
+// the referenced KubeProvider must exist, and it must admit the GitTarget's namespace. The
 // decision itself lives in internal/authz because the ClusterWatchRule reconciler and the watch
 // manager's bootstrap must reach the SAME verdict — see authz.GitTargetAdmitted.
 //
@@ -50,7 +49,7 @@ func (r *GitTargetReconciler) checkSourceAuthorization(
 
 const (
 	// GitTargetConditionSourceClusterReachable is the RUNTIME reachability of the source
-	// cluster a GitTarget mirrors from: True (reason LocalCluster) when kubeConfig is omitted,
+	// cluster a GitTarget mirrors from: True (reason LocalCluster) for an inCluster provider,
 	// Unknown before the data plane's first discovery, False after a real failed attempt. It is
 	// distinct from Validated: a missing/malformed kubeconfig is Validated=False (an input the
 	// controller reads without a network dial); an otherwise-valid kubeconfig whose API server
@@ -65,21 +64,21 @@ const (
 	// does not hold its branch, or reports itself not Ready.
 	GitTargetReasonGitBranchNotReady = "GitBranchNotReady"
 
-	// GitTargetConditionClusterProviderReady projects the referenced ClusterProvider's Ready onto
+	// GitTargetConditionKubeProviderReady projects the referenced KubeProvider's Ready onto
 	// the GitTarget, so one `kubectl get gittarget` shows whether the SOURCE cluster's provider is
 	// healthy — distinct from SourceClusterReachable (the data plane's runtime reach) and
 	// GitBranchReady (the destination). It follows the GitBranchReady contract: only an
 	// EXPLICIT Ready=False downgrades the GitTarget; a provider that has not reported readiness yet
 	// is Unknown and does not. A MISSING provider never reaches this projection at all — that is the
-	// Validated gate's hard denial (GitTargetReasonClusterProviderNotFound), not a readiness axis.
-	GitTargetConditionClusterProviderReady = "ClusterProviderReady"
-	// GitTargetReasonClusterProviderNotReady is the ClusterProviderReady=False/Unknown reason.
-	GitTargetReasonClusterProviderNotReady = "ClusterProviderNotReady"
+	// Validated gate's hard denial (GitTargetReasonKubeProviderNotFound), not a readiness axis.
+	GitTargetConditionKubeProviderReady = "KubeProviderReady"
+	// GitTargetReasonKubeProviderNotReady is the KubeProviderReady=False/Unknown reason.
+	GitTargetReasonKubeProviderNotReady = "KubeProviderNotReady"
 )
 
-// resolveSourceClusterProvider reads the ClusterProvider this GitTarget mirrors through, ONCE per
+// resolveSourceKubeProvider reads the KubeProvider this GitTarget mirrors through, ONCE per
 // reconcile, for the two consumers that need it: the audit route captured on Declare, and the
-// ClusterProviderReady projection. It runs AFTER the Validated gate, which already proved through
+// KubeProviderReady projection. It runs AFTER the Validated gate, which already proved through
 // authz.GitTargetAdmitted that this provider exists and admits this namespace — so a failure here
 // means the provider vanished (or the apiserver blinked) mid-reconcile, and it is returned as an
 // error so the reconcile requeues.
@@ -90,54 +89,54 @@ const (
 // under a partition the audit webhook never writes to. Attribution then resolves nobody — or, if
 // some other provider is NAMED `shared-route`, resolves that cluster's facts and writes a wrong
 // author into Git.
-func (r *GitTargetReconciler) resolveSourceClusterProvider(
+func (r *GitTargetReconciler) resolveSourceKubeProvider(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
-) (*configbutleraiv1alpha3.ClusterProvider, error) {
-	name := target.SourceCluster()
-	var cp configbutleraiv1alpha3.ClusterProvider
-	if err := r.Get(ctx, k8stypes.NamespacedName{Name: name}, &cp); err != nil {
-		return nil, fmt.Errorf("read source ClusterProvider %q: %w", name, err)
+) (*configbutleraiv1alpha3.KubeProvider, error) {
+	key := target.KubeProviderKey()
+	var cp configbutleraiv1alpha3.KubeProvider
+	if err := r.Get(ctx, key, &cp); err != nil {
+		return nil, fmt.Errorf("read source KubeProvider %s: %w", key, err)
 	}
 	return &cp, nil
 }
 
-// clusterProviderReadiness projects the referenced ClusterProvider's Ready condition, mirroring
-// gitProviderReadiness. It takes the provider resolveSourceClusterProvider already read rather than
+// kubeProviderReadiness projects the referenced KubeProvider's Ready condition, mirroring
+// gitProviderReadiness. It takes the provider resolveSourceKubeProvider already read rather than
 // reading its own, so the readiness reported and the audit route declared always describe the same
 // observation of the same object.
 //
 // Only an EXPLICIT Ready=False downgrades the GitTarget; a provider that has not reported readiness
 // yet is Unknown, which does not.
-func clusterProviderReadiness(cp *configbutleraiv1alpha3.ClusterProvider) conditionValue {
+func kubeProviderReadiness(cp *configbutleraiv1alpha3.KubeProvider) conditionValue {
 	name := cp.Name
 	notReady := func(status metav1.ConditionStatus, format string, args ...any) conditionValue {
 		return conditionValue{
 			Status:  status,
-			Reason:  GitTargetReasonClusterProviderNotReady,
+			Reason:  GitTargetReasonKubeProviderNotReady,
 			Message: fmt.Sprintf(format, args...),
 		}
 	}
 	c := findCondition(cp.Status.Conditions, ConditionTypeReady)
 	switch {
 	case c == nil:
-		return notReady(metav1.ConditionUnknown, "referenced ClusterProvider %q has not reported readiness yet", name)
+		return notReady(metav1.ConditionUnknown, "referenced KubeProvider %q has not reported readiness yet", name)
 	case c.Status == metav1.ConditionTrue:
 		return conditionValue{
 			Status:  metav1.ConditionTrue,
 			Reason:  ReasonSucceeded,
-			Message: fmt.Sprintf("referenced ClusterProvider %q is Ready", name),
+			Message: fmt.Sprintf("referenced KubeProvider %q is Ready", name),
 		}
 	case c.Status == metav1.ConditionFalse:
 		if c.Message != "" {
-			return notReady(metav1.ConditionFalse, "referenced ClusterProvider %q is not Ready: %s", name, c.Message)
+			return notReady(metav1.ConditionFalse, "referenced KubeProvider %q is not Ready: %s", name, c.Message)
 		}
-		return notReady(metav1.ConditionFalse, "referenced ClusterProvider %q is not Ready", name)
+		return notReady(metav1.ConditionFalse, "referenced KubeProvider %q is not Ready", name)
 	default:
 		// Ready=Unknown is the provider saying it does not know yet, which is exactly the case the
 		// contract above refuses to downgrade on. Collapsing it into False would hold a GitTarget
 		// down on a provider mid-reconcile.
-		return notReady(metav1.ConditionUnknown, "referenced ClusterProvider %q readiness is unknown", name)
+		return notReady(metav1.ConditionUnknown, "referenced KubeProvider %q readiness is unknown", name)
 	}
 }
 

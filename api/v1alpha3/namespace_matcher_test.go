@@ -77,8 +77,8 @@ func TestNamespaceMatcher_InvalidSelectorIsAnError(t *testing.T) {
 
 // A present-but-EMPTY selector admits EVERY namespace, while a nil one admits none.
 // LabelSelectorAsSelector returns labels.Everything() for the first and labels.Nothing() for the
-// second, and the chart's own default `default` ClusterProvider ships `accessFrom: {selector: {}}`,
-// so if this ever flipped every install would stop admitting anything.
+// second, and a provider shared with every namespace says so with `accessFrom: {selector: {}}`, so
+// if this ever flipped every such install would stop admitting anything.
 func TestNamespaceMatcher_EmptySelectorMatchesEverything(t *testing.T) {
 	declared := &NamespaceMatcher{Selector: &metav1.LabelSelector{}}
 	admits, err := declared.Matches("any", nil)
@@ -126,13 +126,13 @@ func TestResourceRule_EffectiveSourceNamespace(t *testing.T) {
 // The security default in one line: the delegation flag must be false on a provider that never
 // mentions it, so a WatchRule may watch only its own namespace until a platform admin says
 // otherwise.
-func TestClusterProvider_DelegationFlagDefaultsClosed(t *testing.T) {
-	provider := &ClusterProvider{}
+func TestKubeProvider_DelegationFlagDefaultsClosed(t *testing.T) {
+	provider := &KubeProvider{}
 	assert.False(t, provider.AllowsCrossNamespaceSources(),
 		"source-namespace delegation must never be on by default")
 	assert.False(t, provider.AllowsCrossNamespaceAppliers(),
 		"nor may a trigger reach another namespace's applier by default")
-	provider.Spec.AllowCrossNamespace = &ClusterProviderCrossNamespace{Appliers: true}
+	provider.Spec.AllowCrossNamespace = &KubeProviderCrossNamespace{Appliers: true}
 	assert.False(t, provider.AllowsCrossNamespaceSources(), "each power is granted on its own")
 	assert.True(t, provider.AllowsCrossNamespaceAppliers())
 }

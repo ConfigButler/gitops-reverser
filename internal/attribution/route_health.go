@@ -34,10 +34,10 @@ const firstFactEventsBuffer = 64
 // read side — whether attribution has ever resolved and how many events have gone unresolved
 // since.
 //
-// It makes one specific misconfiguration visible: a ClusterProvider whose
+// It makes one specific misconfiguration visible: a KubeProvider whose
 // spec.attribution.auditRoute names a route no API server posts under reads a partition nothing
 // writes, so every commit through it is authored "attribution unresolved" with no error, no failed
-// reconcile, and perfect mirroring. The published-fact half is what the ClusterProvider's
+// reconcile, and perfect mirroring. The published-fact half is what the KubeProvider's
 // AuditFactsReceived condition latches on; the resolve half is the log warning.
 //
 // The zero value is ready to use. Every method is safe on a nil receiver, so a caller wired for
@@ -57,8 +57,8 @@ type RouteHealth struct {
 	delivered        bool
 	transportFailing bool
 
-	// firstFactEvents carries a ClusterProvider-shaped GenericEvent naming the ROUTE (not an
-	// object) the first time a fact lands on it, so the ClusterProvider controller re-reconciles
+	// firstFactEvents carries a KubeProvider-shaped GenericEvent naming the ROUTE (not an
+	// object) the first time a fact lands on it, so the KubeProvider controller re-reconciles
 	// the providers reading that route within seconds instead of on their periodic requeue.
 	firstFactEvents chan event.GenericEvent
 
@@ -124,9 +124,9 @@ func notifyFirstFact(ch chan event.GenericEvent, route string) {
 	if ch == nil {
 		return
 	}
-	// The object is a CARRIER for the route name, not a real ClusterProvider: several providers
+	// The object is a CARRIER for the route name, not a real KubeProvider: several providers
 	// may declare one route, so the controller maps the route to the providers reading it.
-	evt := event.GenericEvent{Object: &configv1alpha3.ClusterProvider{
+	evt := event.GenericEvent{Object: &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: route},
 	}}
 	select {
@@ -187,7 +187,7 @@ func (h *RouteHealth) TransportFailing() bool {
 //
 // It answers only for THIS process: the registry is in-process state and a restart empties it,
 // including under the memory transport. That is why the condition it feeds is latched in the
-// object's persisted status rather than recomputed from here — see the ClusterProvider controller.
+// object's persisted status rather than recomputed from here — see the KubeProvider controller.
 func (h *RouteHealth) FirstFactAt(route string) (time.Time, bool) {
 	if h == nil {
 		return time.Time{}, false
@@ -199,7 +199,7 @@ func (h *RouteHealth) FirstFactAt(route string) (time.Time, bool) {
 }
 
 // FirstFactEvents returns the channel a controller wires via source.Channel so a route's first
-// fact enqueues the ClusterProviders that read it. It is lazily created, so a zero-value registry
+// fact enqueues the KubeProviders that read it. It is lazily created, so a zero-value registry
 // and a wired one behave the same.
 func (h *RouteHealth) FirstFactEvents() <-chan event.GenericEvent {
 	if h == nil {

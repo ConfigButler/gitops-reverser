@@ -42,17 +42,21 @@ func renderAuditNotes(t *testing.T, values ...string) string {
 	return rendered.Data["notes"]
 }
 
+// chartAuditPath is the audit path of the chart's own KubeProvider in the rendered release: its
+// default route, <release namespace>.<kubeProvider.name>.
+const chartAuditPath = "/audit-webhook/gitops-reverser.local"
+
 // TestChartAuditNotesUseConfiguredRouteMode checks the mTLS generator across service types and route modes.
 func TestChartAuditNotesUseConfiguredRouteMode(t *testing.T) {
 	tests := map[string]struct {
 		values []string
 		url    string
 	}{
-		"default nodeport": {url: "https://127.0.0.1:30444/audit-webhook/default"},
+		"default nodeport": {url: "https://127.0.0.1:30444" + chartAuditPath},
 		"clusterip": {values: []string{"auditService.type=ClusterIP", "auditService.clusterIP=10.96.0.44"},
-			url: "https://10.96.0.44:9444/audit-webhook/default"},
+			url: "https://10.96.0.44:9444" + chartAuditPath},
 		"loadbalancer": {values: []string{"auditService.type=LoadBalancer"},
-			url: "\"https://<reachable-address>:9444/audit-webhook/default\""},
+			url: "\"https://<reachable-address>:9444" + chartAuditPath + "\""},
 		"shared stream": {values: []string{"attribution.auditRouteAnnotationKey=example.com/route"},
 			url: "https://127.0.0.1:30444/audit-webhook"},
 	}
@@ -64,7 +68,7 @@ func TestChartAuditNotesUseConfiguredRouteMode(t *testing.T) {
 			require.Contains(t, notes, "tls-server-name: ${AUDIT_TLS_SERVER_NAME}")
 			require.Contains(t, notes, "umask 077\ncat > audit-webhook.kubeconfig")
 			if name == "shared stream" {
-				require.NotContains(t, notes, "/audit-webhook/default")
+				require.NotContains(t, notes, chartAuditPath)
 				require.Contains(t, notes, "example.com/route")
 			}
 		})
@@ -74,7 +78,7 @@ func TestChartAuditNotesUseConfiguredRouteMode(t *testing.T) {
 // TestChartAuditNotesWithoutTLS checks that development examples match the plain HTTP listener.
 func TestChartAuditNotesWithoutTLS(t *testing.T) {
 	for _, shared := range []bool{false, true} {
-		name, path := "named default", "/audit-webhook/default"
+		name, path := "named route", chartAuditPath
 		values := []string{"servers.audit.tls.enabled=false"}
 		if shared {
 			name, path = "shared stream", "/audit-webhook"

@@ -38,7 +38,7 @@ const (
 // compiles a rule. It runs after the GitTarget and GitProvider are resolved and instead of a bare
 // AddOrUpdateWatchRule, so there is no ungated path from a WatchRule to a compiled rule.
 //
-// The gate is cross-object (WatchRule → GitTarget → ClusterProvider), so it is not expressible in
+// The gate is cross-object (WatchRule → GitTarget → KubeProvider), so it is not expressible in
 // CEL and is a reconciler check rather than a webhook, per docs/spec/where-validation-lives.md —
 // the same shape and ordering as checkSourceAuthorization. Running it on every reconcile is what
 // makes a delegation WITHDRAWN after a rule was accepted revoke that rule.
@@ -94,7 +94,7 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 // asserts the terminal condition must also be able to assert the rule is already gone.
 //
 // The refusal is terminal (Stalled=True, Reconciling=False) rather than a retry: nothing this
-// controller does will change the verdict. Recovery arrives as an EVENT — a ClusterProvider flag or
+// controller does will change the verdict. Recovery arrives as an EVENT — a KubeProvider flag or
 // accessFrom change — through the mappers registered in SetupWithManager.
 func (r *WatchRuleReconciler) refuseSourceNamespace(
 	ctx context.Context,

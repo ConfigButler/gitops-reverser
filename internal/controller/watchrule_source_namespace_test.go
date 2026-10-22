@@ -14,7 +14,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -30,15 +29,17 @@ const (
 	wrsnTarget   = "acme"
 	wrsnRule     = "repo-config-rule"
 	wrsnProvider = "workspaces"
+	// wrsnProviderNS holds the KubeProvider, so wrsnTenantNS reaches it only through accessFrom.
+	wrsnProviderNS = "platform"
 )
 
 func wrsnGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnTarget, Namespace: wrsnTenantNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			GitBranchRef:       meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
-			ClusterProviderRef: &meta.LocalObjectReference{Name: wrsnProvider},
-			Path:               "tenants/acme",
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("git", "main")},
+			KubeProviderRef: meta.NamespacedObjectReference{Namespace: wrsnProviderNS, Name: wrsnProvider},
+			Path:            "tenants/acme",
 		},
 	}
 }
@@ -49,14 +50,15 @@ func wrsnGitProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-func wrsnClusterProvider(delegate bool) *configbutleraiv1alpha3.ClusterProvider {
-	return &configbutleraiv1alpha3.ClusterProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: wrsnProvider},
-		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
+func wrsnKubeProvider(delegate bool) *configbutleraiv1alpha3.KubeProvider {
+	return &configbutleraiv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: wrsnProvider, Namespace: wrsnProviderNS},
+		Spec: configbutleraiv1alpha3.KubeProviderSpec{
+			SecretRef: &meta.SecretKeyReference{Name: "kc"},
 			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{
 				Names: []string{wrsnTenantNS},
 			},
-			AllowCrossNamespace: &configbutleraiv1alpha3.ClusterProviderCrossNamespace{Sources: delegate},
+			AllowCrossNamespace: &configbutleraiv1alpha3.KubeProviderCrossNamespace{Sources: delegate},
 		},
 	}
 }
@@ -146,7 +148,7 @@ func wrsnBaseObjects(
 	return []client.Object{
 		wrsnGitTarget(),
 		wrsnGitProvider(),
-		wrsnClusterProvider(delegate),
+		wrsnKubeProvider(delegate),
 		wrsnWatchRule(sourceNamespaces...),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: wrsnTenantNS}},
 	}
@@ -191,30 +193,6 @@ func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
 	assert.Contains(t, cond.Message, "spec.allowCrossNamespace.sources",
 		"the message must name the fix")
-}
-
-// TestReconcile_TheRemovedFieldDelegatesNothing: a ClusterProvider that still stores
-// allowAnySourceNamespace: true, from the release that read it, delegates nothing; the WatchRule
-// that relied on it is refused, and the message names the field that replaced it.
-func TestReconcile_TheRemovedFieldDelegatesNothing(t *testing.T) {
-	ctx := context.Background()
-	objects := wrsnBaseObjects(false, wrsnSourceNS)
-	for _, obj := range objects {
-		if provider, ok := obj.(*configbutleraiv1alpha3.ClusterProvider); ok {
-			provider.Spec.AllowCrossNamespace = nil
-			provider.Spec.RemovedAllowAnySourceNamespace = ptr.To(true)
-		}
-	}
-	f := newWRSNFixture(t, objects)
-
-	_, err := f.reconcile(ctx)
-
-	require.NoError(t, err)
-	assert.Empty(t, f.compiledNames(), "the removed field is never read")
-	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
-	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "does not set spec.allowCrossNamespace.sources")
 }
 
 // TestReconcile_DeniedSourceNamespacePublishesTheFailedTrio pins the whole kstatus verdict a
@@ -282,8 +260,9 @@ func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *tes
 	require.Equal(t, []string{wrsnRule}, f.compiledNames(), "precondition: the rule is compiled")
 
 	// The platform admin withdraws the delegation.
-	var provider configbutleraiv1alpha3.ClusterProvider
-	require.NoError(t, f.client.Get(ctx, k8stypes.NamespacedName{Name: wrsnProvider}, &provider))
+	var provider configbutleraiv1alpha3.KubeProvider
+	require.NoError(t, f.client.Get(ctx,
+		k8stypes.NamespacedName{Namespace: wrsnProviderNS, Name: wrsnProvider}, &provider))
 	provider.Spec.AllowCrossNamespace = nil
 	require.NoError(t, f.client.Update(ctx, &provider))
 
@@ -302,7 +281,7 @@ func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *tes
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 }
 
-// A ClusterProvider that delegates puts NO further namespace policy in the way: the source
+// A KubeProvider that delegates puts NO further namespace policy in the way: the source
 // credential's own RBAC is the bound, and this gate does not try to predict it. That is the whole
 // simplification, so it is asserted rather than left implied — the previous release refused this
 // exact rule unless a GitTarget policy also listed the namespace.
@@ -320,9 +299,9 @@ func TestReconcile_DelegationIsTheOnlyPolicyLeft(t *testing.T) {
 	assert.Equal(t, WatchRuleReasonSourceNamespaceAllowed, cond.Reason)
 }
 
-// TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying: a transient apiserver failure must
+// TestReconcile_KubeProviderReadErrorRequeuesWithoutDenying: a transient apiserver failure must
 // surface as an error the controller requeues on, and must NOT tear down an already-compiled rule.
-func TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying(t *testing.T) {
+func TestReconcile_KubeProviderReadErrorRequeuesWithoutDenying(t *testing.T) {
 	ctx := context.Background()
 	boom := errors.New("etcdserver: request timed out")
 
@@ -334,7 +313,7 @@ func TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, []string{wrsnRule}, f.compiledNames())
 
-	// Now make the ClusterProvider read fail.
+	// Now make the KubeProvider read fail.
 	f.reconciler.Client = fake.NewClientBuilder().
 		WithScheme(scScheme(t)).
 		WithObjects(wrsnBaseObjects(
@@ -345,7 +324,7 @@ func TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying(t *testing.T) 
 				ctx context.Context, c client.WithWatch, key client.ObjectKey,
 				obj client.Object, opts ...client.GetOption,
 			) error {
-				if _, ok := obj.(*configbutleraiv1alpha3.ClusterProvider); ok {
+				if _, ok := obj.(*configbutleraiv1alpha3.KubeProvider); ok {
 					return boom
 				}
 				return c.Get(ctx, key, obj, opts...)
@@ -425,4 +404,32 @@ func TestReconcile_WildcardWithoutDelegationIsRefused(t *testing.T) {
 	assert.Contains(t, cond.Message, "spec.allowCrossNamespace.sources")
 	assert.Equal(t, metav1.ConditionTrue, wrsnCondition(t, rule, ConditionTypeStalled).Status,
 		"a refusal is terminal: nothing this controller does will change the verdict")
+}
+
+// TestKubeProviderToWatchRules: a provider change requeues exactly the WatchRules whose GitTarget
+// mirrors through THAT provider. The match is on the provider's namespace and name: a provider of
+// the same name in another namespace is another provider.
+func TestKubeProviderToWatchRules(t *testing.T) {
+	sameName := wrsnGitTarget()
+	sameName.Name = "same-name"
+	sameName.Spec.KubeProviderRef = meta.NamespacedObjectReference{Name: wrsnProvider}
+	sameNameRule := wrsnWatchRule(wrsnSourceNS)
+	sameNameRule.Name = "same-name-rule"
+	sameNameRule.Spec.GitTargetRef.Name = sameName.Name
+
+	cl := fake.NewClientBuilder().WithScheme(scScheme(t)).
+		WithObjects(wrsnGitTarget(), sameName, wrsnWatchRule(wrsnSourceNS), sameNameRule).Build()
+	r := &WatchRuleReconciler{Client: cl}
+
+	reqs := r.kubeProviderToWatchRules(context.Background(), wrsnKubeProvider(true))
+	keys := make([]k8stypes.NamespacedName, 0, len(reqs))
+	for _, req := range reqs {
+		keys = append(keys, req.NamespacedName)
+	}
+	assert.Equal(t, []k8stypes.NamespacedName{{Namespace: wrsnTenantNS, Name: wrsnRule}}, keys)
+
+	unrelated := wrsnKubeProvider(true)
+	unrelated.Name = "unrelated"
+	assert.Empty(t, r.kubeProviderToWatchRules(context.Background(), unrelated),
+		"no GitTarget mirrors through it, so no WatchRule is requeued")
 }
