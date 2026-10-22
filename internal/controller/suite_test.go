@@ -131,6 +131,13 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = (&GitReceiverReconciler{
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		ListenerEnabled: true,
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// Wired with a live route registry, as the operator is by default (--author-attribution=true):
 	// that is what exercises the first-fact channel source and the AuditFactsReceived condition.
 	err = (&KubeProviderReconciler{
