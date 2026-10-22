@@ -1,9 +1,9 @@
 # GitBranch, KubeProvider, and a phased API break
 
-Status: **plan**, 2026-10-21. Nothing here is built. The current contract stays in
-[architecture.md](../architecture.md) and [configuration.md](../configuration.md) until each phase
-ships. `ideal-shared-stuff.md` is the analysis behind this plan; this page
-records what we decided from it and in what order we build it.
+Status: **plan**, 2026-10-21. Phase 1 shipped in #429 and phase 2 in #430; phase 3 is not built.
+The current contract is in [architecture.md](../architecture.md) and
+[configuration.md](../configuration.md). This page records what we decided and in what order we
+build it.
 
 The plan breaks the API on purpose, more than once. There are no production users to carry across,
 so each phase replaces a shape outright instead of keeping a deprecated twin beside it. A removed
@@ -155,8 +155,8 @@ way this API is installed. A missing or unauthorized reference is a status condi
 | `GitBranch` | `ParentBranchNotFound`, `RecoveringParentBranch` | Moved from `GitTarget`, with their rules unchanged |
 | `GitBranch` | `BranchConflict` | Another `GitBranch` holds the key (new) |
 
-This departs from the strict-admission section of `ideal-shared-stuff.md`, deliberately.
-`BranchConflict` is a new reason; the others exist today and change only which kind reports them.
+Strict admission, which refuses a reference to an object that does not exist yet, was considered
+and rejected for that reason. `BranchConflict` is a new reason; the others exist today and change only which kind reports them.
 
 ### Lifecycle
 
