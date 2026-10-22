@@ -230,9 +230,9 @@ func TestAuditHandler_OneBatchFansOutToOneStreamPerRoute(t *testing.T) {
 	require.Len(t, appends, 2, "the same type on two routes is two streams, not one")
 
 	byRoute := map[string][]queue.AuthorFact{}
-	for _, append := range appends {
-		require.Equal(t, schema.GroupResource{Resource: "configmaps"}, append.key.GroupResource)
-		byRoute[append.key.AuditRoute] = append.facts
+	for _, a := range appends {
+		require.Equal(t, schema.GroupResource{Resource: "configmaps"}, a.key.GroupResource)
+		byRoute[a.key.AuditRoute] = a.facts
 	}
 
 	require.Len(t, byRoute["prod-eu-1"], 2)

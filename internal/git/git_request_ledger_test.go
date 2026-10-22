@@ -65,7 +65,7 @@ type gitRequestLedger struct {
 }
 
 func newGitRequestLedger() *gitRequestLedger {
-	return &gitRequestLedger{rows: map[gitRequestKind]gitRequestStat{}}
+	return &gitRequestLedger{rows: make(map[gitRequestKind]gitRequestStat)}
 }
 
 // classify names the conversation a request belongs to, or "" for anything the git protocol does
@@ -106,7 +106,7 @@ func (l *gitRequestLedger) record(kind gitRequestKind, reqBytes, respBytes int64
 func (l *gitRequestLedger) snapshot() gitRequestSnapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out := gitRequestSnapshot{}
+	out := make(gitRequestSnapshot)
 	for kind, row := range l.rows {
 		out[kind] = row
 	}
@@ -118,7 +118,7 @@ type gitRequestSnapshot map[gitRequestKind]gitRequestStat
 
 // since returns what happened between base and this reading.
 func (s gitRequestSnapshot) since(base gitRequestSnapshot) gitRequestSnapshot {
-	out := gitRequestSnapshot{}
+	out := make(gitRequestSnapshot)
 	for _, kind := range gitRequestKinds {
 		now, was := s[kind], base[kind]
 		out[kind] = gitRequestStat{

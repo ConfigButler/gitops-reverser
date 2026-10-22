@@ -839,7 +839,7 @@ func detectOverlaps(candidates []RepoCandidate) {
 // are recomputed from each refused-structural candidate's kustomization bytes, so the
 // summary shares one source of truth with the per-candidate detail.
 func summarize(candidates []RepoCandidate, kusts map[string]*kustomizationDoc) RepoSummary {
-	s := RepoSummary{CandidatesByLayout: map[Layout]int{}}
+	s := RepoSummary{CandidatesByLayout: make(map[Layout]int)}
 	constructs := map[string]struct{}{}
 	for _, c := range candidates {
 		s.CandidatesByLayout[c.Layout]++

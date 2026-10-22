@@ -597,7 +597,7 @@ func (r *recordingRequester) taken() []ApplyRequest {
 	requests := r.requests
 	r.requests = nil
 	if r.counted == nil {
-		r.counted = map[configv1alpha3.ApplyReason]int{}
+		r.counted = make(map[configv1alpha3.ApplyReason]int)
 	}
 	for _, req := range requests {
 		r.counted[req.Reason]++

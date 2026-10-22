@@ -509,9 +509,9 @@ func classFromDiag(d manifestedit.Diagnostic) Class {
 func buildSummary(files []FileReport, diags []manifestedit.Diagnostic, dupCount int) Summary {
 	s := Summary{
 		Duplicates:  dupCount,
-		ByClass:     map[Class]int{},
+		ByClass:     make(map[Class]int),
 		ByGVK:       map[string]int{},
-		Diagnostics: map[manifestedit.DiagnosticLevel]int{},
+		Diagnostics: make(map[manifestedit.DiagnosticLevel]int),
 	}
 	for _, f := range files {
 		s.FilesTotal++
