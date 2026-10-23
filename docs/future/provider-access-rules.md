@@ -82,11 +82,12 @@ Every grant answers one question: **who may use this object, and for what?**
 
 The field is `allowed` plus the referring kind, or a family of kinds the API already defines,
 followed by a `from` in each grant. That is Gateway API's `allowedRoutes.namespaces.from`, the
-shape `from` is borrowed from. "Applier claim" is such a family: there is no `ApplierClaim` kind, but a `GitTarget` points at one
-with `applierClaimRef`, and `definitions.md` defines the term. The same `allowedGitTargets` on two
-objects always means "which `GitTarget`s may reference me"; the referenced object decides the
-activity. The names follow [definitions.md](../definitions.md) rule 2, and avoid a bare "claim",
-which `definitions.md` keeps apart as "branch claim" and "applier claim".
+shape `from` is borrowed from. "Applier claim" is such a family: there is no `ApplierClaim` kind,
+but a `GitTarget` points at one with `applierClaimRef`, and `definitions.md` defines the term.
+The same `allowedGitTargets` on two objects always means "which `GitTarget`s may reference me";
+the referenced object decides the activity. The names follow [definitions.md](../definitions.md)
+rule 2, and avoid a bare "claim", which `definitions.md` keeps apart as "branch claim" and "applier
+claim".
 
 This means a little more YAML and fewer hidden rules. It replaces the phase 1 decision that a
 `GitBranch` has no access list and its provider's `accessFrom` "governs both hops". The provider
