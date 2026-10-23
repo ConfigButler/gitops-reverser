@@ -23,7 +23,7 @@ the target watches supply *state*, the branch worker owns *Git*, and audit only 
 ```mermaid
 flowchart TB
     subgraph CFG["Config plane (operator's own cluster)"]
-        CRD["api/v1alpha3<br/>GitTarget · WatchRule · ClusterWatchRule<br/>GitProvider · GitBranch · KubeProvider · CommitRequest<br/>FluxTrigger · ArgoCDTrigger"]
+        CRD["api/v1alpha3<br/>GitTarget · WatchRule · ClusterWatchRule<br/>GitProvider · GitBranch · KubeProvider · CommitRequest<br/>FluxClaim · ArgoCDClaim"]
         CTRL["internal/controller<br/>reconcilers"]
         ADM["internal/webhook<br/>admission handlers"]
         AUTHZ["internal/authz<br/>namespace admission"]
@@ -124,7 +124,7 @@ write to that branch goes through its single event loop.
 | Document editor | [`internal/git/manifestedit/`](../internal/git/manifestedit/) | edits one YAML document in place inside a multi-document file |
 | Manifest report | [`internal/manifestreport/`](../internal/manifestreport/) | projects a live object into a comparable manifest |
 | Encryption and signing | [`internal/git/sops_encryptor.go`](../internal/git/sops_encryptor.go), [`internal/sshsig/`](../internal/sshsig/) | SOPS for sensitive types, SSH signatures for commits |
-| Apply requests | [`internal/applier/`](../internal/applier/) | the Flux and Argo CD clients, the dispatcher that carries out each apply attempt a branch worker decides, and the trigger's `Configured` check |
+| Apply requests | [`internal/applier/`](../internal/applier/) | the Flux and Argo CD clients, the dispatcher that carries out each apply attempt a branch worker decides, and the applier claim's `Configured` check |
 | Push receiver | [`internal/webhook/receiver.go`](../internal/webhook/receiver.go) | `/git-push/` deliveries to a `GitReceiver`, routed by the repository and branch they name to the branch worker of each `GitProvider` whose `spec.url` matches, as a hint to read the remote |
 
 ### Attribution
@@ -190,7 +190,7 @@ flowchart LR
 
 Two more paths reach the operator without being watches at all. The audit webhook is a **push** from
 kube-apiserver, and the admission webhooks are synchronous requests. Neither observes state. The
-apply trigger reconciler reads each trigger's `Kustomization` or `Application` with a GET on its own
+applier claim reconciler reads each applier claim's `Kustomization` or `Application` with a GET on its own
 tick rather than a watch, so a cluster without Flux or Argo CD needs no informer for them.
 
 ### Why two type observers is correct

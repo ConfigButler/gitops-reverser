@@ -1,5 +1,8 @@
 # The apply trigger
 
+**Renamed.** The apply trigger kinds are now applier claims: `FluxClaim` and `ArgoCDClaim`, named
+from a `GitTarget` with `spec.applierClaimRef`. This page keeps the names it was written with. See [applier claim](../definitions.md#applying-back).
+
 > **design**: decided 2026-10-16, extended 2026-10-17, 2026-10-19, 2026-10-20 and 2026-10-23; built:
 > the Flux applier (its `Kustomization` held suspended), the Argo CD applier (its automated sync
 > held off), the
@@ -12,7 +15,7 @@
 > How to use it: [`../bi-directional.md`](../bi-directional.md),
 > [`../bi-directional-flux.md`](../bi-directional-flux.md) and
 > [`../bi-directional-argocd.md`](../bi-directional-argocd.md).
-> Fields: [`../configuration.md`](../configuration.md#who-applies-this-folder-specapplytriggerref).
+> Fields: [`../configuration.md`](../configuration.md#who-applies-this-folder-specapplierclaimref).
 
 **GitOps Reverser decides when Git is applied to the cluster, and the applier never applies on its
 own.** Flux and Argo CD keep fetching, rendering, applying, pruning and reporting health. A Flux
@@ -731,7 +734,7 @@ server-side apply under `gitops-reverser`, touching nothing else of `automated`,
 again when somebody switches it on (`ClaimedResourceReconciled`), and on hand-back gives the switch
 up, which leaves the `Application` as its own spec says, unless that is not how it stood before
 (`status.previousSuspendState`) or how an `ApplicationSet` that adopted it since set it (measured in envtest:
-[`argocdtrigger_apiserver_test.go`](../../internal/controller/argocdtrigger_apiserver_test.go)). So
+[`argocdtrigger_apiserver_test.go`](../../internal/controller/argocdclaim_apiserver_test.go)). So
 its timed refresh and its webhook only compare, and every sync it runs is one GitOps Reverser asked
 for, pinned to a commit the branch worker checked. A switch an `ApplicationSet` or another field
 manager owns is never written, only checked: such an `Application` with automated sync on is
@@ -855,7 +858,7 @@ adopted by one apply.
 
 | Claim | Test |
 | --- | --- |
-| The decision: the baseline, the reasons, a `ForeignCommit` asking every applier and answering everything else pending, nothing sent while no flush can be made, a push notice closing the window | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go) |
+| The decision: the baseline, the reasons, a `ForeignCommit` asking every applier and answering everything else pending, nothing sent while no flush can be made, a push notice closing the window | [`apply_trigger_test.go`](../../internal/git/applier_claim_test.go) |
 | `CatchUp`: the startup converge asks nothing of an applier at the tip, an API create is adopted even at the tip, a first naming converges once, nothing is asked before the initial snapshots are published, an empty tip asks nothing | [`apply_catchup_test.go`](../../internal/git/apply_catchup_test.go) |
 | A snapshot collected across an apply, or arriving while Git is ahead, is discarded; initial snapshots are exempt; a branch with no trigger never waits; snapshots are held no longer than the limit | [`apply_epoch_test.go`](../../internal/git/apply_epoch_test.go) |
 | Another applier's object is not mirrored from a live write, and a snapshot of it is neither upserted nor swept | [`apply_ownership_test.go`](../../internal/git/apply_ownership_test.go) |
@@ -863,14 +866,14 @@ adopted by one apply.
 | The operation is recorded before the write that starts it, moves through its phases on the trigger's status, an attempt that asked nothing restores the record before it, and a withheld rollback makes a `Repair` due | [`apply_operation_test.go`](../../internal/git/apply_operation_test.go), [`status_writer_test.go`](../../internal/applier/status_writer_test.go) |
 | Every attempt rechecks targets, asks for nothing weaker than it was told, and resumes no `Kustomization` on another branch; a stop mid-apply suspends the `Kustomization` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`flux_test.go`](../../internal/applier/flux_test.go) |
 | The suspended lifecycle against the source facts: an apply is not finished when attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../../internal/applier/flux_lifecycle_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go), [`fluxsim`](../../internal/applier/fluxsim/fluxsim_test.go) |
-| Adoption, `SuspendOwnedElsewhere`, an external resume suspended again with an Event every time, the hand-back on deletion (a `ClusterProvider` gone included), and the source's other consumers | [`fluxtrigger_hold_test.go`](../../internal/controller/fluxtrigger_hold_test.go) |
-| The rule: a trigger nothing names reads nothing and is `Ready`; the first eligible reference adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; a re-created `GitTarget` releases and re-adopts; the binding over several `GitTarget`s; an older trigger not in line keeps none out, and a retiring holder stays first until its release is done; a holder left unconfigured says the `Kustomization` is suspended; `ApplierNamespaceNotAllowed` for both kinds | [`applytrigger_rule_test.go`](../../internal/controller/applytrigger_rule_test.go) |
+| Adoption, `SuspendOwnedElsewhere`, an external resume suspended again with an Event every time, the hand-back on deletion (a `ClusterProvider` gone included), and the source's other consumers | [`fluxtrigger_hold_test.go`](../../internal/controller/fluxclaim_hold_test.go) |
+| The rule: a trigger nothing names reads nothing and is `Ready`; the first eligible reference adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; a re-created `GitTarget` releases and re-adopts; the binding over several `GitTarget`s; an older trigger not in line keeps none out, and a retiring holder stays first until its release is done; a holder left unconfigured says the `Kustomization` is suspended; `ApplierNamespaceNotAllowed` for both kinds | [`applytrigger_rule_test.go`](../../internal/controller/applierclaim_rule_test.go) |
 | `allowAnySourceNamespace: true` is refused on create and on any spec change, a stored one included; `false` and its removal are accepted; a `WatchRule` that relied on it is refused naming the new field | `removed_allow_any_source_namespace_test.go` (removed with `ClusterProvider`), [`watchrule_source_namespace_test.go`](../../internal/controller/watchrule_source_namespace_test.go) |
 | A restarted worker follows an operation left in flight with its window open, restores `repairPending`, and follows an apply started elsewhere; one recorded but never resumed ends `Failed` | [`apply_recovery_test.go`](../../internal/git/apply_recovery_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
 | Appliers sharing a source have one operation at a time and take turns, across workers too; a shared source applies only the consumer asked | [`apply_groups_test.go`](../../internal/git/apply_groups_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go) |
-| An applier in another cluster is reached through its own `ClusterProvider`, behind that provider's `accessFrom` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`kubeprovider_admission_test.go`](../../internal/authz/kubeprovider_admission_test.go), [`applytrigger_controller_test.go`](../../internal/controller/applytrigger_controller_test.go) |
+| An applier in another cluster is reached through its own `ClusterProvider`, behind that provider's `accessFrom` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`kubeprovider_admission_test.go`](../../internal/authz/kubeprovider_admission_test.go), [`applytrigger_controller_test.go`](../../internal/controller/applierclaim_controller_test.go) |
 | The applier's late write over a newer edit is withheld, and nothing that could be the edit is: a tie, and an undo that leaves an older applier entry, are mirrored; the apply itself is not mirrored, a delayed echo of the attempt before included; an applier entry older than the send is an edit; an applier write with no window open is late | [`apply_window_test.go`](../../internal/git/apply_window_test.go), [`last_field_managers_test.go`](../../internal/watch/last_field_managers_test.go) |
-| A newly named applier is caught up | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go) |
+| A newly named applier is caught up | [`apply_trigger_test.go`](../../internal/git/applier_claim_test.go) |
 | The receiver's path names no provider, and every miss answers the same | [`receiver_test.go`](../../internal/webhook/receiver_test.go) |
 | The original race: two API edits end at the later value with no extra commit | [bi-directional Flux corner](../../test/e2e/flux_bi_directional_e2e_test.go) |
 | A trigger nothing names is `Ready` and holds nothing; `SourceMismatch` adopts nothing and never stamps the other branch's source; fixed, the `Kustomization` is adopted and Flux reaches the tip; dropping the reference hands it back and naming the trigger again adopts it; a Gitea webhook and the refresh alone each get a push applied; a failed apply is suspended and retried by the worker; a `flux resume` is suspended again; deleting the trigger hands the `Kustomization` back | [Manager Flux Applier](../../test/e2e/flux_applier_e2e_test.go) |
@@ -878,8 +881,8 @@ adopted by one apply.
 | A refused edit is reverted by a resume of its `Kustomization` | [Refusal reapply](../../test/e2e/refusal_reapply_e2e_test.go) |
 | The Flux guide's example is accepted by the code | [`flux_guide_test.go`](../../internal/applier/flux_guide_test.go) |
 | An Argo CD sync is the one automated sync builds, pinned to the commit, with a pinned retry; a running operation is waited out and never replaced; an operation set between the read and the update makes it fail; one whose `.operation` was removed while it ran ends; every `Configured` reason, `OwnedByApplicationSet` and `AutomatedSyncOwnedElsewhere` among them; when a sync counts as finished | [`argocd_test.go`](../../internal/applier/argocd_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
-| An `Application` is asked on a `ForeignCommit` and on a `Refusal`; Argo CD's late write over a newer edit is withheld by its own managers | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go), [`apply_window_test.go`](../../internal/git/apply_window_test.go) |
-| Each trigger kind holds one applier in one cluster, immutably; a trigger nothing names is `Ready` with no finalizer, and a `GitTarget` naming it re-runs its check | [`applytrigger_schema_test.go`](../../internal/controller/applytrigger_schema_test.go) |
+| An `Application` is asked on a `ForeignCommit` and on a `Refusal`; Argo CD's late write over a newer edit is withheld by its own managers | [`apply_trigger_test.go`](../../internal/git/applier_claim_test.go), [`apply_window_test.go`](../../internal/git/apply_window_test.go) |
+| Each trigger kind holds one applier in one cluster, immutably; a trigger nothing names is `Ready` with no finalizer, and a `GitTarget` naming it re-runs its check | [`applytrigger_schema_test.go`](../../internal/controller/applierclaim_schema_test.go) |
 | With Argo CD: two API edits keep the later value with no extra commit; a Git-side push is synced by a pinned `ForeignCommit`; a refused edit is reverted by a sync; automated sync switched on is switched off again; a generated `Application` with automated sync on is `OwnedByApplicationSet` and never synced | [bi-directional Argo CD corner](../../test/e2e/argocd_bi_directional_e2e_test.go) |
 | The Argo CD guide's example is accepted by the code | [`argocd_guide_test.go`](../../internal/applier/argocd_guide_test.go) |
 

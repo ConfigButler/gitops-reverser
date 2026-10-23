@@ -219,7 +219,7 @@ const (
     TypeGitPathAccepted        = "GitPathAccepted"
     TypeRenderMatchesLive      = "RenderMatchesLive"
     TypeLayoutResolved         = "LayoutResolved"
-    TypeApplyTriggerReady      = "ApplyTriggerReady" // only when spec names an apply trigger
+    TypeApplierClaimReady      = "ApplierClaimReady" // only when spec names an applier claim
 )
 ```
 
@@ -300,29 +300,30 @@ Canonical reads:
   existed so a `sourceNamespace: "*"` against a policy admitting nothing could not look healthy while
   mirroring nothing; `"*"` is now one cluster-wide watch, which cannot resolve to an empty set.
 
-### Apply triggers
+### Applier claims
 
-`FluxTrigger` and `ArgoCDTrigger` use the trio with `Configured` as their gate, and a `FluxTrigger`
-adds `Held` as a second one.
+`FluxClaim` and `ArgoCDClaim` use the trio with `Configured` as their gate, and `Held` as a second
+one.
 
 Canonical reads:
 
-- **not referenced** (no `GitTarget` names the trigger): `Configured=Unknown` and `Ready=True`, both
+- **not referenced** (no `GitTarget` names the applier claim): `Configured=Unknown` and `Ready=True`, both
   reason `NotReferenced`, `Reconciling=False`, `Stalled=False`. As for a `GitTarget` with nothing to
   mirror, doing nothing when nothing is asked is converged, and a Flux health check that waits on
-  the trigger must not wait for the `GitTarget` that will name it
-- holding its applier: `Configured=True`, for a `FluxTrigger` `Held=True` (`Suspended` or
+  the applier claim must not wait for the `GitTarget` that will name it
+- holding its applier: `Configured=True`, for a `FluxClaim` `Held=True` (`Suspended` or
   `Applying`), and `Ready=True`
 - applier or `KubeProvider` missing (`ApplierNotFound`, `KubeProviderNotFound`):
   `Ready=False`, `Reconciling=True`, `Stalled=False`, because Flux and Argo CD objects are often
-  created after the trigger. Every other `Configured=False` reason is `Stalled=True`
+  created after the applier claim. Every other `Configured=False` reason is `Stalled=True`
 - an operation past its time (`status.operation.phase: Unresolved`): `Ready=False`,
   `Reconciling=True`, reason `OperationUnresolved`. It clears when the operation completes
-- a `FluxTrigger` whose suspend is not handled yet, or that is handing its `Kustomization` back:
+- a `FluxClaim` whose suspend is not handled yet, or that is handing its `Kustomization` back:
   `Held=False` (`Suspending`, `Releasing`), `Ready=False`, `Reconciling=True`
 
-A `GitTarget` naming a trigger gains `ApplyTriggerReady`, a gate on its own trio. `SourceMismatch`,
-or a trigger that is itself `Stalled`, stalls the target; a missing trigger (`ApplyTriggerNotFound`)
+A `GitTarget` naming an applier claim gains `ApplierClaimReady`, a gate on its own trio.
+`SourceMismatch`, or an applier claim that is itself `Stalled`, stalls the target; a missing applier
+claim (`ApplierClaimNotFound`)
 or one that is not `Ready` yet keeps it `Reconciling`.
 
 ### CommitRequest (one-shot)

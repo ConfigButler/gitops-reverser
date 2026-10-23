@@ -43,10 +43,14 @@ vocabulary follows.
 **Control cluster.** The cluster the operator runs in, and where its own ten kinds live. When a
 document says "a namespace" with no qualifier, it means a control-cluster namespace.
 
-**Source cluster.** The cluster whose objects are mirrored into Git. A `KubeProvider` names one, by
-its namespace and name. It is the same cluster as the control cluster on a single-cluster install,
+**Source cluster.** The cluster whose objects are mirrored into Git. A `GitTarget` names it through
+its `KubeProvider`. It is the same cluster as the control cluster on a single-cluster install,
 which is why the two words have to stay distinct even when they point at one machine:
-`KubeProvider.spec.inCluster` means "the control cluster, acting as a source".
+`KubeProvider.spec.inCluster` means "the control cluster, reached with the operator's own
+identity".
+
+**KubeProvider.** A connection to one cluster and the identity used there; a connection, not a role.
+The same provider can be a `GitTarget`'s source cluster and an applier claim's management cluster.
 
 **Mirror.** The projection of source-cluster objects into a Git folder. It is a noun for the result
 and a verb for the act. The operator mirrors; it does not "sync", "export" or "back up", and those
@@ -58,7 +62,7 @@ folder has exactly one `GitTarget`, and one `GitTarget` has exactly one folder.
 The two directions, which share the word "source" and must not share anything else:
 
 - **Access** is the control-cluster direction: which control-cluster namespaces may reference a
-  provider (`KubeProvider` or `GitProvider`) from a `GitTarget` or trigger. A provider's own
+  provider (`KubeProvider` or `GitProvider`) from a `GitTarget` or applier claim. A provider's own
   namespace always may; `spec.accessFrom` admits the others (the spelling is Flux's, on purpose).
 - **Source namespace** is the source-cluster direction: which source-cluster namespace a rule reads
   objects from. `WatchRule.spec.rules[].sourceNamespace`, gated by
@@ -137,6 +141,8 @@ lowercase in prose, `BranchWorker` as the Go type.
 a push session on the remote. Only the holder gets a branch worker; another `GitBranch` for the same
 repository branch reports `BranchConflict`. Say "branch claim", or that a `GitBranch` "holds" its
 branch; never a bare "claim", which names a rule's demand on the read side. `BranchClaims` in Go.
+The **applier claim** is the cluster side of the same idea: one holds an applier, and another
+reports `HeldByAnotherClaim`.
 
 **Write branch.** The branch a `GitTarget` writes to: its `GitBranch`'s `spec.branch`. It must be in
 the `GitProvider`'s `allowedBranches`.
@@ -202,40 +208,55 @@ and the two are not interchangeable.
 ## Applying back
 
 **Applier.** The object that applies a folder to its source cluster: a Flux `Kustomization` or an
-Argo CD `Application`. An apply trigger names it. Not
-"reconciler", which also names this operator's own controllers, and not "orchestrator", which says
-nothing about what it does to the cluster.
+Argo CD `Application`. An applier claim names it. Not "reconciler", which also names this
+operator's own controllers, and not "orchestrator", which says nothing about what it does to the
+cluster.
 
-**Apply trigger.** This operator's resource that holds one applier and starts every apply it makes: a
-`FluxTrigger` (`spec.kustomizationRef`) or an `ArgoCDTrigger` (`spec.applicationRef`). A
-`GitTarget` names one with `spec.applyTriggerRef` and reports it in its `ApplyTriggerReady`
-condition. The trigger is never called the applier: the applier is the object it triggers. Not
-"Argo trigger", which names a trigger of Argo Events.
+**Applier claim.** This operator's resource that declares GitOps Reverser should take and retain
+control of when one applier applies: a `FluxClaim` (`spec.kustomizationRef`) or an `ArgoCDClaim`
+(`spec.applicationRef`), each with the `KubeProvider` that reaches it. That control covers apply
+timing and nothing else: the applier still fetches, renders, applies, prunes and reports health.
+The applier claim does not say when to apply either; the branch worker decides that. Among applier
+claims that reach an applier through the same `KubeProvider`, one holds it and the others report
+`HeldByAnotherClaim`; applier claims made through two `KubeProvider`s for one cluster are not
+arbitrated (see **In line**). Whether an applier claim holds its applier is **Held**, not
+**Bound**. While it holds a `Kustomization`, a `FluxClaim` keeps it suspended and resumes it only
+for an apply GitOps Reverser asks for. While it holds an `Application`, an `ArgoCDClaim` keeps
+automated sync off and starts each sync itself. Deleting either hands the applier back as
+`status.previousSuspendState` recorded it. A `GitTarget` names one with `spec.applierClaimRef` and
+reports it in its `ApplierClaimReady` condition. Write "applier claim" or the kind name, never a
+bare "claim" (see **Branch claim**). The applier claim is never called the applier: the applier is
+the object it claims.
 
 **Coordinated.** A folder configured for GitOps Reverser to decide when its applier applies.
-Naming an apply trigger makes a `GitTarget`'s folder coordinated. The word also describes the
-`GitTarget` that writes it. It describes the setup; `ApplyTriggerReady` reports whether the apply
-trigger is ready. A shared folder applied without that coordination is **uncoordinated**: the
-applier keeps its own schedule and can revert live edits before they reach Git.
+Naming an applier claim makes a `GitTarget`'s folder coordinated. The word also describes the
+`GitTarget` that writes it. It describes the setup; `ApplierClaimReady` reports whether the applier
+claim is ready. A shared folder applied without that coordination is **uncoordinated**: the applier
+keeps its own schedule and can revert live edits before they reach Git.
 
-**Eligible.** A `GitTarget` is eligible for the trigger it names when it is in the trigger's
-namespace, not being deleted, admitted by its `KubeProvider`s, and writes the repository and
-branch the applier fetches. A trigger acts only while an eligible `GitTarget` references it; one
-nothing references is `NotReferenced`. Eligibility is judged from those inputs alone, never from
-the `GitTarget`'s `Ready`. "Bound" names a trigger with at least one eligible `GitTarget`.
+**Eligible.** A `GitTarget` is eligible for the applier claim it names when it is in the applier
+claim's namespace, not being deleted, admitted by its `KubeProvider`s, and writes the repository
+and branch the applier fetches. An applier claim acts only while an eligible `GitTarget` references
+it; one nothing references is `NotReferenced`. Eligibility is judged from those inputs alone, never
+from the `GitTarget`'s `Ready`. **Bound** names an applier claim with at least one eligible
+`GitTarget`; it says nothing about whether the applier claim holds its applier, which is **Held**.
 
-**In line.** The triggers that may hold one applier: those an eligible `GitTarget` references, and a
-`FluxTrigger` that holds the `Kustomization` or is handing it back. One of them holds it; the
-others report `HeldByAnotherTrigger`.
+**In line.** The applier claims that may hold one applier: those an eligible `GitTarget`
+references, and one that holds the applier or is handing it back. One of them holds it; the others
+report `HeldByAnotherClaim`. Applier claims are in line together only when they reach the applier
+through the same `KubeProvider`. GitOps Reverser cannot tell that two `KubeProvider`s reach the same
+cluster, so name one `KubeProvider` for every applier claim that reaches a given cluster.
 
-**Held.** How a `FluxTrigger` reports its `Kustomization`, from the trigger's side: `Suspended`
-(suspended under GitOps Reverser's field manager, the last suspend handled, nothing applies),
-`Applying` (resumed for an apply GitOps Reverser started), `Suspending` (a suspend was sent, and
-Flux has not handled its token yet), `Releasing` (being handed back to Flux), `NotReferenced`
-(nothing to hold) and `NotConfigured`. A suspend counts as done only once it is handled: by then no
+**Held.** How an applier claim reports its applier, from its own side. For a `FluxClaim`:
+`Suspended` (suspended under GitOps Reverser's field manager, the last suspend handled, nothing
+applies), `Applying` (resumed for an apply GitOps Reverser started), `Suspending` (a suspend was
+sent, and Flux has not handled its token yet), `Releasing` (being handed back to Flux). For an
+`ArgoCDClaim`: `AutomatedSyncOff` (held off by GitOps Reverser, or kept off by whoever owns the
+switch) and `Releasing`. Either may be `NotReferenced` (nothing to hold) or `NotConfigured`. A
+suspend counts as done only once it is handled: by then no
 reconcile that started before it is still running. Not "fenced", and not "resumed", which says what
-happens to the `Kustomization` rather than what the trigger does. **Hand back** is releasing
-`spec.suspend`, so Flux applies on its own again.
+happens to the `Kustomization` rather than what the applier claim does. **Hand back** is releasing
+`spec.suspend`, or switching automated sync back, so the applier applies on its own again.
 
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
 (`ForeignCommit`, `Refusal`, `Repair`, `CatchUp`; a `CatchUp` adopts or converges, both defined
@@ -243,7 +264,7 @@ below). It asks; the operation it starts is followed until the applier's status 
 completed. A reason is **pending** for an applier from
 the moment the branch worker decides it until an attempt **carries** it; an operation that
 succeeds **answers** it, and one that does not gives it back to pending. A pending `Repair` shows
-on the trigger as `status.repairPending`.
+on the applier claim as `status.repairPending`.
 
 **Flush.** What a branch worker does before it sends an apply request: it closes the open commit
 window, takes the **flush mark** (the last write decided so far), and publishes every write up to
@@ -264,13 +285,13 @@ folder. An applier prunes only what it applied, and an apply is what stamps an o
 Flux's owner labels and inventory, Argo CD's tracking annotation. So an object nobody applied stays
 on the cluster when Git later deletes its file. An adopt is pending once the branch worker observes
 an API create in a folder an applier applies, or a resync adds an object to Git, and it is never
-skipped as already applied. A trigger's `Adopted` Event names something else, the trigger taking
+skipped as already applied. An applier claim's `Adopted` Event names something else, the applier claim taking
 hold of its `Kustomization`'s `spec.suspend`.
 
 **Converge.** A `CatchUp` that applies the tip because nothing says the applier runs it: once when
-the branch worker starts, and once when a `GitTarget` first names the trigger (per incarnation, by
+the branch worker starts, and once when a `GitTarget` first names the applier claim (per incarnation, by
 uid). The worker keeps, per applier, the commit its last succeeded operation applied, recovered on
-restart from the trigger's `status.operation`, and a converge of that commit asks nothing.
+restart from the applier claim's `status.operation`, and a converge of that commit asks nothing.
 
 **Apply epoch.** A counter on the branch worker, raised at every send of an apply attempt and at
 every end of one. When a snapshot's collection starts, the watch side reads it, with whether **Git
@@ -498,5 +519,6 @@ outage.
 | namespace access (bare) | access, or source namespace | two directions, two names |
 | reconciler, orchestrator (for Flux or Argo CD) | applier | "reconciler" also names our own controllers |
 | owed, owes, debt, obligation | pending, decided, sent, waiting for | an accounting word names no state: say what is pending, for whom, and what ends it |
-| fence, fenced (for what a trigger does to its applier) | suspend, held | the `Kustomization` is suspended, and the trigger holds it; say which, and whether the suspend is handled |
+| fence, fenced (for what an applier claim does to its applier) | suspend, held | the `Kustomization` is suspended, and the applier claim holds it; say which, and whether the suspend is handled |
+| trigger, apply trigger (for an applier claim) | applier claim | the resource does not declare when to apply, and "trigger" already names watch-plan, API-surface and Argo Events triggers |
 | quiet branch | flush | no apply waits for a branch with nothing pending; it goes after a flush |

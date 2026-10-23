@@ -22,7 +22,7 @@
 >   [plan_flush.go](../../internal/git/plan_flush.go), enforced at the top of `flush`.
 > - **Bootstrap** — a fully-commented
 >   [.gittargetignore](../../internal/git/bootstrapped-repo-template/.gittargetignore) staged
->   alongside README.md / .sops.yaml. A resync into a folder an apply trigger applies, which the
+>   alongside README.md / .sops.yaml. A resync into a coordinated folder, which the
 >   branch does not hold yet, commits these files even with no object, so the applier is never
 >   asked to apply a missing path (`stageResyncFolder` in
 >   [resync_flush.go](../../internal/git/resync_flush.go)).

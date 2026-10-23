@@ -7,6 +7,17 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `FluxTrigger` and `ArgoCDTrigger` are now `FluxClaim` and `ArgoCDClaim`
+
+**Breaking, with no migration path.** Before upgrading, delete every `FluxTrigger` and
+`ArgoCDTrigger` (a `FluxTrigger` hands its `Kustomization` back to Flux, an `ArgoCDTrigger` its
+`Application`'s automated sync), then delete their CRDs. After upgrading, recreate them under the
+new kinds with the same `spec`, and on each `GitTarget` replace `spec.applyTriggerRef` with
+`spec.applierClaimRef`. The `GitTarget` condition is `ApplierClaimReady` (reason
+`ApplierClaimNotFound`), the reason `HeldByAnotherTrigger` is `HeldByAnotherClaim`, and the
+finalizers are `configbutler.ai/flux-claim` and `configbutler.ai/argocd-claim`. The entries below
+use the old names. See [applier claim](definitions.md#applying-back).
+
 ## An `ArgoCDTrigger` holds its `Application`'s automated sync off
 
 An `ArgoCDTrigger` no longer only checks that automated sync is off: it switches it off, with a
@@ -315,7 +326,7 @@ status update until the field changes. The old CRD rejects `Reapply`, so move in
    `ApplierNamespaceNotAllowed`.
 4. Set `onRefusal: Reapply` where you want it.
 
-See [who applies this folder](configuration.md#who-applies-this-folder-specapplytriggerref) and
+See [who applies this folder](configuration.md#who-applies-this-folder-specapplierclaimref) and
 [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
 
 A trigger also changes what else applies the folder. A `FluxTrigger` holds its `Kustomization`

@@ -216,15 +216,15 @@ Whichever words change, **applier**, **apply request**, and **apply operation** 
 
 | Current | New | Where |
 | --- | --- | --- |
-| kind `FluxTrigger`, plural `fluxtriggers` | `FluxClaim`, `fluxclaims` | [fluxtrigger_types.go](../../api/v1alpha3/fluxtrigger_types.go), CRD `configbutler.ai_fluxtriggers.yaml` |
-| kind `ArgoCDTrigger`, plural `argocdtriggers` | `ArgoCDClaim`, `argocdclaims` | [argocdtrigger_types.go](../../api/v1alpha3/argocdtrigger_types.go), CRD file |
-| `GitTarget.spec.applyTriggerRef` (`ApplyTriggerReference`) | `spec.applierClaimRef` (`ApplierClaimReference`); old field removed, not rejected | [gittarget_types.go:82-93](../../api/v1alpha3/gittarget_types.go); enum at [applytrigger_types.go:43](../../api/v1alpha3/applytrigger_types.go) |
+| kind `FluxTrigger`, plural `fluxtriggers` | `FluxClaim`, `fluxclaims` | [fluxtrigger_types.go](../../api/v1alpha3/fluxclaim_types.go), CRD `configbutler.ai_fluxtriggers.yaml` |
+| kind `ArgoCDTrigger`, plural `argocdtriggers` | `ArgoCDClaim`, `argocdclaims` | [argocdtrigger_types.go](../../api/v1alpha3/argocdclaim_types.go), CRD file |
+| `GitTarget.spec.applyTriggerRef` (`ApplyTriggerReference`) | `spec.applierClaimRef` (`ApplierClaimReference`); old field removed, not rejected | [gittarget_types.go:82-93](../../api/v1alpha3/gittarget_types.go); enum at [applytrigger_types.go:43](../../api/v1alpha3/applierclaim_types.go) |
 | `onRefusal: Reapply` CEL rule and message ("needs spec.applyTriggerRef, the trigger asked to reapply") | names `spec.applierClaimRef`, "the applier claim" | [gittarget_types.go:36](../../api/v1alpha3/gittarget_types.go) |
-| condition `ApplyTriggerReady` and its printer column | `ApplierClaimReady` | [gittarget_apply_trigger.go:19](../../internal/controller/gittarget_apply_trigger.go), [gittarget_types.go:545](../../api/v1alpha3/gittarget_types.go) |
-| reason `ApplyTriggerNotFound` | `ApplierClaimNotFound` | [gittarget_apply_trigger.go:23](../../internal/controller/gittarget_apply_trigger.go) |
+| condition `ApplyTriggerReady` and its printer column | `ApplierClaimReady` | [gittarget_apply_trigger.go:19](../../internal/controller/gittarget_applier_claim.go), [gittarget_types.go:545](../../api/v1alpha3/gittarget_types.go) |
+| reason `ApplyTriggerNotFound` | `ApplierClaimNotFound` | [gittarget_apply_trigger.go:23](../../internal/controller/gittarget_applier_claim.go) |
 | reason `HeldByAnotherTrigger` | `HeldByAnotherClaim` | [holder.go:32](../../internal/applier/holder.go) |
-| finalizer `configbutler.ai/flux-trigger` | `configbutler.ai/flux-claim` | [fluxtrigger_types.go:17](../../api/v1alpha3/fluxtrigger_types.go) |
-| RBAC markers and `config/rbac/role.yaml` (`fluxtriggers`, `/status`, `/finalizers`, `argocdtriggers`) | `fluxclaims`, `argocdclaims` | [applytrigger_controller.go:139-142](../../internal/controller/applytrigger_controller.go), [gittarget_controller.go:151](../../internal/controller/gittarget_controller.go) |
+| finalizer `configbutler.ai/flux-trigger` | `configbutler.ai/flux-claim` | [fluxtrigger_types.go:17](../../api/v1alpha3/fluxclaim_types.go) |
+| RBAC markers and `config/rbac/role.yaml` (`fluxtriggers`, `/status`, `/finalizers`, `argocdtriggers`) | `fluxclaims`, `argocdclaims` | [applytrigger_controller.go:139-142](../../internal/controller/applierclaim_controller.go), [gittarget_controller.go:151](../../internal/controller/gittarget_controller.go) |
 | chart README (CRD list, uninstall commands), `values.yaml:123-130,373`, `values.schema.json:419`, `templates/applier-rbac.yaml` comments | the new kinds; the keys `applierAccess` and `allowCrossNamespace.appliers` **stay** (they are about appliers) | `charts/gitops-reverser/` |
 | samples `fluxtrigger.yaml`, `argocdtrigger.yaml`, samples README | `fluxclaim.yaml`, `argocdclaim.yaml` | `config/samples/` |
 | e2e CRD wait list | the new CRD names | [Taskfile-e2e.yml:1332](../../test/e2e/Taskfile-e2e.yml) |
@@ -284,7 +284,7 @@ read-side `claimed` demand, and OIDC token claims in the audit code. Every new i
 - **definitions.md "Words we do not use":**
   - Add "trigger, apply trigger (for an applier claim) → applier claim".
   - Update the "fence" row, which says "what a trigger does to its applier".
-- **The configuration heading:** rename [Who applies this folder (`spec.applyTriggerRef`)](../configuration.md#who-applies-this-folder-specapplytriggerref)
+- **The configuration heading:** rename [Who applies this folder (`spec.applyTriggerRef`)](../configuration.md#who-applies-this-folder-specapplierclaimref)
   to "Who applies this folder (`spec.applierClaimRef`)". That changes the anchor, so fix the 12
   links: 8 in configuration.md, and one each in UPGRADING, api-first-publication,
   interpreting-metrics and design/apply-trigger.
@@ -338,7 +338,7 @@ identity" decision. Renaming doesn't change it, though "claim" makes the gap eas
 applier claim is exclusive only among claims made through the same `KubeProvider`.
 
 - **O1 (PR A): document it.** Add a paragraph to
-  [Who applies this folder](../configuration.md#who-applies-this-folder-specapplytriggerref) and to
+  [Who applies this folder](../configuration.md#who-applies-this-folder-specapplierclaimref) and to
   the **In line** entry in definitions.md: *"One holder per `Kustomization` or `Application` is
   enforced among triggers that reach it through the same `KubeProvider`. GitOps Reverser can't tell
   that two `KubeProvider`s reach the same cluster, so name one `KubeProvider` for every trigger that
@@ -413,7 +413,7 @@ repository branch. `apply_sibling_flush.go` is gone.
   they have."
 - [bi-directional.md:434](../bi-directional.md): delete the bullet "An edit through another
   `GitProvider` on the same repository and branch …". That exposure no longer exists.
-- [internal/git/apply_trigger.go:382](../../internal/git/apply_trigger.go): delete ", and so does a
+- [internal/git/apply_trigger.go:382](../../internal/git/applier_claim.go): delete ", and so does a
   sibling's flush" from the comment.
 
 ## Validation and acceptance

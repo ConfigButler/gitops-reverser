@@ -208,8 +208,8 @@ rebuild fails is no longer dropped: it stays pending for that retry
   lands.
 - [ ] Better branching and promotion strategies.
 
-- [ ] A webhook applier, so an apply trigger can hold a tool other than Flux or Argo CD. Flux and
-  Argo CD are built; see the [apply trigger design](design/apply-trigger.md).
+- [ ] A webhook applier, so an applier claim can hold a tool other than Flux or Argo CD. Flux and
+  Argo CD are built; see the [applier claim design](design/apply-trigger.md).
 
 Research work:
 
