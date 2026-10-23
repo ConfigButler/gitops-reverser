@@ -127,12 +127,12 @@ func cwaGitProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-func cwaKubeProvider(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.KubeProvider {
+func cwaKubeProvider(policy []configbutleraiv1alpha3.SourceGrant) *configbutleraiv1alpha3.KubeProvider {
 	return &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaProviderName, Namespace: cwaProviderNS},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
-			SecretRef:  &meta.SecretKeyReference{Name: "kc"},
-			AccessFrom: policy,
+			SecretRef:         &meta.SecretKeyReference{Name: "kc"},
+			AllowedGitTargets: policy,
 		},
 	}
 }
@@ -151,12 +151,12 @@ func cwaClusterWatchRule() *configbutleraiv1alpha3.ClusterWatchRule {
 }
 
 // cwaAdmitting is the policy that admits cwaTargetNS; cwaDenying admits some other namespace.
-func cwaAdmitting() *configbutleraiv1alpha3.NamespaceMatcher {
-	return &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{cwaTargetNS}}
+func cwaAdmitting() []configbutleraiv1alpha3.SourceGrant {
+	return mirrorGrants(cwaTargetNS)
 }
 
-func cwaDenying() *configbutleraiv1alpha3.NamespaceMatcher {
-	return &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"some-other-namespace"}}
+func cwaDenying() []configbutleraiv1alpha3.SourceGrant {
+	return mirrorGrants("some-other-namespace")
 }
 
 type cwaFixture struct {
@@ -362,9 +362,11 @@ func TestReconcile_AdmittedBySelectorOnNamespaceLabels(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaKubeProvider(&configbutleraiv1alpha3.NamespaceMatcher{
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
-		}),
+		cwaKubeProvider([]configbutleraiv1alpha3.SourceGrant{{
+			From:             configbutleraiv1alpha3.GrantFromSelector,
+			Selector:         &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
+			ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
+		}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 			Name: cwaTargetNS, Labels: map[string]string{"mirror": "yes"},
 		}},
@@ -396,7 +398,7 @@ func TestReconcile_RevocationRemovesCompiledRule(t *testing.T) {
 	var provider configbutleraiv1alpha3.KubeProvider
 	require.NoError(t, f.client.Get(ctx,
 		k8stypes.NamespacedName{Namespace: cwaProviderNS, Name: cwaProviderName}, &provider))
-	provider.Spec.AccessFrom = cwaDenying()
+	provider.Spec.AllowedGitTargets = cwaDenying()
 	require.NoError(t, f.client.Update(ctx, &provider))
 
 	// Round 2: the same reconcile now refuses.

@@ -7,6 +7,8 @@ spec:
   gitProviderRef:
     name: mirror-repository
   branch: main
+  allowedGitTargets:
+    - from: Same
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
@@ -20,8 +22,8 @@ spec:
     name: prod
   path: mirror/prod
   # The WatchRule beside this file names source namespaces other than its own. The
-  # KubeProvider's allowCrossNamespace.sources is the only grant that needs, and the
-  # source credential's RBAC bounds what it can actually read.
+  # KubeProvider's allowedGitTargets grant gives this namespace sourceNamespaces "*",
+  # and the source credential's RBAC bounds what it can actually read.
   # Flat is a DECLARED shape. Without a template the built-in ladder ends at the
   # built-in identity path, which is a tree. One file per object, directly in the
   # folder, is what this template says.

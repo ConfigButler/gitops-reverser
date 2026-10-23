@@ -119,16 +119,16 @@ func claimProviderKey(name string) string {
 	return claimProviderNamespace + "/" + name
 }
 
-// admitting is a KubeProvider in claimProviderNamespace whose accessFrom admits namespaces, and
-// which lets an applier claim name an applier in another namespace (the test appliers live in flux-system
-// and argocd).
+// admitting is a KubeProvider in claimProviderNamespace that admits namespaces to mirror their own
+// namespace, and to hold appliers in any namespace (the test appliers live in flux-system and
+// argocd).
 func admitting(name string, namespaces ...string) *configbutleraiv1alpha3.KubeProvider {
 	return &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: claimProviderNamespace},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
-			InCluster:           &configbutleraiv1alpha3.KubeProviderInCluster{},
-			AccessFrom:          &configbutleraiv1alpha3.NamespaceMatcher{Names: namespaces},
-			AllowCrossNamespace: &configbutleraiv1alpha3.KubeProviderCrossNamespace{Appliers: true},
+			InCluster:            &configbutleraiv1alpha3.KubeProviderInCluster{},
+			AllowedGitTargets:    mirrorGrants(namespaces...),
+			AllowedApplierClaims: applierGrants([]configbutleraiv1alpha3.ScopeNamespace{"*"}, namespaces...),
 		},
 	}
 }

@@ -68,8 +68,6 @@ fields that need more than a line.
 | Field | Default | What it does |
 |---|---|---|
 | `url` | **required** | Repository URL, SSH or HTTPS |
-| `allowedBranches` | **required** | Branches a `GitTarget` may write. A target naming any other is rejected |
-| `accessFrom` | **no other namespace** | Other namespaces whose `GitTarget`s may write through this provider, by name or label selector. Its own namespace is always admitted |
 | `allowedGitBranches` | **no `GitBranch`**, its own namespace included | Which namespaces' `GitBranch`es may claim which branches through this provider. Each grant has a `from` (`Same`, `Names`, `Selector`, `All`) and the `branches` patterns it allows |
 | `secretRef` | anonymous access | Secret holding the write credential. See [the credentials Secret](#gitproviderspecsecretref-the-credentials-secret) |
 | `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
@@ -82,8 +80,8 @@ Every field but `allowedGitTargets` is immutable: to change one, delete the `Git
 
 | Field | Default | What it does |
 |---|---|---|
-| `gitProviderRef` | **required** | The `GitProvider`, in this namespace, whose repository and credential write this branch |
-| `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
+| `gitProviderRef` | **required** | The `GitProvider` whose repository and credential write this branch: in this namespace, or `namespace` names another. Its `allowedGitBranches` must admit this namespace and `branch` |
+| `branch` | **required** | Branch to write. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
 | `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may write through this branch, each grant with a `from`. The only mutable field |
 | `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 
@@ -102,9 +100,6 @@ Set exactly one of `secretRef` and `inCluster`. Both are immutable: delete and r
 |---|---|---|
 | `secretRef` | none; set `inCluster` instead | Secret in this provider's namespace holding a kubeconfig for the source cluster. `key` defaults to `value`, then `value.yaml`. See [`KubeProvider`](#kubeprovider) |
 | `inCluster` | none; set `secretRef` instead | `{}` uses the operator's own identity. Honored only for a provider listed in `--in-cluster-kube-providers`. See [the operator's own identity](#the-operators-own-identity-specincluster) |
-| `accessFrom` | **no other namespace** | Other control-cluster namespaces whose objects may use this provider, by name or label selector. Its own namespace is always admitted; an empty `selector: {}` admits every namespace |
-| `allowCrossNamespace.sources` | `false` | Whether rules may watch namespaces other than their own, `*` included. See [cross-namespace grants](#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace) |
-| `allowCrossNamespace.appliers` | `false` | Whether applier claims may name a `Kustomization` or `Application` in another namespace than their own |
 | `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a `from`, and `sourceNamespaces`, `clusterResources` or both |
 | `allowedApplierClaims` | **no applier claim**, its own namespace included | Which namespaces' applier claims may hold an applier through this provider, and the `applierNamespaces` that applier may live in |
 | `client.qps` | `20` | Client rate limit for this source cluster. Refused beside `inCluster` |
@@ -117,9 +112,9 @@ The destination fields are immutable: to move a target, delete it and create a n
 
 | Field | Default | What it does |
 |---|---|---|
-| `gitBranchRef` | **required** | The `GitBranch` this target writes: its own namespace, or `namespace` names one whose `GitProvider`'s `accessFrom` admits it |
+| `gitBranchRef` | **required** | The `GitBranch` this target writes: its own namespace, or `namespace` names another. Its `allowedGitTargets` must admit this namespace |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
-| `kubeProviderRef` | **required** | The `KubeProvider` to mirror from: its own namespace, or `namespace` names one whose `accessFrom` admits it |
+| `kubeProviderRef` | **required** | The `KubeProvider` to mirror from: its own namespace, or `namespace` names another. Its `allowedGitTargets` must admit this namespace |
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
 | `commit.window.maxDuration` | `1m` | Close a commit window this long after it opened, however much keeps arriving |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
@@ -162,7 +157,7 @@ The references are immutable: to hold another `Kustomization`, delete the applie
 
 | Field | Default | What it does |
 |---|---|---|
-| `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Kustomization`: the applier claim's own namespace, or `namespace` names one whose `accessFrom` admits it |
+| `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Kustomization`: the applier claim's own namespace, or `namespace` names another. Its `allowedApplierClaims` must admit this namespace |
 | `kustomizationRef` | **required** | The `Kustomization` that applies the folders of the `GitTarget`s naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref) |
 
 ### `ArgoCDClaim` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync
@@ -171,7 +166,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 
 | Field | Default | What it does |
 |---|---|---|
-| `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Application`: the applier claim's own namespace, or `namespace` names one whose `accessFrom` admits it |
+| `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Application`: the applier claim's own namespace, or `namespace` names another. Its `allowedApplierClaims` must admit this namespace |
 | `applicationRef` | **required** | The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref) |
 
 ### `CommitRequest` (namespaced): save now

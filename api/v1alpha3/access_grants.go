@@ -329,7 +329,7 @@ func describeAdmitted(sources []NamespaceGrant, holderNamespace string) string {
 	for i := range sources {
 		parts = append(parts, sources[i].Describe(holderNamespace))
 	}
-	return "admits " + strings.Join(parts, "; ")
+	return "admits " + strings.Join(parts, ", ")
 }
 
 // expandScope replaces '{namespace}' in each scope entry with namespace, and returns the entries

@@ -12,8 +12,8 @@ import (
 // WatchRuleSpec defines the desired state of WatchRule.
 // WatchRule selects NAMESPACED resources on its GitTarget's source cluster. Each rules[] item
 // carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
-// or "*" for every namespace the source credential can read (refused unless the KubeProvider
-// sets allowCrossNamespace.sources).
+// or "*" for every namespace the source credential can read. Each is watched only while the
+// KubeProvider's spec.allowedGitTargets give the GitTarget's namespace that source namespace.
 type WatchRuleSpec struct {
 	// GitTargetRef names the GitTarget this rule feeds, in this WatchRule's own namespace.
 	// +required
@@ -109,9 +109,10 @@ type ResourceRule struct {
 	// "*" for every namespace the source credential can read.
 	//
 	// "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
-	// is the credential's own RBAC and nothing else. Naming any namespace other than this rule's
-	// own, "*" included, requires the GitTarget's KubeProvider to admit the target's namespace
-	// AND to set spec.allowCrossNamespace.sources; while that is false, "*" is refused outright.
+	// is the credential's own RBAC and nothing else. Every value, this rule's own namespace
+	// included, needs a grant: the GitTarget's KubeProvider must admit the target's namespace in
+	// spec.allowedGitTargets with that namespace in sourceNamespaces ("{namespace}" is the target's
+	// own). "*" needs "*" there.
 	//
 	// This changes only which namespace is WATCHED, never where objects are written: Git placement
 	// follows each mirrored object's own namespace.
@@ -126,8 +127,8 @@ type ResourceRule struct {
 //
 // It kept its spelling and changed its meaning: it used to resolve live through
 // GitTarget.spec.allowedSourceNamespaces into a concrete set. That field is gone, so the token is
-// bounded by source-cluster RBAC alone and is refused while the KubeProvider does not set
-// spec.allowCrossNamespace.sources. See docs/design/source-scope-simplification.md, which is the
+// bounded by source-cluster RBAC alone and is refused unless the KubeProvider's grant gives
+// sourceNamespaces "*". See docs/design/source-scope-simplification.md, which is the
 // definition of record.
 const SourceNamespaceWildcard = "*"
 
@@ -149,14 +150,6 @@ func (r *ResourceRule) EffectiveSourceNamespace(ruleNamespace string) string {
 // read, as one cluster-wide stream.
 func (r *ResourceRule) IsSourceNamespaceWildcard() bool {
 	return r.SourceNamespace == SourceNamespaceWildcard
-}
-
-// OverridesSourceNamespace reports whether this item asks for a source namespace OTHER than the
-// WatchRule's own — the case that needs the KubeProvider's delegation flag. A sourceNamespace
-// that merely restates the rule's own namespace is not an override and stays the legacy case; "*"
-// always is one, since it reaches every namespace the credential can read.
-func (r *ResourceRule) OverridesSourceNamespace(ruleNamespace string) bool {
-	return r.IsSourceNamespaceWildcard() || r.EffectiveSourceNamespace(ruleNamespace) != ruleNamespace
 }
 
 // DescribeSourceNamespace renders this item's requested source namespace for an operator-facing

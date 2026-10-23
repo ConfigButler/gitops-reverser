@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -25,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -36,13 +36,16 @@ const GitBranchFinalizer = "configbutler.ai/git-branch"
 
 const (
 	// GitBranchReasonGitProviderNotFound is the stall for a GitBranch whose GitProvider does not
-	// exist in its namespace.
+	// exist.
 	GitBranchReasonGitProviderNotFound = "GitProviderNotFound"
 	// GitBranchReasonGitProviderNotReady is the progress reason while the GitProvider is not Ready.
 	GitBranchReasonGitProviderNotReady = "GitProviderNotReady"
-	// GitBranchReasonBranchNotAllowed is the stall for a branch outside the GitProvider's
-	// allowedBranches.
-	GitBranchReasonBranchNotAllowed = "BranchNotAllowed"
+	// GitBranchReasonBranchNotAllowed is the stall for a branch outside the patterns the
+	// GitProvider's spec.allowedGitBranches give this GitBranch's namespace.
+	GitBranchReasonBranchNotAllowed = authz.ReasonBranchNotAllowed
+	// GitBranchReasonNamespaceNotAuthorized is the stall for a GitBranch whose namespace no grant in
+	// the GitProvider's spec.allowedGitBranches admits.
+	GitBranchReasonNamespaceNotAuthorized = authz.ReasonNamespaceNotAuthorized
 	// GitBranchReasonPushSessionFailed is the progress reason while the credential cannot open a
 	// push (receive-pack) session on the remote. A GitBranch that holds its branch keeps it.
 	GitBranchReasonPushSessionFailed = "PushSessionFailed"
@@ -189,11 +192,15 @@ func (r *GitBranchReconciler) evaluate(
 		Created:   branch.CreationTimestamp.Time,
 	}
 
-	if !branchAllowed(provider.Spec.AllowedBranches, branch.Spec.Branch) {
+	// Admission comes before the proof, so a GitBranch no grant admits never opens a push session
+	// with the provider's credential.
+	admitted, err := authz.GitBranchClaimAdmitted(ctx, r.Client, branch, &provider)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !admitted.Allowed {
 		r.observeClaim(key, claimant, false)
-		rd.stalled(GitBranchReasonBranchNotAllowed, fmt.Sprintf(
-			"Branch '%s' does not match any pattern in allowedBranches list %v of GitProvider '%s'",
-			branch.Spec.Branch, provider.Spec.AllowedBranches, branch.GitProviderKey()))
+		rd.stalled(admitted.Reason, admitted.Message)
 		return rd, 0, nil
 	}
 
@@ -388,16 +395,6 @@ func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutler
 	update := branch.DeepCopy()
 	controllerutil.RemoveFinalizer(update, GitBranchFinalizer)
 	return client.IgnoreNotFound(r.Update(ctx, update))
-}
-
-// branchAllowed reports whether branch matches one of the GitProvider's allowedBranches patterns.
-func branchAllowed(patterns []string, branch string) bool {
-	for _, pattern := range patterns {
-		if match, err := filepath.Match(pattern, branch); err == nil && match {
-			return true
-		}
-	}
-	return false
 }
 
 // parentBranchNotFoundMessage says which parent is missing and what fixes it.

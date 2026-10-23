@@ -59,6 +59,11 @@ func TestNamespaceGrant_Admits(t *testing.T) {
 			NamespaceGrant{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-a", nil, true},
 		{"Names admits nothing else",
 			NamespaceGrant{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-b", nil, false},
+		// An exact allow-list, never a prefix: otherwise "team-a-evil" would inherit team-a's grant.
+		{"Names is no prefix match",
+			NamespaceGrant{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-a-evil", nil, false},
+		{"Names is case-sensitive",
+			NamespaceGrant{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "Team-A", nil, false},
 		{"Selector admits a matching namespace", NamespaceGrant{From: GrantFromSelector,
 			Selector: &metav1.LabelSelector{MatchLabels: tenant}}, "team-a", tenant, true},
 		{"Selector admits nothing else", NamespaceGrant{From: GrantFromSelector,
@@ -124,7 +129,7 @@ func TestGitBranch_AdmitsGitTarget_NothingAutomatic(t *testing.T) {
 
 	branch.Spec.AllowedGitTargets = []NamespaceGrant{{From: GrantFromSame},
 		{From: GrantFromNames, Names: []GrantNamespace{"team-b"}}}
-	assert.Equal(t, "admits team-a; team-b", branch.DescribeAllowedGitTargets())
+	assert.Equal(t, "admits team-a, team-b", branch.DescribeAllowedGitTargets())
 }
 
 func TestGitProvider_AdmitsGitBranch(t *testing.T) {

@@ -29,7 +29,7 @@ var _ = Describe("Access grants at admission", func() {
 	}
 	gitProvider := func(grants ...any) *unstructured.Unstructured {
 		return object("GitProvider", map[string]any{
-			"url": "https://example.com/repo.git", "allowedBranches": []any{"*"}, "allowedGitBranches": grants,
+			"url": "https://example.com/repo.git", "allowedGitBranches": grants,
 		})
 	}
 	gitBranch := func(grants ...any) *unstructured.Unstructured {

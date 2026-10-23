@@ -197,12 +197,21 @@ var _ = BeforeSuite(func() {
 
 	// Ship the suite's shared in-cluster KubeProvider, so a GitTarget or applier claim naming it
 	// (testKubeProviderRef) passes the reconcile-time hard gate that REQUIRES the referenced
-	// KubeProvider to exist. Its empty selector admits every namespace the specs create.
+	// KubeProvider to exist. Its grants admit every namespace the specs create, to mirror its own
+	// namespace and every cluster-scoped resource, and to hold appliers anywhere.
 	Expect(k8sClient.Create(ctx, &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: testKubeProviderNamespace, Name: testKubeProviderName},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
-			InCluster:  &configbutleraiv1alpha3.KubeProviderInCluster{},
-			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}},
+			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
+			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{{
+				From:             configbutleraiv1alpha3.GrantFromAll,
+				SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable},
+				ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
+			}},
+			AllowedApplierClaims: []configbutleraiv1alpha3.ApplierGrant{{
+				From:              configbutleraiv1alpha3.GrantFromAll,
+				ApplierNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"*"},
+			}},
 		},
 	})).To(Succeed())
 

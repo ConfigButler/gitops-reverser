@@ -8,7 +8,6 @@ import (
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -37,34 +36,12 @@ func TestKubeProvider_AuditRoute(t *testing.T) {
 	assert.Equal(t, "prod-eu-1", new(kubeProvider("tenant-a", "prod", "prod-eu-1", t0)).AuditRoute())
 }
 
-func TestKubeProvider_AdmitsNamespace(t *testing.T) {
-	p := kubeProvider("platform", "remote", "", time.Now())
-
-	admitted, err := p.AdmitsNamespace("platform", nil)
-	require.NoError(t, err)
-	assert.True(t, admitted, "a provider admits its own namespace without accessFrom")
-
-	admitted, err = p.AdmitsNamespace("tenant-a", nil)
-	require.NoError(t, err)
-	assert.False(t, admitted, "omitted accessFrom admits no other namespace")
-
-	p.Spec.AccessFrom = &NamespaceMatcher{Names: []string{"tenant-a"}}
-	admitted, err = p.AdmitsNamespace("tenant-a", nil)
-	require.NoError(t, err)
-	assert.True(t, admitted)
-}
-
-func TestKubeProvider_CredentialAndGrants(t *testing.T) {
+func TestKubeProvider_CredentialAndKey(t *testing.T) {
 	p := kubeProvider("platform", "local", "", time.Now())
 	assert.False(t, p.IsInCluster())
-	assert.False(t, p.AllowsCrossNamespaceSources())
-	assert.False(t, p.AllowsCrossNamespaceAppliers())
 
 	p.Spec.InCluster = &KubeProviderInCluster{}
-	p.Spec.AllowCrossNamespace = &KubeProviderCrossNamespace{Sources: true, Appliers: true}
 	assert.True(t, p.IsInCluster())
-	assert.True(t, p.AllowsCrossNamespaceSources())
-	assert.True(t, p.AllowsCrossNamespaceAppliers())
 	assert.Equal(t, types.NamespacedName{Namespace: "platform", Name: "local"}, p.Key())
 }
 

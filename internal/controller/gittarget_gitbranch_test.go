@@ -27,9 +27,8 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
-// destinationFixture is a GitTarget team-a/apps on the GitBranch platform/main, which team-a may
-// reference through the GitProvider platform/acme's accessFrom, with a started worker manager and a
-// router with no watch plane.
+// destinationFixture is a GitTarget team-a/apps on the GitBranch platform/main, whose
+// allowedGitTargets admit team-a, with a started worker manager and a router with no watch plane.
 type destinationFixture struct {
 	r       *GitTargetReconciler
 	client  ctrlclient.Client
@@ -43,8 +42,10 @@ func newDestinationFixture(t *testing.T) *destinationFixture {
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 	provider := branchProvider("platform", "acme")
-	provider.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}
 	branch := branchObject("platform", "main", "acme", "main", time.Hour)
+	branch.Spec.AllowedGitTargets = []configbutleraiv1alpha3.NamespaceGrant{
+		{From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames("team-a")},
+	}
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
@@ -97,8 +98,8 @@ func TestReconcile_AGitBranchThatHoldsNothingKeepsTheTargetWaiting(t *testing.T)
 }
 
 // TestReconcile_ATargetOnAHeldGitBranchInAnotherNamespaceIsWired: the GitBranch holds the branch and
-// its GitProvider admits the target's namespace, so the target is wired to the holder's worker with
-// that provider's identity.
+// admits the target's namespace, so the target is wired to the holder's worker with its provider's
+// identity.
 func TestReconcile_ATargetOnAHeldGitBranchInAnotherNamespaceIsWired(t *testing.T) {
 	f := newDestinationFixture(t)
 	f.workers.Claims().Observe(git.BranchKeyFor(gitBranchTestURL, "main"), git.BranchClaimant{
@@ -121,22 +122,22 @@ func TestReconcile_ATargetOnAHeldGitBranchInAnotherNamespaceIsWired(t *testing.T
 	assert.Equal(t, "main", worker.Branch)
 }
 
-// TestReconcile_AGitBranchWhoseProviderDoesNotAdmitTheNamespace: the cross-namespace reference is
-// decided by the branch's GitProvider, against the TARGET's namespace.
-func TestReconcile_AGitBranchWhoseProviderDoesNotAdmitTheNamespace(t *testing.T) {
+// TestReconcile_AGitBranchThatDoesNotAdmitTheNamespace: who may write through a GitBranch is decided
+// by the GitBranch's spec.allowedGitTargets, against the TARGET's namespace.
+func TestReconcile_AGitBranchThatDoesNotAdmitTheNamespace(t *testing.T) {
 	f := newDestinationFixture(t)
-	provider := &configbutleraiv1alpha3.GitProvider{}
-	require.NoError(t, f.client.Get(context.Background(), k8stypes.NamespacedName{Namespace: "platform", Name: "acme"},
-		provider))
-	provider.Spec.AccessFrom = nil
-	require.NoError(t, f.client.Update(context.Background(), provider))
+	branch := &configbutleraiv1alpha3.GitBranch{}
+	require.NoError(t, f.client.Get(context.Background(), k8stypes.NamespacedName{Namespace: "platform", Name: "main"},
+		branch))
+	branch.Spec.AllowedGitTargets = nil
+	require.NoError(t, f.client.Update(context.Background(), branch))
 
 	_, got := f.reconcile(t)
 
 	validated := apimeta.FindStatusCondition(got.Status.Conditions, GitTargetConditionValidated)
 	require.NotNil(t, validated)
 	assert.Equal(t, GitTargetReasonNamespaceNotAuthorized, validated.Reason)
-	assert.Contains(t, validated.Message, "GitBranch platform/main")
+	assert.Contains(t, validated.Message, "GitBranch platform/main admits no namespace in spec.allowedGitTargets")
 }
 
 // TestGitBranchWatches_MapToWhatTheyChange: a GitProvider event reaches the GitBranches in its

@@ -118,11 +118,12 @@ func scScheme(t *testing.T) *runtime.Scheme {
 }
 
 func TestCheckSourceAuthorization(t *testing.T) {
-	// The provider lives in "platform", so team-a reaches it only through spec.accessFrom.
-	provider := func(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.KubeProvider {
+	// The provider lives in "platform", so team-a reaches it only through spec.allowedGitTargets.
+	provider := func(grant configbutleraiv1alpha3.SourceGrant) *configbutleraiv1alpha3.KubeProvider {
 		p := remoteKubeProvider("kc", "")
 		p.Namespace = "platform"
-		p.Spec.AccessFrom = policy
+		grant.SourceNamespaces = []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable}
+		p.Spec.AllowedGitTargets = []configbutleraiv1alpha3.SourceGrant{grant}
 		return p
 	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{"tier": "trusted"}}}
@@ -159,21 +160,34 @@ func TestCheckSourceAuthorization(t *testing.T) {
 		{
 			name: "provider allows the namespace by name",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}), ns,
+				provider(
+					configbutleraiv1alpha3.SourceGrant{
+						From:  configbutleraiv1alpha3.GrantFromNames,
+						Names: grantNames("team-a"),
+					},
+				),
+				ns,
 			},
 			providerRef: "prod-eu-1", wantAuthorized: true,
 		},
 		{
 			name: "provider does not allow the namespace -> refused",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-b"}}), ns,
+				provider(
+					configbutleraiv1alpha3.SourceGrant{
+						From:  configbutleraiv1alpha3.GrantFromNames,
+						Names: grantNames("team-b"),
+					},
+				),
+				ns,
 			},
 			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
 		},
 		{
 			name: "provider allows the namespace by label selector",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.NamespaceMatcher{
+				provider(configbutleraiv1alpha3.SourceGrant{
+					From:     configbutleraiv1alpha3.GrantFromSelector,
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
 				}), ns,
 			},
@@ -182,9 +196,10 @@ func TestCheckSourceAuthorization(t *testing.T) {
 		{
 			// A selector the API accepted but that cannot compile must FAIL CLOSED. Treating an
 			// unevaluatable policy as "allow" would hand a namespace access it was never granted.
-			name: "invalid accessFrom selector -> refused, not allowed",
+			name: "invalid selector -> refused, not allowed",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.NamespaceMatcher{
+				provider(configbutleraiv1alpha3.SourceGrant{
+					From: configbutleraiv1alpha3.GrantFromSelector,
 					Selector: &metav1.LabelSelector{
 						MatchExpressions: []metav1.LabelSelectorRequirement{
 							{Key: "tier", Operator: "BogusOperator", Values: []string{"trusted"}},
@@ -199,14 +214,20 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			// no labels. A name-based allow still works; a selector-only policy then denies.
 			name: "namespace object absent -> evaluated with no labels, name allow still holds",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
+				provider(
+					configbutleraiv1alpha3.SourceGrant{
+						From:  configbutleraiv1alpha3.GrantFromNames,
+						Names: grantNames("team-a"),
+					},
+				),
 			},
 			providerRef: "prod-eu-1", wantAuthorized: true,
 		},
 		{
 			name: "namespace object absent -> selector-only policy denies (no labels to match)",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.NamespaceMatcher{
+				provider(configbutleraiv1alpha3.SourceGrant{
+					From:     configbutleraiv1alpha3.GrantFromSelector,
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
 				}),
 			},
@@ -229,11 +250,13 @@ func TestCheckSourceAuthorization(t *testing.T) {
 }
 
 // TestCheckSourceAuthorization_OwnNamespaceAndAuditRoute covers the two admission rules a
-// namespaced KubeProvider adds: its OWN namespace is always admitted, with no accessFrom and with
-// the reference's namespace omitted; and a provider whose audit route another namespace holds is
-// denied to every consumer, its own namespace included.
+// namespaced KubeProvider adds: its OWN namespace is admitted only by a grant, such as from: Same,
+// with the reference's namespace omitted; and a provider whose audit route another namespace holds
+// is denied to every consumer, its own namespace included.
 func TestCheckSourceAuthorization_OwnNamespaceAndAuditRoute(t *testing.T) {
 	own := inClusterKubeProvider("local")
+	own.Spec.AllowedGitTargets = []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromSame,
+		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable}}}
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: kpNamespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
@@ -241,11 +264,21 @@ func TestCheckSourceAuthorization_OwnNamespaceAndAuditRoute(t *testing.T) {
 		},
 	}
 
-	t.Run("own namespace is admitted without accessFrom", func(t *testing.T) {
+	t.Run("own namespace is admitted by from: Same", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(own).Build()
 		ok, _, _, err := (&GitTargetReconciler{Client: cl}).checkSourceAuthorization(context.Background(), target)
 		require.NoError(t, err)
 		assert.True(t, ok)
+	})
+
+	t.Run("own namespace is refused with no grant", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(inClusterKubeProvider("local")).Build()
+		ok, reason, msg, err := (&GitTargetReconciler{Client: cl}).checkSourceAuthorization(
+			context.Background(), target)
+		require.NoError(t, err)
+		assert.False(t, ok)
+		assert.Equal(t, GitTargetReasonNamespaceNotAuthorized, reason)
+		assert.Contains(t, msg, "admits no namespace in spec.allowedGitTargets")
 	})
 
 	t.Run("a route held by another namespace is refused", func(t *testing.T) {
@@ -282,7 +315,7 @@ func TestCheckSourceAuthorization_ReadErrorsRequeue(t *testing.T) {
 	}
 	provider := remoteKubeProvider("kc", "")
 	provider.Namespace = "platform"
-	provider.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}
+	provider.Spec.AllowedGitTargets = mirrorGrants("team-a")
 
 	tests := []struct {
 		name    string
@@ -373,10 +406,14 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	// The provider lives in platform and admits team-b only; the GitTarget lives in team-a.
 	provider := remoteKubeProvider("kc", "")
 	provider.Namespace = providerKey.Namespace
-	provider.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-b"}}
+	provider.Spec.AllowedGitTargets = mirrorGrants("team-b")
 	gitProvider := &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "gp", Namespace: ns},
-		Spec:       configbutleraiv1alpha3.GitProviderSpec{AllowedBranches: []string{"main"}},
+		Spec: configbutleraiv1alpha3.GitProviderSpec{
+			AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
+				{From: configbutleraiv1alpha3.GrantFromSame, Branches: []configbutleraiv1alpha3.BranchPattern{"main"}},
+			},
+		},
 	}
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: ns, UID: "gt-uid"},
@@ -411,7 +448,7 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	require.NotNil(t, validated, "Validated condition must be set")
 	assert.Equal(t, metav1.ConditionFalse, validated.Status)
 	assert.Equal(t, GitTargetReasonNamespaceNotAuthorized, validated.Reason)
-	assert.Contains(t, validated.Message, "not permitted to reference")
+	assert.Contains(t, validated.Message, "admits team-b in spec.allowedGitTargets")
 
 	// The data plane is reported blocked, not merely un-ready...
 	streams := apimeta.FindStatusCondition(got.Status.Conditions, GitTargetConditionStreamsRunning)

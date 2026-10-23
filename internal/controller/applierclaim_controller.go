@@ -524,7 +524,7 @@ func (r *ApplierClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToClaims),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		// An accessFrom selector reads namespace labels.
+		// A Selector grant reads namespace labels.
 		Watches(
 			&corev1.Namespace{},
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToClaims),

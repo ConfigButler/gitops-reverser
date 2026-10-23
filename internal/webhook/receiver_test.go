@@ -95,8 +95,10 @@ func testProvider(namespace, name, url string) *v1alpha3.GitProvider {
 	return &v1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: v1alpha3.GitProviderSpec{
-			URL:             url,
-			AllowedBranches: []string{"*"},
+			URL: url,
+			AllowedGitBranches: []v1alpha3.GitBranchGrant{
+				{From: v1alpha3.GrantFromSame, Branches: []v1alpha3.BranchPattern{"*"}},
+			},
 		},
 	}
 }

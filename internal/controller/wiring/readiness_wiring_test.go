@@ -109,9 +109,9 @@ func startManager(t *testing.T, register func(manager.Manager) error) {
 }
 
 // seedTarget creates a namespace, a GitProvider, a KubeProvider and a GitTarget mirroring through
-// it, and returns the namespace. The KubeProvider is in the target's own namespace, which it always
-// admits: a ClusterWatchRule is refused (and its GitTargetReady overwritten with the refusal) unless
-// the source cluster admits the target's namespace.
+// it, and returns the namespace. The KubeProvider is in the target's own namespace and grants it
+// every cluster-scoped resource: a ClusterWatchRule is refused (and its GitTargetReady overwritten
+// with the refusal) unless the source cluster admits the target's namespace.
 func seedTarget(ctx context.Context, t *testing.T, name string) string {
 	t.Helper()
 
@@ -122,15 +122,20 @@ func seedTarget(ctx context.Context, t *testing.T, name string) string {
 	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "provider", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
-			URL:             "https://github.com/test/repo.git",
-			AllowedBranches: []string{"*"},
-			SecretRef:       &meta.LocalObjectReference{Name: "git-credentials"},
+			URL: "https://github.com/test/repo.git",
+			AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
+				{From: configbutleraiv1alpha3.GrantFromSame, Branches: []configbutleraiv1alpha3.BranchPattern{"*"}},
+			},
+			SecretRef: &meta.LocalObjectReference{Name: "git-credentials"},
 		},
 	}))
 	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
+			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromSame,
+				SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable},
+				ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"}}},
 		},
 	}))
 	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.GitTarget{

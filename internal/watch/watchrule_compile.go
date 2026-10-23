@@ -148,7 +148,8 @@ func CompileClusterWatchRule(
 const (
 	// ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized is the terminal reason when the
 	// referenced GitTarget's namespace is not admitted by that target's KubeProvider — either
-	// because spec.accessFrom excludes it or because the provider does not exist at all.
+	// because no grant in its spec.allowedGitTargets admits it or because the provider does not
+	// exist at all.
 	//
 	// One rule-side reason covers both provider-side causes on purpose: from the ClusterWatchRule's
 	// point of view the single fact that matters is that this rule may not compile against this

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package authz holds the namespace-admission decisions for the providers a GitTarget uses.
-//
-// A KubeProvider holds a credential that can read a lot of a source cluster; it admits its own
-// namespace, and its spec.accessFrom admits the OTHER control-cluster namespaces permitted to use
-// it. A GitProvider holds a write credential, and admits namespaces the same way.
+// Package authz holds the admission decisions for the objects that lend something: a GitProvider's
+// credential (spec.allowedGitBranches), a GitBranch (spec.allowedGitTargets), and a KubeProvider's
+// cluster connection (spec.allowedGitTargets, spec.allowedApplierClaims). Each grant list lives on
+// the referenced object, and nothing is admitted automatically, the object's own namespace included.
 //
 // The decision lives in its own package — outside both internal/controller and internal/watch —
 // because more than one call site compiles rules or starts a data plane for a GitTarget: the
@@ -16,6 +15,8 @@ package authz
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,14 +33,17 @@ const (
 	// is denied rather than mirroring on an implicit identity.
 	ReasonKubeProviderNotFound = "KubeProviderNotFound"
 
-	// ReasonNamespaceNotAuthorized is the denial reason when the consumer's namespace is neither the
-	// KubeProvider's own nor admitted by its spec.accessFrom — including the case where that policy
-	// carries a selector the apiserver accepted but that does not convert to a selector.
+	// ReasonNamespaceNotAuthorized is the denial reason when no grant on the referenced object admits
+	// the referring object's namespace — including a grant whose selector the apiserver accepted but
+	// that does not convert to a selector.
 	ReasonNamespaceNotAuthorized = "NamespaceNotAuthorized"
 
+	// ReasonBranchNotAllowed is the denial reason when a GitProvider admits a GitBranch's namespace,
+	// but none of the grants that admit it allows the branch the GitBranch claims.
+	ReasonBranchNotAllowed = "BranchNotAllowed"
+
 	// ReasonApplierNamespaceNotAllowed is the denial reason when an applier claim names an applier in
-	// another namespace than its own and its KubeProvider does not set
-	// spec.allowCrossNamespace.appliers.
+	// a namespace outside the applierNamespaces its KubeProvider grants it.
 	ReasonApplierNamespaceNotAllowed = "ApplierNamespaceNotAllowed"
 
 	// ReasonAuditRouteConflict is the denial reason when a KubeProvider's audit route is held by a
@@ -59,9 +63,10 @@ type Decision struct {
 	Message string
 }
 
-// GitTargetAdmitted reports whether target's namespace is admitted by the KubeProvider that
-// target references, reading both the provider and the target's Namespace through reader, and by
-// the GitProvider of the GitBranch it writes through (gitBranchAdmitted).
+// GitTargetAdmitted reports whether target may mirror through the KubeProvider it references
+// (spec.allowedGitTargets) and write through the GitBranch it references (that GitBranch's
+// spec.allowedGitTargets), reading the provider, the GitBranch and the target's Namespace through
+// reader.
 //
 // It is evaluated on every reconcile rather than only at admission, so a policy TIGHTENED after a
 // GitTarget was created revokes it too. The two denial paths are deliberate and ordered: a missing
@@ -70,36 +75,62 @@ type Decision struct {
 //
 // A non-NotFound read error is returned as err so the caller requeues instead of tearing down a
 // running data plane on a transient apiserver failure. A NotFound Namespace is NOT an error: the
-// policy is then evaluated against empty labels, so a `names` entry still admits a namespace that
-// has not been created yet while a selector correctly does not match it.
+// policy is then evaluated against empty labels, so a Names grant still admits a namespace that has
+// not been created yet while a selector correctly does not match it.
 func GitTargetAdmitted(
 	ctx context.Context,
 	reader client.Reader,
 	target *configv1alpha3.GitTarget,
 ) (Decision, error) {
+	decision, _, err := GitTargetSourceScope(ctx, reader, target)
+	return decision, err
+}
+
+// GitTargetSourceScope is GitTargetAdmitted, plus what the grants that admit target let it mirror:
+// the source namespaces its WatchRules may watch and the cluster-scoped resources a ClusterWatchRule
+// may mirror through it. The scope is meaningful only when the decision allows.
+func GitTargetSourceScope(
+	ctx context.Context,
+	reader client.Reader,
+	target *configv1alpha3.GitTarget,
+) (Decision, configv1alpha3.SourceScope, error) {
 	key := target.KubeProviderKey()
-	decision, _, err := namespaceAdmitted(ctx, reader, target.Namespace, key, fmt.Sprintf(
+	decision, provider, err := kubeProviderUsable(ctx, reader, key, fmt.Sprintf(
 		"referenced KubeProvider %s was not found; a GitTarget may mirror a source cluster only "+
 			"through an existing KubeProvider, which the operator never creates", key))
 	if err != nil || !decision.Allowed {
-		return decision, err
+		return decision, configv1alpha3.SourceScope{}, err
 	}
-	return gitBranchAdmitted(ctx, reader, target)
+	nsLabels, err := namespaceLabels(ctx, reader, target.Namespace)
+	if err != nil {
+		return Decision{}, configv1alpha3.SourceScope{}, err
+	}
+	scope, selErr := provider.AdmitsGitTarget(target.Namespace, nsLabels)
+	if !scope.Admitted {
+		return notAdmitted("KubeProvider", key, provider.DescribeAllowedGitTargets(), "spec.allowedGitTargets",
+			target.Namespace, selErr), configv1alpha3.SourceScope{}, nil
+	}
+	if decision, err = AuditRouteHeld(ctx, reader, provider); err != nil || !decision.Allowed {
+		return decision, configv1alpha3.SourceScope{}, err
+	}
+	if decision, err = gitBranchAdmitted(ctx, reader, target, nsLabels); err != nil || !decision.Allowed {
+		return decision, configv1alpha3.SourceScope{}, err
+	}
+	return Decision{Allowed: true}, scope, nil
 }
 
-// gitBranchAdmitted reports whether target's namespace may write through the GitBranch it
-// references. One in its own namespace always may. One in another namespace may only while the
-// GitBranch's GitProvider admits target's namespace in its spec.accessFrom, because the GitTarget
-// then writes with that provider's credential: one policy governs both hops, so it cannot be split
-// across two objects that disagree. A GitBranch or GitProvider that does not exist admits nothing
-// and denies nothing here: there is no credential to wield, and their status reports them missing.
+// gitBranchAdmitted reports whether target may write through the GitBranch it references: one of
+// that GitBranch's spec.allowedGitTargets admits target's namespace. The GitBranch's own namespace
+// is admitted only by a grant too. A GitBranch that does not exist admits nothing and denies nothing
+// here: there is nothing to write through, and the GitTarget's status reports it missing.
 func gitBranchAdmitted(
 	ctx context.Context,
 	reader client.Reader,
 	target *configv1alpha3.GitTarget,
+	nsLabels map[string]string,
 ) (Decision, error) {
 	key := target.GitBranchKey()
-	if key.Name == "" || key.Namespace == target.Namespace {
+	if key.Name == "" {
 		return Decision{Allowed: true}, nil
 	}
 	branch := &configv1alpha3.GitBranch{}
@@ -109,72 +140,94 @@ func gitBranchAdmitted(
 		}
 		return Decision{}, fmt.Errorf("read GitBranch %s: %w", key, err)
 	}
-	providerKey := branch.GitProviderKey()
-	provider := &configv1alpha3.GitProvider{}
-	if err := reader.Get(ctx, providerKey, provider); err != nil {
-		if apierrors.IsNotFound(err) {
-			return Decision{Allowed: true}, nil
-		}
-		return Decision{}, fmt.Errorf("read GitProvider %s: %w", providerKey, err)
+	admitted, selErr := branch.AdmitsGitTarget(target.Namespace, nsLabels)
+	if !admitted {
+		return notAdmitted("GitBranch", key, branch.DescribeAllowedGitTargets(), "spec.allowedGitTargets",
+			target.Namespace, selErr), nil
 	}
-	nsLabels, err := namespaceLabels(ctx, reader, target.Namespace)
+	return Decision{Allowed: true}, nil
+}
+
+// GitBranchClaimAdmitted reports whether branch may claim its spec.branch through provider, the
+// GitProvider it references: a grant in provider's spec.allowedGitBranches admits the GitBranch's
+// namespace, and one of the patterns those grants give it matches the branch. A namespace no grant
+// admits is ReasonNamespaceNotAuthorized; an admitted one asking for a branch outside its patterns
+// is ReasonBranchNotAllowed. A non-NotFound read of the Namespace is returned as err, so a caller
+// keeps its last answer rather than revoking on a transient failure.
+func GitBranchClaimAdmitted(
+	ctx context.Context,
+	reader client.Reader,
+	branch *configv1alpha3.GitBranch,
+	provider *configv1alpha3.GitProvider,
+) (Decision, error) {
+	nsLabels, err := namespaceLabels(ctx, reader, branch.Namespace)
 	if err != nil {
 		return Decision{}, err
 	}
-	allowed, selErr := provider.AdmitsNamespace(target.Namespace, nsLabels)
-	if selErr != nil {
+	key := client.ObjectKeyFromObject(provider)
+	admission, selErr := provider.AdmitsGitBranch(branch.Namespace, nsLabels, branch.Spec.Branch)
+	switch {
+	case !admission.Admitted:
+		return notAdmitted("GitProvider", key, provider.DescribeAllowedGitBranches(), "spec.allowedGitBranches",
+			branch.Namespace, selErr), nil
+	case !admission.Allowed:
 		return Decision{
-			Reason:  ReasonNamespaceNotAuthorized,
-			Message: fmt.Sprintf("GitProvider %s accessFrom selector is invalid: %v", providerKey, selErr),
-		}, nil
-	}
-	if !allowed {
-		return Decision{
-			Reason: ReasonNamespaceNotAuthorized,
+			Reason: ReasonBranchNotAllowed,
 			Message: fmt.Sprintf(
-				"namespace %q is not permitted to reference GitBranch %s: its GitProvider %s does not admit it "+
-					"(spec.accessFrom)", target.Namespace, key, providerKey),
+				"namespace %q may claim %s through GitProvider %s (spec.allowedGitBranches); requested branch %q "+
+					"is not allowed", branch.Namespace, quoteAll(admission.Branches), key, branch.Spec.Branch),
 		}, nil
 	}
 	return Decision{Allowed: true}, nil
 }
 
-// ApplierClaimAdmitted reports whether an applier claim's namespace is admitted by the KubeProvider it
-// names (spec.kubeProviderRef), and whether it may reach its applier there. The applier is
-// reached with that provider's credential, so the provider's accessFrom decides who may wield it,
-// exactly as for mirroring, and its allowCrossNamespace.appliers whether a namespace may suspend
-// and apply another namespace's applier. The applier claim's own namespace is always allowed; in a remote
-// cluster that is the namespace of the same name, as it is for mirroring.
+// ApplierClaimAdmitted reports whether an applier claim may hold its applier through the KubeProvider
+// it names (spec.kubeProviderRef): a grant in that provider's spec.allowedApplierClaims admits the
+// applier claim's namespace, and the applier lives in one of the applierNamespaces those grants
+// give it. The applier is reached with that provider's credential, so admission to mirror through
+// it is no admission to apply.
 func ApplierClaimAdmitted(
 	ctx context.Context,
 	reader client.Reader,
 	claim configv1alpha3.ApplierClaim,
 ) (Decision, error) {
 	key := claim.KubeProviderKey()
-	decision, provider, err := namespaceAdmitted(ctx, reader, claim.GetNamespace(), key, fmt.Sprintf(
+	decision, provider, err := kubeProviderUsable(ctx, reader, key, fmt.Sprintf(
 		"KubeProvider %s named by %s %s/%s spec.kubeProviderRef was not found",
 		key, claim.ClaimKind(), claim.GetNamespace(), claim.GetName()))
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
+	nsLabels, err := namespaceLabels(ctx, reader, claim.GetNamespace())
+	if err != nil {
+		return Decision{}, err
+	}
+	scope, selErr := provider.AdmitsApplierClaim(claim.GetNamespace(), nsLabels)
+	if !scope.Admitted {
+		return notAdmitted("KubeProvider", key, provider.DescribeAllowedApplierClaims(), "spec.allowedApplierClaims",
+			claim.GetNamespace(), selErr), nil
+	}
+	if decision, err = AuditRouteHeld(ctx, reader, provider); err != nil || !decision.Allowed {
+		return decision, err
+	}
 	applier := claim.Applier()
-	if applier.Namespace != claim.GetNamespace() && !provider.AllowsCrossNamespaceAppliers() {
+	if !scope.AllowsApplierNamespace(applier.Namespace) {
 		return Decision{
 			Reason: ReasonApplierNamespaceNotAllowed,
 			Message: fmt.Sprintf(
-				"%s %s is in another namespace than the applier claim's own %q, and KubeProvider %s does not "+
-					"set spec.allowCrossNamespace.appliers", claim.ApplierKind(), applier, claim.GetNamespace(),
-				key),
+				"KubeProvider %s lets namespace %q hold appliers in %s (spec.allowedApplierClaims); %s %s is in "+
+					"namespace %q, which is not allowed", key, claim.GetNamespace(),
+				quoteAll(scope.ApplierNamespaces), claim.ApplierKind(), applier, applier.Namespace),
 		}, nil
 	}
-	return decision, nil
+	return Decision{Allowed: true}, nil
 }
 
-// ApplierAdmitted reports whether target may ask the applier its applier claim holds to apply: its
-// namespace is admitted by its own KubeProvider (GitTargetAdmitted) and by the applier claim's
-// (ApplierClaimAdmitted). A GitTarget names an applier claim in its own namespace only, so the second
-// answers for the GitTarget's namespace too. A KubeProvider's client is shared by every object
-// that uses the cluster, so a client being available is no permission to use it.
+// ApplierAdmitted reports whether target may ask the applier its applier claim holds to apply:
+// target may mirror (GitTargetAdmitted), and the applier claim may hold its applier
+// (ApplierClaimAdmitted). Both are always checked, also when the two name one KubeProvider from one
+// namespace: mirroring and applying are granted separately. A KubeProvider's client is shared by
+// every object that uses the cluster, so a client being available is no permission to use it.
 func ApplierAdmitted(
 	ctx context.Context,
 	reader client.Reader,
@@ -185,19 +238,14 @@ func ApplierAdmitted(
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
-	if claim.KubeProviderKey() == target.KubeProviderKey() && claim.GetNamespace() == target.Namespace {
-		return decision, nil
-	}
 	return ApplierClaimAdmitted(ctx, reader, claim)
 }
 
-// namespaceAdmitted is the check both admissions share: the provider exists, it admits namespace
-// (its own, or through spec.accessFrom), and it holds its audit route. notFound is the denial
-// message for a provider that does not exist. It returns the provider it read once it exists.
-func namespaceAdmitted(
+// kubeProviderUsable reads the KubeProvider at key. notFound is the denial message for a provider
+// that does not exist. It returns the provider it read once it exists.
+func kubeProviderUsable(
 	ctx context.Context,
 	reader client.Reader,
-	namespace string,
 	key k8stypes.NamespacedName,
 	notFound string,
 ) (Decision, *configv1alpha3.KubeProvider, error) {
@@ -214,33 +262,35 @@ func namespaceAdmitted(
 		}
 		return Decision{}, nil, fmt.Errorf("read KubeProvider %s: %w", key, err)
 	}
-
-	nsLabels, err := namespaceLabels(ctx, reader, namespace)
-	if err != nil {
-		return Decision{}, nil, err
-	}
-
-	allowed, selErr := provider.AdmitsNamespace(namespace, nsLabels)
-	if selErr != nil {
-		return Decision{
-			Reason:  ReasonNamespaceNotAuthorized,
-			Message: fmt.Sprintf("KubeProvider %s accessFrom selector is invalid: %v", key, selErr),
-		}, provider, nil
-	}
-	if !allowed {
-		return Decision{
-			Reason: ReasonNamespaceNotAuthorized,
-			Message: fmt.Sprintf(
-				"namespace %q is not permitted to reference KubeProvider %s: it is not the provider's own "+
-					"namespace, and spec.accessFrom does not admit it", namespace, key),
-		}, provider, nil
-	}
-
-	routeDecision, err := AuditRouteHeld(ctx, reader, provider)
-	if err != nil || !routeDecision.Allowed {
-		return routeDecision, provider, err
-	}
 	return Decision{Allowed: true}, provider, nil
+}
+
+// notAdmitted is the NamespaceNotAuthorized refusal of a grant list: what it admits, the field, and
+// the namespace that asked. selErr is a grant whose selector does not convert, which admitted nobody.
+func notAdmitted(
+	kind string, key k8stypes.NamespacedName, admits, field, namespace string, selErr error,
+) Decision {
+	message := fmt.Sprintf("%s %s %s in %s; namespace %q is not admitted", kind, key, admits, field, namespace)
+	if admits == "admits no namespace" {
+		message = fmt.Sprintf("%s %s admits no namespace in %s; namespace %q is not admitted", kind, key, field,
+			namespace)
+	}
+	if selErr != nil {
+		message += fmt.Sprintf(" (a grant's selector is invalid: %v)", selErr)
+	}
+	return Decision{Reason: ReasonNamespaceNotAuthorized, Message: message}
+}
+
+// quoteAll renders a scope as quoted, comma-separated values, or "nothing" when it is empty.
+func quoteAll(values []string) string {
+	if len(values) == 0 {
+		return "nothing"
+	}
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, strconv.Quote(value))
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // AuditRouteHeld reports whether provider's namespace holds the audit route provider carries
@@ -277,7 +327,7 @@ func AuditRouteHeld(
 }
 
 // namespaceLabels reads a control-cluster Namespace's labels. A Namespace that does not exist has
-// none: a names entry still admits it, and a selector does not.
+// none: a Names grant still admits it, and a selector does not.
 func namespaceLabels(ctx context.Context, reader client.Reader, namespace string) (map[string]string, error) {
 	var ns corev1.Namespace
 	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: namespace}, &ns); err != nil {

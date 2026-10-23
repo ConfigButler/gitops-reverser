@@ -280,11 +280,10 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
 			builder.WithPredicates(gitTargetReadyProjectionChanged()),
 		).
-		// React to a KubeProvider's allowCrossNamespace.sources (or accessFrom)
-		// changing. The GitTarget->WatchRules edge above still cannot be relied on to carry this: a
+		// React to a KubeProvider's grants changing. The GitTarget->WatchRules edge above still cannot be relied on to carry this: a
 		// KubeProvider change reaches the GitTarget as a status update that need not move the
 		// GitTarget's readiness at all, and only a readiness move re-enqueues the rules. Without
-		// this mapper, flipping the delegation flag would leave every affected WatchRule
+		// this mapper, narrowing a grant would leave every affected WatchRule
 		// un-reconciled until its periodic requeue — so a REVOCATION would take minutes.
 		Watches(
 			&configbutleraiv1alpha3.KubeProvider{},

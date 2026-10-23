@@ -30,8 +30,9 @@ type FluxClaimSpec struct {
 
 	// KubeProviderRef names the KubeProvider whose cluster holds the Kustomization, such as a
 	// management cluster running Flux for the source cluster. Namespace omitted means this
-	// applier claim's own namespace. The provider must admit this applier claim's namespace: its own, or one its
-	// spec.accessFrom admits. Its identity needs get and patch on the Kustomization and its GitRepository. Immutable.
+	// applier claim's own namespace. The provider's spec.allowedApplierClaims must admit this applier
+	// claim's namespace, with the Kustomization's namespace in applierNamespaces. Its identity needs
+	// get and patch on the Kustomization and its GitRepository. Immutable.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the FluxClaim to hold a Kustomization elsewhere"

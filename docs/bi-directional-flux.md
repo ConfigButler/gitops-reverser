@@ -71,10 +71,12 @@ spec:
 The GitOps Reverser side. The `GitProvider` points at the same repository (any URL form of it),
 which is how the `GitReceiver` the Git host's push webhook calls finds it; a `FluxClaim` holds the
 `Kustomization`, in the cluster the chart's `local` `KubeProvider` names (the operator's own,
-through `spec.inCluster`), and the `GitTarget` names the applier claim. The `Kustomization` is in
-`flux-system` and the applier claim in `team-a`, so the provider lets `team-a`'s applier claims reach another
-namespace (`allowCrossNamespace.appliers`); with the Helm chart, set
-`kubeProvider.allowCrossNamespace.appliers: true` instead of declaring it. A `KubeProvider` with
+through `spec.inCluster`), and the `GitTarget` names the applier claim. Nothing may use a provider
+without a grant: the `KubeProvider` lets `team-a`'s `GitTarget`s mirror `team-a`
+(`allowedGitTargets`), and its applier claims hold a `Kustomization` in `flux-system`
+(`allowedApplierClaims`); with the Helm chart, set `kubeProvider.allowedGitTargets` and
+`kubeProvider.allowedApplierClaims` instead of declaring it. The `GitProvider` lets `team-a` claim
+`main`, and the `GitBranch` lets `team-a`'s `GitTarget`s write it. A `KubeProvider` with
 `inCluster` that you declare yourself is honored only once it is listed in
 `--in-cluster-kube-providers`, which the chart does for its own:
 
@@ -86,10 +88,14 @@ metadata:
   namespace: gitops-reverser
 spec:
   inCluster: {}
-  accessFrom:
-    names: [team-a]
-  allowCrossNamespace:
-    appliers: true
+  allowedGitTargets:
+    - from: Names
+      names: [team-a]
+      sourceNamespaces: ["{namespace}"]
+  allowedApplierClaims:
+    - from: Names
+      names: [team-a]
+      applierNamespaces: [flux-system]
 ---
 apiVersion: v1
 kind: Secret
@@ -116,7 +122,9 @@ metadata:
   namespace: team-a
 spec:
   url: git@github.com:acme/platform.git
-  allowedBranches: ["main"]
+  allowedGitBranches:
+    - from: Same
+      branches: [main]
   secretRef:
     name: platform-git
 ---
@@ -129,6 +137,8 @@ spec:
   gitProviderRef:
     name: platform
   branch: main
+  allowedGitTargets:
+    - from: Same
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget

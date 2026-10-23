@@ -197,7 +197,8 @@ spec:
               branch:
                 description: |-
                   Branch is the branch on the remote that this GitBranch writes. It must match one of the
-                  GitProvider's allowedBranches. Only one GitBranch writes a repository branch: the oldest one
+                  patterns the GitProvider's spec.allowedGitBranches give this GitBranch's namespace. Only one
+                  GitBranch writes a repository branch: the oldest admitted one
                   whose credential proves it can open a push session holds it, and any other GitBranch for the
                   same repository and branch reports Stalled with reason BranchConflict.
                   Immutable: delete and recreate the GitBranch to change it.
@@ -230,8 +231,8 @@ spec:
                   default branch), or a branch with no history when the repository is empty. When set, it must
                   exist on the remote for spec.branch to be created; otherwise this GitBranch reports
                   ParentBranchNotFound and nothing is written. Once spec.branch exists, it is used as it is and
-                  the parent is not followed. It is only read, so it does not need to be in the GitProvider's
-                  allowedBranches.
+                  the parent is not followed. It is only read, so the GitProvider's spec.allowedGitBranches need
+                  not allow it.
                   Immutable, including adding or removing it: delete and recreate the GitBranch to change it.
                 minLength: 1
                 type: string

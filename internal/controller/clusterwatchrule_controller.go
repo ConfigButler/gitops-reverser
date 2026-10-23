@@ -220,7 +220,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 // admission of the referenced GitTarget: a ClusterWatchRule is cluster-scoped and its gitTargetRef
 // carries a REQUIRED namespace, so it may name a GitTarget in ANY namespace and widen that target's
 // mirror scope cluster-wide. Compiling such a rule without re-applying the target's own provider
-// admission would let it mirror through a credential whose accessFrom never admitted that target.
+// admission would let it mirror through a credential whose grants never admitted that target.
 //
 // It lives in internal/watch rather than here because the startup bootstrap must apply exactly the
 // same refusal BEFORE the first reconcile — otherwise every restart reopens the window it closes.
@@ -379,7 +379,7 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
 			builder.WithPredicates(gitTargetReadyProjectionChanged()),
 		).
-		// React to a KubeProvider's accessFrom changing. Without this, REVOKING a
+		// React to a KubeProvider's grants changing. Without this, REVOKING a
 		// namespace stops the GitTarget (which does watch KubeProvider) but leaves this rule's
 		// compiled entry resident until the next periodic reconcile, so the admission gate would
 		// converge on a ~10m delay instead of on the event. The GitTarget's own status flip cannot
@@ -390,7 +390,7 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToClusterWatchRules),
 			builder.WithPredicates(kubeProviderReadyOrSpecChanged()),
 		).
-		// React to a Namespace's LABELS changing: accessFrom may admit by selector, so a
+		// React to a Namespace's LABELS changing: a grant may admit by selector, so a
 		// label change on a GitTarget's namespace grants or revokes every ClusterWatchRule pointing
 		// at a target in it. LabelChangedPredicate ignores unrelated namespace churn.
 		Watches(
@@ -442,7 +442,7 @@ func (r *ClusterWatchRuleReconciler) kubeProviderToClusterWatchRules(
 }
 
 // namespaceToClusterWatchRules maps a Namespace label change to every ClusterWatchRule whose
-// referenced GitTarget lives in that namespace — the selector half of accessFrom.
+// referenced GitTarget lives in that namespace — what a Selector grant reads.
 func (r *ClusterWatchRuleReconciler) namespaceToClusterWatchRules(
 	ctx context.Context,
 	obj client.Object,

@@ -4,11 +4,16 @@ metadata:
   name: example-branch
   namespace: default
 spec:
-  # A GitProvider in this GitBranch's namespace. Its credential has to be able to open a push
-  # session on the repository, or this GitBranch never holds the branch.
+  # The GitProvider whose credential writes this branch; add `namespace:` for one in another
+  # namespace. Its spec.allowedGitBranches must admit this namespace and the branch, and its
+  # credential has to be able to open a push session on the repository, or this GitBranch never
+  # holds the branch.
   gitProviderRef:
     name: example-provider
-  # Must match one of the GitProvider's allowedBranches. Only one GitBranch writes a repository branch.
+  # Only one GitBranch writes a repository branch.
   branch: main
   # Optional: the branch `main` is created from while the remote does not have it.
   # parentBranch: develop
+  # Which GitTargets may write through this branch. Its own namespace needs a grant too.
+  allowedGitTargets:
+    - from: Same

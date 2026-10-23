@@ -29,8 +29,9 @@ type ArgoCDClaimSpec struct {
 
 	// KubeProviderRef names the KubeProvider whose cluster holds the Application, such as a
 	// management cluster running Argo CD for the source cluster. Namespace omitted means this
-	// applier claim's own namespace. The provider must admit this applier claim's namespace: its own, or one its
-	// spec.accessFrom admits. Its identity needs get, update and patch on the Application. Immutable.
+	// applier claim's own namespace. The provider's spec.allowedApplierClaims must admit this applier
+	// claim's namespace, with the Application's namespace in applierNamespaces. Its identity needs
+	// get, update and patch on the Application. Immutable.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the ArgoCDClaim to hold an Application elsewhere"

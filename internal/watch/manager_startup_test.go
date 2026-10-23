@@ -40,15 +40,28 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 	existingGitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-target", Namespace: "tilt-playground"},
 		Spec: configv1alpha3.GitTargetSpec{
-			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("playground-provider", "main")},
-			Path:         "live-cluster",
+			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("playground-provider", "main")},
+			KubeProviderRef: meta.NamespacedObjectReference{Name: "local"},
+			Path:            "live-cluster",
+		},
+	}
+	// A WatchRule's own namespace is watched only through a grant, so the fixture ships the provider
+	// that gives it.
+	localKubeProvider := &configv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: "tilt-playground"},
+		Spec: configv1alpha3.KubeProviderSpec{
+			InCluster: &configv1alpha3.KubeProviderInCluster{},
+			AllowedGitTargets: []configv1alpha3.SourceGrant{{From: configv1alpha3.GrantFromSame,
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable}}},
 		},
 	}
 	existingGitProvider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-provider", Namespace: "tilt-playground"},
 		Spec: configv1alpha3.GitProviderSpec{
-			URL:             "https://example.invalid/playground.git",
-			AllowedBranches: []string{"main"},
+			URL: "https://example.invalid/playground.git",
+			AllowedGitBranches: []configv1alpha3.GitBranchGrant{
+				{From: configv1alpha3.GrantFromSame, Branches: []configv1alpha3.BranchPattern{"main"}},
+			},
 		},
 	}
 
@@ -59,6 +72,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 			existingWatchRule,
 			existingGitTarget,
 			existingGitProvider,
+			localKubeProvider,
 		).
 		Build()
 
@@ -114,19 +128,25 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 	existingGitProvider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "ops-provider", Namespace: "ops"},
 		Spec: configv1alpha3.GitProviderSpec{
-			URL:             "https://example.invalid/ops.git",
-			AllowedBranches: []string{"main"},
+			URL: "https://example.invalid/ops.git",
+			AllowedGitBranches: []configv1alpha3.GitBranchGrant{
+				{From: configv1alpha3.GrantFromSame, Branches: []configv1alpha3.BranchPattern{"main"}},
+			},
 		},
 	}
 
 	// existingGitTarget references the KubeProvider ops/local, in its own namespace. Bootstrap
-	// applies that provider's namespace admission before seeding a ClusterWatchRule, so the fixture
-	// must ship the provider (its own namespace is always admitted). Without it the seed is
+	// applies that provider's grants before seeding a ClusterWatchRule, so the fixture must ship the
+	// provider, granting its own namespace every cluster-scoped resource. Without it the seed is
 	// correctly REFUSED, which is the behavior TestBootstrapClusterWatchRule_RefusesMissingKubeProvider
 	// covers; this test is about the admitted path.
 	localKubeProvider := &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: "ops"},
-		Spec:       configv1alpha3.KubeProviderSpec{InCluster: &configv1alpha3.KubeProviderInCluster{}},
+		Spec: configv1alpha3.KubeProviderSpec{
+			InCluster: &configv1alpha3.KubeProviderInCluster{},
+			AllowedGitTargets: []configv1alpha3.SourceGrant{{From: configv1alpha3.GrantFromSame,
+				ClusterResources: []configv1alpha3.ClusterResourceIdentity{"*"}}},
+		},
 	}
 
 	fakeClient := fake.NewClientBuilder().

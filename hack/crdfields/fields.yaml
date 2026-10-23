@@ -30,13 +30,6 @@ kinds:
     fields:
       - path: url
         doc: Repository URL, SSH or HTTPS
-      - path: allowedBranches
-        doc: Branches a `GitTarget` may write. A target naming any other is rejected
-      - path: accessFrom
-        default: "**no other namespace**"
-        doc: >-
-          Other namespaces whose `GitTarget`s may write through this provider, by name or label
-          selector. Its own namespace is always admitted
       - path: allowedGitBranches
         default: "**no `GitBranch`**, its own namespace included"
         doc: >-
@@ -69,11 +62,12 @@ kinds:
     fields:
       - path: gitProviderRef
         doc: >-
-          The `GitProvider`, in this namespace, whose repository and credential write this branch
+          The `GitProvider` whose repository and credential write this branch: in this namespace, or
+          `namespace` names another. Its `allowedGitBranches` must admit this namespace and `branch`
       - path: branch
         doc: >-
-          Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a
-          repository branch; see [who writes a repository branch](#who-writes-a-repository-branch)
+          Branch to write. Only one `GitBranch` holds a repository branch; see
+          [who writes a repository branch](#who-writes-a-repository-branch)
       - path: allowedGitTargets
         default: "**no `GitTarget`**, its own namespace included"
         doc: >-
@@ -113,22 +107,6 @@ kinds:
           `{}` uses the operator's own identity. Honored only for a provider listed in
           `--in-cluster-kube-providers`. See
           [the operator's own identity](#the-operators-own-identity-specincluster)
-      - path: accessFrom
-        default: "**no other namespace**"
-        doc: >-
-          Other control-cluster namespaces whose objects may use this provider, by name or label
-          selector. Its own namespace is always admitted; an empty `selector: {}` admits every
-          namespace
-      - path: allowCrossNamespace.sources
-        default: "`false`"
-        doc: >-
-          Whether rules may watch namespaces other than their own, `*` included. See
-          [cross-namespace grants](#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace)
-      - path: allowCrossNamespace.appliers
-        default: "`false`"
-        doc: >-
-          Whether applier claims may name a `Kustomization` or `Application` in another namespace than
-          their own
       - path: allowedGitTargets
         default: "**no `GitTarget`**, its own namespace included"
         doc: >-
@@ -157,8 +135,8 @@ kinds:
     fields:
       - path: gitBranchRef
         doc: >-
-          The `GitBranch` this target writes: its own namespace, or `namespace` names one whose
-          `GitProvider`'s `accessFrom` admits it
+          The `GitBranch` this target writes: its own namespace, or `namespace` names another. Its
+          `allowedGitTargets` must admit this namespace
       - path: gitProviderRef
         skip: moved to `GitBranch`, kept in the schema only so admission refuses it, naming `gitBranchRef`
       - path: branch
@@ -169,8 +147,8 @@ kinds:
         doc: Folder within the repository. `.` targets the root; empty is rejected
       - path: kubeProviderRef
         doc: >-
-          The `KubeProvider` to mirror from: its own namespace, or `namespace` names one whose
-          `accessFrom` admits it
+          The `KubeProvider` to mirror from: its own namespace, or `namespace` names another. Its
+          `allowedGitTargets` must admit this namespace
       - path: clusterProviderRef
         skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: commit.window
@@ -283,7 +261,7 @@ kinds:
       - path: kubeProviderRef
         doc: >-
           The `KubeProvider` whose cluster holds the `Kustomization`: the applier claim's own namespace, or
-          `namespace` names one whose `accessFrom` admits it
+          `namespace` names another. Its `allowedApplierClaims` must admit this namespace
       - path: clusterProviderRef
         skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: kustomizationRef
@@ -298,7 +276,7 @@ kinds:
       - path: kubeProviderRef
         doc: >-
           The `KubeProvider` whose cluster holds the `Application`: the applier claim's own namespace, or
-          `namespace` names one whose `accessFrom` admits it
+          `namespace` names another. Its `allowedApplierClaims` must admit this namespace
       - path: clusterProviderRef
         skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: applicationRef

@@ -61,7 +61,9 @@ func referenceFrom(t *testing.T, c client.Client, claim v1alpha3.ApplierClaim) {
 			require.NoError(t, c.Create(ctx, kubeProvider(name, targetNS, claim.GetNamespace())))
 			continue
 		}
-		provider.Spec.AccessFrom.Names = append(provider.Spec.AccessFrom.Names, claim.GetNamespace())
+		ns := v1alpha3.GrantNamespace(claim.GetNamespace())
+		provider.Spec.AllowedGitTargets[0].Names = append(provider.Spec.AllowedGitTargets[0].Names, ns)
+		provider.Spec.AllowedApplierClaims[0].Names = append(provider.Spec.AllowedApplierClaims[0].Names, ns)
 		require.NoError(t, c.Update(ctx, provider))
 	}
 }

@@ -102,7 +102,6 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"name", gitProvider.Name,
 		"namespace", gitProvider.Namespace,
 		"url", gitProvider.Spec.URL,
-		"allowedBranches", gitProvider.Spec.AllowedBranches,
 		"generation", gitProvider.Generation,
 		"resourceVersion", gitProvider.ResourceVersion)
 

@@ -15,25 +15,25 @@ namespace demo
   GitTarget/demo -> GitProvider/app-repository
 ```
 
-The provider is namespace-local because it carries credentials. A `GitTarget` may refer to a
-provider in another namespace only when that provider's `spec.accessFrom` admits the target's
-namespace, and every `GitTarget` writing one repository branch must refer to the same provider.
+The provider carries credentials, so nothing uses it without a grant. Its
+`spec.allowedGitBranches` says which namespaces' `GitBranch`es may claim which branches, and each
+`GitBranch`'s `spec.allowedGitTargets` says which namespaces' `GitTarget`s may write through it; the
+provider's own namespace needs a grant too (`from: Same`).
 
 ## Source cluster authority
 
 Every `GitTarget` names its source cluster with `spec.kubeProviderRef`. The examples here use the
 `KubeProvider` the chart renders, `local` in `gitops-reverser`, which uses the operator's own
-identity. A target that captures objects from a different source namespace needs one grant, and it
-belongs to the owner of the `KubeProvider`: the provider delegates the *ability* to choose a source
-namespace (`allowCrossNamespace.sources`). What may actually be read is bounded by that provider
-credential's own RBAC in the source cluster. Concrete specimens are in
+identity. Every target needs a grant from the owner of the `KubeProvider`
+(`spec.allowedGitTargets`), and the grant's `sourceNamespaces` bound which source namespaces its
+`WatchRule`s may watch, its own included only when listed (`"{namespace}"`). What may actually be read
+is bounded by that provider credential's own RBAC in the source cluster. Concrete specimens are in
 [`../../shapes/1-flat-serialized/config/`](../../shapes/1-flat-serialized/config/kubeprovider.yaml)
 and [`../../shapes/3-tree-serialized/config/`](../../shapes/3-tree-serialized/config/kubeprovider.yaml).
 
-The source-cluster rule and source-namespace authorization are separate checks. A `KubeProvider`
-admits consumers in its own namespace, and `accessFrom` decides which other configuration
-namespaces may reference it; `allowCrossNamespace.sources` decides whether those namespaces'
-`GitTarget`s may look outside their own.
+The source-cluster rule and source-namespace authorization are one grant read twice. A grant in
+`allowedGitTargets` decides which configuration namespaces may reference the `KubeProvider` at all,
+and its `sourceNamespaces` decide what those namespaces' `GitTarget`s may watch.
 
 ## Credentials stay out of this design
 

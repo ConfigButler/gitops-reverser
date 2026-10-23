@@ -99,6 +99,7 @@ func gitBranch(providerName, namespace string) *configbutleraiv1alpha3.GitBranch
 		ObjectMeta: metav1.ObjectMeta{Name: gitBranchNameForTest(providerName, "main"), Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
 			GitProviderRef: meta.NamespacedObjectReference{Name: providerName}, Branch: "main",
+			AllowedGitTargets: writersFromSame(),
 		},
 	}
 }

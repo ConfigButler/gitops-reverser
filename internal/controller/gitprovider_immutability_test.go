@@ -24,25 +24,30 @@ var _ = Describe("GitProvider URL Immutability", func() {
 		interval = time.Millisecond * 250
 	)
 
-	It("rejects a change to the URL but allows changing allowedBranches", func() {
+	It("rejects a change to the URL but allows changing allowedGitBranches", func() {
 		ctx := context.Background()
 		key := types.NamespacedName{Name: "immutable-provider", Namespace: "default"}
 
 		provider := &configbutleraiv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitProviderSpec{
-				URL:             "https://example.com/repo.git",
-				AllowedBranches: []string{"main"},
+				URL: "https://example.com/repo.git",
+				AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
+					{
+						From:     configbutleraiv1alpha3.GrantFromSame,
+						Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
+					},
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, provider)).Should(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, provider) })
 
-		// allowedBranches is operational and mutable: widening the set succeeds.
+		// allowedGitBranches is operational and mutable: widening the set succeeds.
 		Eventually(func(g Gomega) {
 			current := &configbutleraiv1alpha3.GitProvider{}
 			g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
-			current.Spec.AllowedBranches = []string{"main", "develop"}
+			current.Spec.AllowedGitBranches[0].Branches = []configbutleraiv1alpha3.BranchPattern{"main", "develop"}
 			g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
 		}, timeout, interval).Should(Succeed())
 

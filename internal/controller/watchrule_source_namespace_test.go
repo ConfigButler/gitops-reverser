@@ -50,15 +50,17 @@ func wrsnGitProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-func wrsnKubeProvider(delegate bool) *configbutleraiv1alpha3.KubeProvider {
+// wrsnKubeProvider admits wrsnTenantNS to watch its own namespace, and every namespace when wide.
+func wrsnKubeProvider(wide bool) *configbutleraiv1alpha3.KubeProvider {
+	grants := mirrorGrants(wrsnTenantNS)
+	if wide {
+		grants[0].SourceNamespaces = append(grants[0].SourceNamespaces, "*")
+	}
 	return &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnProvider, Namespace: wrsnProviderNS},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
-			SecretRef: &meta.SecretKeyReference{Name: "kc"},
-			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{
-				Names: []string{wrsnTenantNS},
-			},
-			AllowCrossNamespace: &configbutleraiv1alpha3.KubeProviderCrossNamespace{Sources: delegate},
+			SecretRef:         &meta.SecretKeyReference{Name: "kc"},
+			AllowedGitTargets: grants,
 		},
 	}
 }
@@ -170,7 +172,7 @@ func TestReconcile_LegacyWatchRuleNeedsNoPolicyOrFlag(t *testing.T) {
 
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
-	assert.Equal(t, WatchRuleReasonLegacySourceNamespace, cond.Reason)
+	assert.Equal(t, WatchRuleReasonSourceNamespaceAllowed, cond.Reason)
 }
 
 // TestReconcile_DeniedSourceNamespaceStartsNoWatch mirrors
@@ -191,7 +193,7 @@ func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "spec.allowCrossNamespace.sources",
+	assert.Contains(t, cond.Message, "spec.allowedGitTargets[].sourceNamespaces",
 		"the message must name the fix")
 }
 
@@ -259,11 +261,12 @@ func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *tes
 	require.NoError(t, err)
 	require.Equal(t, []string{wrsnRule}, f.compiledNames(), "precondition: the rule is compiled")
 
-	// The platform admin withdraws the delegation.
+	// The platform admin narrows the grant to the tenant's own namespace.
 	var provider configbutleraiv1alpha3.KubeProvider
 	require.NoError(t, f.client.Get(ctx,
 		k8stypes.NamespacedName{Namespace: wrsnProviderNS, Name: wrsnProvider}, &provider))
-	provider.Spec.AllowCrossNamespace = nil
+	provider.Spec.AllowedGitTargets[0].SourceNamespaces = []configbutleraiv1alpha3.ScopeNamespace{
+		configbutleraiv1alpha3.NamespaceVariable}
 	require.NoError(t, f.client.Update(ctx, &provider))
 
 	// Observe the world at the exact moment the data plane is replanned.
@@ -401,7 +404,7 @@ func TestReconcile_WildcardWithoutDelegationIsRefused(t *testing.T) {
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "spec.allowCrossNamespace.sources")
+	assert.Contains(t, cond.Message, "spec.allowedGitTargets[].sourceNamespaces")
 	assert.Equal(t, metav1.ConditionTrue, wrsnCondition(t, rule, ConditionTypeStalled).Status,
 		"a refusal is terminal: nothing this controller does will change the verdict")
 }

@@ -51,12 +51,26 @@ func bootGitProvider() *configv1alpha3.GitProvider {
 	}
 }
 
-func bootKubeProvider(policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.KubeProvider {
+// mirrorGrants admits the named namespaces to mirror their own namespace and every cluster-scoped
+// resource, the reach a provider admitting them had before grants were scoped.
+func mirrorGrants(namespaces ...string) []configv1alpha3.SourceGrant {
+	names := make([]configv1alpha3.GrantNamespace, 0, len(namespaces))
+	for _, ns := range namespaces {
+		names = append(names, configv1alpha3.GrantNamespace(ns))
+	}
+	return []configv1alpha3.SourceGrant{{
+		From: configv1alpha3.GrantFromNames, Names: names,
+		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable},
+		ClusterResources: []configv1alpha3.ClusterResourceIdentity{"*"},
+	}}
+}
+
+func bootKubeProvider(policy []configv1alpha3.SourceGrant) *configv1alpha3.KubeProvider {
 	return &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: bootProviderNS, Name: bootProviderName},
 		Spec: configv1alpha3.KubeProviderSpec{
-			SecretRef:  &meta.SecretKeyReference{Name: "prod-eu-1-kubeconfig"},
-			AccessFrom: policy,
+			SecretRef:         &meta.SecretKeyReference{Name: "prod-eu-1-kubeconfig"},
+			AllowedGitTargets: policy,
 		},
 	}
 }
@@ -96,7 +110,7 @@ func bootCompiledNames(m *Manager) []string {
 func TestBootstrapClusterWatchRule_RefusesUnauthorizedGitTargetNamespace(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"some-other-namespace"}}),
+		bootKubeProvider(mirrorGrants("some-other-namespace")),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -126,7 +140,7 @@ func TestBootstrapClusterWatchRule_RefusesMissingKubeProvider(t *testing.T) {
 func TestBootstrapClusterWatchRule_SeedsAdmittedRule(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		bootKubeProvider(mirrorGrants(bootTargetNS)),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -163,7 +177,7 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 		&configv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Name: "git", Namespace: "team-ok"}},
 		admittedRule,
 		// Admits team-ok only, so the team-a rule is refused.
-		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"team-ok"}}),
+		bootKubeProvider(mirrorGrants("team-ok")),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-ok"}},
 	)
@@ -189,7 +203,7 @@ func TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes(t 
 
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		bootKubeProvider(mirrorGrants(bootTargetNS)),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -207,7 +221,7 @@ func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.
 	ctx := context.Background()
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootKubeProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		bootKubeProvider(mirrorGrants(bootTargetNS)),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -221,7 +235,7 @@ func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.
 	var provider configv1alpha3.KubeProvider
 	providerKey := client.ObjectKey{Namespace: bootProviderNS, Name: bootProviderName}
 	require.NoError(t, m.Client.Get(ctx, providerKey, &provider))
-	provider.Spec.AccessFrom = &configv1alpha3.NamespaceMatcher{Names: []string{"someone-else"}}
+	provider.Spec.AllowedGitTargets = mirrorGrants("someone-else")
 	require.NoError(t, m.Client.Update(ctx, &provider))
 
 	decision, err = CompileClusterWatchRule(

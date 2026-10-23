@@ -7,6 +7,8 @@ spec:
   gitProviderRef:
     name: app-repository
   branch: main
+  allowedGitTargets:
+    - from: Same
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget

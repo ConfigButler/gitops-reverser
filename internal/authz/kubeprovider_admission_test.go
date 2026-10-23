@@ -47,13 +47,23 @@ func targetIn(providerName string) *configv1alpha3.GitTarget {
 	return t
 }
 
-// providerNamed builds a KubeProvider in platformNS, so the GitTarget in testNS is admitted only
-// through policy.
-func providerNamed(name string, policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.KubeProvider {
+// providerNamed builds a KubeProvider in platformNS with grants as its spec.allowedGitTargets, so
+// the GitTarget in testNS is admitted only through a grant.
+func providerNamed(name string, grants ...configv1alpha3.SourceGrant) *configv1alpha3.KubeProvider {
 	return &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: platformNS},
-		Spec:       configv1alpha3.KubeProviderSpec{AccessFrom: policy},
+		Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: grants},
 	}
+}
+
+// mirrorFrom is a grant that admits namespaces by name to mirror their own namespace.
+func mirrorFrom(namespaces ...string) configv1alpha3.SourceGrant {
+	names := make([]configv1alpha3.GrantNamespace, 0, len(namespaces))
+	for _, ns := range namespaces {
+		names = append(names, configv1alpha3.GrantNamespace(ns))
+	}
+	return configv1alpha3.SourceGrant{From: configv1alpha3.GrantFromNames, Names: names,
+		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable}}
 }
 
 func namespaceLabeled(labels map[string]string) *corev1.Namespace {
@@ -61,6 +71,17 @@ func namespaceLabeled(labels map[string]string) *corev1.Namespace {
 }
 
 func TestGitTargetAdmitted_Policy(t *testing.T) {
+	ownNamespace := func(grants ...configv1alpha3.SourceGrant) *configv1alpha3.KubeProvider {
+		return &configv1alpha3.KubeProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS},
+			Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: grants},
+		}
+	}
+	ownTarget := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "mirror", Namespace: testNS},
+		Spec:       configv1alpha3.GitTargetSpec{KubeProviderRef: meta.NamespacedObjectReference{Name: "local"}},
+	}
+	tenant := map[string]string{"tenant": "true"}
 	tests := []struct {
 		name        string
 		objects     []client.Object
@@ -87,157 +108,108 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			wantMessage: "spec.kubeProviderRef names no KubeProvider",
 		},
 		{
-			// A provider admits its own namespace without any accessFrom, like a GitProvider.
-			name: "a provider in the target's own namespace is admitted without accessFrom",
-			objects: []client.Object{
-				&configv1alpha3.KubeProvider{ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS}},
-				namespaceLabeled(nil),
-			},
-			target: &configv1alpha3.GitTarget{
-				ObjectMeta: metav1.ObjectMeta{Name: "mirror", Namespace: testNS},
-				Spec: configv1alpha3.GitTargetSpec{
-					KubeProviderRef: meta.NamespacedObjectReference{Name: "local"},
-				},
-			},
+			// Nothing is automatic, the provider's own namespace included.
+			name:        "the provider's own namespace is refused when no grant names it",
+			objects:     []client.Object{ownNamespace(), namespaceLabeled(nil)},
+			target:      ownTarget,
+			wantReason:  ReasonNamespaceNotAuthorized,
+			wantMessage: `KubeProvider team-a/local admits no namespace in spec.allowedGitTargets; namespace "team-a"`,
+		},
+		{
+			name: "from: Same admits the provider's own namespace",
+			objects: []client.Object{ownNamespace(configv1alpha3.SourceGrant{From: configv1alpha3.GrantFromSame,
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"}}), namespaceLabeled(nil)},
+			target:      ownTarget,
 			wantAllowed: true,
 		},
 		{
-			name: "nil accessFrom denies another namespace by default",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", nil),
-				namespaceLabeled(nil),
-			},
+			name: "from: Same admits nothing else",
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
+				From: configv1alpha3.GrantFromSame, SourceNamespaces: []configv1alpha3.ScopeNamespace{"*"}}),
+				namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
-			wantAllowed: false,
 			wantReason:  ReasonNamespaceNotAuthorized,
-			wantMessage: `namespace "team-a" is not permitted to reference KubeProvider platform/prod-eu-1`,
+			wantMessage: `KubeProvider platform/prod-eu-1 admits platform in spec.allowedGitTargets; namespace "team-a"`,
 		},
 		{
-			name: "empty policy struct denies by default",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{}),
-				namespaceLabeled(nil),
-			},
+			name:        "an omitted list denies every namespace",
+			objects:     []client.Object{providerNamed("prod-eu-1"), namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
-			wantAllowed: false,
 			wantReason:  ReasonNamespaceNotAuthorized,
+			wantMessage: "admits no namespace in spec.allowedGitTargets",
 		},
 		{
-			name: "names entry admits",
+			name: "a Names grant admits",
 			objects: []client.Object{
-				providerNamed("prod-eu-1",
-					&configv1alpha3.NamespaceMatcher{Names: []string{"team-b", "team-a"}}),
+				providerNamed("prod-eu-1", mirrorFrom("team-b", "team-a")),
 				namespaceLabeled(nil),
 			},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: true,
 		},
 		{
-			name: "names list not containing the namespace denies",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{Names: []string{"team-b"}}),
-				namespaceLabeled(nil),
-			},
+			name:        "a Names grant not listing the namespace denies, naming what it admits",
+			objects:     []client.Object{providerNamed("prod-eu-1", mirrorFrom("team-b")), namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
-			wantAllowed: false,
 			wantReason:  ReasonNamespaceNotAuthorized,
+			wantMessage: `KubeProvider platform/prod-eu-1 admits team-b in spec.allowedGitTargets; namespace "team-a" is not admitted`,
 		},
 		{
-			// The chart default. An empty selector matches every label set, so it admits every
-			// namespace — the single-cluster install's "no policy configured" shape.
-			name: "empty selector admits every namespace",
-			objects: []client.Object{
-				providerNamed("prod-eu-1",
-					&configv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}}),
-				namespaceLabeled(nil),
-			},
+			name: "a Selector grant admits a namespace by its labels",
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
+				From: configv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"}}), namespaceLabeled(tenant)},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: true,
 		},
 		{
-			name: "selector matching namespace labels admits",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
-					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
-				}),
-				namespaceLabeled(map[string]string{"tier": "prod"}),
-			},
+			name: "a Selector grant does not admit a namespace without the labels",
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
+				From: configv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"}}), namespaceLabeled(nil)},
+			target:      targetIn("prod-eu-1"),
+			wantReason:  ReasonNamespaceNotAuthorized,
+			wantMessage: "admits namespaces labelled tenant=true",
+		},
+		{
+			// A namespace not created yet has no labels: a Names grant still admits it.
+			name:        "a Names grant admits a namespace that does not exist yet",
+			objects:     []client.Object{providerNamed("prod-eu-1", mirrorFrom("team-a"))},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: true,
 		},
 		{
-			name: "selector not matching namespace labels denies",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
-					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
-				}),
-				namespaceLabeled(map[string]string{"tier": "dev"}),
-			},
+			// A malformed selector must FAIL CLOSED, and say so.
+			name: "an invalid selector denies, and the message says why",
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
+				From: configv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tier", Operator: "NotAnOperator"}},
+				}, SourceNamespaces: []configv1alpha3.ScopeNamespace{"*"}}), namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
-			wantAllowed: false,
 			wantReason:  ReasonNamespaceNotAuthorized,
+			wantMessage: "a grant's selector is invalid",
 		},
 		{
-			// Names and selector are ORed: a listed namespace is admitted even when the selector
-			// rejects it. Guards against a future refactor turning the OR into an AND.
-			name: "names admits even when the selector does not match",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
-					Names:    []string{"team-a"},
-					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
-				}),
-				namespaceLabeled(map[string]string{"tier": "dev"}),
-			},
+			name: "from: All admits every namespace",
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
+				From: configv1alpha3.GrantFromAll, SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"}}),
+				namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: true,
-		},
-		{
-			name: "invalid selector denies with a legible message rather than admitting",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
-					Selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
-						Key: "tier", Operator: "NotARealOperator",
-					}}},
-				}),
-				namespaceLabeled(nil),
-			},
-			target:      targetIn("prod-eu-1"),
-			wantAllowed: false,
-			wantReason:  ReasonNamespaceNotAuthorized,
-			wantMessage: "accessFrom selector is invalid",
-		},
-		{
-			// A missing Namespace object is not an error: `names` is evaluated against the NAME,
-			// which exists in the reference even before the namespace object does.
-			name: "absent namespace object still admitted by a names entry",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
-			},
-			target:      targetIn("prod-eu-1"),
-			wantAllowed: true,
-		},
-		{
-			// ...but a selector has no labels to match against, so it correctly does not admit.
-			name: "absent namespace object is not admitted by a label selector",
-			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
-					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
-				}),
-			},
-			target:      targetIn("prod-eu-1"),
-			wantAllowed: false,
-			wantReason:  ReasonNamespaceNotAuthorized,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cl := fake.NewClientBuilder().WithScheme(admissionScheme(t)).WithObjects(tc.objects...).Build()
+			reader := fake.NewClientBuilder().
+				WithScheme(admissionScheme(t)).
+				WithObjects(tc.objects...).
+				Build()
 
-			decision, err := GitTargetAdmitted(context.Background(), cl, tc.target)
-
+			decision, err := GitTargetAdmitted(context.Background(), reader, tc.target)
 			require.NoError(t, err)
-			assert.Equal(t, tc.wantAllowed, decision.Allowed)
+
+			assert.Equal(t, tc.wantAllowed, decision.Allowed, decision.Message)
 			if tc.wantAllowed {
 				assert.Empty(t, decision.Reason, "an admission carries no reason")
 				assert.Empty(t, decision.Message, "an admission carries no message")
@@ -285,7 +257,7 @@ func TestGitTargetAdmitted_ReadErrorsSurfaceAsError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cl := fake.NewClientBuilder().WithScheme(admissionScheme(t)).
 				WithObjects(
-					providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
+					providerNamed("prod-eu-1", mirrorFrom("team-a")),
 					namespaceLabeled(nil),
 				).
 				WithInterceptorFuncs(interceptor.Funcs{
@@ -312,19 +284,90 @@ func TestGitTargetAdmitted_ReadErrorsSurfaceAsError(t *testing.T) {
 	}
 }
 
-// TestApplierAdmitted: an applier is reached with its applier claim's KubeProvider's credential, so
-// that provider must admit the namespace too, and the source's denial comes first.
-func TestApplierAdmitted(t *testing.T) {
-	admits := func(name string, namespaces ...string) *configv1alpha3.KubeProvider {
-		return providerNamed(name, &configv1alpha3.NamespaceMatcher{Names: namespaces})
+// claimOn is a FluxClaim in testNS on the KubeProvider cluster, holding the Kustomization
+// applierNamespace/apps.
+func claimOn(cluster, applierNamespace string) configv1alpha3.ApplierClaim {
+	return &configv1alpha3.FluxClaim{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "apps"},
+		Spec: configv1alpha3.FluxClaimSpec{
+			KubeProviderRef:  meta.NamespacedObjectReference{Name: cluster, Namespace: platformNS},
+			KustomizationRef: meta.NamespacedObjectReference{Name: "apps", Namespace: applierNamespace},
+		},
 	}
-	claimOn := func(cluster string) configv1alpha3.ApplierClaim {
-		return &configv1alpha3.FluxClaim{
-			ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "apps"},
-			Spec: configv1alpha3.FluxClaimSpec{
-				KubeProviderRef: meta.NamespacedObjectReference{Name: cluster, Namespace: platformNS},
-			},
-		}
+}
+
+// appliersFrom is a grant that admits namespaces by name to hold appliers in scope.
+func appliersFrom(scope []configv1alpha3.ScopeNamespace, namespaces ...string) configv1alpha3.ApplierGrant {
+	names := make([]configv1alpha3.GrantNamespace, 0, len(namespaces))
+	for _, ns := range namespaces {
+		names = append(names, configv1alpha3.GrantNamespace(ns))
+	}
+	return configv1alpha3.ApplierGrant{From: configv1alpha3.GrantFromNames, Names: names, ApplierNamespaces: scope}
+}
+
+// TestApplierClaimAdmitted: an applier claim needs its own grant, and the applier must live in the
+// scope that grant gives. An explicit list is the whole scope.
+func TestApplierClaimAdmitted(t *testing.T) {
+	own := []configv1alpha3.ScopeNamespace{"{namespace}"}
+	provider := func(grants ...configv1alpha3.ApplierGrant) *configv1alpha3.KubeProvider {
+		p := providerNamed("hub", mirrorFrom(testNS))
+		p.Spec.AllowedApplierClaims = grants
+		return p
+	}
+	tests := []struct {
+		name        string
+		provider    *configv1alpha3.KubeProvider
+		applierNS   string
+		wantAllowed bool
+		wantReason  string
+		wantMessage string
+	}{
+		{"admitted to mirror is not admitted to apply", provider(), testNS, false, ReasonNamespaceNotAuthorized,
+			`KubeProvider platform/hub admits no namespace in spec.allowedApplierClaims; namespace "team-a"`},
+		{"{namespace} admits an applier in the claim's own namespace",
+			provider(appliersFrom(own, testNS)), testNS, true, "", ""},
+		{"{namespace} refuses an applier elsewhere", provider(appliersFrom(own, testNS)), "flux-system", false,
+			ReasonApplierNamespaceNotAllowed, `KubeProvider platform/hub lets namespace "team-a" hold appliers in ` +
+				`"team-a" (spec.allowedApplierClaims); Kustomization flux-system/apps is in namespace "flux-system"`},
+		{"an explicit list refuses the claim's own namespace",
+			provider(appliersFrom([]configv1alpha3.ScopeNamespace{"flux-system"}, testNS)), testNS, false,
+			ReasonApplierNamespaceNotAllowed, `hold appliers in "flux-system"`},
+		{
+			"an explicit list allows what it lists",
+			provider(
+				appliersFrom([]configv1alpha3.ScopeNamespace{"flux-system"}, testNS),
+			),
+			"flux-system",
+			true,
+			"",
+			"",
+		},
+		{"* allows every namespace",
+			provider(appliersFrom([]configv1alpha3.ScopeNamespace{"*"}, testNS)), "anywhere", true, "", ""},
+		{"a grant for another namespace admits nothing here",
+			provider(appliersFrom(own, "team-b")), testNS, false, ReasonNamespaceNotAuthorized,
+			"admits team-b in spec.allowedApplierClaims"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := fake.NewClientBuilder().WithScheme(admissionScheme(t)).
+				WithObjects(tc.provider, namespaceLabeled(nil)).Build()
+			decision, err := ApplierClaimAdmitted(context.Background(), reader, claimOn("hub", tc.applierNS))
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAllowed, decision.Allowed, decision.Message)
+			assert.Equal(t, tc.wantReason, decision.Reason)
+			assert.Contains(t, decision.Message, tc.wantMessage)
+		})
+	}
+}
+
+// TestApplierAdmitted: asking an applier to apply needs both admissions, always. Mirroring and
+// applying are granted separately, also on one KubeProvider from one namespace.
+func TestApplierAdmitted(t *testing.T) {
+	own := []configv1alpha3.ScopeNamespace{"{namespace}"}
+	withAppliers := func(p *configv1alpha3.KubeProvider, grants ...configv1alpha3.ApplierGrant) *configv1alpha3.KubeProvider {
+		p.Spec.AllowedApplierClaims = grants
+		return p
 	}
 	tests := []struct {
 		name        string
@@ -335,35 +378,41 @@ func TestApplierAdmitted(t *testing.T) {
 		wantMessage string
 	}{
 		{
-			name:        "the applier claim's provider is the source's",
-			objects:     []client.Object{admits("prod-eu-1", testNS)},
-			claim:       claimOn("prod-eu-1"),
+			name: "one provider granting both",
+			objects: []client.Object{
+				withAppliers(providerNamed("prod-eu-1", mirrorFrom(testNS)), appliersFrom(own, testNS)),
+			},
+			claim:       claimOn("prod-eu-1", testNS),
 			wantAllowed: true,
 		},
 		{
-			name:        "another provider that admits the namespace",
-			objects:     []client.Object{admits("prod-eu-1", testNS), admits("hub", testNS)},
-			claim:       claimOn("hub"),
-			wantAllowed: true,
-		},
-		{
-			name:        "another provider that does not admit the namespace",
-			objects:     []client.Object{admits("prod-eu-1", testNS), admits("hub", "elsewhere")},
-			claim:       claimOn("hub"),
+			// The GitTarget and its applier claim are in one namespace on one KubeProvider; the
+			// shortcut that once admitted this without reading allowedApplierClaims is gone.
+			name:        "mirroring allowed, applying denied, on one provider",
+			objects:     []client.Object{providerNamed("prod-eu-1", mirrorFrom(testNS))},
+			claim:       claimOn("prod-eu-1", testNS),
 			wantReason:  ReasonNamespaceNotAuthorized,
-			wantMessage: "KubeProvider platform/hub",
+			wantMessage: "spec.allowedApplierClaims",
+		},
+		{
+			name: "another provider that admits the applier claim",
+			objects: []client.Object{providerNamed("prod-eu-1", mirrorFrom(testNS)),
+				withAppliers(providerNamed("hub"), appliersFrom(own, testNS))},
+			claim:       claimOn("hub", testNS),
+			wantAllowed: true,
 		},
 		{
 			name:        "another provider that does not exist",
-			objects:     []client.Object{admits("prod-eu-1", testNS)},
-			claim:       claimOn("hub"),
+			objects:     []client.Object{providerNamed("prod-eu-1", mirrorFrom(testNS))},
+			claim:       claimOn("hub", testNS),
 			wantReason:  ReasonKubeProviderNotFound,
 			wantMessage: "FluxClaim " + testNS + "/apps spec.kubeProviderRef",
 		},
 		{
-			name:        "the source's denial comes first",
-			objects:     []client.Object{admits("prod-eu-1", "elsewhere"), admits("hub", testNS)},
-			claim:       claimOn("hub"),
+			name: "the source's denial comes first",
+			objects: []client.Object{providerNamed("prod-eu-1", mirrorFrom("elsewhere")),
+				withAppliers(providerNamed("hub"), appliersFrom(own, testNS))},
+			claim:       claimOn("hub", testNS),
 			wantReason:  ReasonNamespaceNotAuthorized,
 			wantMessage: "KubeProvider platform/prod-eu-1",
 		},
@@ -388,7 +437,7 @@ func TestAuditRouteHeld(t *testing.T) {
 		p := &configv1alpha3.KubeProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, CreationTimestamp: created},
 			Spec: configv1alpha3.KubeProviderSpec{
-				AccessFrom: &configv1alpha3.NamespaceMatcher{Names: []string{testNS}},
+				AllowedGitTargets: []configv1alpha3.SourceGrant{mirrorFrom(testNS)},
 			},
 		}
 		if route != "" {
@@ -432,7 +481,7 @@ func TestAuditRouteHeld_ListErrorSurfacesAsError(t *testing.T) {
 				return boom
 			},
 		}).Build()
-	decision, err := AuditRouteHeld(context.Background(), reader, providerNamed("prod-eu-1", nil))
+	decision, err := AuditRouteHeld(context.Background(), reader, providerNamed("prod-eu-1"))
 	require.ErrorIs(t, err, boom)
 	assert.False(t, decision.Allowed)
 	assert.Empty(t, decision.Reason)

@@ -466,7 +466,7 @@ func TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsTheOptIn(t *testing.T)
 				assert.Equal(t, tc.wantStatus, configured.Status, configured.Message)
 				assert.Equal(t, tc.wantReason, configured.Reason)
 				if tc.wantStatus == metav1.ConditionFalse {
-					assert.Contains(t, configured.Message, "spec.allowCrossNamespace.appliers")
+					assert.Contains(t, configured.Message, "spec.allowedApplierClaims")
 					assert.True(t, conditionIsTrue(*got.StatusConditions(), ConditionTypeStalled))
 					assert.Zero(t, *calls, "the applier's cluster is never asked")
 					assert.Empty(t, got.GetFinalizers(), "and nothing is held")
@@ -503,7 +503,8 @@ func applierNamespaceReconciler(
 	}
 	provider := admitting(claimLocalProvider, "team-a")
 	if !optIn {
-		provider.Spec.AllowCrossNamespace = nil
+		provider.Spec.AllowedApplierClaims = applierGrants(
+			[]configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable}, "team-a")
 	}
 	r := claimReconciler(claimTestClient(t, claim, provider), kind, applierFakeSource(t, appliers...), nil, true)
 	calls := new(int)
