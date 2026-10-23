@@ -744,3 +744,61 @@ func TestFluxClaim_RecordsNothingOfAKustomizationAnotherHolds(t *testing.T) {
 	assert.Empty(t, got.Status.PreviousSuspendState)
 	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "nothing written")
 }
+
+// setReferenced deletes the GitTarget team-a/name that names the applier claim of kind, or creates
+// it again: a GitTarget's spec.applierClaimRef removed and restored.
+func setReferenced(t *testing.T, c ctrlclient.Client, name, kind string, referenced bool) {
+	t.Helper()
+	if referenced {
+		require.NoError(t, c.Create(context.Background(), referencingTarget(name, kind)))
+		return
+	}
+	target := &configbutleraiv1alpha3.GitTarget{}
+	require.NoError(t, c.Get(context.Background(), ctrlclient.ObjectKey{Namespace: "team-a", Name: name}, target))
+	require.NoError(t, c.Delete(context.Background(), target))
+}
+
+// TestFluxClaim_ReadoptsAKustomizationItHandedBackSuspended is the review's reuse finding. A
+// Kustomization suspended before the applier claim held it is handed back suspended, its
+// spec.suspend kept under GitOps Reverser's field manager and its requestedAt given up. Referenced
+// again, the applier claim adopts it anew, as it takes over any suspend: it records how it stood, and
+// suspends it with a fresh token, since Flux still reports the old one handled. It is not taken for a hold already in place,
+// which would wait for a token nobody stamped, and its next hand-back would resume it.
+func TestFluxClaim_ReadoptsAKustomizationItHandedBackSuspended(t *testing.T) {
+	objs := applierFluxObjects()
+	objs[0] = fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), true, "flux",
+		metav1.ManagedFieldsOperationUpdate)
+	f := newHoldFixture(t, testFluxClaim(claimLocalProvider), objs...)
+	reconcileClaim(t, f.r)
+	setReferenced(t, f.r.Client, "checkout-flux", configbutleraiv1alpha3.ApplierClaimKindFlux, false)
+	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.FluxClaim)
+	require.Empty(t, got.Status.PreviousSuspendState, "forgotten once handed back")
+	ks := f.sim.Kustomization(checkoutKustomization)
+	require.True(t, suspendedSpec(ks), "handed back suspended, as it was")
+	require.Contains(
+		t,
+		kustomizationManagers(ks),
+		applier.SuspendFieldManager,
+		"the suspend is kept under GitOps Reverser",
+	)
+	f.events()
+
+	setReferenced(t, f.r.Client, "checkout-flux", configbutleraiv1alpha3.ApplierClaimKindFlux, true)
+	var held *metav1.Condition
+	for range 50 {
+		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
+		require.NoError(t, err)
+		held = findCondition(f.claim(t).Status.Conditions, ApplierClaimConditionHeld)
+		if held != nil && held.Reason == ReasonSuspended {
+			break
+		}
+	}
+	require.NotNil(t, held)
+	assert.Equal(t, ReasonSuspended, held.Reason, held.Message)
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.claim(t).Status.PreviousSuspendState,
+		"adopted anew: suspended before the applier claim held it")
+
+	setReferenced(t, f.r.Client, "checkout-flux", configbutleraiv1alpha3.ApplierClaimKindFlux, false)
+	reconcileClaim(t, f.r)
+	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "suspended, as it was, again")
+}

@@ -118,36 +118,56 @@ func (r *ApplierClaimReconciler) holdAutomatedSync(
 	if state.Owner != "" {
 		return ownedSwitchCondition(ref, state), nil
 	}
+	// A switch held already, by an applier claim that adopts, is one a hand-back kept off (adopting).
+	adopt := adopting(claim, claim.Status.Operation)
+	if adopt && state.Held {
+		if other, ok := r.heldElsewhere(ctx, claim); !ok {
+			return other, nil
+		}
+	}
 	if err := r.setFinalizer(ctx, st, claim, true); err != nil {
 		return conditionValue{}, err
 	}
-	if !state.Held || state.On {
-		if err := r.recordPreviousSuspendState(ctx, st, claim, state.Held, !state.On); err != nil {
-			return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, fmt.Sprintf(
-				"cannot record how Application %s stood before it is held: %v", ref, err)), nil
-		}
-		written, err := argo.SwitchOff(ctx, ref)
-		switch {
-		case err != nil:
-			return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error()), nil
-		case !written:
-			// Configured checks this first; an Argo CD downgraded since is caught here, before a write.
-			return conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonArgoCDVersionNotSupported,
-				Message: fmt.Sprintf("Application %s is served without spec.syncPolicy.automated.enabled (Argo CD "+
-					"before 3.1), so GitOps Reverser writes nothing", ref)}, nil
-		}
-		switch {
-		case !heldBefore(claim):
-			r.event(claim, corev1.EventTypeNormal, EventReasonAdopted,
-				"switched automated sync of Application %s off: from now on GitOps Reverser starts every sync", ref)
-		case state.On:
-			r.event(claim, corev1.EventTypeNormal, EventReasonClaimedResourceReconciled,
-				"automated sync of Application %s was switched on outside GitOps Reverser, which switched it off "+
-					"again; a sync Argo CD started meanwhile was not checked against the branch", ref)
+	if !state.Held || state.On || adopt {
+		if failed, ok := r.switchOff(ctx, st, claim, argo, state, adopt); !ok {
+			return failed, nil
 		}
 	}
 	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonAutomatedSyncOff, Message: fmt.Sprintf(
 		"Application %s has automated sync held off by GitOps Reverser, which starts every sync", ref)}, nil
+}
+
+// switchOff switches an ArgoCDClaim's Application's automated sync off, having recorded how it stood
+// when the applier claim adopts it, and reports false with the Held condition when it could not.
+func (r *ApplierClaimReconciler) switchOff(
+	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.ArgoCDClaim, argo *applier.ArgoCD,
+	state applier.AutomatedSync, adopt bool,
+) (conditionValue, bool) {
+	ref := claim.Applier()
+	if err := r.recordPreviousSuspendState(ctx, st, claim, state.Held && !adopt, !state.On); err != nil {
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, fmt.Sprintf(
+			"cannot record how Application %s stood before it is held: %v", ref, err)), false
+	}
+	written, err := argo.SwitchOff(ctx, ref)
+	switch {
+	case err != nil:
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error()), false
+	case !written:
+		// Configured checks this first; an Argo CD downgraded since is caught here, before a write.
+		return conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonArgoCDVersionNotSupported,
+			Message: fmt.Sprintf("Application %s is served without spec.syncPolicy.automated.enabled (Argo CD "+
+				"before 3.1), so GitOps Reverser writes nothing", ref)}, false
+	}
+	switch {
+	case !heldBefore(claim):
+		r.event(claim, corev1.EventTypeNormal, EventReasonAdopted,
+			"switched automated sync of Application %s off: from now on GitOps Reverser starts every sync", ref)
+	case state.On:
+		r.event(claim, corev1.EventTypeNormal, EventReasonClaimedResourceReconciled,
+			"automated sync of Application %s was switched on outside GitOps Reverser, which switched it off "+
+				"again; a sync Argo CD started meanwhile was not checked against the branch", ref)
+	}
+	return conditionValue{}, true
 }
 
 // ownedSwitchCondition is the Held condition of an applier claim whose Application's switch somebody else

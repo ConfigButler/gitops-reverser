@@ -258,17 +258,14 @@ func (r *ApplierClaimReconciler) hold(
 		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, fmt.Sprintf(
 			"cannot record how Kustomization %s stood before it is held: %v", ref, err))
 	}
+	adopt := adopting(claim, held.operation)
 	switch {
 	case !held.suspension.Suspended:
 		// Read resumed: the resume can be another applier claim's, one that came first in line since the
 		// cached read this reconcile decided on. That applier claim recorded its operation before it
 		// resumed, so a read made now sees it.
-		if other, err := applier.HeldByAnother(ctx, r.uncachedReader(), claim); err != nil || other != nil {
-			message := fmt.Sprintf("cannot check which applier claim holds Kustomization %s: %v", ref, err)
-			if other != nil {
-				message = applier.HeldByAnotherMessage(claim, other)
-			}
-			return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured, Message: message}
+		if other, ok := r.heldElsewhere(ctx, claim); !ok {
+			return other
 		}
 		if err := r.recordPreviousSuspendState(ctx, st, claim, held.suspension.Held, false); err != nil {
 			return unrecorded(err)
@@ -279,16 +276,8 @@ func (r *ApplierClaimReconciler) hold(
 		}
 		r.suspended(claim, token, heldBefore(claim) || held.inFlight())
 		return suspending(fmt.Sprintf("Kustomization %s is being suspended", ref))
-	case !held.suspension.Held:
-		// Suspended by somebody else's write (`flux suspend`): take the field over, with a token, so
-		// nothing that write let run is taken for idle.
-		if err := r.recordPreviousSuspendState(ctx, st, claim, false, true); err != nil {
-			return unrecorded(err)
-		}
-		if _, err := held.flux.Suspend(ctx, ref); err != nil {
-			return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error())
-		}
-		return suspending(fmt.Sprintf("Kustomization %s is being suspended under GitOps Reverser", ref))
+	case !held.suspension.Held || adopt:
+		return r.takeOverSuspend(ctx, st, claim, held)
 	case !held.suspension.Handled:
 		return suspending(fmt.Sprintf("Kustomization %s is suspended; waiting for it to handle the suspend", ref))
 	}
@@ -297,6 +286,61 @@ func (r *ApplierClaimReconciler) hold(
 	}
 	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 		Message: fmt.Sprintf("Kustomization %s is suspended; GitOps Reverser starts every apply it makes", ref)}
+}
+
+// takeOverSuspend takes over a Kustomization suspended by somebody else's write (`flux suspend`), or
+// kept suspended under GitOps Reverser's field manager by a hand-back with no applier claim holding it
+// now: it suspends it with a token, so nothing that write let run is taken for idle. A kept suspend
+// needs the token most: the hand-back gave its requestedAt up, and Flux still reports the last one
+// handled, so without a new one the suspend would never read as handled.
+func (r *ApplierClaimReconciler) takeOverSuspend(
+	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.FluxClaim, held heldState,
+) conditionValue {
+	ref := claim.Applier()
+	if held.suspension.Held {
+		if other, ok := r.heldElsewhere(ctx, claim); !ok {
+			return other
+		}
+	}
+	if err := r.recordPreviousSuspendState(ctx, st, claim, false, true); err != nil {
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, fmt.Sprintf(
+			"cannot record how Kustomization %s stood before it is held: %v", ref, err))
+	}
+	if _, err := held.flux.Suspend(ctx, ref); err != nil {
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error())
+	}
+	return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending,
+		Message: fmt.Sprintf("Kustomization %s is being suspended under GitOps Reverser", ref)}
+}
+
+// heldElsewhere reports, from an uncached read, whether the applier claim's applier is free of any
+// other applier claim's hold, and when it is not (or cannot be told) the Held condition that says so.
+// The cached read Configured was judged on can predate another applier claim coming first in line, and
+// that one's hold looks like a hand-back's or an apply's from the applier alone.
+func (r *ApplierClaimReconciler) heldElsewhere(
+	ctx context.Context, claim configbutleraiv1alpha3.ApplierClaim,
+) (conditionValue, bool) {
+	other, err := applier.HeldByAnother(ctx, r.uncachedReader(), claim)
+	if err == nil && other == nil {
+		return conditionValue{}, true
+	}
+	message := fmt.Sprintf("cannot check which applier claim holds %s %s: %v", claim.ApplierKind(),
+		claim.Applier(), err)
+	if other != nil {
+		message = applier.HeldByAnotherMessage(claim, other)
+	}
+	return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured, Message: message}, false
+}
+
+// adopting reports whether the applier claim takes its applier anew: it records nothing of how the
+// applier stood, did not last say it held it, and has no operation in flight (operation, read
+// uncached where it matters). A hand-back forgets the record and ends the operation, and a successor
+// is passed its predecessor's record. So a field GitOps Reverser's field manager holds when an
+// applier claim adopts is no hold in place but one a hand-back kept, set to how the applier stood:
+// it is recorded as such, and held anew.
+func adopting(claim configbutleraiv1alpha3.ApplierClaim, operation *configbutleraiv1alpha3.ApplyOperation) bool {
+	return claim.PreviousSuspendState() == "" && !heldBefore(claim) &&
+		(operation == nil || operation.Phase.Completed())
 }
 
 // recordPreviousSuspendState records in status.previousSuspendState, on adoption, whether the applier

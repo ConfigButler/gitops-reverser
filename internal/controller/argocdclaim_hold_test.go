@@ -466,3 +466,42 @@ func TestArgoCDClaim_RecordsHowItStoodBeforeTheSwitchOff(t *testing.T) {
 	automated, _ := f.automated(t)
 	assert.Equal(t, false, automated["enabled"], "manual, as it was")
 }
+
+// TestArgoCDClaim_ReadoptsAnApplicationItHandedBackManual is the review's reuse finding. A manual
+// Application whose switch was taken by a click while it was held is handed back manual by keeping
+// enabled: false under GitOps Reverser's field manager, and its record is forgotten. Referenced
+// again, the applier claim adopts it anew and records it manual: a switch it kept is not a hold in
+// place. Otherwise the next hand-back would give the switch up, and the Application would sync on
+// its own.
+func TestArgoCDClaim_ReadoptsAnApplicationItHandedBackManual(t *testing.T) {
+	app := argosim.OwnSwitch(
+		t,
+		applierArgoApplication(map[string]any{"automated": map[string]any{"prune": true}}).(*unstructured.Unstructured),
+		false,
+		"kubectl-client-side-apply",
+		metav1.ManagedFieldsOperationUpdate,
+	)
+	f := newArgoHoldFixture(t, nil, app)
+	reconcileClaim(t, f.r)
+	f.switchOn(t)
+	reconcileClaim(t, f.r)
+	setReferenced(t, f.r.Client, "checkout-argo", configbutleraiv1alpha3.ApplierClaimKindArgoCD, false)
+	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
+	require.Empty(t, got.Status.PreviousSuspendState, "forgotten once handed back")
+	automated, _ := f.automated(t)
+	require.Equal(t, false, automated["enabled"], "handed back manual, the switch kept under GitOps Reverser")
+	f.events()
+
+	setReferenced(t, f.r.Client, "checkout-argo", configbutleraiv1alpha3.ApplierClaimKindArgoCD, true)
+	got = reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, got.Status.PreviousSuspendState,
+		"adopted anew: manual before the applier claim held it")
+	if events := f.events(); assert.NotEmpty(t, events) {
+		assert.Contains(t, events[0], "Normal Adopted switched automated sync of Application argocd/checkout off")
+	}
+
+	setReferenced(t, f.r.Client, "checkout-argo", configbutleraiv1alpha3.ApplierClaimKindArgoCD, false)
+	reconcileClaim(t, f.r)
+	automated, _ = f.automated(t)
+	assert.Equal(t, false, automated["enabled"], "manual, as it was, again")
+}
