@@ -26,7 +26,8 @@ rather than per field:
 | condition reasons | Flux (`fluxcd/pkg/apis/meta`) | one alerting rule should span our kinds and the Flux kinds in the same cluster |
 | readiness shape (`Ready`, `Reconciling`, `Stalled`, `observedGeneration`) | Flux and kstatus | the tools that read a cluster's health read this shape |
 | flags and their chart values | Flux | [`config-flag-conventions.md`](config-flag-conventions.md) is built on it |
-| a field we mirror verbatim | Flux | `spec.accessFrom`, `meta.KubeConfigReference`, `suspend`, `sops` |
+| a field we mirror verbatim | Flux | `meta.KubeConfigReference`, `suspend`, `sops` |
+| the source of a grant (`from: Same`, `Names`, `Selector`, `All`) | Gateway API | `allowedRoutes.namespaces.from`; `Names` is ours, a plain list where Gateway API matches a label |
 | enum value shape | Kubernetes `core/v1` | Flux is inconsistent here, and `core/v1` is not. See rule 7 |
 | field, block and timestamp shape | Kubernetes API conventions, then Flux | rules 2 through 4 |
 
@@ -61,12 +62,12 @@ folder has exactly one `GitTarget`, and one `GitTarget` has exactly one folder.
 
 The two directions, which share the word "source" and must not share anything else:
 
-- **Access** is the control-cluster direction: which control-cluster namespaces may reference a
-  provider (`KubeProvider` or `GitProvider`) from a `GitTarget` or applier claim. A provider's own
-  namespace always may; `spec.accessFrom` admits the others (the spelling is Flux's, on purpose).
+- **Access** is the control-cluster direction: which control-cluster namespaces may reference an
+  object that lends something (a `GitProvider`, a `GitBranch`, a `KubeProvider`). It is granted on
+  the referenced object, in a **grant** list, and nothing is automatic, the own namespace included.
 - **Source namespace** is the source-cluster direction: which source-cluster namespace a rule reads
-  objects from. `WatchRule.spec.rules[].sourceNamespace`, gated by
-  `KubeProvider.spec.allowCrossNamespace.sources`.
+  objects from. `WatchRule.spec.rules[].sourceNamespace`, bounded by the `sourceNamespaces` of the
+  `KubeProvider` grant that admits the `GitTarget`.
 
 A sentence about namespace policy names one of those two. Never "namespace access" unqualified.
 
@@ -144,8 +145,15 @@ branch; never a bare "claim", which names a rule's demand on the read side. `Bra
 The **applier claim** is the cluster side of the same idea: one holds an applier, and another
 reports `HeldByAnotherClaim`.
 
-**Write branch.** The branch a `GitTarget` writes to: its `GitBranch`'s `spec.branch`. It must be in
-the `GitProvider`'s `allowedBranches`.
+**Write branch.** The branch a `GitTarget` writes to: its `GitBranch`'s `spec.branch`. A grant in the
+`GitProvider`'s `spec.allowedGitBranches` must allow it for the `GitBranch`'s namespace.
+
+**Grant.** One entry in a list named `allowed` plus the kind that refers to it
+(`GitProvider.spec.allowedGitBranches`, `GitBranch.spec.allowedGitTargets`,
+`KubeProvider.spec.allowedGitTargets` and `spec.allowedApplierClaims`). It says where it admits from
+(`from`) and, where the object lends reach, the scope it gives (`branches`, `sourceNamespaces`,
+`clusterResources`, `applierNamespaces`). Grants combine by union; an explicit scope is the whole
+scope. Not "permission" or "policy".
 
 **Parent branch.** The branch a write branch is created from, and compared against while the write
 branch does not exist on the remote: the `GitBranch`'s `spec.parentBranch`, or the remote's default

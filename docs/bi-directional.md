@@ -32,8 +32,8 @@ flowchart TD
 
 Everything bi-directional is opt-in and off by default: the applier claims, the push receiver,
 `onRefusal: Reapply`, the chart's `applierAccess` grants, and the `KubeProvider`'s
-`allowCrossNamespace.appliers`, which an applier claim needs to hold an applier outside its own namespace,
-such as one in `flux-system` or `argocd`. A `GitTarget` without `spec.applierClaimRef` never reads,
+`allowedApplierClaims`, which an applier claim needs to hold an applier at all, with `applierNamespaces`
+naming where it may live, such as `flux-system` or `argocd`. A `GitTarget` without `spec.applierClaimRef` never reads,
 patches or syncs anything of Flux's or Argo CD's, and neither does an applier claim no `GitTarget` names, so
 a `Kustomization` keeps its interval and an `Application` keeps automated sync.
 
@@ -445,9 +445,9 @@ returns to `Ready=True` only after a resync covering the refused scope. The elig
   wait: a push reaches the cluster only through a manual sync or `flux resume`. A graceful stop
   suspends a `Kustomization` it had resumed; after a crash, the apply that was running finishes,
   and the next process suspends it. Monitor the operator the way you monitor the applier.
-- **An applier claim may hold any applier its `KubeProvider` reaches.** With
-  `allowCrossNamespace.appliers`, every namespace the provider admits may hold a `Kustomization` or
-  `Application` in another namespace whose source is the repository its `GitProvider` names. That
+- **An applier claim may hold any applier its grant reaches.** A grant in `allowedApplierClaims` lets
+  every namespace it admits hold a `Kustomization` or `Application` in its `applierNamespaces` whose
+  source is the repository its `GitProvider` names. That
   is a delegation by the provider's owner: nothing proves the namespace owns the applier, or may
   write to the repository, since the binding compares URLs.
 - **Pending writes live in worker memory.** They do not survive a restart; recovery is a resync of

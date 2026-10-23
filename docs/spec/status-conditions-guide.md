@@ -263,10 +263,10 @@ Canonical reads:
   `GitPathAccepted=False` with reason `AmbiguousLayout` rather than by a second gate
 - WatchRule and ClusterWatchRule carry target dependency health in `GitTargetReady`
 - WatchRule carries source-namespace authorization in `SourceNamespaceAuthorized`, a positive
-  state-style condition set even for legacy own-namespace rules (reason `LegacySourceNamespace`), so
-  the effective authorization is always visible and automation has one condition to inspect. It is an
-  additional prerequisite of `Ready`, and is deliberately kept out of `GitTargetReady`, which stays
-  the referenced target's own health.
+  state-style condition set for every rule, its own namespace included (reason
+  `SourceNamespaceAllowed`), so the effective authorization is always visible and automation has
+  one condition to inspect. It is an additional prerequisite of `Ready`, and is deliberately kept
+  out of `GitTargetReady`, which stays the referenced target's own health.
 
   Its values are `True` and `False`, plus an `Unknown` that means only "not evaluated yet, because
   an earlier gate blocked this reconcile" (reason `Progressing`). `False` is a **refusal**:
@@ -287,9 +287,9 @@ Canonical reads:
   about a mixed rule. First match wins:
 
   1. any item **denied** → `False` / `SourceNamespaceNotAllowed` / `Stalled=True`
-  2. every item admitted, at least one naming a namespace other than the rule's own → `True` /
-     `SourceNamespaceAllowed`
-  3. every item on its own namespace → `True` / `LegacySourceNamespace`
+  2. every item admitted → `True` / `SourceNamespaceAllowed`
+
+  Every item needs a grant, the rule's own namespace included, so there is no ungated case.
 
   A **denied explicit name refuses the whole rule**; the item is never trimmed away so the rest can
   run, because mirroring two of the three namespaces a rule asked for is worse than a loud failure.

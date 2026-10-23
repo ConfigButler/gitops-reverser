@@ -219,14 +219,14 @@ Appliers on one branch that share a source apply one at a time.
   with its apply window open, for as long as it runs.
 - `spec.dependsOn`: a dependency whose apply failed is suspended with its generation unapplied, so
   its dependents wait until GitOps Reverser's retry of it succeeds.
-- It lives in the applier claim's namespace unless the applier claim's `KubeProvider` sets
-  `allowCrossNamespace.appliers: true`; an applier claim naming one elsewhere without it reports
-  `ApplierNamespaceNotAllowed`. A `Kustomization` in `flux-system` therefore needs the grant. It is
-  a delegation, not owner consent: every namespace the provider admits may then
-  suspend and apply any `Kustomization` in reach of the provider's identity whose source fetches the
+- It lives in a namespace the applier claim's `KubeProvider` grants it in `allowedApplierClaims`
+  (`applierNamespaces`); an applier claim naming one elsewhere reports
+  `ApplierNamespaceNotAllowed`. A `Kustomization` in `flux-system` therefore needs
+  `applierNamespaces: [flux-system]`. It is a delegation, not owner consent: every namespace the grant
+  admits may then suspend and apply any `Kustomization` in its scope whose source fetches the
   repository its `GitProvider` names. Nothing proves that the namespace owns the `Kustomization`, or
   may write to that repository: the binding compares URLs. See
-  [what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
+  [the grants](configuration.md#the-grants).
 - Several `GitTarget`s may name one `FluxClaim`, for a `Kustomization` whose `path` covers several
   folders. It is applied once for all of them.
 - Two `GitProvider`s may name one repository. Before either branch worker asks, both flush: the
@@ -258,7 +258,8 @@ spec:
 
 `kubeProviderRef` names the cluster that holds the `Kustomization`: the operator's own cluster for
 an `inCluster` provider such as the chart's `local`, or a management cluster where Flux runs. The
-provider must admit the applier claim's namespace: its own, or one its `accessFrom` admits. Both
+provider's `spec.allowedApplierClaims` must admit the applier claim's namespace, its own included only
+by a grant; a denial hands a held `Kustomization` back. Both
 references are immutable: delete and recreate the applier claim to hold another `Kustomization`.
 
 ### How the applier claim holds the `Kustomization`
@@ -350,10 +351,10 @@ The applier claim reports `Configured` and `Held`, and its `Ready` includes both
 | `Configured`: `UnsupportedSource` | The source is not a `GitRepository`, or breaks one of the [`GitRepository` rules](#the-gitrepository) | stalled |
 | `Configured`: `SuspendOwnedElsewhere` | Another field manager applies `spec.suspend` | stalled: remove the field from the manifest it applies |
 | `Configured`: `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository` | stalled |
-| `Configured`: `NamespaceNotAuthorized` | The `kubeProviderRef` names a provider in another namespace whose `accessFrom` does not admit the applier claim's namespace | stalled |
+| `Configured`: `NamespaceNotAuthorized` | No grant in the provider's `spec.allowedApplierClaims` admits the applier claim's namespace | stalled |
 | `Configured`: `KubeProviderNotFound` | The `kubeProviderRef` names a provider that does not exist | progressing |
 | `Configured`: `AuditRouteConflict` | The provider carries an audit route another namespace holds, so it is not used | stalled |
-| `Configured`: `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the applier claim's, and the `KubeProvider` does not set `allowCrossNamespace.appliers` | stalled |
+| `Configured`: `ApplierNamespaceNotAllowed` | The `Kustomization`'s namespace is not in the `applierNamespaces` the provider's grants give the applier claim's namespace | stalled |
 | `Configured`: `HeldByAnotherClaim` | Another `FluxClaim` holds this `Kustomization` | stalled: delete one of the two |
 | `Held`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
 | `Held`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |
@@ -503,7 +504,7 @@ flux get ks checkout -n flux-system
 | `FluxClaim` `Configured=False`, `ApplierNotFound` | No `Kustomization` with that namespace and name in the applier claim's cluster, or Flux is not installed there | Create it, or recreate the applier claim with the right `kustomizationRef`; an omitted namespace is the applier claim's |
 | `FluxClaim` `Configured=False`, `SuspendOwnedElsewhere` | The manifest that applies the `Kustomization` sets `spec.suspend` | Remove the field from that manifest |
 | `ApplierClaimReady=False`, `SourceMismatch`, or applier claim `UnsupportedSource` | The message names the broken [`GitRepository` rule](#the-gitrepository) | Fix the `GitRepository`; the applier claim then adopts the `Kustomization`, and the apply that was waiting is asked for |
-| `FluxClaim` `Configured=False`, `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the applier claim, such as `flux-system` | Set `allowCrossNamespace.appliers: true` on the applier claim's `KubeProvider` (Helm: `kubeProvider.allowCrossNamespace.appliers`), or move the applier claim and `GitTarget` to the `Kustomization`'s namespace |
+| `FluxClaim` `Configured=False`, `ApplierNamespaceNotAllowed` | The `Kustomization` is in a namespace the grants do not give, such as `flux-system` | Add it to `applierNamespaces` in the `KubeProvider`'s `spec.allowedApplierClaims` (Helm: `kubeProvider.allowedApplierClaims`) |
 | `FluxClaim` `Configured=Unknown`, `NotBound` | A `GitTarget` names the applier claim, but cannot be judged yet: its `GitProvider` or `KubeProvider` does not exist | Create the missing object; the message names it |
 | `FluxClaim` `Ready=True`, `NotReferenced`, and the `Kustomization` is not suspended | No `GitTarget` names the applier claim, so it holds nothing | Name it in the `GitTarget`'s `spec.applierClaimRef` |
 | `FluxClaim` `Configured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.flux: true` |

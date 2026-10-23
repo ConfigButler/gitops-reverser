@@ -55,11 +55,11 @@ age key under `generateWhenMissing`).
 RBAC above is the hard maximum; *within* it, scope is carried by the rule **kind**:
 
 - A **`WatchRule`** selects namespaced resources. Each `spec.rules[]` item watches the rule's own
-  namespace by default. Naming any other source namespace — including `sourceNamespace: "*"` —
-  requires `KubeProvider.spec.allowCrossNamespace.sources`, a delegation by the provider's owner that
-  is false by default. That flag is the only namespace policy in this direction: what may actually be
-  read is bounded by the provider credential's own Kubernetes RBAC, and a `"*"` reaches every
-  namespace that credential can read, as one cluster-wide watch.
+  namespace by default, and every item, that one included, needs the `KubeProvider`'s grant: the
+  `sourceNamespaces` of the `allowedGitTargets` grants that admit the `GitTarget`'s namespace. A
+  `sourceNamespace: "*"` needs `"*"` there. That scope is the only namespace policy in this direction:
+  what may actually be read is bounded by the provider credential's own Kubernetes RBAC, and a `"*"`
+  reaches every namespace that credential can read, as one cluster-wide watch.
 
   On an **`inCluster`** provider that delegation deliberately bypasses live namespace RBAC: the owner
   of an admitted `GitTarget` can then mirror another namespace's objects — read through the
@@ -117,9 +117,10 @@ namespace it already knows. Narrowing that further is
 | Audit ingress (`/audit-webhook/<route>`, such as `/audit-webhook/gitops-reverser.local` for the chart's provider) | Accepts audit traffic; protected by mutual TLS via cert-manager. A route is held by one namespace: a `KubeProvider` elsewhere that carries it is `Stalled` (`AuditRouteConflict`) and reads none of its facts. |
 | Push receiver (`--receiver-bind-address`, off by default) | Plain HTTP for Git hosts' push webhooks. Each `GitReceiver` route is a path derived from its token, whose Secret lives in the receiver's own namespace, and a delivery must carry a valid signature or token for it before its body is read. A delivery is only a hint: it wakes the branch worker of every `GitProvider`, in any namespace, whose `spec.url` names the repository it reports, and that worker reads the remote with its own provider's credential. The payload's repository URL is only compared with `spec.url`, never fetched, so a delivery cannot choose a URL, a credential or a commit. A worker holds at most one pending look however many deliveries arrive, so deliveries never queue up behind its writes; but they are not rate-limited, so a token holder, in whatever namespace, who keeps delivering can keep a matching worker reading its remote continuously. That availability cost is accepted: there is no per-worker cooldown. The `202` carries no body, so it does not say whether another namespace tracks a repository. |
 | Generated Secret material | Signing keys and generated age keys live in cluster Secrets. |
-| `accessFrom` label selectors on `GitProvider` and `KubeProvider` | A selector admits every control-cluster namespace whose labels match, so it is only as strong as the right to set those labels. Whoever can label a namespace can admit it, including a tenant allowed to edit its own namespace. Select on labels only the platform can set, or list namespaces by `names`. |
+| Grants (`allowedGitBranches`, `allowedGitTargets`, `allowedApplierClaims`) | Nothing is admitted automatically, an object's own namespace included. A `from: Selector` grant admits every control-cluster namespace whose labels match, so it is only as strong as the right to set those labels: whoever can label a namespace can admit it, including a tenant allowed to edit its own namespace. Select on labels only the platform can set, or use `from: Names`. A `Names` grant also admits a namespace deleted and recreated with the same name. Grants decide who may use a provider's identity; every operation still runs as that identity, never as the referrer. |
+| Another provider on the same repository | The branch claim is keyed by repository and branch, not by provider, so grants cannot stop a `GitBranch` that claims a branch through a second `GitProvider` for the same URL with a copied credential. On Gitea and Forgejo a read-only token opens a push session. Keep tenants from creating `GitProvider`s where they share a repository. |
 | `KubeProvider.spec.inCluster` and `--in-cluster-kube-providers` | `inCluster` wields the operator's own identity in the cluster it runs in. It is honored only for a `KubeProvider` the flag lists by exact `namespace/name` (no wildcards, empty by default); any other is `Stalled` (`InClusterNotAuthorized`) and never used. Anyone who can create a `KubeProvider` under a listed name wields that identity through it, so list only names in namespaces you control. |
-| `KubeProvider.spec.allowCrossNamespace.appliers` | Lets every namespace the provider admits suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`, through the provider's identity. A delegation, not owner consent: it does not prove the namespace owns the applier or its repository. An applier claim only acts while an eligible `GitTarget` names it, and the binding check compares the `GitProvider` URL, not write access. |
+| `KubeProvider.spec.allowedApplierClaims` | Lets the namespaces a grant admits suspend and apply a `Kustomization` or `Application` in its `applierNamespaces`, such as `flux-system`, through the provider's identity. Admission to mirror does not admit to apply. A delegation, not owner consent: it does not prove the namespace owns the applier or its repository. An applier claim only acts while an eligible `GitTarget` names it, and the binding check compares the `GitProvider` URL, not write access. A denial hands the applier back. |
 
 ## Secret data the controller writes to Git
 
@@ -139,10 +140,11 @@ resource types can opt into the same encryption path at controller startup. See
 
 ## Git credentials Secret shape
 
-`GitProvider.spec.secretRef` points to a Secret in the provider's own namespace. A `GitTarget` in
-another namespace that writes through the provider, which its `spec.accessFrom` must admit, uses
-that Secret without being able to read it. The controller picks the auth
-method from the keys present, preferring an SSH key, then HTTP basic auth, then a bearer token. The
+`GitProvider.spec.secretRef` points to a Secret in the provider's own namespace. A `GitBranch` in
+another namespace that claims a branch through the provider, which its `spec.allowedGitBranches`
+must admit, and the `GitTarget`s that branch admits, use that Secret without being able to read it.
+The controller picks the auth method from the keys present, preferring an SSH key, then HTTP basic
+auth, then a bearer token. The
 examples below use the Kubernetes-native key names; the reader also accepts the Flux and Argo CD key
 names so an existing GitOps Secret works unchanged (see
 [`design/git-credentials-interop.md`](finished/git-credentials-interop.md)).

@@ -75,8 +75,9 @@ it, so the list must cover every type your rules name.
 ### `namespaces` on a REMOTE source cluster
 
 The operator needs **no `Namespace` access at all** in a source cluster. The manager role's
-`namespaces` `get`/`list`/`watch` covers the operator's own cluster, where `KubeProvider.accessFrom`
-selectors match control-cluster labels.
+`namespaces` `get`/`list`/`watch` covers the operator's own cluster, where `Selector` grants (in
+`GitProvider.spec.allowedGitBranches`, `GitBranch.spec.allowedGitTargets` and the `KubeProvider`'s
+grant lists) match control-cluster labels.
 
 This used to be different: `GitTarget.spec.allowedSourceNamespaces` could carry a label selector
 evaluated against `Namespace`s in the *source* cluster, so a remote provider's identity needed

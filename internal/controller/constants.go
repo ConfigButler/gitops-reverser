@@ -77,9 +77,9 @@ const (
 	// ConditionTypeGitTargetReady indicates whether the referenced GitTarget is ready for writes.
 	ConditionTypeGitTargetReady = "GitTargetReady"
 	// ConditionTypeSourceNamespaceAuthorized reports whether a rule's EFFECTIVE source namespace
-	// is authorized for the observed generation. It is positive and state-style, and it is set
-	// even for legacy own-namespace rules (reason LegacySourceNamespace) so the effective
-	// authorization is always visible and automation has ONE condition to inspect.
+	// is authorized for the observed generation. It is positive and state-style, and it is set for
+	// every rule, its own namespace included, so the effective authorization is always visible and
+	// automation has ONE condition to inspect.
 	//
 	// It is deliberately distinct from GitTargetReady, which stays the health of the referenced
 	// GitTarget and must never be reused for source authorization. Its three values are not

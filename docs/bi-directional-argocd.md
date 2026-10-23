@@ -270,14 +270,14 @@ spec:
 
 `kubeProviderRef` names the cluster that holds the `Application`: the operator's own cluster for an
 `inCluster` provider such as the chart's `local`, or a management cluster for a hub Argo CD that
-deploys to other clusters. The provider must admit the applier claim's namespace: its own, or one its
-`accessFrom` admits. The `GitTarget`'s own `spec.kubeProviderRef` stays the cluster it mirrors. An
-`Application` in another namespace than the applier claim's, such as `argocd`, needs
-`allowCrossNamespace.appliers: true` on that `KubeProvider`; without it the applier claim reports
-`ApplierNamespaceNotAllowed`. That is a delegation, not owner consent: every namespace the provider
-admits may then sync any `Application` in reach of its identity whose source is the repository its
-`GitProvider` names, and nothing proves it owns the `Application` or may write to the repository. See
-[what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
+deploys to other clusters. The provider's `spec.allowedApplierClaims` must admit the applier claim's
+namespace, its own included only by a grant. The `GitTarget`'s own `spec.kubeProviderRef` stays the
+cluster it mirrors. The `Application`'s namespace, such as `argocd`, must be in the
+`applierNamespaces` that grant gives; otherwise the applier claim reports
+`ApplierNamespaceNotAllowed`. That is a delegation, not owner consent: every namespace the grant
+admits may then sync any `Application` in its scope whose source is the repository its
+`GitProvider` names, and nothing proves it owns the `Application` or may write to the repository. A
+denial hands a held `Application` back. See [the grants](configuration.md#the-grants).
 Both references are immutable: delete and recreate the applier claim to hold another `Application`. An
 applier claim that holds the switch carries the finalizer `configbutler.ai/argocd-claim`: deleting it,
 or no longer naming it from any eligible `GitTarget`, hands the switch back first: as it was
@@ -327,10 +327,10 @@ The applier claim reports `Configured` and `Held`, and its `Ready` includes both
 | `OwnedByApplicationSet` | Automated sync is on, and an `ApplicationSet` generated the `Application`, so its template owns the switch | stalled: set `automated.enabled: false` in the template |
 | `AutomatedSyncOwnedElsewhere` | Automated sync is on, and another field manager applies the switch | stalled: set `enabled: false` in the manifest it applies, or leave it out |
 | `Forbidden` | The applier cluster's identity may not update or patch the `Application` | stalled |
-| `NamespaceNotAuthorized` | The `kubeProviderRef` names a provider in another namespace whose `accessFrom` does not admit the applier claim's namespace | stalled |
+| `NamespaceNotAuthorized` | No grant in the provider's `spec.allowedApplierClaims` admits the applier claim's namespace | stalled |
 | `KubeProviderNotFound` | The `kubeProviderRef` names a provider that does not exist | progressing |
 | `AuditRouteConflict` | The provider carries an audit route another namespace holds, so it is not used | stalled |
-| `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the applier claim's, and the `KubeProvider` does not set `allowCrossNamespace.appliers` | stalled |
+| `ApplierNamespaceNotAllowed` | The `Application`'s namespace is not in the `applierNamespaces` the provider's grants give the applier claim's namespace | stalled |
 | `HeldByAnotherClaim` | Another `ArgoCDClaim` in line for the same `Application` in the same cluster, one an eligible `GitTarget` references, holds it (it holds the switch already, or was created first); this one starts no sync, and takes over once that one lets go | stalled: delete one of the two |
 
 `Held` says whether automated sync is off:
@@ -541,7 +541,7 @@ it.
 | `ArgoCDClaim` `Configured=False`, `ArgoCDVersionNotSupported` | Argo CD before 3.1, whose `Application` has no `enabled` | Upgrade Argo CD to 3.1 or later |
 | `ArgoCDClaim` `Configured=False`, `ApplierNotFound` | No `Application` with that namespace and name in the applier claim's cluster, or Argo CD is not installed there | Create it, or recreate the applier claim with the right `applicationRef`; an omitted namespace is the applier claim's |
 | `ApplierClaimReady=False`, `SourceMismatch`, or applier claim `UnsupportedSource` | The message names the broken [`Application` rule](#the-application) | Fix the `Application`; a sync that was waiting is asked for afterward |
-| `ArgoCDClaim` `Configured=False`, `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the applier claim, such as `argocd` | Set `allowCrossNamespace.appliers: true` on the applier claim's `KubeProvider` (Helm: `kubeProvider.allowCrossNamespace.appliers`), or move the applier claim and `GitTarget` to the `Application`'s namespace |
+| `ArgoCDClaim` `Configured=False`, `ApplierNamespaceNotAllowed` | The `Application` is in a namespace the grants do not give, such as `argocd` | Add it to `applierNamespaces` in the `KubeProvider`'s `spec.allowedApplierClaims` (Helm: `kubeProvider.allowedApplierClaims`) |
 | `ArgoCDClaim` `Configured=Unknown`, `NotBound` | A `GitTarget` names the applier claim, but cannot be judged yet: its `GitProvider` or `KubeProvider` does not exist | Create the missing object; the message names it |
 | `ArgoCDClaim` `Configured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.argocd: true` |
 | A Warning `ApplyRequestFailed` Event | A request could not be delivered, such as a sync somebody else started that did not end within 5 minutes | GitOps Reverser keeps asking after its backoff, at most every five minutes |

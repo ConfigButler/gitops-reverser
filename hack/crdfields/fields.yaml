@@ -34,7 +34,8 @@ kinds:
         default: "**no `GitBranch`**, its own namespace included"
         doc: >-
           Which namespaces' `GitBranch`es may claim which branches through this provider. Each grant
-          has a `from` (`Same`, `Names`, `Selector`, `All`) and the `branches` patterns it allows
+          has a `from` (`Same`, `Names`, `Selector`, `All`) and the `branches` patterns it allows. See
+          [the grants](#the-grants)
       - path: secretRef
         default: anonymous access
         doc: >-
@@ -72,7 +73,7 @@ kinds:
         default: "**no `GitTarget`**, its own namespace included"
         doc: >-
           Which namespaces' `GitTarget`s may write through this branch, each grant with a `from`. The
-          only mutable field
+          only mutable field. See [the grants](#the-grants)
       - path: parentBranch
         default: the remote's default branch
         doc: >-
@@ -111,12 +112,12 @@ kinds:
         default: "**no `GitTarget`**, its own namespace included"
         doc: >-
           Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a
-          `from`, and `sourceNamespaces`, `clusterResources` or both
+          `from`, and `sourceNamespaces`, `clusterResources` or both. See [the grants](#the-grants)
       - path: allowedApplierClaims
         default: "**no applier claim**, its own namespace included"
         doc: >-
           Which namespaces' applier claims may hold an applier through this provider, and the
-          `applierNamespaces` that applier may live in
+          `applierNamespaces` that applier may live in. See [the grants](#the-grants)
       - path: client.qps
         default: "`20`"
         doc: Client rate limit for this source cluster. Refused beside `inCluster`

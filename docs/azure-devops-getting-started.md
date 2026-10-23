@@ -44,8 +44,9 @@ spec:
   url: https://dev.azure.com/<org>/<project>/_git/<repo>
   secretRef:
     name: ado-creds
-  allowedBranches:
-    - <branch>
+  allowedGitBranches:
+    - from: Same
+      branches: [<branch>]
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitBranch

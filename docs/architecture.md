@@ -20,9 +20,9 @@ credential belongs in the namespace of whoever owns it. A namespaced `GitProvide
 write boundary: its credential, branch policy, and targets usually belong together. A namespaced
 `KubeProvider` is one **logical source identity**: one client, discovery surface, watch state, and
 attribution partition, shared by every target that names it. Its kubeconfig Secret lives in its own
-namespace, so a tenant's connection keeps its credential with the tenant. A provider admits
-consumers in its own namespace, and `accessFrom` admits other control-cluster namespaces; neither
-grants source-cluster RBAC or selects source namespaces. The source identity is the provider's
+namespace, so a tenant's connection keeps its credential with the tenant. Its grants
+(`spec.allowedGitTargets`, `spec.allowedApplierClaims`) admit control-cluster namespaces, its own
+included only by a grant, and bound what they may reach; none grants source-cluster RBAC. The source identity is the provider's
 namespace and name, with no API-server identity probe: two providers configured for the same server
 remain separate source partitions, and so do two providers with one name in two namespaces.
 
@@ -34,13 +34,14 @@ or forbidden credential falls through to the operator's identity.
 
 Keeping a repository's write credential in the namespace of whoever owns that repository is what
 makes a team able to start mirroring without a platform admin. Each branch of that repository is a
-`GitBranch` in the credential's namespace, and **one `GitBranch` holds a repository branch**,
-because one branch worker writes the branch, with one credential: the oldest `GitBranch` whose
-credential opens a push session on the remote holds it, and any other reports `BranchConflict`. A
-repository written from several namespaces needs no copy of the credential in each: their
-`GitTarget`s name the shared `GitBranch` with
-`spec.gitBranchRef.namespace`, admitted by its `GitProvider`'s `spec.accessFrom`, the same pattern a
-`KubeProvider` uses. Its own namespace is always admitted. Neither kind can change scope later: a
+`GitBranch`, in the credential's namespace or in one the `GitProvider`'s `spec.allowedGitBranches`
+admit for that branch, and **one `GitBranch` holds a repository branch**, because one branch worker
+writes the branch, with one credential: the oldest admitted `GitBranch` whose credential opens a
+push session on the remote holds it, and any other reports `BranchConflict`. A repository written
+from several namespaces needs no copy of the credential in each: their `GitTarget`s name the shared
+`GitBranch` with `spec.gitBranchRef.namespace`, admitted by that `GitBranch`'s
+`spec.allowedGitTargets`. Nothing is admitted automatically, the own namespace included
+([configuration.md](configuration.md#sharing-connections-across-namespaces)). Neither kind can change scope later: a
 CRD's `spec.scope` is immutable once the definition is `Established`, so the change would mean
 deleting the definition (and every object of the kind with it) and recreating both.
 
@@ -384,14 +385,14 @@ Subresources are rejected in rule resources. Mirroring operates on top level res
 made through the `/scale` subresource reaches Git as the parent's own watch event, and its audit
 event serves only to name who scaled the parent.
 
-The two namespace controls intentionally live in different planes:
+One `KubeProvider` grant answers two questions in different planes:
 
-- `KubeProvider.spec.accessFrom` authorizes **control-cluster** namespaces other than its own to
-  reference the provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
-- `KubeProvider.spec.allowCrossNamespace.sources` delegates the CHOICE of source namespace to the
-  `GitTarget`s that provider admits. It grants nothing: what may actually be read from the source
-  cluster is bounded by that credential's own Kubernetes RBAC, which is the only bound there is. The
-  operator reads no `Namespace` objects in a source cluster for authorization.
+- `from` (with `names` or `selector`) authorizes **control-cluster** namespaces to reference the
+  provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
+- `sourceNamespaces` and `clusterResources` bound what the `GitTarget`s it admits may watch. They
+  grant nothing: what may actually be read from the source cluster is bounded by that credential's
+  own Kubernetes RBAC. The operator reads no `Namespace` objects in a source cluster for
+  authorization.
 
 ### CommitRequest
 
@@ -431,10 +432,10 @@ One materialization from a source provider to a Git destination: `(KubeProvider,
 Key fields:
 
 - `spec.gitBranchRef`: required; a `GitBranch` by name, in the `GitTarget`'s own namespace unless
-  `namespace` names another one, whose `GitProvider`'s `spec.accessFrom` must then admit it.
+  `namespace` names another one. Its `spec.allowedGitTargets` must admit the `GitTarget`'s namespace.
 - `spec.kubeProviderRef`: required; the source `KubeProvider`, in the `GitTarget`'s own namespace
-  unless `namespace` names another one, whose `spec.accessFrom` must then admit it. There is no
-  default provider: a missing one reports `Validated=False` (`KubeProviderNotFound`).
+  unless `namespace` names another one. Its `spec.allowedGitTargets` must admit the `GitTarget`'s
+  namespace. There is no default provider: a missing one reports `Validated=False` (`KubeProviderNotFound`).
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
   chosen explicitly).
 - `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
@@ -499,12 +500,10 @@ Represents a Git repository and the credentials/configuration used to write it. 
 
 - `spec.url`: immutable repository URL.
 - `spec.secretRef`: optional Secret in the same namespace for HTTP/SSH authentication.
-- `spec.accessFrom`: which other namespaces' `GitTarget`s may write through this provider's
-  `GitBranch`es, by name or label selector, as on a `KubeProvider`. Its own namespace is always
-  admitted; omitted admits no other. A `GitTarget` admitted from another namespace writes with this
-  provider's credential and identity. Checked on every reconcile, so a tightened policy revokes.
+- `spec.allowedGitBranches`: which namespaces' `GitBranch`es may claim which branches with this
+  credential, as grants with a `from` and branch patterns. Its own namespace needs a grant too. A
+  `GitBranch` it no longer admits gives its branch up, keeping its finalizer.
 - `spec.knownHostsRef`: optional SSH known hosts source.
-- `spec.allowedBranches`: glob patterns that gate writable branches.
 - `spec.commit.committer`: committer identity (defaults to `GitOps Reverser` / `noreply@configbutler.ai`).
 - `spec.commit.signing`: SSH signing key reference and optional key generation.
 - `status.signingPublicKey`: populated when signing is configured and key material is available.
@@ -521,15 +520,18 @@ Kubernetes native, Flux, and Argo CD Secret key dialects (see
 - **Controller**: [internal/controller/gitbranch_controller.go](../internal/controller/gitbranch_controller.go)
 
 One branch of the repository a `GitProvider` names, holding it for every `GitTarget` that references
-it. Every field is immutable:
+it. Every field but `spec.allowedGitTargets` is immutable:
 
-- `spec.gitProviderRef`: a `GitProvider` in the `GitBranch`'s own namespace only, so creating one
-  takes the right to create objects where the credential lives.
-- `spec.branch`: validated against the provider's `allowedBranches` (`BranchNotAllowed`).
+- `spec.gitProviderRef`: the `GitProvider`, in the `GitBranch`'s own namespace unless `namespace`
+  names another. Its `spec.allowedGitBranches` must admit this namespace and the branch
+  (`NamespaceNotAuthorized`, `BranchNotAllowed`), checked before any push session.
+- `spec.branch`: the branch it claims.
 - `spec.parentBranch`: optional branch the write branch is created from and compared against while
   it does not exist. Omitted means the remote's default branch. An explicit parent must exist when
-  creating the write branch (`ParentBranchNotFound`). It does not need to be in `allowedBranches`
-  because it is only read.
+  creating the write branch (`ParentBranchNotFound`). The grants need not allow it, because it is
+  only read.
+- `spec.allowedGitTargets`: which namespaces' `GitTarget`s may write through it, its own included
+  only by a grant.
 - `status.repository`: the normalized repository URL, half of the key one `GitBranch` holds.
 - `status.lastPushNoticeAt`: when a `GitReceiver` last delivered a push to it. It records receipt,
   so it is published even when the look the delivery caused could not read the remote.
@@ -591,11 +593,11 @@ immutable arms (delete and recreate the provider to repoint it):
 Several namespaces may mirror through one provider, but its source identity must not vary by target
 because it keys source clients, discovery, watches, and attribution. The identity is the provider's
 `namespace/name` rather than a deduplicated physical-cluster identity, so two providers pointing at the
-same API server still have separate contexts and authorization boundaries. A provider admits
-consumers in its own namespace; `spec.accessFrom` admits others, and an omitted one admits no other
-namespace. The check runs on every reconcile before watches start (`NamespaceNotAuthorized`), so
-tightening it also stops an already-existing `GitTarget`, which an admission-time check could not
-do. It guards which tenant may cause the operator to export a source; it does not expand that source
+same API server still have separate contexts and authorization boundaries. A provider admits only
+the namespaces its grants admit, its own included only by a grant. The check runs on every reconcile
+before watches start (`NamespaceNotAuthorized`), and a grant or Namespace label change triggers that
+reconcile, so tightening it also stops an already-existing `GitTarget`, which an admission-time check
+could not do. It guards which tenant may cause the operator to export a source; it does not expand that source
 credential's Kubernetes permissions.
 
 Its audit route, `spec.attribution.auditRoute`, defaults to `<namespace>.<name>` and is held by one
@@ -1341,8 +1343,8 @@ Later attempts may resume a cursor; see
 
 There is no periodic object LIST or timer-driven object-drift sweep. Source-namespace selection
 uses delegated rule configuration and the source credential's permissions; it does not require
-reading source Namespace labels. Control-cluster Namespace labels can govern `accessFrom`, which
-is a separate provider-reference authorization boundary.
+reading source Namespace labels. Control-cluster Namespace labels can govern a `Selector` grant,
+which is a separate provider-reference authorization boundary.
 
 ### Rule change reconcile
 
