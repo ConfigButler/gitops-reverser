@@ -57,7 +57,7 @@ func (f *holdFixture) settle(t *testing.T, key k8stypes.NamespacedName) *configb
 		require.NoError(t, err)
 		require.NoError(t, f.r.Get(context.Background(), key, claim))
 		held := findCondition(claim.Status.Conditions, ApplierClaimConditionHeld)
-		return held != nil && held.Reason != ReasonSuspending && held.Reason != ReasonReleasing
+		return held != nil && held.Reason != ReasonSuspending && !handingBack(held)
 	}, 5*time.Second, 5*time.Millisecond)
 	return claim
 }

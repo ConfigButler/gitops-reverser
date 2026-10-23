@@ -67,6 +67,10 @@ const (
 	// it is being deleted, or no eligible GitTarget references it any more. Held=False with
 	// applier.ReasonNotReferenced is an applier claim with nothing to hold.
 	ReasonReleasing = "Releasing"
+	// ReasonRevoking is Held=False on an applier claim that held its applier and is handing it back
+	// because its KubeProvider's spec.allowedApplierClaims no longer admit it. The hand-back finishes
+	// even if a grant admits the applier claim again meanwhile, which then adopts its applier anew.
+	ReasonRevoking = "Revoking"
 	// EventReasonAdopted is a Kustomization suspended, or an Application's automated sync switched
 	// off, for the first time.
 	EventReasonAdopted = "Adopted"

@@ -157,8 +157,7 @@ func TestFluxClaim_ADenialThatCannotHandBackGivesUp(t *testing.T) {
 			got := f.claim(t)
 			if !tc.atOnce {
 				require.False(t, handedBack(got))
-				assert.Equal(t, ReasonReleasing, heldReason(t, got), "the hand-back shows in status")
-				assert.True(t, releasingForDenial(got))
+				assert.Equal(t, ReasonRevoking, heldReason(t, got), "the hand-back shows in status")
 				held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
 				held.LastTransitionTime = metav1.NewTime(time.Now().Add(-releaseDeadline - time.Minute))
 				require.NoError(t, f.r.Status().Update(context.Background(), got))
@@ -185,13 +184,12 @@ func TestFluxClaim_ARegrantDuringTheHandBackLetsItFinish(t *testing.T) {
 	f.setApplierGrants(t, nil)
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
-	require.Equal(t, ReasonReleasing, heldReason(t, f.claim(t)))
-	assert.True(t, releasingForDenial(f.claim(t)))
+	require.Equal(t, ReasonRevoking, heldReason(t, f.claim(t)))
 
 	f.setApplierGrants(t, grants)
 	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
-	assert.Equal(t, ReasonReleasing, heldReason(t, f.claim(t)), "the hand-back is not abandoned")
+	assert.Equal(t, ReasonRevoking, heldReason(t, f.claim(t)), "the hand-back is not abandoned")
 
 	unpause()
 	f.reconcileUntil(t, func(claim *configbutleraiv1alpha3.FluxClaim) bool {

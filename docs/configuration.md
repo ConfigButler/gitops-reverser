@@ -401,7 +401,7 @@ admits no new work under the revoked permission. Work it already held may comple
 - **A `GitTarget`, `WatchRule`, `ClusterWatchRule` or applier claim** that loses admission or scope is
   refused on its next reconcile. A write already decided is still committed and pushed.
 - **An applier claim its `allowedApplierClaims` refuse** hands its applier back, as one no eligible
-  `GitTarget` references does: it stays the holder (`Held=False`, `Releasing`) while it hands back,
+  `GitTarget` references does: it stays the holder (`Held=False`, `Revoking`) while it hands back,
   keeps a `Kustomization` that was suspended before adoption suspended, and gives up after ten
   minutes with a Warning Event if it cannot finish. A regrant during the hand-back lets it finish, and
   the applier claim then adopts the applier anew. A read error never starts a hand-back. Once the
@@ -1845,7 +1845,7 @@ status:
       message: Kustomization flux-system/checkout applies GitRepository flux-system/platform, ...
     - type: Held               # FluxClaim only
       status: "True"
-      reason: Suspended        # Suspended | Applying | Suspending | Releasing | NotReferenced | NotConfigured
+      reason: Suspended        # Suspended | Applying | Suspending | Releasing | Revoking | NotReferenced | NotConfigured
     - type: Ready
       status: "True"
   source:

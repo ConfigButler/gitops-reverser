@@ -260,7 +260,8 @@ cluster, so name one `KubeProvider` for every applier claim that reaches a given
 applies), `Applying` (resumed for an apply GitOps Reverser started), `Suspending` (a suspend was
 sent, and Flux has not handled its token yet), `Releasing` (being handed back to Flux). For an
 `ArgoCDClaim`: `AutomatedSyncOff` (held off by GitOps Reverser, or kept off by whoever owns the
-switch) and `Releasing`. Either may be `NotReferenced` (nothing to hold) or `NotConfigured`. A
+switch) and `Releasing`. Either may be `Revoking` (being handed back because a grant no longer
+admits it), `NotReferenced` (nothing to hold) or `NotConfigured`. A
 suspend counts as done only once it is handled: by then no
 reconcile that started before it is still running. Not "fenced", and not "resumed", which says what
 happens to the `Kustomization` rather than what the applier claim does. **Hand back** is releasing

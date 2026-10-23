@@ -339,6 +339,7 @@ The applier claim reports `Configured` and `Held`, and its `Ready` includes both
 | --- | --- |
 | `AutomatedSyncOff` (`True`) | Automated sync is off: held off by GitOps Reverser, or kept off by the `ApplicationSet` or field manager that owns the switch (the message says which) |
 | `Releasing` (`False`) | The switch is being handed back |
+| `Revoking` (`False`) | The switch is being handed back because the `KubeProvider`'s `allowedApplierClaims` no longer admit the applier claim; it finishes even if a grant returns meanwhile |
 | `NotReferenced` (`False`), `NotConfigured` (`Unknown`) | Nothing is held: no `GitTarget` names the applier claim, or it is not `Configured` |
 
 A sync that has not completed within 5 minutes also makes the applier claim `Ready=False` with

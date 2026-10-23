@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -609,26 +608,26 @@ func applierTool(claim configbutleraiv1alpha3.ApplierClaim) string {
 	return "Flux"
 }
 
-// publishReleasing sets Held=False (Releasing) and the trio on an applier claim whose hand-back is not
-// done, its deadline counted from since. The condition is written anew when it was not Releasing
-// before, so its lastTransitionTime says when the release began.
+// publishReleasing sets Held=False (Releasing, or Revoking for a hand-back a denial began) and the
+// trio on an applier claim whose hand-back is not done, its deadline counted from since. The condition
+// is written anew when no hand-back was under way before, so its lastTransitionTime says when the
+// release began.
 func (r *ApplierClaimReconciler) publishReleasing(
 	st *reconcileStatus, claim configbutleraiv1alpha3.ApplierClaim, check *claimCheck, since time.Time,
 ) {
-	why := "the applier claim is being deleted"
+	why, reason := "the applier claim is being deleted", ReasonReleasing
 	switch {
 	case check != nil && (check.denied || releasingForDenial(claim)):
-		why = releasingForDenialWhy
+		why, reason = "the KubeProvider's spec.allowedApplierClaims no longer admit the applier claim", ReasonRevoking
 	case check != nil && check.refs.Named():
 		why = "no GitTarget naming the applier claim is eligible any more"
 	case check != nil:
 		why = "no GitTarget names the applier claim any more"
 	}
-	held := conditionValue{Status: metav1.ConditionFalse, Reason: ReasonReleasing, Message: fmt.Sprintf(
+	held := conditionValue{Status: metav1.ConditionFalse, Reason: reason, Message: fmt.Sprintf(
 		"%s: handing %s %s back to %s, by %s at the latest", why, claim.ApplierKind(), claim.Applier(),
 		applierTool(claim), since.Add(releaseDeadline).UTC().Format(time.RFC3339))}
-	if previous := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld); previous == nil ||
-		previous.Reason != ReasonReleasing {
+	if !handingBack(findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)) {
 		st.remove(ApplierClaimConditionHeld)
 	}
 	st.setValue(ApplierClaimConditionHeld, held)
@@ -641,22 +640,25 @@ func (r *ApplierClaimReconciler) publishReleasing(
 	st.applyReadiness(r.claimReadiness(claim, check.configured, &held))
 }
 
-// releasingForDenialWhy opens the Held=Releasing message of a hand-back that a denial by the
-// KubeProvider's spec.allowedApplierClaims began. releasingForDenial reads it back: such a hand-back
-// finishes even after a regrant, and the applier is adopted anew once it has.
-const releasingForDenialWhy = "the KubeProvider's spec.allowedApplierClaims no longer admit the applier claim"
-
 // releasingForDenial reports whether the applier claim is handing its applier back because its
-// KubeProvider's grants refused it.
+// KubeProvider's grants refused it (Held=False, Revoking): such a hand-back finishes even after a
+// regrant, and the applier is adopted anew once it has.
 func releasingForDenial(claim configbutleraiv1alpha3.ApplierClaim) bool {
 	held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
-	return held != nil && held.Reason == ReasonReleasing && strings.HasPrefix(held.Message, releasingForDenialWhy)
+	return held != nil && held.Reason == ReasonRevoking
 }
 
-// releasingSince is when the applier claim's Held condition turned Releasing, or now when it has not.
+// handingBack reports whether a Held condition says a hand-back is under way: Releasing, or Revoking.
+// A denial arriving during a release continues the same hand-back, with the same deadline.
+func handingBack(held *metav1.Condition) bool {
+	return held != nil && (held.Reason == ReasonReleasing || held.Reason == ReasonRevoking)
+}
+
+// releasingSince is when the applier claim's Held condition turned Releasing or Revoking, or now when
+// it has not.
 func releasingSince(claim configbutleraiv1alpha3.ApplierClaim) time.Time {
 	held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
-	if held == nil || held.Reason != ReasonReleasing || held.LastTransitionTime.IsZero() {
+	if !handingBack(held) || held.LastTransitionTime.IsZero() {
 		return time.Now()
 	}
 	return held.LastTransitionTime.Time

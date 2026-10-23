@@ -717,8 +717,9 @@ page:
   reconciles.
 - **A denied applier claim hands back through `retire` as it is.** If the identity is Forbidden from
   patching the applier, it lets go at once with a Warning Event. Other failures retry until
-  `releaseDeadline`. A hand-back a denial began is marked by the start of its `Held=Releasing`
-  message, which is how a regrant knows to let it finish before adopting the applier again.
+  `releaseDeadline`. A hand-back a denial began reads `Held=False`, reason `Revoking`, rather than
+  `Releasing`, which is how a regrant knows to let it finish before adopting the applier again. A
+  first cut marked it by the opening words of the `Releasing` message instead.
 - **A deleted `GitProvider` or `KubeProvider` is not a revocation.** The `GitBranch` keeps its claim,
   and the applier claim keeps its hold, as before.
 - **Watch-driven tests.** The drain, successor and two-candidate revocation tests, and the applier

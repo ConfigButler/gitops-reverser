@@ -163,7 +163,8 @@ spec:
                   syncs a single source, has automated sync off or a switch the applier claim may hold, may be
                   written, and no other ArgoCDClaim holds it), Held (AutomatedSyncOff: automated sync is off,
                   held by GitOps Reverser or kept off by the switch's owner; Releasing: being handed back;
-                  NotReferenced; NotConfigured), and the kstatus Ready/Reconciling/Stalled trio. An applier claim acts only while an
+                  Revoking: being handed back because a grant no longer admits it; NotReferenced; NotConfigured),
+                  and the kstatus Ready/Reconciling/Stalled trio. An applier claim acts only while an
                   eligible GitTarget references it: one in its namespace that names it, is admitted by its
                   KubeProviders, and writes the repository and branch the Application syncs. An applier claim no
                   GitTarget names reads nothing in the Application's cluster and is Configured=Unknown,
