@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -483,8 +484,10 @@ func (r *GitBranchReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha3.GitBranch{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// Every GitProvider event, status included: its Ready flipping is what un-blocks a GitBranch,
-		// and providers are few.
+		// its grants decide which GitBranches may claim through it, and providers are few.
 		Watches(&configbutleraiv1alpha3.GitProvider{}, handler.EnqueueRequestsFromMapFunc(r.gitProviderToGitBranches)).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.namespaceToGitBranches),
+			builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		// gitBranchRef is immutable, so only a GitTarget appearing or going changes the count.
 		Watches(&configbutleraiv1alpha3.GitTarget{}, handler.EnqueueRequestsFromMapFunc(gitTargetToGitBranch),
 			builder.WithPredicates(predicate.Funcs{
@@ -499,19 +502,36 @@ func (r *GitBranchReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return b.Complete(r)
 }
 
-// gitProviderToGitBranches enqueues the GitBranches in the provider's namespace that name it.
+// gitProviderToGitBranches enqueues the GitBranches, from any namespace, that claim through the
+// provider: its grants decide whether each may.
 func (r *GitBranchReconciler) gitProviderToGitBranches(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
-	var branches configbutleraiv1alpha3.GitBranchList
-	if err := r.List(ctx, &branches, client.InNamespace(obj.GetNamespace())); err != nil {
+	branches, err := gitBranchesOf(ctx, r.Client, obj)
+	if err != nil {
+		logDependencyListError(ctx, err, "GitBranches", obj)
 		return nil
 	}
-	var requests []ctrlreconcile.Request
+	requests := make([]ctrlreconcile.Request, 0, len(branches))
+	for i := range branches {
+		requests = append(requests, ctrlreconcile.Request{NamespacedName: client.ObjectKeyFromObject(&branches[i])})
+	}
+	return requests
+}
+
+// namespaceToGitBranches enqueues the GitBranches in a Namespace whose labels changed: a Selector
+// grant on their GitProvider reads those labels, so the change can admit or revoke them. Their
+// GitTargets follow through the GitBranch watch on the GitTarget controller.
+func (r *GitBranchReconciler) namespaceToGitBranches(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
+	var branches configbutleraiv1alpha3.GitBranchList
+	if err := r.List(ctx, &branches, client.InNamespace(obj.GetName())); err != nil {
+		logDependencyListError(ctx, err, "GitBranches", obj)
+		return nil
+	}
+	requests := make([]ctrlreconcile.Request, 0, len(branches.Items))
 	for i := range branches.Items {
-		if branches.Items[i].Spec.GitProviderRef.Name == obj.GetName() {
-			requests = append(requests, ctrlreconcile.Request{
-				NamespacedName: client.ObjectKeyFromObject(&branches.Items[i]),
-			})
-		}
+		requests = append(
+			requests,
+			ctrlreconcile.Request{NamespacedName: client.ObjectKeyFromObject(&branches.Items[i])},
+		)
 	}
 	return requests
 }

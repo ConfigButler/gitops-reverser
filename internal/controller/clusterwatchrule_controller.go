@@ -8,7 +8,6 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -370,35 +369,9 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
 		// matches what GitProvider and KubeProvider already do.
 		For(&configbutleraiv1alpha3.ClusterWatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		// This rule MIRRORS the GitTarget's readiness into its own GitTargetReady, so the watch has
-		// to see the status-only update that carries a heal — GenerationChangedPredicate would drop
-		// exactly that. gitTargetReadyProjectionChanged fires on a spec change or on a move in the
-		// mirrored verdict, and on nothing else.
-		Watches(
-			&configbutleraiv1alpha3.GitTarget{},
-			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
-			builder.WithPredicates(gitTargetReadyProjectionChanged()),
-		).
-		// React to a KubeProvider's grants changing. Without this, REVOKING a
-		// namespace stops the GitTarget (which does watch KubeProvider) but leaves this rule's
-		// compiled entry resident until the next periodic reconcile, so the admission gate would
-		// converge on a ~10m delay instead of on the event. The GitTarget's own status flip cannot
-		// be relied on to carry it: the edge above re-enqueues only on a move in the MIRRORED
-		// readiness, and a revocation need not move it.
-		Watches(
-			&configbutleraiv1alpha3.KubeProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToClusterWatchRules),
-			builder.WithPredicates(kubeProviderReadyOrSpecChanged()),
-		).
-		// React to a Namespace's LABELS changing: a grant may admit by selector, so a
-		// label change on a GitTarget's namespace grants or revokes every ClusterWatchRule pointing
-		// at a target in it. LabelChangedPredicate ignores unrelated namespace churn.
-		Watches(
-			&corev1.Namespace{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterWatchRules),
-			builder.WithPredicates(predicate.LabelChangedPredicate{}),
-		).
 		Named("clusterwatchrule")
+	b = ruleDependencyWatches(b, r.gitTargetToClusterWatchRules, r.kubeProviderToClusterWatchRules,
+		r.namespaceToClusterWatchRules)
 
 	// React to a stream of this rule's GitTarget reaching or leaving Streaming, for the reason the
 	// WatchRule controller wires the same channel: the data plane is the only thing that knows when

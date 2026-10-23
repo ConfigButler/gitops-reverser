@@ -1577,14 +1577,12 @@ func gitTargetsOn(
 	case *configbutleraiv1alpha3.GitBranch:
 		branches[client.ObjectKeyFromObject(obj)] = true
 	case *configbutleraiv1alpha3.GitProvider:
-		var list configbutleraiv1alpha3.GitBranchList
-		if err := reader.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
+		list, err := gitBranchesOf(ctx, reader, obj)
+		if err != nil {
 			return nil, err
 		}
-		for i := range list.Items {
-			if list.Items[i].Spec.GitProviderRef.Name == obj.GetName() {
-				branches[client.ObjectKeyFromObject(&list.Items[i])] = true
-			}
+		for i := range list {
+			branches[client.ObjectKeyFromObject(&list[i])] = true
 		}
 	}
 	if len(branches) == 0 {

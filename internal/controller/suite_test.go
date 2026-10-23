@@ -115,6 +115,8 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
+	Expect(IndexGitBranches(ctx, mgr.GetFieldIndexer())).To(Succeed())
+
 	testRuleStore = rulestore.NewStore()
 
 	// Initialize WorkerManager for new architecture

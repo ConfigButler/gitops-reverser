@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -140,21 +141,32 @@ func TestReconcile_AGitBranchThatDoesNotAdmitTheNamespace(t *testing.T) {
 	assert.Contains(t, validated.Message, "GitBranch platform/main admits no namespace in spec.allowedGitTargets")
 }
 
-// TestGitBranchWatches_MapToWhatTheyChange: a GitProvider event reaches the GitBranches in its
-// namespace that name it; a GitTarget event reaches the GitBranch it references, from any namespace.
+// TestGitBranchWatches_MapToWhatTheyChange: a GitProvider event reaches the GitBranches that claim
+// through it, from any namespace; a Namespace event reaches the GitBranches in it; a GitTarget event
+// reaches the GitBranch it references, from any namespace.
 func TestGitBranchWatches_MapToWhatTheyChange(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	tenant := branchObject("team-c", "live", "acme", "teams/team-c/live", time.Hour)
+	tenant.Spec.GitProviderRef.Namespace = "platform"
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithIndex(&configbutleraiv1alpha3.GitBranch{}, GitBranchProviderIndex, IndexGitBranchProvider).WithObjects(
 		branchObject("platform", "main", "acme", "main", time.Hour),
 		branchObject("platform", "release", "acme", "release", time.Hour),
 		branchObject("platform", "other", "mirror", "main", time.Hour),
 		branchObject("team-b", "main", "acme", "main", time.Hour),
+		tenant,
 	).Build()
 	r := &GitBranchReconciler{Client: c}
 
-	assert.Equal(t, []string{"platform/main", "platform/release"},
-		requestsToKeys(r.gitProviderToGitBranches(context.Background(), branchProvider("platform", "acme"))))
+	assert.Equal(t, []string{"platform/main", "platform/release", "team-c/live"},
+		requestsToKeys(r.gitProviderToGitBranches(context.Background(), branchProvider("platform", "acme"))),
+		"a GitBranch in another namespace claiming through the provider is reached too")
+	assert.Equal(t, []string{"team-b/main"},
+		requestsToKeys(r.gitProviderToGitBranches(context.Background(), branchProvider("team-b", "acme"))))
+	assert.Equal(t, []string{"team-c/live"}, requestsToKeys(r.namespaceToGitBranches(context.Background(),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-c"}})))
 
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
@@ -208,10 +220,13 @@ func TestGitTargetsOn_FindsTheTargetsOfABranchOrItsProvider(t *testing.T) {
 			},
 		}
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		branchObject("platform", "main", "acme", "main", time.Hour),
+	tenant := branchObject("team-c", "live", "acme", "teams/team-c/live", time.Hour)
+	tenant.Spec.GitProviderRef.Namespace = "platform"
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithIndex(&configbutleraiv1alpha3.GitBranch{}, GitBranchProviderIndex, IndexGitBranchProvider).WithObjects(
+		branchObject("platform", "main", "acme", "main", time.Hour), tenant,
 		target("platform", "infra", "", "main"), target("team-a", "apps", "platform", "main"),
-		target("team-a", "own", "", "main"),
+		target("team-a", "own", "", "main"), target("team-d", "shared", "team-c", "live"),
 	).Build()
 
 	byBranch, err := gitTargetsOn(context.Background(), c, branchObject("platform", "main", "acme", "main", 0))
@@ -219,7 +234,7 @@ func TestGitTargetsOn_FindsTheTargetsOfABranchOrItsProvider(t *testing.T) {
 	assert.Len(t, byBranch, 2)
 	byProvider, err := gitTargetsOn(context.Background(), c, branchProvider("platform", "acme"))
 	require.NoError(t, err)
-	assert.Len(t, byProvider, 2)
+	assert.Len(t, byProvider, 3, "including the targets of a GitBranch in another namespace that claims through it")
 	none, err := gitTargetsOn(context.Background(), c, branchProvider("platform", "unused"))
 	require.NoError(t, err)
 	assert.Empty(t, none)

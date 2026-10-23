@@ -38,6 +38,7 @@ func newDependencyWatchesTestClient(t *testing.T, objects ...ctrlclient.Object) 
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).
+		WithIndex(&configbutleraiv1alpha3.GitBranch{}, GitBranchProviderIndex, IndexGitBranchProvider).
 		Build()
 }
 

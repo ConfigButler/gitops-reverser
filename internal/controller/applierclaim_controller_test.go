@@ -235,6 +235,7 @@ func claimTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Clie
 			referencingTarget("checkout-argo", configbutleraiv1alpha3.ApplierClaimKindArgoCD))
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
+		WithIndex(&configbutleraiv1alpha3.GitBranch{}, GitBranchProviderIndex, IndexGitBranchProvider).
 		WithStatusSubresource(&configbutleraiv1alpha3.FluxClaim{}, &configbutleraiv1alpha3.ArgoCDClaim{}).
 		Build()
 }
