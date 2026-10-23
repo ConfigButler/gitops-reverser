@@ -69,15 +69,21 @@ func allowCrossNamespaceAppliers() {
 
 // suiteKubeProviderGrants are the grants the suite needs on the install's KubeProvider: every
 // namespace mirrors its own namespace and any cluster-scoped resource, and holds an applier in its
-// own namespace. config/kubeprovider-local.yaml carries them; the chart grants nothing by default,
-// so grantSuiteAccess applies them whatever the install mode.
+// own namespace. config/kubeprovider-local.yaml carries them, and the Helm install passes them as
+// values (test/e2e/helm-values-suite-grants.yaml); the chart grants nothing by default, so the plain
+// manifests need them patched in.
 const suiteKubeProviderGrants = `{"spec":{` +
 	`"allowedGitTargets":[{"from":"All","sourceNamespaces":["{namespace}"],"clusterResources":["*"]}],` +
 	`"allowedApplierClaims":[{"from":"All","applierNamespaces":["{namespace}"]}]}}`
 
-// grantSuiteAccess gives the install's KubeProvider the grants the suite needs.
+// grantSuiteAccess gives the install's KubeProvider the grants the suite needs. A Helm install already
+// carries them as values, and a patch there would take the fields from Helm, whose next server-side
+// upgrade then refuses the conflict.
 func grantSuiteAccess() {
 	GinkgoHelper()
+	if mode, err := resolveE2EInstallMode(); err == nil && mode == "helm" {
+		return
+	}
 	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
 		"--type=merge", "-p", suiteKubeProviderGrants)
 	Expect(err).NotTo(HaveOccurred(), "failed to grant the suite's access on the install KubeProvider")
