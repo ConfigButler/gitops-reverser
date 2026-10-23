@@ -308,8 +308,14 @@ func (r *GitTargetReconciler) publishAheadOfGates(
 ) {
 	layout, scanned := r.observeLayout(target)
 	publishLayout(st, target, layout, scanned)
+	// The provider labels join git_pushes_total, which the worker labels with the provider it
+	// pushes through: the GitBranch's, which may live in another namespace than the GitBranch.
+	provider := dest.providerKey()
+	if provider.Name == "" {
+		provider.Namespace = dest.key.Namespace
+	}
 	telemetry.RecordBranchTarget(
-		target.Namespace, target.Name, dest.key.Namespace, dest.providerName(), dest.branchName(),
+		target.Namespace, target.Name, provider.Namespace, provider.Name, dest.branchName(),
 		target.SourceCluster())
 }
 
@@ -1013,11 +1019,13 @@ func (r *GitTargetReconciler) resolveDestination(
 	return gitDestination{key: target.GitBranchKey(), branch: branch, provider: provider}, nil
 }
 
-func (d gitDestination) providerName() string {
+// providerKey is the GitBranch's GitProvider, its namespace resolved: a GitBranch may name a
+// GitProvider in another namespace, and the worker pushes with that one's credential.
+func (d gitDestination) providerKey() k8stypes.NamespacedName {
 	if d.branch == nil {
-		return ""
+		return k8stypes.NamespacedName{}
 	}
-	return d.branch.Spec.GitProviderRef.Name
+	return d.branch.GitProviderKey()
 }
 
 func (d gitDestination) branchName() string {
@@ -1031,7 +1039,7 @@ func (d gitDestination) branchName() string {
 func (d gitDestination) workerRequest() git.WorkerRequest {
 	return git.WorkerRequest{
 		GitBranch:    d.key,
-		Provider:     d.providerName(),
+		Provider:     d.providerKey(),
 		Branch:       d.branchName(),
 		Repo:         repoIdentityOf(d.provider),
 		ParentBranch: d.branch.Spec.ParentBranch,

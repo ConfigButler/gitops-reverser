@@ -364,12 +364,13 @@ func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool)
 }
 
 // WorkerRequest names the branch worker a GitTarget needs: the GitBranch holding the branch, the
-// GitProvider (in the GitBranch's namespace) it writes with, and the repository that provider names.
+// GitProvider it writes with, and the repository that provider names.
 type WorkerRequest struct {
 	// GitBranch is the claim holder the worker writes for.
 	GitBranch k8stypes.NamespacedName
-	// Provider is the GitBranch's GitProvider, by name, in the GitBranch's namespace.
-	Provider string
+	// Provider is the GitBranch's GitProvider, its namespace resolved: a GitBranch may name one in
+	// another namespace, whose credential the worker then pushes with.
+	Provider k8stypes.NamespacedName
 	// Branch is the GitBranch's spec.branch.
 	Branch string
 	// Repo is the repository the GitProvider names now.
@@ -379,7 +380,7 @@ type WorkerRequest struct {
 }
 
 func (r WorkerRequest) provider() k8stypes.NamespacedName {
-	return k8stypes.NamespacedName{Namespace: r.GitBranch.Namespace, Name: r.Provider}
+	return r.Provider
 }
 
 // EnsureWorker ensures a worker exists for the repository branch req names, keyed by that branch

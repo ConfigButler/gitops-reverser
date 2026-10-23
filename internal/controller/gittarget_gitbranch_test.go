@@ -224,3 +224,55 @@ func TestGitTargetsOn_FindsTheTargetsOfABranchOrItsProvider(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, none)
 }
+
+// TestReconcile_ACrossNamespaceGitBranchWritesWithItsProvidersCredential: a GitBranch in team-a that
+// claims through platform/acme is written with platform/acme's credential and repository, also when
+// team-a has a GitProvider of the same name for another repository.
+func TestReconcile_ACrossNamespaceGitBranchWritesWithItsProvidersCredential(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+	platform := branchProvider("platform", "acme")
+	platform.Spec.AllowedGitBranches[0] = configbutleraiv1alpha3.GitBranchGrant{
+		From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames("team-a"),
+		Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{namespace}/*"},
+	}
+	decoy := branchProvider("team-a", "acme")
+	decoy.UID = "uid-decoy"
+	decoy.Spec.URL = "https://github.com/acme/decoy.git"
+	branch := branchObject("team-a", "live", "acme", "teams/team-a/live", time.Hour)
+	branch.Spec.GitProviderRef.Namespace = "platform"
+	target := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			KubeProviderRef: claimProviderRef(claimLocalProvider),
+			GitBranchRef:    meta.NamespacedObjectReference{Name: "live"},
+			Path:            "apps",
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(platform, decoy, branch, target, admitting(claimLocalProvider, "team-a")).
+		WithStatusSubresource(&configbutleraiv1alpha3.GitTarget{}).Build()
+	workers := git.NewWorkerManager(c, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = workers.Start(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+	workers.Claims().Observe(git.BranchKeyFor(gitBranchTestURL, "teams/team-a/live"), git.BranchClaimant{
+		GitBranch: ctrlclient.ObjectKeyFromObject(branch), UID: branch.UID, Created: branch.CreationTimestamp.Time,
+	}, true)
+	r := &GitTargetReconciler{
+		Client: c, WorkerManager: workers, EventRouter: watch.NewEventRouter(workers, nil, c, logr.Discard()),
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: ctrlclient.ObjectKeyFromObject(target)})
+	require.NoError(t, err)
+
+	worker, wired := workers.WorkerForTarget(target)
+	require.True(t, wired)
+	assert.Equal(t, "platform", worker.GitProviderNamespace, "the credential is read from the provider's namespace")
+	assert.Equal(t, "acme", worker.GitProviderRef)
+	_, onPlatformRepo := workers.WorkerForGitBranchAt(ctrlclient.ObjectKeyFromObject(branch),
+		git.BranchKeyFor(gitBranchTestURL, "teams/team-a/live"))
+	assert.True(t, onPlatformRepo, "the repository is the platform provider's, not the decoy's")
+}

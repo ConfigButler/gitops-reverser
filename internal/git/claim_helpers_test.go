@@ -26,7 +26,7 @@ func claimForTest(m *WorkerManager, provider, namespace, branch string, repo Rep
 	}, true)
 	return WorkerRequest{
 		GitBranch: gitBranch,
-		Provider:  provider,
+		Provider:  k8stypes.NamespacedName{Namespace: namespace, Name: provider},
 		Branch:    branch,
 		Repo:      repo,
 	}

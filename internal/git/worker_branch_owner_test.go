@@ -28,7 +28,8 @@ func TestEnsureWorker_OnlyTheHolderGetsAWorker(t *testing.T) {
 
 	require.NoError(t, m.EnsureWorker(ctx, claimForTest(m, "monorepo", "team-a", "main", teamA)))
 	refused := WorkerRequest{
-		GitBranch: testGitBranch("monorepo", "team-b", "main"), Provider: "monorepo", Branch: "main", Repo: teamB,
+		GitBranch: testGitBranch("monorepo", "team-b", "main"),
+		Provider:  k8stypes.NamespacedName{Namespace: "team-b", Name: "monorepo"}, Branch: "main", Repo: teamB,
 	}
 	require.ErrorIs(t, m.EnsureWorker(ctx, refused), ErrBranchOwnedElsewhere)
 	_, found := m.WorkerForGitBranch(refused.GitBranch)
@@ -65,7 +66,15 @@ func TestReconcileWorkers_StopsTheWorkerOfAGitBranchThatLostItsBranch(t *testing
 		Observe(key, BranchClaimant{GitBranch: older, UID: "older", Created: time.Unix(0, 0).Add(-time.Hour)}, true)
 	require.ErrorIs(
 		t,
-		m.EnsureWorker(ctx, WorkerRequest{GitBranch: older, Provider: "monorepo", Branch: "main", Repo: repo}),
+		m.EnsureWorker(
+			ctx,
+			WorkerRequest{
+				GitBranch: older,
+				Provider:  k8stypes.NamespacedName{Namespace: older.Namespace, Name: "monorepo"},
+				Branch:    "main",
+				Repo:      repo,
+			},
+		),
 		ErrBranchOwnedElsewhere,
 		"the previous holder's worker is still live",
 	)
@@ -76,7 +85,15 @@ func TestReconcileWorkers_StopsTheWorkerOfAGitBranchThatLostItsBranch(t *testing
 
 	require.NoError(
 		t,
-		m.EnsureWorker(ctx, WorkerRequest{GitBranch: older, Provider: "monorepo", Branch: "main", Repo: repo}),
+		m.EnsureWorker(
+			ctx,
+			WorkerRequest{
+				GitBranch: older,
+				Provider:  k8stypes.NamespacedName{Namespace: older.Namespace, Name: "monorepo"},
+				Branch:    "main",
+				Repo:      repo,
+			},
+		),
 	)
 	require.NoError(t, m.ReconcileWorkers(context.Background()))
 	_, found = m.WorkerForGitBranch(older)
@@ -101,4 +118,25 @@ func TestRetireGitBranch_StopsTheWorkerAndForgetsTheBranch(t *testing.T) {
 	_, known := m.RemoteForBranch(worker.branchKey())
 	assert.False(t, known, "the next holder starts from the remote")
 	m.RetireGitBranch(request.GitBranch) // a second call finds nothing to do
+}
+
+// TestEnsureWorker_ACrossNamespaceGitBranchWritesWithItsProvider: a GitBranch in team-a claiming
+// through platform/shared-repo gets a worker that pushes with that provider's credential, never a
+// same-name provider in team-a, and a push delivery for the provider wakes it.
+func TestEnsureWorker_ACrossNamespaceGitBranchWritesWithItsProvider(t *testing.T) {
+	m, ctx := startedManager(t)
+	repo := RepoIdentity{URL: ownerTestURL}
+	request := claimForTest(m, "shared-repo", "team-a", "teams/team-a/live", repo)
+	request.Provider = k8stypes.NamespacedName{Namespace: "platform", Name: "shared-repo"}
+	require.NoError(t, m.EnsureWorker(ctx, request))
+
+	worker, found := m.WorkerForGitBranch(request.GitBranch)
+	require.True(t, found)
+	assert.Equal(t, "platform", worker.GitProviderNamespace, "the credential is read where the provider lives")
+	assert.Equal(t, "shared-repo", worker.GitProviderRef)
+
+	assert.False(t, m.NotifyPush("team-a", "shared-repo", "teams/team-a/live", ""),
+		"a same-name provider in the GitBranch's namespace is not the one it writes with")
+	assert.True(t, m.NotifyPush("platform", "shared-repo", "teams/team-a/live", ""),
+		"receiver routing reaches the worker of a cross-namespace GitBranch")
 }

@@ -199,8 +199,12 @@ func (r *GitBranchReconciler) evaluate(
 		return nil, 0, err
 	}
 	if !admitted.Allowed {
-		r.observeClaim(key, claimant, false)
-		rd.stalled(admitted.Reason, admitted.Message)
+		message := admitted.Message
+		if r.relinquish(ctx, branch) {
+			message += "; this GitBranch gave up the branch, and its branch worker pushed or refused the writes " +
+				"it held"
+		}
+		rd.stalled(admitted.Reason, message)
 		return rd, 0, nil
 	}
 
@@ -367,25 +371,13 @@ func (r *GitBranchReconciler) ensureFinalizer(
 	return nil
 }
 
-// finalize gives up the branch. The claim goes first, so no GitTarget reconcile can start this
-// GitBranch's worker again; then the worker is stopped, which closes its intake, pushes or refuses
-// every pending write and settles every CommitRequest it holds (BranchWorker.Stop). Only then is
-// the finalizer removed. Nothing deletes the branch on the remote.
+// finalize gives up the branch (relinquish), and only then removes the finalizer. Nothing deletes
+// the branch on the remote.
 func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutleraiv1alpha3.GitBranch) error {
 	if !controllerutil.ContainsFinalizer(branch, GitBranchFinalizer) {
 		return nil
 	}
-	if r.WorkerManager != nil {
-		claims := r.WorkerManager.Claims()
-		key, _, held := claims.HeldBy(client.ObjectKeyFromObject(branch))
-		claims.Release(branch.UID)
-		r.WorkerManager.RetireGitBranch(client.ObjectKeyFromObject(branch))
-		// The next candidate holds the branch now. It may be a GitBranch stalled on BranchConflict,
-		// which nothing else would reconcile before its steady requeue.
-		if next, taken := claims.Holder(key); held && taken {
-			r.WorkerManager.WakeGitBranch(next.GitBranch)
-		}
-	}
+	r.relinquish(ctx, branch)
 	r.proofsMu.Lock()
 	delete(r.proofs, branch.UID)
 	r.proofsMu.Unlock()
@@ -395,6 +387,74 @@ func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutler
 	update := branch.DeepCopy()
 	controllerutil.RemoveFinalizer(update, GitBranchFinalizer)
 	return client.IgnoreNotFound(r.Update(ctx, update))
+}
+
+// relinquish gives up whatever branch claim the GitBranch has, and reports whether it held its branch.
+// It is the one path for a GitBranch being deleted and for one that no grant admits any more, which
+// keeps its finalizer. The claim goes first, so no GitTarget reconcile can start this GitBranch's
+// worker again; then the worker is stopped, which closes its intake, pushes or refuses every pending
+// write and settles every CommitRequest it holds (BranchWorker.Stop). Release, not a failed proof:
+// Observe keeps a holder's candidacy through a failed proof, and a revoked GitBranch must stop being
+// a candidate at all. Last, the next holder is woken, once the old worker has retired, so pending
+// work never moves to it.
+func (r *GitBranchReconciler) relinquish(ctx context.Context, branch *configbutleraiv1alpha3.GitBranch) bool {
+	if r.WorkerManager == nil {
+		return false
+	}
+	claims := r.WorkerManager.Claims()
+	key, _, held := claims.HeldBy(client.ObjectKeyFromObject(branch))
+	claims.Release(branch.UID)
+	r.WorkerManager.RetireGitBranch(client.ObjectKeyFromObject(branch))
+	if held {
+		r.wakeNextHolder(ctx, key)
+	}
+	return held
+}
+
+// maxSuccessorChecks bounds wakeNextHolder's walk down the candidates for one branch.
+const maxSuccessorChecks = 16
+
+// wakeNextHolder wakes the GitBranch that holds key now: it may be one stalled on BranchConflict,
+// which nothing else would reconcile before its steady requeue. One grant edit can revoke several
+// candidates, so the successor's admission is checked again first, and a candidate no grant admits
+// any more is released here rather than handed the branch until its own reconcile notices. A read
+// error leaves the successor as it is: its own reconcile decides.
+func (r *GitBranchReconciler) wakeNextHolder(ctx context.Context, key git.BranchKey) {
+	claims := r.WorkerManager.Claims()
+	for range maxSuccessorChecks {
+		next, taken := claims.Holder(key)
+		if !taken {
+			return
+		}
+		admitted, decided := r.stillAdmitted(ctx, next)
+		if !decided || admitted {
+			r.WorkerManager.WakeGitBranch(next.GitBranch)
+			return
+		}
+		claims.Release(next.UID)
+	}
+}
+
+// stillAdmitted reports whether the GitBranch behind a claimant may still claim its branch, and
+// whether that could be decided: a GitBranch that is gone, or replaced under its name, is no
+// candidate; one whose GitProvider is gone keeps its claim, as the GitBranch reconcile keeps it.
+func (r *GitBranchReconciler) stillAdmitted(ctx context.Context, claimant git.BranchClaimant) (bool, bool) {
+	var branch configbutleraiv1alpha3.GitBranch
+	if err := r.Get(ctx, claimant.GitBranch, &branch); err != nil {
+		return false, apierrors.IsNotFound(err)
+	}
+	if branch.UID != claimant.UID || !branch.DeletionTimestamp.IsZero() {
+		return false, true
+	}
+	var provider configbutleraiv1alpha3.GitProvider
+	if err := r.Get(ctx, branch.GitProviderKey(), &provider); err != nil {
+		return apierrors.IsNotFound(err), apierrors.IsNotFound(err)
+	}
+	decision, err := authz.GitBranchClaimAdmitted(ctx, r.Client, &branch, &provider)
+	if err != nil {
+		return false, false
+	}
+	return decision.Allowed, true
 }
 
 // parentBranchNotFoundMessage says which parent is missing and what fixes it.

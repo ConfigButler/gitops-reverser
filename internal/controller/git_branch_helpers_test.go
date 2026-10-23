@@ -27,7 +27,12 @@ func claimWorkerForTest(m *git.WorkerManager, repo git.RepoIdentity) git.WorkerR
 		UID:       k8stypes.UID(shopRepo1Main.String()),
 		Created:   time.Unix(0, 0),
 	}, true)
-	return git.WorkerRequest{GitBranch: shopRepo1Main, Provider: "repo1", Branch: "main", Repo: repo}
+	return git.WorkerRequest{
+		GitBranch: shopRepo1Main,
+		Provider:  k8stypes.NamespacedName{Namespace: "shop", Name: "repo1"},
+		Branch:    "main",
+		Repo:      repo,
+	}
 }
 
 // gitBranchOn is the GitBranch "<provider>-<branch>" in namespace, writing branch through provider.

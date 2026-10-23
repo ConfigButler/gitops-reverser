@@ -271,7 +271,7 @@ func TestGitBranch_DeletionStopsTheWorkerAndReleasesTheBranch(t *testing.T) {
 	f.reconcile(t, "team-b", "main")
 	holder := k8stypes.NamespacedName{Namespace: "platform", Name: "main"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: holder, Provider: "acme", Branch: "main",
+		GitBranch: holder, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"}, Branch: "main",
 		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 
@@ -304,8 +304,11 @@ func TestGitBranch_AMissingParentStallsTheBranch(t *testing.T) {
 
 	key := ctrlclient.ObjectKeyFromObject(branch)
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: key, Provider: "acme", Branch: "edits", ParentBranch: "release",
-		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
+		GitBranch:    key,
+		Provider:     k8stypes.NamespacedName{Namespace: "platform", Name: "acme"},
+		Branch:       "edits",
+		ParentBranch: "release",
+		Repo:         git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 	worker, _ := f.workers.WorkerForGitBranch(key)
 	worker.RecordMissingParentForTest("release")
@@ -332,7 +335,7 @@ func TestGitBranch_AnUnresolvedDefaultBranchStallsToo(t *testing.T) {
 	f.reconcile(t, "platform", "edits")
 	key := k8stypes.NamespacedName{Namespace: "platform", Name: "edits"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: key, Provider: "acme", Branch: "edits",
+		GitBranch: key, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"}, Branch: "edits",
 		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 	worker, _ := f.workers.WorkerForGitBranch(key)
@@ -378,7 +381,7 @@ func TestGitBranch_ANoticeIsPublishedWithoutAnyLook(t *testing.T) {
 	f.reconcile(t, "platform", "edits")
 	key := k8stypes.NamespacedName{Namespace: "platform", Name: "edits"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: key, Provider: "acme", Branch: "edits",
+		GitBranch: key, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"}, Branch: "edits",
 		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 	assert.Nil(t, f.reconcile(t, "platform", "edits").Status.LastPushNoticeAt, "no delivery yet")
@@ -403,7 +406,7 @@ func TestGitBranch_ARepointClearsTheNotice(t *testing.T) {
 		"the same repository keeps it")
 	key := k8stypes.NamespacedName{Namespace: "platform", Name: "main"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: key, Provider: "acme", Branch: "main",
+		GitBranch: key, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"}, Branch: "main",
 		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 	require.True(t, f.workers.NotifyPush("platform", "acme", "main", "abc"), "the old repository's worker")
