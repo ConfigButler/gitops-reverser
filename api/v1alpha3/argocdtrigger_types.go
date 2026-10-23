@@ -219,3 +219,11 @@ func (t *ArgoCDTrigger) RepairPending() bool { return t.Status.RepairPending }
 func (t *ArgoCDTrigger) SetOperation(operation *ApplyOperation, repairPending bool) {
 	t.Status.Operation, t.Status.RepairPending = operation, repairPending
 }
+
+// PreviousSuspendState is status.previousSuspendState.
+func (t *ArgoCDTrigger) PreviousSuspendState() SuspendState { return t.Status.PreviousSuspendState }
+
+// SetPreviousSuspendState replaces status.previousSuspendState.
+func (t *ArgoCDTrigger) SetPreviousSuspendState(state SuspendState) {
+	t.Status.PreviousSuspendState = state
+}

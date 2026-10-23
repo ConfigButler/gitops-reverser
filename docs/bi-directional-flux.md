@@ -306,13 +306,14 @@ stateDiagram-v2
 - **The trigger hands the `Kustomization` back** when no eligible `GitTarget` references it any
   more, and when it is deleted. `Held` reads `Releasing`: it suspends the `Kustomization` once more
   if an apply has it resumed, waits until that is handled, and releases `spec.suspend`, so Flux
-  applies it on its own again (a `Released` Event). One somebody had `flux suspend`ed before the
-  trigger held it stays suspended, as it was: the trigger records how it stood in
-  `status.previousSuspendState` (`Suspended` or `NotSuspended`) when it first suspends it, and
+  applies it on its own again (a `Released` Event). A `Kustomization` that somebody suspended
+  before the trigger held it stays suspended. The trigger records how it stood in
+  `status.previousSuspendState` (`Suspended` or `NotSuspended`) before it first suspends it, and
   `kubectl get fluxtrigger -o wide` shows it.
   Until that is done it stays the holder, so no other trigger acts on the `Kustomization`. One
   whose `spec.suspend` another manager also applies stays suspended, and the Event names that
-  manager. With another `FluxTrigger` in line, the `Kustomization` stays suspended for that one. A
+  manager. With another `FluxTrigger` in line, the `Kustomization` stays suspended for that one,
+  which inherits `status.previousSuspendState`. A
   `KubeProvider` that is gone does not stop the hand-back: it goes on through whatever still
   reaches the cluster, which for an `inCluster` provider is the operator's own. When nothing
   does, or the hand-back has not finished 10 minutes after `Held` turned `Releasing`, the trigger

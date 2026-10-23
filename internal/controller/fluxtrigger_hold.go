@@ -48,7 +48,7 @@ import (
 // follows any more is suspended here (suspendUnfollowed), so the Kustomization is never left resumed
 // with nothing guarding it.
 func (r *ApplyTriggerReconciler) holdKustomization(
-	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger,
+	ctx context.Context, st *reconcileStatus, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) conditionValue {
 	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
 	defer cancel()
@@ -65,7 +65,7 @@ func (r *ApplyTriggerReconciler) holdKustomization(
 		}
 		return r.suspendUnfollowed(ctx, trigger, held)
 	}
-	return r.hold(ctx, trigger, held)
+	return r.hold(ctx, st, trigger, held)
 }
 
 // applyingCondition is Held=True (Applying) for a branch worker's operation in flight that is
@@ -248,13 +248,16 @@ func sameOperationPhase(a, b *configbutleraiv1alpha3.ApplyOperation) bool {
 // hold suspends the Kustomization when it is not held with its suspend handled, and completes the operation an
 // external resume was recorded as once it is.
 func (r *ApplyTriggerReconciler) hold(
-	ctx context.Context, trigger *configbutleraiv1alpha3.FluxTrigger, held heldState,
+	ctx context.Context, st *reconcileStatus, trigger *configbutleraiv1alpha3.FluxTrigger, held heldState,
 ) conditionValue {
 	ref := trigger.Applier()
 	suspending := func(message string) conditionValue {
 		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending, Message: message}
 	}
-	recordKustomizationSuspendState(trigger, held.suspension)
+	unrecorded := func(err error) conditionValue {
+		return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, fmt.Sprintf(
+			"cannot record how Kustomization %s stood before it is held: %v", ref, err))
+	}
 	switch {
 	case !held.suspension.Suspended:
 		// Read resumed: the resume can be another trigger's, one that came first in line since the
@@ -267,6 +270,9 @@ func (r *ApplyTriggerReconciler) hold(
 			}
 			return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured, Message: message}
 		}
+		if err := r.recordPreviousSuspendState(ctx, st, trigger, held.suspension.Held, false); err != nil {
+			return unrecorded(err)
+		}
 		token, err := held.flux.Suspend(ctx, ref)
 		if err != nil {
 			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, err.Error())
@@ -276,6 +282,9 @@ func (r *ApplyTriggerReconciler) hold(
 	case !held.suspension.Held:
 		// Suspended by somebody else's write (`flux suspend`): take the field over, with a token, so
 		// nothing that write let run is taken for idle.
+		if err := r.recordPreviousSuspendState(ctx, st, trigger, false, true); err != nil {
+			return unrecorded(err)
+		}
 		if _, err := held.flux.Suspend(ctx, ref); err != nil {
 			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, err.Error())
 		}
@@ -290,13 +299,66 @@ func (r *ApplyTriggerReconciler) hold(
 		Message: fmt.Sprintf("Kustomization %s is suspended; GitOps Reverser starts every apply it makes", ref)}
 }
 
-// recordKustomizationSuspendState records in status.previousSuspendState, on adoption, how the
-// Kustomization stood before it was first held, which the hand-back puts back. Only on adoption, so
-// the value is neither GitOps Reverser's own nor a later `flux resume`.
-func recordKustomizationSuspendState(trigger *configbutleraiv1alpha3.FluxTrigger, suspension applier.Suspension) {
-	if trigger.Status.PreviousSuspendState == "" && !suspension.Held && !heldBefore(trigger) {
-		trigger.Status.PreviousSuspendState = suspendState(suspension.Suspended)
+// recordPreviousSuspendState records in status.previousSuspendState, on adoption, whether the applier
+// was suspended before the trigger first held it (held: whether GitOps Reverser's field manager holds
+// it already), which the hand-back puts back. Only on adoption, so the value is neither GitOps
+// Reverser's own nor a later resume or switch-on, and only where the adoption goes ahead. It is
+// written before the write that holds the applier: after that write the applier no longer shows how
+// it stood, so a status write lost after it would lose the value for good.
+func (r *ApplyTriggerReconciler) recordPreviousSuspendState(
+	ctx context.Context, st *reconcileStatus, trigger configbutleraiv1alpha3.ApplyTrigger, held, suspended bool,
+) error {
+	if held || trigger.PreviousSuspendState() != "" || heldBefore(trigger) {
+		return nil
 	}
+	state := suspendState(suspended)
+	resourceVersion, err := r.patchPreviousSuspendState(ctx, trigger, state)
+	if err != nil {
+		return err
+	}
+	trigger.SetPreviousSuspendState(state)
+	trigger.SetResourceVersion(resourceVersion)
+	if before, ok := st.before.(configbutleraiv1alpha3.ApplyTrigger); ok {
+		before.SetPreviousSuspendState(state)
+	}
+	st.metadataWritten()
+	return nil
+}
+
+// patchPreviousSuspendState writes state alone to trigger's status.previousSuspendState, guarded by
+// its resourceVersion, and returns the resourceVersion the write left. trigger itself is not changed.
+func (r *ApplyTriggerReconciler) patchPreviousSuspendState(
+	ctx context.Context, trigger configbutleraiv1alpha3.ApplyTrigger, state configbutleraiv1alpha3.SuspendState,
+) (string, error) {
+	base, ok := trigger.DeepCopyObject().(configbutleraiv1alpha3.ApplyTrigger)
+	if !ok {
+		return "", fmt.Errorf("a copy of %s %s/%s is no trigger", trigger.TriggerKind(), trigger.GetNamespace(),
+			trigger.GetName())
+	}
+	patched, _ := base.DeepCopyObject().(configbutleraiv1alpha3.ApplyTrigger)
+	patched.SetPreviousSuspendState(state)
+	if err := r.Status().Patch(ctx, patched,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return "", fmt.Errorf("write status.previousSuspendState of %s %s/%s: %w", trigger.TriggerKind(),
+			trigger.GetNamespace(), trigger.GetName(), err)
+	}
+	return patched.GetResourceVersion(), nil
+}
+
+// passPreviousSuspendState gives a successor in line what trigger recorded of how the applier stood
+// before it was held, before trigger lets go: the successor takes over an applier GitOps Reverser
+// holds already, so it cannot read that for itself, and without it its hand-back would resume a
+// Kustomization that was suspended, or switch on an Application that was manual. A successor that
+// recorded a value of its own keeps it.
+func (r *ApplyTriggerReconciler) passPreviousSuspendState(
+	ctx context.Context, trigger, successor configbutleraiv1alpha3.ApplyTrigger,
+) error {
+	state := trigger.PreviousSuspendState()
+	if state == "" || successor.PreviousSuspendState() != "" {
+		return nil
+	}
+	_, err := r.patchPreviousSuspendState(ctx, successor, state)
+	return err
 }
 
 // suspendState is the SuspendState of an applier that is suspended or not.
@@ -465,14 +527,9 @@ func (r *ApplyTriggerReconciler) retire(
 }
 
 // clearPreviousSuspendState drops what a trigger recorded of its applier before it held it, once it
-// has handed it back: a later adoption records anew.
+// has handed it back (or on to a successor): a later adoption records anew.
 func clearPreviousSuspendState(trigger configbutleraiv1alpha3.ApplyTrigger) {
-	switch t := trigger.(type) {
-	case *configbutleraiv1alpha3.FluxTrigger:
-		t.Status.PreviousSuspendState = ""
-	case *configbutleraiv1alpha3.ArgoCDTrigger:
-		t.Status.PreviousSuspendState = ""
-	}
+	trigger.SetPreviousSuspendState("")
 }
 
 // triggerFinalizer is the finalizer of trigger's kind: the one it carries while it holds its
@@ -616,6 +673,13 @@ type pendingRelease struct {
 func (r *ApplyTriggerReconciler) releaseStep(
 	ctx context.Context, trigger, successor configbutleraiv1alpha3.ApplyTrigger,
 ) *pendingRelease {
+	if successor != nil {
+		if err := r.passPreviousSuspendState(ctx, trigger, successor); err != nil {
+			return &pendingRelease{err: err, left: fmt.Sprintf("it is left held, and %s %s/%s, which holds it "+
+				"next, does not know how it stood before it was held (%v)", successor.TriggerKind(),
+				successor.GetNamespace(), successor.GetName(), err)}
+		}
+	}
 	switch t := trigger.(type) {
 	case *configbutleraiv1alpha3.FluxTrigger:
 		return r.releaseKustomization(ctx, t, successor)

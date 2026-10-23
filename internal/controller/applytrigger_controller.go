@@ -242,7 +242,7 @@ func (r *ApplyTriggerReconciler) holdFlux(
 		if err := r.setFinalizer(ctx, st, trigger, true); err != nil {
 			return conditionValue{}, err
 		}
-		held := r.holdKustomization(ctx, trigger)
+		held := r.holdKustomization(ctx, st, trigger)
 		if check.checked {
 			r.publishConsumers(ctx, trigger)
 		}

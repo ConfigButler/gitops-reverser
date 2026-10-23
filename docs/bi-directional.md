@@ -92,7 +92,7 @@ The two appliers get the same contract by different means:
 | When it is asked to apply | [The same four reasons](#when-gitops-reverser-asks-for-an-apply), `CatchUp` included | The same four reasons |
 | The tool's own push webhook | Removed: GitOps Reverser's receiver replaces it | May stay: with automated sync off it only compares |
 | A human override | `flux resume` applies once; it is suspended again within a minute | Sync applies; GitOps Reverser waits for it to end. Automated sync switched on is switched off again within a minute |
-| Handing it back | Delete the trigger, or stop naming it from every `GitTarget`: the `Kustomization` is resumed, or stays suspended if it was before | Delete the trigger, or stop naming it from every `GitTarget`: automated sync is as it was before |
+| Handing it back | Delete the trigger, or stop naming it from every `GitTarget`: the `Kustomization` is resumed, or stays suspended if it was before | Delete the trigger, or stop naming it from every `GitTarget`: automated sync is as it was before, unless an `ApplicationSet` or another field manager owns the switch by then, which keeps their value |
 | Complete setup | [Bi-directional GitOps with Flux](bi-directional-flux.md) | [Bi-directional GitOps with Argo CD](bi-directional-argocd.md) |
 
 ## Why the applier cannot decide for itself

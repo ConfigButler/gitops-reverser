@@ -224,3 +224,11 @@ func (t *FluxTrigger) RepairPending() bool { return t.Status.RepairPending }
 func (t *FluxTrigger) SetOperation(operation *ApplyOperation, repairPending bool) {
 	t.Status.Operation, t.Status.RepairPending = operation, repairPending
 }
+
+// PreviousSuspendState is status.previousSuspendState.
+func (t *FluxTrigger) PreviousSuspendState() SuspendState { return t.Status.PreviousSuspendState }
+
+// SetPreviousSuspendState replaces status.previousSuspendState.
+func (t *FluxTrigger) SetPreviousSuspendState(state SuspendState) {
+	t.Status.PreviousSuspendState = state
+}

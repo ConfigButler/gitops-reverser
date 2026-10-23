@@ -122,7 +122,10 @@ func (r *ApplyTriggerReconciler) holdAutomatedSync(
 		return conditionValue{}, err
 	}
 	if !state.Held || state.On {
-		recordApplicationSuspendState(trigger, state)
+		if err := r.recordPreviousSuspendState(ctx, st, trigger, state.Held, !state.On); err != nil {
+			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, fmt.Sprintf(
+				"cannot record how Application %s stood before it is held: %v", ref, err)), nil
+		}
 		written, err := argo.SwitchOff(ctx, ref)
 		switch {
 		case err != nil:
@@ -159,15 +162,6 @@ func ownedSwitchCondition(ref k8stypes.NamespacedName, state applier.AutomatedSy
 	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonAutomatedSyncOff, Message: fmt.Sprintf(
 		"Application %s has automated sync kept off by %s, which owns the switch; GitOps Reverser starts "+
 			"every sync", ref, state.Owner)}
-}
-
-// recordApplicationSuspendState records in status.previousSuspendState, on adoption, whether the
-// Application synced on its own before it was first held, which the hand-back puts back. Only on
-// adoption, so the value is neither GitOps Reverser's own nor a later switch-on.
-func recordApplicationSuspendState(trigger *configbutleraiv1alpha3.ArgoCDTrigger, state applier.AutomatedSync) {
-	if trigger.Status.PreviousSuspendState == "" && !state.Held && !heldBefore(trigger) {
-		trigger.Status.PreviousSuspendState = suspendState(!state.On)
-	}
 }
 
 // releaseAutomatedSync takes an ArgoCDTrigger's hand-back one step: it hands the Application's

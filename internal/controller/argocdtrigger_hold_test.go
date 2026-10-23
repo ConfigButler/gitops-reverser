@@ -232,7 +232,8 @@ func TestArgoCDTrigger_NoLongerReferencedHandsTheSwitchBack(t *testing.T) {
 }
 
 // TestArgoCDTrigger_ASuccessorInLineKeepsTheSwitchOff: a holder that goes with another trigger in
-// line leaves the switch held off for it: released, Argo CD would sync on its own at once.
+// line leaves the switch held off for it: released, Argo CD would sync on its own at once. It passes
+// on how the Application stood, which the successor cannot read from a switch held already.
 func TestArgoCDTrigger_ASuccessorInLineKeepsTheSwitchOff(t *testing.T) {
 	successor := testArgoCDTrigger(triggerLocalProvider)
 	successor.Name = "checkout-next"
@@ -254,6 +255,10 @@ func TestArgoCDTrigger_ASuccessorInLineKeepsTheSwitchOff(t *testing.T) {
 
 	automated, _ := f.automated(t)
 	assert.Equal(t, false, automated["enabled"], "left held off for the successor")
+	next := &configbutleraiv1alpha3.ArgoCDTrigger{}
+	require.NoError(t, f.r.Get(context.Background(), ctrlclient.ObjectKeyFromObject(successor), next))
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateNotSuspended, next.Status.PreviousSuspendState,
+		"passed on: it synced on its own")
 	events := f.events()
 	require.Len(t, events, 1)
 	assert.True(t, strings.HasPrefix(events[0], "Normal Released left automated sync of Application argocd/checkout "+
@@ -430,4 +435,34 @@ func TestArgoCDTrigger_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue(t
 	events := f.events()
 	require.Len(t, events, 1)
 	assert.Contains(t, events[0], "its automated sync is off, as ApplicationSet argocd/checkouts set it")
+}
+
+// TestArgoCDTrigger_RecordsHowItStoodBeforeTheSwitchOff: status.previousSuspendState is written before
+// the switch-off that hides it. With the commit after it lost, the next reconcile finds the switch
+// held and cannot read how it stood, yet the hand-back still leaves a manual Application manual.
+func TestArgoCDTrigger_RecordsHowItStoodBeforeTheSwitchOff(t *testing.T) {
+	app := argosim.OwnSwitch(
+		t,
+		applierArgoApplication(map[string]any{"automated": map[string]any{"prune": true}}).(*unstructured.Unstructured),
+		false,
+		"kubectl-client-side-apply",
+		metav1.ManagedFieldsOperationUpdate,
+	)
+	f := newArgoHoldFixture(t, nil, app)
+	f.r.Client = &commitFailingClient{Client: f.r.Client, failures: 1}
+
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.Error(t, err, "the commit after the switch-off is lost")
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.trigger(t).Status.PreviousSuspendState,
+		"recorded before the switch-off")
+
+	reconcileTrigger(t, f.r)
+	target := &configbutleraiv1alpha3.GitTarget{}
+	require.NoError(t, f.r.Get(context.Background(),
+		ctrlclient.ObjectKey{Namespace: "team-a", Name: "checkout-argo"}, target))
+	require.NoError(t, f.r.Delete(context.Background(), target))
+	reconcileTrigger(t, f.r)
+
+	automated, _ := f.automated(t)
+	assert.Equal(t, false, automated["enabled"], "manual, as it was")
 }

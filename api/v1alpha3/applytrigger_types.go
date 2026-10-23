@@ -182,6 +182,9 @@ type ApplyTrigger interface {
 	Operation() *ApplyOperation
 	RepairPending() bool
 	SetOperation(operation *ApplyOperation, repairPending bool)
+	// PreviousSuspendState is status.previousSuspendState, and SetPreviousSuspendState replaces it.
+	PreviousSuspendState() SuspendState
+	SetPreviousSuspendState(state SuspendState)
 	// StatusConditions returns the condition set, and SetObservedGeneration stamps the generation.
 	StatusConditions() *[]metav1.Condition
 	SetObservedGeneration(generation int64)

@@ -307,9 +307,10 @@ func (s *reconcileStatus) recordReadyTransition() {
 	s.recorder.Event(s.object, eventType, after.Reason, after.Message)
 }
 
-// metadataWritten carries metadata the reconcile wrote to the object mid-session (a finalizer) into
-// the snapshot the status patch is computed from: the patch is then made against the version that
-// write left, and carries no metadata of its own.
+// metadataWritten carries metadata the reconcile wrote to the object mid-session (a finalizer, or the
+// resourceVersion a status field written ahead of the commit left) into the snapshot the status patch
+// is computed from: the patch is then made against the version that write left, and carries no
+// metadata of its own.
 func (s *reconcileStatus) metadataWritten() {
 	s.before.SetResourceVersion(s.object.GetResourceVersion())
 	s.before.SetFinalizers(s.object.GetFinalizers())

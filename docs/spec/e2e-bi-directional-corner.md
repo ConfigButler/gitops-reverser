@@ -404,13 +404,15 @@ which auto-syncs a folder of its own.
 
 ## Test design: `argocd_bi_directional_e2e_test.go`
 
-Every spec runs the standard of [`docs/bi-directional-argocd.md`](../bi-directional-argocd.md): the `Application`
+Specs A, B, C and E run the standard of [`docs/bi-directional-argocd.md`](../bi-directional-argocd.md): the `Application`
 has automated sync off (`automated: {enabled: false, prune: true}`) and is held by
 the `ArgoCDTrigger` the `GitTarget` names, so every sync it runs is one GitOps
 Reverser started, pinned to a commit it checked. The earlier phases that ran
 automated sync (`selfHeal: true` losing the edit, `ignoreDifferences`, and
 `selfHeal: false` with the webhook) are gone with it: they characterized an Argo CD
-that synced on its own, which the standard no longer allows.
+that synced on its own, which the standard no longer allows. Spec F is the exception: an
+`ApplicationSet` owns its `Application`'s switch, so the trigger never holds it, and starts out
+`Configured=False` (`OwnedByApplicationSet`).
 
 Specs A, B and E are three `It`s of one `Ordered` describe, sharing one Gitea repo,
 one `IceCreamOrder` CRD (`applyIceCreamCRD(crdGroupArgoBiDirectional)`) and one
