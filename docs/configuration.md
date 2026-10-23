@@ -184,28 +184,67 @@ The references are immutable: to hold another `Application`, delete the applier 
 
 <!-- END GENERATED: settings-index -->
 
-## Why both provider types are namespaced
+## Sharing connections across namespaces
 
-| Object | Scope | What it represents |
-|---|---|---|
-| `GitProvider` | Namespace | A Git destination and the credentials allowed to write it. A repository is normally one team's write boundary, so the provider and its Secret sit in that team's namespace. |
-| `KubeProvider` | Namespace | One connection to a Kubernetes source cluster and the credential it is read with. The credential is a Secret, so the provider sits beside it in its owner's namespace, and its owner decides who else may use it. |
+A platform team usually owns the repository credential, the cluster connections and the endpoint the
+Git host calls; application teams only decide what to mirror where. The kinds are cut along that
+line. What holds a credential (`GitProvider`, `KubeProvider`, `GitReceiver`, and the `GitBranch`
+that claims a branch with that credential) sits in its owner's namespace with its Secret. What a team
+decides (`GitTarget`, `WatchRule`) sits in the team's namespace, and reaches the shared objects by
+reference.
 
-Each admits the objects in its own namespace, and its `spec.accessFrom` admits other namespaces. A
-team can keep its own connection to a remote cluster in its own namespace, and a platform team can
-publish one connection that several namespaces use.
+![A platform namespace holds the shared GitProvider with its credentials Secret, a KubeProvider and
+a GitReceiver; each team namespace has its own WatchRule and GitTarget writing its own branch of that
+repository, and a push event is routed by repository and branch to the GitTarget that writes
+it](images/config-platform-shared.excalidraw.svg)
 
-![A platform namespace holds one GitProvider with its credentials Secret, and a GitReceiver; each
-team namespace has its own WatchRule, GitTarget and GitBranch on that repository, and a push event is
-forwarded to the branch it names](images/config-platform-shared.excalidraw.svg)
+| Object | How other namespaces use it |
+|---|---|
+| `GitProvider` | Its `spec.accessFrom` admits other namespaces, by name or label selector. A `GitTarget` there writes through a `GitBranch` of the provider's namespace, named with `spec.gitBranchRef.namespace` |
+| `GitBranch` | Lives beside its `GitProvider`, so claiming a branch is an act of the credential's owner. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
+| `KubeProvider` | Its `spec.accessFrom` admits the `GitTarget`s and applier claims of other control-cluster namespaces. It selects nothing in the source cluster and grants nothing there |
+| `GitReceiver` | Nothing names it, and nothing needs admitting: it serves every `GitProvider`, in any namespace, whose `spec.url` names the repository a push reports |
 
-Neither has a default. The operator cannot infer a safe repository, branch, or write credential, nor
+```yaml
+# platform: the credential, the branch it claims, and the namespaces it admits
+apiVersion: configbutler.ai/v1alpha3
+kind: GitProvider
+metadata: {name: platform-repo, namespace: platform}
+spec:
+  url: git@github.com:example-org/platform.git
+  secretRef: {name: git-creds}
+  allowedBranches: ["team-a/*", "team-b/*"]
+  accessFrom:
+    names: [team-a, team-b]
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata: {name: team-a-live, namespace: platform}
+spec:
+  gitProviderRef: {name: platform-repo}
+  branch: team-a/live
+---
+# team-a: what to mirror, and where
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata: {name: live, namespace: team-a}
+spec:
+  gitBranchRef: {name: team-a-live, namespace: platform}
+  kubeProviderRef: {name: local, namespace: gitops-reverser}
+  path: live-cluster
+```
+
+**Push events route themselves.** The platform team points the Git host's push webhook, or a GitHub
+App's or an organization's single webhook, at one [`GitReceiver`](#gitreceiver). A verified push
+names a repository and a branch, and wakes the branch worker of every `GitProvider` whose
+`spec.url` names that repository, whichever namespace it is in, for that branch only. Nobody wires a
+team to the receiver: a team whose new `GitTarget` writes a new branch gets its push notices from
+the first push on. A team that wants an endpoint of its own creates a `GitReceiver` in its own
+namespace.
+
+Nothing has a default. The operator cannot infer a safe repository, branch, or write credential, nor
 which cluster a folder means, so every `GitTarget` names its `GitBranch` and its `KubeProvider`.
 Nothing falls back to the provider the chart renders.
-
-`KubeProvider.spec.accessFrom` decides which control-cluster namespaces may contain `GitTarget`s
-and applier claims that reference the provider. It does not select namespaces in the source cluster and
-grants nothing there.
 
 ## `GitProvider`
 
