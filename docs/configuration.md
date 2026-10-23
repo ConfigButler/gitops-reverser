@@ -361,11 +361,13 @@ A branch pattern is a small language of its own, matched against the whole branc
   served version of its group and resource.
 - **It is decided on the rule's text.** A `ClusterWatchRule` item with `"*"` in `apiGroups` or
   `resources` needs `clusterResources: ["*"]`. An item that names its groups and resources is checked
-  pair by pair. An item that omits `apiGroups` is checked by the group discovery resolves it to.
+  pair by pair. An item that omits `apiGroups` is checked by the types it would watch: those it
+  matches in the source cluster's discovery, at the `apiVersions` it names.
 - **One forbidden type refuses the whole `ClusterWatchRule`**, with `ResourcesResolved=False`, reason
   `ClusterResourceNotAllowed`, and a message naming the type. Nothing is filtered silently.
-- **Discovery never widens a grant.** Under a narrow grant no wildcard item compiles, so a CRD
-  installed later cannot slip in. Under `["*"]` it is included: that is what `"*"` grants.
+- **Discovery never widens a grant.** Under a narrow grant no wildcard item compiles, and nothing
+  outside the grant is watched, so a CRD installed later cannot slip in; the rule is refused when it
+  next reconciles. Under `["*"]` it is included: that is what `"*"` grants.
 
 ### Refusal messages name the grant
 
@@ -391,9 +393,11 @@ admits no new work under the revoked permission. Work it already held may comple
 - **A `GitBranch` no grant admits any more** gives up its branch the way a deleted one does, but
   keeps its finalizer. Its branch worker closes its intake, pushes or refuses each pending write and
   settles every `CommitRequest`; an event that arrives afterwards is refused. The `GitBranch` reports
-  `Stalled=True` with the grant's reason, and the next candidate takes the branch only after the old
-  worker has retired, with none of its work. Writes can therefore land after the API server accepted
-  the policy edit: Git cannot take back a push already sent.
+  `Stalled=True` with the grant's reason. Nobody holds the branch until a waiting `GitBranch` takes
+  it on its own reconcile, which checks its grant first, so a candidate revoked by the same edit
+  never holds it. The new holder starts a worker of its own, with none of the old one's work. Writes
+  can therefore land after the API server accepted the policy edit: Git cannot take back a push
+  already sent.
 - **A `GitTarget`, `WatchRule`, `ClusterWatchRule` or applier claim** that loses admission or scope is
   refused on its next reconcile. A write already decided is still committed and pushed.
 - **An applier claim its `allowedApplierClaims` refuse** hands its applier back, as one no eligible

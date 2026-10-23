@@ -228,11 +228,19 @@ Four more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
 
-Twenty-three shipped plans and closed investigations. **Nothing here binds.** Read one
+Twenty-four shipped plans and closed investigations. **Nothing here binds.** Read one
 only when you want to know *why* something is the way it is; the answer to *what it
 is* always lives in `spec/`.
 
 The newest is
+[`provider-access-rules.md`](finished/provider-access-rules.md): why every reference that lends a
+credential, a branch or reach needs an explicit grant on the object it reaches (`allowedGitBranches`,
+`allowedGitTargets`, `allowedApplierClaims`, each with a required `from`), with nothing automatic,
+not even the own namespace. It replaced `accessFrom`, `allowedBranches` and `allowCrossNamespace`
+before any of them shipped, and records what revocation promises, where the code departs from the
+plan, and the two recovery tests still missing. Shipped as #441.
+
+Before that,
 [`attribution-fact-stream.md`](finished/attribution-fact-stream.md): why attribution facts stopped
 being a keyspace the watch side polls and became a per-type log it follows into a bounded in-memory
 index. It deleted the `SET`/`GET` fact keys, the 150ms poll loop, and the `deletecollection`
@@ -244,7 +252,7 @@ collection delete the API server sent no response body for used to lose its auth
 watch resume cursors still live in Redis, so this frees attribution from it rather than the install).
 Shipped as #283, #284, #286 and #287.
 
-Before that,
+Earlier,
 [`analyzer-consumer-contract-asks.md`](finished/analyzer-consumer-contract-asks.md): why a
 refusal carries whether it can be solved and by whom, why the analyzer's report is a KRM
 document that names the build that produced it, and why `ResourceIdentifier.Key()` is a

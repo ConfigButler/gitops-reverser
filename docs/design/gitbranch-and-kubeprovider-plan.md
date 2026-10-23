@@ -8,7 +8,7 @@ build it.
 > **Superseded in part.** That a `GitBranch` has no access list of its own, and that the
 > `GitProvider`'s `accessFrom` governs both hops, no longer hold: grants on each referenced object
 > replace `accessFrom`, `allowedBranches` and `allowCrossNamespace`
-> ([who may reference what](../future/provider-access-rules.md)).
+> ([who may reference what](../finished/provider-access-rules.md)).
 
 The plan breaks the API on purpose, more than once. There are no production users to carry across,
 so each phase replaces a shape outright instead of keeping a deprecated twin beside it. A removed

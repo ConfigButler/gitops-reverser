@@ -112,7 +112,7 @@ Ordered by how much they matter now.
    `allowedBranches: [teams/team-a/*]` and `accessFrom: {names: [team-a]}`. Path isolation is not
    possible at all. [gitbranch-and-kubeprovider-plan.md](gitbranch-and-kubeprovider-plan.md)
    parks this as "Folder and branch grants per namespace", and
-   [who may use a provider](../future/provider-access-rules.md) built it as grants
+   [who may use a provider](../finished/provider-access-rules.md) built it as grants
    (`allowedGitBranches`, `GitBranch.allowedGitTargets`), and also covers item 2 below.
 
 2. **The claim is weaker than "one credential per branch, enforced".** Three gaps:

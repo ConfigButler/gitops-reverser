@@ -140,7 +140,7 @@ func claiming(namespace, branch string) *configv1alpha3.GitBranch {
 	}
 }
 
-// TestGitBranchClaimAdmitted is the walkthrough of docs/future/provider-access-rules.md: tenants may
+// TestGitBranchClaimAdmitted is the walkthrough of docs/finished/provider-access-rules.md: tenants may
 // claim their own prefix, and the platform keeps main.
 func TestGitBranchClaimAdmitted(t *testing.T) {
 	tenant := map[string]string{"platform.example.com/tenant": "true"}
