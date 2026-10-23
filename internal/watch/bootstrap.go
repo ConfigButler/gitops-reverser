@@ -94,7 +94,7 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 	// rule is simply left out of the store, and the reconciler's own gate re-decides (and can grant
 	// it) as soon as the controller's initial sync reaches this rule.
 	decision, err := CompileClusterWatchRule(ctx, m.Client, m.RuleStore, rule, target,
-		m.ClusterResourceGroupsFor(target))
+		m.ClusterResourcesSelectedFor(target))
 	if err != nil {
 		return fmt.Errorf("evaluating admission for ClusterWatchRule %q: %w", rule.Name, err)
 	}

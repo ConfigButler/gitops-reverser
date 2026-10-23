@@ -35,8 +35,8 @@ type cwaWatchManager struct {
 	onReconcile func()
 	// collectionOverlap, when set, is the refusal message both CollectionOverlap methods report.
 	collectionOverlap string
-	// groupsFor is what ClusterResourceGroupsFor resolves an omitted apiGroups with.
-	groupsFor func(string) []string
+	// selected is what ClusterResourcesSelectedFor selects for an item.
+	selected watch.ClusterResourceSelection
 }
 
 func (m *cwaWatchManager) TriggerRuleChange(internaltypes.ResourceReference) {
@@ -95,8 +95,8 @@ func (m *cwaWatchManager) StreamSummaryForClusterWatchRule(
 
 func (m *cwaWatchManager) StreamStateEvents() <-chan event.GenericEvent { return nil }
 
-func (m *cwaWatchManager) ClusterResourceGroupsFor(configbutleraiv1alpha3.GitTarget) func(string) []string {
-	return m.groupsFor
+func (m *cwaWatchManager) ClusterResourcesSelectedFor(configbutleraiv1alpha3.GitTarget) watch.ClusterResourceSelection {
+	return m.selected
 }
 
 func cwaRunningSummary() watch.StreamSummary {

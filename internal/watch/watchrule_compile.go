@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -104,10 +105,11 @@ func itemNamespaces(resolved authz.ResolvedSourceScope) [][]string {
 //  2. every type the rule names must be in the clusterResources the grants that admit the target
 //     give it (clusterResourcesRefusal). One forbidden type refuses the whole rule.
 //
-// groupsFor resolves the resource of an item that omits apiGroups to the groups that serve it, by
-// discovery; nil, or a cluster not discovered yet, resolves nothing. The compiled rule carries the
-// granted clusterResources too, so the planner never watches a type the grant does not name, also
-// one that discovery serves only later.
+// selected is what the planner selects for an item in the GitTarget's source cluster (see
+// Manager.ClusterResourcesSelectedFor); nil, or a cluster not discovered yet, selects nothing. The
+// compiled rule carries the granted clusterResources too, so the planner never watches a type the
+// grant does not name, also one that discovery serves only after this compile. The rule reconciles
+// again on its steady interval, and is refused then.
 //
 // Like CompileWatchRule it is shared by the reconciler and the startup bootstrap, so a restart
 // cannot open an unauthorized watch before the first reconcile can publish status.
@@ -117,7 +119,7 @@ func CompileClusterWatchRule(
 	store *rulestore.RuleStore,
 	rule configv1alpha3.ClusterWatchRule,
 	target configv1alpha3.GitTarget,
-	groupsFor func(resource string) []string,
+	selected ClusterResourceSelection,
 ) (ClusterWatchRuleDecision, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name}
 
@@ -139,7 +141,7 @@ func CompileClusterWatchRule(
 				target.Namespace, target.Name, admitted.Message),
 		}, nil
 	}
-	if forbidden := clusterResourcesRefusal(&rule, scope, groupsFor); len(forbidden) > 0 {
+	if forbidden := clusterResourcesRefusal(&rule, scope, selected); len(forbidden) > 0 {
 		store.DeleteClusterWatchRule(key)
 		return ClusterWatchRuleDecision{
 			ResourcesRefused: true,
@@ -212,32 +214,44 @@ type ObjectSelectorError struct {
 
 func (e *ObjectSelectorError) Error() string { return e.Message }
 
-// clusterResourcesRefusal names what a ClusterWatchRule asks for outside scope's clusterResources,
-// decided on the rule's TEXT, as rules[].sourceNamespace: "*" is: an item with "*" in apiGroups or
-// resources needs clusterResources: ["*"], and an item naming its groups and resources is checked
-// pair by pair. An item that omits apiGroups is checked by the pair discovery resolves it to; one
-// that resolves to no group, or to several, watches nothing today, and the planner's filter on the
-// granted identities keeps it so when discovery changes. Under ["*"] nothing is refused.
+// ClusterResourceSelection returns the cluster-scoped types the watch planner selects for a
+// ClusterWatchRule item now.
+type ClusterResourceSelection func(item configv1alpha3.ClusterResourceRule) []schema.GroupResource
+
+// clusterResourcesRefusal names what a ClusterWatchRule asks for outside scope's clusterResources. An
+// item with "*" in apiGroups or resources needs clusterResources: ["*"], decided on the rule's TEXT as
+// rules[].sourceNamespace: "*" is. Any other item asks for every pair its apiGroups and resources name,
+// and for every type the planner selects for it, which is how an item that omits apiGroups is
+// checked: by the planner's own matching, versions and ambiguity rule included. Under ["*"] nothing
+// is refused.
 func clusterResourcesRefusal(
-	rule *configv1alpha3.ClusterWatchRule, scope configv1alpha3.SourceScope, groupsFor func(string) []string,
+	rule *configv1alpha3.ClusterWatchRule, scope configv1alpha3.SourceScope, selected ClusterResourceSelection,
 ) []string {
 	if scope.AllowsAllClusterResources() {
 		return nil
 	}
 	var forbidden []string
 	for i := range rule.Spec.Rules {
-		item := &rule.Spec.Rules[i]
+		item := rule.Spec.Rules[i]
 		if slices.Contains(item.APIGroups, "*") || slices.Contains(item.Resources, "*") {
 			forbidden = append(forbidden, fmt.Sprintf(
 				"spec.rules[%d] has \"*\" in apiGroups or resources, which needs clusterResources: [\"*\"]", i))
 			continue
 		}
-		var types []string
+		var asked []schema.GroupResource
 		for _, resource := range item.Resources {
-			for _, group := range itemGroups(item, resource, groupsFor) {
-				if !scope.AllowsClusterResource(group, resource) {
-					types = append(types, configv1alpha3.ClusterResourceIdentityFor(group, resource))
-				}
+			for _, group := range item.APIGroups {
+				asked = append(asked, schema.GroupResource{Group: group, Resource: normalizeResource(resource)})
+			}
+		}
+		if selected != nil {
+			asked = append(asked, selected(item)...)
+		}
+		var types []string
+		for _, gr := range asked {
+			identity := configv1alpha3.ClusterResourceIdentityFor(gr.Group, gr.Resource)
+			if !scope.AllowsClusterResource(gr.Group, gr.Resource) && !slices.Contains(types, identity) {
+				types = append(types, identity)
 			}
 		}
 		if len(types) > 0 {
@@ -248,21 +262,6 @@ func clusterResourcesRefusal(
 		}
 	}
 	return forbidden
-}
-
-// itemGroups is the groups an item's resource is checked in: the ones it names, or, with apiGroups
-// omitted, the one group discovery serves it from.
-func itemGroups(item *configv1alpha3.ClusterResourceRule, resource string, groupsFor func(string) []string) []string {
-	if len(item.APIGroups) > 0 {
-		return item.APIGroups
-	}
-	if groupsFor == nil {
-		return nil
-	}
-	if groups := groupsFor(resource); len(groups) == 1 {
-		return groups
-	}
-	return nil
 }
 
 // describeIdentities renders cluster-resource identities for a message.

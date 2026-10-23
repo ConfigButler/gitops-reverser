@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -866,13 +865,13 @@ func (m *Manager) publishClusterOrderLocked() {
 	m.clusterOrder.Store(&out)
 }
 
-// ClusterResourceGroupsFor resolves, in the cluster target mirrors from, the API groups that serve a
-// cluster-scoped resource by name: what a ClusterWatchRule item with apiGroups omitted resolves to.
-// It answers only once the target's cluster has been captured and discovered; before that it
-// resolves nothing, and the compiled rule's granted identities still bound what is planned.
-func (m *Manager) ClusterResourceGroupsFor(target configv1alpha3.GitTarget) func(resource string) []string {
+// ClusterResourcesSelectedFor is what the watch planner selects, in the cluster target mirrors from,
+// for a ClusterWatchRule item: the same matching collectClusterWatchRuleSelections does, versions and
+// the omitted-apiGroups ambiguity rule included, so the compile checks against the grant exactly the
+// types the rule would watch. It selects nothing until the target's cluster has been captured.
+func (m *Manager) ClusterResourcesSelectedFor(target configv1alpha3.GitTarget) ClusterResourceSelection {
 	ref := types.NewResourceReference(target.Name, target.Namespace)
-	return func(resource string) []string {
+	return func(item configv1alpha3.ClusterResourceRule) []schema.GroupResource {
 		clusterID, captured := m.watchPlane().clusters[ref.Key()]
 		if !captured {
 			return nil
@@ -881,14 +880,11 @@ func (m *Manager) ClusterResourceGroupsFor(target configv1alpha3.GitTarget) func
 		if cc == nil {
 			return nil
 		}
-		var groups []string
-		for _, rec := range cc.registry.Followable() {
-			gvr := rec.Identity.GVR
-			if rec.Identity.Scope != typeset.ScopeNamespaced && gvr.Resource == resource &&
-				!slices.Contains(groups, gvr.Group) {
-				groups = append(groups, gvr.Group)
-			}
+		matched := matchClusterRuleItem(cc.registry.Followable(), item.APIGroups, item.APIVersions, item.Resources)
+		selected := make([]schema.GroupResource, 0, len(matched))
+		for _, rec := range matched {
+			selected = append(selected, rec.Identity.GVR.GroupResource())
 		}
-		return groups
+		return selected
 	}
 }

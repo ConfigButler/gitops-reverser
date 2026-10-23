@@ -234,12 +234,12 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 	target configbutleraiv1alpha3.GitTarget,
 	log logr.Logger,
 ) (bool, ctrl.Result, error) {
-	var groupsFor func(string) []string
+	var selected watch.ClusterResourceSelection
 	if r.WatchManager != nil {
-		groupsFor = r.WatchManager.ClusterResourceGroupsFor(target)
+		selected = r.WatchManager.ClusterResourcesSelectedFor(target)
 	}
 	decision, err := watch.CompileClusterWatchRule(
-		ctx, r.Client, r.RuleStore, *clusterRule, target, groupsFor)
+		ctx, r.Client, r.RuleStore, *clusterRule, target, selected)
 	var selectorErr *watch.ObjectSelectorError
 	if errors.As(err, &selectorErr) {
 		result, stallErr := r.refuseRuleResources(ctx, st, clusterRule, watch.ReasonInvalidObjectSelector,

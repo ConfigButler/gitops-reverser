@@ -10,9 +10,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // granting is the boot KubeProvider admitting the boot GitTarget's namespace with clusterResources
@@ -105,18 +107,20 @@ func TestCompileClusterWatchRule_ClusterResources(t *testing.T) {
 }
 
 // TestCompileClusterWatchRule_AnOmittedGroupIsCheckedByItsResolvedPair: with apiGroups omitted, the
-// item is checked by the group discovery serves the resource from.
+// item is checked by the types the planner selects for it.
 func TestCompileClusterWatchRule_AnOmittedGroupIsCheckedByItsResolvedPair(t *testing.T) {
 	m := bootManager(t, bootGitTarget(), granting("nodes"))
 	rule := clusterRuleFor("rule", item(nil, "clusterroles"))
-	rbac := func(string) []string { return rbacGroup }
+	rbac := func(configv1alpha3.ClusterResourceRule) []schema.GroupResource {
+		return []schema.GroupResource{{Group: rbacGroup[0], Resource: "clusterroles"}}
+	}
 
 	decision, err := CompileClusterWatchRule(context.Background(), m.Client, m.RuleStore, rule, *bootGitTarget(), rbac)
 	require.NoError(t, err)
 	assert.Equal(t, ClusterWatchRuleReasonClusterResourceNotAllowed, decision.Reason)
 	assert.Contains(t, decision.Message, `"clusterroles.rbac.authorization.k8s.io"`)
 
-	// Unresolved, it watches nothing today, and compiles; the planner keeps it to the grant.
+	// Selecting nothing today, it compiles; the planner keeps it to the grant.
 	decision, err = CompileClusterWatchRule(context.Background(), m.Client, m.RuleStore, rule, *bootGitTarget(), nil)
 	require.NoError(t, err)
 	assert.True(t, decision.Admitted)
@@ -176,4 +180,66 @@ func TestRefreshWatchedTypeTables_DiscoveryNeverWidensAGrant(t *testing.T) {
 		table, _ := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
 		assert.Len(t, table.Types, tc.types, "granted %v", tc.granted)
 	}
+}
+
+// TestRefreshWatchedTypeTables_ANarrowerGrantRebuildsThePlan: the granted clusterResources are part of
+// the plan's fingerprint, so recompiling a rule under a narrower grant drops what it no longer covers.
+func TestRefreshWatchedTypeTables_ANarrowerGrantRebuildsThePlan(t *testing.T) {
+	manager, store := makeWatchedTypeManager(t)
+	rule := clusterRuleForResource("rule-1", "namespaces")
+	store.AddOrUpdateClusterWatchRule(rule, []string{"*"}, "test-target", "test-ns", "test-provider", "test-ns",
+		"test-path")
+	manager.refreshWatchedTypeTables()
+	table, _ := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
+	require.Len(t, table.Types, 1)
+
+	store.AddOrUpdateClusterWatchRule(rule, []string{"nodes"}, "test-target", "test-ns", "test-provider", "test-ns",
+		"test-path")
+	manager.refreshWatchedTypeTables()
+	table, _ = manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
+	assert.Empty(t, table.Types, "a type the grant no longer covers leaves the plan")
+}
+
+// TestCompileClusterWatchRule_TheCompileChecksWhatThePlannerSelects: an item omitting apiGroups whose
+// resource two groups serve, but only one at the version it names, is no ambiguity to the planner. The
+// compile checks the type the planner selects, so withdrawing its grant refuses the rule and empties
+// the plan.
+func TestCompileClusterWatchRule_TheCompileChecksWhatThePlannerSelects(t *testing.T) {
+	m, _ := makeWatchedTypeManager(t)
+	target := bootGitTarget()
+	m.Client = bootManager(t, target, granting("*")).Client
+	discovery := oneScopedResourceDiscovery("", "namespaces", "Namespace", false)
+	discovery.groups = append(discovery.groups, testAPIGroup("other.example", "v2"))
+	discovery.resources = append(discovery.resources, &metav1.APIResourceList{
+		GroupVersion: "other.example/v2", APIResources: []metav1.APIResource{
+			{Name: "namespaces", Kind: "Namespace", Verbs: metav1.Verbs{"get", "list", "watch"}},
+		},
+	})
+	seedClusterCatalog(t, m, configPlaneClusterID, discovery)
+	dest := types.NewResourceReference(target.Name, target.Namespace)
+	m.rememberGitTargetCluster(dest, configPlaneClusterID)
+	rule := clusterRuleFor("rule", configv1alpha3.ClusterResourceRule{
+		Resources: []string{"namespaces"}, APIVersions: []string{"v1"},
+	})
+
+	decision, err := CompileClusterWatchRule(context.Background(), m.Client, m.RuleStore, rule, *target,
+		m.ClusterResourcesSelectedFor(*target))
+	require.NoError(t, err)
+	require.True(t, decision.Admitted, decision.Message)
+	m.refreshWatchedTypeTables()
+	before, _ := m.watchedTypeTableForGitDest(dest)
+	require.Len(t, before.Types, 1)
+
+	stored := &configv1alpha3.KubeProvider{}
+	require.NoError(t, m.Client.Get(context.Background(), granting().Key(), stored))
+	stored.Spec.AllowedGitTargets = granting().Spec.AllowedGitTargets
+	require.NoError(t, m.Client.Update(context.Background(), stored))
+	decision, err = CompileClusterWatchRule(context.Background(), m.Client, m.RuleStore, rule, *target,
+		m.ClusterResourcesSelectedFor(*target))
+	require.NoError(t, err)
+	assert.Equal(t, ClusterWatchRuleReasonClusterResourceNotAllowed, decision.Reason)
+	assert.Contains(t, decision.Message, `spec.rules[0] asks for "namespaces"`)
+	m.refreshWatchedTypeTables()
+	after, _ := m.watchedTypeTableForGitDest(dest)
+	assert.Empty(t, after.Types, "the revoked type leaves the plan")
 }

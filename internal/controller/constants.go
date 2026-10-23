@@ -43,10 +43,9 @@ type WatchManagerInterface interface {
 	StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) watch.StreamSummary
 	StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) watch.StreamSummary
 
-	// ClusterResourceGroupsFor resolves, in the cluster a GitTarget mirrors from, the groups that
-	// serve a cluster-scoped resource by name, so a ClusterWatchRule item that omits apiGroups is
-	// checked against the grant by the pair it resolves to.
-	ClusterResourceGroupsFor(target configv1alpha3.GitTarget) func(resource string) []string
+	// ClusterResourcesSelectedFor is what the watch planner selects for a ClusterWatchRule item in
+	// the cluster a GitTarget mirrors from, so the compile checks those types against the grant.
+	ClusterResourcesSelectedFor(target configv1alpha3.GitTarget) watch.ClusterResourceSelection
 
 	// StreamStateEvents is the channel a rule controller wires via source.Channel so a stream
 	// reaching (or leaving) Streaming re-reconciles the rules that project it, instead of leaving

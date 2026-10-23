@@ -386,9 +386,7 @@ func (m *Manager) collectClusterWatchRuleSelections(
 		ts := get(gitTargetRef, rule.GitBranchNamespace, rule.GitBranchRef, rule.Path)
 		selecting := selectingRule{kind: ruleKindClusterWatchRule, name: rule.Source.Name, createdAt: rule.CreatedAt}
 		for _, rr := range rule.Rules {
-			matched := matchFollowableRecords(
-				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
-			for _, rec := range matched {
+			for _, rec := range matchClusterRuleItem(records, rr.APIGroups, rr.APIVersions, rr.Resources) {
 				// The compile refused every type the rule names outside its grant. This keeps a type
 				// discovery serves only later, matched through an omitted apiGroups, out as well.
 				if !rule.AllowsType(rec.Identity.GVR.Group, rec.Identity.GVR.Resource) {
@@ -400,6 +398,13 @@ func (m *Manager) collectClusterWatchRuleSelections(
 			}
 		}
 	}
+}
+
+// matchClusterRuleItem is the records a ClusterWatchRule item selects, before its grant: the planner
+// filters them by the compiled rule's grant, and the compile refuses the rule when one falls outside
+// it (ClusterResourcesSelectedFor), so the two check the same types.
+func matchClusterRuleItem(records []typeset.TypeRecord, groups, versions, resources []string) []typeset.TypeRecord {
+	return matchFollowableRecords(records, groups, versions, resources, configv1alpha3.ResourceScopeCluster)
 }
 
 // matchFollowableRecords returns the followable records a rule selector names, applying
@@ -581,14 +586,15 @@ func watchRuleFingerprint(rule rulestore.CompiledRule) string {
 }
 
 // clusterWatchRuleFingerprint hashes a compiled ClusterWatchRule. It carries no scope component:
-// a ClusterWatchRule is cluster-scope-only, so there is no per-rule scope left that could change
-// what it watches.
+// a ClusterWatchRule is cluster-scope-only. It does carry the granted clusterResources, which the
+// planner filters by (AllowsType): a recompile under a narrower grant must rebuild the plan.
 func clusterWatchRuleFingerprint(rule rulestore.CompiledClusterRule) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "cwr|%s|created=%d|gt=%s/%s|dest=%s",
+	fmt.Fprintf(&b, "cwr|%s|created=%d|gt=%s/%s|dest=%s|grant=%s",
 		rule.Source.Name, rule.CreatedAt.UnixNano(),
 		rule.GitTargetNamespace, rule.GitTargetRef,
-		watchPlanDest(rule.GitBranchNamespace, rule.GitBranchRef, rule.Path))
+		watchPlanDest(rule.GitBranchNamespace, rule.GitBranchRef, rule.Path),
+		strings.Join(rule.ClusterResources, ","))
 	for _, rr := range rule.Rules {
 		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;sel=%q]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),
