@@ -5,11 +5,9 @@
 > replaces three drafts: `docs/reviews/20261023-gitbranch-claims-from-other-namespaces.md` (the
 > proposal), `docs/reviews/20261023-gitbranch-claims-review.md` (its review), and
 > `docs/future/gitprovider-branch-rules.md`. It follows up items 1 and 2 of "Still missing" in the
-> [one-writer-per-branch status](../design/one-writer-per-branch-plan.md). It includes three reviews
-> of 2026-10-23. The second made every grant explicit, made claiming a branch include sharing it,
-> and dropped the phases. The third settled the chart default, the branch pattern language, the
-> revocation promise and the open questions. [Tests to add](#tests-to-add) is the checklist for the
-> PR.
+> [one-writer-per-branch status](../design/one-writer-per-branch-plan.md). Four reviews of
+> 2026-10-23 shaped it, the last read against Flux's own sources; the permission model is settled.
+> [Tests to add](#tests-to-add) is the checklist for the PR.
 
 ## The goal
 
@@ -42,9 +40,12 @@ later rename breaks released manifests. If the rename lands first, those names a
 
 Every reference in `api/v1alpha3`, and whether it needs a grant. **An object that lends something
 lists every grant explicitly: a credential, a branch, or reach into other namespaces.** A
-reference that stays in its own namespace and lends nothing needs no grant. Kubernetes draws the
-same line. A Pod mounts a Secret in its own namespace without consent, and Gateway API asks for a
-`ReferenceGrant` only when a reference crosses namespaces.
+reference that stays in its own namespace and lends nothing needs no grant.
+
+This is stricter than Flux on purpose. Flux keeps consent on the referenced object too (`accessFrom`),
+but its ACL helper admits every same-namespace reference. GitOps Reverser requires explicit consent
+for provider and branch use, also within one namespace. Administering a provider and creating its
+consumers can then carry different RBAC permissions.
 
 | Reference | What it lends | Grant |
 |---|---|---|
@@ -261,9 +262,10 @@ The installer chooses which namespaces may use the operator's identity; the char
 them.
 
 - **Default install: empty grant lists.** Nothing mirrors or holds an applier through `local` until
-  values grant it. A `GitTarget` refused by the empty default says how to fix it: "KubeProvider
-  `gitops-reverser/local` grants no namespace; set `kubeProvider.gitTargetsFrom` in the chart
-  values".
+  values grant it. The controller's refusal names the API field, because the
+  same provider may be managed with Kustomize: "KubeProvider `gitops-reverser/local` admits no
+  namespace in `spec.gitTargetsFrom`". The chart docs map that field to
+  `kubeProvider.gitTargetsFrom`.
 - **`quickstart.enabled=true`** also renders a grant for exactly the quickstart namespace, so the
   [quickstart](../quickstart.md) stays one `helm install`:
 
@@ -302,26 +304,80 @@ configuration docs keep that warning for `sourceNamespaces`, `clusterScoped` and
 
 State these in the configuration docs, beside the grants:
 
-- **A namespace grant trusts that namespace's administrators.** Anyone allowed to create the
-  referring kind there can use the grant. Labels used in a `selector` must be controlled by trusted
-  administrators. Kubernetes treats namespace isolation the same way: it comes from
-  [RBAC and other controls](https://kubernetes.io/docs/concepts/security/multi-tenancy/), not from
-  namespace names alone. A `names` grant also admits a namespace that is deleted and recreated with
-  the same name.
-- **Controlling an applier is not limiting its workloads.** `applierNamespaces` bounds where the
-  `Kustomization` or `Application` lives. What it deploys, and where, is its own configuration and
-  credentials: a Flux `Kustomization`'s `serviceAccountName` and `targetNamespace`, or an Argo CD
-  `AppProject`'s destinations.
-- **The repository's authority must be trusted.** The model assumes platform administrators manage
-  `GitProvider`s, while tenants manage `GitBranch`es and `GitTarget`s. If tenants may also create
-  providers, see [the limit](#the-limit-another-provider-on-the-same-repository): grants on one
-  provider cannot stop a competing claim through another.
+- **Every operation runs as the provider's identity, never as the referrer's.** Grants decide who
+  may use that identity, and for what. They are not Flux-style impersonation, and this PR does not
+  add impersonation.
+  - A source-namespace grant permits mirroring the resource kinds the provider identity can read in
+    that namespace. It does not reproduce the referring user's Kubernetes permissions.
+  - An applier-namespace grant permits controlling matching appliers in that namespace. The
+    applier's own execution identity and RBAC bound what it deploys: a Flux `Kustomization`'s
+    `serviceAccountName`, or an Argo CD `AppProject`'s destinations. `targetNamespace` only places
+    the workloads; the service account's permissions authorize them.
+- **A namespace grant trusts that namespace's administrators.** Anyone, or any reconciler, allowed
+  to create the referring kind there can use the grant. Labels used in a `selector` must be
+  controlled by trusted administrators. A `names` grant also admits a namespace that is deleted and
+  recreated with the same name.
 - **Branch grants restrict claiming and writing. They do not make branches confidential from each
-  other.** A `GitBranch`'s `parentBranch` may name any branch the provider's credential can read,
-  granted or not, because creating `feature/x` from `main` should not need the right to claim
-  `main`. A permitted parent's contents can therefore be copied into the delegated branch.
-- **The unit a grant delegates is the branch.** Inside one branch, the folder overlap check
-  coordinates writers; it is not a boundary between tenants.
+  other.** A `parentBranch` may name any branch the provider's credential can read, so a permitted
+  parent's contents can be copied into the delegated branch. Inside one branch, the folder overlap
+  check coordinates writers; it is not a boundary between tenants.
+
+## A platform and its tenants
+
+The model assumes one split, and it is enforced by RBAC: platform administrators manage providers,
+grants and namespace labels, and tenants manage what uses them. With Flux, objects are applied by a
+reconciler, so what counts is what each reconciler's identity may create. The platform's
+reconciler applies:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+  labels: {platform.example.com/tenant: "true"}   # the label the grants select on
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: gitops-reverser-tenant}
+rules:
+  - apiGroups: [configbutler.ai]
+    resources: [gitbranches, gittargets, watchrules, fluxclaims, argocdclaims, commitrequests]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: tenant-reconciler, namespace: team-a}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: tenant-reconciler, namespace: team-a}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: gitops-reverser-tenant}
+subjects: [{kind: ServiceAccount, name: tenant-reconciler, namespace: team-a}]
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata: {name: team-a, namespace: team-a}
+spec:
+  serviceAccountName: tenant-reconciler   # team-a's repository is applied as this identity
+  sourceRef: {kind: GitRepository, name: team-a}
+  path: ./
+  interval: 10m
+  prune: true
+```
+
+The platform's reconciler also applies the `GitProvider` and `KubeProvider` above, with their
+grants, and the `GitBranch` for `main`. The Role also needs whatever team-a's own workloads require.
+
+| Identity | Manages | Cannot |
+|---|---|---|
+| The platform's reconciler | `GitProvider`, `KubeProvider` and their grants; Namespaces and their labels; tenant RBAC; platform `GitBranch`es such as `main` | |
+| `team-a/tenant-reconciler` | `GitBranch`, `GitTarget`, `WatchRule`, applier claims and `CommitRequest`s in `team-a` | Create or edit a provider; label a Namespace; change RBAC |
+
+The last column is what makes the grants hold. A tenant cannot grant itself a label, and cannot
+create the second provider that [the limit](#the-limit-another-provider-on-the-same-repository)
+describes. Flux's multi-tenancy lockdown (`--no-cross-namespace-refs` and
+`--default-service-account` on kustomize-controller) makes the tenant identity mandatory, so no
+tenant `Kustomization` falls back to the controller's own.
 
 ## Revocation
 
@@ -353,15 +409,27 @@ reports `Stalled=True`, reason `NamespaceNotAuthorized`. Writes can therefore la
 server accepts a policy edit. Git cannot take back a push that is already sent, and the docs should
 promise no more than that.
 
-**An applier claim that loses `applierClaimsFrom` hands its applier back.** Today it does not: a
-claim that stops being `Configured` leaves its `Kustomization` suspended under GitOps Reverser's
-field manager. It hands back only once no eligible `GitTarget` references the claim, or the claim
-is deleted (`applierclaim_controller.go`). After this change, an explicit denial stops new apply
-requests and follows the existing hand-back. That costs one final write through the revoked
-credential, so an applier is never left suspended forever. A transient read error still keeps the
-hold; the controller already tells the two apart (`kept` against a denial). Once the applier is
-handed back, Flux or Argo CD resumes, and may apply Git over live edits not mirrored yet. That is
-what losing control of an applier means.
+**An applier claim that loses `applierClaimsFrom`:**
+
+> Revocation stops new apply requests and starts handing back the existing hold. The hand-back
+> restores the recorded prior state and leaves other owners' declarations alone. It may need retries
+> and may fail; its outcome is visible in status and Events.
+
+Today a claim that stops being `Configured` keeps its `Kustomization` suspended, and hands back only
+once no eligible `GitTarget` references it or it is deleted. A denial now takes the same
+[`retire`](../../internal/controller/fluxclaim_hold.go) path as "no eligible `GitTarget`". That path:
+
+- keeps the claim the holder (`Held=False`, `Releasing`) while it hands back;
+- keeps a `Kustomization` that was suspended before adoption suspended
+  (`status.previousSuspendState`);
+- gives up after `releaseDeadline` (10 minutes) with a Warning Event, as it already does for a live
+  claim. It may be unable to finish: the Secret is gone, the identity lost its RBAC, or the cluster
+  is unreachable.
+
+A regrant during the hand-back lets it finish, then adopts the applier anew. A read error never
+starts a hand-back; the controller already tells it apart from a denial (`kept` against
+`falseCheck`). Once the applier is resumed, Flux or Argo CD may apply Git over live edits not
+mirrored yet. That is what losing control of an applier means.
 
 Two alternatives were rejected:
 
@@ -410,16 +478,11 @@ State the limit wherever the grants are documented:
 > `GitBranch`. They cannot stop a claim on the same repository branch through another provider
 > whose credential opens a push session.
 
-Under the trust boundary above, platform administrators create providers, so this needs a copied
-credential. If tenants must also create arbitrary providers, one governing authority per repository
-becomes part of the design. Either of these would do:
-
-- **A cluster-scoped object per repository URL.** This is option C of the original one-writer
-  plan: `ClusterGitProvider`, or `GitCredential`.
-- **A cluster-level rule that names one governing provider.** For a repository it names, branches
-  may only be claimed through that `GitProvider`.
-
-Neither exists.
+In the [platform example](#a-platform-and-its-tenants), tenants cannot create providers, so a
+competing claim needs someone with provider rights. If tenants must create their own providers, one
+governing authority per repository becomes part of the design: a cluster-scoped object per
+repository URL (option C of the original one-writer plan), or a cluster-level rule naming the one
+provider through which a repository's branches may be claimed. Neither exists.
 
 ## The change, surface by surface
 
@@ -433,11 +496,11 @@ docs, samples, the chart and e2e fixtures.
 | Accessors | `GitProvider.AdmitsGitBranch(ns, labels, branch)`, `GitBranch.AdmitsGitTarget(ns, labels)`, `KubeProvider.AdmitsGitTarget` and `AdmitsApplierClaim`, each returning the scope that applies. They replace `AdmitsNamespace`, `AllowsCrossNamespaceSources` and `AllowsCrossNamespaceAppliers`. One pattern matcher, with `{namespace}` expansion, beside `NamespaceMatcher` |
 | `internal/authz` | Every own-namespace shortcut goes: `gitBranchAdmitted`'s and `namespaceAdmitted`'s, and **`ApplierAdmitted`'s**, which returns early when the claim and the target share a provider and a namespace. It must now check `applierClaimsFrom` on its own. `source_namespace.go` checks `sourceNamespaces`, and `watchrule_compile.go` checks `clusterScoped`. Messages follow [refusal messages](#refusal-messages-name-the-grant) |
 | Claim and worker | `GitBranch` admission is checked before proof and candidacy; revocation goes through `finalize` without removing the finalizer; `WorkerRequest` carries the resolved provider namespace (see implementation notes) |
-| Applier claims | An explicit admission denial hands the applier back; a transient error keeps the hold |
+| Applier claims | An explicit admission denial takes the `retire` path; a read error keeps the hold |
 | Controllers and watches | `WatchRule` and `GitBranch` get Namespace watches; `GitBranch`es are indexed by resolved provider key (see implementation notes) |
 | CRDs and chart | Regenerate. The chart's `local` provider gets empty grant lists by default, a grant for the quickstart namespace under `quickstart.enabled`, and `values-playground.yaml` (see [the chart's `local` provider](#the-charts-local-provider)). `config/kubeprovider-local.yaml` and the e2e install grant what the suite needs; samples |
 | `hack/crdfields` | The field inventory |
-| Docs | `configuration.md` (sharing section, the semantics table, `GitProvider`, `GitBranch`, `KubeProvider`, the boundaries), `security-model.md`, `rbac.md`, `quickstart.md`, `components.md`, `architecture.md`, the bi-directional and attribution guides, `docs/spec` |
+| Docs | `configuration.md` (sharing section, the semantics table, `GitProvider`, `GitBranch`, `KubeProvider`, the boundaries, the platform example), `security-model.md`, `rbac.md`, `quickstart.md`, `components.md`, `architecture.md`, the bi-directional and attribution guides, `docs/spec` |
 | `definitions.md` | Remove `spec.accessFrom` from the fields mirrored from Flux word for word, and rewrite the line saying a provider's "`spec.accessFrom` admits the others". Add "grant". The `NamespaceMatcher` comment ("One field uses it") is already stale |
 | `gitbranch-and-kubeprovider-plan.md` | Its "no `accessFrom` of its own" and "one policy governs both hops" for `GitBranch` are superseded; point there from here |
 | `UPGRADING.md` | One entry: `allowedBranches` is replaced by `gitBranchesFrom`; every `GitBranch`, `GitTarget` and applier claim now needs a grant, also in the provider's own namespace; the chart's `local` provider grants nothing unless values or the quickstart do; and a `ClusterWatchRule` needs `clusterScoped` |
@@ -446,25 +509,13 @@ docs, samples, the chart and e2e fixtures.
 The worker and the Git write path change, so this is the high-risk case in `AGENTS.md`: run local
 e2e before pushing.
 
-## What works today, before any of this
+## Until this lands
 
-Nothing refuses two `GitProvider`s for one URL in one namespace, so a platform can already isolate
-teams on one repository with one Secret. It creates one provider per team, and creates the
-`GitBranch`es itself:
-
-```yaml
-kind: GitProvider
-metadata: {name: repo-team-a, namespace: platform}
-spec:
-  url: https://git.example.com/platform/config.git
-  secretRef: {name: repository-auth}   # the one Secret every team's provider shares
-  allowedBranches: ["teams/team-a/*"]
-  accessFrom: {names: [team-a]}
-```
-
-The example in [configuration.md](../configuration.md#sharing-connections-across-namespaces) has
-one provider with `accessFrom: {names: [team-a, team-b]}`, which lets each team write the other's
-branch. Until this lands, the page should say so, or show the per-team form.
+Today a platform isolates teams on one repository by creating one `GitProvider` per team, all
+sharing one Secret, each with its own `allowedBranches` and `accessFrom`, and creating the
+`GitBranch`es itself. The example in
+[configuration.md](../configuration.md#sharing-connections-across-namespaces) uses one provider for
+two teams, which lets each write the other's branch; the page should say so.
 
 ## Alternatives considered
 
@@ -503,12 +554,7 @@ branch. Until this lands, the page should say so, or show the per-team form.
 - **Credential resolution.**
   [`WorkerRequest.provider()`](../../internal/git/worker_manager.go) builds the provider key from
   `GitBranch.Namespace`. The resolved provider namespace has to be carried through
-  `gitDestination`, `WorkerRequest` and worker creation. Test two cases: no provider in the tenant
-  namespace, and a same-name provider there holding a different credential. Both must use the
-  platform provider and its Secret.
-- **Applier hand-back on denial.** `ApplierClaimReconciler` reports a denial through `falseCheck` and
-  a read error through `kept`. Only the denial goes to the hand-back that "no eligible `GitTarget`"
-  takes today.
+  `gitDestination`, `WorkerRequest` and worker creation.
 - **One admission function per act, in `internal/authz`.** Each returns the decision, the scope
   that applies, and the grants for the refusal message. Call the `GitBranch` one before proof and
   candidacy. Keep distinct reasons for each case: reference missing, namespace not admitted, branch
@@ -583,11 +629,23 @@ server and an applier.
 - [ ] One grant edit revokes two candidates; neither holds the branch afterwards.
 - [ ] An applier claim denied by `applierClaimsFrom` hands its applier back. A read error on the
   `KubeProvider` keeps the hold.
+- [ ] A `Kustomization` suspended before adoption stays suspended after a denial's hand-back.
+- [ ] A hand-back that cannot finish (the identity lost its RBAC) shows in status and a Warning
+  Event, and gives up at `releaseDeadline`.
+- [ ] A regrant during the hand-back lets it finish, then adopts the applier anew.
+
+**Recovery** (envtest; fixing the grant must be enough, with no consumer edited):
+
+- [ ] Restoring a grant re-admits, each through its watch: a `GitBranch` (it proves itself and
+  claims), a namespace's source scope, `clusterScoped` for a `ClusterWatchRule`, and an applier
+  claim (it adopts its applier).
+- [ ] The same after a controller restart: restored grants are read fresh, and nothing revoked
+  earlier stays refused.
 
 **Chart and end to end:**
 
 - [ ] A default install grants nothing: a `GitTarget` through `local` is refused with the message
-  that names `kubeProvider.gitTargetsFrom`.
+  that names `spec.gitTargetsFrom`.
 - [ ] `quickstart.enabled=true` mirrors the quickstart namespace and nothing else.
 - [ ] `values-playground.yaml` lets any namespace mirror its own namespace, and no other.
 - [ ] e2e: a team claims `teams/<team>/live` through a platform provider and writes it, then shares it
