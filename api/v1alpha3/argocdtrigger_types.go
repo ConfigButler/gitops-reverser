@@ -13,7 +13,7 @@ import (
 // ArgoCDTriggerFinalizer is the finalizer an ArgoCDTrigger carries while it holds its
 // Application's automated sync off: from before it first switches it off until it has handed the
 // switch back or over. Deleting the trigger, or the last eligible GitTarget naming it, hands the
-// switch back as status.handBack recorded it. A trigger that never held the
+// switch back as status.previousSuspendState recorded it. A trigger that never held the
 // switch (one whose Application an ApplicationSet generated, or whose switch another field manager
 // applies) has none.
 const ArgoCDTriggerFinalizer = "configbutler.ai/argocd-trigger"
@@ -99,21 +99,14 @@ type ArgoCDTriggerStatus struct {
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
 
-	// HandBack is how the Application stood when the trigger took its automated sync switch over,
-	// which handing it back restores. Recorded with the first switch-off, and cleared once it is
+	// PreviousSuspendState is how the Application stood before the trigger first switched its
+	// automated sync off, which handing it back restores: NotSuspended (automated sync was on) or
+	// Suspended (it was off). Recorded with the first switch-off, and cleared once the Application is
 	// handed back. Absent, a hand-back gives the switch up and leaves what the Application's own spec
 	// says. Either way, a switch that an ApplicationSet or another field manager owns by then keeps
 	// the value that owner set.
 	// +optional
-	HandBack *ArgoCDTriggerHandBack `json:"handBack,omitempty"`
-}
-
-// ArgoCDTriggerHandBack is how an Application stood before its ArgoCDTrigger held its automated
-// sync off.
-type ArgoCDTriggerHandBack struct {
-	// AutomatedSync is whether the Application synced on its own then.
-	// +optional
-	AutomatedSync bool `json:"automatedSync,omitempty"`
+	PreviousSuspendState SuspendState `json:"previousSuspendState,omitempty"`
 }
 
 // ArgoCDTriggerSource is the source an Application syncs.
@@ -138,6 +131,7 @@ type ArgoCDTriggerSource struct {
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1
 // +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.kubeProviderRef.name`,priority=1
 // +kubebuilder:printcolumn:name="RepairPending",type=boolean,JSONPath=`.status.repairPending`,priority=1
+// +kubebuilder:printcolumn:name="PreviousSuspendState",type=string,JSONPath=`.status.previousSuspendState`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

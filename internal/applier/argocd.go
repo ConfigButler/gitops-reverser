@@ -485,7 +485,7 @@ func (a *ArgoCD) switchVerdict(ctx context.Context, ref types.NamespacedName) *V
 		return &Verdict{Reason: ReasonCheckFailed, Err: err, Message: fmt.Sprintf(
 			"could not check whether %s %s keeps spec.syncPolicy.automated.enabled: %v", kindApplication, ref, err)}
 	case !kept:
-		return &Verdict{Reason: ReasonApplierVersionUnsupported, Message: switchPrunedMessage(ref)}
+		return &Verdict{Reason: ReasonArgoCDVersionNotSupported, Message: switchPrunedMessage(ref)}
 	}
 	return nil
 }
@@ -655,7 +655,7 @@ type Released struct {
 // what the hand-back does when it leaves the Application as it should be:
 //
 //   - wasOn, when set, is whether automated sync was on before the trigger held it (the trigger's
-//     status.handBack), and the hand-back puts that back.
+//     status.previousSuspendState), and the hand-back puts that back.
 //   - An ApplicationSet that generates the Application by then, or a field manager that applies its
 //     switch, owns the switch: the hand-back leaves the value they set. An ApplicationSet writes the
 //     switch with an update, which takes no share of a value that does not change, so giving it up

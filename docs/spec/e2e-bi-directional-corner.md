@@ -491,7 +491,7 @@ env var no overlay declaration can express.
    `enabled`): the client-side apply removes the switch the manifest no longer has.
    Request a trigger reconcile, since the applier is read on reconcile rather than
    watched.
-2. Assert the switch is `false` again, with an `AutomatedSyncSwitchedOn` Event on the
+2. Assert the switch is `false` again, with a `ClaimedResourceReconciled` Event on the
    trigger, `Held=True` (`AutomatedSyncOff`), and `gitops-reverser` among the
    `Application`'s field managers.
 3. Push a Git-side change. Assert GitOps Reverser syncs it as a `ForeignCommit`

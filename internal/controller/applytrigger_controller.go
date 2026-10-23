@@ -70,9 +70,10 @@ const (
 	// EventReasonAdopted is a Kustomization suspended, or an Application's automated sync switched
 	// off, for the first time.
 	EventReasonAdopted = "Adopted"
-	// EventReasonResumedElsewhere is a held Kustomization found resumed by somebody else, such as
-	// `flux resume`, and suspended again.
-	EventReasonResumedElsewhere = "ResumedElsewhere"
+	// EventReasonClaimedResourceReconciled is a held applier found changed by somebody else, and put
+	// back as the trigger holds it: a Kustomization resumed (`flux resume`) and suspended again, or an
+	// Application's automated sync switched on and off again.
+	EventReasonClaimedResourceReconciled = "ClaimedResourceReconciled"
 	// EventReasonReleased is an applier handed back to Flux or Argo CD, or left held for the trigger
 	// next in line, when its trigger was deleted or no eligible GitTarget references it any more.
 	EventReasonReleased = "Released"

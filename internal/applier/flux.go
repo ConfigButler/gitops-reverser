@@ -735,9 +735,9 @@ func (f *Flux) Suspend(ctx context.Context, ref types.NamespacedName) (string, e
 // spec.suspend and the requestedAt GitOps Reverser held, so the Kustomization is resumed and Flux
 // owns its apply moments again. It returns the field manager that still keeps the Kustomization
 // suspended, or "" once it is resumed. One that was suspended before GitOps Reverser held it
-// (wasSuspended, the trigger's status.handBack) is handed back suspended instead: an apply of
-// spec.suspend: true alone gives the requestedAt up and keeps the suspend, under GitOps Reverser's
-// field manager until somebody resumes it, and SuspendFieldManager is returned.
+// (wasSuspended, the trigger's status.previousSuspendState) is handed back suspended instead: an
+// apply of spec.suspend: true alone gives the requestedAt up and keeps the suspend, under GitOps
+// Reverser's field manager until somebody resumes it, and SuspendFieldManager is returned.
 //
 // An apply of the value a field holds shares the field with its owner, even forced, so a suspend
 // that took over a `flux suspend` co-owns spec.suspend with that update, and the empty apply alone

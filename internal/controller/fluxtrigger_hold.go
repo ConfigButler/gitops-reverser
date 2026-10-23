@@ -32,8 +32,8 @@ import (
 //     manager, with a token; Held (and so Ready) waits until the Kustomization handled it.
 //   - External resume: a held Kustomization found resumed with no operation of a branch worker in
 //     flight was resumed by somebody else (`flux resume`). It is suspended again with a token, every
-//     time, with a Normal Event, and recorded as an Unresolved operation that completes once that
-//     token is handled. There is no step-back.
+//     time, with a Normal ClaimedResourceReconciled Event, and recorded as an Unresolved operation
+//     that completes once that token is handled. There is no step-back.
 //   - Hand-back: the finalizer suspends once more, waits until that token is handled, and releases
 //     spec.suspend, so Flux owns the Kustomization's applies again.
 //
@@ -254,7 +254,7 @@ func (r *ApplyTriggerReconciler) hold(
 	suspending := func(message string) conditionValue {
 		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending, Message: message}
 	}
-	recordKustomizationHandBack(trigger, held.suspension)
+	recordKustomizationSuspendState(trigger, held.suspension)
 	switch {
 	case !held.suspension.Suspended:
 		// Read resumed: the resume can be another trigger's, one that came first in line since the
@@ -290,13 +290,21 @@ func (r *ApplyTriggerReconciler) hold(
 		Message: fmt.Sprintf("Kustomization %s is suspended; GitOps Reverser starts every apply it makes", ref)}
 }
 
-// recordKustomizationHandBack records, on adoption, how the Kustomization stood before it was first
-// held, which the hand-back puts back. Only on adoption, so the value is neither GitOps Reverser's
-// own nor a later `flux resume`.
-func recordKustomizationHandBack(trigger *configbutleraiv1alpha3.FluxTrigger, suspension applier.Suspension) {
-	if trigger.Status.HandBack == nil && !suspension.Held && !heldBefore(trigger) {
-		trigger.Status.HandBack = &configbutleraiv1alpha3.FluxTriggerHandBack{Suspended: suspension.Suspended}
+// recordKustomizationSuspendState records in status.previousSuspendState, on adoption, how the
+// Kustomization stood before it was first held, which the hand-back puts back. Only on adoption, so
+// the value is neither GitOps Reverser's own nor a later `flux resume`.
+func recordKustomizationSuspendState(trigger *configbutleraiv1alpha3.FluxTrigger, suspension applier.Suspension) {
+	if trigger.Status.PreviousSuspendState == "" && !suspension.Held && !heldBefore(trigger) {
+		trigger.Status.PreviousSuspendState = suspendState(suspension.Suspended)
 	}
+}
+
+// suspendState is the SuspendState of an applier that is suspended or not.
+func suspendState(suspended bool) configbutleraiv1alpha3.SuspendState {
+	if suspended {
+		return configbutleraiv1alpha3.SuspendStateSuspended
+	}
+	return configbutleraiv1alpha3.SuspendStateNotSuspended
 }
 
 // suspended records a Kustomization just suspended: an adoption, or, for one held before, an
@@ -308,7 +316,7 @@ func (r *ApplyTriggerReconciler) suspended(trigger *configbutleraiv1alpha3.FluxT
 			"suspended Kustomization %s: from now on GitOps Reverser starts every apply it makes", ref)
 		return
 	}
-	r.event(trigger, corev1.EventTypeNormal, EventReasonResumedElsewhere,
+	r.event(trigger, corev1.EventTypeNormal, EventReasonClaimedResourceReconciled,
 		"Kustomization %s was resumed outside GitOps Reverser, which suspended it again; the apply "+
 			"that resume started was not checked against the branch", ref)
 	trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
@@ -439,7 +447,7 @@ func (r *ApplyTriggerReconciler) retire(
 		return ctrl.Result{}, err
 	}
 	r.letGoOfOperation(trigger)
-	clearHandBack(trigger)
+	clearPreviousSuspendState(trigger)
 	held := conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonNotReferenced,
 		Message: fmt.Sprintf("nothing to hold: no GitTarget names this trigger, and its %s was handed back",
 			trigger.ApplierKind())}
@@ -456,14 +464,14 @@ func (r *ApplyTriggerReconciler) retire(
 	return ctrl.Result{RequeueAfter: st.requeueAfter(heldTriggerSteadyInterval)}, nil
 }
 
-// clearHandBack drops what a trigger recorded of its applier before it held it, once it has handed
-// it back: a later adoption records anew.
-func clearHandBack(trigger configbutleraiv1alpha3.ApplyTrigger) {
+// clearPreviousSuspendState drops what a trigger recorded of its applier before it held it, once it
+// has handed it back: a later adoption records anew.
+func clearPreviousSuspendState(trigger configbutleraiv1alpha3.ApplyTrigger) {
 	switch t := trigger.(type) {
 	case *configbutleraiv1alpha3.FluxTrigger:
-		t.Status.HandBack = nil
+		t.Status.PreviousSuspendState = ""
 	case *configbutleraiv1alpha3.ArgoCDTrigger:
-		t.Status.HandBack = nil
+		t.Status.PreviousSuspendState = ""
 	}
 }
 
@@ -667,12 +675,12 @@ func (r *ApplyTriggerReconciler) releaseKustomization(
 }
 
 // handBackKustomization releases a FluxTrigger's Kustomization, suspended and with its suspend
-// handled, as status.handBack recorded it, with a Released Event that says how it is left.
+// handled, as status.previousSuspendState recorded it, with a Released Event that says how it is left.
 func (r *ApplyTriggerReconciler) handBackKustomization(
 	ctx context.Context, flux *applier.Flux, trigger *configbutleraiv1alpha3.FluxTrigger,
 ) *pendingRelease {
 	ref := trigger.Applier()
-	wasSuspended := trigger.Status.HandBack != nil && trigger.Status.HandBack.Suspended
+	wasSuspended := trigger.Status.PreviousSuspendState == configbutleraiv1alpha3.SuspendStateSuspended
 	keeper, err := flux.Release(ctx, ref, wasSuspended)
 	if err != nil {
 		return r.releaseFailed(trigger, err, fmt.Sprintf("it is suspended, and releasing spec.suspend failed (%v); "+

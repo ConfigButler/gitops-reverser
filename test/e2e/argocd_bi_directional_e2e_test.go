@@ -304,7 +304,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		requestTriggerReconcile(testNs, argoCDTriggerResource, run.appName)
 		Eventually(func(g Gomega) {
 			g.Expect(run.automatedEnabled()).To(Equal("false"))
-			g.Expect(triggerEventMessages(g, testNs, "ArgoCDTrigger", run.appName, "AutomatedSyncSwitchedOn")).
+			g.Expect(triggerEventMessages(g, testNs, "ArgoCDTrigger", run.appName, "ClaimedResourceReconciled")).
 				To(ContainSubstring("was switched on outside GitOps Reverser, which switched it off again"))
 		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 		verifyResourceCondition(argoCDTriggerResource, run.appName, testNs, "Held", "True", "AutomatedSyncOff",

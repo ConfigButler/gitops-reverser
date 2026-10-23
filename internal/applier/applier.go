@@ -157,10 +157,10 @@ const (
 	// ReasonSourceMismatch is ApplyTriggerReady=False on a GitTarget whose trigger's applier applies
 	// a different repository or branch than the GitTarget writes.
 	ReasonSourceMismatch = "SourceMismatch"
-	// ReasonApplierVersionUnsupported is an applier whose API in its cluster lacks what GitOps
-	// Reverser holds it with: an Argo CD before 3.1, whose Application has no
-	// spec.syncPolicy.automated.enabled.
-	ReasonApplierVersionUnsupported = "ApplierVersionUnsupported"
+	// ReasonArgoCDVersionNotSupported is an Application served by an Argo CD before 3.1, which has no
+	// spec.syncPolicy.automated.enabled to hold automated sync off with. GitOps Reverser does not
+	// support it: the trigger writes nothing and is Stalled, so never Ready.
+	ReasonArgoCDVersionNotSupported = "ArgoCDVersionNotSupported"
 	// ReasonForbidden is a KubeProvider identity that may not read or write the applier.
 	ReasonForbidden = "Forbidden"
 	// ReasonCheckFailed is a check that could not complete: the applier's cluster did not answer.

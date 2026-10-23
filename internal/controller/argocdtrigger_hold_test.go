@@ -56,7 +56,7 @@ func (f *argoHoldFixture) events() []string {
 		select {
 		case event := <-f.recorder.Events:
 			for _, reason := range []string{
-				EventReasonAdopted, EventReasonAutomatedSyncSwitchedOn, EventReasonReleased, EventReasonReleaseFailed,
+				EventReasonAdopted, EventReasonClaimedResourceReconciled, EventReasonReleased, EventReasonReleaseFailed,
 			} {
 				if strings.Contains(event, " "+reason+" ") {
 					out = append(out, event)
@@ -144,8 +144,8 @@ func TestArgoCDTrigger_SwitchesAutomatedSyncOff(t *testing.T) {
 }
 
 // TestArgoCDTrigger_AutomatedSyncSwitchedOnIsSwitchedOffAgain: the control loop. Automated sync
-// switched on outside GitOps Reverser is switched off again, every time, with a Normal Event each
-// time.
+// switched on outside GitOps Reverser is switched off again, every time, with a Normal
+// ClaimedResourceReconciled Event each time.
 func TestArgoCDTrigger_AutomatedSyncSwitchedOnIsSwitchedOffAgain(t *testing.T) {
 	f := newArgoHoldFixture(t, nil, applierArgoApplication(nil))
 	reconcileTrigger(t, f.r)
@@ -161,7 +161,7 @@ func TestArgoCDTrigger_AutomatedSyncSwitchedOnIsSwitchedOffAgain(t *testing.T) {
 		assert.Equal(t, false, automated["enabled"], "round %d", round)
 		events := f.events()
 		require.Len(t, events, 1, "an Event every time")
-		assert.True(t, strings.HasPrefix(events[0], "Normal AutomatedSyncSwitchedOn automated sync of Application "+
+		assert.True(t, strings.HasPrefix(events[0], "Normal ClaimedResourceReconciled automated sync of Application "+
 			"argocd/checkout was switched on outside GitOps Reverser, which switched it off again"), events[0])
 	}
 }
@@ -350,9 +350,13 @@ func TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNeverWritten(t *testing.T) {
 			configured := findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
 			require.NotNil(t, configured)
 			assert.Equal(t, metav1.ConditionFalse, configured.Status)
-			assert.Equal(t, applier.ReasonApplierVersionUnsupported, configured.Reason)
+			assert.Equal(t, applier.ReasonArgoCDVersionNotSupported, configured.Reason)
 			assert.Contains(t, configured.Message, "which Argo CD has from 3.1")
 			assert.True(t, conditionIsTrue(*got.StatusConditions(), ConditionTypeStalled))
+			ready := findCondition(*got.StatusConditions(), ConditionTypeReady)
+			require.NotNil(t, ready)
+			assert.Equal(t, metav1.ConditionFalse, ready.Status, "an Argo CD before 3.1 is never Ready")
+			assert.Equal(t, applier.ReasonArgoCDVersionNotSupported, ready.Reason)
 			after, _ := f.automated(t)
 			assert.Equal(t, before, after, "nothing is written")
 			assert.Empty(t, f.application(t).GetManagedFields())
@@ -363,9 +367,10 @@ func TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNeverWritten(t *testing.T) {
 }
 
 // TestArgoCDTrigger_RecordsAndRestoresHowItStood: adoption records whether the Application synced on
-// its own in status.handBack, the hand-back puts exactly that back, and then forgets it. Giving the
-// switch up alone would not: here the owner's own enabled: false was taken by a click in the UI, so
-// giving the switch up would remove it, and an Application that was manual would sync on its own.
+// its own in status.previousSuspendState, the hand-back puts exactly that back, and then forgets it.
+// Giving the switch up alone would not: here the owner's own enabled: false was taken by a click in
+// the UI, so giving the switch up would remove it, and an Application that was manual would sync on
+// its own.
 func TestArgoCDTrigger_RecordsAndRestoresHowItStood(t *testing.T) {
 	app := argosim.OwnSwitch(
 		t,
@@ -376,10 +381,10 @@ func TestArgoCDTrigger_RecordsAndRestoresHowItStood(t *testing.T) {
 	)
 	f := newArgoHoldFixture(t, nil, app)
 	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.ArgoCDTrigger)
-	require.Equal(t, &configbutleraiv1alpha3.ArgoCDTriggerHandBack{AutomatedSync: false}, got.Status.HandBack)
+	require.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, got.Status.PreviousSuspendState)
 	f.switchOn(t)
 	reconcileTrigger(t, f.r)
-	assert.Equal(t, &configbutleraiv1alpha3.ArgoCDTriggerHandBack{AutomatedSync: false}, f.trigger(t).Status.HandBack,
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.trigger(t).Status.PreviousSuspendState,
 		"a switch-on is not how it stood")
 	f.events()
 
@@ -391,7 +396,7 @@ func TestArgoCDTrigger_RecordsAndRestoresHowItStood(t *testing.T) {
 
 	automated, _ := f.automated(t)
 	assert.Equal(t, false, automated["enabled"], "manual, as it was")
-	assert.Nil(t, got.Status.HandBack, "forgotten once handed back")
+	assert.Empty(t, got.Status.PreviousSuspendState, "forgotten once handed back")
 	events := f.events()
 	require.Len(t, events, 1)
 	assert.Contains(t, events[0], "its automated sync is off, as it was before GitOps Reverser held it")

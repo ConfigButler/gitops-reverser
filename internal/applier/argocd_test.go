@@ -1132,7 +1132,7 @@ func TestArgoCD_AnAPIWithoutTheSwitchIsNeverWritten(t *testing.T) {
 	argo := pinnedArgo(client)
 
 	verdict := argo.Validate(ctx, platformApp)
-	assert.Equal(t, ReasonApplierVersionUnsupported, verdict.Reason)
+	assert.Equal(t, ReasonArgoCDVersionNotSupported, verdict.Reason)
 	assert.Contains(t, verdict.Message, "which Argo CD has from 3.1")
 	assert.NotNil(t, verdict.Source)
 

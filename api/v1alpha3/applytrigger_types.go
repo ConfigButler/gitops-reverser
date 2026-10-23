@@ -67,6 +67,20 @@ const (
 	ApplyReasonCatchUp ApplyReason = "CatchUp"
 )
 
+// SuspendState is whether an applier applied on its own. An Argo CD Application with automated sync
+// off counts as Suspended.
+// +kubebuilder:validation:Enum=Suspended;NotSuspended
+type SuspendState string
+
+const (
+	// SuspendStateSuspended is a Kustomization with spec.suspend: true, or an Application with
+	// automated sync off.
+	SuspendStateSuspended SuspendState = "Suspended"
+	// SuspendStateNotSuspended is a Kustomization that applied on its own, or an Application with
+	// automated sync on.
+	SuspendStateNotSuspended SuspendState = "NotSuspended"
+)
+
 // ApplyOperationPhase is where an apply operation stands.
 // +kubebuilder:validation:Enum=Requested;Running;Settling;Unresolved;Succeeded;Failed
 type ApplyOperationPhase string

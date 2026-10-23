@@ -407,7 +407,7 @@ would not be pruned when Git later deletes it.
   once, and the next forced apply takes it back.
 - **Resumed by someone else.** The reconciler finds the `Kustomization` resumed with no operation of
   a branch worker in flight (read uncached, since the worker records its operation a moment before
-  it resumes). It suspends it with a token, records a `Normal` `ResumedElsewhere` Event, and records
+  it resumes). It suspends it with a token, records a `Normal` `ClaimedResourceReconciled` Event, and records
   the apply as an `Unresolved` operation with that suspend token and no request token, which it
   completes once the suspend is handled. It does this every time, with an Event each time: there is no
   step-back state. A `FluxTrigger` that is `Ready` reads its `Kustomization` every minute, which
@@ -429,7 +429,7 @@ would not be pruned when Git later deletes it.
   is `Held=False`, `Releasing`, and stays the holder in line. It suspends the `Kustomization` with a
   token if an apply has it resumed, waits until that is handled, then releases `spec.suspend` with
   an empty apply, so Flux owns it again (`Released`). A `Kustomization` that was suspended when the
-  trigger first held it (`status.handBack.suspended`) stays suspended instead ([decisions of
+  trigger first held it (`status.previousSuspendState: Suspended`) stays suspended instead ([decisions of
   2026-10-23](#decisions)). An operation still recorded in flight that
   this process does not follow then completes as `Failed`. A reference that returns before the
   release is done holds the `Kustomization` again; one that returns after adopts it anew. Deleting
@@ -590,13 +590,13 @@ Taken 2026-10-23:
    automated sync is on, so an `ApplicationSet` whose template keeps it off is supported. Binding
    the `ApplicationSet` itself is parked.
 3. **A hand-back puts back how the applier stood before it was held**, recorded in
-   `status.handBack` (both kinds) on adoption: a `Kustomization` suspended before stays suspended
+   `status.previousSuspendState` (both kinds) on adoption: a `Kustomization` suspended before stays suspended
    (until now it was resumed), an `Application`'s automated sync is as it was. A switch an
    `ApplicationSet` adopted meanwhile keeps the value it set: its update takes no share of an
    unchanged value, so giving the switch up would turn automated sync on against its template.
    Where giving the field up would leave anything else, the value is set and left under
    `gitops-reverser`, for its owner to change.
-4. **Argo CD before 3.1 is refused, `ApplierVersionUnsupported`, before any write.** Its schema has
+4. **Argo CD before 3.1 is refused, `ArgoCDVersionNotSupported`, before any write.** Its schema has
    no `enabled`, and the API server refuses a server-side apply of an undeclared field (measured);
    a server-side dry run tells that apart from a cluster that keeps it, with no extra permission.
 
@@ -728,9 +728,9 @@ applier too, and two appliers applying one object fight each other.
 **GitOps Reverser takes full control of when Argo CD syncs.** The `ArgoCDTrigger` holds its
 `Application`'s automated sync off: it owns `syncPolicy.automated.enabled: false` with a
 server-side apply under `gitops-reverser`, touching nothing else of `automated`, switches it off
-again when somebody switches it on (`AutomatedSyncSwitchedOn`), and on hand-back gives the switch
+again when somebody switches it on (`ClaimedResourceReconciled`), and on hand-back gives the switch
 up, which leaves the `Application` as its own spec says, unless that is not how it stood before
-(`status.handBack`) or how an `ApplicationSet` that adopted it since set it (measured in envtest:
+(`status.previousSuspendState`) or how an `ApplicationSet` that adopted it since set it (measured in envtest:
 [`argocdtrigger_apiserver_test.go`](../../internal/controller/argocdtrigger_apiserver_test.go)). So
 its timed refresh and its webhook only compare, and every sync it runs is one GitOps Reverser asked
 for, pinned to a commit the branch worker checked. A switch an `ApplicationSet` or another field

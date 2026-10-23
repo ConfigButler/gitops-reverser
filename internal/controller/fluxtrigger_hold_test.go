@@ -62,7 +62,7 @@ func (f *holdFixture) events() []string {
 		select {
 		case event := <-f.recorder.Events:
 			for _, reason := range []string{
-				EventReasonAdopted, EventReasonResumedElsewhere, EventReasonReleased, EventReasonReleaseFailed,
+				EventReasonAdopted, EventReasonClaimedResourceReconciled, EventReasonReleased, EventReasonReleaseFailed,
 				EventReasonOperationUnfollowed,
 			} {
 				if strings.Contains(event, " "+reason+" ") {
@@ -137,8 +137,8 @@ func TestFluxTrigger_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 		assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
 		events := f.events()
 		require.Len(t, events, 1, "an Event every time")
-		assert.True(t, strings.HasPrefix(events[0], "Normal ResumedElsewhere Kustomization flux-system/checkout "+
-			"was resumed outside GitOps Reverser"), events[0])
+		assert.True(t, strings.HasPrefix(events[0], "Normal ClaimedResourceReconciled "+
+			"Kustomization flux-system/checkout was resumed outside GitOps Reverser"), events[0])
 
 		got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
 		require.NotNil(t, got.Status.Operation)
@@ -629,7 +629,7 @@ func TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
 }
 
 // TestFluxTrigger_HandsBackASuspendedKustomizationSuspended: adoption records how the
-// Kustomization stood in status.handBack. One somebody had suspended before the trigger held it is
+// Kustomization stood in status.previousSuspendState. One somebody had suspended before the trigger held it is
 // handed back suspended, as it was, and not resumed; one that was running is resumed, as before.
 func TestFluxTrigger_HandsBackASuspendedKustomizationSuspended(t *testing.T) {
 	for name, wasSuspended := range map[string]bool{"suspended before": true, "running before": false} {
@@ -641,7 +641,7 @@ func TestFluxTrigger_HandsBackASuspendedKustomizationSuspended(t *testing.T) {
 			}
 			f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider), objs...)
 			got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
-			require.Equal(t, &configbutleraiv1alpha3.FluxTriggerHandBack{Suspended: wasSuspended}, got.Status.HandBack)
+			require.Equal(t, suspendState(wasSuspended), got.Status.PreviousSuspendState)
 			f.events()
 
 			require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
