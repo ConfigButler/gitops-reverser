@@ -49,10 +49,10 @@ consumers can then carry different RBAC permissions.
 
 | Reference | What it lends | Grant |
 |---|---|---|
-| `GitBranch.gitProviderRef` → `GitProvider` | A credential, and a branch of its repository | **`GitProvider.gitBranchesFrom`**, scoped by `branches` |
-| `GitTarget.gitBranchRef` → `GitBranch` | Writing a folder into the branch | **`GitBranch.gitTargetsFrom`** |
-| `GitTarget.kubeProviderRef` → `KubeProvider` | Reading a cluster with its credential | **`KubeProvider.gitTargetsFrom`**, scoped by `sourceNamespaces` and `clusterResources` |
-| `FluxClaim` / `ArgoCDClaim` `.kubeProviderRef` → `KubeProvider` | Control over an applier, with its credential | **`KubeProvider.applierClaimsFrom`**, scoped by `applierNamespaces` |
+| `GitBranch.gitProviderRef` → `GitProvider` | A credential, and a branch of its repository | **`GitProvider.allowedGitBranches`**, scoped by `branches` |
+| `GitTarget.gitBranchRef` → `GitBranch` | Writing a folder into the branch | **`GitBranch.allowedGitTargets`** |
+| `GitTarget.kubeProviderRef` → `KubeProvider` | Reading a cluster with its credential | **`KubeProvider.allowedGitTargets`**, scoped by `sourceNamespaces` and `clusterResources` |
+| `FluxClaim` / `ArgoCDClaim` `.kubeProviderRef` → `KubeProvider` | Control over an applier, with its credential | **`KubeProvider.allowedApplierClaims`**, scoped by `applierNamespaces` |
 | `FluxClaim.kustomizationRef`, `ArgoCDClaim.applicationRef` → the applier in the source cluster | (points into a cluster whose objects we do not own) | Bounded by `applierNamespaces` |
 | `WatchRule.rules[].sourceNamespace` → a source-cluster namespace | (same) | Bounded by `sourceNamespaces` |
 | `ClusterWatchRule.gitTargetRef` → a `GitTarget` in any namespace | Cluster-scoped reads through that target's `KubeProvider` | Bounded by `clusterResources` on the grant that admits the target |
@@ -80,9 +80,10 @@ Every grant answers one question: **who may use this object, and for what?**
 | Who owns a grant list? | One policy owner per object: every grant list is `+listType=atomic`, and `names`, `branches`, `sourceNamespaces`, `clusterResources` and `applierNamespaces` are `+listType=set` |
 | Are there booleans? | No. A grant's source is an enum (`from`), and every scope is a list, so either can grow a value later without a new field ([API conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md): think twice about bool fields) |
 
-The field is named after the referring kind, or after a family of kinds the API already defines.
-"Applier claim" is such a family: there is no `ApplierClaim` kind, but a `GitTarget` points at one
-with `applierClaimRef`, and `definitions.md` defines the term. The same `gitTargetsFrom` on two
+The field is `allowed` plus the referring kind, or a family of kinds the API already defines,
+followed by a `from` in each grant. That is Gateway API's `allowedRoutes.namespaces.from`, the
+shape `from` is borrowed from. "Applier claim" is such a family: there is no `ApplierClaim` kind, but a `GitTarget` points at one
+with `applierClaimRef`, and `definitions.md` defines the term. The same `allowedGitTargets` on two
 objects always means "which `GitTarget`s may reference me"; the referenced object decides the
 activity. The names follow [definitions.md](../definitions.md) rule 2, and avoid a bare "claim",
 which `definitions.md` keeps apart as "branch claim" and "applier claim".
@@ -96,7 +97,7 @@ decides who may claim, and the branch decides who may write.
 Every grant has a required `from`, as a Gateway API listener's `allowedRoutes.namespaces.from`:
 
 ```yaml
-gitTargetsFrom:
+allowedGitTargets:
   - from: Same                  # this object's own namespace, whatever it is named
   - from: Names
     names: [team-b]
@@ -126,13 +127,13 @@ reviewer sees.
 | A grant list | No access | No access | Grants, combined by union | Not a value of a list |
 | `from` | **Refused**: required | (not a list) | `Same`, `Names`, `Selector` or `All` | Refused: use `All` |
 | `names` (with `Names`) | Refused | Refused | Exact control-cluster namespace names; `{namespace}` is refused, because it would admit every referrer (use `Same` for the own namespace) | Refused: use `All` |
-| `GitProvider.gitBranchesFrom[].branches` | **Refused**: required | Refused | Branch patterns (see [patterns](#patterns)) | Every branch |
-| `KubeProvider.gitTargetsFrom[].sourceNamespaces` | No namespaces | Refused | Exactly these source-cluster namespaces | Every namespace; also allows `rules[].sourceNamespace: "*"` |
-| `KubeProvider.gitTargetsFrom[].clusterResources` | No cluster-scoped resources | Refused | Exactly these cluster-scoped resources (`clusterroles`, `customresourcedefinitions.apiextensions.k8s.io`), which a `ClusterWatchRule` may mirror through the target | Every cluster-scoped resource |
-| `KubeProvider.applierClaimsFrom[].applierNamespaces` | **Refused**: required | Refused | Exactly these namespaces | Every namespace |
-| `GitBranch.gitTargetsFrom[]` | no scope field | | | |
+| `GitProvider.allowedGitBranches[].branches` | **Refused**: required | Refused | Branch patterns (see [patterns](#patterns)) | Every branch |
+| `KubeProvider.allowedGitTargets[].sourceNamespaces` | No namespaces | Refused | Exactly these source-cluster namespaces | Every namespace; also allows `rules[].sourceNamespace: "*"` |
+| `KubeProvider.allowedGitTargets[].clusterResources` | No cluster-scoped resources | Refused | Exactly these cluster-scoped resources (`clusterroles`, `customresourcedefinitions.apiextensions.k8s.io`), which a `ClusterWatchRule` may mirror through the target | Every cluster-scoped resource |
+| `KubeProvider.allowedApplierClaims[].applierNamespaces` | **Refused**: required | Refused | Exactly these namespaces | Every namespace |
+| `GitBranch.allowedGitTargets[]` | no scope field | | | |
 
-A `KubeProvider` `gitTargetsFrom` grant must set `sourceNamespaces`, `clusterResources`, or
+A `KubeProvider` `allowedGitTargets` grant must set `sourceNamespaces`, `clusterResources`, or
 both. CEL refuses one that grants nothing. **An explicit list is the whole scope, never "these
 plus your own".** `applierNamespaces: [flux-system]` means `flux-system` only. `["*"]` is a
 deliberate, broad grant.
@@ -184,7 +185,7 @@ to find out why something failed:
 - `GitBranch`: "namespace `team-a` may claim `teams/team-a/*`, `feature/*` through GitProvider
   `platform/shared-repo`; requested branch `main` is not allowed".
 - `GitTarget` on a branch: "GitBranch `team-a/live` admits `team-a`, `team-b`; namespace `team-c` is
-  not admitted (`spec.gitTargetsFrom`)".
+  not admitted (`spec.allowedGitTargets`)".
 - `WatchRule`: "KubeProvider `platform/production` lets namespace `team-a` watch `team-a`;
   `sourceNamespace: kube-system` is not allowed".
 
@@ -199,7 +200,7 @@ metadata: {name: shared-repo, namespace: platform}
 spec:
   url: https://git.example.com/platform/config.git
   secretRef: {name: repository-auth}
-  gitBranchesFrom:
+  allowedGitBranches:
     - from: Same
       branches: [main, "release/*"]
     - from: Selector
@@ -225,7 +226,7 @@ metadata: {name: live, namespace: team-a}
 spec:
   gitProviderRef: {name: shared-repo, namespace: platform}
   branch: teams/team-a/live
-  gitTargetsFrom:
+  allowedGitTargets:
     - from: Same
 ---
 kind: GitBranch
@@ -233,7 +234,7 @@ metadata: {name: main, namespace: platform}
 spec:
   gitProviderRef: {name: shared-repo}
   branch: main
-  gitTargetsFrom:
+  allowedGitTargets:
     - from: Names
       names: [release-team]
 ```
@@ -245,7 +246,7 @@ spec:
   is no provider-level writer policy beside this one. That would turn delegation into two
   policies that intersect.
 - **The `GitBranch`'s own namespace needs a grant too.** `from: Same` above is not implied.
-- **`gitTargetsFrom` is mutable.** `gitProviderRef`, `branch` and `parentBranch` stay immutable,
+- **`allowedGitTargets` is mutable.** `gitProviderRef`, `branch` and `parentBranch` stay immutable,
   because together they are the branch's identity. The type comment "every field is immutable"
   changes with it.
 - [`gitBranchAdmitted`](../../internal/authz/kubeprovider_admission.go) reads this list on the
@@ -259,7 +260,7 @@ kind: KubeProvider
 metadata: {name: production, namespace: platform}
 spec:
   secretRef: {name: production-auth}
-  gitTargetsFrom:
+  allowedGitTargets:
     - from: Selector
       selector: {matchLabels: {platform.example.com/tenant: "true"}}
       sourceNamespaces: ["{namespace}"]
@@ -267,7 +268,7 @@ spec:
       names: [platform-audit]
       sourceNamespaces: ["*"]
       clusterResources: ["*"]
-  applierClaimsFrom:
+  allowedApplierClaims:
     - from: Selector
       selector: {matchLabels: {platform.example.com/tenant: "true"}}
       applierNamespaces: ["{namespace}"]
@@ -275,14 +276,14 @@ spec:
       applierNamespaces: [flux-system]
 ```
 
-- **`gitTargetsFrom`** admits a `GitTarget` to mirror through this provider. Its
+- **`allowedGitTargets`** admits a `GitTarget` to mirror through this provider. Its
   `sourceNamespaces` bound what the `WatchRule`s feeding that target may watch. A `WatchRule` feeds
   a `GitTarget` in its own namespace.
 - **`clusterResources`** lets a `ClusterWatchRule` mirror those cluster-scoped resources through
   that `GitTarget`. Today a `ClusterWatchRule` needs only the target's admission. Only a cluster admin can
   create one, but without this field `sourceNamespaces: ["{namespace}"]` would look like the whole
   reach and would not be.
-- **`applierClaimsFrom`** admits an applier claim, and its `applierNamespaces` bound where the
+- **`allowedApplierClaims`** admits an applier claim, and its `applierNamespaces` bound where the
   `Kustomization` or `Application` it holds may live.
 - **`allowCrossNamespace` and `accessFrom` are removed.** Mirroring and controlling appliers are
   granted separately: a namespace admitted to mirror is no longer admitted to apply.
@@ -295,17 +296,17 @@ them.
 - **Default install: empty grant lists.** Nothing mirrors or holds an applier through `local` until
   values grant it. The controller's refusal names the API field, because the
   same provider may be managed with Kustomize: "KubeProvider `gitops-reverser/local` admits no
-  namespace in `spec.gitTargetsFrom`". The chart docs map that field to
-  `kubeProvider.gitTargetsFrom`.
+  namespace in `spec.allowedGitTargets`". The chart docs map that field to
+  `kubeProvider.allowedGitTargets`.
 - **`quickstart.enabled=true`** also renders a grant for exactly the quickstart namespace, so the
   [quickstart](../quickstart.md) stays one `helm install`:
 
   ```yaml
-  gitTargetsFrom:
+  allowedGitTargets:
     - from: Names
       names: [gitops-reverser-quickstart-demo]
       sourceNamespaces: ["{namespace}"]
-  applierClaimsFrom:
+  allowedApplierClaims:
     - from: Names
       names: [gitops-reverser-quickstart-demo]
       applierNamespaces: ["{namespace}"]
@@ -316,10 +317,10 @@ them.
 
   ```yaml
   kubeProvider:
-    gitTargetsFrom:
+    allowedGitTargets:
       - from: All
         sourceNamespaces: ["{namespace}"]
-    applierClaimsFrom:
+    allowedApplierClaims:
       - from: All
         applierNamespaces: ["{namespace}"]
   ```
@@ -437,12 +438,12 @@ drain:
   ([`write_gate.go`](../../internal/git/write_gate.go) explains why: a write held back would come
   out of order later).
 
-A `GitBranch` that loses `gitBranchesFrom` takes the `finalize` path but keeps its finalizer, and
+A `GitBranch` that loses `allowedGitBranches` takes the `finalize` path but keeps its finalizer, and
 reports `Stalled=True`, reason `NamespaceNotAuthorized`. Writes can therefore land after the API
 server accepts a policy edit. Git cannot take back a push that is already sent, and the docs should
 promise no more than that.
 
-**An applier claim that loses `applierClaimsFrom`:**
+**An applier claim that loses `allowedApplierClaims`:**
 
 > Revocation stops new apply requests and starts handing back the existing hold. The hand-back
 > restores the recorded prior state and leaves other owners' declarations alone. It may need retries
@@ -502,7 +503,7 @@ The claim key is the repository and the branch; the provider is not part of it. 
 claims `main` through a different `GitProvider` for the same URL. That provider can be in a tenant's
 namespace with a copied token. On Gitea or Forgejo, a token that can only read is enough, because it
 still opens a receive-pack session. If that `GitBranch` is older, or first, it holds the branch. The
-platform's `GitBranch`, and the `gitTargetsFrom` on it, then report `BranchConflict` and govern
+platform's `GitBranch`, and the `allowedGitTargets` on it, then report `BranchConflict` and govern
 nothing.
 
 State the limit wherever the grants are documented:
@@ -525,9 +526,9 @@ docs, samples, the chart and e2e fixtures.
 
 | Surface | Change |
 |---|---|
-| `api/v1alpha3` | `GitProvider`: drop `AccessFrom` and `AllowedBranches`; add `GitBranchesFrom []GitBranchGrant`. `GitBranch`: `gitProviderRef` becomes namespaced; add `GitTargetsFrom []NamespaceGrant`. `KubeProvider`: drop `AccessFrom` and `AllowCrossNamespace`; add `GitTargetsFrom []SourceGrant` and `ApplierClaimsFrom []ApplierGrant`. Each grant has `from` with `names` or `selector`, and the CEL rules from the semantics table. `NamespaceMatcher` goes: nothing else uses it. Doc comments on `GitTarget`, `GitBranch`, `FluxClaim` and `ArgoCDClaim` that say `accessFrom` |
+| `api/v1alpha3` | `GitProvider`: drop `AccessFrom` and `AllowedBranches`; add `AllowedGitBranches []GitBranchGrant`. `GitBranch`: `gitProviderRef` becomes namespaced; add `AllowedGitTargets []NamespaceGrant`. `KubeProvider`: drop `AccessFrom` and `AllowCrossNamespace`; add `AllowedGitTargets []SourceGrant` and `AllowedApplierClaims []ApplierGrant`. Each grant has `from` with `names` or `selector`, and the CEL rules from the semantics table. `NamespaceMatcher` goes: nothing else uses it. Doc comments on `GitTarget`, `GitBranch`, `FluxClaim` and `ArgoCDClaim` that say `accessFrom` |
 | Accessors | `GitProvider.AdmitsGitBranch(ns, labels, branch)`, `GitBranch.AdmitsGitTarget(ns, labels)`, `KubeProvider.AdmitsGitTarget` and `AdmitsApplierClaim`, each returning the scope that applies. They replace `AdmitsNamespace`, `AllowsCrossNamespaceSources` and `AllowsCrossNamespaceAppliers`. One `from` matcher, and one pattern matcher with `{namespace}` expansion |
-| `internal/authz` | Every own-namespace shortcut goes: `gitBranchAdmitted`'s and `namespaceAdmitted`'s, and **`ApplierAdmitted`'s**, which returns early when the claim and the target share a provider and a namespace. It must now check `applierClaimsFrom` on its own. `source_namespace.go` checks `sourceNamespaces`, and `watchrule_compile.go` checks `clusterResources`. Messages follow [refusal messages](#refusal-messages-name-the-grant) |
+| `internal/authz` | Every own-namespace shortcut goes: `gitBranchAdmitted`'s and `namespaceAdmitted`'s, and **`ApplierAdmitted`'s**, which returns early when the claim and the target share a provider and a namespace. It must now check `allowedApplierClaims` on its own. `source_namespace.go` checks `sourceNamespaces`, and `watchrule_compile.go` checks `clusterResources`. Messages follow [refusal messages](#refusal-messages-name-the-grant) |
 | Claim and worker | `GitBranch` admission is checked before proof and candidacy; revocation goes through `finalize` without removing the finalizer; `WorkerRequest` carries the resolved provider namespace (see implementation notes) |
 | Applier claims | An explicit admission denial takes the `retire` path; a read error keeps the hold |
 | Controllers and watches | `WatchRule` and `GitBranch` get Namespace watches; `GitBranch`es are indexed by resolved provider key (see implementation notes) |
@@ -536,7 +537,7 @@ docs, samples, the chart and e2e fixtures.
 | Docs | `configuration.md` (sharing section, the semantics table, `GitProvider`, `GitBranch`, `KubeProvider`, the boundaries, the platform example), `security-model.md`, `rbac.md`, `quickstart.md`, `components.md`, `architecture.md`, the bi-directional and attribution guides, `docs/spec` |
 | `definitions.md` | Remove `spec.accessFrom` from the fields mirrored from Flux word for word, and rewrite the line saying a provider's "`spec.accessFrom` admits the others". Add "grant", and `from` among the names borrowed from Gateway API |
 | `gitbranch-and-kubeprovider-plan.md` | Its "no `accessFrom` of its own" and "one policy governs both hops" for `GitBranch` are superseded; point there from here |
-| `UPGRADING.md` | One entry: `allowedBranches` is replaced by `gitBranchesFrom`; every `GitBranch`, `GitTarget` and applier claim now needs a grant, also in the provider's own namespace; the chart's `local` provider grants nothing unless values or the quickstart do; and a `ClusterWatchRule` needs `clusterResources` |
+| `UPGRADING.md` | One entry: `allowedBranches` became `allowedGitBranches`, which also says who may claim; every `GitBranch`, `GitTarget` and applier claim now needs a grant, also in the provider's own namespace; the chart's `local` provider grants nothing unless values or the quickstart do; and a `ClusterWatchRule` needs `clusterResources` |
 | e2e and fixtures | Every `accessFrom`, `allowCrossNamespace` and `allowedBranches` in `test/e2e` and `test/fixtures`; same-namespace fixtures gain explicit grants |
 
 The worker and the Git write path change, so this is the high-risk case in `AGENTS.md`: run local
@@ -557,9 +558,10 @@ two teams, which lets each write the other's branch; the page should say so.
 | Keep `accessFrom` (Flux's spelling) | It does not say which act it grants, and it cannot grant mirroring without applying, or one branch without all |
 | Admit the own namespace automatically, with its own namespace as the scope, and keep `allowedBranches` as a limit on every claim (the previous version of this page) | Hidden rules: the default differed per field, `[flux-system]` meant "flux-system plus your own", and a delegated branch needed two fields read together. Explicit grants show the whole policy in one place |
 | Admit the own namespace with unlimited scope | Widens today's `KubeProvider` behavior, and loses the RBAC split where a team may create `GitBranch`es beside a provider it may not edit |
-| A provider-level writer policy beside `GitBranch.gitTargetsFrom` | Two policies that intersect. The platform keeps control of a branch by owning its `GitBranch` |
-| `gitTargetsFrom` on `GitProvider`, with `branches` per grant | A `GitTarget` does not reference the provider, so the decision reached through the branch |
+| A provider-level writer policy beside `GitBranch.allowedGitTargets` | Two policies that intersect. The platform keeps control of a branch by owning its `GitBranch` |
+| `allowedGitTargets` on `GitProvider`, with `branches` per grant | A `GitTarget` does not reference the provider, so the decision reached through the branch |
 | Rules keyed by branch on `GitProvider`, first match wins | It needs list order to keep `main` narrow beside a `*` rule. That order is invisible in a merged manifest, and the shape does not carry over to `KubeProvider` |
+| Field names ending in `From` (`gitBranchesFrom`, an earlier version of this page) | With `from` in every grant, `gitBranchesFrom: [{from: Same}]` says "from" twice. `allowed` plus the kind reads as one sentence, and is Gateway API's own pattern |
 | Flat `branchClaimsFrom` beside `allowedBranches` and `accessFrom` | Three lists that interact. The effective rule for one branch is their intersection |
 | A separate grant kind in the provider's namespace (`GitBranchGrant`, after Gateway API's `ReferenceGrant`) | Worth it only if someone needs separate RBAC for grants and connections; it adds a kind, a watch and grant-deletion handling |
 | Two phases: the renames first, cross-namespace claims later | Ships an API whose own-namespace rules change again in the second phase. One PR settles the model once |
@@ -623,7 +625,7 @@ server and an applier.
 - [ ] `teams/{ns}/*` is refused, and the message names `{ns}` and `{namespace}`.
 - [ ] `[]` is refused for `names`, `branches`, `sourceNamespaces`, `clusterResources` and
   `applierNamespaces`; a grant without `from` is refused, and so are `names` without `Names` and
-  `selector` without `Selector`; a `KubeProvider` `gitTargetsFrom` grant with neither
+  `selector` without `Selector`; a `KubeProvider` `allowedGitTargets` grant with neither
   `sourceNamespaces` nor `clusterResources` is refused.
 - [ ] `names: ["{namespace}"]` is refused, with a message pointing to `from: Same`.
 - [ ] `from: Same` admits the object's own namespace after a kustomize overlay moves the object to
@@ -654,7 +656,7 @@ server and an applier.
 
 **Revocation** (envtest, driven by watch events):
 
-- [ ] Removing a namespace from `GitBranch.gitTargetsFrom` refuses that namespace's `GitTarget`s;
+- [ ] Removing a namespace from `GitBranch.allowedGitTargets` refuses that namespace's `GitTarget`s;
   adding it back admits them.
 - [ ] Scope narrowed while admission stays: a namespace matched by two grants loses the label of the
   one granting `"*"`. Its `WatchRule`s stop watching the other namespaces, and the `GitTarget`
@@ -665,7 +667,7 @@ server and an applier.
   arriving afterwards is refused. The successor starts only after the old worker retires, and
   receives none of its work.
 - [ ] One grant edit revokes two candidates; neither holds the branch afterwards.
-- [ ] An applier claim denied by `applierClaimsFrom` hands its applier back. A read error on the
+- [ ] An applier claim denied by `allowedApplierClaims` hands its applier back. A read error on the
   `KubeProvider` keeps the hold.
 - [ ] A `Kustomization` suspended before adoption stays suspended after a denial's hand-back.
 - [ ] A hand-back that cannot finish (the identity lost its RBAC) shows in status and a Warning
@@ -683,7 +685,7 @@ server and an applier.
 **Chart and end to end:**
 
 - [ ] A default install grants nothing: a `GitTarget` through `local` is refused with the message
-  that names `spec.gitTargetsFrom`.
+  that names `spec.allowedGitTargets`.
 - [ ] `quickstart.enabled=true` mirrors the quickstart namespace and nothing else.
 - [ ] `values-playground.yaml` lets any namespace mirror its own namespace, and no other.
 - [ ] e2e: a team claims `teams/<team>/live` through a platform provider and writes it, then shares it
