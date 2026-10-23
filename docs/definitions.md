@@ -212,6 +212,12 @@ nothing about what it does to the cluster.
 condition. The trigger is never called the applier: the applier is the object it triggers. Not
 "Argo trigger", which names a trigger of Argo Events.
 
+**Coordinated.** A folder configured for GitOps Reverser to decide when its applier applies.
+Naming an apply trigger makes a `GitTarget`'s folder coordinated. The word also describes the
+`GitTarget` that writes it. It describes the setup; `ApplyTriggerReady` reports whether the apply
+trigger is ready. A shared folder applied without that coordination is **uncoordinated**: the
+applier keeps its own schedule and can revert live edits before they reach Git.
+
 **Eligible.** A `GitTarget` is eligible for the trigger it names when it is in the trigger's
 namespace, not being deleted, admitted by its `KubeProvider`s, and writes the repository and
 branch the applier fetches. A trigger acts only while an eligible `GitTarget` references it; one

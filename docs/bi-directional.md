@@ -21,9 +21,9 @@ ordinary GitOps and needs nothing from this page.
 flowchart TD
     Q1{"Does Flux or Argo CD apply a folder<br/>that GitOps Reverser writes?"}
     Q1 -->|no| ONEWAY["One-way. Mirror only, or GitOps as usual beside it.<br/>Nothing on this page applies"]
-    Q1 -->|yes| Q2{"Does an apply trigger hold that applier?"}
-    Q2 -->|yes| BI["Bi-directional. GitOps Reverser decides when it applies"]
-    Q2 -->|no| EXPOSED["Shared folder without a trigger.<br/>Works, and the applier can revert live edits"]
+    Q1 -->|yes| Q2{"Does the GitTarget name an apply trigger?"}
+    Q2 -->|yes| BI["Coordinated folder.<br/>GitOps Reverser decides when it applies"]
+    Q2 -->|no| EXPOSED["Uncoordinated shared folder.<br/>Works, and the applier can revert live edits"]
 
     style ONEWAY fill:#e8f5e9,stroke:#43a047
     style BI fill:#e8f5e9,stroke:#43a047
@@ -37,7 +37,11 @@ such as one in `flux-system` or `argocd`. A `GitTarget` without `spec.applyTrigg
 patches or syncs anything of Flux's or Argo CD's, and neither does a trigger no `GitTarget` names, so
 a `Kustomization` keeps its interval and an `Application` keeps automated sync.
 
-**A shared folder without a trigger works, and is exposed.** The applier keeps its own schedule,
+Naming an apply trigger makes the `GitTarget`'s folder
+[coordinated](definitions.md#applying-back). This describes the setup; `ApplyTriggerReady`
+reports whether the apply trigger is ready.
+
+**An uncoordinated shared folder works, and is exposed.** The applier keeps its own schedule,
 and that schedule cannot see the edits GitOps Reverser has not pushed yet
 ([why](#why-the-applier-cannot-decide-for-itself)). An apply at the wrong moment reverts a live edit,
 and GitOps Reverser then commits the revert as the applier's change. With Argo CD's
