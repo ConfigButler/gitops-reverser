@@ -638,7 +638,7 @@ tasks:
         "{{.KUBECTL}}" --context "${ctx}" -n "${ns}" create configmap "${name}" \
           --from-literal=value="${value}" \
           --from-literal=updatedAt="${stamp}" \
-          --from-literal=applier claim=tilt \
+          --from-literal=trigger=tilt \
           --dry-run=client -o yaml \
           | "{{.KUBECTL}}" --context "${ctx}" apply -f -
 
