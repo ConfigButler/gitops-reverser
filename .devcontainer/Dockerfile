@@ -2,7 +2,7 @@
 # Stage 1: CI base image with essential build tools
 # Pinned by digest (Scorecard "pinned dependencies"); Dependabot's docker
 # ecosystem keeps version + digest current together.
-FROM golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS ci
+FROM golang:1.27.3-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5 AS ci
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -67,10 +67,10 @@ RUN apt-get update \
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.37.1 \
-    KUSTOMIZE_VERSION=5.8.2 \
+    KUSTOMIZE_VERSION=5.8.3 \
     KUBEBUILDER_VERSION=4.16.0 \
-    GOLANGCI_LINT_VERSION=v2.14.0 \
-    HELM_VERSION=v4.3.0 \
+    GOLANGCI_LINT_VERSION=v2.15.0 \
+    HELM_VERSION=v4.3.1 \
     K3D_VERSION=v5.9.0 \
     FLUX_VERSION=2.9.6 \
     FLUX_OPERATOR_VERSION=0.61.0 \
@@ -78,12 +78,12 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     ACTIONLINT_VERSION=1.7.12 \
     HADOLINT_VERSION=2.15.1 \
     VALKEY_VERSION=9.1.2 \
-    COSIGN_VERSION=v3.1.3 \
-    ORAS_VERSION=1.3.4 \
+    COSIGN_VERSION=v3.1.4 \
+    ORAS_VERSION=1.3.5 \
     NODE_MAJOR=24 \
-    MARKDOWNLINT_CLI2_VERSION=0.23.3 \
+    MARKDOWNLINT_CLI2_VERSION=0.24.0 \
     VALE_VERSION=3.24.0 \
-    TRIVY_VERSION=0.75.0
+    TRIVY_VERSION=0.76.1
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -284,10 +284,10 @@ RUN chgrp -R godev /go && \
 # by mtime -- so once this layer is older than trimLimit (5 days) the first
 # `go` build in any container deletes ~90% of it regardless. Cleaning in the
 # same layer keeps those ~400MB out of the image instead of merely hiding them.
-RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0 \
-    && go install github.com/onsi/ginkgo/v2/ginkgo@v2.33.0 \
+RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.23.0 \
+    && go install github.com/onsi/ginkgo/v2/ginkgo@v2.33.1 \
     && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2 \
-    && go install golang.org/x/tools/cmd/goimports@v0.49.0 \
+    && go install golang.org/x/tools/cmd/goimports@v0.51.0 \
     && go install github.com/boyter/scc/v4@v4.1.0 \
     && go clean -cache
 
@@ -350,10 +350,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # DLV_VERSION -> https://github.com/go-delve/delve/releases
 # GOPLS_VERSION -> https://github.com/golang/tools/releases
 # STATICCHECK_VERSION -> https://github.com/dominikh/go-tools/releases
-ENV TILT_VERSION=v0.37.7 \
+ENV TILT_VERSION=v0.37.8 \
     DLV_VERSION=v1.27.2 \
-    GOPLS_VERSION=v0.23.0 \
-    STATICCHECK_VERSION=v0.8.1
+    GOPLS_VERSION=v0.24.0 \
+    STATICCHECK_VERSION=v0.8.2
 
 # Kind is already installed in the ci stage above.
 RUN apt-get update \

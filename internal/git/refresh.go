@@ -461,7 +461,7 @@ func advertiseRemoteBranch(
 		return remoteAdvertisement{}, err
 	}
 	empty := advertisesNoRefs(refs)
-	hashes := map[plumbing.ReferenceName]plumbing.Hash{}
+	hashes := make(map[plumbing.ReferenceName]plumbing.Hash)
 	var defaultBranch plumbing.ReferenceName
 	for _, ref := range refs {
 		switch {
