@@ -27,7 +27,7 @@ const (
 	snbRule     = "repo-config-rule"
 	snbProvider = "workspaces"
 	// snbProviderNS is the KubeProvider's namespace: another than the tenant's, so the tenant is
-	// admitted through spec.accessFrom.
+	// admitted through a Names grant.
 	snbProviderNS = "platform"
 )
 

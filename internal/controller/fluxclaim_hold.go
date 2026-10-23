@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -554,20 +555,35 @@ func (r *ApplierClaimReconciler) retire(
 	}
 	r.letGoOfOperation(claim)
 	clearPreviousSuspendState(claim)
-	held := conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonNotReferenced,
-		Message: fmt.Sprintf("nothing to hold: no GitTarget names this applier claim, and its %s was handed back",
-			claim.ApplierKind())}
-	if check.refs.Named() {
-		held = conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured,
-			Message: fmt.Sprintf("the %s was handed back, and is held again once an eligible GitTarget "+
-				"references the applier claim", claim.ApplierKind())}
-	}
+	held := handedBackCondition(claim, check)
 	st.setValue(ApplierClaimConditionHeld, held)
 	st.applyReadiness(r.claimReadiness(claim, check.configured, &held))
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
+	// A hand-back that a denial began and a regrant outlived adopts the applier anew at once.
+	if !check.denied && check.configured.Status == metav1.ConditionTrue {
+		return ctrl.Result{RequeueAfter: st.requeueAfter(applierClaimSuspendingInterval)}, nil
+	}
 	return ctrl.Result{RequeueAfter: st.requeueAfter(heldClaimSteadyInterval)}, nil
+}
+
+// handedBackCondition is the Held condition of a live applier claim that has handed its applier
+// back, saying what makes it hold the applier again.
+func handedBackCondition(claim configbutleraiv1alpha3.ApplierClaim, check *claimCheck) conditionValue {
+	switch {
+	case check.denied:
+		return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured,
+			Message: fmt.Sprintf("the %s was handed back, and is held again once the KubeProvider's "+
+				"spec.allowedApplierClaims admit the applier claim", claim.ApplierKind())}
+	case check.refs.Named():
+		return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured,
+			Message: fmt.Sprintf("the %s was handed back, and is held again once an eligible GitTarget "+
+				"references the applier claim", claim.ApplierKind())}
+	}
+	return conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonNotReferenced,
+		Message: fmt.Sprintf("nothing to hold: no GitTarget names this applier claim, and its %s was handed back",
+			claim.ApplierKind())}
 }
 
 // clearPreviousSuspendState drops what an applier claim recorded of its applier before it held it, once it
@@ -600,9 +616,12 @@ func (r *ApplierClaimReconciler) publishReleasing(
 	st *reconcileStatus, claim configbutleraiv1alpha3.ApplierClaim, check *claimCheck, since time.Time,
 ) {
 	why := "the applier claim is being deleted"
-	if check != nil && check.refs.Named() {
+	switch {
+	case check != nil && (check.denied || releasingForDenial(claim)):
+		why = releasingForDenialWhy
+	case check != nil && check.refs.Named():
 		why = "no GitTarget naming the applier claim is eligible any more"
-	} else if check != nil {
+	case check != nil:
 		why = "no GitTarget names the applier claim any more"
 	}
 	held := conditionValue{Status: metav1.ConditionFalse, Reason: ReasonReleasing, Message: fmt.Sprintf(
@@ -620,6 +639,18 @@ func (r *ApplierClaimReconciler) publishReleasing(
 		return
 	}
 	st.applyReadiness(r.claimReadiness(claim, check.configured, &held))
+}
+
+// releasingForDenialWhy opens the Held=Releasing message of a hand-back that a denial by the
+// KubeProvider's spec.allowedApplierClaims began. releasingForDenial reads it back: such a hand-back
+// finishes even after a regrant, and the applier is adopted anew once it has.
+const releasingForDenialWhy = "the KubeProvider's spec.allowedApplierClaims no longer admit the applier claim"
+
+// releasingForDenial reports whether the applier claim is handing its applier back because its
+// KubeProvider's grants refused it.
+func releasingForDenial(claim configbutleraiv1alpha3.ApplierClaim) bool {
+	held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
+	return held != nil && held.Reason == ReasonReleasing && strings.HasPrefix(held.Message, releasingForDenialWhy)
 }
 
 // releasingSince is when the applier claim's Held condition turned Releasing, or now when it has not.

@@ -279,13 +279,22 @@ type claimCheck struct {
 	// refs are the GitTargets naming the applier claim, judged; judged is false when they could not be.
 	refs   applier.References
 	judged bool
+	// denied is a conclusive refusal by the KubeProvider's spec.allowedApplierClaims: the applier
+	// claim's namespace is not admitted, or its applier is outside the applierNamespaces it is given.
+	// A read error is never a denial.
+	denied bool
 }
 
-// retiring reports whether claim holds its applier and no eligible GitTarget references it any
-// more, conclusively: none names it, or each is refused. A reference that cannot be judged yet
-// keeps the hold, since a release is not undone: Flux applies at once, and Argo CD syncs.
+// retiring reports whether claim holds its applier and must hand it back, conclusively: its
+// KubeProvider's grants refuse it, or no eligible GitTarget references it any more (none names it,
+// or each is refused). A hand-back that began on a denial finishes even once a grant admits the
+// applier claim again; it then adopts the applier anew. A reference that cannot be judged yet keeps
+// the hold, since a release is not undone: Flux applies at once, and Argo CD syncs.
 func (c claimCheck) retiring(claim configbutleraiv1alpha3.ApplierClaim) bool {
-	return applier.Holding(claim) && c.judged && (!c.refs.Named() || c.refs.Refused())
+	if !applier.Holding(claim) {
+		return false
+	}
+	return c.denied || releasingForDenial(claim) || (c.judged && (!c.refs.Named() || c.refs.Refused()))
 }
 
 // configuredVerdict judges the GitTargets naming the applier claim, and, while one may be eligible,
@@ -321,7 +330,10 @@ func (r *ApplierClaimReconciler) configuredVerdict(
 	case err != nil:
 		return kept(fmt.Sprintf("Cannot check KubeProvider %s: %v", cluster, err))
 	case !decision.Allowed:
-		return falseCheck(decision.Reason, decision.Message, refs)
+		check := falseCheck(decision.Reason, decision.Message, refs)
+		check.denied = decision.Reason == authz.ReasonNamespaceNotAuthorized ||
+			decision.Reason == authz.ReasonApplierNamespaceNotAllowed
+		return check
 	case refs.Refused():
 		return falseCheck(refs.Reason(), refs.Message(), refs)
 	}
