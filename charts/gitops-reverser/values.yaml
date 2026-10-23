@@ -363,20 +363,35 @@ kubeProvider:
   secretRef:
     name: ""
     key: ""
-  # Which OTHER namespaces may reference this provider; the release namespace always may. It is
-  # authorization in the CONTROL cluster (names OR selector), not a filter on the source cluster.
-  # The chart default is an empty selector, which matches EVERY namespace, so a single-cluster
-  # install works out of the box; tighten it to a names list or a label selector in a real install.
-  accessFrom:
-    selector: {}
-  # What a namespace this provider admits may reach OUTSIDE itself through the provider's
-  # identity. Each is a power of its own: sources lets a WatchRule read other namespaces' objects
-  # into its own Git ("*" included); appliers lets a FluxClaim or ArgoCDClaim suspend and apply
-  # a Kustomization or Application in another namespace. It is a delegation to every admitted
-  # namespace, not proof that a namespace owns what it reaches.
-  allowCrossNamespace:
-    sources: false
-    appliers: false
+  # Who may use the operator's identity, and for what: rendered as the provider's
+  # spec.allowedGitTargets and spec.allowedApplierClaims. Empty by default, so NOTHING mirrors or
+  # holds an applier through this provider until you grant it, the release namespace included; a
+  # refusal names spec.allowedGitTargets. The installer decides, never the chart.
+  # quickstart.enabled=true adds a grant for exactly the quickstart namespace, and
+  # values-playground.yaml grants every namespace its own namespace.
+  #
+  # Each grant has a `from` (Same, Names with names, Selector with a non-empty selector, or All)
+  # and a scope:
+  #   allowedGitTargets[].sourceNamespaces  which namespaces the WatchRules feeding an admitted
+  #                                         GitTarget may watch: names, "{namespace}" for the
+  #                                         GitTarget's own, or "*"
+  #   allowedGitTargets[].clusterResources  which cluster-scoped types a ClusterWatchRule may mirror:
+  #                                         resource.group, a bare core resource, or "*"
+  #   allowedApplierClaims[].applierNamespaces  where an admitted applier claim's Kustomization or
+  #                                         Application may live
+  # With an inCluster provider a grant bypasses live namespace RBAC through the operator's own
+  # identity: the owner of an admitted object acts on the namespaces in its scope.
+  #
+  #   allowedGitTargets:
+  #     - from: Selector
+  #       selector: {matchLabels: {platform.example.com/tenant: "true"}}
+  #       sourceNamespaces: ["{namespace}"]
+  #   allowedApplierClaims:
+  #     - from: Names
+  #       names: [team-a]
+  #       applierNamespaces: [flux-system]
+  allowedGitTargets: []
+  allowedApplierClaims: []
 
 # RBAC configuration
 rbac:
@@ -491,7 +506,9 @@ quickstart:
     name: example-provider
     # Required when quickstart.enabled=true.
     url: ""
-    allowedBranches:
+    # The branch patterns the quickstart namespace may claim through this provider ("*" is every
+    # branch); rendered as a from: Same grant in spec.allowedGitBranches.
+    allowedGitBranches:
       - "*"
     secretRef:
       # Required when quickstart.enabled=true.

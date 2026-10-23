@@ -316,7 +316,7 @@ tasks:
     #
     # It exists because the table it guards was written by hand once and got three
     # defaults backwards, each in the direction that costs a reader an outage:
-    # accessFrom omitted DENIES every namespace, serializeNamespace omitted INFERS
+    # a grant list omitted DENIES every namespace, serializeNamespace omitted INFERS
     # per document rather than meaning false, and qps/burst fall back to the
     # operator-wide flags. The schema knew all three. Nothing was asking it.
     sources:
