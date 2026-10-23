@@ -302,3 +302,59 @@ func setWriters(
 		return k8sClient.Update(ctx, stored)
 	}))
 }
+
+// TestClusterWatchRule_ClusterResourcesFollowTheGrant: removing a type from the grant's
+// clusterResources takes the ClusterWatchRule naming it out of the rule store, and restoring it puts
+// the rule back, each on the KubeProvider event alone.
+func TestClusterWatchRule_ClusterResourcesFollowTheGrant(t *testing.T) {
+	ctx := context.Background()
+	store := rulestore.NewStore()
+	startManager(t, func(m manager.Manager) error {
+		return (&controller.ClusterWatchRuleReconciler{
+			Client: m.GetClient(), Scheme: m.GetScheme(), RuleStore: store,
+		}).SetupWithManager(m)
+	})
+
+	namespace := seedTarget(ctx, t, "wiring-cluster-resources")
+	setClusterResources := func(identities ...configbutleraiv1alpha3.ClusterResourceIdentity) {
+		t.Helper()
+		require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			provider := &configbutleraiv1alpha3.KubeProvider{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "source"},
+				provider); err != nil {
+				return err
+			}
+			provider.Spec.AllowedGitTargets[0].ClusterResources = identities
+			return k8sClient.Update(ctx, provider)
+		}))
+	}
+	compiled := func(want bool, budget time.Duration) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			return (len(store.SnapshotClusterWatchRules()) == 1) == want
+		}, budget, 50*time.Millisecond, "compiled=%t", want)
+	}
+	setClusterResources("clusterroles.rbac.authorization.k8s.io")
+	rule := &configbutleraiv1alpha3.ClusterWatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "wiring-cluster-roles"},
+		Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
+			GitTargetRef: meta.NamespacedObjectReference{Name: "target", Namespace: namespace},
+			Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
+				APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"clusterroles"},
+			}},
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, rule))
+	compiled(true, settleBudget)
+
+	setClusterResources("nodes")
+	refused := awaitCondition(ctx, t, client.ObjectKeyFromObject(rule),
+		func() client.Object { return &configbutleraiv1alpha3.ClusterWatchRule{} },
+		controller.ConditionTypeResourcesResolved, watch.ClusterWatchRuleReasonClusterResourceNotAllowed,
+		propagationBudget)
+	require.Contains(t, refused.Message, `"clusterroles.rbac.authorization.k8s.io"`)
+	compiled(false, propagationBudget)
+
+	setClusterResources("clusterroles.rbac.authorization.k8s.io")
+	compiled(true, propagationBudget)
+}

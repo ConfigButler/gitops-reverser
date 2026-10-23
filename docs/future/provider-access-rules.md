@@ -702,85 +702,86 @@ server and an applier.
 
 **Patterns and CEL** (unit, plus CEL tests on the CRD):
 
-- [ ] `teams/{namespace}/*` for `team-a` matches `teams/team-a/live` and **does not** match
+- [x] `teams/{namespace}/*` for `team-a` matches `teams/team-a/live` and **does not** match
   `teams/team-ab/live`.
-- [ ] `teams/{namespace}*` is refused at admission (`{namespace}` is not a whole segment).
-- [ ] `feature/*` matches `feature/checkout/v2`; `*` matches every branch, `main` included.
-- [ ] `teams/*` matches `teams/a/b` (`*` crosses `/`); `main` does not match `main-old` (whole name).
-- [ ] `teams/{ns}/*` is refused, and the message names `{ns}` and `{namespace}`.
-- [ ] `[]` is refused for `names`, `branches`, `sourceNamespaces`, `clusterResources` and
+- [x] `teams/{namespace}*` is refused at admission (`{namespace}` is not a whole segment).
+- [x] `feature/*` matches `feature/checkout/v2`; `*` matches every branch, `main` included.
+- [x] `teams/*` matches `teams/a/b` (`*` crosses `/`); `main` does not match `main-old` (whole name).
+- [x] `teams/{ns}/*` is refused, and the message names `{ns}` and `{namespace}`.
+- [x] `[]` is refused for `names`, `branches`, `sourceNamespaces`, `clusterResources` and
   `applierNamespaces`; a grant without `from` is refused, and so are `names` without `Names` and
   `selector` without `Selector`; a `KubeProvider` `allowedGitTargets` grant with neither
   `sourceNamespaces` nor `clusterResources` is refused.
-- [ ] `names: ["{namespace}"]` is refused, with a message pointing to `from: Same`.
-- [ ] `from: Selector` with no `selector`, or with `selector: {}`, is refused (use `from: All`);
+- [x] `names: ["{namespace}"]` is refused, with a message pointing to `from: Same`.
+- [x] `from: Selector` with no `selector`, or with `selector: {}`, is refused (use `from: All`);
   a non-empty selector is accepted.
-- [ ] `from: Same` admits the object's own namespace after a kustomize overlay moves the object to
+- [x] `from: Same` admits the object's own namespace after a kustomize overlay moves the object to
   another namespace, and admits nothing else; `from: All` admits every namespace.
 
 **Admission** (unit, `internal/authz`):
 
-- [ ] The own namespace is refused when no grant names it, on all four lists. For a `GitBranch`,
+- [x] The own namespace is refused when no grant names it, on all four lists. For a `GitBranch`,
   that includes a `GitTarget` in the `GitBranch`'s own namespace.
-- [ ] `applierNamespaces: [flux-system]` refuses a claim on an applier in the claim's own
+- [x] `applierNamespaces: [flux-system]` refuses a claim on an applier in the claim's own
   namespace. An explicit list is the whole scope.
-- [ ] `sourceNamespaces: ["{namespace}"]` refuses `sourceNamespace: "*"`, and `["*"]` allows it.
-- [ ] Mirroring allowed, applying denied, on one `KubeProvider`, with the `GitTarget` and its applier
+- [x] `sourceNamespaces: ["{namespace}"]` refuses `sourceNamespace: "*"`, and `["*"]` allows it.
+- [x] Mirroring allowed, applying denied, on one `KubeProvider`, with the `GitTarget` and its applier
   claim in one namespace. Today's `ApplierAdmitted` shortcut would allow the apply.
-- [ ] A `ClusterWatchRule` for RBAC `clusterroles` is refused through a target whose grant has no
+- [x] A `ClusterWatchRule` for RBAC `clusterroles` is refused through a target whose grant has no
   `clusterResources`, or only `[customresourcedefinitions.apiextensions.k8s.io]`, or a bare
   `[clusterroles]`. It compiles with `[clusterroles.rbac.authorization.k8s.io]` or `["*"]`.
-- [ ] A `ClusterWatchRule` item with `resources: ["*"]` or `apiGroups: ["*"]` is refused under a
+- [x] A `ClusterWatchRule` item with `resources: ["*"]` or `apiGroups: ["*"]` is refused under a
   narrow grant, and a CRD installed later is not mirrored. Under `["*"]` it is.
-- [ ] A `ClusterWatchRule` naming one permitted and one forbidden type is refused whole, and the
+- [x] A `ClusterWatchRule` naming one permitted and one forbidden type is refused whole, and the
   message names the forbidden type.
-- [ ] Removing one identity from `clusterResources` refuses the rules naming it, while the
+- [x] Removing one identity from `clusterResources` refuses the rules naming it, while the
   `GitTarget` stays admitted for its other rules.
-- [ ] Refusal messages name the grants that apply and the requested value, for each act.
+- [x] Refusal messages name the grants that apply and the requested value, for each act.
 
 **Claim and credential** (unit and envtest):
 
-- [ ] An unadmitted `GitBranch` never opens a push session with the shared credential.
-- [ ] A `GitBranch` admitted later becomes a candidate. If it is older than the holder, it takes the
+- [x] An unadmitted `GitBranch` never opens a push session with the shared credential.
+- [x] A `GitBranch` admitted later becomes a candidate. If it is older than the holder, it takes the
   branch (`creationTimestamp`, then UID), also after a restart.
-- [ ] A cross-namespace `GitBranch` pushes with the platform provider's Secret, both when its own
+- [x] A cross-namespace `GitBranch` pushes with the platform provider's Secret, both when its own
   namespace has no provider and when it has a same-name provider with a different credential.
-- [ ] Receiver routing still wakes the worker of a cross-namespace `GitBranch`.
+- [x] Receiver routing still wakes the worker of a cross-namespace `GitBranch`.
 
 **Revocation** (envtest, driven by watch events):
 
-- [ ] Removing a namespace from `GitBranch.allowedGitTargets` refuses that namespace's `GitTarget`s;
+- [x] Removing a namespace from `GitBranch.allowedGitTargets` refuses that namespace's `GitTarget`s;
   adding it back admits them.
-- [ ] Scope narrowed while admission stays: a namespace matched by two grants loses the label of the
+- [x] Scope narrowed while admission stays: a namespace matched by two grants loses the label of the
   one granting `"*"`. Its `WatchRule`s stop watching the other namespaces, and the `GitTarget`
   stays admitted. This is the new `WatchRule` Namespace watch.
-- [ ] A label removed from a claimant's namespace revokes its `GitBranch` through the new
+- [x] A label removed from a claimant's namespace revokes its `GitBranch` through the new
   `GitBranch` Namespace watch, and its `GitTarget`s in other namespaces follow.
-- [ ] A revoked `GitBranch`'s worker drains what it held when the revocation was observed. An event
+- [x] A revoked `GitBranch`'s worker drains what it held when the revocation was observed. An event
   arriving afterwards is refused. The successor starts only after the old worker retires, and
-  receives none of its work.
-- [ ] One grant edit revokes two candidates; neither holds the branch afterwards.
-- [ ] An applier claim denied by `allowedApplierClaims` hands its applier back. A read error on the
-  `KubeProvider` keeps the hold.
-- [ ] A `Kustomization` suspended before adoption stays suspended after a denial's hand-back.
-- [ ] A hand-back that cannot finish (the identity lost its RBAC) shows in status and a Warning
+  receives none of its work. (Unit, reconciling directly: `gitbranch_access_test.go`.)
+- [x] One grant edit revokes two candidates; neither holds the branch afterwards. (Unit.)
+- [x] An applier claim denied by `allowedApplierClaims` hands its applier back. A read error on the
+  `KubeProvider` keeps the hold. (Unit, `applierclaim_revocation_test.go`, as the next three.)
+- [x] A `Kustomization` suspended before adoption stays suspended after a denial's hand-back.
+- [x] A hand-back that cannot finish (the identity lost its RBAC) shows in status and a Warning
   Event, and gives up at `releaseDeadline`.
-- [ ] A regrant during the hand-back lets it finish, then adopts the applier anew.
+- [x] A regrant during the hand-back lets it finish, then adopts the applier anew.
 
 **Recovery** (envtest; fixing the grant must be enough, with no consumer edited):
 
 - [ ] Restoring a grant re-admits, each through its watch: a `GitBranch` (it proves itself and
   claims), a namespace's source scope, `clusterResources` for a `ClusterWatchRule`, and an applier
-  claim (it adopts its applier).
+  claim (it adopts its applier). Done through watches for the first three (`wiring/`); the applier
+  claim's re-adoption is covered by a unit test only.
 - [ ] The same after a controller restart: restored grants are read fresh, and nothing revoked
-  earlier stays refused.
+  earlier stays refused. Covered for the branch claim only (a fresh claim registry, unit).
 
 **Chart and end to end:**
 
-- [ ] A default install grants nothing: a `GitTarget` through `local` is refused with the message
+- [x] A default install grants nothing: a `GitTarget` through `local` is refused with the message
   that names `spec.allowedGitTargets`.
-- [ ] `quickstart.enabled=true` mirrors the quickstart namespace and nothing else.
-- [ ] `values-playground.yaml` lets any namespace mirror its own namespace, and no other.
-- [ ] e2e: a team claims `teams/<team>/live` through a platform provider and writes it, then shares it
+- [x] `quickstart.enabled=true` mirrors the quickstart namespace and nothing else.
+- [x] `values-playground.yaml` lets any namespace mirror its own namespace, and no other.
+- [x] e2e: a team claims `teams/<team>/live` through a platform provider and writes it, then shares it
   with a second team. Claims on `main` and on another team's branch are refused with their
   messages.

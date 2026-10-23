@@ -361,6 +361,33 @@ func TestApplierClaimAdmitted(t *testing.T) {
 	}
 }
 
+// TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant: a provider admits no applier claim in its own
+// namespace by itself, also one it admits to mirror.
+func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
+	provider := &configv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS},
+		Spec: configv1alpha3.KubeProviderSpec{AllowedGitTargets: []configv1alpha3.SourceGrant{{
+			From: configv1alpha3.GrantFromSame, SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"},
+		}}},
+	}
+	claim := &configv1alpha3.FluxClaim{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "apps"},
+		Spec: configv1alpha3.FluxClaimSpec{
+			KubeProviderRef:  meta.NamespacedObjectReference{Name: "local"},
+			KustomizationRef: meta.NamespacedObjectReference{Name: "apps"},
+		},
+	}
+	reader := fake.NewClientBuilder().
+		WithScheme(admissionScheme(t)).
+		WithObjects(provider, namespaceLabeled(nil)).
+		Build()
+	decision, err := ApplierClaimAdmitted(context.Background(), reader, claim)
+	require.NoError(t, err)
+	assert.False(t, decision.Allowed)
+	assert.Equal(t, ReasonNamespaceNotAuthorized, decision.Reason)
+	assert.Contains(t, decision.Message, "KubeProvider team-a/local admits no namespace in spec.allowedApplierClaims")
+}
+
 // TestApplierAdmitted: asking an applier to apply needs both admissions, always. Mirroring and
 // applying are granted separately, also on one KubeProvider from one namespace.
 func TestApplierAdmitted(t *testing.T) {
