@@ -44,6 +44,15 @@ updates:
       - "/hack/sops-build"
     patterns:
       - "*"
+    # kustomize 0.21.3 moved to the Kubernetes 1.38 dependency line: it raises
+    # k8s.io/kube-openapi to a snapshot built on structured-merge-diff/v7, while
+    # k8s.io/apimachinery v0.37.x still compiles against v6, so the operator no
+    # longer builds. The bump arrives inside the group PR and turns the whole
+    # week red. Drop this once k8s.io/* moves to v0.38 (Kubernetes 1.38 GA) —
+    # then kustomize has to come along in the same PR.
+    ignore:
+      - dependency-name: "sigs.k8s.io/kustomize/*"
+        versions: [">= 0.21.3"]
     multi-ecosystem-group: "all-dependencies"
 
   - package-ecosystem: "github-actions"
