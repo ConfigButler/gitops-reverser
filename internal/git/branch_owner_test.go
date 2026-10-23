@@ -85,9 +85,10 @@ func TestBranchClaims_TheHolderKeepsTheBranchThroughAFailedProof(t *testing.T) {
 	assert.Equal(t, younger, got)
 }
 
-// TestBranchClaims_ReleaseHandsTheBranchToTheNextCandidate: a deleted holder gives the branch to the
-// oldest remaining candidate, and HeldBy follows it.
-func TestBranchClaims_ReleaseHandsTheBranchToTheNextCandidate(t *testing.T) {
+// TestBranchClaims_ReleaseHandsTheBranchToNobody is rule 5: a holder giving the branch up elects no
+// successor. It returns the GitBranches waiting, oldest first, and the first of them to confirm again
+// holds the branch; an older one confirming later takes it over by rule 2.
+func TestBranchClaims_ReleaseHandsTheBranchToNobody(t *testing.T) {
 	claims := NewBranchClaims()
 	key := BranchKeyFor("https://github.com/acme/platform.git", "main")
 	first := claimant("platform", "main", 3*time.Hour)
@@ -97,13 +98,21 @@ func TestBranchClaims_ReleaseHandsTheBranchToTheNextCandidate(t *testing.T) {
 		claims.Observe(key, c, true)
 	}
 
-	claims.Release(first.UID)
-	gotKey, got, held := claims.HeldBy(second.GitBranch)
-	require.True(t, held)
-	assert.Equal(t, key, gotKey)
-	assert.Equal(t, second, got)
+	assert.Empty(t, claims.Release(third.UID), "a candidate that does not hold the branch hands nothing on")
+	claims.Observe(key, third, true)
+
+	waiting := claims.Release(first.UID)
+	assert.Equal(t, []BranchClaimant{second, third}, waiting)
+	_, held := claims.Holder(key)
+	assert.False(t, held, "nobody holds the branch until a waiting GitBranch confirms itself")
 	_, _, held = claims.HeldBy(first.GitBranch)
 	assert.False(t, held, "a released GitBranch holds nothing")
+
+	got, held := claims.Observe(key, third, true)
+	require.True(t, held)
+	assert.Equal(t, third, got)
+	got, _ = claims.Observe(key, second, true)
+	assert.Equal(t, second, got, "the older candidate takes the branch over once it confirms")
 }
 
 // TestBranchClaims_AGitBranchThatNamesAnotherRepositoryGivesTheOldOneUp: its GitProvider was

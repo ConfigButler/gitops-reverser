@@ -1,8 +1,11 @@
 # Access between objects: who may reference what
 
-> **future work**, 2026-10-23. Not built. The proposed contract for who may use a provider or a
-> branch, to land before the next release while the names are still free (see [why now](#why-now)).
-> It replaces three drafts: `docs/reviews/20261023-gitbranch-claims-from-other-namespaces.md`,
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../configuration.md`](../configuration.md#sharing-connections-across-namespaces). Index: [`../INDEX.md`](../INDEX.md)
+
+> Shipped 2026-10-23 as [#441](https://github.com/ConfigButler/gitops-reverser/pull/441), before the
+> names were ever released (see [why now](#why-now)). [What shipped](#what-shipped-and-where-it-departs)
+> records where the code departs from this page, and two tests still missing. It replaced three
+> drafts: `docs/reviews/20261023-gitbranch-claims-from-other-namespaces.md`,
 > `docs/reviews/20261023-gitbranch-claims-review.md` and `docs/future/gitprovider-branch-rules.md`,
 > and follows up items 1 and 2 of "Still missing" in the
 > [one-writer-per-branch status](../design/one-writer-per-branch-plan.md).
@@ -216,8 +219,8 @@ does not reuse the placement parser, which carries fourteen variables, fallbacks
   served version of its group and resource.
 - **It is decided on the rule's text, as `sourceNamespace: "*"` is.** A `ClusterWatchRule` item
   whose `apiGroups` or `resources` holds `"*"` needs `clusterResources: ["*"]`. An item that names
-  its groups and resources is checked pair by pair. An item that omits `apiGroups` resolves to one
-  group by discovery, as today, and that pair is checked.
+  its groups and resources is checked pair by pair. An item that omits `apiGroups` is checked by
+  the types the planner selects for it (see [what shipped](#what-shipped-and-where-it-departs)).
 - **One forbidden type refuses the whole `ClusterWatchRule`,** with a message that names the
   forbidden types, as an invalid `objectSelector` refuses it today. Nothing is filtered silently.
 - **Discovery never widens a grant.** Under a narrow grant no wildcard item compiles, so a CRD
@@ -481,7 +484,7 @@ drain:
 - **Deleting a `GitBranch`.**
   [`finalize`](../../internal/controller/gitbranch_controller.go) releases the claim first. It then
   retires the worker, which closes intake, pushes or refuses each pending write, and settles every
-  `CommitRequest`. Last, it wakes the next holder.
+  `CommitRequest`. Last, it wakes the `GitBranch`es waiting for the branch.
 - **A `GitTarget`, `WatchRule`, `ClusterWatchRule` or applier claim that loses admission or scope.**
   It is refused on its next reconcile. A write already decided is still committed and pushed
   ([`write_gate.go`](../../internal/git/write_gate.go) explains why: a write held back would come
@@ -541,8 +544,8 @@ The implementation must get these right:
 - **A transient read error is not a revocation.** Keep the old answer, retry, and hand nothing off
   on an error alone.
 - **A successor starts only after the old worker retires.** `EnsureWorker` already refuses while
-  another `GitBranch`'s worker is live. Check the successor's admission again: one edit can revoke
-  several candidates.
+  another `GitBranch`'s worker is live. One edit can revoke several candidates, so a successor must
+  not hold the branch on an admission it was given before the edit.
 - **Pending work never moves to a new holder or credential.**
 
 ## The limit: another provider on the same repository
@@ -682,6 +685,46 @@ two teams, which lets each write the other's branch; the page should say so.
   not allowed, proof failed, branch conflict.
 - **Status.** `kubectl get gitbranch` should show the provider's namespace.
 
+## What shipped, and where it departs
+
+The API, the grants and the checklist below shipped as written. Where the code departs from the
+page:
+
+- **`GitBranch.spec.gitProviderRef` is immutable as written.** CEL cannot read
+  `metadata.namespace`, and there is no mutating webhook to fill in the default, so writing out the
+  `GitBranch`'s own namespace where it was omitted counts as a change and is refused.
+  `GitTarget.spec.kubeProviderRef` already behaves this way.
+- **A holder giving its branch up hands it to nobody.** The plan's "check the successor's admission
+  again" was first built as a walk down the candidates, re-reading each one's grant. A review found
+  a race in it: the claim registry elected the successor before the walk checked it, so a
+  concurrent `GitTarget` reconcile could start a revoked successor's worker, and the walk did not
+  stop it. Now `BranchClaims.Release` leaves the branch unheld and returns the waiting
+  `GitBranch`es, which are woken. Each takes the branch only through its own reconcile, whose grant
+  check is the only one (rule 5 in
+  [`branch_owner.go`](../../internal/git/branch_owner.go)). A waiting `GitBranch` is stalled on
+  `BranchConflict` and requeues within seconds anyway; the wake only saves that wait. If a younger
+  one reconciles first and holds the branch, an older one takes it over when it reconciles, as
+  after a restart.
+- **`clusterResources` is checked against what the planner selects.** "Decided on the text" holds
+  for `"*"` and for named groups. An item that omits `apiGroups` is checked by the types the
+  planner's own matcher selects for it in the source cluster
+  (`Manager.ClusterResourcesSelectedFor`), with its `apiVersions` and its ambiguity rule. An earlier
+  version resolved the group by resource name alone and let through an item it could not pin to
+  one group. That was wrong when only one of the groups serves the named version. The compiled rule
+  also carries the granted identities: the planner watches nothing outside them, and they are part
+  of the plan's fingerprint, so a recompile under a narrower grant rebuilds the plan. A type
+  discovery serves only after the compile is not watched, and the rule is refused when it next
+  reconciles.
+- **A denied applier claim hands back through `retire` as it is.** If the identity is Forbidden from
+  patching the applier, it lets go at once with a Warning Event. Other failures retry until
+  `releaseDeadline`. A hand-back a denial began is marked by the start of its `Held=Releasing`
+  message, which is how a regrant knows to let it finish before adopting the applier again.
+- **A deleted `GitProvider` or `KubeProvider` is not a revocation.** The `GitBranch` keeps its claim,
+  and the applier claim keeps its hold, as before.
+- **Watch-driven tests.** The drain, successor and two-candidate revocation tests, and the applier
+  claim's hand-back tests, call `Reconcile` directly rather than running in envtest. The two
+  recovery items left open below are the gaps.
+
 ## Decided
 
 The questions earlier versions left open, closed without a new grant field:
@@ -736,6 +779,9 @@ server and an applier.
   message names the forbidden type.
 - [x] Removing one identity from `clusterResources` refuses the rules naming it, while the
   `GitTarget` stays admitted for its other rules.
+- [x] An item that omits `apiGroups`, whose resource two groups serve but only one at the version it
+  names, is checked by the type the planner selects; withdrawing that grant refuses the rule and
+  empties the plan. A rule recompiled under a narrower grant rebuilds the cached plan.
 - [x] Refusal messages name the grants that apply and the requested value, for each act.
 
 **Claim and credential** (unit and envtest):
@@ -759,7 +805,8 @@ server and an applier.
 - [x] A revoked `GitBranch`'s worker drains what it held when the revocation was observed. An event
   arriving afterwards is refused. The successor starts only after the old worker retires, and
   receives none of its work. (Unit, reconciling directly: `gitbranch_access_test.go`.)
-- [x] One grant edit revokes two candidates; neither holds the branch afterwards. (Unit.)
+- [x] One grant edit revokes two candidates; neither holds the branch afterwards, and a `GitTarget`
+  reconcile racing the handoff cannot start the revoked successor's worker. (Unit.)
 - [x] An applier claim denied by `allowedApplierClaims` hands its applier back. A read error on the
   `KubeProvider` keeps the hold. (Unit, `applierclaim_revocation_test.go`, as the next three.)
 - [x] A `Kustomization` suspended before adoption stays suspended after a denial's hand-back.

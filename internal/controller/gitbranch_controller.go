@@ -201,7 +201,7 @@ func (r *GitBranchReconciler) evaluate(
 	}
 	if !admitted.Allowed {
 		message := admitted.Message
-		if r.relinquish(ctx, branch) {
+		if r.relinquish(branch) {
 			message += "; this GitBranch gave up the branch, and its branch worker pushed or refused the writes " +
 				"it held"
 		}
@@ -378,7 +378,7 @@ func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutler
 	if !controllerutil.ContainsFinalizer(branch, GitBranchFinalizer) {
 		return nil
 	}
-	r.relinquish(ctx, branch)
+	r.relinquish(branch)
 	r.proofsMu.Lock()
 	delete(r.proofs, branch.UID)
 	r.proofsMu.Unlock()
@@ -396,66 +396,21 @@ func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutler
 // worker again; then the worker is stopped, which closes its intake, pushes or refuses every pending
 // write and settles every CommitRequest it holds (BranchWorker.Stop). Release, not a failed proof:
 // Observe keeps a holder's candidacy through a failed proof, and a revoked GitBranch must stop being
-// a candidate at all. Last, the next holder is woken, once the old worker has retired, so pending
-// work never moves to it.
-func (r *GitBranchReconciler) relinquish(ctx context.Context, branch *configbutleraiv1alpha3.GitBranch) bool {
+// a candidate at all. Last, once the old worker has retired so pending work never moves on, the
+// GitBranches waiting for the branch are woken. Release handed it to none of them: each takes it only
+// through its own reconcile, whose grant check is the one in evaluate.
+func (r *GitBranchReconciler) relinquish(branch *configbutleraiv1alpha3.GitBranch) bool {
 	if r.WorkerManager == nil {
 		return false
 	}
 	claims := r.WorkerManager.Claims()
-	key, _, held := claims.HeldBy(client.ObjectKeyFromObject(branch))
-	claims.Release(branch.UID)
+	_, _, held := claims.HeldBy(client.ObjectKeyFromObject(branch))
+	waiting := claims.Release(branch.UID)
 	r.WorkerManager.RetireGitBranch(client.ObjectKeyFromObject(branch))
-	if held {
-		r.wakeNextHolder(ctx, key)
+	for _, next := range waiting {
+		r.WorkerManager.WakeGitBranch(next.GitBranch)
 	}
 	return held
-}
-
-// maxSuccessorChecks bounds wakeNextHolder's walk down the candidates for one branch.
-const maxSuccessorChecks = 16
-
-// wakeNextHolder wakes the GitBranch that holds key now: it may be one stalled on BranchConflict,
-// which nothing else would reconcile before its steady requeue. One grant edit can revoke several
-// candidates, so the successor's admission is checked again first, and a candidate no grant admits
-// any more is released here rather than handed the branch until its own reconcile notices. A read
-// error leaves the successor as it is: its own reconcile decides.
-func (r *GitBranchReconciler) wakeNextHolder(ctx context.Context, key git.BranchKey) {
-	claims := r.WorkerManager.Claims()
-	for range maxSuccessorChecks {
-		next, taken := claims.Holder(key)
-		if !taken {
-			return
-		}
-		admitted, decided := r.stillAdmitted(ctx, next)
-		if !decided || admitted {
-			r.WorkerManager.WakeGitBranch(next.GitBranch)
-			return
-		}
-		claims.Release(next.UID)
-	}
-}
-
-// stillAdmitted reports whether the GitBranch behind a claimant may still claim its branch, and
-// whether that could be decided: a GitBranch that is gone, or replaced under its name, is no
-// candidate; one whose GitProvider is gone keeps its claim, as the GitBranch reconcile keeps it.
-func (r *GitBranchReconciler) stillAdmitted(ctx context.Context, claimant git.BranchClaimant) (bool, bool) {
-	var branch configbutleraiv1alpha3.GitBranch
-	if err := r.Get(ctx, claimant.GitBranch, &branch); err != nil {
-		return false, apierrors.IsNotFound(err)
-	}
-	if branch.UID != claimant.UID || !branch.DeletionTimestamp.IsZero() {
-		return false, true
-	}
-	var provider configbutleraiv1alpha3.GitProvider
-	if err := r.Get(ctx, branch.GitProviderKey(), &provider); err != nil {
-		return apierrors.IsNotFound(err), apierrors.IsNotFound(err)
-	}
-	decision, err := authz.GitBranchClaimAdmitted(ctx, r.Client, &branch, &provider)
-	if err != nil {
-		return false, false
-	}
-	return decision.Allowed, true
 }
 
 // parentBranchNotFoundMessage says which parent is missing and what fixes it.

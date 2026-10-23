@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,11 +137,14 @@ func TestGitBranch_RevocationDrainsAndKeepsTheFinalizer(t *testing.T) {
 	assert.False(t, live, "the worker retired, pushing or refusing what it held")
 	assert.False(t, old.Enqueue(git.Event{}), "an event arriving after the revocation is refused")
 
+	_, held := f.holder()
+	assert.False(t, held, "the branch passes to nobody until the successor has reconciled")
+	require.Len(t, f.workers.GitBranchEvents(), 1, "the successor is woken")
+	<-f.workers.GitBranchEvents()
+	f.reconcile(t, "team-b", "main")
 	holder, held := f.holder()
 	require.True(t, held)
 	assert.Equal(t, "team-b/main", holder.GitBranch.String())
-	require.Len(t, f.workers.GitBranchEvents(), 1, "the successor is woken")
-	<-f.workers.GitBranchEvents()
 	successor := k8stypes.NamespacedName{Namespace: "team-b", Name: "main"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
 		GitBranch: successor, Provider: provider, Branch: "main", Repo: repo,
@@ -155,24 +159,49 @@ func TestGitBranch_RevocationDrainsAndKeepsTheFinalizer(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, readyOf(back).Status, readyOf(back).Message)
 }
 
-// TestGitBranch_OneEditRevokesTwoCandidates: the holder's successor is checked again before it is
-// handed the branch, so a grant edit that revokes both leaves neither holding it.
+// TestGitBranch_OneEditRevokesTwoCandidates: a grant edit that revokes the holder and its successor
+// together hands the branch to neither. The holder's release elects nobody, so a GitTarget reconcile
+// racing the handoff cannot start the revoked successor's worker; each waiting GitBranch takes the
+// branch only through its own reconcile, which checks its grant first, in whichever order they run.
 func TestGitBranch_OneEditRevokesTwoCandidates(t *testing.T) {
-	f := newGitBranchFixture(t, sharedProvider("team-a", "team-b", "team-c"),
-		tenantBranch("team-a", 3*time.Hour), tenantBranch("team-b", 2*time.Hour),
-		tenantBranch("team-c", time.Hour))
-	for _, ns := range []string{"team-a", "team-b", "team-c"} {
-		f.reconcile(t, ns, "main")
+	for _, order := range [][]string{{"team-b", "team-c"}, {"team-c", "team-b"}} {
+		t.Run(strings.Join(order, "-then-"), func(t *testing.T) {
+			f := newGitBranchFixture(t, sharedProvider("team-a", "team-b", "team-c"),
+				tenantBranch("team-a", 3*time.Hour), tenantBranch("team-b", 2*time.Hour),
+				tenantBranch("team-c", time.Hour))
+			for _, ns := range []string{"team-a", "team-b", "team-c"} {
+				f.reconcile(t, ns, "main")
+			}
+
+			f.grantOnly(t, "team-c")
+			f.reconcile(t, "team-a", "main")
+
+			revoked := k8stypes.NamespacedName{Namespace: "team-b", Name: "main"}
+			err := f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
+				GitBranch: revoked, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "shared-repo"},
+				Branch: "main", Repo: git.RepoIdentity{ProviderUID: "uid-shared-repo", URL: gitBranchTestURL},
+			})
+			require.ErrorIs(t, err, git.ErrBranchOwnedElsewhere, "the revoked successor was handed nothing")
+			woken := []string{}
+			for len(f.workers.GitBranchEvents()) > 0 {
+				event := <-f.workers.GitBranchEvents()
+				woken = append(woken, event.Object.GetNamespace())
+			}
+			assert.Equal(t, []string{"team-b", "team-c"}, woken, "the waiting GitBranches are woken, oldest first")
+
+			for _, ns := range order {
+				f.reconcile(t, ns, "main")
+			}
+			holder, held := f.holder()
+			require.True(t, held)
+			assert.Equal(t, "team-c/main", holder.GitBranch.String(), "team-b, also revoked, never holds the branch")
+			_, live := f.workers.WorkerForGitBranch(revoked)
+			assert.False(t, live)
+			got := &configbutleraiv1alpha3.GitBranch{}
+			require.NoError(t, f.client.Get(context.Background(), revoked, got))
+			assert.Equal(t, GitBranchReasonNamespaceNotAuthorized, readyOf(got).Reason)
+		})
 	}
-
-	f.grantOnly(t, "team-c")
-	f.reconcile(t, "team-a", "main")
-
-	holder, held := f.holder()
-	require.True(t, held)
-	assert.Equal(t, "team-c/main", holder.GitBranch.String(), "team-b, also revoked, never holds the branch")
-	_, b, bHolds := f.workers.Claims().HeldBy(k8stypes.NamespacedName{Namespace: "team-b", Name: "main"})
-	assert.False(t, bHolds, "%v", b)
 }
 
 // TestGitBranch_ANamespaceLabelLossRevokesASelectorGrant: a label removed from a claimant's namespace

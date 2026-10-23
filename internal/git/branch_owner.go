@@ -3,6 +3,7 @@
 package git
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -23,9 +24,15 @@ import (
 //     claim and does not hand the branch to another GitBranch. Any other candidate whose proof
 //     fails stops being one.
 //  4. The claim lives here, in the manager's memory. After a restart it is recomputed by 1 and 2.
+//  5. A holder giving the branch up hands it to nobody. Every other candidate becomes one again only
+//     through its own GitBranch reconcile, which checks its grants before its proof, so a candidate
+//     whose grant was withdrawn since it last reconciled never holds the branch, and never gets a
+//     worker. The candidates waiting are stalled on BranchConflict, so they reconcile again soon on
+//     their own; the GitBranch reconciler also wakes them at once (Release returns them).
 //
 // The GitBranch reconciler feeds it (Observe, Release); the GitTarget reconciler, the worker sweep
-// and EnsureWorker read it, so they cannot disagree about who writes a branch.
+// and EnsureWorker read it, so they cannot disagree about who writes a branch. The grants are checked
+// in one place only, the GitBranch reconcile, before it calls Observe.
 
 // BranchClaimant is a GitBranch as the claim sees it: which object, and how old.
 type BranchClaimant struct {
@@ -73,6 +80,8 @@ func (c *BranchClaims) Observe(key BranchKey, claimant BranchClaimant, proven bo
 	defer c.mu.Unlock()
 	entry, known := c.entries[claimant.UID]
 	if known && entry.key != key {
+		// The GitBranches waiting for the old key are stalled on BranchConflict, and reconcile again
+		// on their own.
 		c.releaseLocked(claimant.UID)
 		known = false
 	}
@@ -88,24 +97,34 @@ func (c *BranchClaims) Observe(key BranchKey, claimant BranchClaimant, proven bo
 	return c.holderLocked(key)
 }
 
-// Release forgets a GitBranch: it is being deleted, and its worker has stopped. If it held its key,
-// the oldest remaining candidate takes it over.
-func (c *BranchClaims) Release(uid k8stypes.UID) {
+// Release forgets a GitBranch: it is being deleted, or no grant admits it any more. If it held its
+// key, nobody holds the key afterwards (rule 5), and Release returns the GitBranches that wait for it,
+// oldest first: they are candidates again once their own reconcile has checked their grants.
+func (c *BranchClaims) Release(uid k8stypes.UID) []BranchClaimant {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.releaseLocked(uid)
+	return c.releaseLocked(uid)
 }
 
-func (c *BranchClaims) releaseLocked(uid k8stypes.UID) {
+func (c *BranchClaims) releaseLocked(uid k8stypes.UID) []BranchClaimant {
 	entry, known := c.entries[uid]
 	if !known {
-		return
+		return nil
 	}
 	delete(c.entries, uid)
-	if c.holders[entry.key] == uid {
-		delete(c.holders, entry.key)
+	if c.holders[entry.key] != uid {
+		return nil
 	}
-	c.electLocked(entry.key)
+	delete(c.holders, entry.key)
+	var waiting []BranchClaimant
+	for _, other := range c.entries {
+		if other.key == entry.key {
+			other.candidate = false
+			waiting = append(waiting, other.claimant)
+		}
+	}
+	sort.Slice(waiting, func(i, j int) bool { return waiting[i].olderThan(waiting[j]) })
+	return waiting
 }
 
 // electLocked applies rule 2: the oldest candidate for key holds it. A holder is always a candidate,
