@@ -26,7 +26,7 @@ import (
 //
 // Three exceptions keep that from holding anything forever:
 //
-//   - A branch with no trigger never waits: nothing applies its commits.
+//   - A branch with no applier claim never waits: nothing applies its commits.
 //   - A collection's initial snapshot (the first one applied for it, ResyncRequest.Initial) is
 //     exempt. It is the startup baseline, and S2 asks no applier for anything before it is in Git,
 //     so holding it for an apply would wait on itself.

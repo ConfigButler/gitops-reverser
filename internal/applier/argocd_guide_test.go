@@ -23,7 +23,7 @@ const argoCDGuide = "../../docs/bi-directional-argocd.md"
 // TestArgoCDGuide_TheCompleteExampleIsAccepted reads the guide's complete example and checks it
 // against the code that validates and drives an Argo CD applier: the GitOps Reverser objects decode
 // into the API types with no unknown field, Configured comes out True for the Application as
-// written, the trigger's source binds the GitTarget, and a request sets a sync pinned to the commit. It also holds the example to the guide's
+// written, the applier claim's source binds the GitTarget, and a request sets a sync pinned to the commit. It also holds the example to the guide's
 // own advice: automated sync off, prune kept, and a recursive directory source.
 func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	objects := guideExampleObjects(t, argoCDGuide)
@@ -32,15 +32,15 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	var receiver v1alpha3.GitReceiver
 	var branch v1alpha3.GitBranch
 	var target v1alpha3.GitTarget
-	var trigger v1alpha3.ArgoCDTrigger
+	var claim v1alpha3.ArgoCDClaim
 	var secret corev1.Secret
 	decodeStrict(t, objects, "GitProvider", &provider)
 	decodeStrict(t, objects, "GitReceiver", &receiver)
 	decodeStrict(t, objects, "GitBranch", &branch)
 	decodeStrict(t, objects, "GitTarget", &target)
-	decodeStrict(t, objects, v1alpha3.ApplyTriggerKindArgoCD, &trigger)
+	decodeStrict(t, objects, v1alpha3.ApplierClaimKindArgoCD, &claim)
 	decodeStrict(t, objects, "Secret", &secret)
-	exampleReachesItsApplier(t, objects, &trigger)
+	exampleReachesItsApplier(t, objects, &claim)
 	app := one(t, objects, kindApplication)
 
 	// The GitOps Reverser objects are wired to each other.
@@ -56,10 +56,10 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	assert.Equal(t, secret.Name, receiver.Spec.SecretRef.Name)
 	assert.Equal(t, receiver.Namespace, secret.Namespace, "a GitReceiver reads its token in its own namespace")
 	assert.NotEmpty(t, secret.StringData[v1alpha3.ReceiverTokenKey], "the receiver reads the token key")
-	require.NotNil(t, target.Spec.ApplyTriggerRef)
-	assert.Equal(t, v1alpha3.ApplyTriggerReference{Kind: v1alpha3.ApplyTriggerKindArgoCD, Name: trigger.Name},
-		*target.Spec.ApplyTriggerRef)
-	assert.Equal(t, target.Namespace, trigger.Namespace, "a GitTarget names a trigger in its own namespace")
+	require.NotNil(t, target.Spec.ApplierClaimRef)
+	assert.Equal(t, v1alpha3.ApplierClaimReference{Kind: v1alpha3.ApplierClaimKindArgoCD, Name: claim.Name},
+		*target.Spec.ApplierClaimRef)
+	assert.Equal(t, target.Namespace, claim.Namespace, "a GitTarget names an applier claim in its own namespace")
 	assert.Equal(t, v1alpha3.RefusalActionReapply, target.Spec.OnRefusal)
 
 	// The Application follows the guide's advice.
@@ -69,7 +69,7 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	assert.True(t, recurse, "GitOps Reverser writes nested folders")
 
 	// The applier, as written, is accepted, binds the GitTarget, and is driven.
-	ref := trigger.Applier()
+	ref := claim.Applier()
 	assert.Equal(t, types.NamespacedName{Namespace: app.GetNamespace(), Name: app.GetName()}, ref)
 	want := Binding{RepositoryURL: provider.Spec.URL, Branch: branch.Spec.Branch}
 	client := newArgoSource(app)
@@ -77,10 +77,10 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	verdict := argo.Validate(context.Background(), ref)
 	assert.True(t, verdict.OK, "Configured for the guide's example: %s: %s", verdict.Reason, verdict.Message)
 	require.NotNil(t, verdict.Source)
-	trigger.Status.Source = &v1alpha3.ArgoCDTriggerSource{
+	claim.Status.Source = &v1alpha3.ArgoCDClaimSource{
 		RepoURL: verdict.Source.URL, TargetRevision: verdict.Source.Revision,
 	}
-	assert.Empty(t, BindingMismatch(&trigger, want), "the trigger's Application syncs what the GitTarget writes")
+	assert.Empty(t, BindingMismatch(&claim, want), "the applier claim's Application syncs what the GitTarget writes")
 
 	started, err := argo.Request(context.Background(), ref, Ask{
 		Want: want, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit, Token: requestToken(stampTime),

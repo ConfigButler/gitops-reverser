@@ -3,7 +3,7 @@
 /*
 Package argosim is the API server's field ownership of an Argo CD Application's automated sync
 switch, spec.syncPolicy.automated.enabled, for tests of code that holds it. The fake dynamic client
-keeps no managedFields, and the ArgoCDTrigger's hold is decided by them.
+keeps no managedFields, and the ArgoCDClaim's hold is decided by them.
 */
 package argosim
 
@@ -35,7 +35,7 @@ func ApplicationGVR() schema.GroupVersionResource {
 func switchPath() []string { return []string{"spec", "syncPolicy", "automated", "enabled"} }
 
 // Serve makes client serve the patches of an Application as the API server does for the switch,
-// as measured in envtest (internal/controller/argocdtrigger_apiserver_test.go):
+// as measured in envtest (internal/controller/argocdclaim_apiserver_test.go):
 //
 //   - A write that changes the switch's value takes it from every other owner.
 //   - An update (a merge patch) that writes the value the switch holds takes nothing.

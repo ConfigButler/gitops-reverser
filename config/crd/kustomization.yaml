@@ -1,10 +1,10 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - bases/configbutler.ai_argocdtriggers.yaml
+  - bases/configbutler.ai_argocdclaims.yaml
   - bases/configbutler.ai_clusterwatchrules.yaml
   - bases/configbutler.ai_commitrequests.yaml
-  - bases/configbutler.ai_fluxtriggers.yaml
+  - bases/configbutler.ai_fluxclaims.yaml
   - bases/configbutler.ai_gitbranches.yaml
   - bases/configbutler.ai_gitproviders.yaml
   - bases/configbutler.ai_gitreceivers.yaml

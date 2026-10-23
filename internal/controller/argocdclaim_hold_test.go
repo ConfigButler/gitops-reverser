@@ -28,10 +28,10 @@ import (
 
 var checkoutApplication = k8stypes.NamespacedName{Namespace: "argocd", Name: "checkout"}
 
-// argoHoldFixture is an ArgoCDTrigger team-a/checkout over an applier cluster holding objs, with
+// argoHoldFixture is an ArgoCDClaim team-a/checkout over an applier cluster holding objs, with
 // Events recorded.
 type argoHoldFixture struct {
-	r        *ApplyTriggerReconciler
+	r        *ApplierClaimReconciler
 	sim      *fluxsim.Sim
 	recorder *record.FakeRecorder
 }
@@ -39,10 +39,10 @@ type argoHoldFixture struct {
 func newArgoHoldFixture(t *testing.T, objects []ctrlclient.Object, objs ...runtime.Object) *argoHoldFixture {
 	t.Helper()
 	if len(objects) == 0 {
-		objects = []ctrlclient.Object{testArgoCDTrigger(triggerLocalProvider)}
+		objects = []ctrlclient.Object{testArgoCDClaim(claimLocalProvider)}
 	}
 	sim := applierSim(t, objs...)
-	r := triggerReconciler(triggerTestClient(t, objects...), configbutleraiv1alpha3.ApplyTriggerKindArgoCD,
+	r := claimReconciler(claimTestClient(t, objects...), configbutleraiv1alpha3.ApplierClaimKindArgoCD,
 		sim.Client, nil, true)
 	recorder := record.NewFakeRecorder(32)
 	r.Recorder = recorder
@@ -68,11 +68,11 @@ func (f *argoHoldFixture) events() []string {
 	}
 }
 
-func (f *argoHoldFixture) trigger(t *testing.T) *configbutleraiv1alpha3.ArgoCDTrigger {
+func (f *argoHoldFixture) claim(t *testing.T) *configbutleraiv1alpha3.ArgoCDClaim {
 	t.Helper()
-	trigger := &configbutleraiv1alpha3.ArgoCDTrigger{}
-	require.NoError(t, f.r.Get(context.Background(), triggerKey, trigger))
-	return trigger
+	claim := &configbutleraiv1alpha3.ArgoCDClaim{}
+	require.NoError(t, f.r.Get(context.Background(), claimKey, claim))
+	return claim
 }
 
 func (f *argoHoldFixture) application(t *testing.T) *unstructured.Unstructured {
@@ -114,23 +114,23 @@ func generatedApplication(syncPolicy map[string]any) runtime.Object {
 	return app
 }
 
-// TestArgoCDTrigger_SwitchesAutomatedSyncOff: a Configured trigger holds its Application's
+// TestArgoCDClaim_SwitchesAutomatedSyncOff: a Configured applier claim holds its Application's
 // automated sync off under GitOps Reverser's field manager, keeping prune, with its finalizer in
 // place first and a Normal Adopted Event.
-func TestArgoCDTrigger_SwitchesAutomatedSyncOff(t *testing.T) {
+func TestArgoCDClaim_SwitchesAutomatedSyncOff(t *testing.T) {
 	f := newArgoHoldFixture(t, nil, applierArgoApplication(map[string]any{
 		"automated": map[string]any{"prune": true, "selfHeal": true},
 	}))
 
-	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.ArgoCDTrigger)
+	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
 
-	held := findCondition(got.Status.Conditions, ApplyTriggerConditionHeld)
+	held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
 	require.NotNil(t, held)
 	assert.Equal(t, metav1.ConditionTrue, held.Status, held.Message)
 	assert.Equal(t, ReasonAutomatedSyncOff, held.Reason)
 	assert.Contains(t, held.Message, "held off by GitOps Reverser")
 	assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeReady))
-	assert.True(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDTriggerFinalizer))
+	assert.True(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDClaimFinalizer))
 	automated, _ := f.automated(t)
 	assert.Equal(t, map[string]any{"enabled": false, "prune": true, "selfHeal": true}, automated,
 		"only the switch is written")
@@ -139,22 +139,22 @@ func TestArgoCDTrigger_SwitchesAutomatedSyncOff(t *testing.T) {
 	assert.True(t, strings.HasPrefix(events[0],
 		"Normal Adopted switched automated sync of Application argocd/checkout off"), events[0])
 
-	reconcileTrigger(t, f.r)
+	reconcileClaim(t, f.r)
 	assert.Empty(t, f.events(), "a held switch is not written again")
 }
 
-// TestArgoCDTrigger_AutomatedSyncSwitchedOnIsSwitchedOffAgain: the control loop. Automated sync
+// TestArgoCDClaim_AutomatedSyncSwitchedOnIsSwitchedOffAgain: the control loop. Automated sync
 // switched on outside GitOps Reverser is switched off again, every time, with a Normal
 // ClaimedResourceReconciled Event each time.
-func TestArgoCDTrigger_AutomatedSyncSwitchedOnIsSwitchedOffAgain(t *testing.T) {
+func TestArgoCDClaim_AutomatedSyncSwitchedOnIsSwitchedOffAgain(t *testing.T) {
 	f := newArgoHoldFixture(t, nil, applierArgoApplication(nil))
-	reconcileTrigger(t, f.r)
+	reconcileClaim(t, f.r)
 	f.events()
 
 	for round := range 2 {
 		f.switchOn(t)
 
-		got := reconcileTrigger(t, f.r)
+		got := reconcileClaim(t, f.r)
 
 		assert.True(t, conditionIsTrue(*got.StatusConditions(), ConditionTypeReady), "round %d", round)
 		automated, _ := f.automated(t)
@@ -166,9 +166,9 @@ func TestArgoCDTrigger_AutomatedSyncSwitchedOnIsSwitchedOffAgain(t *testing.T) {
 	}
 }
 
-// TestArgoCDTrigger_DeletionHandsTheSwitchBack: the finalizer gives the switch up, so the Application
+// TestArgoCDClaim_DeletionHandsTheSwitchBack: the finalizer gives the switch up, so the Application
 // is as its own spec says again: syncing on its own when it did before, manual when it was.
-func TestArgoCDTrigger_DeletionHandsTheSwitchBack(t *testing.T) {
+func TestArgoCDClaim_DeletionHandsTheSwitchBack(t *testing.T) {
 	for name, tc := range map[string]struct {
 		syncPolicy map[string]any
 		wantOn     bool
@@ -182,14 +182,14 @@ func TestArgoCDTrigger_DeletionHandsTheSwitchBack(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newArgoHoldFixture(t, nil, applierArgoApplication(tc.syncPolicy))
-			reconcileTrigger(t, f.r)
+			reconcileClaim(t, f.r)
 			f.events()
 
-			require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
-			_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+			require.NoError(t, f.r.Delete(context.Background(), f.claim(t)))
+			_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 			require.NoError(t, err)
 
-			err = f.r.Get(context.Background(), triggerKey, &configbutleraiv1alpha3.ArgoCDTrigger{})
+			err = f.r.Get(context.Background(), claimKey, &configbutleraiv1alpha3.ArgoCDClaim{})
 			assert.True(t, apierrors.IsNotFound(err), "the finalizer is gone: %v", err)
 			automated, found := f.automated(t)
 			assert.Equal(t, tc.wantOn, found)
@@ -207,21 +207,21 @@ func TestArgoCDTrigger_DeletionHandsTheSwitchBack(t *testing.T) {
 	}
 }
 
-// TestArgoCDTrigger_NoLongerReferencedHandsTheSwitchBack: a trigger no eligible GitTarget references
+// TestArgoCDClaim_NoLongerReferencedHandsTheSwitchBack: an applier claim no eligible GitTarget references
 // any more hands the switch back, keeps nothing, and is held again once one does.
-func TestArgoCDTrigger_NoLongerReferencedHandsTheSwitchBack(t *testing.T) {
+func TestArgoCDClaim_NoLongerReferencedHandsTheSwitchBack(t *testing.T) {
 	f := newArgoHoldFixture(t, nil, applierArgoApplication(map[string]any{"automated": map[string]any{}}))
-	reconcileTrigger(t, f.r)
+	reconcileClaim(t, f.r)
 	f.events()
 	target := &configbutleraiv1alpha3.GitTarget{}
 	require.NoError(t, f.r.Get(context.Background(),
 		ctrlclient.ObjectKey{Namespace: "team-a", Name: "checkout-argo"}, target))
 	require.NoError(t, f.r.Delete(context.Background(), target))
 
-	got := reconcileTrigger(t, f.r)
+	got := reconcileClaim(t, f.r)
 
-	assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDTriggerFinalizer))
-	held := findCondition(*got.StatusConditions(), ApplyTriggerConditionHeld)
+	assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDClaimFinalizer))
+	held := findCondition(*got.StatusConditions(), ApplierClaimConditionHeld)
 	require.NotNil(t, held)
 	assert.Equal(t, applier.ReasonNotReferenced, held.Reason)
 	automated, _ := f.automated(t)
@@ -231,58 +231,58 @@ func TestArgoCDTrigger_NoLongerReferencedHandsTheSwitchBack(t *testing.T) {
 	assert.Contains(t, events[0], "Normal Released handed Application argocd/checkout back to Argo CD")
 }
 
-// TestArgoCDTrigger_ASuccessorInLineKeepsTheSwitchOff: a holder that goes with another trigger in
+// TestArgoCDClaim_ASuccessorInLineKeepsTheSwitchOff: a holder that goes with another applier claim in
 // line leaves the switch held off for it: released, Argo CD would sync on its own at once. It passes
 // on how the Application stood, which the successor cannot read from a switch held already.
-func TestArgoCDTrigger_ASuccessorInLineKeepsTheSwitchOff(t *testing.T) {
-	successor := testArgoCDTrigger(triggerLocalProvider)
+func TestArgoCDClaim_ASuccessorInLineKeepsTheSwitchOff(t *testing.T) {
+	successor := testArgoCDClaim(claimLocalProvider)
 	successor.Name = "checkout-next"
 	successor.CreationTimestamp = metav1.NewTime(time.Now().Add(time.Hour))
 	successor.Status.Conditions = []metav1.Condition{{
-		Type: ApplyTriggerConditionConfigured, Status: metav1.ConditionFalse,
-		Reason: applier.ReasonHeldByAnotherTrigger, LastTransitionTime: metav1.Now(),
+		Type: ApplierClaimConditionConfigured, Status: metav1.ConditionFalse,
+		Reason: applier.ReasonHeldByAnotherClaim, LastTransitionTime: metav1.Now(),
 	}}
-	holder := testArgoCDTrigger(triggerLocalProvider)
+	holder := testArgoCDClaim(claimLocalProvider)
 	holder.CreationTimestamp = metav1.NewTime(time.Now())
 	f := newArgoHoldFixture(t, []ctrlclient.Object{holder, successor},
 		applierArgoApplication(map[string]any{"automated": map[string]any{}}))
-	reconcileTrigger(t, f.r)
+	reconcileClaim(t, f.r)
 	f.events()
 
-	require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
-	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, f.r.Delete(context.Background(), f.claim(t)))
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
 
 	automated, _ := f.automated(t)
 	assert.Equal(t, false, automated["enabled"], "left held off for the successor")
-	next := &configbutleraiv1alpha3.ArgoCDTrigger{}
+	next := &configbutleraiv1alpha3.ArgoCDClaim{}
 	require.NoError(t, f.r.Get(context.Background(), ctrlclient.ObjectKeyFromObject(successor), next))
 	assert.Equal(t, configbutleraiv1alpha3.SuspendStateNotSuspended, next.Status.PreviousSuspendState,
 		"passed on: it synced on its own")
 	events := f.events()
 	require.Len(t, events, 1)
 	assert.True(t, strings.HasPrefix(events[0], "Normal Released left automated sync of Application argocd/checkout "+
-		"held off for ArgoCDTrigger team-a/checkout-next"), events[0])
+		"held off for ArgoCDClaim team-a/checkout-next"), events[0])
 }
 
-// TestArgoCDTrigger_AnApplicationSetOwnsTheSwitch: the switch of an Application an ApplicationSet
-// generated is the ApplicationSet's template's. With automated sync off the trigger is Held and
+// TestArgoCDClaim_AnApplicationSetOwnsTheSwitch: the switch of an Application an ApplicationSet
+// generated is the ApplicationSet's template's. With automated sync off the applier claim is Held and
 // writes nothing; with it on, it is refused with a reason and message that say what to change.
-func TestArgoCDTrigger_AnApplicationSetOwnsTheSwitch(t *testing.T) {
+func TestArgoCDClaim_AnApplicationSetOwnsTheSwitch(t *testing.T) {
 	t.Run("kept off by the ApplicationSet", func(t *testing.T) {
 		f := newArgoHoldFixture(t, nil, generatedApplication(map[string]any{
 			"automated": map[string]any{"enabled": false, "prune": true},
 		}))
 
-		got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.ArgoCDTrigger)
+		got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
 
 		assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeReady))
-		held := findCondition(got.Status.Conditions, ApplyTriggerConditionHeld)
+		held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
 		require.NotNil(t, held)
 		assert.Equal(t, ReasonAutomatedSyncOff, held.Reason)
 		assert.Contains(t, held.Message, "kept off by ApplicationSet argocd/checkouts, which owns the switch")
-		assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDTriggerFinalizer),
-			"nothing of the trigger's to hand back")
+		assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDClaimFinalizer),
+			"nothing of the applier claim's to hand back")
 		assert.Empty(t, f.application(t).GetManagedFields(), "the switch is never written")
 		assert.Empty(t, f.events())
 	})
@@ -291,9 +291,9 @@ func TestArgoCDTrigger_AnApplicationSetOwnsTheSwitch(t *testing.T) {
 			"automated": map[string]any{"prune": true},
 		}))
 
-		got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.ArgoCDTrigger)
+		got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
 
-		configured := findCondition(got.Status.Conditions, ApplyTriggerConditionConfigured)
+		configured := findCondition(got.Status.Conditions, ApplierClaimConditionConfigured)
 		require.NotNil(t, configured)
 		assert.Equal(t, metav1.ConditionFalse, configured.Status)
 		assert.Equal(t, applier.ReasonOwnedByApplicationSet, configured.Reason)
@@ -303,14 +303,14 @@ func TestArgoCDTrigger_AnApplicationSetOwnsTheSwitch(t *testing.T) {
 		assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeStalled), "a human has to change it")
 		automated, _ := f.automated(t)
 		assert.NotContains(t, automated, "enabled", "the switch is never written")
-		assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDTriggerFinalizer))
+		assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDClaimFinalizer))
 	})
 }
 
-// TestArgoCDTrigger_AManagerThatAppliesTheSwitchOwnsIt: whatever applies the Application's manifest
-// with the switch in it sets it on every apply, so the trigger leaves it alone: Held while it is
+// TestArgoCDClaim_AManagerThatAppliesTheSwitchOwnsIt: whatever applies the Application's manifest
+// with the switch in it sets it on every apply, so the applier claim leaves it alone: Held while it is
 // off, refused while it is on.
-func TestArgoCDTrigger_AManagerThatAppliesTheSwitchOwnsIt(t *testing.T) {
+func TestArgoCDClaim_AManagerThatAppliesTheSwitchOwnsIt(t *testing.T) {
 	for name, tc := range map[string]struct {
 		enabled    bool
 		wantReason string
@@ -323,9 +323,9 @@ func TestArgoCDTrigger_AManagerThatAppliesTheSwitchOwnsIt(t *testing.T) {
 				"kustomize-controller", metav1.ManagedFieldsOperationApply)
 			f := newArgoHoldFixture(t, nil, app)
 
-			got := reconcileTrigger(t, f.r)
+			got := reconcileClaim(t, f.r)
 
-			configured := findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
+			configured := findCondition(*got.StatusConditions(), ApplierClaimConditionConfigured)
 			require.NotNil(t, configured)
 			assert.Equal(t, tc.wantReason, configured.Reason, configured.Message)
 			automated, _ := f.automated(t)
@@ -335,11 +335,11 @@ func TestArgoCDTrigger_AManagerThatAppliesTheSwitchOwnsIt(t *testing.T) {
 	}
 }
 
-// TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNeverWritten: Argo CD before 3.1 has no
+// TestArgoCDClaim_AnArgoCDThatDropsTheSwitchIsNeverWritten: Argo CD before 3.1 has no
 // spec.syncPolicy.automated.enabled in its schema, and its API server prunes it, so switching a
-// manual Application off would leave automated: {}, which is automated sync ON. The trigger finds
+// manual Application off would leave automated: {}, which is automated sync ON. The applier claim finds
 // that with a dry run, refuses the Application, and writes nothing.
-func TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNeverWritten(t *testing.T) {
+func TestArgoCDClaim_AnArgoCDThatDropsTheSwitchIsNeverWritten(t *testing.T) {
 	for name, syncPolicy := range map[string]map[string]any{
 		"a manual Application":          nil,
 		"automated sync on":             {"automated": map[string]any{"prune": true}},
@@ -350,9 +350,9 @@ func TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNeverWritten(t *testing.T) {
 			argosim.Serve(f.sim.Client, argosim.WithoutSwitch())
 			before, _ := f.automated(t)
 
-			got := reconcileTrigger(t, f.r)
+			got := reconcileClaim(t, f.r)
 
-			configured := findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
+			configured := findCondition(*got.StatusConditions(), ApplierClaimConditionConfigured)
 			require.NotNil(t, configured)
 			assert.Equal(t, metav1.ConditionFalse, configured.Status)
 			assert.Equal(t, applier.ReasonArgoCDVersionNotSupported, configured.Reason)
@@ -365,18 +365,18 @@ func TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNeverWritten(t *testing.T) {
 			after, _ := f.automated(t)
 			assert.Equal(t, before, after, "nothing is written")
 			assert.Empty(t, f.application(t).GetManagedFields())
-			assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDTriggerFinalizer))
+			assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDClaimFinalizer))
 			assert.Empty(t, f.events())
 		})
 	}
 }
 
-// TestArgoCDTrigger_RecordsAndRestoresHowItStood: adoption records whether the Application synced on
+// TestArgoCDClaim_RecordsAndRestoresHowItStood: adoption records whether the Application synced on
 // its own in status.previousSuspendState, the hand-back puts exactly that back, and then forgets it.
 // Giving the switch up alone would not: here the owner's own enabled: false was taken by a click in
 // the UI, so giving the switch up would remove it, and an Application that was manual would sync on
 // its own.
-func TestArgoCDTrigger_RecordsAndRestoresHowItStood(t *testing.T) {
+func TestArgoCDClaim_RecordsAndRestoresHowItStood(t *testing.T) {
 	app := argosim.OwnSwitch(
 		t,
 		applierArgoApplication(map[string]any{"automated": map[string]any{"prune": true}}).(*unstructured.Unstructured),
@@ -385,11 +385,11 @@ func TestArgoCDTrigger_RecordsAndRestoresHowItStood(t *testing.T) {
 		metav1.ManagedFieldsOperationUpdate,
 	)
 	f := newArgoHoldFixture(t, nil, app)
-	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.ArgoCDTrigger)
+	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
 	require.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, got.Status.PreviousSuspendState)
 	f.switchOn(t)
-	reconcileTrigger(t, f.r)
-	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.trigger(t).Status.PreviousSuspendState,
+	reconcileClaim(t, f.r)
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.claim(t).Status.PreviousSuspendState,
 		"a switch-on is not how it stood")
 	f.events()
 
@@ -397,7 +397,7 @@ func TestArgoCDTrigger_RecordsAndRestoresHowItStood(t *testing.T) {
 	require.NoError(t, f.r.Get(context.Background(),
 		ctrlclient.ObjectKey{Namespace: "team-a", Name: "checkout-argo"}, target))
 	require.NoError(t, f.r.Delete(context.Background(), target))
-	got = reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.ArgoCDTrigger)
+	got = reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
 
 	automated, _ := f.automated(t)
 	assert.Equal(t, false, automated["enabled"], "manual, as it was")
@@ -407,14 +407,14 @@ func TestArgoCDTrigger_RecordsAndRestoresHowItStood(t *testing.T) {
 	assert.Contains(t, events[0], "its automated sync is off, as it was before GitOps Reverser held it")
 }
 
-// TestArgoCDTrigger_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue is the review's P2. An
+// TestArgoCDClaim_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue is the review's P2. An
 // ApplicationSet that takes over a held Application with enabled: false in its template writes the
 // switch with an update, which takes no share of a value that does not change: the switch stays
 // GitOps Reverser's alone. Giving it up would then switch automated sync on against the template, so
 // the hand-back keeps the value the ApplicationSet set.
-func TestArgoCDTrigger_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue(t *testing.T) {
+func TestArgoCDClaim_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue(t *testing.T) {
 	f := newArgoHoldFixture(t, nil, applierArgoApplication(map[string]any{"automated": map[string]any{"prune": true}}))
-	reconcileTrigger(t, f.r)
+	reconcileClaim(t, f.r)
 	f.events()
 	adopted := f.application(t)
 	controller := true
@@ -426,8 +426,8 @@ func TestArgoCDTrigger_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue(t
 		Update(context.Background(), adopted, metav1.UpdateOptions{FieldManager: "argocd-applicationset-controller"})
 	require.NoError(t, err)
 
-	require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
-	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, f.r.Delete(context.Background(), f.claim(t)))
+	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
 
 	automated, _ := f.automated(t)
@@ -437,10 +437,10 @@ func TestArgoCDTrigger_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue(t
 	assert.Contains(t, events[0], "its automated sync is off, as ApplicationSet argocd/checkouts set it")
 }
 
-// TestArgoCDTrigger_RecordsHowItStoodBeforeTheSwitchOff: status.previousSuspendState is written before
+// TestArgoCDClaim_RecordsHowItStoodBeforeTheSwitchOff: status.previousSuspendState is written before
 // the switch-off that hides it. With the commit after it lost, the next reconcile finds the switch
 // held and cannot read how it stood, yet the hand-back still leaves a manual Application manual.
-func TestArgoCDTrigger_RecordsHowItStoodBeforeTheSwitchOff(t *testing.T) {
+func TestArgoCDClaim_RecordsHowItStoodBeforeTheSwitchOff(t *testing.T) {
 	app := argosim.OwnSwitch(
 		t,
 		applierArgoApplication(map[string]any{"automated": map[string]any{"prune": true}}).(*unstructured.Unstructured),
@@ -451,17 +451,17 @@ func TestArgoCDTrigger_RecordsHowItStoodBeforeTheSwitchOff(t *testing.T) {
 	f := newArgoHoldFixture(t, nil, app)
 	f.r.Client = &commitFailingClient{Client: f.r.Client, failures: 1}
 
-	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.Error(t, err, "the commit after the switch-off is lost")
-	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.trigger(t).Status.PreviousSuspendState,
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.claim(t).Status.PreviousSuspendState,
 		"recorded before the switch-off")
 
-	reconcileTrigger(t, f.r)
+	reconcileClaim(t, f.r)
 	target := &configbutleraiv1alpha3.GitTarget{}
 	require.NoError(t, f.r.Get(context.Background(),
 		ctrlclient.ObjectKey{Namespace: "team-a", Name: "checkout-argo"}, target))
 	require.NoError(t, f.r.Delete(context.Background(), target))
-	reconcileTrigger(t, f.r)
+	reconcileClaim(t, f.r)
 
 	automated, _ := f.automated(t)
 	assert.Equal(t, false, automated["enabled"], "manual, as it was")

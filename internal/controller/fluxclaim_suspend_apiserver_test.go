@@ -144,7 +144,7 @@ var _ = Describe("A Kustomization resume guarded by uid and resourceVersion, on 
 		_, err = applier.NewFlux(dyn).Suspend(ctx, ref)
 		Expect(err).NotTo(HaveOccurred())
 	}
-	// request asks Flux.Request for an apply of commit, with held run where the trigger's hold is
+	// request asks Flux.Request for an apply of commit, with held run where the applier claim's hold is
 	// checked: after the resume's read of the Kustomization, before its write.
 	request := func(held func(context.Context) error) (applier.Started, error) {
 		return applier.NewFlux(dyn).Request(ctx, ref, applier.Ask{

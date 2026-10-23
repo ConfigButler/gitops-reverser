@@ -19,36 +19,36 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// DefaultStatusRetryInterval is how soon a trigger status write that failed is tried again.
+// DefaultStatusRetryInterval is how soon an applier claim status write that failed is tried again.
 const DefaultStatusRetryInterval = 5 * time.Second
 
-// maxStatusConflicts bounds how often one write re-reads a trigger after losing a race with its
+// maxStatusConflicts bounds how often one write re-reads an applier claim after losing a race with its
 // reconciler, which writes the conditions and the source of the same status.
 const maxStatusConflicts = 5
 
-// StatusWriter writes what the branch workers publish on their apply triggers: status.operation
-// and status.repairPending. It implements git.ApplyTriggerStatusWriter, and runs as a manager.Runnable
+// StatusWriter writes what the branch workers publish on their applier claims: status.operation
+// and status.repairPending. It implements git.ApplierClaimStatusWriter, and runs as a manager.Runnable
 // beside the branch workers, on the leader as they are.
 //
 // A publication never blocks the worker. It is held until written, and a later publication for the
-// same trigger replaces one not yet written, so the status catches up with the worker's latest view
+// same applier claim replaces one not yet written, so the status catches up with the worker's latest view
 // rather than replaying each step. A write that fails is tried again after RetryInterval, unless a
 // newer publication replaced it in between.
 //
-// An operation an attempt starts reaches the trigger first through RecordApplyOperation, which the
-// dispatcher calls just before the write that starts the apply, so the trigger never shows an
+// An operation an attempt starts reaches the applier claim first through RecordApplyOperation, which the
+// dispatcher calls just before the write that starts the apply, so the applier claim never shows an
 // operation that nothing could have applied. Writes are made one at a time, each of the latest
 // publication, so a publication is never written over a later one.
 //
-// The status may hold an operation somebody else recorded: an earlier process, or the trigger's
+// The status may hold an operation somebody else recorded: an earlier process, or the applier claim's
 // reconciler for an apply started outside GitOps Reverser. A publication replaces status.operation
 // only on a status that holds none, or holds the same operation (sameOperation) at an earlier
 // point, so it never writes over a record that is not the one it carries. An operation the worker
 // withdraws, because its attempt was recorded and then asked for no apply, is replaced by what the
 // status held before it was recorded.
 //
-// The rest of the status (the conditions, the source) belongs to the trigger's reconciler. Each
-// write reads the trigger, sets these two fields and updates the status with the resourceVersion it
+// The rest of the status (the conditions, the source) belongs to the applier claim's reconciler. Each
+// write reads the applier claim, sets these two fields and updates the status with the resourceVersion it
 // read, so a status the reconciler wrote in between is never overwritten: the update conflicts and
 // the write reads again.
 type StatusWriter struct {
@@ -62,19 +62,19 @@ type StatusWriter struct {
 	// writing is held for every write, and for the whole of a batch, so writes land in the order
 	// their publications were made.
 	writing sync.Mutex
-	// recorded is the operation RecordApplyOperation last wrote on each trigger, with what the
+	// recorded is the operation RecordApplyOperation last wrote on each applier claim, with what the
 	// status held before it. It is read and written under writing.
-	recorded map[git.TriggerRef]recordedOperation
+	recorded map[git.ApplierClaimRef]recordedOperation
 
 	mu      sync.Mutex
-	pending map[git.TriggerRef]publication
+	pending map[git.ApplierClaimRef]publication
 	wake    chan struct{}
 }
 
-// publication is what is held for one trigger until it is written: the worker's latest status, and
+// publication is what is held for one applier claim until it is written: the worker's latest status, and
 // every operation withdrawn since the last write, which a later publication never takes back.
 type publication struct {
-	status    git.ApplyTriggerStatus
+	status    git.ApplierClaimStatus
 	withdrawn []*v1alpha3.ApplyOperation
 }
 
@@ -95,20 +95,20 @@ type recordedOperation struct {
 }
 
 var (
-	// errTriggerReleased is a write to a trigger that is gone, or being deleted.
-	errTriggerReleased = errors.New("the trigger is gone or being deleted")
-	// errOperationInFlight is a record refused because the trigger's status holds another operation
+	// errClaimReleased is a write to an applier claim that is gone, or being deleted.
+	errClaimReleased = errors.New("the applier claim is gone or being deleted")
+	// errOperationInFlight is a record refused because the applier claim's status holds another operation
 	// that has not completed.
-	errOperationInFlight = errors.New("the trigger records another operation that has not completed")
+	errOperationInFlight = errors.New("the applier claim records another operation that has not completed")
 )
 
 var (
-	_ git.ApplyTriggerStatusWriter   = (*StatusWriter)(nil)
+	_ git.ApplierClaimStatusWriter   = (*StatusWriter)(nil)
 	_ manager.Runnable               = (*StatusWriter)(nil)
 	_ manager.LeaderElectionRunnable = (*StatusWriter)(nil)
 )
 
-// NewStatusWriter returns a StatusWriter that reads triggers through reader, uncached so a write
+// NewStatusWriter returns a StatusWriter that reads applier claims through reader, uncached so a write
 // does not lose its race to a lagging cache, and writes their status through writer.
 func NewStatusWriter(reader client.Reader, writer client.StatusClient, log logr.Logger) *StatusWriter {
 	return &StatusWriter{
@@ -116,8 +116,8 @@ func NewStatusWriter(reader client.Reader, writer client.StatusClient, log logr.
 		writer:        writer,
 		log:           log,
 		RetryInterval: DefaultStatusRetryInterval,
-		recorded:      map[git.TriggerRef]recordedOperation{},
-		pending:       map[git.TriggerRef]publication{},
+		recorded:      map[git.ApplierClaimRef]recordedOperation{},
+		pending:       map[git.ApplierClaimRef]publication{},
 		wake:          make(chan struct{}, 1),
 	}
 }
@@ -125,9 +125,9 @@ func NewStatusWriter(reader client.Reader, writer client.StatusClient, log logr.
 // NeedLeaderElection is true: the branch workers that publish run only on the leader.
 func (w *StatusWriter) NeedLeaderElection() bool { return true }
 
-// PublishApplyTriggerStatus holds status for trigger until it is written, replacing any not yet
+// PublishApplierClaimStatus holds status for claim until it is written, replacing any not yet
 // written, but not what that one withdrew. It does not block.
-func (w *StatusWriter) PublishApplyTriggerStatus(trigger git.TriggerRef, status git.ApplyTriggerStatus) {
+func (w *StatusWriter) PublishApplierClaimStatus(claim git.ApplierClaimRef, status git.ApplierClaimStatus) {
 	next := publication{status: status}
 	if status.Operation != nil {
 		next.status.Operation = stored(status.Operation)
@@ -136,7 +136,7 @@ func (w *StatusWriter) PublishApplyTriggerStatus(trigger git.TriggerRef, status 
 		next.withdrawn = []*v1alpha3.ApplyOperation{stored(status.Withdrawn)}
 	}
 	w.mu.Lock()
-	w.pending[trigger] = w.pending[trigger].merged(next)
+	w.pending[claim] = w.pending[claim].merged(next)
 	w.mu.Unlock()
 	select {
 	case w.wake <- struct{}{}:
@@ -173,14 +173,14 @@ func (w *StatusWriter) Start(ctx context.Context) error {
 	}
 }
 
-// RecordApplyOperation writes operation on the trigger now, and returns once it is written. It
-// first writes what is held for the trigger, so the operation it replaces is the worker's latest
-// view of it. It fails, so that nothing starts the apply, when the trigger is gone or being
+// RecordApplyOperation writes operation on the applier claim now, and returns once it is written. It
+// first writes what is held for the applier claim, so the operation it replaces is the worker's latest
+// view of it. It fails, so that nothing starts the apply, when the applier claim is gone or being
 // deleted, and when its status holds another operation that has not completed: an apply started
-// outside GitOps Reverser, which the trigger's reconciler recorded, or one an earlier process
+// outside GitOps Reverser, which the applier claim's reconciler recorded, or one an earlier process
 // recorded, which the worker follows before it asks for anything.
 func (w *StatusWriter) RecordApplyOperation(
-	ctx context.Context, ref git.TriggerRef, operation *v1alpha3.ApplyOperation,
+	ctx context.Context, ref git.ApplierClaimRef, operation *v1alpha3.ApplyOperation,
 ) error {
 	w.writing.Lock()
 	defer w.writing.Unlock()
@@ -190,11 +190,11 @@ func (w *StatusWriter) RecordApplyOperation(
 
 	operation = stored(operation)
 	for range maxStatusConflicts {
-		trigger, err := w.read(ctx, ref)
+		claim, err := w.read(ctx, ref)
 		if err != nil {
 			return err
 		}
-		current := trigger.Operation()
+		current := claim.Operation()
 		switch {
 		case current != nil && sameOperation(current, operation):
 			return nil
@@ -204,13 +204,13 @@ func (w *StatusWriter) RecordApplyOperation(
 		}
 		// Kept before the update: an update that reports an error may still have landed.
 		w.recorded[ref] = recordedOperation{operation: operation, displaced: current.DeepCopy()}
-		trigger.SetOperation(operation, trigger.RepairPending())
-		err = w.writer.Status().Update(ctx, trigger)
+		claim.SetOperation(operation, claim.RepairPending())
+		err = w.writer.Status().Update(ctx, claim)
 		switch {
 		case err == nil:
 			return nil
 		case apierrors.IsNotFound(err):
-			return errTriggerReleased
+			return errClaimReleased
 		case apierrors.IsConflict(err):
 			continue
 		default:
@@ -220,9 +220,9 @@ func (w *StatusWriter) RecordApplyOperation(
 	return fmt.Errorf("record the operation on %s: it kept changing under the write", ref)
 }
 
-// writeHeld writes what is held for one trigger, if anything, and holds it again should the write
+// writeHeld writes what is held for one applier claim, if anything, and holds it again should the write
 // fail. The caller holds writing.
-func (w *StatusWriter) writeHeld(ctx context.Context, ref git.TriggerRef) error {
+func (w *StatusWriter) writeHeld(ctx context.Context, ref git.ApplierClaimRef) error {
 	w.mu.Lock()
 	held, ok := w.pending[ref]
 	delete(w.pending, ref)
@@ -231,7 +231,7 @@ func (w *StatusWriter) writeHeld(ctx context.Context, ref git.TriggerRef) error 
 		return nil
 	}
 	err := w.write(ctx, ref, held)
-	if err != nil && !errors.Is(err, errTriggerReleased) {
+	if err != nil && !errors.Is(err, errClaimReleased) {
 		w.holdAgain(ref, held)
 	}
 	return err
@@ -243,18 +243,18 @@ func (w *StatusWriter) writePending(ctx context.Context) bool {
 	defer w.writing.Unlock()
 	w.mu.Lock()
 	batch := w.pending
-	w.pending = map[git.TriggerRef]publication{}
+	w.pending = map[git.ApplierClaimRef]publication{}
 	w.mu.Unlock()
 
 	failed := false
-	for trigger, held := range batch {
-		err := w.write(ctx, trigger, held)
-		if err == nil || errors.Is(err, errTriggerReleased) {
+	for claim, held := range batch {
+		err := w.write(ctx, claim, held)
+		if err == nil || errors.Is(err, errClaimReleased) {
 			continue
 		}
-		w.log.Info("could not write an apply trigger's status; trying again", "trigger", trigger.String(),
+		w.log.Info("could not write an applier claim's status; trying again", "applier claim", claim.String(),
 			"error", err.Error())
-		if w.holdAgain(trigger, held) {
+		if w.holdAgain(claim, held) {
 			failed = true
 		}
 	}
@@ -263,7 +263,7 @@ func (w *StatusWriter) writePending(ctx context.Context) bool {
 
 // holdAgain holds a publication whose write failed, under any made since, and reports whether none
 // was: only then is a retry due, because a newer publication wakes the writer itself.
-func (w *StatusWriter) holdAgain(ref git.TriggerRef, failed publication) bool {
+func (w *StatusWriter) holdAgain(ref git.ApplierClaimRef, failed publication) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	newer, ok := w.pending[ref]
@@ -275,26 +275,26 @@ func (w *StatusWriter) holdAgain(ref git.TriggerRef, failed publication) bool {
 	return false
 }
 
-// write sets one trigger's status.operation, as operationToWrite says, and status.repairPending. A
-// trigger that is gone, or being deleted, takes the publication with it: errTriggerReleased.
-func (w *StatusWriter) write(ctx context.Context, ref git.TriggerRef, held publication) error {
+// write sets one applier claim's status.operation, as operationToWrite says, and status.repairPending. An
+// applier claim that is gone, or being deleted, takes the publication with it: errClaimReleased.
+func (w *StatusWriter) write(ctx context.Context, ref git.ApplierClaimRef, held publication) error {
 	for range maxStatusConflicts {
-		trigger, err := w.read(ctx, ref)
+		claim, err := w.read(ctx, ref)
 		if err != nil {
 			return err
 		}
-		operation := w.operationToWrite(ref, held, trigger.Operation())
+		operation := w.operationToWrite(ref, held, claim.Operation())
 		repairPending := held.status.RepairPending
-		if trigger.RepairPending() == repairPending && equality.Semantic.DeepEqual(trigger.Operation(), operation) {
+		if claim.RepairPending() == repairPending && equality.Semantic.DeepEqual(claim.Operation(), operation) {
 			return nil
 		}
-		trigger.SetOperation(operation, repairPending)
-		err = w.writer.Status().Update(ctx, trigger)
+		claim.SetOperation(operation, repairPending)
+		err = w.writer.Status().Update(ctx, claim)
 		switch {
 		case err == nil:
 			return nil
 		case apierrors.IsNotFound(err):
-			return errTriggerReleased
+			return errClaimReleased
 		case apierrors.IsConflict(err):
 			continue
 		default:
@@ -304,32 +304,32 @@ func (w *StatusWriter) write(ctx context.Context, ref git.TriggerRef, held publi
 	return fmt.Errorf("write the status of %s: it kept changing under the write", ref)
 }
 
-// read reads a trigger to write, and errTriggerReleased when it is gone or being deleted.
-func (w *StatusWriter) read(ctx context.Context, ref git.TriggerRef) (v1alpha3.ApplyTrigger, error) {
-	trigger := v1alpha3.NewApplyTrigger(ref.Kind)
-	if trigger == nil {
-		return nil, errTriggerReleased
+// read reads an applier claim to write, and errClaimReleased when it is gone or being deleted.
+func (w *StatusWriter) read(ctx context.Context, ref git.ApplierClaimRef) (v1alpha3.ApplierClaim, error) {
+	claim := v1alpha3.NewApplierClaim(ref.Kind)
+	if claim == nil {
+		return nil, errClaimReleased
 	}
-	err := w.reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger)
+	err := w.reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, claim)
 	switch {
 	case apierrors.IsNotFound(err):
-		return nil, errTriggerReleased
+		return nil, errClaimReleased
 	case err != nil:
 		return nil, fmt.Errorf("read %s: %w", ref, err)
-	case !trigger.GetDeletionTimestamp().IsZero():
-		return nil, errTriggerReleased
+	case !claim.GetDeletionTimestamp().IsZero():
+		return nil, errClaimReleased
 	}
-	return trigger, nil
+	return claim, nil
 }
 
-// operationToWrite is the operation a write of held leaves on a trigger whose status holds current.
+// operationToWrite is the operation a write of held leaves on an applier claim whose status holds current.
 // An operation held withdraws is replaced by what the status held before this writer recorded it,
 // or by none. Then the published operation is written over none, or over the same operation at an
 // earlier point; never over another, which somebody else recorded, and never in flight over the
 // same one completed: a worker that recovered an external resume publishes it as it was listed,
-// and the trigger's reconciler can have completed it since.
+// and the applier claim's reconciler can have completed it since.
 func (w *StatusWriter) operationToWrite(
-	ref git.TriggerRef, held publication, current *v1alpha3.ApplyOperation,
+	ref git.ApplierClaimRef, held publication, current *v1alpha3.ApplyOperation,
 ) *v1alpha3.ApplyOperation {
 	operation := current
 	if current != nil && holdsOperation(held.withdrawn, current) {
@@ -351,7 +351,7 @@ func (w *StatusWriter) operationToWrite(
 
 // sameOperation reports whether a and b are one operation, perhaps at different points: an
 // operation keeps the token and requestedAt it was recorded with. The requestedAt tells apart the
-// operations the trigger's reconciler records, which carry no token.
+// operations the applier claim's reconciler records, which carry no token.
 func sameOperation(a, b *v1alpha3.ApplyOperation) bool {
 	return a.Token == b.Token && a.RequestedAt.Equal(&b.RequestedAt)
 }

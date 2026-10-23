@@ -25,7 +25,7 @@ import (
 // the window: a write by the applier's own field manager, during an attempt, to an object the API
 // side edited after that attempt was sent, is the apply arriving late with no intent behind it. It
 // is withheld. Git keeps the edit, and the cluster runs the reverted value until an apply puts it
-// back, so the withheld write leaves a Repair pending for its applier (apply_trigger.go).
+// back, so the withheld write leaves a Repair pending for its applier (applier_claim.go).
 //
 // The applier's write to an object nobody edited is the apply itself, landing: its content is the
 // commit's, which Git already holds. It is not mirrored either (docs/design/applier-echoes.md, F1).

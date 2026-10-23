@@ -416,7 +416,7 @@
             },
             "appliers": {
               "type": "boolean",
-              "description": "A FluxTrigger or ArgoCDTrigger may name a Kustomization or Application in another namespace."
+              "description": "A FluxClaim or ArgoCDClaim may name a Kustomization or Application in another namespace."
             }
           }
         }

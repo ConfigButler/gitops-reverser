@@ -33,14 +33,14 @@ type echoApplier struct {
 	// owns reports whether the applier owns the live ConfigMap: Flux's owner labels name its
 	// Kustomization, or Argo CD's tracking annotation names its Application.
 	owns func(g Gomega, testNs, configMap string) bool
-	// operation is the trigger's status.operation.
-	operation func(g Gomega) triggerOperation
-	// startOther starts another applier applying folder, which is not the trigger's, and returns its
+	// operation is the applier claim's status.operation.
+	operation func(g Gomega) claimOperation
+	// startOther starts another applier applying folder, which is not the applier claim's, and returns its
 	// cleanup.
 	startOther func(folder string) func()
 }
 
-// fluxEchoApplier is the FluxTrigger fluxName of testNs, holding the Kustomization of that name.
+// fluxEchoApplier is the FluxClaim fluxName of testNs, holding the Kustomization of that name.
 func fluxEchoApplier(testNs, fluxName string, repo *RepoArtifacts) echoApplier {
 	return echoApplier{
 		name: "Flux",
@@ -50,8 +50,8 @@ func fluxEchoApplier(testNs, fluxName string, repo *RepoArtifacts) echoApplier {
 			g.Expect(err).NotTo(HaveOccurred())
 			return strings.TrimSpace(out) == fluxName
 		},
-		operation: func(g Gomega) triggerOperation {
-			return readTriggerOperation(g, testNs, fluxTriggerResource, fluxName)
+		operation: func(g Gomega) claimOperation {
+			return readClaimOperation(g, testNs, fluxClaimResource, fluxName)
 		},
 		startOther: func(folder string) func() {
 			other := "other-" + fluxName
@@ -65,7 +65,7 @@ func fluxEchoApplier(testNs, fluxName string, repo *RepoArtifacts) echoApplier {
 	}
 }
 
-// argoEchoApplier is the ArgoCDTrigger of run, holding its Application.
+// argoEchoApplier is the ArgoCDClaim of run, holding its Application.
 func argoEchoApplier(run argoBiDirectionalRun) echoApplier {
 	return echoApplier{
 		name: "Argo CD",
@@ -75,12 +75,12 @@ func argoEchoApplier(run argoBiDirectionalRun) echoApplier {
 			g.Expect(err).NotTo(HaveOccurred())
 			return strings.HasPrefix(strings.TrimSpace(out), run.appName+":")
 		},
-		operation: run.triggerOperation,
+		operation: run.claimOperation,
 		startOther: func(folder string) func() {
 			other := run.baseAppConfig()
 			other.Name = "other-" + run.appName
 			other.Path = folder
-			other.Automated = true // not a trigger's: it syncs on its own
+			other.Automated = true // not an applier claim's: it syncs on its own
 			run.applyArgoApp(other)
 			return func() { cleanupNamespacedResource(run.argoNs, "application.argoproj.io", other.Name) }
 		},
@@ -350,9 +350,9 @@ func echoScenarios(run func() *echoRun) {
 		folder := "other/" + r.testNs
 		head := pushFileFromOutside(r.repo, folder+"/owned-elsewhere.yaml",
 			echoConfigMap(r.testNs, "owned-elsewhere", "e1"), "e2e: another applier's folder")
-		// The push is a foreign commit to the trigger's repository too, so it is applied first; what
+		// The push is a foreign commit to the applier claim's repository too, so it is applied first; what
 		// must not follow is an apply of the object the other applier creates.
-		var before triggerOperation
+		var before claimOperation
 		Eventually(func(g Gomega) {
 			before = r.applier.operation(g)
 			g.Expect(before.Commit).To(Equal(head), "the push is applied")
@@ -368,7 +368,7 @@ func echoScenarios(run func() *echoRun) {
 		}, echoApplyBudget, 2*time.Second).Should(Succeed())
 		Consistently(func(g Gomega) {
 			_, inGit := r.committedValue(g, "owned-elsewhere")
-			g.Expect(inGit).To(BeFalse(), "it is not mirrored into the triggered folder")
+			g.Expect(inGit).To(BeFalse(), "it is not mirrored into the coordinated folder")
 			g.Expect(r.applier.operation(g).Token).To(Equal(before.Token), "nor adopted")
 		}, echoHold, 2*time.Second).Should(Succeed())
 	})
@@ -436,11 +436,11 @@ var _ = Describe("Bi Directional applier echoes (Flux)", Label("bi-directional",
 			pipeline.start()
 
 			applyFluxApplierWithPrune(testNs, repo, fluxName, fluxName+"-git", "main", "./"+pipeline.gitPath, true)
-			createFluxTrigger(testNs, fluxName, fluxName)
-			nameApplyTrigger(testNs, pipeline.targetName, "FluxTrigger", fluxName, "")
+			createFluxClaim(testNs, fluxName, fluxName)
+			nameApplierClaim(testNs, pipeline.targetName, "FluxClaim", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
-				"ApplyTriggerReady", "True", "Succeeded", "")
-			verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
+				"ApplierClaimReady", "True", "Succeeded", "")
+			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
 
 			r = &echoRun{timingPipeline: pipeline, applier: fluxEchoApplier(testNs, fluxName, repo)}
 		})
@@ -450,7 +450,7 @@ var _ = Describe("Bi Directional applier echoes (Flux)", Label("bi-directional",
 				return
 			}
 			r.cleanup()
-			cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
+			cleanupNamespacedResource(testNs, fluxClaimResource, fluxName)
 			cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 			cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
 			cleanupNamespacedResource("flux-system", "secret", fluxName+"-git")
@@ -484,10 +484,10 @@ var _ = Describe("Bi Directional applier echoes (Argo CD)", Label("bi-directiona
 			cfg := run.baseAppConfig()
 			cfg.Path = pipeline.gitPath
 			run.applyArgoApp(cfg)
-			createArgoCDTrigger(testNs, run.appName, run.argoNs, run.appName)
-			nameApplyTrigger(testNs, pipeline.targetName, "ArgoCDTrigger", run.appName, "")
+			createArgoCDClaim(testNs, run.appName, run.argoNs, run.appName)
+			nameApplierClaim(testNs, pipeline.targetName, "ArgoCDClaim", run.appName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
-				"ApplyTriggerReady", "True", "Succeeded", "")
+				"ApplierClaimReady", "True", "Succeeded", "")
 
 			r = &echoRun{timingPipeline: pipeline, applier: argoEchoApplier(run)}
 		})
@@ -498,7 +498,7 @@ var _ = Describe("Bi Directional applier echoes (Argo CD)", Label("bi-directiona
 			}
 			cleanupNamespacedResource(run.argoNs, "application.argoproj.io", run.appName)
 			cleanupNamespacedResource(run.argoNs, "secret", run.repoSecretName)
-			cleanupNamespacedResource(testNs, argoCDTriggerResource, run.appName)
+			cleanupNamespacedResource(testNs, argoCDClaimResource, run.appName)
 			r.cleanup()
 			cleanupNamespace(testNs)
 		})

@@ -1,12 +1,12 @@
-# What GitOps Reverser needs to drive a Flux Kustomization a FluxTrigger holds: read the
+# What GitOps Reverser needs to drive a Flux Kustomization a FluxClaim holds: read the
 # Kustomization and the GitRepository it applies from, suspend and resume the Kustomization and
 # stamp reconcile.fluxcd.io/requestedAt on either, list the consumers of the GitRepository
-# (Kustomizations, and HelmReleases with the HelmCharts built from it; without it the trigger lists
+# (Kustomizations, and HelmReleases with the HelmCharts built from it; without it the applier claim lists
 # none in status.source.otherConsumers), and check that it may.
 #
 # It is kept OUT of role.yaml because no GitTarget needs it until one names an applier, and an
 # install that does not use Flux should not hold patch rights on Flux objects. Drop this pair when
-# no FluxTrigger exists (Helm: `applierAccess.flux: false`, the default there). For a
+# no FluxClaim exists (Helm: `applierAccess.flux: false`, the default there). For a
 # remote source cluster, grant the same to the identity of the ClusterProvider's kubeconfig there.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

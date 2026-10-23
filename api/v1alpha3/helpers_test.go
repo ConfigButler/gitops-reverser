@@ -314,12 +314,12 @@ func TestSourceCluster_IsTheProvidersNamespacedName(t *testing.T) {
 	assert.NotEmpty(t, unset.SourceCluster())
 }
 
-// TestApplyTrigger_AppliersDefaultToTheTriggersNamespace: a reference with no namespace names an
-// applier in the trigger's own namespace, as Flux defaults a sourceRef.
-func TestApplyTrigger_AppliersDefaultToTheTriggersNamespace(t *testing.T) {
-	flux := &FluxTrigger{
+// TestApplierClaim_AppliersDefaultToTheClaimsNamespace: a reference with no namespace names an
+// applier in the applier claim's own namespace, as Flux defaults a sourceRef.
+func TestApplierClaim_AppliersDefaultToTheClaimsNamespace(t *testing.T) {
+	flux := &FluxClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
-		Spec: FluxTriggerSpec{
+		Spec: FluxClaimSpec{
 			KubeProviderRef:  meta.NamespacedObjectReference{Name: "hub"},
 			KustomizationRef: meta.NamespacedObjectReference{Name: "apps"},
 		},
@@ -327,78 +327,78 @@ func TestApplyTrigger_AppliersDefaultToTheTriggersNamespace(t *testing.T) {
 	assert.Equal(t, "team-a/apps", flux.Applier().String())
 	assert.Equal(t, "team-a/hub", flux.KubeProviderKey().String())
 
-	argo := &ArgoCDTrigger{
+	argo := &ArgoCDClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
-		Spec: ArgoCDTriggerSpec{
+		Spec: ArgoCDClaimSpec{
 			ApplicationRef: meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
 		},
 	}
 	assert.Equal(t, "argocd/apps", argo.Applier().String())
 }
 
-// TestArgoCDTrigger_SourceBindingNamesTheBranch: targetRevision may spell a branch as refs/heads/,
+// TestArgoCDClaim_SourceBindingNamesTheBranch: targetRevision may spell a branch as refs/heads/,
 // and an empty one is Argo CD's HEAD, which follows no branch GitOps Reverser writes.
-func TestArgoCDTrigger_SourceBindingNamesTheBranch(t *testing.T) {
-	trigger := &ArgoCDTrigger{}
-	_, _, known := trigger.SourceBinding()
+func TestArgoCDClaim_SourceBindingNamesTheBranch(t *testing.T) {
+	claim := &ArgoCDClaim{}
+	_, _, known := claim.SourceBinding()
 	assert.False(t, known)
 
 	for revision, branch := range map[string]string{"main": "main", "refs/heads/main": "main", "": "HEAD"} {
-		trigger.Status.Source = &ArgoCDTriggerSource{RepoURL: "https://example.com/r.git", TargetRevision: revision}
-		url, got, known := trigger.SourceBinding()
+		claim.Status.Source = &ArgoCDClaimSource{RepoURL: "https://example.com/r.git", TargetRevision: revision}
+		url, got, known := claim.SourceBinding()
 		assert.True(t, known)
 		assert.Equal(t, "https://example.com/r.git", url)
 		assert.Equal(t, branch, got, "targetRevision %q", revision)
 	}
 }
 
-// TestNewApplyTrigger_KnowsBothKinds: a kind this release does not know is nil, never a guess.
-// TestApplyTrigger_SharedSource: a FluxTrigger shares the GitRepository it last read; an
-// ArgoCDTrigger shares nothing.
-func TestApplyTrigger_SharedSource(t *testing.T) {
-	flux := &FluxTrigger{}
+// TestNewApplierClaim_KnowsBothKinds: a kind this release does not know is nil, never a guess.
+// TestApplierClaim_SharedSource: a FluxClaim shares the GitRepository it last read; an
+// ArgoCDClaim shares nothing.
+func TestApplierClaim_SharedSource(t *testing.T) {
+	flux := &FluxClaim{}
 	_, known := flux.SharedSource()
-	assert.False(t, known, "a trigger that has not read its source shares none yet")
+	assert.False(t, known, "an applier claim that has not read its source shares none yet")
 
-	flux.Status.Source = &FluxTriggerSource{
+	flux.Status.Source = &FluxClaimSource{
 		GitRepository: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "platform"},
 	}
 	source, known := flux.SharedSource()
 	assert.True(t, known)
 	assert.Equal(t, "flux-system/platform", source.String())
 
-	argo := &ArgoCDTrigger{}
+	argo := &ArgoCDClaim{}
 	_, known = argo.SharedSource()
 	assert.False(t, known, "every sync pins its own revision")
 }
 
-func TestNewApplyTrigger_KnowsBothKinds(t *testing.T) {
-	assert.IsType(t, &FluxTrigger{}, NewApplyTrigger(ApplyTriggerKindFlux))
-	assert.IsType(t, &ArgoCDTrigger{}, NewApplyTrigger(ApplyTriggerKindArgoCD))
-	assert.Nil(t, NewApplyTrigger("WebhookTrigger"))
+func TestNewApplierClaim_KnowsBothKinds(t *testing.T) {
+	assert.IsType(t, &FluxClaim{}, NewApplierClaim(ApplierClaimKindFlux))
+	assert.IsType(t, &ArgoCDClaim{}, NewApplierClaim(ApplierClaimKindArgoCD))
+	assert.Nil(t, NewApplierClaim("WebhookClaim"))
 }
 
-// TestApplyTrigger_StatusAccessors: both kinds answer the shared interface from their own status,
+// TestApplierClaim_StatusAccessors: both kinds answer the shared interface from their own status,
 // and SetOperation replaces the operation and repairPending together.
-func TestApplyTrigger_StatusAccessors(t *testing.T) {
+func TestApplierClaim_StatusAccessors(t *testing.T) {
 	operation := &ApplyOperation{Phase: ApplyOperationRunning, Commit: "abc"}
-	flux := &FluxTrigger{}
-	argo := &ArgoCDTrigger{}
-	for _, trigger := range []ApplyTrigger{flux, argo} {
-		assert.Nil(t, trigger.Operation())
-		assert.False(t, trigger.RepairPending())
-		trigger.SetOperation(operation, true)
-		assert.Equal(t, operation, trigger.Operation())
-		assert.True(t, trigger.RepairPending())
-		trigger.SetObservedGeneration(3)
-		assert.NotNil(t, trigger.StatusConditions())
+	flux := &FluxClaim{}
+	argo := &ArgoCDClaim{}
+	for _, claim := range []ApplierClaim{flux, argo} {
+		assert.Nil(t, claim.Operation())
+		assert.False(t, claim.RepairPending())
+		claim.SetOperation(operation, true)
+		assert.Equal(t, operation, claim.Operation())
+		assert.True(t, claim.RepairPending())
+		claim.SetObservedGeneration(3)
+		assert.NotNil(t, claim.StatusConditions())
 	}
 	assert.Equal(t, int64(3), flux.Status.ObservedGeneration)
 	assert.Equal(t, int64(3), argo.Status.ObservedGeneration)
 
-	assert.Equal(t, ApplyTriggerKindFlux, flux.TriggerKind())
+	assert.Equal(t, ApplierClaimKindFlux, flux.ClaimKind())
 	assert.Equal(t, ApplierKindKustomization, flux.ApplierKind())
-	assert.Equal(t, ApplyTriggerKindArgoCD, argo.TriggerKind())
+	assert.Equal(t, ApplierClaimKindArgoCD, argo.ClaimKind())
 	assert.Equal(t, ApplierKindApplication, argo.ApplierKind())
 	assert.Equal(t, types.NamespacedName{}, argo.KubeProviderKey(),
 		"an omitted kubeProviderRef names nothing: there is no default provider")
@@ -407,7 +407,7 @@ func TestApplyTrigger_StatusAccessors(t *testing.T) {
 
 	_, _, known := flux.SourceBinding()
 	assert.False(t, known)
-	flux.Status.Source = &FluxTriggerSource{URL: "https://example.com/r.git", Branch: "main"}
+	flux.Status.Source = &FluxClaimSource{URL: "https://example.com/r.git", Branch: "main"}
 	url, branch, known := flux.SourceBinding()
 	assert.True(t, known)
 	assert.Equal(t, "https://example.com/r.git", url)

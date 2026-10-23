@@ -36,7 +36,7 @@ const fluxGuide = "../../docs/bi-directional-flux.md"
 // TestFluxGuide_TheCompleteExampleIsAccepted reads the guide's complete example and checks it
 // against the code that validates and drives a Flux applier: the GitOps Reverser objects decode
 // into the API types with no unknown field, Configured comes out True for the Flux objects as
-// written, the trigger's source binds the GitTarget, and a request fetches and resumes the
+// written, the applier claim's source binds the GitTarget, and a request fetches and resumes the
 // Kustomization. It also holds the example to the guide's own
 // advice, so the page cannot recommend one thing and show another.
 func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
@@ -46,15 +46,15 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	var receiver v1alpha3.GitReceiver
 	var branch v1alpha3.GitBranch
 	var target v1alpha3.GitTarget
-	var trigger v1alpha3.FluxTrigger
+	var claim v1alpha3.FluxClaim
 	var secret corev1.Secret
 	decodeStrict(t, objects, "GitProvider", &provider)
 	decodeStrict(t, objects, "GitReceiver", &receiver)
 	decodeStrict(t, objects, "GitBranch", &branch)
 	decodeStrict(t, objects, "GitTarget", &target)
-	decodeStrict(t, objects, v1alpha3.ApplyTriggerKindFlux, &trigger)
+	decodeStrict(t, objects, v1alpha3.ApplierClaimKindFlux, &claim)
 	decodeStrict(t, objects, "Secret", &secret)
-	exampleReachesItsApplier(t, objects, &trigger)
+	exampleReachesItsApplier(t, objects, &claim)
 	repository := one(t, objects, "GitRepository")
 	kustomization := one(t, objects, "Kustomization")
 	assert.NotContains(t, objects, "Receiver", "the guide tells the reader to remove the Flux Receiver")
@@ -73,10 +73,10 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	assert.Equal(t, receiver.Namespace, secret.Namespace, "a GitReceiver reads its token in its own namespace")
 	assert.Equal(t, provider.Namespace, secret.Namespace)
 	assert.NotEmpty(t, secret.StringData[v1alpha3.ReceiverTokenKey], "the receiver reads the token key")
-	require.NotNil(t, target.Spec.ApplyTriggerRef)
-	assert.Equal(t, v1alpha3.ApplyTriggerReference{Kind: v1alpha3.ApplyTriggerKindFlux, Name: trigger.Name},
-		*target.Spec.ApplyTriggerRef)
-	assert.Equal(t, target.Namespace, trigger.Namespace, "a GitTarget names a trigger in its own namespace")
+	require.NotNil(t, target.Spec.ApplierClaimRef)
+	assert.Equal(t, v1alpha3.ApplierClaimReference{Kind: v1alpha3.ApplierClaimKindFlux, Name: claim.Name},
+		*target.Spec.ApplierClaimRef)
+	assert.Equal(t, target.Namespace, claim.Namespace, "a GitTarget names an applier claim in its own namespace")
 	assert.Equal(t, v1alpha3.RefusalActionReapply, target.Spec.OnRefusal)
 
 	// The Flux objects follow the guide's advice.
@@ -89,7 +89,7 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	assert.False(t, setsSuspend, "the manifest omits spec.suspend, which GitOps Reverser holds")
 
 	// The applier, as written, is accepted, binds the GitTarget, and is driven.
-	ref := trigger.Applier()
+	ref := claim.Applier()
 	assert.Equal(t, types.NamespacedName{Namespace: kustomization.GetNamespace(), Name: kustomization.GetName()}, ref)
 	want := Binding{RepositoryURL: provider.Spec.URL, Branch: branch.Spec.Branch}
 
@@ -99,8 +99,12 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	verdict := flux.Validate(context.Background(), ref)
 	assert.True(t, verdict.OK, "Configured for the guide's example: %s: %s", verdict.Reason, verdict.Message)
 	require.NotNil(t, verdict.Source)
-	trigger.Status.Source = &v1alpha3.FluxTriggerSource{URL: verdict.Source.URL, Branch: verdict.Source.Revision}
-	assert.Empty(t, BindingMismatch(&trigger, want), "the trigger's Kustomization applies what the GitTarget writes")
+	claim.Status.Source = &v1alpha3.FluxClaimSource{URL: verdict.Source.URL, Branch: verdict.Source.Revision}
+	assert.Empty(
+		t,
+		BindingMismatch(&claim, want),
+		"the applier claim's Kustomization applies what the GitTarget writes",
+	)
 
 	sim := fluxsim.New(t, client)
 	sim.Fetches(types.NamespacedName{Namespace: repository.GetNamespace(), Name: repository.GetName()},
@@ -169,21 +173,21 @@ func decodeStrict(t *testing.T, objects map[string][]*unstructured.Unstructured,
 	require.NoError(t, decoder.Decode(into), "the guide's %s must decode with no unknown field", kind)
 }
 
-// exampleReachesItsApplier checks that the guide's example KubeProvider admits the trigger's
-// namespace and lets it reach its applier, through the admission the trigger reconciler runs.
+// exampleReachesItsApplier checks that the guide's example KubeProvider admits the applier claim's
+// namespace and lets it reach its applier, through the admission the applier claim reconciler runs.
 func exampleReachesItsApplier(
-	t *testing.T, objects map[string][]*unstructured.Unstructured, trigger v1alpha3.ApplyTrigger,
+	t *testing.T, objects map[string][]*unstructured.Unstructured, claim v1alpha3.ApplierClaim,
 ) {
 	t.Helper()
 	var provider v1alpha3.KubeProvider
 	decodeStrict(t, objects, "KubeProvider", &provider)
-	assert.Equal(t, trigger.KubeProviderKey(), provider.Key(), "the example declares the trigger's KubeProvider")
+	assert.Equal(t, claim.KubeProviderKey(), provider.Key(), "the example declares the applier claim's KubeProvider")
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, v1alpha3.AddToScheme(scheme))
 	control := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&provider).Build()
-	decision, err := authz.ApplyTriggerAdmitted(context.Background(), control, trigger)
+	decision, err := authz.ApplierClaimAdmitted(context.Background(), control, claim)
 	require.NoError(t, err)
-	assert.True(t, decision.Allowed, "the example's KubeProvider lets the trigger reach its applier: %s: %s",
+	assert.True(t, decision.Allowed, "the example's KubeProvider lets the applier claim reach its applier: %s: %s",
 		decision.Reason, decision.Message)
 }

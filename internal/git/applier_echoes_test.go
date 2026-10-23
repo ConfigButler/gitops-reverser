@@ -272,16 +272,16 @@ func TestApplierEchoes_AReplayedResyncObeysATightenedPruneMode(t *testing.T) {
 // keyOf is the key of a GitTarget in the default namespace.
 func keyOf(name string) client.ObjectKey { return client.ObjectKey{Namespace: "default", Name: name} }
 
-// withTrigger names a FluxTrigger on team-a and gives the worker a requester that reports nothing,
+// withClaim names a FluxClaim on team-a and gives the worker a requester that reports nothing,
 // so the test reports for it. The loop's commit window is an hour, so a window stays open until
 // something closes it.
-func (f *echoFixture) withTrigger() *recordingRequester {
+func (f *echoFixture) withClaim() *recordingRequester {
 	f.t.Helper()
 	var target configv1alpha3.GitTarget
 	require.NoError(f.t, f.worker.Client.Get(f.worker.ctx, keyOf(echoTarget), &target))
-	target.Spec.ApplyTriggerRef = testApplier(echoTarget)
+	target.Spec.ApplierClaimRef = testApplier(echoTarget)
 	require.NoError(f.t, f.worker.Client.Update(f.worker.ctx, &target))
-	createTestTrigger(f.t, f.worker.Client, &target)
+	createTestClaim(f.t, f.worker.Client, &target)
 	requester := &recordingRequester{manual: true}
 	f.worker.applyRequester = requester
 	f.loop.stopTimers()
@@ -297,7 +297,7 @@ func (f *echoFixture) withTrigger() *recordingRequester {
 	return requester
 }
 
-// echoApplier is the applier team-a's trigger holds.
+// echoApplier is the applier team-a's applier claim holds.
 func (f *echoFixture) echoApplier() *applierState {
 	f.t.Helper()
 	require.Len(f.t, f.loop.appliers, 1)
@@ -313,7 +313,7 @@ func (f *echoFixture) echoApplier() *applierState {
 // in the apply window, and the apply landing over it is withheld, with a Repair pending.
 func TestApplierEchoes_FlushThenApply(t *testing.T) {
 	f := newEchoFixture(t, "echo-flush", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1", "y": "y1"})
-	requester := f.withTrigger()
+	requester := f.withClaim()
 	f.loop.lastPushAt = time.Now() // the push cooldown runs: a flush does not wait for it
 
 	f.writeWindow(echoEvent("x", "x2")) // E0, in the open window when the apply comes due
@@ -354,7 +354,7 @@ func TestApplierEchoes_FlushThenApply(t *testing.T) {
 // there. It is adopted; a resync that only updates adopts nothing.
 func TestApplierEchoes_AResyncThatAddsAnObjectAdoptsIt(t *testing.T) {
 	f := newEchoFixture(t, "echo-resync-adopt", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
-	f.withTrigger()
+	f.withClaim()
 
 	resync := func(desired ...manifestanalyzer.DesiredResource) {
 		req := &ResyncRequest{Desired: desired, GitTargetName: echoTarget, GitTargetNamespace: "default",
@@ -390,7 +390,7 @@ func TestApplierEchoes_ASuspendedResyncIsNotRetained(t *testing.T) {
 
 // TestApplierEchoes_AnAppliedFolderIsCreatedByItsResync: a folder an applier applies must exist
 // before the applier is asked to apply it, or Argo CD retries a sync of a missing path for minutes
-// and Flux fails it. A resync of a GitTarget naming a trigger creates the folder with its bootstrap
+// and Flux fails it. A resync of a GitTarget naming an applier claim creates the folder with its bootstrap
 // files, with no object to write; once it exists, an empty resync commits nothing. A GitTarget no
 // applier applies keeps the old rule: an empty resync commits nothing.
 func TestApplierEchoes_AnAppliedFolderIsCreatedByItsResync(t *testing.T) {
@@ -415,7 +415,7 @@ func TestApplierEchoes_AnAppliedFolderIsCreatedByItsResync(t *testing.T) {
 
 	applied := newEchoFixture(t, "echo-bootstrap-applied", configv1alpha3.PruneOnEvent, nil)
 	seed(applied)
-	applied.withTrigger()
+	applied.withClaim()
 	emptyResync(applied)
 	assert.NotEmpty(t, applied.onMain(echoTarget+"/README.md"), "the folder exists, with its bootstrap files")
 	created := main(applied)

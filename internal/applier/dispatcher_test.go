@@ -62,19 +62,19 @@ var (
 	testGitBranch = types.NamespacedName{Namespace: targetNS, Name: "platform-" + testBranch}
 )
 
-// Test-only annotations on a GitTarget, which newDispatcherFixture reads to create the trigger the
+// Test-only annotations on a GitTarget, which newDispatcherFixture reads to create the applier claim the
 // GitTarget names: the applier it holds ("namespace/name") and the cluster it is in (a source-cluster
 // id, "namespace/name" of its KubeProvider).
 const (
-	testKustomizationAnnotation  = "test.gitops-reverser/kustomization"
-	testApplicationAnnotation    = "test.gitops-reverser/application"
-	testTriggerClusterAnnotation = "test.gitops-reverser/trigger-cluster"
+	testKustomizationAnnotation = "test.gitops-reverser/kustomization"
+	testApplicationAnnotation   = "test.gitops-reverser/application"
+	testClaimClusterAnnotation  = "test.gitops-reverser/trigger-cluster"
 )
 
 // gitTarget builds a GitTarget on testBranchKey, mirroring the KubeProvider cluster (localCluster
 // when empty). A
-// kustomizationRef makes it name the FluxTrigger of that Kustomization's name, which holds it in the
-// same cluster; nil names no trigger.
+// kustomizationRef makes it name the FluxClaim of that Kustomization's name, which holds it in the
+// same cluster; nil names no applier claim.
 func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference, cluster string) *v1alpha3.GitTarget {
 	target := &v1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: name, UID: uid(name)},
@@ -89,45 +89,45 @@ func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference
 	target.Spec.KubeProviderRef = kubeProviderRef(cluster)
 	if kustomizationRef != nil {
 		namesKustomization(target, kustomizationRef.Namespace, kustomizationRef.Name)
-		target.Annotations[testTriggerClusterAnnotation] = target.SourceCluster()
+		target.Annotations[testClaimClusterAnnotation] = target.SourceCluster()
 	}
 	return target
 }
 
-// namesKustomization makes a GitTarget name the FluxTrigger called name, which holds the
-// Kustomization namespace/name (the trigger's own namespace when namespace is empty).
+// namesKustomization makes a GitTarget name the FluxClaim called name, which holds the
+// Kustomization namespace/name (the applier claim's own namespace when namespace is empty).
 func namesKustomization(target *v1alpha3.GitTarget, namespace, name string) {
 	if target.Annotations == nil {
 		target.Annotations = map[string]string{}
 	}
-	target.Spec.ApplyTriggerRef = &v1alpha3.ApplyTriggerReference{Kind: v1alpha3.ApplyTriggerKindFlux, Name: name}
+	target.Spec.ApplierClaimRef = &v1alpha3.ApplierClaimReference{Kind: v1alpha3.ApplierClaimKindFlux, Name: name}
 	target.Annotations[testKustomizationAnnotation] = namespace + "/" + name
 }
 
-// triggersFor returns the trigger each GitTarget names, as its test annotations describe it.
-func triggersFor(objects []client.Object) []client.Object {
-	var triggers []client.Object
+// claimsFor returns the applier claim each GitTarget names, as its test annotations describe it.
+func claimsFor(objects []client.Object) []client.Object {
+	var claims []client.Object
 	seen := map[string]bool{}
 	for _, obj := range objects {
 		target, ok := obj.(*v1alpha3.GitTarget)
-		if !ok || target.Spec.ApplyTriggerRef == nil {
+		if !ok || target.Spec.ApplierClaimRef == nil {
 			continue
 		}
-		key := target.Spec.ApplyTriggerRef.Kind + "/" + target.Spec.ApplyTriggerRef.Name
+		key := target.Spec.ApplierClaimRef.Kind + "/" + target.Spec.ApplierClaimRef.Name
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		cluster := target.Annotations[testTriggerClusterAnnotation]
+		cluster := target.Annotations[testClaimClusterAnnotation]
 		if cluster == "" {
 			cluster = clusterID(localCluster)
 		}
-		meta := metav1.ObjectMeta{Namespace: target.Namespace, Name: target.Spec.ApplyTriggerRef.Name}
+		meta := metav1.ObjectMeta{Namespace: target.Namespace, Name: target.Spec.ApplierClaimRef.Name}
 		providerNS, providerName, _ := strings.Cut(cluster, "/")
 		provider := fluxmeta.NamespacedObjectReference{Namespace: providerNS, Name: providerName}
 		if app, ok := target.Annotations[testApplicationAnnotation]; ok {
 			namespace, name, _ := strings.Cut(app, "/")
-			triggers = append(triggers, &v1alpha3.ArgoCDTrigger{ObjectMeta: meta, Spec: v1alpha3.ArgoCDTriggerSpec{
+			claims = append(claims, &v1alpha3.ArgoCDClaim{ObjectMeta: meta, Spec: v1alpha3.ArgoCDClaimSpec{
 				KubeProviderRef: provider,
 				ApplicationRef:  fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
 			}})
@@ -136,16 +136,16 @@ func triggersFor(objects []client.Object) []client.Object {
 		if ks, ok := target.Annotations[testKustomizationAnnotation]; ok {
 			namespace, name, _ := strings.Cut(ks, "/")
 			// Its reconciler holds the Kustomization (Ask.Held), unless a test says otherwise.
-			triggers = append(triggers, &v1alpha3.FluxTrigger{ObjectMeta: meta, Spec: v1alpha3.FluxTriggerSpec{
+			claims = append(claims, &v1alpha3.FluxClaim{ObjectMeta: meta, Spec: v1alpha3.FluxClaimSpec{
 				KubeProviderRef:  provider,
 				KustomizationRef: fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
-			}, Status: v1alpha3.FluxTriggerStatus{Conditions: []metav1.Condition{{
-				Type: TriggerConditionHeld, Status: metav1.ConditionTrue, Reason: "Suspended",
+			}, Status: v1alpha3.FluxClaimStatus{Conditions: []metav1.Condition{{
+				Type: ApplierClaimConditionHeld, Status: metav1.ConditionTrue, Reason: "Suspended",
 				LastTransitionTime: metav1.Now(),
 			}}}})
 		}
 	}
-	return triggers
+	return claims
 }
 
 // reapplying makes a GitTarget consent to a Refusal request.
@@ -162,7 +162,7 @@ func kubeProvider(name string, admits ...string) *v1alpha3.KubeProvider {
 		Spec: v1alpha3.KubeProviderSpec{
 			InCluster:  &v1alpha3.KubeProviderInCluster{},
 			AccessFrom: &v1alpha3.NamespaceMatcher{Names: admits},
-			// The test appliers live in flux-system and argocd, not in the triggers' namespace.
+			// The test appliers live in flux-system and argocd, not in the applier claims' namespace.
 			AllowCrossNamespace: &v1alpha3.KubeProviderCrossNamespace{Appliers: true},
 		},
 	}
@@ -198,11 +198,11 @@ func ref(name string) itypes.ResourceReference { return itypes.NewResourceRefere
 func uid(name string) types.UID { return types.UID("uid-" + name) }
 
 // kustomizationApplier is a Kustomization applier in the cluster of the test KubeProvider called
-// cluster, held by the FluxTrigger in targetNS of the Kustomization's name.
+// cluster, held by the FluxClaim in targetNS of the Kustomization's name.
 func kustomizationApplier(cluster, namespace, name string) git.ApplierRef {
 	return git.ApplierRef{
-		Trigger: git.TriggerRef{Kind: v1alpha3.ApplyTriggerKindFlux, Namespace: targetNS, Name: name},
-		Cluster: clusterID(cluster), Kind: v1alpha3.ApplierKindKustomization, Namespace: namespace, Name: name,
+		ApplierClaim: git.ApplierClaimRef{Kind: v1alpha3.ApplierClaimKindFlux, Namespace: targetNS, Name: name},
+		Cluster:      clusterID(cluster), Kind: v1alpha3.ApplierKindKustomization, Namespace: namespace, Name: name,
 	}
 }
 
@@ -259,7 +259,7 @@ func newDispatcherFixture(t *testing.T, targets []client.Object, sourceObjs ...r
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, v1alpha3.AddToScheme(scheme))
 	controlClient := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(append(append(controlPlane(), targets...), triggersFor(targets)...)...).Build()
+		WithObjects(append(append(controlPlane(), targets...), claimsFor(targets)...)...).Build()
 
 	source := &sourceStub{client: newSourceClient(sourceObjs...)}
 	sim := fluxsim.New(t, source.client)
@@ -417,7 +417,7 @@ func TestDispatcher_AsksOnceForEveryTarget(t *testing.T) {
 // namespace and so names one in its own.
 func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
 	own := kustomizationApplier("prod-eu-1", targetNS, "own")
-	// Suspended, as the Kustomization its trigger holds is. A resumed one is reconciled by the
+	// Suspended, as the Kustomization its applier claim holds is. A resumed one is reconciled by the
 	// simulated kustomize-controller as soon as the fetch lands a new artifact, and that status write
 	// can move its resourceVersion between the resume's read and its apply: the resume is then
 	// refused with a Conflict and made again, which is correct, but shows up here as two resumes.
@@ -435,9 +435,9 @@ func TestDispatcher_LooksTheApplierUpInItsCluster(t *testing.T) {
 		f.patches())
 }
 
-// appliedFrom puts the applier of a GitTarget's trigger in the cluster of another test KubeProvider.
+// appliedFrom puts the applier of a GitTarget's applier claim in the cluster of another test KubeProvider.
 func appliedFrom(target *v1alpha3.GitTarget, cluster string) *v1alpha3.GitTarget {
-	target.Annotations[testTriggerClusterAnnotation] = clusterID(cluster)
+	target.Annotations[testClaimClusterAnnotation] = clusterID(cluster)
 	return target
 }
 
@@ -585,14 +585,14 @@ func TestDispatcher_WithdrawnConsentAsksNothing(t *testing.T) {
 // third finding is the first case: a recreated GitTarget executed its predecessor's request.
 func TestDispatcher_ATargetThatChangedAsksNothing(t *testing.T) {
 	for name, change := range map[string]func(*v1alpha3.GitTarget){
-		"it was deleted and recreated": func(g *v1alpha3.GitTarget) { g.UID = "uid-recreated" },
-		"it moved to another branch":   func(g *v1alpha3.GitTarget) { g.Spec.GitBranchRef.Name = "platform-release" },
-		"it names another trigger":     func(g *v1alpha3.GitTarget) { namesKustomization(g, fluxSystemNS, "other") },
-		"it names no trigger any more": func(g *v1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil },
-		"its trigger is gone": func(g *v1alpha3.GitTarget) {
-			g.Spec.ApplyTriggerRef.Kind = v1alpha3.ApplyTriggerKindArgoCD // no test annotation creates one
+		"it was deleted and recreated":       func(g *v1alpha3.GitTarget) { g.UID = "uid-recreated" },
+		"it moved to another branch":         func(g *v1alpha3.GitTarget) { g.Spec.GitBranchRef.Name = "platform-release" },
+		"it names another applier claim":     func(g *v1alpha3.GitTarget) { namesKustomization(g, fluxSystemNS, "other") },
+		"it names no applier claim any more": func(g *v1alpha3.GitTarget) { g.Spec.ApplierClaimRef = nil },
+		"its applier claim is gone": func(g *v1alpha3.GitTarget) {
+			g.Spec.ApplierClaimRef.Kind = v1alpha3.ApplierClaimKindArgoCD // no test annotation creates one
 		},
-		"its trigger holds the applier in another cluster": func(g *v1alpha3.GitTarget) {
+		"its applier claim holds the applier in another cluster": func(g *v1alpha3.GitTarget) {
 			appliedFrom(g, "prod-eu-1")
 		},
 	} {
@@ -782,10 +782,10 @@ func TestDispatcher_AFailedApplyIsSuspendedAgain(t *testing.T) {
 	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)), "no retryInterval retry can fire")
 }
 
-// TestDispatcher_ADeletedTriggerEndsItsOperation: a trigger being deleted hands its Kustomization
+// TestDispatcher_ADeletedClaimEndsItsOperation: an applier claim being deleted hands its Kustomization
 // back itself, so its operation completes as Failed, and nothing more is written to the
 // Kustomization from here.
-func TestDispatcher_ADeletedTriggerEndsItsOperation(t *testing.T) {
+func TestDispatcher_ADeletedClaimEndsItsOperation(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
 	held := f.sim.HoldNextApply()
 	reports := f.carryOut(context.Background(), request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
@@ -793,13 +793,13 @@ func TestDispatcher_ADeletedTriggerEndsItsOperation(t *testing.T) {
 	<-held
 	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
 
-	trigger := &v1alpha3.FluxTrigger{}
+	claim := &v1alpha3.FluxClaim{}
 	require.NoError(t, f.control.Get(context.Background(),
-		client.ObjectKey{Namespace: targetNS, Name: "checkout"}, trigger))
-	require.NoError(t, f.control.Delete(context.Background(), trigger))
+		client.ObjectKey{Namespace: targetNS, Name: "checkout"}, claim))
+	require.NoError(t, f.control.Delete(context.Background(), claim))
 	res := next(t, reports)
 	assert.Equal(t, git.ApplyFailed, res.Outcome)
-	require.ErrorContains(t, res.Err, "the trigger is being deleted")
+	require.ErrorContains(t, res.Err, "the applier claim is being deleted")
 	assert.Equal(t, fetchedAndResumed, f.patches(), "never suspended from here")
 }
 
@@ -819,18 +819,18 @@ func TestDispatcher_AnAbandonedOperationIsSuspendedBeforeItIsLetGo(t *testing.T)
 	assert.Equal(t, git.ApplyRequested, next(t, reports).Outcome)
 	<-held
 	assert.Equal(t, git.ApplyRunning, next(t, reports).Outcome)
-	assert.True(t, f.dispatcher.Following(checkout.Trigger, "T1"))
+	assert.True(t, f.dispatcher.Following(checkout.ApplierClaim, "T1"))
 	close(abandoned)
 	eventually(t, func() bool { return suspended(f.sim.Kustomization(checkoutKey)) }, "suspended at once")
 	quiet(t, reports, "still waiting for the suspend to be handled, behind the running apply")
-	assert.True(t, f.dispatcher.Following(checkout.Trigger, "T1"), "and it is still followed")
+	assert.True(t, f.dispatcher.Following(checkout.ApplierClaim, "T1"), "and it is still followed")
 
 	f.sim.Release()
 	_, open := <-reports
 	assert.False(t, open, "nothing more is reported")
 	assert.True(t, tokenHandled(f.sim.Kustomization(checkoutKey), f.sim.Kustomization(checkoutKey).
 		GetAnnotations()[fluxmeta.ReconcileRequestAnnotation]), "let go once the suspend is handled")
-	assert.False(t, f.dispatcher.Following(checkout.Trigger, "T1"))
+	assert.False(t, f.dispatcher.Following(checkout.ApplierClaim, "T1"))
 }
 
 // TestDispatcher_AStopMidApplySuspendsTheKustomization is review 7's F1: an apply is in flight, and
@@ -859,17 +859,17 @@ func TestDispatcher_AStopMidApplySuspendsTheKustomization(t *testing.T) {
 	f.sim.Release()
 }
 
-// TestDispatcher_AnUnheldTriggerIsNotResumed is review 4's F: the trigger's reconciler suspends the
+// TestDispatcher_AnUnheldClaimIsNotResumed is review 4's F: the applier claim's reconciler suspends the
 // Kustomization on its own reads (an adoption, an external resume), and a resume between its read
 // and its suspend would be suspended under the apply. So a request resumes only a Kustomization its
-// trigger reports Held=True, read uncached; any other is a failed attempt the worker retries.
-func TestDispatcher_AnUnheldTriggerIsNotResumed(t *testing.T) {
+// applier claim reports Held=True, read uncached; any other is a failed attempt the worker retries.
+func TestDispatcher_AnUnheldClaimIsNotResumed(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
-	trigger := &v1alpha3.FluxTrigger{}
+	claim := &v1alpha3.FluxClaim{}
 	require.NoError(t, f.control.Get(context.Background(), client.ObjectKey{Namespace: targetNS, Name: "checkout"},
-		trigger))
-	trigger.Status.Conditions[0].Status, trigger.Status.Conditions[0].Reason = metav1.ConditionFalse, "Suspending"
-	require.NoError(t, f.control.Update(context.Background(), trigger))
+		claim))
+	claim.Status.Conditions[0].Status, claim.Status.Conditions[0].Reason = metav1.ConditionFalse, "Suspending"
+	require.NoError(t, f.control.Update(context.Background(), claim))
 
 	res := f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
 
@@ -880,20 +880,20 @@ func TestDispatcher_AnUnheldTriggerIsNotResumed(t *testing.T) {
 	}
 }
 
-// TestDispatcher_ATriggerAnotherCameBeforeIsNotResumed is review 5's P2, the dispatcher's half: the
-// recheck reads the triggers cached, and can miss one that came first in line since (created in the
+// TestDispatcher_AClaimAnotherCameBeforeIsNotResumed is review 5's P2, the dispatcher's half: the
+// recheck reads the applier claims cached, and can miss one that came first in line since (created in the
 // same second, after it by name, but with an apply of its own in flight). The hold check before the resume reads them
 // uncached, and fails the attempt.
-func TestDispatcher_ATriggerAnotherCameBeforeIsNotResumed(t *testing.T) {
+func TestDispatcher_AClaimAnotherCameBeforeIsNotResumed(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
-	own := &v1alpha3.FluxTrigger{}
+	own := &v1alpha3.FluxClaim{}
 	require.NoError(t, f.control.Get(context.Background(), client.ObjectKey{Namespace: targetNS, Name: "checkout"},
 		own))
 	other := own.DeepCopy()
 	other.Namespace, other.ResourceVersion = "team-z", ""
 	other.Spec.KustomizationRef.Namespace = own.Applier().Namespace
 	other.Status.Operation = &v1alpha3.ApplyOperation{Phase: v1alpha3.ApplyOperationRunning, Token: "T0"}
-	other.Finalizers = []string{v1alpha3.FluxTriggerFinalizer} // the holder whose apply this is
+	other.Finalizers = []string{v1alpha3.FluxClaimFinalizer} // the holder whose apply this is
 	scheme := runtime.NewScheme()
 	require.NoError(t, v1alpha3.AddToScheme(scheme))
 	f.dispatcher.APIReader = fake.NewClientBuilder().WithScheme(scheme).WithObjects(own.DeepCopy(), other).Build()
@@ -902,14 +902,14 @@ func TestDispatcher_ATriggerAnotherCameBeforeIsNotResumed(t *testing.T) {
 
 	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
 	require.ErrorContains(t, res.Err, "no longer holds its Kustomization")
-	require.ErrorContains(t, res.Err, "held by FluxTrigger team-z/checkout, whose apply is in flight")
+	require.ErrorContains(t, res.Err, "held by FluxClaim team-z/checkout, whose apply is in flight")
 	for _, write := range f.patches() {
 		assert.NotContains(t, write, "suspend=false", "nothing is resumed")
 	}
 }
 
 // TestDispatcher_ARecoveredAttemptBeforeStartWaitsForIt is review 4's B at startup: a worker
-// recovers its trigger's operation once, and one that failed because the dispatcher had not started
+// recovers its applier claim's operation once, and one that failed because the dispatcher had not started
 // yet left the Kustomization resumed with nobody following it. Now it is followed once Start runs.
 func TestDispatcher_ARecoveredAttemptBeforeStartWaitsForIt(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, resumedSource(t, "T1")...)
@@ -971,22 +971,22 @@ func TestDispatcher_AnApplierThatIsGoneFailsItsOperation(t *testing.T) {
 	require.ErrorContains(t, res.Err, "the applier is gone")
 }
 
-// argoTarget is the GitTarget "a", which names the ArgoCDTrigger "platform", holding the
+// argoTarget is the GitTarget "a", which names the ArgoCDClaim "platform", holding the
 // Application argocd/platform.
 func argoTarget() *v1alpha3.GitTarget {
 	target := gitTarget("a", nil, "")
 	target.Annotations = map[string]string{testApplicationAnnotation: argoNS + "/platform"}
-	target.Spec.ApplyTriggerRef = &v1alpha3.ApplyTriggerReference{
-		Kind: v1alpha3.ApplyTriggerKindArgoCD,
+	target.Spec.ApplierClaimRef = &v1alpha3.ApplierClaimReference{
+		Kind: v1alpha3.ApplierClaimKindArgoCD,
 		Name: "platform",
 	}
 	return target
 }
 
-// argoPlatform is the applier argoTarget's trigger holds.
+// argoPlatform is the applier argoTarget's applier claim holds.
 var argoPlatform = git.ApplierRef{
-	Trigger: git.TriggerRef{Kind: v1alpha3.ApplyTriggerKindArgoCD, Namespace: targetNS, Name: "platform"},
-	Cluster: clusterID(localCluster), Kind: v1alpha3.ApplierKindApplication,
+	ApplierClaim: git.ApplierClaimRef{Kind: v1alpha3.ApplierClaimKindArgoCD, Namespace: targetNS, Name: "platform"},
+	Cluster:      clusterID(localCluster), Kind: v1alpha3.ApplierKindApplication,
 	Namespace: argoNS, Name: "platform",
 }
 
@@ -1035,7 +1035,7 @@ func TestDispatcher_AsksAnApplicationToSync(t *testing.T) {
 
 // TestDispatcher_AnApplicationWithAutomatedSyncIsNeverSynced: the standard is full control, so an
 // Application that syncs on its own is never asked to, whatever its verdict says. One whose switch
-// its trigger holds was switched on by somebody, and its trigger switches it off again: the attempt
+// its applier claim holds was switched on by somebody, and its applier claim switches it off again: the attempt
 // fails, and the worker asks again after its backoff. One whose switch an ApplicationSet owns is a
 // configuration no retry fixes: Rejected.
 func TestDispatcher_AnApplicationWithAutomatedSyncIsNeverSynced(t *testing.T) {
@@ -1044,8 +1044,8 @@ func TestDispatcher_AnApplicationWithAutomatedSyncIsNeverSynced(t *testing.T) {
 		wantOutcome git.ApplyOutcome
 		wantErr     string
 	}{
-		"held by its trigger": {app: automatedApp(), wantOutcome: git.ApplyRequestFailed,
-			wantErr: "its ArgoCDTrigger switches it off again"},
+		"held by its applier claim": {app: automatedApp(), wantOutcome: git.ApplyRequestFailed,
+			wantErr: "its ArgoCDClaim switches it off again"},
 		"owned by an ApplicationSet": {app: generated(automatedApp()), wantOutcome: git.ApplyRejected,
 			wantErr: "is generated by ApplicationSet argocd/platforms"},
 	} {
@@ -1300,7 +1300,7 @@ func TestDispatcher_ARecoveredOperationThatNeverResumedFails(t *testing.T) {
 	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)))
 }
 
-// TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsSuspend: the trigger's reconciler recorded a
+// TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsSuspend: the applier claim's reconciler recorded a
 // `flux resume` it suspended again, with the suspend token and no request token; following it ends
 // once that suspend is handled.
 func TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsSuspend(t *testing.T) {

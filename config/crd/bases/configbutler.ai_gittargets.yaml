@@ -48,8 +48,8 @@ spec:
       name: RenderMatchesLive
       priority: 1
       type: string
-    - jsonPath: .status.conditions[?(@.type=="ApplyTriggerReady")].status
-      name: ApplyTriggerReady
+    - jsonPath: .status.conditions[?(@.type=="ApplierClaimReady")].status
+      name: ApplierClaimReady
       priority: 1
       type: string
     - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
@@ -104,27 +104,28 @@ spec:
           spec:
             description: spec defines the desired state of GitTarget
             properties:
-              applyTriggerRef:
+              applierClaimRef:
                 description: |-
-                  ApplyTriggerRef names the apply trigger, in this GitTarget's namespace, that holds the applier
-                  of this folder: a FluxTrigger (a Flux Kustomization) or an ArgoCDTrigger (an Argo CD
+                  ApplierClaimRef names the applier claim, in this GitTarget's namespace, that holds the applier
+                  of this folder: a FluxClaim (a Flux Kustomization) or an ArgoCDClaim (an Argo CD
                   Application). With it set, GitOps Reverser decides when that applier applies, always after
                   publishing the edits it holds: after a commit it did not push, after a refused edit
                   (spec.onRefusal: Reapply), after an apply reverted a newer API edit, after the API created an
                   object in the folder (so the applier owns it and prunes it later), and once when the operator
-                  starts or the trigger is first named, after the folder's initial snapshots are in Git. Objects
-                  another applier owns are not mirrored into the folder. The trigger's applier must apply this target's repository and
-                  branch; the ApplyTriggerReady condition says whether it does. Several GitTargets may name one
-                  trigger, and it is asked once for all of them.
+                  starts or the applier claim is first named, after the folder's initial snapshots are in Git. Objects
+                  another applier owns are not mirrored into the folder. The applier claim's applier must apply this target's repository and
+                  branch; the ApplierClaimReady condition says whether it does. Several GitTargets may name one
+                  applier claim, and it is asked once for all of them.
                 properties:
                   kind:
-                    description: 'Kind is the trigger''s kind: FluxTrigger or ArgoCDTrigger.'
+                    description: 'Kind is the applier claim''s kind: FluxClaim or
+                      ArgoCDClaim.'
                     enum:
-                    - FluxTrigger
-                    - ArgoCDTrigger
+                    - FluxClaim
+                    - ArgoCDClaim
                     type: string
                   name:
-                    description: Name is the trigger's name.
+                    description: Name is the applier claim's name.
                     minLength: 1
                     type: string
                 required:
@@ -372,12 +373,12 @@ spec:
 
                   "Ignore", the default, records the refusal in conditions and events and does nothing else.
 
-                  "Reapply" asks this target's applier (through spec.applyTriggerRef, which it requires) to
+                  "Reapply" asks this target's applier (through spec.applierClaimRef, which it requires) to
                   apply the current tip after publishing the edits pending on the branch, which reverts the
                   refused edit and nothing that was waiting to be published. Only this
                   target's applier is asked. If its GitRepository has to fetch to reach the tip, the
-                  Kustomizations a FluxTrigger holds stay suspended and ignore the new artifact; only the
-                  consumers no trigger holds, listed in the trigger's status.source.otherConsumers, apply it, as
+                  Kustomizations a FluxClaim holds stay suspended and ignore the new artifact; only the
+                  consumers no applier claim holds, listed in the applier claim's status.source.otherConsumers, apply it, as
                   they would for any push.
 
                   It fires only for an edit to a document the folder ALREADY holds, in a write that removes no
@@ -571,9 +572,9 @@ spec:
             - message: spec.clusterProviderRef was replaced by spec.kubeProviderRef,
                 which names a namespaced KubeProvider
               rule: '!has(self.clusterProviderRef)'
-            - message: 'spec.onRefusal: Reapply needs spec.applyTriggerRef, the trigger
-                asked to reapply'
-              rule: '!has(self.onRefusal) || self.onRefusal != ''Reapply'' || has(self.applyTriggerRef)'
+            - message: 'spec.onRefusal: Reapply needs spec.applierClaimRef, the applier
+                claim asked to reapply'
+              rule: '!has(self.onRefusal) || self.onRefusal != ''Reapply'' || has(self.applierClaimRef)'
           status:
             description: status defines the observed state of GitTarget
             properties:

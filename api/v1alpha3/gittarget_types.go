@@ -33,7 +33,7 @@ import (
 // accepted, so it stays in the schema only to be refused by name, on spec for the same ratcheting
 // reason as the branch fields above.
 // +kubebuilder:validation:XValidation:rule="!has(self.clusterProviderRef)",message="spec.clusterProviderRef was replaced by spec.kubeProviderRef, which names a namespaced KubeProvider"
-// +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applyTriggerRef)",message="spec.onRefusal: Reapply needs spec.applyTriggerRef, the trigger asked to reapply"
+// +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applierClaimRef)",message="spec.onRefusal: Reapply needs spec.applierClaimRef, the applier claim asked to reapply"
 type GitTargetSpec struct {
 	// GitBranchRef names the GitBranch this target writes: the repository branch, and the credential
 	// it is written with. Namespace omitted means this GitTarget's own namespace. A GitBranch in
@@ -79,18 +79,18 @@ type GitTargetSpec struct {
 	// be guessing on Flux's behalf, and the guess would drive a write. A reference the user declares
 	// claims nothing. See docs/design/apply-trigger.md.
 
-	// ApplyTriggerRef names the apply trigger, in this GitTarget's namespace, that holds the applier
-	// of this folder: a FluxTrigger (a Flux Kustomization) or an ArgoCDTrigger (an Argo CD
+	// ApplierClaimRef names the applier claim, in this GitTarget's namespace, that holds the applier
+	// of this folder: a FluxClaim (a Flux Kustomization) or an ArgoCDClaim (an Argo CD
 	// Application). With it set, GitOps Reverser decides when that applier applies, always after
 	// publishing the edits it holds: after a commit it did not push, after a refused edit
 	// (spec.onRefusal: Reapply), after an apply reverted a newer API edit, after the API created an
 	// object in the folder (so the applier owns it and prunes it later), and once when the operator
-	// starts or the trigger is first named, after the folder's initial snapshots are in Git. Objects
-	// another applier owns are not mirrored into the folder. The trigger's applier must apply this target's repository and
-	// branch; the ApplyTriggerReady condition says whether it does. Several GitTargets may name one
-	// trigger, and it is asked once for all of them.
+	// starts or the applier claim is first named, after the folder's initial snapshots are in Git. Objects
+	// another applier owns are not mirrored into the folder. The applier claim's applier must apply this target's repository and
+	// branch; the ApplierClaimReady condition says whether it does. Several GitTargets may name one
+	// applier claim, and it is asked once for all of them.
 	// +optional
-	ApplyTriggerRef *ApplyTriggerReference `json:"applyTriggerRef,omitempty"`
+	ApplierClaimRef *ApplierClaimReference `json:"applierClaimRef,omitempty"`
 
 	// OnRefusal decides what happens when a live edit is refused because it has no legal
 	// destination in the Git folder. A refusal produces no commit, so nothing reverts the edit
@@ -98,12 +98,12 @@ type GitTargetSpec struct {
 	//
 	// "Ignore", the default, records the refusal in conditions and events and does nothing else.
 	//
-	// "Reapply" asks this target's applier (through spec.applyTriggerRef, which it requires) to
+	// "Reapply" asks this target's applier (through spec.applierClaimRef, which it requires) to
 	// apply the current tip after publishing the edits pending on the branch, which reverts the
 	// refused edit and nothing that was waiting to be published. Only this
 	// target's applier is asked. If its GitRepository has to fetch to reach the tip, the
-	// Kustomizations a FluxTrigger holds stay suspended and ignore the new artifact; only the
-	// consumers no trigger holds, listed in the trigger's status.source.otherConsumers, apply it, as
+	// Kustomizations a FluxClaim holds stay suspended and ignore the new artifact; only the
+	// consumers no applier claim holds, listed in the applier claim's status.source.otherConsumers, apply it, as
 	// they would for any push.
 	//
 	// It fires only for an edit to a document the folder ALREADY holds, in a write that removes no
@@ -542,7 +542,7 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="LayoutResolved",type=string,JSONPath=`.status.conditions[?(@.type=="LayoutResolved")].reason`,priority=1
 // +kubebuilder:printcolumn:name="GitPathAccepted",type=string,JSONPath=`.status.conditions[?(@.type=="GitPathAccepted")].status`,priority=1
 // +kubebuilder:printcolumn:name="RenderMatchesLive",type=string,JSONPath=`.status.conditions[?(@.type=="RenderMatchesLive")].status`,priority=1
-// +kubebuilder:printcolumn:name="ApplyTriggerReady",type=string,JSONPath=`.status.conditions[?(@.type=="ApplyTriggerReady")].status`,priority=1
+// +kubebuilder:printcolumn:name="ApplierClaimReady",type=string,JSONPath=`.status.conditions[?(@.type=="ApplierClaimReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
 // +kubebuilder:printcolumn:name="SourceReachable",type=string,JSONPath=`.status.conditions[?(@.type=="SourceClusterReachable")].reason`,priority=1
 // +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1

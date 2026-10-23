@@ -11,8 +11,8 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Restart recovery for a FluxTrigger (docs/design/apply-trigger.md, "Restart recovery"). The
-// operation an apply runs as is recorded on the trigger before the Kustomization is resumed, so a
+// Restart recovery for a FluxClaim (docs/design/apply-trigger.md, "Restart recovery"). The
+// operation an apply runs as is recorded on the applier claim before the Kustomization is resumed, so a
 // manager that restarts while the apply runs follows that same operation to its end, and asks for
 // nothing new until it has. The stopping manager suspends the Kustomization it had resumed (a
 // graceful stop), so Flux applies nothing on its own while no process follows the apply; the apply
@@ -67,9 +67,9 @@ var _ = Describe("Flux Restart Recovery", Label("flux-restart-recovery"), Serial
 			`{"spec":{"wait":true,"timeout":"5m"}}`)
 		Expect(err).NotTo(HaveOccurred(), "the Kustomization waits for what it applies to be ready")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		createFluxTrigger(testNs, fluxName, fluxName)
-		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "")
-		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
+		createFluxClaim(testNs, fluxName, fluxName)
+		nameApplierClaim(testNs, destName, "FluxClaim", fluxName, "")
+		verifyResourceCondition("gittarget", destName, testNs, "ApplierClaimReady", "True", "Succeeded", "")
 		Expect(applyFromTemplate("test/e2e/templates/manager/watchrule-resources.tmpl", struct {
 			Name, Namespace, DestinationName, Resources string
 		}{Name: ruleName, Namespace: testNs, DestinationName: destName, Resources: `"configmaps"`},
@@ -80,7 +80,7 @@ var _ = Describe("Flux Restart Recovery", Label("flux-restart-recovery"), Serial
 		_, _ = kubectlRun("label", "node", node, nodeLabel+"-")
 		cleanupWatchRule(ruleName, testNs)
 		cleanupGitTarget(destName, testNs)
-		cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
+		cleanupNamespacedResource(testNs, fluxClaimResource, fluxName)
 		deleteGitProvider(testNs, providerName)
 		cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 		cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
@@ -96,9 +96,9 @@ var _ = Describe("Flux Restart Recovery", Label("flux-restart-recovery"), Serial
 		applyConfigMap(testNs, "recovery-edit")
 
 		By("the ForeignCommit's apply starts, and waits for the Deployment")
-		var before triggerOperation
+		var before claimOperation
 		Eventually(func(g Gomega) {
-			before = readTriggerOperation(g, testNs, fluxTriggerResource, fluxName)
+			before = readClaimOperation(g, testNs, fluxClaimResource, fluxName)
 			g.Expect(before.Reason).To(Equal("ForeignCommit"))
 			g.Expect(before.Phase).To(BeElementOf("Requested", "Running"))
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeFalse(), "resumed for the apply")
@@ -116,7 +116,7 @@ var _ = Describe("Flux Restart Recovery", Label("flux-restart-recovery"), Serial
 
 		By("the restarted manager completes that same operation, and the Kustomization stays suspended")
 		Eventually(func(g Gomega) {
-			after := readTriggerOperation(g, testNs, fluxTriggerResource, fluxName)
+			after := readClaimOperation(g, testNs, fluxClaimResource, fluxName)
 			g.Expect(after.Token).To(Equal(before.Token), "the operation recorded before the restart, not a new one")
 			g.Expect(after.Phase).To(Equal("Succeeded"))
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue())

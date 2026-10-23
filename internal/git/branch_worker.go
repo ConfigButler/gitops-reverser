@@ -138,15 +138,15 @@ type BranchWorker struct {
 	// simply not shared.
 	remoteReporter RemoteReporter
 
-	// applyRequester delivers the apply requests this worker decides (apply_trigger.go), and inbox
+	// applyRequester delivers the apply requests this worker decides (applier_claim.go), and inbox
 	// holds the reasons pending for the branch's appliers from what was observed about the remote,
 	// and the reports of attempts that came back. Set by the
-	// WorkerManager before Start; a nil requester switches the apply trigger off (the CLI, and tests
+	// WorkerManager before Start; a nil requester switches the applier claim off (the CLI, and tests
 	// that do not exercise it).
 	applyRequester ApplyRequester
-	// triggerStatus writes each applier's operation to its trigger's status; nil writes nothing.
-	triggerStatus ApplyTriggerStatusWriter
-	inbox         applyInbox
+	// claimStatus writes each applier's operation to its applier claim's status; nil writes nothing.
+	claimStatus ApplierClaimStatusWriter
+	inbox       applyInbox
 	// applyWake wakes the loop to service the appliers without queueing a work item: an attempt
 	// reported back.
 	applyWake chan struct{}
@@ -247,7 +247,7 @@ type BranchWorker struct {
 	// coveredRefusal records, per GitTarget AND WATCHED COLLECTION, the refusal observation the last
 	// reapply request was decided for: a digest of the objects that were refused together with the
 	// issues raised about them. A recheck that observes exactly the same thing is already covered
-	// by that request, so it is not another trigger. It is dropped when a resync for that collection is
+	// by that request, so it is not another applier claim. It is dropped when a resync for that collection is
 	// ACCEPTED — see refusalRecovered, which is what makes a live edit re-made after a revert
 	// count as new, and what keeps one watched type's success from speaking for another's.
 	// Guarded by refusalMu with the rate limit, because the two are read together.
@@ -1212,12 +1212,12 @@ type branchWorkerEventLoop struct {
 	// unsentRefusals holds the refusals the worker decided to send their target's applier a Refusal
 	// request for, until an attempt carries them after a flush. It is keyed like refusalPending,
 	// by target AND collection, so a collection that recovers cancels its own request and no other
-	// (refusalRecovered). See apply_trigger.go.
+	// (refusalRecovered). See applier_claim.go.
 	unsentRefusals map[refusalKey]unsentRefusal
 
 	// appliers holds the reasons pending for each applier named on this branch and how its attempts
 	// are going, and nextApplyID numbers the attempts. applierTimer fires when the earliest waiting
-	// attempt comes due. See apply_trigger.go.
+	// attempt comes due. See applier_claim.go.
 	appliers     map[ApplierRef]*applierState
 	nextApplyID  uint64
 	applierTimer *time.Timer
@@ -1270,7 +1270,7 @@ func (l *branchWorkerEventLoop) run() {
 	// Before the first live event can be mirrored: an operation an earlier process left in flight
 	// is followed again, with its apply window open.
 	l.followRecordedOperations(time.Now())
-	l.publishTriggerStatus()
+	l.publishClaimStatus()
 	l.publishLoopState(0)
 	for {
 		commitC, pushC, attachC, refusalC := l.timerChannels()
@@ -1489,7 +1489,7 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 }
 
 // mirrors reports whether a live event reaches the commit window. It does not while the target's
-// render fidelity is not established, for an object another applier owns in a folder a trigger
+// render fidelity is not established, for an object another applier owns in a folder an applier claim
 // applies (F4), and for the applier's own write in its apply window (apply_window.go).
 func (l *branchWorkerEventLoop) mirrors(event Event) bool {
 	if status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace); closed {

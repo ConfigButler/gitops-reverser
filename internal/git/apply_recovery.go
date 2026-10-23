@@ -10,7 +10,7 @@ import (
 )
 
 // Restart recovery (docs/design/apply-trigger.md, "Restart recovery"). The worker's attempts live
-// in memory, and the trigger's status.operation is their durable record: the worker writes it
+// in memory, and the applier claim's status.operation is their durable record: the worker writes it
 // before an apply can start (ApplyRequest.Record). So a process that starts reads it back, before
 // its first live event is mirrored:
 //
@@ -19,7 +19,7 @@ import (
 //     the Kustomization may have been left resumed, and the follow suspends it again.
 //   - repairPending is restored.
 //
-// The trigger's reconciler records an apply somebody else started (`flux resume`) the same way, as
+// The applier claim's reconciler records an apply somebody else started (`flux resume`) the same way, as
 // an operation with no request token. The worker follows such a record whenever it lists one, not
 // only on start, so its apply window opens for an apply nobody checked.
 //
@@ -27,8 +27,8 @@ import (
 // recovered operation decides nothing about which reasons are pending, and asks the applier for
 // nothing.
 
-// followRecordedOperations reads the triggers' recorded status on every pass, and follows what it
-// finds. Every pass, and not only while the branch has appliers: a GitTarget naming a trigger for
+// followRecordedOperations reads the applier claims' recorded status on every pass, and follows what it
+// finds. Every pass, and not only while the branch has appliers: a GitTarget naming an applier claim for
 // the first time is seen here, and gets its first apply (syncAppliers). The listing is cached. A
 // listing that fails is tried again on the applier timer (listRetryAt), as takeReasons' is.
 func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
@@ -38,7 +38,7 @@ func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
 	}
 	targets, err := w.appliersOnBranch(w.ctx)
 	if err != nil {
-		w.Log.Error(err, "Cannot read the apply triggers' recorded operations; retrying", "branch", w.Branch)
+		w.Log.Error(err, "Cannot read the applier claims' recorded operations; retrying", "branch", w.Branch)
 		l.listRetryAt = time.Now().Add(applierRetryInterval)
 		l.resetApplierTimer(applierRetryInterval)
 		return
@@ -50,7 +50,7 @@ func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
 	}
 }
 
-// followRecordedFor follows what one applier's trigger records: anything in flight, and the
+// followRecordedFor follows what one applier's applier claim records: anything in flight, and the
 // pending repair, the first time this process lists it; afterwards only an apply started elsewhere.
 func (l *branchWorkerEventLoop) followRecordedFor(state *applierState, now time.Time) {
 	recorded, repairPending := recordedStatus(state)
@@ -68,8 +68,8 @@ func (l *branchWorkerEventLoop) followRecordedFor(state *applierState, now time.
 	}
 }
 
-// recordedStatus is the operation and repairPending recorded on an applier's trigger, as listed with
-// any GitTarget naming it: they all name the same trigger.
+// recordedStatus is the operation and repairPending recorded on an applier's applier claim, as listed with
+// any GitTarget naming it: they all name the same applier claim.
 func recordedStatus(state *applierState) (*v1alpha3.ApplyOperation, bool) {
 	for _, target := range state.targets {
 		return target.recorded, target.repairPending
@@ -100,7 +100,7 @@ func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1
 	for _, target := range state.targets {
 		targets = append(targets, ApplyTarget{Ref: target.ref, UID: target.uid, Reason: recorded.Reason})
 	}
-	w.Log.Info("Following an apply recorded on the trigger, with its apply window open",
+	w.Log.Info("Following an apply recorded on the applier claim, with its apply window open",
 		"branch", w.Branch, "applier", state.ref.String(), "phase", string(recorded.Phase),
 		"reason", string(recorded.Reason), "commit", recorded.Commit, "startedElsewhere", recorded.Token == "")
 	w.applyRequester.RequestApply(ApplyRequest{

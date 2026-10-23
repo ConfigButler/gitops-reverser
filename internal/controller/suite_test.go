@@ -49,7 +49,7 @@ var (
 
 // The suite's shared KubeProvider: the operator's own identity, in the "default" namespace, listed
 // in the suite reconciler's --in-cluster-kube-providers equivalent and admitting every namespace,
-// the way an install that mirrors its own cluster ships one. A spec's GitTargets and triggers name
+// the way an install that mirrors its own cluster ships one. A spec's GitTargets and applier claims name
 // it through testKubeProviderRef.
 const (
 	testKubeProviderNamespace = "default"
@@ -157,12 +157,12 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	// No ApplierClients: a trigger's applier is never read here, so Configured stays Unknown
-	// (NotChecked), which is enough to drive the watches between a trigger and its GitTargets.
+	// No ApplierClients: an applier claim's applier is never read here, so Configured stays Unknown
+	// (NotChecked), which is enough to drive the watches between an applier claim and its GitTargets.
 	for _, kind := range []string{
-		configbutleraiv1alpha3.ApplyTriggerKindFlux, configbutleraiv1alpha3.ApplyTriggerKindArgoCD,
+		configbutleraiv1alpha3.ApplierClaimKindFlux, configbutleraiv1alpha3.ApplierClaimKindArgoCD,
 	} {
-		err = (&ApplyTriggerReconciler{Client: mgr.GetClient(), Kind: kind}).SetupWithManager(mgr)
+		err = (&ApplierClaimReconciler{Client: mgr.GetClient(), Kind: kind}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
 	}
 
@@ -195,7 +195,7 @@ var _ = BeforeSuite(func() {
 	// Note: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
 	// Webhook tests are handled separately in webhook package
 
-	// Ship the suite's shared in-cluster KubeProvider, so a GitTarget or trigger naming it
+	// Ship the suite's shared in-cluster KubeProvider, so a GitTarget or applier claim naming it
 	// (testKubeProviderRef) passes the reconcile-time hard gate that REQUIRES the referenced
 	// KubeProvider to exist. Its empty selector admits every namespace the specs create.
 	Expect(k8sClient.Create(ctx, &configbutleraiv1alpha3.KubeProvider{

@@ -245,9 +245,9 @@ var _ = Describe("Retained and refused clusterProviderRef", func() {
 		case "GitTarget":
 			spec["gitBranchRef"] = map[string]any{"name": "main"}
 			spec["path"] = "apps"
-		case "FluxTrigger":
+		case "FluxClaim":
 			spec["kustomizationRef"] = map[string]any{"name": "apps"}
-		case "ArgoCDTrigger":
+		case "ArgoCDClaim":
 			spec["applicationRef"] = map[string]any{"name": "apps"}
 		}
 		return &unstructured.Unstructured{Object: map[string]any{
@@ -258,7 +258,7 @@ var _ = Describe("Retained and refused clusterProviderRef", func() {
 		}}
 	}
 
-	for _, kind := range []string{"GitTarget", "FluxTrigger", "ArgoCDTrigger"} {
+	for _, kind := range []string{"GitTarget", "FluxClaim", "ArgoCDClaim"} {
 		It("refuses spec.clusterProviderRef on a "+kind+", naming spec.kubeProviderRef", func() {
 			ctx := context.Background()
 			obj := referrer(kind, "legacy-cluster-provider", map[string]any{

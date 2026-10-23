@@ -148,12 +148,12 @@ type GitTargetReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitbranches,verbs=get;list;watch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers;argocdtriggers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxclaims;argocdclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// The Flux and Argo CD kinds a trigger holds are NOT granted here: nothing needs them until a
-// trigger names an applier, and an install that does not use Flux or Argo CD should not hold
+// The Flux and Argo CD kinds an applier claim holds are NOT granted here: nothing needs them until an
+// applier claim names an applier, and an install that does not use Flux or Argo CD should not hold
 // write rights on their objects. config/rbac/flux-applier-role.yaml and argocd-applier-role.yaml,
 // and the chart's applierAccess.flux and applierAccess.argocd, grant them.
 
@@ -237,7 +237,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		})
 	}
 
-	// The refresher's trigger is this reconcile, which is already a scheduled tick looking for a
+	// The refresher's applier claim is this reconcile, which is already a scheduled tick looking for a
 	// job: a converged GitTarget requeues on RequeueSteadyInterval and those passes publish
 	// status without touching Git. Nothing new schedules anything, and the request is ENQUEUED
 	// rather than run here — the reconcile must not block on a network round trip, and the work
@@ -262,13 +262,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
 
 	refs := r.publishReferenceReadiness(st, &target, gitBranchReadiness(dest, true), sourceProvider)
-	triggerVerdict, hasTrigger := r.observeApplyTrigger(ctx, st, &target, dest)
+	claimVerdict, hasClaim := r.observeApplierClaim(ctx, st, &target, dest)
 
 	rd := newGitTargetReadiness()
 	convergeAsSuspended(rd, &target)
 	gitTargetReadinessGates(rd, observed,
 		refs.gitBranch, refs.kubeProvider, refs.sourceCluster, publicationCondition(publication))
-	applyTriggerReadiness(rd, triggerVerdict, hasTrigger)
+	applierClaimReadiness(rd, claimVerdict, hasClaim)
 	st.applyReadiness(rd)
 
 	if err := st.commit(ctx); err != nil {
@@ -988,7 +988,7 @@ func (r *GitTargetReconciler) recoverBranchAfterReplacement(
 // gitDestination is what a GitTarget's spec.gitBranchRef resolves to, read ONCE for the whole
 // reconcile: the GitBranch, and that GitBranch's GitProvider. That one pair answers the Validated
 // gate, projects GitBranchReady, names the repository the branch worker has to be about, and the
-// binding the apply trigger is checked against. Reading them several times let those disagree about
+// binding the applier claim is checked against. Reading them several times let those disagree about
 // which repository this target points at, which is the disagreement the worker's repository
 // identity exists to prevent.
 type gitDestination struct {
@@ -1482,18 +1482,18 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.clusterWatchRuleToGitTarget),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		// React to an apply trigger appearing, going, or changing its Ready or its source, so
-		// ApplyTriggerReady follows the trigger within one reconcile. The trigger's own reconciler
+		// React to an applier claim appearing, going, or changing its Ready or its source, so
+		// ApplierClaimReady follows the applier claim within one reconcile. The applier claim's own reconciler
 		// checks its applier; a status write that moves neither is filtered.
 		Watches(
-			&configbutleraiv1alpha3.FluxTrigger{},
-			handler.EnqueueRequestsFromMapFunc(r.applyTriggerToGitTargets),
-			builder.WithPredicates(applyTriggerReadinessChanged()),
+			&configbutleraiv1alpha3.FluxClaim{},
+			handler.EnqueueRequestsFromMapFunc(r.applierClaimToGitTargets),
+			builder.WithPredicates(applierClaimReadinessChanged()),
 		).
 		Watches(
-			&configbutleraiv1alpha3.ArgoCDTrigger{},
-			handler.EnqueueRequestsFromMapFunc(r.applyTriggerToGitTargets),
-			builder.WithPredicates(applyTriggerReadinessChanged()),
+			&configbutleraiv1alpha3.ArgoCDClaim{},
+			handler.EnqueueRequestsFromMapFunc(r.applierClaimToGitTargets),
+			builder.WithPredicates(applierClaimReadinessChanged()),
 		).
 		Named("gittarget")
 
@@ -1642,13 +1642,13 @@ func (r *GitTargetReconciler) kubeProviderToGitTargets(
 	return requests
 }
 
-// applyTriggerToGitTargets maps an apply trigger event to every GitTarget in its namespace that
+// applierClaimToGitTargets maps an applier claim event to every GitTarget in its namespace that
 // names it.
-func (r *GitTargetReconciler) applyTriggerToGitTargets(
+func (r *GitTargetReconciler) applierClaimToGitTargets(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
-	trigger, ok := obj.(configbutleraiv1alpha3.ApplyTrigger)
+	applierClaim, ok := obj.(configbutleraiv1alpha3.ApplierClaim)
 	if !ok {
 		return nil
 	}
@@ -1660,8 +1660,8 @@ func (r *GitTargetReconciler) applyTriggerToGitTargets(
 	var requests []ctrlreconcile.Request
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		ref := t.Spec.ApplyTriggerRef
-		if ref == nil || ref.Kind != trigger.TriggerKind() || ref.Name != obj.GetName() {
+		ref := t.Spec.ApplierClaimRef
+		if ref == nil || ref.Kind != applierClaim.ClaimKind() || ref.Name != obj.GetName() {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{
@@ -1671,22 +1671,22 @@ func (r *GitTargetReconciler) applyTriggerToGitTargets(
 	return requests
 }
 
-// applyTriggerReadinessChanged fires on create and delete, and on an update that changes the
-// trigger's generation, its Ready or Stalled condition, or its source: what ApplyTriggerReady reads.
-func applyTriggerReadinessChanged() predicate.Predicate {
+// applierClaimReadinessChanged fires on create and delete, and on an update that changes the
+// applier claim's generation, its Ready or Stalled condition, or its source: what ApplierClaimReady reads.
+func applierClaimReadinessChanged() predicate.Predicate {
 	summary := func(obj client.Object) string {
-		trigger, ok := obj.(configbutleraiv1alpha3.ApplyTrigger)
+		applierClaim, ok := obj.(configbutleraiv1alpha3.ApplierClaim)
 		if !ok {
 			return ""
 		}
 		var out strings.Builder
-		out.WriteString(strconv.FormatInt(trigger.GetGeneration(), 10))
+		out.WriteString(strconv.FormatInt(applierClaim.GetGeneration(), 10))
 		for _, conditionType := range []string{ConditionTypeReady, ConditionTypeStalled} {
-			if c := findCondition(*trigger.StatusConditions(), conditionType); c != nil {
+			if c := findCondition(*applierClaim.StatusConditions(), conditionType); c != nil {
 				fmt.Fprintf(&out, "|%s/%s/%s/%d", c.Status, c.Reason, c.Message, c.ObservedGeneration)
 			}
 		}
-		url, branch, known := trigger.SourceBinding()
+		url, branch, known := applierClaim.SourceBinding()
 		fmt.Fprintf(&out, "|%s|%s|%t", url, branch, known)
 		return out.String()
 	}

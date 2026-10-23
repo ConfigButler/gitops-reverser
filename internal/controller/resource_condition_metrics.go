@@ -34,8 +34,8 @@ const (
 	conditionKindGitBranch        = "GitBranch"
 	conditionKindGitReceiver      = "GitReceiver"
 	conditionKindKubeProvider     = "KubeProvider"
-	conditionKindFluxTrigger      = configbutleraiv1alpha3.ApplyTriggerKindFlux
-	conditionKindArgoCDTrigger    = configbutleraiv1alpha3.ApplyTriggerKindArgoCD
+	conditionKindFluxClaim        = configbutleraiv1alpha3.ApplierClaimKindFlux
+	conditionKindArgoCDClaim      = configbutleraiv1alpha3.ApplierClaimKindArgoCD
 )
 
 // conditionMetricKind names the kind an object publishes under, or "" for one that is not on the
@@ -63,10 +63,10 @@ func conditionMetricKind(obj client.Object) string {
 		return conditionKindGitReceiver
 	case *configbutleraiv1alpha3.KubeProvider:
 		return conditionKindKubeProvider
-	case *configbutleraiv1alpha3.FluxTrigger:
-		return conditionKindFluxTrigger
-	case *configbutleraiv1alpha3.ArgoCDTrigger:
-		return conditionKindArgoCDTrigger
+	case *configbutleraiv1alpha3.FluxClaim:
+		return conditionKindFluxClaim
+	case *configbutleraiv1alpha3.ArgoCDClaim:
+		return conditionKindArgoCDClaim
 	default:
 		return ""
 	}

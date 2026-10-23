@@ -17,10 +17,10 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
 )
 
-// The API server holds the trigger kinds to their contract: each names one applier and its
+// The API server holds the applier claim kinds to their contract: each names one applier and its
 // cluster, neither can be pointed elsewhere once created, and
-// a GitTarget names a trigger by a kind this release serves.
-var _ = Describe("Apply trigger schema", func() {
+// a GitTarget names an applier claim by a kind this release serves.
+var _ = Describe("Applier claim schema", func() {
 	ctx := context.Background()
 	create := func(obj client.Object) error {
 		err := k8sClient.Create(ctx, obj)
@@ -29,19 +29,19 @@ var _ = Describe("Apply trigger schema", func() {
 		}
 		return err
 	}
-	flux := func(name string) *configbutleraiv1alpha3.FluxTrigger {
-		return &configbutleraiv1alpha3.FluxTrigger{
+	flux := func(name string) *configbutleraiv1alpha3.FluxClaim {
+		return &configbutleraiv1alpha3.FluxClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-			Spec: configbutleraiv1alpha3.FluxTriggerSpec{
+			Spec: configbutleraiv1alpha3.FluxClaimSpec{
 				KubeProviderRef:  meta.NamespacedObjectReference{Name: "hub"},
 				KustomizationRef: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "apps"},
 			},
 		}
 	}
-	argo := func(name string) *configbutleraiv1alpha3.ArgoCDTrigger {
-		return &configbutleraiv1alpha3.ArgoCDTrigger{
+	argo := func(name string) *configbutleraiv1alpha3.ArgoCDClaim {
+		return &configbutleraiv1alpha3.ArgoCDClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-			Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
+			Spec: configbutleraiv1alpha3.ArgoCDClaimSpec{
 				KubeProviderRef: meta.NamespacedObjectReference{Name: "hub"},
 				ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
 			},
@@ -64,26 +64,26 @@ var _ = Describe("Apply trigger schema", func() {
 		Expect(create(noKustomization)).To(MatchError(ContainSubstring("spec.kustomizationRef.name must not be empty")))
 	})
 
-	// A trigger no GitTarget names adopts nothing, so it carries no finalizer and deletes at once;
+	// An applier claim no GitTarget names adopts nothing, so it carries no finalizer and deletes at once;
 	// it still publishes its conditions, Ready because it does all it is asked to.
-	It("publishes a new FluxTrigger's conditions, and holds nothing while no GitTarget names it", func() {
-		trigger := flux("flux-first-pass")
-		Expect(create(trigger)).To(Succeed())
+	It("publishes a new FluxClaim's conditions, and holds nothing while no GitTarget names it", func() {
+		claim := flux("flux-first-pass")
+		Expect(create(claim)).To(Succeed())
 		Eventually(func(g Gomega) {
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trigger), trigger)).To(Succeed())
-			ready := findCondition(trigger.Status.Conditions, ConditionTypeReady)
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), claim)).To(Succeed())
+			ready := findCondition(claim.Status.Conditions, ConditionTypeReady)
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 			g.Expect(ready.Reason).To(Equal(applier.ReasonNotReferenced))
 		}, 20*time.Second, 100*time.Millisecond).Should(Succeed())
-		Expect(trigger.Finalizers).NotTo(ContainElement(configbutleraiv1alpha3.FluxTriggerFinalizer))
-		held := findCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld)
+		Expect(claim.Finalizers).NotTo(ContainElement(configbutleraiv1alpha3.FluxClaimFinalizer))
+		held := findCondition(claim.Status.Conditions, ApplierClaimConditionHeld)
 		Expect(held).NotTo(BeNil())
 		Expect(held.Reason).To(Equal(applier.ReasonNotReferenced))
 	})
 
-	It("never points a trigger at another applier or cluster", func() {
-		// The suite's FluxTrigger reconciler writes the trigger too (its finalizer), so each update
+	It("never points an applier claim at another applier or cluster", func() {
+		// The suite's FluxClaim reconciler writes the applier claim too (its finalizer), so each update
 		// is made from a fresh read, and one that loses that race is made again.
 		update := func(obj client.Object, mutate func()) error {
 			var err error
@@ -95,69 +95,69 @@ var _ = Describe("Apply trigger schema", func() {
 			}).Should(BeTrue())
 			return err
 		}
-		fluxTrigger := flux("flux-immutable")
-		Expect(create(fluxTrigger)).To(Succeed())
-		Expect(update(fluxTrigger, func() { fluxTrigger.Spec.KustomizationRef.Name = "other" })).
+		fluxClaim := flux("flux-immutable")
+		Expect(create(fluxClaim)).To(Succeed())
+		Expect(update(fluxClaim, func() { fluxClaim.Spec.KustomizationRef.Name = "other" })).
 			To(MatchError(ContainSubstring("spec.kustomizationRef is immutable")))
-		Expect(update(fluxTrigger, func() { fluxTrigger.Spec.KubeProviderRef.Name = "other" })).
+		Expect(update(fluxClaim, func() { fluxClaim.Spec.KubeProviderRef.Name = "other" })).
 			To(MatchError(ContainSubstring("spec.kubeProviderRef is immutable")))
 
-		argoTrigger := argo("argo-immutable")
-		Expect(create(argoTrigger)).To(Succeed())
-		Expect(update(argoTrigger, func() { argoTrigger.Spec.ApplicationRef.Namespace = "elsewhere" })).
+		argoClaim := argo("argo-immutable")
+		Expect(create(argoClaim)).To(Succeed())
+		Expect(update(argoClaim, func() { argoClaim.Spec.ApplicationRef.Namespace = "elsewhere" })).
 			To(MatchError(ContainSubstring("spec.applicationRef is immutable")))
 	})
 
-	It("lets a GitTarget name a trigger of a kind it serves, and requires one for Reapply", func() {
-		target := func(name string, ref *configbutleraiv1alpha3.ApplyTriggerReference) *configbutleraiv1alpha3.GitTarget {
+	It("lets a GitTarget name an applier claim of a kind it serves, and requires one for Reapply", func() {
+		target := func(name string, ref *configbutleraiv1alpha3.ApplierClaimReference) *configbutleraiv1alpha3.GitTarget {
 			return &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
 					KubeProviderRef: testKubeProviderRef(),
 					GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("prov", "main")},
 					Path:            "apps/" + name,
-					ApplyTriggerRef: ref,
+					ApplierClaimRef: ref,
 				},
 			}
 		}
-		Expect(create(target("names-flux", &configbutleraiv1alpha3.ApplyTriggerReference{
-			Kind: configbutleraiv1alpha3.ApplyTriggerKindFlux, Name: "apps",
+		Expect(create(target("names-flux", &configbutleraiv1alpha3.ApplierClaimReference{
+			Kind: configbutleraiv1alpha3.ApplierClaimKindFlux, Name: "apps",
 		}))).To(Succeed())
-		Expect(create(target("names-argo", &configbutleraiv1alpha3.ApplyTriggerReference{
-			Kind: configbutleraiv1alpha3.ApplyTriggerKindArgoCD, Name: "apps",
+		Expect(create(target("names-argo", &configbutleraiv1alpha3.ApplierClaimReference{
+			Kind: configbutleraiv1alpha3.ApplierClaimKindArgoCD, Name: "apps",
 		}))).To(Succeed())
-		Expect(create(target("names-webhook", &configbutleraiv1alpha3.ApplyTriggerReference{
-			Kind: "WebhookTrigger", Name: "apps",
+		Expect(create(target("names-webhook", &configbutleraiv1alpha3.ApplierClaimReference{
+			Kind: "WebhookClaim", Name: "apps",
 		}))).To(MatchError(ContainSubstring("Unsupported value")))
 
 		reapply := target("reapply-alone", nil)
 		reapply.Spec.OnRefusal = configbutleraiv1alpha3.RefusalActionReapply
-		Expect(create(reapply)).To(MatchError(ContainSubstring("spec.onRefusal: Reapply needs spec.applyTriggerRef")))
+		Expect(create(reapply)).To(MatchError(ContainSubstring("spec.onRefusal: Reapply needs spec.applierClaimRef")))
 	})
 })
 
-// The trigger reconciler runs under the manager: a trigger created gets its trio, Ready while no
+// The applier claim reconciler runs under the manager: an applier claim created gets its trio, Ready while no
 // GitTarget names it, and a GitTarget naming it re-runs the check, though nothing else changed on
-// the trigger. The suite reaches no applier cluster, so that check goes no further.
-var _ = Describe("Apply trigger reconcile", func() {
+// the applier claim. The suite reaches no applier cluster, so that check goes no further.
+var _ = Describe("Applier claim reconcile", func() {
 	ctx := context.Background()
 
-	It("publishes the trigger's verdict", func() {
-		trigger := &configbutleraiv1alpha3.ArgoCDTrigger{
+	It("publishes the applier claim's verdict", func() {
+		claim := &configbutleraiv1alpha3.ArgoCDClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: "reconciled", Namespace: "default"},
-			Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
+			Spec: configbutleraiv1alpha3.ArgoCDClaimSpec{
 				KubeProviderRef: testKubeProviderRef(),
 				ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: "apps"},
 			},
 		}
-		Expect(k8sClient.Create(ctx, trigger)).To(Succeed())
-		DeferCleanup(func() { _ = k8sClient.Delete(ctx, trigger) })
+		Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, claim) })
 
 		configuredReason := func(g Gomega) string {
-			got := &configbutleraiv1alpha3.ArgoCDTrigger{}
-			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(trigger), got)).To(Succeed())
+			got := &configbutleraiv1alpha3.ArgoCDClaim{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(claim), got)).To(Succeed())
 			g.Expect(got.Status.ObservedGeneration).To(Equal(got.Generation))
-			configured := findCondition(got.Status.Conditions, ApplyTriggerConditionConfigured)
+			configured := findCondition(got.Status.Conditions, ApplierClaimConditionConfigured)
 			g.Expect(configured).NotTo(BeNil())
 			return configured.Reason
 		}
@@ -173,8 +173,8 @@ var _ = Describe("Apply trigger reconcile", func() {
 					Name: gitBranchNameForTest("prov", "main"),
 				},
 				Path: "apps/reconciled",
-				ApplyTriggerRef: &configbutleraiv1alpha3.ApplyTriggerReference{
-					Kind: configbutleraiv1alpha3.ApplyTriggerKindArgoCD, Name: "reconciled",
+				ApplierClaimRef: &configbutleraiv1alpha3.ApplierClaimReference{
+					Kind: configbutleraiv1alpha3.ApplierClaimKindArgoCD, Name: "reconciled",
 				},
 			},
 		}

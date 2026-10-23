@@ -185,22 +185,22 @@ type WorkerManager struct {
 
 	// applyRequester delivers every worker's apply requests. Set once at startup
 	// (SetApplyRequester) before any worker is created; nil in the CLI and in tests, which switches
-	// the apply trigger off.
+	// the applier claim off.
 	applyRequester ApplyRequester
 
-	// triggerStatus writes what every worker publishes on its apply triggers' status. Set once at
-	// startup (SetApplyTriggerStatusWriter); nil in the CLI and in tests, which publishes nothing.
-	triggerStatus ApplyTriggerStatusWriter
+	// claimStatus writes what every worker publishes on its applier claims' status. Set once at
+	// startup (SetApplierClaimStatusWriter); nil in the CLI and in tests, which publishes nothing.
+	claimStatus ApplierClaimStatusWriter
 
-	// applierAdmitted is the dispatcher's own check of whether a GitTarget may ask its trigger's
+	// applierAdmitted is the dispatcher's own check of whether a GitTarget may ask its applier claim's
 	// applier (authz.ApplierAdmitted), so a worker never flushes or holds an applier for a GitTarget
 	// the dispatcher would refuse. Always set by NewWorkerManager.
 	applierAdmitted ApplierAdmission
 }
 
-// ApplierAdmission reports whether target may ask the applier trigger holds to apply.
+// ApplierAdmission reports whether target may ask the applier applierClaim holds to apply.
 type ApplierAdmission func(
-	ctx context.Context, reader client.Reader, target *configv1alpha3.GitTarget, trigger configv1alpha3.ApplyTrigger,
+	ctx context.Context, reader client.Reader, target *configv1alpha3.GitTarget, applierClaim configv1alpha3.ApplierClaim,
 ) (authz.Decision, error)
 
 // NewWorkerManager creates a new worker manager. limits bounds every worker this manager
@@ -327,12 +327,12 @@ func (m *WorkerManager) SetApplyRequester(requester ApplyRequester) {
 	m.applyRequester = requester
 }
 
-// SetApplyTriggerStatusWriter injects what writes every worker's apply trigger status. Like
+// SetApplierClaimStatusWriter injects what writes every worker's applier claim status. Like
 // SetApplyRequester, it is called once at startup before any worker is created.
-func (m *WorkerManager) SetApplyTriggerStatusWriter(writer ApplyTriggerStatusWriter) {
+func (m *WorkerManager) SetApplierClaimStatusWriter(writer ApplierClaimStatusWriter) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.triggerStatus = writer
+	m.claimStatus = writer
 }
 
 // recordRemoteObservation is the delivery point for one branch's confirmed observation. Every
@@ -513,7 +513,7 @@ func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest) erro
 	worker.publicationReporter = func() { go m.notifyPublication(managerCtx, gitBranch) }
 	worker.scanAcceptance = m.scanAcceptance
 	worker.applyRequester = m.applyRequester
-	worker.triggerStatus = m.triggerStatus
+	worker.claimStatus = m.claimStatus
 	worker.initialSnapshots = m.initialSnapshots
 	worker.resyncRecheck = m.resyncRecheck
 	worker.applierAdmitted = m.applierAdmitted
@@ -853,7 +853,7 @@ const WorkerSweepInterval = time.Minute
 // that reconcile runs, and the controller sees the successor, wires its worker, and never learns
 // that the predecessor existed: the old branch's worker, its goroutine and its clone are then held
 // until the process restarts. Kubernetes reconciliation cannot be built on observing every
-// intermediate state, so the sweep needs a trigger that does not depend on seeing the delete.
+// intermediate state, so the sweep needs an applier claim that does not depend on seeing the delete.
 //
 // It is a separate goroutine rather than a step in the GitTarget reconcile on purpose: the sweep
 // takes lifecycleMu and holds it across Stop, and GitTarget reconciles are serialized, so a slow

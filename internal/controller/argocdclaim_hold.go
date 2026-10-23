@@ -18,11 +18,11 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
 )
 
-// An ArgoCDTrigger holds its Application's automated sync off, as a FluxTrigger holds its
-// Kustomization suspended (fluxtrigger_hold.go). The branch workers only start syncs
+// An ArgoCDClaim holds its Application's automated sync off, as a FluxClaim holds its
+// Kustomization suspended (fluxclaim_hold.go). The branch workers only start syncs
 // (internal/applier/argocd.go); the reconciler does the lifecycle:
 //
-//   - Adoption: a Configured trigger applies spec.syncPolicy.automated.enabled: false under GitOps
+//   - Adoption: a Configured applier claim applies spec.syncPolicy.automated.enabled: false under GitOps
 //     Reverser's field manager, with a Normal Event. Nothing else of automated changes, so prune
 //     keeps applying to the syncs GitOps Reverser starts.
 //   - Switched on elsewhere: a held Application found with automated sync on (Argo CD's UI,
@@ -33,103 +33,103 @@ import (
 //     again.
 //
 // The switch of an Application an ApplicationSet generated, or whose switch another field manager
-// applies, is not the trigger's (applier.AutomatedSync.Owner): the trigger never writes it and
+// applies, is not the applier claim's (applier.AutomatedSync.Owner): the applier claim never writes it and
 // carries no finalizer for it. Configured refuses such an Application while its automated sync is
-// on, and the trigger is Held while the owner keeps it off.
+// on, and the applier claim is Held while the owner keeps it off.
 
-// ReasonAutomatedSyncOff is Held=True on an ArgoCDTrigger whose Application has automated sync off:
+// ReasonAutomatedSyncOff is Held=True on an ArgoCDClaim whose Application has automated sync off:
 // held off by GitOps Reverser, or kept off by the switch's owner (the message says which).
 const ReasonAutomatedSyncOff = "AutomatedSyncOff"
 
-// reconcileArgoCD is Reconcile for an ArgoCDTrigger: one being deleted, or that no eligible
+// reconcileArgoCD is Reconcile for an ArgoCDClaim: one being deleted, or that no eligible
 // GitTarget references any more, hands its Application's automated sync back; any other holds it
 // off while it is Configured.
-func (r *ApplyTriggerReconciler) reconcileArgoCD(
-	ctx context.Context, st *reconcileStatus, trigger *configbutleraiv1alpha3.ArgoCDTrigger,
+func (r *ApplierClaimReconciler) reconcileArgoCD(
+	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.ArgoCDClaim,
 ) (ctrl.Result, error) {
-	if !trigger.DeletionTimestamp.IsZero() {
-		if !controllerutil.ContainsFinalizer(trigger, configbutleraiv1alpha3.ArgoCDTriggerFinalizer) {
+	if !claim.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(claim, configbutleraiv1alpha3.ArgoCDClaimFinalizer) {
 			return ctrl.Result{}, nil
 		}
-		return r.retire(ctx, st, trigger, nil)
+		return r.retire(ctx, st, claim, nil)
 	}
-	check := r.configuredVerdict(ctx, trigger)
-	publishCheck(st, trigger, check)
-	if check.retiring(trigger) {
-		return r.retire(ctx, st, trigger, &check)
+	check := r.configuredVerdict(ctx, claim)
+	publishCheck(st, claim, check)
+	if check.retiring(claim) {
+		return r.retire(ctx, st, claim, &check)
 	}
-	held, err := r.holdArgoCD(ctx, st, trigger, check)
+	held, err := r.holdArgoCD(ctx, st, claim, check)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	st.setValue(ApplyTriggerConditionHeld, held)
-	return r.commitTrigger(ctx, st, r.triggerReadiness(trigger, check.configured, &held), &held,
-		heldTriggerSteadyInterval)
+	st.setValue(ApplierClaimConditionHeld, held)
+	return r.commitClaim(ctx, st, r.claimReadiness(claim, check.configured, &held), &held,
+		heldClaimSteadyInterval)
 }
 
-// holdArgoCD returns an ArgoCDTrigger's Held condition. A Configured trigger holds its
+// holdArgoCD returns an ArgoCDClaim's Held condition. A Configured applier claim holds its
 // Application's automated sync off. One that is not Configured holds nothing, and one in line
 // behind another holder lets go of a finalizer it carries, handing nothing back.
-func (r *ApplyTriggerReconciler) holdArgoCD(
-	ctx context.Context, st *reconcileStatus, trigger *configbutleraiv1alpha3.ArgoCDTrigger, check triggerCheck,
+func (r *ApplierClaimReconciler) holdArgoCD(
+	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.ArgoCDClaim, check claimCheck,
 ) (conditionValue, error) {
 	configured := check.configured
 	switch {
 	case configured.Status == metav1.ConditionTrue:
-		return r.holdAutomatedSync(ctx, st, trigger)
+		return r.holdAutomatedSync(ctx, st, claim)
 	case configured.Reason == applier.ReasonNotReferenced:
 		return conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonNotReferenced,
-			Message: "nothing to hold: no GitTarget names this trigger"}, nil
-	case configured.Reason == applier.ReasonHeldByAnotherTrigger && applier.Holding(trigger):
+			Message: "nothing to hold: no GitTarget names this applier claim"}, nil
+	case configured.Reason == applier.ReasonHeldByAnotherClaim && applier.Holding(claim):
 		// The holder took it, or two adopted at once: the switch is held under the same field
-		// manager either way, so there is nothing of this trigger's to hand back.
-		if err := r.setFinalizer(ctx, st, trigger, false); err != nil {
+		// manager either way, so there is nothing of this applier claim's to hand back.
+		if err := r.setFinalizer(ctx, st, claim, false); err != nil {
 			return conditionValue{}, err
 		}
-	case applier.Holding(trigger):
+	case applier.Holding(claim):
 		return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured, Message: fmt.Sprintf(
 			"Application %s is left with its automated sync held off under GitOps Reverser's field manager, as "+
-				"this trigger last held it: it is held again once the trigger is Configured, and handed back "+
-				"once no eligible GitTarget references the trigger or the trigger is deleted", trigger.Applier())}, nil
+				"this applier claim last held it: it is held again once the applier claim is Configured, and handed back "+
+				"once no eligible GitTarget references the applier claim or the applier claim is deleted", claim.Applier())}, nil
 	}
 	return conditionValue{Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured,
-		Message: "the Application's automated sync is held off once the trigger is Configured"}, nil
+		Message: "the Application's automated sync is held off once the applier claim is Configured"}, nil
 }
 
-// holdAutomatedSync holds a Configured ArgoCDTrigger's Application's automated sync off, with the
-// trigger's finalizer put in place before the first write, and returns the Held condition. A switch
+// holdAutomatedSync holds a Configured ArgoCDClaim's Application's automated sync off, with the
+// applier claim's finalizer put in place before the first write, and returns the Held condition. A switch
 // somebody else owns is left to them: Configured is True only while they keep it off.
-func (r *ApplyTriggerReconciler) holdAutomatedSync(
-	ctx context.Context, st *reconcileStatus, trigger *configbutleraiv1alpha3.ArgoCDTrigger,
+func (r *ApplierClaimReconciler) holdAutomatedSync(
+	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.ArgoCDClaim,
 ) (conditionValue, error) {
 	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
 	defer cancel()
-	ref := trigger.Applier()
-	argo, err := r.argoClient(ctx, trigger)
+	ref := claim.Applier()
+	argo, err := r.argoClient(ctx, claim)
 	if err != nil {
-		return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld,
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld,
 			fmt.Sprintf("cannot reach the cluster of Application %s: %v", ref, err)), nil
 	}
 	state, err := argo.AutomatedSync(ctx, ref)
 	if err != nil {
-		return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld,
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld,
 			fmt.Sprintf("cannot read Application %s: %v", ref, err)), nil
 	}
 	if state.Owner != "" {
 		return ownedSwitchCondition(ref, state), nil
 	}
-	if err := r.setFinalizer(ctx, st, trigger, true); err != nil {
+	if err := r.setFinalizer(ctx, st, claim, true); err != nil {
 		return conditionValue{}, err
 	}
 	if !state.Held || state.On {
-		if err := r.recordPreviousSuspendState(ctx, st, trigger, state.Held, !state.On); err != nil {
-			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, fmt.Sprintf(
+		if err := r.recordPreviousSuspendState(ctx, st, claim, state.Held, !state.On); err != nil {
+			return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, fmt.Sprintf(
 				"cannot record how Application %s stood before it is held: %v", ref, err)), nil
 		}
 		written, err := argo.SwitchOff(ctx, ref)
 		switch {
 		case err != nil:
-			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, err.Error()), nil
+			return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error()), nil
 		case !written:
 			// Configured checks this first; an Argo CD downgraded since is caught here, before a write.
 			return conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonArgoCDVersionNotSupported,
@@ -137,11 +137,11 @@ func (r *ApplyTriggerReconciler) holdAutomatedSync(
 					"before 3.1), so GitOps Reverser writes nothing", ref)}, nil
 		}
 		switch {
-		case !heldBefore(trigger):
-			r.event(trigger, corev1.EventTypeNormal, EventReasonAdopted,
+		case !heldBefore(claim):
+			r.event(claim, corev1.EventTypeNormal, EventReasonAdopted,
 				"switched automated sync of Application %s off: from now on GitOps Reverser starts every sync", ref)
 		case state.On:
-			r.event(trigger, corev1.EventTypeNormal, EventReasonClaimedResourceReconciled,
+			r.event(claim, corev1.EventTypeNormal, EventReasonClaimedResourceReconciled,
 				"automated sync of Application %s was switched on outside GitOps Reverser, which switched it off "+
 					"again; a sync Argo CD started meanwhile was not checked against the branch", ref)
 		}
@@ -150,8 +150,8 @@ func (r *ApplyTriggerReconciler) holdAutomatedSync(
 		"Application %s has automated sync held off by GitOps Reverser, which starts every sync", ref)}, nil
 }
 
-// ownedSwitchCondition is the Held condition of a trigger whose Application's switch somebody else
-// owns. Nothing is written: a share of the switch the trigger took before the owner did is handed
+// ownedSwitchCondition is the Held condition of an applier claim whose Application's switch somebody else
+// owns. Nothing is written: a share of the switch the applier claim took before the owner did is handed
 // back by the finalizer it carries.
 func ownedSwitchCondition(ref k8stypes.NamespacedName, state applier.AutomatedSync) conditionValue {
 	if state.On {
@@ -164,22 +164,22 @@ func ownedSwitchCondition(ref k8stypes.NamespacedName, state applier.AutomatedSy
 			"every sync", ref, state.Owner)}
 }
 
-// releaseAutomatedSync takes an ArgoCDTrigger's hand-back one step: it hands the Application's
+// releaseAutomatedSync takes an ArgoCDClaim's hand-back one step: it hands the Application's
 // automated sync switch back as status.previousSuspendState recorded it, or as the ApplicationSet or field
 // manager that owns the switch by then set it (applier.ArgoCD.ReleaseAutomatedSync). A successor
 // (nextInLine) takes it over instead, and it is left held off for it: released, Argo CD would sync on
 // its own at once, before the successor could switch it off again.
-func (r *ApplyTriggerReconciler) releaseAutomatedSync(
-	ctx context.Context, trigger *configbutleraiv1alpha3.ArgoCDTrigger, successor configbutleraiv1alpha3.ApplyTrigger,
+func (r *ApplierClaimReconciler) releaseAutomatedSync(
+	ctx context.Context, claim *configbutleraiv1alpha3.ArgoCDClaim, successor configbutleraiv1alpha3.ApplierClaim,
 ) *pendingRelease {
-	ref := trigger.Applier()
+	ref := claim.Applier()
 	if successor != nil {
-		r.event(trigger, corev1.EventTypeNormal, EventReasonReleased,
+		r.event(claim, corev1.EventTypeNormal, EventReasonReleased,
 			"left automated sync of Application %s held off for %s %s/%s, which holds it next", ref,
-			successor.TriggerKind(), successor.GetNamespace(), successor.GetName())
+			successor.ClaimKind(), successor.GetNamespace(), successor.GetName())
 		return nil
 	}
-	dynamicClient, err := r.releaseClient(ctx, trigger)
+	dynamicClient, err := r.releaseClient(ctx, claim)
 	if err != nil {
 		return &pendingRelease{
 			err: err, left: fmt.Sprintf("its cluster cannot be reached (%v), so it is left as it was", err),
@@ -189,7 +189,7 @@ func (r *ApplyTriggerReconciler) releaseAutomatedSync(
 		return nil
 	}
 	var wasOn *bool
-	if previous := trigger.Status.PreviousSuspendState; previous != "" {
+	if previous := claim.Status.PreviousSuspendState; previous != "" {
 		on := previous == configbutleraiv1alpha3.SuspendStateNotSuspended
 		wasOn = &on
 	}
@@ -198,8 +198,8 @@ func (r *ApplyTriggerReconciler) releaseAutomatedSync(
 	case apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err):
 		return nil
 	case err != nil:
-		return r.releaseFailed(trigger, err, fmt.Sprintf("giving its automated sync switch up failed (%v); %s",
-			err, leftHeld(trigger)))
+		return r.releaseFailed(claim, err, fmt.Sprintf("giving its automated sync switch up failed (%v); %s",
+			err, leftHeld(claim)))
 	}
 	state := "its automated sync is off"
 	if released.On {
@@ -208,16 +208,16 @@ func (r *ApplyTriggerReconciler) releaseAutomatedSync(
 	if released.Kept != "" {
 		state += ", " + released.Kept + "; GitOps Reverser's field manager keeps that value until its owner changes it"
 	}
-	r.event(trigger, corev1.EventTypeNormal, EventReasonReleased, "handed Application %s back to Argo CD: %s",
+	r.event(claim, corev1.EventTypeNormal, EventReasonReleased, "handed Application %s back to Argo CD: %s",
 		ref, state)
 	return nil
 }
 
-// argoClient is the Argo CD client of the trigger's cluster.
-func (r *ApplyTriggerReconciler) argoClient(
-	ctx context.Context, trigger *configbutleraiv1alpha3.ArgoCDTrigger,
+// argoClient is the Argo CD client of the applier claim's cluster.
+func (r *ApplierClaimReconciler) argoClient(
+	ctx context.Context, claim *configbutleraiv1alpha3.ArgoCDClaim,
 ) (*applier.ArgoCD, error) {
-	dynamicClient, err := r.ApplierClients(ctx, trigger.KubeProviderKey().String())
+	dynamicClient, err := r.ApplierClients(ctx, claim.KubeProviderKey().String())
 	if err != nil {
 		return nil, err
 	}

@@ -144,11 +144,11 @@ func TestKubeProviderKey_DefaultsToReferrerNamespace(t *testing.T) {
 	target.Spec.KubeProviderRef = meta.NamespacedObjectReference{Name: "remote"}
 	assert.Equal(t, types.NamespacedName{Namespace: "tenant-a", Name: "remote"}, target.KubeProviderKey())
 
-	flux := &FluxTrigger{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-a"}}
+	flux := &FluxClaim{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-a"}}
 	flux.Spec.KubeProviderRef = meta.NamespacedObjectReference{Name: "mgmt", Namespace: "platform"}
 	assert.Equal(t, types.NamespacedName{Namespace: "platform", Name: "mgmt"}, flux.KubeProviderKey())
 
-	argo := &ArgoCDTrigger{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-a"}}
+	argo := &ArgoCDClaim{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-a"}}
 	argo.Spec.KubeProviderRef = meta.NamespacedObjectReference{Name: "mgmt"}
 	assert.Equal(t, types.NamespacedName{Namespace: "tenant-a", Name: "mgmt"}, argo.KubeProviderKey())
 }

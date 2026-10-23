@@ -17,26 +17,26 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 )
 
-// A trigger acts only while an eligible GitTarget references it: one that names it, is admitted by
-// its KubeProviders, and writes the repository and branch the applier fetches. A trigger nothing
+// An applier claim acts only while an eligible GitTarget references it: one that names it, is admitted by
+// its KubeProviders, and writes the repository and branch the applier fetches. An applier claim nothing
 // eligible names serves nobody, so it reads and writes nothing in the applier's cluster, and is not
 // in line for its applier. Eligibility is judged from those inputs alone, never from the
-// GitTarget's Ready, which reads the trigger's own Ready back (ApplyTriggerReady) and would make
+// GitTarget's Ready, which reads the applier claim's own Ready back (ApplierClaimReady) and would make
 // the two circular.
 
-// ReasonNotReferenced is Configured=Unknown (and Ready=True) on a trigger no GitTarget names: it is
+// ReasonNotReferenced is Configured=Unknown (and Ready=True) on an applier claim no GitTarget names: it is
 // asked nothing, so it does nothing.
 const ReasonNotReferenced = "NotReferenced"
 
-// ReasonNotBound is Configured on a trigger whose naming GitTargets are none of them eligible:
+// ReasonNotBound is Configured on an applier claim whose naming GitTargets are none of them eligible:
 // Unknown while one cannot be judged yet, False once each is refused for different reasons.
 const ReasonNotBound = "NotBound"
 
-// ReferenceState is how one GitTarget naming a trigger stands with it.
+// ReferenceState is how one GitTarget naming an applier claim stands with it.
 type ReferenceState int
 
 const (
-	// ReferenceEligible names the trigger, is admitted, and writes what the applier fetches.
+	// ReferenceEligible names the applier claim, is admitted, and writes what the applier fetches.
 	ReferenceEligible ReferenceState = iota
 	// ReferenceUndecided cannot be judged yet: its GitProvider or a KubeProvider is missing, or
 	// the applier's source has not been read.
@@ -45,7 +45,7 @@ const (
 	ReferenceRefused
 )
 
-// Reference is one GitTarget naming a trigger, judged.
+// Reference is one GitTarget naming an applier claim, judged.
 type Reference struct {
 	Target types.NamespacedName
 	State  ReferenceState
@@ -56,13 +56,13 @@ type Reference struct {
 	Message string
 }
 
-// References are the GitTargets naming one trigger, judged.
+// References are the GitTargets naming one applier claim, judged.
 type References []Reference
 
-// Named reports whether any GitTarget names the trigger.
+// Named reports whether any GitTarget names the applier claim.
 func (refs References) Named() bool { return len(refs) > 0 }
 
-// Eligible reports whether at least one GitTarget naming the trigger is eligible.
+// Eligible reports whether at least one GitTarget naming the applier claim is eligible.
 func (refs References) Eligible() bool {
 	for _, ref := range refs {
 		if ref.State == ReferenceEligible {
@@ -72,7 +72,7 @@ func (refs References) Eligible() bool {
 	return false
 }
 
-// Refused reports whether every GitTarget naming the trigger is conclusively refused: there is at
+// Refused reports whether every GitTarget naming the applier claim is conclusively refused: there is at
 // least one, and none is eligible or may yet be.
 func (refs References) Refused() bool {
 	for _, ref := range refs {
@@ -111,22 +111,22 @@ func (refs References) Message() string {
 			parts = append(parts, fmt.Sprintf("GitTarget %s: %s", ref.Target, ref.Message))
 		}
 	}
-	return "no GitTarget naming this trigger is eligible: " + strings.Join(parts, "; ")
+	return "no GitTarget naming this applier claim is eligible: " + strings.Join(parts, "; ")
 }
 
-// NamingTargets lists the GitTargets that name trigger, in its namespace, and are not being
+// NamingTargets lists the GitTargets that name claim, in its namespace, and are not being
 // deleted, by name.
 func NamingTargets(
-	ctx context.Context, reader client.Reader, trigger v1alpha3.ApplyTrigger,
+	ctx context.Context, reader client.Reader, claim v1alpha3.ApplierClaim,
 ) ([]*v1alpha3.GitTarget, error) {
 	var list v1alpha3.GitTargetList
-	if err := reader.List(ctx, &list, client.InNamespace(trigger.GetNamespace())); err != nil {
+	if err := reader.List(ctx, &list, client.InNamespace(claim.GetNamespace())); err != nil {
 		return nil, fmt.Errorf("list GitTargets: %w", err)
 	}
 	var targets []*v1alpha3.GitTarget
 	for i := range list.Items {
 		target := &list.Items[i]
-		if target.DeletionTimestamp.IsZero() && Names(target, trigger) {
+		if target.DeletionTimestamp.IsZero() && Names(target, claim) {
 			targets = append(targets, target)
 		}
 	}
@@ -134,23 +134,23 @@ func NamingTargets(
 	return targets, nil
 }
 
-// Names reports whether target's spec.applyTriggerRef names trigger.
-func Names(target *v1alpha3.GitTarget, trigger v1alpha3.ApplyTrigger) bool {
-	ref := target.Spec.ApplyTriggerRef
-	return ref != nil && target.Namespace == trigger.GetNamespace() && ref.Kind == trigger.TriggerKind() &&
-		ref.Name == trigger.GetName()
+// Names reports whether target's spec.applierClaimRef names claim.
+func Names(target *v1alpha3.GitTarget, claim v1alpha3.ApplierClaim) bool {
+	ref := target.Spec.ApplierClaimRef
+	return ref != nil && target.Namespace == claim.GetNamespace() && ref.Kind == claim.ClaimKind() &&
+		ref.Name == claim.GetName()
 }
 
-// JudgeReferences judges each of targets, which name trigger, against the source its applier
+// JudgeReferences judges each of targets, which name claim, against the source its applier
 // fetches, or with source nil, on admission alone: a reference that is admitted is then undecided.
 // A read that fails with anything but NotFound is an error, so the caller keeps what it published.
 func JudgeReferences(
-	ctx context.Context, reader client.Reader, trigger v1alpha3.ApplyTrigger, targets []*v1alpha3.GitTarget,
+	ctx context.Context, reader client.Reader, claim v1alpha3.ApplierClaim, targets []*v1alpha3.GitTarget,
 	source *Source,
 ) (References, error) {
 	refs := make(References, 0, len(targets))
 	for _, target := range targets {
-		ref, err := judgeReference(ctx, reader, trigger, target, source)
+		ref, err := judgeReference(ctx, reader, claim, target, source)
 		if err != nil {
 			return nil, err
 		}
@@ -160,17 +160,17 @@ func JudgeReferences(
 }
 
 func judgeReference(
-	ctx context.Context, reader client.Reader, trigger v1alpha3.ApplyTrigger, target *v1alpha3.GitTarget,
+	ctx context.Context, reader client.Reader, claim v1alpha3.ApplierClaim, target *v1alpha3.GitTarget,
 	source *Source,
 ) (Reference, error) {
 	ref := Reference{Target: types.NamespacedName{Namespace: target.Namespace, Name: target.Name}}
-	decision, err := authz.ApplierAdmitted(ctx, reader, target, trigger)
+	decision, err := authz.ApplierAdmitted(ctx, reader, target, claim)
 	switch {
 	case err != nil:
 		return ref, fmt.Errorf("check GitTarget %s against its KubeProviders: %w", ref.Target, err)
 	case decision.Allowed:
 	case decision.Reason == authz.ReasonKubeProviderNotFound:
-		// A provider may be on its way, as the trigger's own KubeProviderNotFound may.
+		// A provider may be on its way, as the applier claim's own KubeProviderNotFound may.
 		ref.State, ref.Message = ReferenceUndecided, decision.Message
 		return ref, nil
 	default:
@@ -194,7 +194,7 @@ func judgeReference(
 		return ref, nil
 	}
 	want := Binding{RepositoryURL: provider.Spec.URL, Branch: branch.Spec.Branch}
-	if mismatch := bindingMismatch(trigger, source.URL, source.Revision, want); mismatch != "" {
+	if mismatch := bindingMismatch(claim, source.URL, source.Revision, want); mismatch != "" {
 		ref.State, ref.Reason, ref.Message = ReferenceRefused, ReasonSourceMismatch, mismatch
 		return ref, nil
 	}
@@ -203,8 +203,8 @@ func judgeReference(
 
 // bindingMismatch returns why an applier fetching url and branch does not apply what want writes,
 // or "" when it does.
-func bindingMismatch(trigger v1alpha3.ApplyTrigger, url, branch string, want Binding) string {
-	name := trigger.TriggerKind() + " " + trigger.GetName()
+func bindingMismatch(claim v1alpha3.ApplierClaim, url, branch string, want Binding) string {
+	name := claim.ClaimKind() + " " + claim.GetName()
 	if !repourl.Same(url, want.RepositoryURL) {
 		return fmt.Sprintf("the applier of %s applies %s, not %s", name, url, want.RepositoryURL)
 	}
@@ -214,21 +214,21 @@ func bindingMismatch(trigger v1alpha3.ApplyTrigger, url, branch string, want Bin
 	return ""
 }
 
-// eligible reports whether at least one GitTarget naming trigger is eligible, judged against
-// source, the applier's source as the caller read it: triggers in line for one applier share it.
-// With no source read, a reference that is not refused counts: a trigger that may be eligible is
+// eligible reports whether at least one GitTarget naming claim is eligible, judged against
+// source, the applier's source as the caller read it: applier claims in line for one applier share it.
+// With no source read, a reference that is not refused counts: an applier claim that may be eligible is
 // taken to be, so a caller that cannot tell waits rather than acts.
 func eligible(
-	ctx context.Context, reader client.Reader, trigger v1alpha3.ApplyTrigger, source *Source,
+	ctx context.Context, reader client.Reader, claim v1alpha3.ApplierClaim, source *Source,
 ) (bool, error) {
-	if !trigger.GetDeletionTimestamp().IsZero() {
+	if !claim.GetDeletionTimestamp().IsZero() {
 		return false, nil
 	}
-	targets, err := NamingTargets(ctx, reader, trigger)
+	targets, err := NamingTargets(ctx, reader, claim)
 	if err != nil || len(targets) == 0 {
 		return false, err
 	}
-	refs, err := JudgeReferences(ctx, reader, trigger, targets, source)
+	refs, err := JudgeReferences(ctx, reader, claim, targets, source)
 	if err != nil || source != nil {
 		return refs.Eligible(), err
 	}

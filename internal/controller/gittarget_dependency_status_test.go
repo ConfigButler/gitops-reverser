@@ -70,7 +70,7 @@ func TestGitTargetReadyProjectionChanged(t *testing.T) {
 		ObjectNew: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonOK, "ready"),
 	}), "the first Ready publish must fire")
 
-	// One reason can be a stall or progress (the apply-trigger gate reports it either way), so a
+	// One reason can be a stall or progress (the applier-claim gate reports it either way), so a
 	// Stalled flip under an unchanged Status and Reason is a move the rule has to see: it stalls on
 	// that verdict, not on the reason.
 	progressing := gitTargetWithReady(1, metav1.ConditionFalse, "SourceMismatch", "applier reads another source")

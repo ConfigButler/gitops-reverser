@@ -21,7 +21,7 @@ configs:
   cm:
     # Make Argo's *spontaneous* refresh slow, not fast: a NEW GIT REVISION is only
     # noticed on this timed refresh. The specs drive refresh/sync explicitly (an
-    # ArgoCDTrigger's sync, or the spec itself), so they never wait on it. Longer
+    # ArgoCDClaim's sync, or the spec itself), so they never wait on it. Longer
     # than the 120s default.
     timeout.reconciliation: 180s
   params:

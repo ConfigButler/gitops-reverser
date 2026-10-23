@@ -31,7 +31,7 @@ func sharedProviderTarget(
 			CreationTimestamp: metav1.NewTime(time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-age)),
 		},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			KubeProviderRef: triggerProviderRef(triggerLocalProvider),
+			KubeProviderRef: claimProviderRef(claimLocalProvider),
 			GitBranchRef: meta.NamespacedObjectReference{
 				Name:      gitBranchNameForTest("monorepo", "main"),
 				Namespace: providerNS,
@@ -47,7 +47,7 @@ func sharedProviderReconciler(t *testing.T, objects ...ctrlclient.Object) *GitTa
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 	// The KubeProvider every GitTarget here mirrors through admits every namespace.
-	local := admitting(triggerLocalProvider)
+	local := admitting(claimLocalProvider)
 	local.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}}
 	objects = append(objects, local)
 	for _, ns := range []string{"platform", "team-b"} {

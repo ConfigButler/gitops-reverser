@@ -12,18 +12,18 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// The apply trigger kinds as kubectl names them.
+// The applier claim kinds as kubectl names them.
 const (
-	fluxTriggerResource   = "fluxtrigger"
-	argoCDTriggerResource = "argocdtrigger"
+	fluxClaimResource   = "fluxclaim"
+	argoCDClaimResource = "argocdclaim"
 )
 
-// createFluxTrigger creates the FluxTrigger name in namespace, holding the Kustomization
+// createFluxClaim creates the FluxClaim name in namespace, holding the Kustomization
 // flux-system/<kustomization> in the operator's own cluster (the install's "local" KubeProvider).
-func createFluxTrigger(namespace, name, kustomization string) {
+func createFluxClaim(namespace, name, kustomization string) {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: FluxTrigger
+kind: FluxClaim
 metadata:
   name: %s
   namespace: %s
@@ -34,15 +34,15 @@ spec:
     name: %s
 `, name, namespace, localKubeProviderRef(), kustomization)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
-	Expect(err).NotTo(HaveOccurred(), "failed to create FluxTrigger %s/%s", namespace, name)
+	Expect(err).NotTo(HaveOccurred(), "failed to create FluxClaim %s/%s", namespace, name)
 }
 
-// createArgoCDTrigger creates the ArgoCDTrigger name in namespace, holding the Application
+// createArgoCDClaim creates the ArgoCDClaim name in namespace, holding the Application
 // <appNamespace>/<application> in the operator's own cluster.
-func createArgoCDTrigger(namespace, name, appNamespace, application string) {
+func createArgoCDClaim(namespace, name, appNamespace, application string) {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: ArgoCDTrigger
+kind: ArgoCDClaim
 metadata:
   name: %s
   namespace: %s
@@ -53,51 +53,51 @@ spec:
     name: %s
 `, name, namespace, localKubeProviderRef(), appNamespace, application)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
-	Expect(err).NotTo(HaveOccurred(), "failed to create ArgoCDTrigger %s/%s", namespace, name)
+	Expect(err).NotTo(HaveOccurred(), "failed to create ArgoCDClaim %s/%s", namespace, name)
 }
 
-// allowCrossNamespaceAppliers lets the triggers that reach their applier through the install's
+// allowCrossNamespaceAppliers lets the applier claims that reach their applier through the install's
 // KubeProvider name one in another namespace, as the e2e appliers are: in flux-system and argocd,
-// while each spec's triggers live in its own namespace. Granting it is idempotent, and no spec
+// while each spec's applier claims live in its own namespace. Granting it is idempotent, and no spec
 // relies on its absence on that provider, so parallel specs may all ask for it.
 func allowCrossNamespaceAppliers() {
 	GinkgoHelper()
 	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
 		"--type=merge", "-p", `{"spec":{"allowCrossNamespace":{"appliers":true}}}`)
-	Expect(err).NotTo(HaveOccurred(), "failed to let the install KubeProvider's triggers reach other namespaces")
+	Expect(err).NotTo(HaveOccurred(), "failed to let the install KubeProvider's applier claims reach other namespaces")
 }
 
-// nameApplyTrigger points a GitTarget at the trigger of kind (FluxTrigger or ArgoCDTrigger) and
+// nameApplierClaim points a GitTarget at the applier claim of kind (FluxClaim or ArgoCDClaim) and
 // name, and sets onRefusal when it is not empty.
-func nameApplyTrigger(namespace, gitTarget, kind, trigger, onRefusal string) {
+func nameApplierClaim(namespace, gitTarget, kind, claim, onRefusal string) {
 	GinkgoHelper()
 	refusal := ""
 	if onRefusal != "" {
 		refusal = fmt.Sprintf(`,"onRefusal":%q`, onRefusal)
 	}
 	_, err := kubectlRunInNamespace(namespace, "patch", "gittarget", gitTarget, "--type=merge", "-p",
-		fmt.Sprintf(`{"spec":{"applyTriggerRef":{"kind":%q,"name":%q}%s}}`, kind, trigger, refusal))
-	Expect(err).NotTo(HaveOccurred(), "failed to point GitTarget %s/%s at %s %s", namespace, gitTarget, kind, trigger)
+		fmt.Sprintf(`{"spec":{"applierClaimRef":{"kind":%q,"name":%q}%s}}`, kind, claim, refusal))
+	Expect(err).NotTo(HaveOccurred(), "failed to point GitTarget %s/%s at %s %s", namespace, gitTarget, kind, claim)
 }
 
-// requestTriggerReconcile asks a trigger's reconciler to read its applier now. It reads the
+// requestClaimReconcile asks an applier claim's reconciler to read its applier now. It reads the
 // applier on its own cadence and watches nothing in the applier's cluster, so a test that changes
 // the applier asks for the read rather than wait for it.
-func requestTriggerReconcile(namespace, resource, name string) {
+func requestClaimReconcile(namespace, resource, name string) {
 	GinkgoHelper()
 	_, err := kubectlRunInNamespace(namespace, "annotate", resource, name, "--overwrite",
 		"reconcile.configbutler.ai/requestedAt="+strconv.FormatInt(time.Now().UnixNano(), 10))
 	Expect(err).NotTo(HaveOccurred(), "failed to request a %s reconcile", resource)
 }
 
-// triggerOperation is a trigger's status.operation: its reason, commit, phase and token, as the
+// claimOperation is an applier claim's status.operation: its reason, commit, phase and token, as the
 // branch worker writes them on every transition.
-type triggerOperation struct {
+type claimOperation struct {
 	Reason, Commit, Phase, Token string
 }
 
-// readTriggerOperation reads a trigger's status.operation; the zero value when it has none.
-func readTriggerOperation(g Gomega, namespace, resource, name string) triggerOperation {
+// readClaimOperation reads an applier claim's status.operation; the zero value when it has none.
+func readClaimOperation(g Gomega, namespace, resource, name string) claimOperation {
 	out, err := kubectlRunInNamespace(namespace, "get", resource, name, "-o",
 		"jsonpath={.status.operation.reason}|{.status.operation.commit}|{.status.operation.phase}|"+
 			"{.status.operation.token}")
@@ -107,7 +107,7 @@ func readTriggerOperation(g Gomega, namespace, resource, name string) triggerOpe
 	for len(parts) < fields {
 		parts = append(parts, "")
 	}
-	return triggerOperation{Reason: parts[0], Commit: parts[1], Phase: parts[2], Token: parts[3]}
+	return claimOperation{Reason: parts[0], Commit: parts[1], Phase: parts[2], Token: parts[3]}
 }
 
 // fluxSourceStamp is the reconcile.fluxcd.io/requestedAt of a GitRepository in flux-system: set
@@ -135,10 +135,10 @@ func kustomizationManagers(g Gomega, name string) string {
 	return strings.TrimSpace(out)
 }
 
-// fluxTriggerEvents is every message of the Events with reason recorded on the FluxTrigger name.
-func fluxTriggerEvents(g Gomega, namespace, name, reason string) string {
+// fluxClaimEvents is every message of the Events with reason recorded on the FluxClaim name.
+func fluxClaimEvents(g Gomega, namespace, name, reason string) string {
 	out, err := kubectlRunInNamespace(namespace, "get", "events", "--field-selector",
-		"involvedObject.kind=FluxTrigger,involvedObject.name="+name+",reason="+reason,
+		"involvedObject.kind=FluxClaim,involvedObject.name="+name+",reason="+reason,
 		"-o", "jsonpath={.items[*].message}")
 	g.Expect(err).NotTo(HaveOccurred())
 	return out

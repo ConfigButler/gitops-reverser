@@ -19,7 +19,7 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 - ✅ **Git synchronization**: Push Kubernetes changes back to Git repositories
 - ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
 - ✅ **Automatic CRD installation**: KubeProvider, GitProvider, GitBranch, GitTarget, WatchRule,
-  ClusterWatchRule, CommitRequest, FluxTrigger, and ArgoCDTrigger CRDs installed automatically
+  ClusterWatchRule, CommitRequest, FluxClaim, and ArgoCDClaim CRDs installed automatically
 - ✅ **Watch-based ingestion**: object state comes from the Kubernetes watch API
 - ✅ **Optional audit attribution**: name commit authors from kube-apiserver audit events over HTTPS
 - ✅ **Prometheus metrics**: Built-in monitoring support
@@ -184,8 +184,8 @@ nodeSelector:
 | `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds. While the remote cannot be reached, retained writes that reach it close the worker to new writes, saves and resyncs until they are published; the watch delivers a refused event again | `8Mi` |
 | `controllerManager.commitRequestTTL` | How long a `CommitRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
-| `applierAccess.flux` | Grant the operator `get`, `list` and `patch` on Flux `Kustomizations`, `get` and `patch` on `GitRepositories`, `list` on `HelmReleases` and `HelmCharts` (to find a source's other consumers), and `create` on `SelfSubjectAccessReviews`, so it can hold the `Kustomization` a `FluxTrigger` names suspended and resume it for each apply | `false` |
-| `applierAccess.argocd` | Grant the operator `get`, `update` and `patch` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can hold the automated sync of the `Application` an `ArgoCDTrigger` names off and start its syncs | `false` |
+| `applierAccess.flux` | Grant the operator `get`, `list` and `patch` on Flux `Kustomizations`, `get` and `patch` on `GitRepositories`, `list` on `HelmReleases` and `HelmCharts` (to find a source's other consumers), and `create` on `SelfSubjectAccessReviews`, so it can hold the `Kustomization` a `FluxClaim` names suspended and resume it for each apply | `false` |
+| `applierAccess.argocd` | Grant the operator `get`, `update` and `patch` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can hold the automated sync of the `Application` an `ArgoCDClaim` names off and start its syncs | `false` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |
@@ -219,7 +219,7 @@ nodeSelector:
 | `kubeProvider.secretRef.key` | Key within that Secret. Empty reads `value` then `value.yaml` | `""` |
 | `kubeProvider.accessFrom` | Policy (`names` and/or `selector`) for which **other** control-cluster namespaces may reference this provider; the release namespace always may. The default empty selector admits every namespace | `{selector: {}}` |
 | `kubeProvider.allowCrossNamespace.sources` | Let a `WatchRule` in an admitted namespace watch other namespaces, `"*"` included. A delegation to every admitted namespace, not proof that it owns what it reads | `false` |
-| `kubeProvider.allowCrossNamespace.appliers` | Let a `FluxTrigger` or `ArgoCDTrigger` in an admitted namespace suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`. A delegation to every admitted namespace, not proof that it owns the applier or the repository | `false` |
+| `kubeProvider.allowCrossNamespace.appliers` | Let a `FluxClaim` or `ArgoCDClaim` in an admitted namespace suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`. A delegation to every admitted namespace, not proof that it owns the applier or the repository | `false` |
 | `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
 | `rbac.create` | Create the manager ClusterRole and its binding | `true` |
 | `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything, including every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
@@ -288,8 +288,8 @@ This chart automatically manages the following CRDs:
 - **`watchrules.configbutler.ai`** - Namespaced watch rules
 - **`clusterwatchrules.configbutler.ai`** - Cluster-scoped watch rules
 - **`commitrequests.configbutler.ai`** - One-shot "save now" signals that finalize the open commit window
-- **`fluxtriggers.configbutler.ai`** - Apply triggers holding a Flux `Kustomization` for bi-directional GitOps
-- **`argocdtriggers.configbutler.ai`** - Apply triggers holding an Argo CD `Application` for bi-directional GitOps
+- **`fluxclaims.configbutler.ai`** - Applier claims holding a Flux `Kustomization` for bi-directional GitOps
+- **`argocdclaims.configbutler.ai`** - Applier claims holding an Argo CD `Application` for bi-directional GitOps
 
 ### CRD Lifecycle
 
@@ -309,10 +309,10 @@ kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/downlo
 To manually remove CRDs after uninstallation:
 
 ```bash
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxclaims.configbutler.ai argocdclaims.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
 ```
 
-Delete the triggers while the operator still runs, before this ([Uninstallation](#uninstallation)).
+Delete the applier claims while the operator still runs, before this ([Uninstallation](#uninstallation)).
 
 > ⚠️ **Warning**: Deleting CRDs will also delete all custom resources of those types!
 
@@ -378,19 +378,19 @@ If upgrading from earlier chart versions:
 
 ## Uninstallation
 
-**Hand Flux its `Kustomization`s back first, while the operator still runs.** A `FluxTrigger` that
-holds its `Kustomization` carries the finalizer `configbutler.ai/flux-trigger`, and only the running
+**Hand Flux its `Kustomization`s back first, while the operator still runs.** A `FluxClaim` that
+holds its `Kustomization` carries the finalizer `configbutler.ai/flux-claim`, and only the running
 operator removes it, once it has handed the `Kustomization` back. One left after `helm uninstall`
-keeps its namespace and the `fluxtriggers` CRD from being deleted, and its `Kustomization` stays
-suspended. Delete your `GitTarget`s, or the triggers, before uninstalling, and wait until they are
+keeps its namespace and the `fluxclaims` CRD from being deleted, and its `Kustomization` stays
+suspended. Delete your `GitTarget`s, or the applier claims, before uninstalling, and wait until they are
 gone:
 
 ```bash
-kubectl delete fluxtriggers,argocdtriggers --all --all-namespaces --wait
+kubectl delete fluxclaims,argocdclaims --all --all-namespaces --wait
 ```
 
-A trigger that never held its `Kustomization`, such as one no `GitTarget` names, carries no
-finalizer. An `ArgoCDTrigger` never carries one.
+An applier claim that never held its `Kustomization`, such as one no `GitTarget` names, carries no
+finalizer. An `ArgoCDClaim` never carries one.
 
 ```bash
 # Uninstall chart
@@ -400,7 +400,7 @@ helm uninstall gitops-reverser --namespace gitops-reverser
 kubectl delete namespace gitops-reverser
 
 # Delete CRDs (optional, but removes all custom resources)
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxclaims.configbutler.ai argocdclaims.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
 ```
 
 ## Troubleshooting
@@ -489,7 +489,7 @@ resources:
 
 New versions are automatically released via GitHub Actions:
 
-1. Push to `main` branch triggers release-please
+1. Push to `main` branch applier claims release-please
 2. Docker images built for `linux/amd64` and `linux/arm64`
 3. Helm chart packaged and pushed to `ghcr.io`
 4. Release notes include installation instructions

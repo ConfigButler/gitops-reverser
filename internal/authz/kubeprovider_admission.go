@@ -37,7 +37,7 @@ const (
 	// carries a selector the apiserver accepted but that does not convert to a selector.
 	ReasonNamespaceNotAuthorized = "NamespaceNotAuthorized"
 
-	// ReasonApplierNamespaceNotAllowed is the denial reason when a trigger names an applier in
+	// ReasonApplierNamespaceNotAllowed is the denial reason when an applier claim names an applier in
 	// another namespace than its own and its KubeProvider does not set
 	// spec.allowCrossNamespace.appliers.
 	ReasonApplierNamespaceNotAllowed = "ApplierNamespaceNotAllowed"
@@ -139,56 +139,56 @@ func gitBranchAdmitted(
 	return Decision{Allowed: true}, nil
 }
 
-// ApplyTriggerAdmitted reports whether a trigger's namespace is admitted by the KubeProvider it
+// ApplierClaimAdmitted reports whether an applier claim's namespace is admitted by the KubeProvider it
 // names (spec.kubeProviderRef), and whether it may reach its applier there. The applier is
 // reached with that provider's credential, so the provider's accessFrom decides who may wield it,
 // exactly as for mirroring, and its allowCrossNamespace.appliers whether a namespace may suspend
-// and apply another namespace's applier. The trigger's own namespace is always allowed; in a remote
+// and apply another namespace's applier. The applier claim's own namespace is always allowed; in a remote
 // cluster that is the namespace of the same name, as it is for mirroring.
-func ApplyTriggerAdmitted(
+func ApplierClaimAdmitted(
 	ctx context.Context,
 	reader client.Reader,
-	trigger configv1alpha3.ApplyTrigger,
+	claim configv1alpha3.ApplierClaim,
 ) (Decision, error) {
-	key := trigger.KubeProviderKey()
-	decision, provider, err := namespaceAdmitted(ctx, reader, trigger.GetNamespace(), key, fmt.Sprintf(
+	key := claim.KubeProviderKey()
+	decision, provider, err := namespaceAdmitted(ctx, reader, claim.GetNamespace(), key, fmt.Sprintf(
 		"KubeProvider %s named by %s %s/%s spec.kubeProviderRef was not found",
-		key, trigger.TriggerKind(), trigger.GetNamespace(), trigger.GetName()))
+		key, claim.ClaimKind(), claim.GetNamespace(), claim.GetName()))
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
-	applier := trigger.Applier()
-	if applier.Namespace != trigger.GetNamespace() && !provider.AllowsCrossNamespaceAppliers() {
+	applier := claim.Applier()
+	if applier.Namespace != claim.GetNamespace() && !provider.AllowsCrossNamespaceAppliers() {
 		return Decision{
 			Reason: ReasonApplierNamespaceNotAllowed,
 			Message: fmt.Sprintf(
-				"%s %s is in another namespace than the trigger's own %q, and KubeProvider %s does not "+
-					"set spec.allowCrossNamespace.appliers", trigger.ApplierKind(), applier, trigger.GetNamespace(),
+				"%s %s is in another namespace than the applier claim's own %q, and KubeProvider %s does not "+
+					"set spec.allowCrossNamespace.appliers", claim.ApplierKind(), applier, claim.GetNamespace(),
 				key),
 		}, nil
 	}
 	return decision, nil
 }
 
-// ApplierAdmitted reports whether target may ask the applier its trigger holds to apply: its
-// namespace is admitted by its own KubeProvider (GitTargetAdmitted) and by the trigger's
-// (ApplyTriggerAdmitted). A GitTarget names a trigger in its own namespace only, so the second
+// ApplierAdmitted reports whether target may ask the applier its applier claim holds to apply: its
+// namespace is admitted by its own KubeProvider (GitTargetAdmitted) and by the applier claim's
+// (ApplierClaimAdmitted). A GitTarget names an applier claim in its own namespace only, so the second
 // answers for the GitTarget's namespace too. A KubeProvider's client is shared by every object
 // that uses the cluster, so a client being available is no permission to use it.
 func ApplierAdmitted(
 	ctx context.Context,
 	reader client.Reader,
 	target *configv1alpha3.GitTarget,
-	trigger configv1alpha3.ApplyTrigger,
+	claim configv1alpha3.ApplierClaim,
 ) (Decision, error) {
 	decision, err := GitTargetAdmitted(ctx, reader, target)
 	if err != nil || !decision.Allowed {
 		return decision, err
 	}
-	if trigger.KubeProviderKey() == target.KubeProviderKey() && trigger.GetNamespace() == target.Namespace {
+	if claim.KubeProviderKey() == target.KubeProviderKey() && claim.GetNamespace() == target.Namespace {
 		return decision, nil
 	}
-	return ApplyTriggerAdmitted(ctx, reader, trigger)
+	return ApplierClaimAdmitted(ctx, reader, claim)
 }
 
 // namespaceAdmitted is the check both admissions share: the provider exists, it admits namespace

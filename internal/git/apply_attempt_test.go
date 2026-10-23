@@ -23,10 +23,10 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// manualLoop is applyTriggerLoop with a requester that reports nothing until the test does.
+// manualLoop is applierClaimLoop with a requester that reports nothing until the test does.
 func manualLoop(t *testing.T, targets ...client.Object) (*branchWorkerEventLoop, *recordingRequester) {
 	t.Helper()
-	loop, requester := applyTriggerLoop(t, targets...)
+	loop, requester := applierClaimLoop(t, targets...)
 	requester.manual = true
 	return loop, requester
 }
@@ -130,7 +130,7 @@ func TestApplier_WithdrawnConsentNeverBecomesAnImmediateApply(t *testing.T) {
 // recovered while its attempt was out came back with the failed attempt and was requested again.
 func TestApplier_ARecoveredRefusalIsNotRetried(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying),
-		fluxTrigger("alpha", recording(recordedOperation(configv1alpha3.ApplyOperationSucceeded), false)))
+		fluxClaim("alpha", recording(recordedOperation(configv1alpha3.ApplyOperationSucceeded), false)))
 	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch}) // the tip it applied
 	key := addAlphaUnsentRefusal(loop)
 	loop.serviceAppliers()
@@ -203,14 +203,14 @@ func TestApplier_EachApplierRetriesOnItsOwnClock(t *testing.T) {
 	assert.Equal(t, applierRef("alpha"), retry[0].Applier)
 }
 
-// TestApplier_OneAttemptForEveryTargetNamingIt: GitTargets that share a trigger are asked for
+// TestApplier_OneAttemptForEveryTargetNamingIt: GitTargets that share an applier claim are asked for
 // together, each with its own reason, because its apply reaches every one of their folders.
 func TestApplier_OneAttemptForEveryTargetNamingIt(t *testing.T) {
-	shared := func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("shared") }
-	loop, requester := applyTriggerLoop(t,
+	shared := func(g *configv1alpha3.GitTarget) { g.Spec.ApplierClaimRef = testApplier("shared") }
+	loop, requester := applierClaimLoop(t,
 		applierTestTarget("alpha", true, shared, reapplying),
 		applierTestTarget("bravo", true, shared),
-		fluxTrigger("shared"),
+		fluxClaim("shared"),
 	)
 	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush}) // the startup converge
 	addAlphaUnsentRefusal(loop)
@@ -263,7 +263,7 @@ func TestApplier_ATargetThatNoLongerNamesAnApplierHasNothingPending(t *testing.T
 	out := requester.taken()
 	require.Len(t, out, 1)
 
-	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil })
+	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.ApplierClaimRef = nil })
 	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 	loop.serviceAppliers()
 	report(out[0], ApplyRequestFailed)
@@ -335,7 +335,7 @@ func TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow(t *testing.T) {
 		{name: "a notice that names no commit", after: "", wantClose: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true), &configv1alpha3.GitProvider{
+			loop, _ := applierClaimLoop(t, applierTestTarget("alpha", true), &configv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-provider", Namespace: "team-a"},
 				Spec:       configv1alpha3.GitProviderSpec{URL: "https://github.com/acme/platform"},
 			})
@@ -352,7 +352,7 @@ func TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow(t *testing.T) {
 // TestWriteBusy_ASaveAnnouncedBeforeItsWrites: a registered CommitRequest makes the branch busy, so
 // a catch-up cannot land between a save's announcement and its first writes.
 func TestWriteBusy_ASaveAnnouncedBeforeItsWrites(t *testing.T) {
-	loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	loop, _ := applierClaimLoop(t, applierTestTarget("alpha", true))
 	assert.False(t, loop.writeBusy())
 	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{{}: {}}
 	assert.True(t, loop.writeBusy())

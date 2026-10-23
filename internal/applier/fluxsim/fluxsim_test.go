@@ -169,7 +169,7 @@ func TestSim_FailuresAndRequeues(t *testing.T) {
 }
 
 // The ownership a real API server keeps (measured in envtest,
-// internal/controller/fluxtrigger_suspend_apiserver_test.go): a merge patch owns what it changes,
+// internal/controller/fluxclaim_suspend_apiserver_test.go): a merge patch owns what it changes,
 // as an update; an apply of the value a field holds shares it, even forced; a write that changes
 // the value takes it from every other owner; an apply that leaves a field out gives up its share,
 // and removes the field only when nobody else owns it.

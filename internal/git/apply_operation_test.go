@@ -138,7 +138,7 @@ func TestApplier_AnApplierNoLongerNamedAbandonsItsOperation(t *testing.T) {
 	loop.serviceAppliers()
 	require.Equal(t, int64(1), loop.w.unresolvedOperations.Load())
 
-	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = nil })
+	updateTarget(t, loop, "alpha", func(g *configv1alpha3.GitTarget) { g.Spec.ApplierClaimRef = nil })
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 
@@ -187,73 +187,73 @@ func onlyApplier(t *testing.T, loop *branchWorkerEventLoop) *applierState {
 	return nil
 }
 
-// recordingStatusWriter records what a worker publishes on its triggers' status, in order, and the
+// recordingStatusWriter records what a worker publishes on its applier claims' status, in order, and the
 // operations the requester recorded.
 type recordingStatusWriter struct {
 	mu        sync.Mutex
-	published map[TriggerRef][]ApplyTriggerStatus
-	recorded  map[TriggerRef][]*configv1alpha3.ApplyOperation
+	published map[ApplierClaimRef][]ApplierClaimStatus
+	recorded  map[ApplierClaimRef][]*configv1alpha3.ApplyOperation
 }
 
 func (r *recordingStatusWriter) RecordApplyOperation(
-	_ context.Context, trigger TriggerRef, operation *configv1alpha3.ApplyOperation,
+	_ context.Context, applierClaim ApplierClaimRef, operation *configv1alpha3.ApplyOperation,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.recorded == nil {
-		r.recorded = map[TriggerRef][]*configv1alpha3.ApplyOperation{}
+		r.recorded = map[ApplierClaimRef][]*configv1alpha3.ApplyOperation{}
 	}
-	r.recorded[trigger] = append(r.recorded[trigger], operation)
+	r.recorded[applierClaim] = append(r.recorded[applierClaim], operation)
 	return nil
 }
 
-func (r *recordingStatusWriter) PublishApplyTriggerStatus(trigger TriggerRef, status ApplyTriggerStatus) {
+func (r *recordingStatusWriter) PublishApplierClaimStatus(applierClaim ApplierClaimRef, status ApplierClaimStatus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.published == nil {
-		r.published = map[TriggerRef][]ApplyTriggerStatus{}
+		r.published = map[ApplierClaimRef][]ApplierClaimStatus{}
 	}
-	r.published[trigger] = append(r.published[trigger], status)
+	r.published[applierClaim] = append(r.published[applierClaim], status)
 }
 
-// last is the last publication for trigger, and how many there were.
-func (r *recordingStatusWriter) last(trigger TriggerRef) (ApplyTriggerStatus, int) {
+// last is the last publication for applierClaim, and how many there were.
+func (r *recordingStatusWriter) last(applierClaim ApplierClaimRef) (ApplierClaimStatus, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	all := r.published[trigger]
+	all := r.published[applierClaim]
 	if len(all) == 0 {
-		return ApplyTriggerStatus{}, 0
+		return ApplierClaimStatus{}, 0
 	}
 	return all[len(all)-1], len(all)
 }
 
-// records are the operations recorded on trigger, in order.
-func (r *recordingStatusWriter) records(trigger TriggerRef) []*configv1alpha3.ApplyOperation {
+// records are the operations recorded on applierClaim, in order.
+func (r *recordingStatusWriter) records(applierClaim ApplierClaimRef) []*configv1alpha3.ApplyOperation {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.recorded[trigger]
+	return r.recorded[applierClaim]
 }
 
-// TestApplier_TheTriggerStatusFollowsEveryTransition: the operation reaches the trigger's status
+// TestApplier_TheClaimStatusFollowsEveryTransition: the operation reaches the applier claim's status
 // first through the request's Record, which the requester writes through before it applies (so a
 // restart finds every apply that may have started), and moves with every report, so `kubectl get
-// fluxtriggers` shows where an apply stands without anything having to reconcile. Unresolved holds
+// fluxclaims` shows where an apply stands without anything having to reconcile. Unresolved holds
 // until the operation completes.
-func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
+func TestApplier_TheClaimStatusFollowsEveryTransition(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	writer := &recordingStatusWriter{}
-	loop.w.triggerStatus = writer
-	trigger := applierRef("alpha").Trigger
+	loop.w.claimStatus = writer
+	applierClaim := applierRef("alpha").ApplierClaim
 
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	sent := requester.taken()
 	require.Len(t, sent, 1)
-	_, n := writer.last(trigger)
+	_, n := writer.last(applierClaim)
 	require.Zero(t, n, "nothing is published as the attempt is sent")
 	require.NotNil(t, sent[0].Record)
 	require.NoError(t, sent[0].Record(context.Background()))
-	records := writer.records(trigger)
+	records := writer.records(applierClaim)
 	require.Len(t, records, 1, "the request writes it through before it applies")
 	requested := records[0]
 	assert.Equal(t, configv1alpha3.ApplyOperationRequested, requested.Phase)
@@ -269,7 +269,7 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 		res.ID = sent[0].ID
 		sent[0].Report(res)
 		loop.serviceAppliers()
-		status, _ := writer.last(trigger)
+		status, _ := writer.last(applierClaim)
 		require.NotNil(t, status.Operation)
 		assert.Nil(t, status.Withdrawn)
 		return status.Operation
@@ -290,26 +290,26 @@ func TestApplier_TheTriggerStatusFollowsEveryTransition(t *testing.T) {
 	assert.Equal(t, requested.RequestedAt, done.RequestedAt, "one operation, one record")
 	assert.Equal(t, requested.Token, done.Token)
 
-	_, before := writer.last(trigger)
+	_, before := writer.last(applierClaim)
 	loop.serviceAppliers()
-	_, after := writer.last(trigger)
+	_, after := writer.last(applierClaim)
 	assert.Equal(t, before, after, "an unchanged status is not published again")
 }
 
-// TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone is the fourth review's first
+// TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheClaimAlone is the fourth review's first
 // finding: the Requested operation was published as the attempt was sent, so an attempt the
 // requester refused (an Argo CD Application with automated sync on: Rejected) left a Requested
-// operation on the trigger that nothing would ever complete. Whatever ends an attempt before its
-// Record, the trigger is told nothing about it.
-func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T) {
+// operation on the applier claim that nothing would ever complete. Whatever ends an attempt before its
+// Record, the applier claim is told nothing about it.
+func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheClaimAlone(t *testing.T) {
 	for _, outcome := range []ApplyOutcome{
 		ApplyRejected, ApplyDropped, ApplyStale, ApplyRequestFailed,
 	} {
 		t.Run(string(outcome), func(t *testing.T) {
 			loop, requester := manualLoop(t, applierTestTarget("alpha", true, argoApplier))
 			writer := &recordingStatusWriter{}
-			loop.w.triggerStatus = writer
-			trigger := argoApplierRef("alpha").Trigger
+			loop.w.claimStatus = writer
+			applierClaim := argoApplierRef("alpha").ApplierClaim
 
 			observeForeignCommit(loop.w)
 			loop.serviceAppliers()
@@ -318,7 +318,7 @@ func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T
 			report(first[0], ApplyRequested)
 			report(first[0], ApplySucceeded)
 			loop.serviceAppliers()
-			completed, published := writer.last(trigger)
+			completed, published := writer.last(applierClaim)
 			require.Equal(t, configv1alpha3.ApplyOperationSucceeded, completed.Operation.Phase)
 
 			observeForeignCommit(loop.w)
@@ -328,9 +328,9 @@ func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T
 			report(second[0], outcome)
 			loop.serviceAppliers()
 
-			_, after := writer.last(trigger)
+			_, after := writer.last(applierClaim)
 			assert.Equal(t, published, after, "nothing is published for an attempt that was never recorded")
-			assert.Empty(t, writer.records(trigger))
+			assert.Empty(t, writer.records(applierClaim))
 			assert.Equal(t, completed.Operation, onlyApplier(t, loop).shownOperation(),
 				"the last operation stands")
 		})
@@ -338,13 +338,13 @@ func TestApplier_AnAttemptEndedBeforeItsRecordLeavesTheTriggerAlone(t *testing.T
 }
 
 // TestApplier_AnAttemptEndedAfterItsRecordWithdrawsIt: the requester recorded the operation, and
-// then could not start the apply (the resume failed). The operation is withdrawn, so the trigger
+// then could not start the apply (the resume failed). The operation is withdrawn, so the applier claim
 // shows the one before it again, and a restart does not follow an apply that never started.
 func TestApplier_AnAttemptEndedAfterItsRecordWithdrawsIt(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	writer := &recordingStatusWriter{}
-	loop.w.triggerStatus = writer
-	trigger := applierRef("alpha").Trigger
+	loop.w.claimStatus = writer
+	applierClaim := applierRef("alpha").ApplierClaim
 
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -353,34 +353,34 @@ func TestApplier_AnAttemptEndedAfterItsRecordWithdrawsIt(t *testing.T) {
 	report(first[0], ApplyRequested)
 	report(first[0], ApplySucceeded)
 	loop.serviceAppliers()
-	completed, _ := writer.last(trigger)
+	completed, _ := writer.last(applierClaim)
 
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
 	second := requester.taken()
 	require.Len(t, second, 1)
 	require.NoError(t, second[0].Record(context.Background()))
-	recorded := writer.records(trigger)
+	recorded := writer.records(applierClaim)
 	require.Len(t, recorded, 1)
 	report(second[0], ApplyRequestFailed)
 	loop.serviceAppliers()
 
-	withdrawal, n := writer.last(trigger)
+	withdrawal, n := writer.last(applierClaim)
 	assert.Equal(t, recorded[0], withdrawal.Withdrawn, "the recorded operation is withdrawn")
 	assert.Equal(t, completed.Operation, withdrawal.Operation, "and the one before it shown again")
 
 	loop.serviceAppliers()
-	_, again := writer.last(trigger)
+	_, again := writer.last(applierClaim)
 	assert.Equal(t, n, again, "withdrawn once")
 }
 
-// TestApplier_TheTriggerStatusSaysARepairIsPending: repairPending is published from the withheld write
+// TestApplier_TheClaimStatusSaysARepairIsPending: repairPending is published from the withheld write
 // until an operation that carried the repair succeeded.
-func TestApplier_TheTriggerStatusSaysARepairIsPending(t *testing.T) {
+func TestApplier_TheClaimStatusSaysARepairIsPending(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	writer := &recordingStatusWriter{}
-	loop.w.triggerStatus = writer
-	trigger := applierRef("alpha").Trigger
+	loop.w.claimStatus = writer
+	applierClaim := applierRef("alpha").ApplierClaim
 
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -390,20 +390,20 @@ func TestApplier_TheTriggerStatusSaysARepairIsPending(t *testing.T) {
 	loop.withholdLateApply(windowEvent("alpha", "3", "kubectl-edit"))
 	require.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)))
 	loop.serviceAppliers()
-	status, _ := writer.last(trigger)
+	status, _ := writer.last(applierClaim)
 	assert.True(t, status.RepairPending, "the withheld write leaves a repair pending")
 
 	report(first[0], ApplySucceeded)
 	loop.serviceAppliers()
 	repair := requester.taken()
 	require.Len(t, repair, 1)
-	status, _ = writer.last(trigger)
+	status, _ = writer.last(applierClaim)
 	assert.True(t, status.RepairPending, "still pending while the repair is out")
 
 	report(repair[0], ApplyRequested)
 	report(repair[0], ApplySucceeded)
 	loop.serviceAppliers()
-	status, _ = writer.last(trigger)
+	status, _ = writer.last(applierClaim)
 	assert.False(t, status.RepairPending, "repaired")
 	assert.Equal(t, configv1alpha3.ApplyReasonRepair, status.Operation.Reason)
 }

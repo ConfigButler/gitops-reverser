@@ -1,0 +1,18 @@
+# An ArgoCDClaim holds the Argo CD Application, with automated sync off, that syncs
+# example-target's folder. Name it from the GitTarget with
+# spec.applierClaimRef: {kind: ArgoCDClaim, name: example-claim}. See docs/bi-directional-argocd.md.
+apiVersion: configbutler.ai/v1alpha3
+kind: ArgoCDClaim
+metadata:
+  name: example-claim
+  namespace: default
+spec:
+  # The cluster the Application is in: here the chart's `local` KubeProvider, the operator's own.
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
+  # In another namespace than the applier claim's, so the KubeProvider must set
+  # allowCrossNamespace.appliers: true, or the applier claim reports ApplierNamespaceNotAllowed.
+  applicationRef:
+    namespace: argocd
+    name: example-apps

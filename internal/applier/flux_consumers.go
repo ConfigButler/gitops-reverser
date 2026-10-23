@@ -18,7 +18,7 @@ import (
 
 // A GitRepository's consumers (docs/design/apply-trigger.md, "Shared sources"). A suspended
 // Kustomization ignores a new artifact; one consumer that is not held applies each new artifact the
-// moment it arrives, so a FluxTrigger lists the ones no trigger holds in its status.
+// moment it arrives, so a FluxClaim lists the ones no applier claim holds in its status.
 
 // A HelmRelease applies a GitRepository through a HelmChart that source-controller builds from it:
 // one helm-controller creates from the release's spec.chart, or one the release names in

@@ -14,11 +14,11 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
-// A folder a trigger applies belongs to that trigger's applier (docs/design/applier-echoes.md, F4).
+// A coordinated folder belongs to its applier (docs/design/applier-echoes.md, F4).
 // An object another applier applies, mirrored into it, would be applied by this applier too, and two
 // appliers applying one object fight each other. So an object owned by another applier is excluded
-// from a triggered folder: a live event of it is not mirrored, and a snapshot of it is neither
-// upserted nor swept. A folder with no trigger excludes nothing: mirroring another applier's objects
+// from a coordinated folder: a live event of it is not mirrored, and a snapshot of it is neither
+// upserted nor swept. A folder with no applier claim excludes nothing: mirroring another applier's objects
 // one way is what such a folder can exist for.
 //
 // The owner is read from the raw object, where the watch holds it before sanitize strips it: Flux's
@@ -80,7 +80,7 @@ func AppliedByOf(u *unstructured.Unstructured) AppliedBy {
 	return AppliedBy{Kind: v1alpha3.ApplierKindApplication, Name: app}
 }
 
-// applierOf is the applier whose trigger a GitTarget names on this branch, nil when it names none.
+// applierOf is the applier whose applier claim a GitTarget names on this branch, nil when it names none.
 func (l *branchWorkerEventLoop) applierOf(name, namespace string) *applierState {
 	for _, ref := range l.sortedAppliers() {
 		state := l.appliers[ref]
@@ -94,7 +94,7 @@ func (l *branchWorkerEventLoop) applierOf(name, namespace string) *applierState 
 }
 
 // ownedElsewhere reports whether an object of the GitTarget's folder is owned by an applier other
-// than the one the folder's trigger names, and counts and logs it when it is.
+// than the one the folder's applier claim names, and counts and logs it when it is.
 func (l *branchWorkerEventLoop) ownedElsewhere(name, namespace, object string, owner AppliedBy) bool {
 	if owner.IsZero() {
 		return false
@@ -120,7 +120,7 @@ func (l *branchWorkerEventLoop) noteCreated(event Event) {
 	l.adopt(event.GitTargetName, event.GitTargetNamespace, event.Identifier.String())
 }
 
-// adopt leaves an adopt pending for the applier of a GitTarget's folder, when its trigger names one.
+// adopt leaves an adopt pending for the applier of a GitTarget's folder, when its applier claim names one.
 func (l *branchWorkerEventLoop) adopt(name, namespace, object string) {
 	applier := l.applierOf(name, namespace)
 	if applier == nil {
@@ -174,7 +174,7 @@ func (l *branchWorkerEventLoop) withoutOwnedElsewhere(
 // ownershipLogLimit bounds the objects recordOwnershipConflict remembers having logged.
 const ownershipLogLimit = 1024
 
-// recordOwnershipConflict counts an object another applier owns, kept out of a triggered folder, and
+// recordOwnershipConflict counts an object another applier owns, kept out of a coordinated folder, and
 // logs it once per object.
 func (l *branchWorkerEventLoop) recordOwnershipConflict(target, object string, applier ApplierRef, owner AppliedBy) {
 	if telemetry.ApplyOwnershipConflictsTotal != nil {
@@ -191,7 +191,7 @@ func (l *branchWorkerEventLoop) recordOwnershipConflict(target, object string, a
 		l.ownershipLogged = map[string]struct{}{}
 	}
 	l.ownershipLogged[key] = struct{}{}
-	l.w.Log.Info("Not mirroring an object another applier owns into a folder its trigger's applier applies: "+
+	l.w.Log.Info("Not mirroring an object another applier owns into a folder its applier claim's applier applies: "+
 		"two appliers applying one object fight each other",
 		"gitTarget", target, "object", object, "applier", applier.String(), "ownedBy", owner.String())
 }

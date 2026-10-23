@@ -1,8 +1,8 @@
 {{- if and .Values.rbac.create .Values.applierAccess.flux }}
-# What GitOps Reverser needs to drive a Kustomization a FluxTrigger holds: read and patch the
+# What GitOps Reverser needs to drive a Kustomization a FluxClaim holds: read and patch the
 # Kustomization and its GitRepository (it suspends and resumes the one and asks the other to fetch),
 # list the GitRepository's consumers (Kustomizations, and HelmReleases with the HelmCharts built
-# from it; without it the trigger lists none in status.source.otherConsumers), and create SelfSubjectAccessReviews so the operator can check it holds that
+# from it; without it the applier claim lists none in status.source.otherConsumers), and create SelfSubjectAccessReviews so the operator can check it holds that
 # access before relying on it. Separate from the manager role because it is optional and
 # names another project's API: an install without Flux grants nothing on it. See
 # docs/design/apply-trigger.md.
