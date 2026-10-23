@@ -54,7 +54,7 @@ func branchObject(namespace, name, provider, branch string, age time.Duration) *
 			CreationTimestamp: metav1.NewTime(gitBranchEpoch.Add(-age)),
 		},
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: provider}, Branch: branch,
+			GitProviderRef: meta.NamespacedObjectReference{Name: provider}, Branch: branch,
 		},
 	}
 }

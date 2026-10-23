@@ -179,7 +179,7 @@ func controlPlane() []client.Object {
 		&v1alpha3.GitBranch{
 			ObjectMeta: metav1.ObjectMeta{Namespace: testGitBranch.Namespace, Name: testGitBranch.Name},
 			Spec: v1alpha3.GitBranchSpec{
-				GitProviderRef: fluxmeta.LocalObjectReference{Name: testProvider.Name}, Branch: testBranch,
+				GitProviderRef: fluxmeta.NamespacedObjectReference{Name: testProvider.Name}, Branch: testBranch,
 			},
 		},
 		kubeProvider(localCluster, targetNS),

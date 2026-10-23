@@ -215,7 +215,7 @@ var _ = Describe("Reference names must not be empty", func() {
 		branch := &configbutleraiv1alpha3.GitBranch{
 			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitBranchSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: ""}, Branch: "main",
+				GitProviderRef: meta.NamespacedObjectReference{Name: ""}, Branch: "main",
 			},
 		}
 		Expect(k8sClient.Create(ctx, branch)).NotTo(Succeed(),

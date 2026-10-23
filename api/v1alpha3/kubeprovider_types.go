@@ -58,6 +58,25 @@ type KubeProviderSpec struct {
 	// +optional
 	AllowCrossNamespace *KubeProviderCrossNamespace `json:"allowCrossNamespace,omitempty"`
 
+	// AllowedGitTargets says which GitTargets may mirror through this provider, and what: each grant
+	// admits some control-cluster namespaces and bounds what the WatchRules feeding a GitTarget there
+	// may watch (sourceNamespaces), and what a ClusterWatchRule may mirror through it
+	// (clusterResources). Nothing is admitted automatically, this KubeProvider's own namespace
+	// included; omitted or empty, no GitTarget mirrors through it. Grants combine by union.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	AllowedGitTargets []SourceGrant `json:"allowedGitTargets,omitempty"`
+
+	// AllowedApplierClaims says which applier claims (FluxClaims and ArgoCDClaims) may hold an applier
+	// through this provider, and in which namespaces that applier may live (applierNamespaces).
+	// Admission to mirror does not admit to apply. Nothing is admitted automatically; omitted or
+	// empty, no applier claim holds an applier through it. Grants combine by union.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	AllowedApplierClaims []ApplierGrant `json:"allowedApplierClaims,omitempty"`
+
 	// Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
 	// the built-in defaults apply (20 QPS, burst 30). Refused beside inCluster.
 	// +optional

@@ -914,7 +914,7 @@ func createGitBranchFor(ctx context.Context, provider *configbutleraiv1alpha3.Gi
 			Name: gitBranchNameForTest(provider.Name, branch), Namespace: provider.Namespace,
 		},
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: provider.Name}, Branch: branch,
+			GitProviderRef: meta.NamespacedObjectReference{Name: provider.Name}, Branch: branch,
 		},
 	}
 	Expect(k8sClient.Create(ctx, gitBranch)).Should(Succeed())

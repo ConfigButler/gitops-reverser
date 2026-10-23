@@ -29,7 +29,7 @@ func sharedGitBranch(provider string) *configv1alpha3.GitBranch {
 	return &configv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "main"},
 		Spec: configv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: provider}, Branch: "main",
+			GitProviderRef: meta.NamespacedObjectReference{Name: provider}, Branch: "main",
 		},
 	}
 }

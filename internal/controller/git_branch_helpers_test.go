@@ -35,7 +35,7 @@ func gitBranchOn(provider, namespace, branch string) *configbutleraiv1alpha3.Git
 	return &configbutleraiv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Name: gitBranchNameForTest(provider, branch), Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: provider}, Branch: branch,
+			GitProviderRef: meta.NamespacedObjectReference{Name: provider}, Branch: branch,
 		},
 	}
 }

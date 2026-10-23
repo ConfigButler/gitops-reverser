@@ -33,12 +33,15 @@ func TestResolveGitBranch_FollowsTheTargetToItsBranchAndProvider(t *testing.T) {
 	branch := &configv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "main"},
 		Spec: configv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "acme"}, Branch: "main",
+			GitProviderRef: meta.NamespacedObjectReference{Name: "acme"}, Branch: "main",
 		},
 	}
 	orphan := &configv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "orphan"},
-		Spec:       configv1alpha3.GitBranchSpec{GitProviderRef: meta.LocalObjectReference{Name: "gone"}, Branch: "x"},
+		Spec: configv1alpha3.GitBranchSpec{
+			GitProviderRef: meta.NamespacedObjectReference{Name: "gone"},
+			Branch:         "x",
+		},
 	}
 	provider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "acme"},

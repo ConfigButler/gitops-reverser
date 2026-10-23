@@ -135,6 +135,159 @@ spec:
                   type: string
                 minItems: 1
                 type: array
+              allowedGitBranches:
+                description: |-
+                  AllowedGitBranches says which GitBranches may claim a branch of this repository through this
+                  GitProvider, and which branches: a GitBranch claims only while a grant admits its namespace and
+                  one of that grant's branches matches its spec.branch. Nothing is admitted automatically, this
+                  GitProvider's own namespace included; omitted or empty, no GitBranch claims through it. Grants
+                  combine by union. Who may write through a claimed branch is that GitBranch's
+                  spec.allowedGitTargets.
+                items:
+                  description: |-
+                    GitBranchGrant admits GitBranches in some control-cluster namespaces to claim the branches its
+                    patterns match through a GitProvider.
+                  properties:
+                    branches:
+                      description: |-
+                        Branches are the branches an admitted GitBranch may claim, as patterns matched against the
+                        whole branch name. '*' matches any sequence of characters, '/' included, so "*" alone is every
+                        branch. '{namespace}' is the claiming GitBranch's namespace, and must be a whole path segment:
+                        "teams/{namespace}/*". There is no escaping, '?' or character class.
+                      items:
+                        description: |-
+                          BranchPattern is a pattern matched against a whole branch name: literal text, '*' for any
+                          sequence of characters ('/' included), and '{namespace}' as a whole path segment.
+                        maxLength: 255
+                        minLength: 1
+                        pattern: ^[^\s~^:?\[\\]*$
+                        type: string
+                        x-kubernetes-validations:
+                        - messageExpression: '''branch pattern '' + self + '' references
+                            unknown variable '' + self.replace(''{namespace}'', ''x'').find(''[{][^{}]*[}]'')
+                            + ''; the only variable is {namespace}'''
+                          rule: '!self.replace(''{namespace}'', ''x'').matches(''[{][^{}]*[}]'')'
+                        - messageExpression: '''branch pattern '' + self + '' has
+                            an unmatched brace; the only variable is {namespace}'''
+                          rule: self.replace('{namespace}', 'x').matches('[{][^{}]*[}]')
+                            || !self.replace('{namespace}', 'x').matches('[{}]')
+                        - messageExpression: '''branch pattern '' + self + '': {namespace}
+                            must be a whole path segment, at the start or after a
+                            /, and at the end or before a /'''
+                          rule: '!self.matches(''[^/][{]namespace[}]'') && !self.matches(''[{]namespace[}][^/]'')'
+                        - messageExpression: '''branch pattern '' + self + '' can
+                            match no branch name: git refuses .., @{, a leading or
+                            trailing / and //'''
+                          rule: '!self.contains(''..'') && !self.contains(''@{'')
+                            && !self.startsWith(''/'') && !self.endsWith(''/'') &&
+                            !self.contains(''//'')'
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    from:
+                      description: |-
+                        From is where this grant admits from: Same (this GitProvider's namespace), Names (the
+                        namespaces in names), Selector (the namespaces whose labels match selector) or All (every
+                        namespace).
+                      enum:
+                      - Same
+                      - Names
+                      - Selector
+                      - All
+                      type: string
+                    names:
+                      description: 'Names are the control-cluster namespaces admitted
+                        with from: Names, by exact name.'
+                      items:
+                        description: GrantNamespace is one control-cluster namespace
+                          a grant admits by name.
+                        maxLength: 63
+                        type: string
+                        x-kubernetes-validations:
+                        - message: 'names: ''{namespace}'' is refused, because it
+                            would admit every referring namespace; use from: Same
+                            for the namespace of the object holding the grant'
+                          rule: self != '{namespace}'
+                        - message: 'names: ''*'' is refused; use from: All to admit
+                            every namespace'
+                          rule: self != '*'
+                        - message: names holds namespace names (DNS labels)
+                          rule: self == '{namespace}' || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    selector:
+                      description: |-
+                        Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
+                        something: to admit every namespace, use from: All.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                  required:
+                  - branches
+                  - from
+                  type: object
+                  x-kubernetes-validations:
+                  - message: 'from: Names needs names'
+                    rule: self.from != 'Names' || has(self.names)
+                  - message: 'names goes only with from: Names'
+                    rule: '!has(self.names) || self.from == ''Names'''
+                  - message: 'from: Selector needs a selector; to admit every namespace,
+                      use from: All'
+                    rule: self.from != 'Selector' || has(self.selector)
+                  - message: 'selector goes only with from: Selector'
+                    rule: '!has(self.selector) || self.from == ''Selector'''
+                  - message: 'selector: {} is refused; to admit every namespace, use
+                      from: All'
+                    rule: '!has(self.selector) || (has(self.selector.matchLabels)
+                      && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
+                      && size(self.selector.matchExpressions) > 0)'
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
               commit:
                 description: |-
                   Commit configures the commit identity and signing behavior this connection uses. Message

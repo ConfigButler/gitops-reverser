@@ -88,7 +88,7 @@ func TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder(t *testing.T) {
 	branch := &configbutleraiv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: gitBranchNameForTest("monorepo", "main")},
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "monorepo"}, Branch: "main",
+			GitProviderRef: meta.NamespacedObjectReference{Name: "monorepo"}, Branch: "main",
 		},
 	}
 	squatter := sharedProviderTarget("intruder", "everything", "platform", ".", 2*time.Hour)

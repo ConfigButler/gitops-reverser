@@ -70,6 +70,7 @@ fields that need more than a line.
 | `url` | **required** | Repository URL, SSH or HTTPS |
 | `allowedBranches` | **required** | Branches a `GitTarget` may write. A target naming any other is rejected |
 | `accessFrom` | **no other namespace** | Other namespaces whose `GitTarget`s may write through this provider, by name or label selector. Its own namespace is always admitted |
+| `allowedGitBranches` | **no `GitBranch`**, its own namespace included | Which namespaces' `GitBranch`es may claim which branches through this provider. Each grant has a `from` (`Same`, `Names`, `Selector`, `All`) and the `branches` patterns it allows |
 | `secretRef` | anonymous access | Secret holding the write credential. See [the credentials Secret](#gitproviderspecsecretref-the-credentials-secret) |
 | `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
 | `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
@@ -77,12 +78,13 @@ fields that need more than a line.
 
 ### `GitBranch` (namespaced): one branch of the repository
 
-Every field is immutable: to change one, delete the `GitBranch` and create a new one.
+Every field but `allowedGitTargets` is immutable: to change one, delete the `GitBranch` and create a new one.
 
 | Field | Default | What it does |
 |---|---|---|
 | `gitProviderRef` | **required** | The `GitProvider`, in this namespace, whose repository and credential write this branch |
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches`. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
+| `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may write through this branch, each grant with a `from`. The only mutable field |
 | `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 
 ### `GitReceiver` (namespaced): the endpoint a Git host notifies on a push
@@ -103,6 +105,8 @@ Set exactly one of `secretRef` and `inCluster`. Both are immutable: delete and r
 | `accessFrom` | **no other namespace** | Other control-cluster namespaces whose objects may use this provider, by name or label selector. Its own namespace is always admitted; an empty `selector: {}` admits every namespace |
 | `allowCrossNamespace.sources` | `false` | Whether rules may watch namespaces other than their own, `*` included. See [cross-namespace grants](#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace) |
 | `allowCrossNamespace.appliers` | `false` | Whether applier claims may name a `Kustomization` or `Application` in another namespace than their own |
+| `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a `from`, and `sourceNamespaces`, `clusterResources` or both |
+| `allowedApplierClaims` | **no applier claim**, its own namespace included | Which namespaces' applier claims may hold an applier through this provider, and the `applierNamespaces` that applier may live in |
 | `client.qps` | `20` | Client rate limit for this source cluster. Refused beside `inCluster` |
 | `client.burst` | `30` | Client burst for this source cluster. Refused beside `inCluster` |
 | `attribution.auditRoute` | `<namespace>.<name>` | Audit route this provider joins. A route is held by one namespace. See [audit route](#audit-route-and-auditfactsreceived) |

@@ -85,7 +85,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 			gitBranch := &configbutleraiv1alpha3.GitBranch{
 				ObjectMeta: metav1.ObjectMeta{Name: tc.key.Name, Namespace: tc.key.Namespace},
 				Spec: configbutleraiv1alpha3.GitBranchSpec{
-					GitProviderRef: meta.LocalObjectReference{Name: "prov-a"},
+					GitProviderRef: meta.NamespacedObjectReference{Name: "prov-a"},
 					Branch:         "edits",
 					ParentBranch:   tc.parent,
 				},
