@@ -7,6 +7,27 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## An `ArgoCDTrigger` holds its `Application`'s automated sync off
+
+An `ArgoCDTrigger` no longer only checks that automated sync is off: it switches it off, with a
+server-side apply of `spec.syncPolicy.automated.enabled: false` under the field manager
+`gitops-reverser`, switches it off again when somebody switches it on, and hands the switch back
+when it is deleted or no longer named, as it was before (`status.previousSuspendState`). A trigger
+that holds the switch carries the finalizer `configbutler.ai/argocd-trigger`. Argo CD before 3.1,
+which has no `enabled`, is not supported: the trigger reports `ArgoCDVersionNotSupported`, is
+Stalled and never Ready, and writes nothing. A `FluxTrigger` now records
+`status.previousSuspendState` too: a `Kustomization` that was suspended before the trigger held it
+stays suspended on hand-back, where it used to be resumed.
+Both kinds record a `ClaimedResourceReconciled` Event when they put back what somebody changed of
+the applier they hold: automated sync switched on, or a `flux resume`. It replaces the Flux Event
+`ResumedElsewhere`.
+`AutomatedSyncEnabled` is gone. Automated sync on is refused only where the switch is somebody
+else's: `OwnedByApplicationSet` for an `Application` an `ApplicationSet` generated, and
+`AutomatedSyncOwnedElsewhere` for a switch another field manager applies. The operator now needs
+`patch` on `applications` as well as `get` and `update`: Helm `applierAccess.argocd: true` grants it;
+grant it yourself where you applied `config/rbac/argocd-applier-role.yaml` or hold a remote
+cluster's role. See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
+
 ## `GitReceiver` replaces `GitProvider.spec.receiver`
 
 **Breaking.** The push receiver is a namespaced kind of its own, `GitReceiver`, and nothing names it:
@@ -319,12 +340,12 @@ the `Kustomization` back to Flux. The operator needs `get`, `list` and `patch` o
 `selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true` grants them
 for the operator's own cluster.
 
-For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its automated sync off
-(`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before its trigger holds it; one with
-automated sync on reports `Configured=False` (`AutomatedSyncEnabled`) on the trigger and is never
-synced. An `Application` is asked to sync for the same reasons as a `Kustomization`, adopt and
+For an Argo CD `Application`, GitOps Reverser starts every sync, so its trigger holds its automated
+sync off ([since](#an-argocdtrigger-holds-its-applications-automated-sync-off); before that, you
+switched it off yourself, and automated sync on was refused). An `Application` is asked to sync
+for the same reasons as a `Kustomization`, adopt and
 converge included, so its hooks also run after an API create in the folder and when a `GitTarget`
-first names the trigger. The operator needs `get` and `update` on `applications`: Helm
+first names the trigger. The operator needs `get`, `update` and `patch` on `applications`: Helm
 `applierAccess.argocd: true`. See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
 
 Naming a trigger also narrows what the folder mirrors. An object another applier owns, one whose

@@ -62,7 +62,7 @@ func (f *holdFixture) events() []string {
 		select {
 		case event := <-f.recorder.Events:
 			for _, reason := range []string{
-				EventReasonAdopted, EventReasonResumedElsewhere, EventReasonReleased, EventReasonReleaseFailed,
+				EventReasonAdopted, EventReasonClaimedResourceReconciled, EventReasonReleased, EventReasonReleaseFailed,
 				EventReasonOperationUnfollowed,
 			} {
 				if strings.Contains(event, " "+reason+" ") {
@@ -137,8 +137,8 @@ func TestFluxTrigger_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 		assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
 		events := f.events()
 		require.Len(t, events, 1, "an Event every time")
-		assert.True(t, strings.HasPrefix(events[0], "Normal ResumedElsewhere Kustomization flux-system/checkout "+
-			"was resumed outside GitOps Reverser"), events[0])
+		assert.True(t, strings.HasPrefix(events[0], "Normal ClaimedResourceReconciled "+
+			"Kustomization flux-system/checkout was resumed outside GitOps Reverser"), events[0])
 
 		got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
 		require.NotNil(t, got.Status.Operation)
@@ -626,4 +626,121 @@ func TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
 				"left suspended, as the Event says")
 		})
 	}
+}
+
+// TestFluxTrigger_HandsBackASuspendedKustomizationSuspended: adoption records how the
+// Kustomization stood in status.previousSuspendState. One somebody had suspended before the trigger held it is
+// handed back suspended, as it was, and not resumed; one that was running is resumed, as before.
+func TestFluxTrigger_HandsBackASuspendedKustomizationSuspended(t *testing.T) {
+	for name, wasSuspended := range map[string]bool{"suspended before": true, "running before": false} {
+		t.Run(name, func(t *testing.T) {
+			objs := applierFluxObjects()
+			if wasSuspended {
+				objs[0] = fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), true, "flux",
+					metav1.ManagedFieldsOperationUpdate)
+			}
+			f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider), objs...)
+			got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
+			require.Equal(t, suspendState(wasSuspended), got.Status.PreviousSuspendState)
+			f.events()
+
+			require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
+			require.Eventually(t, func() bool {
+				_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+				require.NoError(t, err)
+				err = f.r.Get(context.Background(), triggerKey, &configbutleraiv1alpha3.FluxTrigger{})
+				return apierrors.IsNotFound(err)
+			}, 5*time.Second, 5*time.Millisecond, "the finalizer goes once the Kustomization is handed back")
+
+			ks := f.sim.Kustomization(checkoutKustomization)
+			assert.Equal(t, wasSuspended, suspendedSpec(ks))
+			assert.NotContains(t, ks.GetAnnotations(), meta.ReconcileRequestAnnotation,
+				"GitOps Reverser's requestedAt is given up either way")
+			events := f.events()
+			require.Len(t, events, 1)
+			want := "it is resumed, and applies on its own again"
+			if wasSuspended {
+				want = "it stays suspended, as it was before GitOps Reverser held it"
+			}
+			assert.Contains(t, events[0], want)
+		})
+	}
+}
+
+// commitFailingClient refuses the next failures status writes that carry conditions: the commit a
+// reconcile makes after its writes to the applier.
+type commitFailingClient struct {
+	ctrlclient.Client
+
+	failures int
+}
+
+func (c *commitFailingClient) Status() ctrlclient.SubResourceWriter {
+	return commitFailingWriter{SubResourceWriter: c.Client.Status(), c: c}
+}
+
+type commitFailingWriter struct {
+	ctrlclient.SubResourceWriter
+
+	c *commitFailingClient
+}
+
+func (w commitFailingWriter) Patch(
+	ctx context.Context, obj ctrlclient.Object, patch ctrlclient.Patch, opts ...ctrlclient.SubResourcePatchOption,
+) error {
+	if data, err := patch.Data(obj); err == nil && strings.Contains(string(data), `"conditions"`) && w.c.failures > 0 {
+		w.c.failures--
+		return errors.New("status write refused")
+	}
+	return w.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+}
+
+// TestFluxTrigger_RecordsHowItStoodBeforeTheSuspend: status.previousSuspendState is written before
+// the suspend that hides it. With the commit after the suspend lost, the next reconcile finds the
+// Kustomization held and cannot read how it stood, yet the hand-back still leaves it suspended.
+func TestFluxTrigger_RecordsHowItStoodBeforeTheSuspend(t *testing.T) {
+	objs := applierFluxObjects()
+	objs[0] = fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), true, "flux",
+		metav1.ManagedFieldsOperationUpdate)
+	f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider), objs...)
+	f.r.Client = &commitFailingClient{Client: f.r.Client, failures: 1}
+
+	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.Error(t, err, "the commit after the suspend is lost")
+	assert.Contains(t, kustomizationManagers(f.sim.Kustomization(checkoutKustomization)), applier.SuspendFieldManager)
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.trigger(t).Status.PreviousSuspendState,
+		"recorded before the suspend")
+
+	reconcileTrigger(t, f.r)
+	require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
+	require.Eventually(t, func() bool {
+		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+		require.NoError(t, err)
+		err = f.r.Get(context.Background(), triggerKey, &configbutleraiv1alpha3.FluxTrigger{})
+		return apierrors.IsNotFound(err)
+	}, 5*time.Second, 5*time.Millisecond, "the finalizer goes once the Kustomization is handed back")
+	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "suspended, as it was")
+}
+
+// TestFluxTrigger_RecordsNothingOfAKustomizationAnotherHolds: a trigger Configured from a cached read
+// that finds its Kustomization resumed, and another trigger holding it on the uncached read, adopts
+// nothing, so it records nothing: the resume is the holder's apply, not how the Kustomization stood.
+func TestFluxTrigger_RecordsNothingOfAKustomizationAnotherHolds(t *testing.T) {
+	trigger := testFluxTrigger(triggerLocalProvider)
+	trigger.CreationTimestamp = metav1.NewTime(time.Unix(2_000_000, 0))
+	f := newHoldFixture(t, trigger)
+	holder := testFluxTrigger(triggerLocalProvider)
+	holder.Name = "checkout-first"
+	holder.CreationTimestamp = metav1.NewTime(time.Unix(1_000_000, 0))
+	holder.Finalizers = []string{configbutleraiv1alpha3.FluxTriggerFinalizer}
+	f.r.APIReader = triggerTestClient(t, trigger.DeepCopy(), holder)
+
+	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
+
+	held := findCondition(got.Status.Conditions, ApplyTriggerConditionHeld)
+	require.NotNil(t, held)
+	assert.Equal(t, ReasonNotConfigured, held.Reason)
+	assert.Contains(t, held.Message, "team-a/checkout-first")
+	assert.Empty(t, got.Status.PreviousSuspendState)
+	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "nothing written")
 }

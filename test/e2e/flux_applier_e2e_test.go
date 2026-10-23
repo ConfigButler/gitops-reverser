@@ -284,7 +284,7 @@ data:
 		Expect(err).NotTo(HaveOccurred())
 		requestTriggerReconcile(testNs, fluxTriggerResource, fluxName)
 		Eventually(func(g Gomega) {
-			g.Expect(fluxTriggerEvents(g, testNs, fluxName, "ResumedElsewhere")).
+			g.Expect(fluxTriggerEvents(g, testNs, fluxName, "ClaimedResourceReconciled")).
 				To(ContainSubstring("was resumed outside GitOps Reverser"))
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue(), "suspended again")
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())

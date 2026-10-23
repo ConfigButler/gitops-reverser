@@ -20,9 +20,9 @@ import (
 // hands back only for the holder, and the dispatcher, which asks the applier only for it. Both
 // confirm it uncached before they write to a Kustomization.
 //
-// Only a trigger in line can hold: one an eligible GitTarget references (references.go), or a
-// FluxTrigger that carries its finalizer, which it does from before its first adoption write until
-// it has handed the Kustomization back or over. So an older trigger nothing eligible references
+// Only a trigger in line can hold: one an eligible GitTarget references (references.go), or one
+// that carries its finalizer, which it does from before its first write to the applier (a suspend,
+// or switching automated sync off) until it has handed the applier back or over. So an older trigger nothing eligible references
 // keeps no younger one out, and one that is retiring stays the holder until its release is done.
 
 // ReasonHeldByAnotherTrigger is Configured=False on a trigger whose applier another trigger of its
@@ -50,9 +50,9 @@ func sameTrigger(a, b v1alpha3.ApplyTrigger) bool {
 // whatever triggers appear; a trigger created in the same second as the holder, which can come
 // before it by name, waits for the holder's apply to end. An Application has no such hold: a sync
 // somebody else started is never replaced, so an ArgoCDTrigger's operation does not count. Then a
-// FluxTrigger that holds the Kustomization already (it carries the finalizer) comes first: a trigger
-// that becomes eligible later takes it over only once the holder lets go, so a Kustomization is
-// never taken from a holder still suspending or releasing it. Then the trigger created first comes
+// trigger that holds its applier already (it carries the finalizer) comes first: a trigger that
+// becomes eligible later takes it over only once the holder lets go, so an applier is never taken
+// from a holder still holding or releasing it. Then the trigger created first comes
 // first, and then by namespace and name.
 func precedes(a, b v1alpha3.ApplyTrigger) bool {
 	if applying, other := holdsAnApply(a), holdsAnApply(b); applying != other {
@@ -64,11 +64,14 @@ func precedes(a, b v1alpha3.ApplyTrigger) bool {
 	return createdBefore(a, b)
 }
 
-// Holding reports whether trigger is a FluxTrigger that carries its finalizer: it holds its
-// Kustomization, or hands it back or over.
+// Holding reports whether trigger carries its kind's finalizer: it holds its applier (a
+// Kustomization suspended, an Application's automated sync off), or hands it back or over.
 func Holding(trigger v1alpha3.ApplyTrigger) bool {
-	return trigger.TriggerKind() == v1alpha3.ApplyTriggerKindFlux &&
-		slices.Contains(trigger.GetFinalizers(), v1alpha3.FluxTriggerFinalizer)
+	finalizer := v1alpha3.FluxTriggerFinalizer
+	if trigger.TriggerKind() == v1alpha3.ApplyTriggerKindArgoCD {
+		finalizer = v1alpha3.ArgoCDTriggerFinalizer
+	}
+	return slices.Contains(trigger.GetFinalizers(), finalizer)
 }
 
 // holdsAnApply reports whether trigger is a FluxTrigger with an operation in flight.
@@ -91,7 +94,7 @@ func createdBefore(a, b v1alpha3.ApplyTrigger) bool {
 }
 
 // firstInLine is the trigger that holds trigger's applier: of the triggers of its kind in line for
-// the same applier, the one first (precedes). trigger itself counts as in line. A FluxTrigger being
+// the same applier, the one first (precedes). trigger itself counts as in line. A trigger being
 // deleted still holds it, until it is gone: its finalizer is handing the applier back. It is trigger
 // itself when no other comes before it.
 func firstInLine(

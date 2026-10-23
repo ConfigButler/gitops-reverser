@@ -1427,7 +1427,7 @@ spec:
 | --- | --- | --- |
 | `FluxTrigger.spec.kubeProviderRef`, `ArgoCDTrigger.spec.kubeProviderRef` | required | The `KubeProvider` whose cluster holds the applier, in the trigger's namespace unless `namespace` names another. Immutable |
 | `FluxTrigger.spec.kustomizationRef` | required | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` that follows a branch. Immutable |
-| `ArgoCDTrigger.spec.applicationRef` | required | An Argo CD `Application` on a single source whose `targetRevision` names a branch, with automated sync off. Immutable |
+| `ArgoCDTrigger.spec.applicationRef` | required | An Argo CD `Application` on a single source whose `targetRevision` names a branch. The trigger holds its automated sync off, unless an `ApplicationSet` or another field manager owns the switch and keeps it off. Immutable |
 | `GitTarget.spec.applyTriggerRef` | none | The trigger, by `kind` and `name`, in the `GitTarget`'s namespace |
 
 **One trigger, several folders.** Several `GitTarget`s may name one trigger: their folders are
@@ -1554,8 +1554,9 @@ is `Unresolved`. An unreferenced trigger is `Ready=True` (`NotReferenced`). The
 `GitTarget`s naming the trigger are reported as `NotBound` (`Unknown` while one cannot be judged
 yet, `False` once each is refused for different reasons), or as the refusal they share,
 `SourceMismatch` or `NamespaceNotAuthorized`, every `GitTarget` and its reason in the message. The
-other `False` reasons are `ApplierNotFound`, `UnsupportedSource`, `AutomatedSyncEnabled` (Argo CD),
-`SuspendOwnedElsewhere` (Flux), `Forbidden`, `NamespaceNotAuthorized` (the trigger's own namespace),
+other `False` reasons are `ApplierNotFound`, `UnsupportedSource`, `ArgoCDVersionNotSupported`,
+`OwnedByApplicationSet` and `AutomatedSyncOwnedElsewhere` (Argo CD), `SuspendOwnedElsewhere` (Flux),
+`Forbidden`, `NamespaceNotAuthorized` (the trigger's own namespace),
 `KubeProviderNotFound`, `AuditRouteConflict`, `ApplierNamespaceNotAllowed` and `HeldByAnotherTrigger`; each guide's
 table says what they mean for its applier and how to fix them
 ([Flux](bi-directional-flux.md#the-fluxtrigger), [Argo CD](bi-directional-argocd.md#the-argocdtrigger)).

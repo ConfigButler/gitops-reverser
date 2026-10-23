@@ -21,12 +21,13 @@ import (
 // Argo CD is only installed for this corner, by the `_argocd-installed` Taskfile
 // node. `task test-e2e` skips these specs; `task test-e2e-bi-directional` runs them.
 //
-// Every spec runs the standard (docs/bi-directional-argocd.md): the Application has automated sync
-// off and is held by the ArgoCDTrigger the GitTarget names, so every sync it
-// runs is one GitOps Reverser started, pinned to a commit it checked. Argo CD's own
-// Gitea webhook stays wired, and is shown to be harmless: with automated sync off it
-// only refreshes. The last spec turns automated sync on and proves GitOps Reverser
-// then refuses to drive the Application.
+// Every spec runs the standard (docs/bi-directional-argocd.md): the ArgoCDTrigger the
+// GitTarget names holds the Application's automated sync off, so every sync it runs is
+// one GitOps Reverser started, pinned to a commit it checked. Argo CD's own Gitea
+// webhook stays wired, and is shown to be harmless: with automated sync off it only
+// refreshes. Two specs take the switch: one switches automated sync on and proves the
+// trigger switches it off again, and one generates the Application from an
+// ApplicationSet, whose switch the trigger never writes.
 //
 // Everything is driven through kubectl, so the devcontainer needs no `argocd`
 // binary.
@@ -54,8 +55,6 @@ const (
 	// ForeignCommit after a flush, and Argo CD then syncs: seconds, far below the
 	// 10m refresher, so this can only pass through the receiver.
 	argoRequestedSyncTimeout = 90 * time.Second
-	// Long enough for a sync GitOps Reverser should not have asked for to show up.
-	argoNoSyncWindow = 20 * time.Second
 )
 
 // argoBiDirectionalRepo holds the file-local repo fixtures for the main describe block.
@@ -83,6 +82,13 @@ type argoBiDirectionalRun struct {
 	syncedOrderName    string
 	editedOrderName    string
 	automatedOrderName string
+
+	// The ApplicationSet spec's own folder, GitTarget, trigger and generated Application.
+	appSetPath        string
+	appSetName        string
+	appSetTargetName  string
+	generatedAppName  string
+	appSetTriggerName string
 }
 
 // argoAppConfig is the knob set the specs turn. The Application is re-applied (not
@@ -97,7 +103,7 @@ type argoAppConfig struct {
 
 	// Kustomize renders the path as a kustomization instead of a recursive directory.
 	Kustomize bool
-	// Automated turns automated sync ON, which the standard forbids.
+	// Automated turns automated sync ON, which the trigger switches off again.
 	Automated bool
 }
 
@@ -284,28 +290,29 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		}, argoSyncTimeout, biPollInterval).Should(Succeed())
 	})
 
-	// The standard is full control, so an Application with automated sync on is a
-	// configuration error, not a mode: the GitTarget reports it and stalls, and GitOps
-	// Reverser refuses every request to it. Argo CD's automated sync still applies the
-	// push on its own; what must never appear is a sync GitOps Reverser started.
-	It("never syncs an Application with automated sync on", func() {
-		By("turning automated sync on")
+	// The standard is full control, so the trigger holds automated sync off: switching it
+	// on (as Argo CD's Enable Auto-Sync does) is undone at the trigger's next read, with an
+	// Event, and a Git-side push after that is synced by GitOps Reverser, not by Argo CD.
+	It("switches automated sync off again when somebody switches it on", func() {
+		By("switching automated sync on: a client-side apply that drops enabled from the manifest")
 		automated := run.baseAppConfig()
 		automated.Automated = true
 		run.applyArgoApp(automated)
-		// The applier is read on the trigger's reconcile, not watched; a Ready trigger
-		// reconciles every few minutes, so ask for one now.
+		Expect(run.automatedEnabled()).To(BeEmpty(), "the apply removed the switch, so automated sync is on")
+
+		// The applier is read on the trigger's reconcile, not watched; ask for one now.
 		requestTriggerReconcile(testNs, argoCDTriggerResource, run.appName)
-		verifyResourceCondition(argoCDTriggerResource, run.appName, testNs, "Configured", "False",
-			"AutomatedSyncEnabled", "has automated sync on")
-		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "False",
-			"AutomatedSyncEnabled", "has automated sync on")
-		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "Stalled", "True",
-			"AutomatedSyncEnabled", "")
+		Eventually(func(g Gomega) {
+			g.Expect(run.automatedEnabled()).To(Equal("false"))
+			g.Expect(triggerEventMessages(g, testNs, "ArgoCDTrigger", run.appName, "ClaimedResourceReconciled")).
+				To(ContainSubstring("was switched on outside GitOps Reverser, which switched it off again"))
+		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
+		verifyResourceCondition(argoCDTriggerResource, run.appName, testNs, "Held", "True", "AutomatedSyncOff",
+			"held off by GitOps Reverser")
+		Expect(run.applicationManagers()).To(ContainElement(argoReverserInitiator),
+			"the switch is held under GitOps Reverser's field manager")
 
-		requestedBefore := run.triggerOperation(Default)
-
-		By("pushing a Git-side change, which GitOps Reverser hears of and refuses to sync")
+		By("pushing a Git-side change, which GitOps Reverser syncs as a ForeignCommit")
 		run.writeLiveOrder(iceCreamOrderFile{
 			Name:         run.automatedOrderName,
 			Namespace:    testNs,
@@ -314,24 +321,70 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 			Scoops:       []iceCreamScoop{{Flavor: "Strawberry", Quantity: 1}},
 			Toppings:     []string{"WhippedCream"},
 		})
-		Expect(run.commitAllAndPush("argo bi-directional: a push under automated sync")).To(Succeed())
+		Expect(run.commitAllAndPush("argo bi-directional: a push after automated sync was switched on")).To(Succeed())
 		head := run.gitHEAD()
-		Eventually(func(g Gomega) {
-			failed := gitTargetEventMessages(g, testNs, run.gitTargetName, "ApplyRequestFailed")
-			g.Expect(failed).To(ContainSubstring("(ForeignCommit)"))
-			g.Expect(failed).To(ContainSubstring("has automated sync on"))
-		}, argoRequestedSyncTimeout, biPollInterval).Should(Succeed(),
-			"the ForeignCommit is decided, and refused at the Application")
+		run.waitForReverserSync(head, "ForeignCommit")
+		run.waitForOrderContainer(run.automatedOrderName, "Cone")
+	})
 
-		By("no sync GitOps Reverser started ever names that commit")
-		Consistently(func(g Gomega) {
-			initiator, revision := run.lastOperation(g)
-			if initiator == argoReverserInitiator {
-				g.Expect(revision).NotTo(Equal(head),
-					"GitOps Reverser must not sync an Application that syncs on its own")
-			}
-			g.Expect(run.triggerOperation(g)).To(Equal(requestedBefore), "no request was delivered")
-		}, argoNoSyncWindow, biPollInterval).Should(Succeed())
+	// An Application an ApplicationSet generates is rewritten from the ApplicationSet's
+	// template on every reconcile, so the switch is the template's. The trigger never writes
+	// it: with automated sync on in the template it refuses the Application with a message
+	// that says what to change, and once the template has it off it holds nothing and is
+	// Ready.
+	It("never writes the switch of an Application an ApplicationSet generates", func() {
+		By("giving the ApplicationSet's folder something to apply")
+		Expect(run.gitPull()).To(Succeed())
+		configMap := fmt.Sprintf("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: %s\n"+
+			"data:\n  generated: \"true\"\n", run.generatedAppName, testNs)
+		Expect(os.MkdirAll(run.repoPath(run.appSetPath), 0o755)).To(Succeed())
+		Expect(os.WriteFile(run.repoPath(run.appSetPath, "configmap.yaml"), []byte(configMap), 0o644)).To(Succeed())
+		Expect(run.commitAllAndPush("argo bi-directional: the ApplicationSet's folder")).To(Succeed())
+
+		By("generating the Application with automated sync on in the template")
+		DeferCleanup(func() {
+			cleanupNamespacedResource(run.argoNs, "applicationset.argoproj.io", run.appSetName)
+			cleanupNamespacedResource(testNs, argoCDTriggerResource, run.appSetTriggerName)
+			cleanupGitTarget(run.appSetTargetName, testNs)
+		})
+		run.applyApplicationSet(true)
+		Eventually(func(g Gomega) {
+			owner, err := kubectlRunInNamespace(run.argoNs, "get", "application.argoproj.io", run.generatedAppName,
+				"-o", "jsonpath={.metadata.ownerReferences[?(@.controller==true)].kind}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(owner).To(Equal("ApplicationSet"))
+		}, argoSyncTimeout, biPollInterval).Should(Succeed())
+
+		By("naming the generated Application from a GitTarget of its own")
+		createGitTarget(run.appSetTargetName, testNs, run.gitProviderName, run.appSetPath, "main")
+		createArgoCDTrigger(testNs, run.appSetTriggerName, run.argoNs, run.generatedAppName)
+		nameApplyTrigger(testNs, run.appSetTargetName, "ArgoCDTrigger", run.appSetTriggerName, "")
+
+		verifyResourceCondition(argoCDTriggerResource, run.appSetTriggerName, testNs, "Configured", "False",
+			"OwnedByApplicationSet", "is generated by ApplicationSet "+run.argoNs+"/"+run.appSetName)
+		verifyResourceCondition("gittarget", run.appSetTargetName, testNs, "ApplyTriggerReady", "False",
+			"OwnedByApplicationSet", "spec.template.spec.syncPolicy.automated.enabled")
+		Expect(run.applicationManagersOf(run.generatedAppName)).NotTo(ContainElement(argoReverserInitiator),
+			"the switch of a generated Application is never written")
+
+		By("switching automated sync off in the template, which the trigger then only checks")
+		run.applyApplicationSet(false)
+		Eventually(func(g Gomega) {
+			enabled, err := kubectlRunInNamespace(run.argoNs, "get", "application.argoproj.io", run.generatedAppName,
+				"-o", "jsonpath={.spec.syncPolicy.automated.enabled}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(enabled)).To(Equal("false"))
+		}, argoSyncTimeout, biPollInterval).Should(Succeed())
+		requestTriggerReconcile(testNs, argoCDTriggerResource, run.appSetTriggerName)
+		verifyResourceCondition(argoCDTriggerResource, run.appSetTriggerName, testNs, "Held", "True",
+			"AutomatedSyncOff", "kept off by ApplicationSet "+run.argoNs+"/"+run.appSetName)
+		verifyResourceCondition("gittarget", run.appSetTargetName, testNs, "ApplyTriggerReady", "True",
+			"Succeeded", "")
+		Expect(run.applicationManagersOf(run.generatedAppName)).NotTo(ContainElement(argoReverserInitiator))
+		finalizers, err := kubectlRunInNamespace(testNs, "get", argoCDTriggerResource, run.appSetTriggerName,
+			"-o", "jsonpath={.metadata.finalizers}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(finalizers).To(BeEmpty(), "a trigger that holds no switch has nothing to hand back")
 	})
 })
 
@@ -468,6 +521,11 @@ func newArgoBiDirectionalRun(testNs string, repo *RepoArtifacts, prefix string) 
 		syncedOrderName:    fmt.Sprintf("argo-alice-order-%s", testID),
 		editedOrderName:    fmt.Sprintf("argo-dana-order-%s", testID),
 		automatedOrderName: fmt.Sprintf("argo-bob-order-%s", testID),
+		appSetPath:         fmt.Sprintf("argo-bi-directional/%s/appset", testID),
+		appSetName:         fmt.Sprintf("%s-appset-%s", prefix, testID),
+		appSetTargetName:   fmt.Sprintf("%s-appset-target-%s", prefix, testID),
+		generatedAppName:   fmt.Sprintf("%s-generated-%s", prefix, testID),
+		appSetTriggerName:  fmt.Sprintf("%s-generated-%s", prefix, testID),
 	}
 }
 
@@ -560,6 +618,65 @@ func (r argoBiDirectionalRun) applyArgoApp(cfg argoAppConfig) {
 	GinkgoHelper()
 	Expect(applyFromTemplate("test/e2e/templates/bi-directional/argocd-application.tmpl", cfg, r.argoNs)).
 		To(Succeed(), "failed to apply Argo CD Application")
+}
+
+// applyApplicationSet applies the ApplicationSet that generates generatedAppName over the
+// ApplicationSet spec's folder, with automated sync on or off in its template.
+func (r argoBiDirectionalRun) applyApplicationSet(automated bool) {
+	GinkgoHelper()
+	Expect(applyFromTemplate("test/e2e/templates/bi-directional/argocd-applicationset.tmpl", struct {
+		Name                 string
+		ArgoNamespace        string
+		ApplicationName      string
+		RepoURL              string
+		Branch               string
+		Path                 string
+		DestinationNamespace string
+		Automated            bool
+	}{
+		Name:                 r.appSetName,
+		ArgoNamespace:        r.argoNs,
+		ApplicationName:      r.generatedAppName,
+		RepoURL:              r.repoURL,
+		Branch:               "main",
+		Path:                 r.appSetPath,
+		DestinationNamespace: r.testNs,
+		Automated:            automated,
+	}, r.argoNs)).To(Succeed(), "failed to apply the Argo CD ApplicationSet")
+}
+
+// automatedEnabled is the Application's spec.syncPolicy.automated.enabled as written, "" when it
+// has none.
+func (r argoBiDirectionalRun) automatedEnabled() string {
+	GinkgoHelper()
+	out, err := kubectlRunInNamespace(r.argoNs, "get", "application.argoproj.io", r.appName,
+		"-o", "jsonpath={.spec.syncPolicy.automated.enabled}")
+	Expect(err).NotTo(HaveOccurred())
+	return strings.TrimSpace(out)
+}
+
+// applicationManagers lists the field managers of the Application.
+func (r argoBiDirectionalRun) applicationManagers() []string {
+	GinkgoHelper()
+	return r.applicationManagersOf(r.appName)
+}
+
+// applicationManagersOf lists the field managers of the Application name.
+func (r argoBiDirectionalRun) applicationManagersOf(name string) []string {
+	GinkgoHelper()
+	out, err := kubectlRunInNamespace(r.argoNs, "get", "application.argoproj.io", name,
+		"--show-managed-fields", "-o", "jsonpath={.metadata.managedFields[*].manager}")
+	Expect(err).NotTo(HaveOccurred())
+	return strings.Fields(out)
+}
+
+// triggerEventMessages is the messages of the Events with reason on the trigger kind/name.
+func triggerEventMessages(g Gomega, namespace, kind, name, reason string) string {
+	out, err := kubectlRunInNamespace(namespace, "get", "events", "--field-selector",
+		"involvedObject.kind="+kind+",involvedObject.name="+name+",reason="+reason,
+		"-o", "jsonpath={.items[*].message}")
+	g.Expect(err).NotTo(HaveOccurred())
+	return out
 }
 
 // configureArgoWebhookSecret sets the Gogs webhook secret on the cluster-global

@@ -213,8 +213,9 @@ func TestChartApplierAccess_Flux(t *testing.T) {
 	assert.Equal(t, "gitops-reverser", binding.Subjects[0].Name)
 }
 
-// applierAccess.argocd is off by default, and on it grants exactly what starting an Argo CD sync
-// needs (get, and update to set the Application's operation), apart from the Flux grant.
+// applierAccess.argocd is off by default, and on it grants exactly what holding an Argo CD
+// Application needs (get; update to set its operation; patch to hold its automated sync off),
+// apart from the Flux grant.
 func TestChartApplierAccess_ArgoCD(t *testing.T) {
 	assert.Empty(t, helmTemplateDocs(t, "templates/applier-rbac.yaml",
 		"applierAccess.argocd=true", "rbac.create=false"), "rbac.create=false renders no RBAC at all")
@@ -229,7 +230,7 @@ func TestChartApplierAccess_ArgoCD(t *testing.T) {
 		{
 			APIGroups: []string{"argoproj.io"},
 			Resources: []string{"applications"},
-			Verbs:     []string{"get", "update"},
+			Verbs:     []string{"get", "update", "patch"},
 		},
 		{
 			APIGroups: []string{"authorization.k8s.io"},

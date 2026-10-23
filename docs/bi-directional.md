@@ -57,7 +57,7 @@ things set that up:
    namespace, admitted by its `KubeProvider`s, that writes the repository and branch the applier
    fetches.
 2. **The applier's own triggers are off.** The `FluxTrigger` keeps its `Kustomization` suspended;
-   the `Application` runs with automated sync off.
+   the `ArgoCDTrigger` keeps its `Application`'s automated sync off.
 3. **The Git host's push webhook reaches GitOps Reverser**, so a Git-side push is applied in
    seconds. See [telling GitOps Reverser that somebody else pushed](#telling-gitops-reverser-that-somebody-else-pushed).
 
@@ -87,12 +87,12 @@ The two appliers get the same contract by different means:
 | | Flux | Argo CD |
 | --- | --- | --- |
 | Held by | A `FluxTrigger` | An `ArgoCDTrigger` |
-| Kept from applying on its own by | `spec.suspend`, which the trigger owns | Automated sync off, which you set on the `Application` |
+| Kept from applying on its own by | `spec.suspend`, which the trigger owns | `spec.syncPolicy.automated.enabled: false`, which the trigger owns, unless the `ApplicationSet` that generated the `Application` owns it |
 | One apply is | A resume for one reconcile, then a suspend | A sync operation pinned to the commit |
 | When it is asked to apply | [The same four reasons](#when-gitops-reverser-asks-for-an-apply), `CatchUp` included | The same four reasons |
 | The tool's own push webhook | Removed: GitOps Reverser's receiver replaces it | May stay: with automated sync off it only compares |
-| A human override | `flux resume` applies once; it is suspended again within a minute | Sync applies; GitOps Reverser waits for it to end |
-| Handing it back | Delete the trigger, or stop naming it from every `GitTarget`: the `Kustomization` is resumed | Delete the trigger, or stop naming it, then switch automated sync on |
+| A human override | `flux resume` applies once; it is suspended again within a minute | Sync applies; GitOps Reverser waits for it to end. Automated sync switched on is switched off again within a minute |
+| Handing it back | Delete the trigger, or stop naming it from every `GitTarget`: the `Kustomization` is resumed, or stays suspended if it was before | Delete the trigger, or stop naming it from every `GitTarget`: automated sync is as it was before, unless an `ApplicationSet` or another field manager owns the switch by then, which keeps their value |
 | Complete setup | [Bi-directional GitOps with Flux](bi-directional-flux.md) | [Bi-directional GitOps with Argo CD](bi-directional-argocd.md) |
 
 ## Why the applier cannot decide for itself

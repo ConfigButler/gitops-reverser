@@ -147,7 +147,7 @@
         },
         "argocd": {
           "type": "boolean",
-          "description": "Grant get/update on Argo CD Applications, plus create on SelfSubjectAccessReviews."
+          "description": "Grant get/update/patch on Argo CD Applications, plus create on SelfSubjectAccessReviews."
         }
       }
     },

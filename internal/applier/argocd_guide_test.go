@@ -72,7 +72,7 @@ func TestArgoCDGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	ref := trigger.Applier()
 	assert.Equal(t, types.NamespacedName{Namespace: app.GetNamespace(), Name: app.GetName()}, ref)
 	want := Binding{RepositoryURL: provider.Spec.URL, Branch: branch.Spec.Branch}
-	client := newSourceClient(app)
+	client := newArgoSource(app)
 	argo := pinnedArgo(client)
 	verdict := argo.Validate(context.Background(), ref)
 	assert.True(t, verdict.OK, "Configured for the guide's example: %s: %s", verdict.Reason, verdict.Message)

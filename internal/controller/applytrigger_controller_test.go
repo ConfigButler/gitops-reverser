@@ -30,6 +30,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
+	"github.com/ConfigButler/gitops-reverser/internal/applier/argosim"
 	"github.com/ConfigButler/gitops-reverser/internal/applier/fluxsim"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
 )
@@ -84,7 +85,8 @@ func applierFakeSource(t *testing.T, objs ...runtime.Object) *dynamicfake.FakeDy
 	return applierSim(t, objs...).Client
 }
 
-// applierSim is an applier cluster holding objs, with Flux's controllers simulated in it.
+// applierSim is an applier cluster holding objs, with Flux's controllers simulated in it, and the
+// API server's ownership of an Application's automated sync switch.
 func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
 	t.Helper()
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
@@ -94,6 +96,7 @@ func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
 			{Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases"}: "HelmReleaseList",
 			{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}:      "ApplicationList",
 		}, objs...)
+	argosim.Serve(client)
 	return fluxsim.New(t, client)
 }
 
@@ -265,7 +268,8 @@ var triggerKey = k8stypes.NamespacedName{Namespace: "team-a", Name: "checkout"}
 // then. While its Kustomization's suspend is being handled, a FluxTrigger is read again at the
 // suspending interval. Every pass publishes its conditions: the one that adopts too, which also adds
 // the finalizer, since nothing re-enqueues a trigger for a metadata-only update. A FluxTrigger
-// carries the finalizer exactly while it is Configured: it holds its Kustomization.
+// carries the finalizer exactly while it is Configured: it holds its Kustomization. An
+// ArgoCDTrigger does too, unless the switch it holds is somebody else's.
 func reconcileTrigger(t *testing.T, r *ApplyTriggerReconciler) configbutleraiv1alpha3.ApplyTrigger {
 	t.Helper()
 	var trigger configbutleraiv1alpha3.ApplyTrigger
@@ -276,20 +280,17 @@ func reconcileTrigger(t *testing.T, r *ApplyTriggerReconciler) configbutleraiv1a
 		require.NoError(t, r.Get(context.Background(), triggerKey, trigger))
 		require.NotNil(t, findCondition(*trigger.StatusConditions(), ConditionTypeReady),
 			"every pass publishes Ready")
-		flux, holds := trigger.(*configbutleraiv1alpha3.FluxTrigger)
-		if holds && conditionIsTrue(flux.Status.Conditions, ApplyTriggerConditionConfigured) {
-			require.True(t, controllerutil.ContainsFinalizer(flux, configbutleraiv1alpha3.FluxTriggerFinalizer),
-				"a trigger that holds its Kustomization carries the finalizer")
+		held := findCondition(*trigger.StatusConditions(), ApplyTriggerConditionHeld)
+		if conditionIsTrue(*trigger.StatusConditions(), ApplyTriggerConditionConfigured) && held != nil &&
+			!strings.Contains(held.Message, "which owns the switch") {
+			require.True(t, controllerutil.ContainsFinalizer(trigger, triggerFinalizer(trigger)),
+				"a trigger that holds its applier carries the finalizer")
 		}
-		if held := findCondition(*trigger.StatusConditions(), ApplyTriggerConditionHeld); held != nil &&
-			held.Reason == ReasonSuspending {
+		if held != nil && held.Reason == ReasonSuspending {
 			assert.Equal(t, applyTriggerSuspendingInterval, result.RequeueAfter, "a suspend is waited for closely")
 			return false
 		}
-		want := RequeueSteadyInterval
-		if holds {
-			want = fluxTriggerSteadyInterval
-		}
+		want := heldTriggerSteadyInterval
 		if !conditionIsTrue(*trigger.StatusConditions(), ConditionTypeReady) &&
 			!conditionIsTrue(*trigger.StatusConditions(), ConditionTypeStalled) {
 			want = applyTriggerSettleInterval
@@ -365,7 +366,7 @@ func TestApplyTriggerReconcile_ArgoCDVerdicts(t *testing.T) {
 			objects: []runtime.Object{applierArgoApplication(map[string]any{
 				"automated": map[string]any{"prune": true},
 			})},
-			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonAutomatedSyncEnabled, wantStalled: true},
+			wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded},
 		{name: "no such Application", allowed: true,
 			wantStatus: metav1.ConditionFalse, wantReason: applier.ReasonApplierNotFound},
 		{name: "an identity that may not update it", objects: []runtime.Object{applierArgoApplication(nil)},

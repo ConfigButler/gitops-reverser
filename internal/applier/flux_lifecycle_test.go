@@ -819,7 +819,7 @@ func TestFlux_SuspendAndRelease(t *testing.T) {
 			sim.Kustomization(checkoutKey).GetAnnotations()[fluxmeta.ReconcileRequestAnnotation] == token
 	}, "held and handled")
 
-	keeper, err := flux.Release(context.Background(), checkoutKey)
+	keeper, err := flux.Release(context.Background(), checkoutKey, false)
 	require.NoError(t, err)
 	assert.Empty(t, keeper)
 	ks := sim.Kustomization(checkoutKey)
@@ -844,7 +844,7 @@ func TestFlux_ReleaseResumesASuspendItSharedWithFlux(t *testing.T) {
 	require.ElementsMatch(t, []string{"flux", SuspendFieldManager}, suspendManagers(sim.Kustomization(checkoutKey)),
 		"shared, as the API server shares it")
 
-	keeper, err := flux.Release(context.Background(), checkoutKey)
+	keeper, err := flux.Release(context.Background(), checkoutKey, false)
 	require.NoError(t, err)
 	assert.Empty(t, keeper)
 	ks := sim.Kustomization(checkoutKey)
@@ -857,7 +857,7 @@ func TestFlux_ReleaseResumesASuspendItSharedWithFlux(t *testing.T) {
 	flux = simFlux(sim)
 	_, err = flux.Suspend(context.Background(), checkoutKey)
 	require.NoError(t, err)
-	keeper, err = flux.Release(context.Background(), checkoutKey)
+	keeper, err = flux.Release(context.Background(), checkoutKey, false)
 	require.NoError(t, err)
 	assert.Equal(t, "kustomize-controller", keeper, "its manifest sets spec.suspend")
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))

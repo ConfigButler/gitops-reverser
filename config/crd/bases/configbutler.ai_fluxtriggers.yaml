@@ -42,6 +42,10 @@ spec:
       name: RepairPending
       priority: 1
       type: boolean
+    - jsonPath: .status.previousSuspendState
+      name: PreviousSuspendState
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Message
       priority: 1
@@ -288,6 +292,16 @@ spec:
                 - phase
                 - requestedAt
                 type: object
+              previousSuspendState:
+                description: |-
+                  PreviousSuspendState is how the Kustomization stood before the trigger first suspended it,
+                  which handing it back restores: one that was Suspended stays suspended, one that was
+                  NotSuspended is resumed. Recorded with the first suspend, and cleared once the Kustomization is
+                  handed back. Absent, a hand-back resumes the Kustomization.
+                enum:
+                - Suspended
+                - NotSuspended
+                type: string
               repairPending:
                 description: |-
                   RepairPending is true while a Repair apply is pending for the Kustomization: an apply reverted

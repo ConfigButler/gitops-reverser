@@ -65,7 +65,8 @@ subjects:
 {{- if and .Values.rbac.create .Values.applierAccess.argocd }}
 ---
 # What GitOps Reverser needs to ask an Argo CD Application to sync a commit it checked: read the
-# Application and update it with a sync operation (how Argo CD's own automated sync starts one), and
+# Application, update it with a sync operation (how Argo CD's own automated sync starts one), patch
+# it to hold its automated sync off (a server-side apply of spec.syncPolicy.automated.enabled), and
 # create SelfSubjectAccessReviews so the operator can check it holds that access before relying on
 # it. Separate from the manager role because it is optional and names another project's API: an
 # install without Argo CD grants nothing on it. See docs/bi-directional-argocd.md.
@@ -83,6 +84,7 @@ rules:
   verbs:
   - get
   - update
+  - patch
 - apiGroups:
   - authorization.k8s.io
   resources:

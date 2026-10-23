@@ -8,7 +8,7 @@ so a slow or unreachable applier never holds a branch.
 
 Two kinds are served, behind one Client: a Flux Kustomization whose sourceRef is a GitRepository
 (a FluxTrigger's spec.kustomizationRef, flux.go), held suspended while idle and resumed for each
-apply, and an Argo CD Application with automated sync off (an ArgoCDTrigger's
+apply, and an Argo CD Application held with automated sync off (an ArgoCDTrigger's
 spec.applicationRef, argocd.go). Either way the applier applies only when GitOps Reverser asks.
 See docs/design/apply-trigger.md, "The Flux applier, suspended".
 
@@ -157,9 +157,10 @@ const (
 	// ReasonSourceMismatch is ApplyTriggerReady=False on a GitTarget whose trigger's applier applies
 	// a different repository or branch than the GitTarget writes.
 	ReasonSourceMismatch = "SourceMismatch"
-	// ReasonAutomatedSyncEnabled is an Argo CD Application with automated sync on, which syncs on
-	// its own and so is never asked to.
-	ReasonAutomatedSyncEnabled = "AutomatedSyncEnabled"
+	// ReasonArgoCDVersionNotSupported is an Application served by an Argo CD before 3.1, which has no
+	// spec.syncPolicy.automated.enabled to hold automated sync off with. GitOps Reverser does not
+	// support it: the trigger writes nothing and is Stalled, so never Ready.
+	ReasonArgoCDVersionNotSupported = "ArgoCDVersionNotSupported"
 	// ReasonForbidden is a KubeProvider identity that may not read or write the applier.
 	ReasonForbidden = "Forbidden"
 	// ReasonCheckFailed is a check that could not complete: the applier's cluster did not answer.

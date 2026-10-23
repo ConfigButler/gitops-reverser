@@ -323,6 +323,8 @@ func TestApplyTriggerRule_ARetiringHolderStaysInLineUntilItsReleaseIsDone(t *tes
 	taken := f.settle(t, inLineKey)
 	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplyTriggerConditionConfigured))
 	assert.Equal(t, ReasonSuspended, heldReason(t, taken))
+	assert.Equal(t, configbutleraiv1alpha3.SuspendStateNotSuspended, taken.Status.PreviousSuspendState,
+		"passed on by the holder: the successor took the Kustomization over suspended already")
 	events := f.events()
 	require.NotEmpty(t, events)
 	assert.True(t, strings.HasPrefix(events[0], "Normal Released left Kustomization flux-system/checkout suspended "+

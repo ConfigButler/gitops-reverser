@@ -1,6 +1,7 @@
 # What GitOps Reverser needs to drive an Argo CD Application an ArgoCDTrigger holds: read
 # the Application, set its operation to a sync (an update of the whole object, as Argo CD's own
-# SetAppOperation makes it), and check that it may.
+# SetAppOperation makes it), hold its automated sync off (a server-side apply, so a patch), and
+# check that it may.
 #
 # It is kept OUT of role.yaml because no GitTarget needs it until one names an Application, and an
 # install that does not use Argo CD should not hold update rights on Applications. Drop this pair
@@ -22,6 +23,7 @@ rules:
     verbs:
       - get
       - update
+      - patch
   - apiGroups:
       - authorization.k8s.io
     resources:

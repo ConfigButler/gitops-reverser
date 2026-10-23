@@ -306,10 +306,14 @@ stateDiagram-v2
 - **The trigger hands the `Kustomization` back** when no eligible `GitTarget` references it any
   more, and when it is deleted. `Held` reads `Releasing`: it suspends the `Kustomization` once more
   if an apply has it resumed, waits until that is handled, and releases `spec.suspend`, so Flux
-  applies it on its own again (a `Released` Event), even one somebody had `flux suspend`ed before.
+  applies it on its own again (a `Released` Event). A `Kustomization` that somebody suspended
+  before the trigger held it stays suspended. The trigger records how it stood in
+  `status.previousSuspendState` (`Suspended` or `NotSuspended`) before it first suspends it, and
+  `kubectl get fluxtrigger -o wide` shows it.
   Until that is done it stays the holder, so no other trigger acts on the `Kustomization`. One
   whose `spec.suspend` another manager also applies stays suspended, and the Event names that
-  manager. With another `FluxTrigger` in line, the `Kustomization` stays suspended for that one. A
+  manager. With another `FluxTrigger` in line, the `Kustomization` stays suspended for that one,
+  which inherits `status.previousSuspendState`. A
   `KubeProvider` that is gone does not stop the hand-back: it goes on through whatever still
   reaches the cluster, which for an `inCluster` provider is the operator's own. When nothing
   does, or the hand-back has not finished 10 minutes after `Held` turned `Releasing`, the trigger
@@ -452,7 +456,7 @@ tip, the consumers GitOps Reverser holds ignore the new artifact, and one in
 ## Overriding by hand
 
 - **`flux resume ks checkout`** applies the `Kustomization` at once, unchecked. Within a minute the
-  trigger suspends it again, records a `ResumedElsewhere` Event, and shows the apply as an
+  trigger suspends it again, records a `ClaimedResourceReconciled` Event, and shows the apply as an
   `Unresolved` operation that completes once nothing it started is running. It does so every time.
 - **`flux reconcile ks checkout`** does nothing visible while the `Kustomization` is suspended: Flux
   marks the request handled without applying.
@@ -540,7 +544,7 @@ applied the tip is asked nothing.
 | A trigger nothing names is `Ready` and holds nothing; named from a `GitTarget` on another branch than its source, it is `SourceMismatch` and adopts nothing | [Manager Flux Applier](../test/e2e/flux_applier_e2e_test.go) |
 | A `ForeignCommit` for a `SourceMismatch` applier never stamps the other branch's source and records `ApplyRequestFailed`; once the source is fixed the trigger adopts the `Kustomization` and Flux reaches the tip; dropping the reference hands it back, and naming the trigger again adopts it anew | Manager Flux Applier |
 | A Gitea push webhook to the operator's receiver gets a Git-side push applied; with no receiver and no API edit, the refresh finds one | Manager Flux Applier |
-| A failed apply is suspended again and retried; a `flux resume` is suspended again with a `ResumedElsewhere` Event; deleting the trigger hands the `Kustomization` back | Manager Flux Applier |
+| A failed apply is suspended again and retried; a `flux resume` is suspended again with a `ClaimedResourceReconciled` Event; deleting the trigger hands the `Kustomization` back | Manager Flux Applier |
 | A manager restarted during an apply suspends the `Kustomization` as it stops; the new one completes that same operation and leaves it suspended | [Flux Restart Recovery](../test/e2e/flux_restart_recovery_e2e_test.go) |
 | Two API edits seconds apart end at the later value with no extra commit | [Bi-directional (Flux)](../test/e2e/flux_bi_directional_e2e_test.go) |
 | A Git-side push with an API edit on top lands both, and Flux applies the replayed commit | Bi-directional (Flux) |

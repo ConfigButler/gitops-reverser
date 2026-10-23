@@ -185,7 +185,7 @@ nodeSelector:
 | `controllerManager.commitRequestTTL` | How long a `CommitRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
 | `applierAccess.flux` | Grant the operator `get`, `list` and `patch` on Flux `Kustomizations`, `get` and `patch` on `GitRepositories`, `list` on `HelmReleases` and `HelmCharts` (to find a source's other consumers), and `create` on `SelfSubjectAccessReviews`, so it can hold the `Kustomization` a `FluxTrigger` names suspended and resume it for each apply | `false` |
-| `applierAccess.argocd` | Grant the operator `get` and `update` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can start the syncs of an `Application` an `ArgoCDTrigger` holds | `false` |
+| `applierAccess.argocd` | Grant the operator `get`, `update` and `patch` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can hold the automated sync of the `Application` an `ArgoCDTrigger` names off and start its syncs | `false` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |

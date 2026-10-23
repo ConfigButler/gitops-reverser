@@ -129,7 +129,7 @@ publish them over the incoming change.
 **GitOps Reverser decides when Git is applied to the cluster.** An apply must not revert an edit
 that is live and not yet in Git, and only the worker writing the branch can see those edits. So a
 `GitTarget` names an **apply trigger**, which holds its **applier** so that it applies nothing on
-its own (a Flux `Kustomization` is held suspended, an Argo CD `Application` has automated sync off),
+its own (a Flux `Kustomization` is held suspended, an Argo CD `Application` held with automated sync off),
 and the branch worker sends **apply requests** instead. A request is sent only **after a flush**:
 when an apply comes due, the worker closes the open commit window, publishes every write decided so
 far at once, and sends the request for the tip that publication produced. An edit decided after
@@ -152,7 +152,7 @@ published, so the edits made while the operator was down reach Git before any ap
 keeps each reason pending until an apply operation answers it, and decides every retry the same
 way. A request runs off the publication path and cannot fail a publication; the trigger's
 `status.operation` records the operation it started. **Built:**
-the Flux `Kustomization` applier and the Argo CD `Application` applier, with automated sync off.
+the Flux `Kustomization` applier and the Argo CD `Application` applier, its automated sync held off.
 **The aim:** a webhook for any other tool. See [the apply trigger design](design/apply-trigger.md).
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
@@ -437,8 +437,8 @@ Key fields:
   silence, or `maxDuration` (default `1m`) after the window opened.
 - `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
 - `spec.applyTriggerRef`: optional; the `FluxTrigger` (a Flux `Kustomization` GitOps Reverser holds
-  suspended and asks to apply) or `ArgoCDTrigger` (an Argo CD `Application`, automated sync off,
-  whose syncs GitOps Reverser starts) in this namespace. In a folder a trigger applies, an object
+  suspended and asks to apply) or `ArgoCDTrigger` (an Argo CD `Application` whose automated sync
+  GitOps Reverser holds off, and whose syncs it starts) in this namespace. In a folder a trigger applies, an object
   another applier owns (by Flux's owner labels or Argo CD's tracking annotation) is not mirrored.
 - `spec.onRefusal`: `Ignore` (default) or `Reapply`, which asks the applier to reapply the tip when
   an edit to an existing document is refused. `Reapply` requires `spec.applyTriggerRef`.
@@ -472,7 +472,8 @@ Status has a kstatus-compatible summary layer plus domain conditions:
 - `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
 - `ApplyTriggerReady`, present only with `spec.applyTriggerRef`, says the trigger is `Ready` (its
-  applier exists, can be written, and, an `Application`, has automated sync off) and that the
+  applier exists, can be written, and is held: a `Kustomization` suspended, an `Application`'s
+  automated sync off) and that the
   applier applies this repository and branch. It is a gate.
 - `status.streams` is a bounded count summary, not a per-type list.
 
