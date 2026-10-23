@@ -12,7 +12,8 @@ import (
 // suspended: from before its first adoption write until it has handed the Kustomization back or
 // over. Deleting the trigger, or the last eligible GitTarget naming it, suspends the Kustomization
 // once more, waits until nothing started before that suspend is running, and then hands it back to
-// Flux: spec.suspend is released, so the Kustomization is resumed. A trigger that never held its
+// Flux as status.handBack recorded it: spec.suspend is released, so the Kustomization is resumed,
+// unless it was suspended before the trigger held it, and stays so. A trigger that never held its
 // Kustomization has none.
 const FluxTriggerFinalizer = "configbutler.ai/flux-trigger"
 
@@ -92,6 +93,19 @@ type FluxTriggerStatus struct {
 	// next apply.
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
+
+	// HandBack is how the Kustomization stood when the trigger took it over, which handing it back
+	// restores: one that was suspended stays suspended. Recorded with the first suspend, and cleared
+	// once it is handed back. Absent, a hand-back resumes the Kustomization.
+	// +optional
+	HandBack *FluxTriggerHandBack `json:"handBack,omitempty"`
+}
+
+// FluxTriggerHandBack is how a Kustomization stood before its FluxTrigger held it.
+type FluxTriggerHandBack struct {
+	// Suspended is the Kustomization's spec.suspend then.
+	// +optional
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // FluxTriggerSource is the GitRepository a Kustomization applies.

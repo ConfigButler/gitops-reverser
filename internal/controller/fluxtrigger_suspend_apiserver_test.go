@@ -68,7 +68,7 @@ var _ = Describe("Kustomization spec.suspend on a real API server", func() {
 		Expect(suspendEntries(read())).To(ConsistOf("flux/Update", applier.SuspendFieldManager+"/Apply"))
 
 		By("Release takes the update's share, and resumes it")
-		keeper, err := flux.Release(ctx, ref)
+		keeper, err := flux.Release(ctx, ref, false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(keeper).To(BeEmpty())
 		released := read()

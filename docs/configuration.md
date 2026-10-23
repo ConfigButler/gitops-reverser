@@ -1554,9 +1554,9 @@ is `Unresolved`. An unreferenced trigger is `Ready=True` (`NotReferenced`). The
 `GitTarget`s naming the trigger are reported as `NotBound` (`Unknown` while one cannot be judged
 yet, `False` once each is refused for different reasons), or as the refusal they share,
 `SourceMismatch` or `NamespaceNotAuthorized`, every `GitTarget` and its reason in the message. The
-other `False` reasons are `ApplierNotFound`, `UnsupportedSource`, `OwnedByApplicationSet` and
-`AutomatedSyncOwnedElsewhere` (Argo CD),
-`SuspendOwnedElsewhere` (Flux), `Forbidden`, `NamespaceNotAuthorized` (the trigger's own namespace),
+other `False` reasons are `ApplierNotFound`, `UnsupportedSource`, `ApplierVersionUnsupported`,
+`OwnedByApplicationSet` and `AutomatedSyncOwnedElsewhere` (Argo CD), `SuspendOwnedElsewhere` (Flux),
+`Forbidden`, `NamespaceNotAuthorized` (the trigger's own namespace),
 `KubeProviderNotFound`, `AuditRouteConflict`, `ApplierNamespaceNotAllowed` and `HeldByAnotherTrigger`; each guide's
 table says what they mean for its applier and how to fix them
 ([Flux](bi-directional-flux.md#the-fluxtrigger), [Argo CD](bi-directional-argocd.md#the-argocdtrigger)).

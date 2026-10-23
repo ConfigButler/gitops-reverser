@@ -224,6 +224,19 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              handBack:
+                description: |-
+                  HandBack is how the Application stood when the trigger took its automated sync switch over,
+                  which handing it back restores. Recorded with the first switch-off, and cleared once it is
+                  handed back. Absent, a hand-back gives the switch up and leaves what the Application's own spec
+                  says. Either way, a switch that an ApplicationSet or another field manager owns by then keeps
+                  the value that owner set.
+                properties:
+                  automatedSync:
+                    description: AutomatedSync is whether the Application synced on
+                      its own then.
+                    type: boolean
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.

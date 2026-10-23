@@ -12,8 +12,11 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 An `ArgoCDTrigger` no longer only checks that automated sync is off: it switches it off, with a
 server-side apply of `spec.syncPolicy.automated.enabled: false` under the field manager
 `gitops-reverser`, switches it off again when somebody switches it on, and hands the switch back
-when it is deleted or no longer named, so the `Application` is as its own spec says again. A
-trigger that holds the switch carries the finalizer `configbutler.ai/argocd-trigger`.
+when it is deleted or no longer named, as it was before (`status.handBack`). A trigger that holds
+the switch carries the finalizer `configbutler.ai/argocd-trigger`. Argo CD before 3.1, which has
+no `enabled`, is refused with `ApplierVersionUnsupported` and never written. A `FluxTrigger` now
+records `status.handBack` too: a `Kustomization` that was suspended before the trigger held it
+stays suspended on hand-back, where it used to be resumed.
 `AutomatedSyncEnabled` is gone. Automated sync on is refused only where the switch is somebody
 else's: `OwnedByApplicationSet` for an `Application` an `ApplicationSet` generated, and
 `AutomatedSyncOwnedElsewhere` for a switch another field manager applies. The operator now needs

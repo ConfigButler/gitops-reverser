@@ -627,3 +627,42 @@ func TestFluxTrigger_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
 		})
 	}
 }
+
+// TestFluxTrigger_HandsBackASuspendedKustomizationSuspended: adoption records how the
+// Kustomization stood in status.handBack. One somebody had suspended before the trigger held it is
+// handed back suspended, as it was, and not resumed; one that was running is resumed, as before.
+func TestFluxTrigger_HandsBackASuspendedKustomizationSuspended(t *testing.T) {
+	for name, wasSuspended := range map[string]bool{"suspended before": true, "running before": false} {
+		t.Run(name, func(t *testing.T) {
+			objs := applierFluxObjects()
+			if wasSuspended {
+				objs[0] = fluxsim.OwnSuspend(t, objs[0].(*unstructured.Unstructured), true, "flux",
+					metav1.ManagedFieldsOperationUpdate)
+			}
+			f := newHoldFixture(t, testFluxTrigger(triggerLocalProvider), objs...)
+			got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.FluxTrigger)
+			require.Equal(t, &configbutleraiv1alpha3.FluxTriggerHandBack{Suspended: wasSuspended}, got.Status.HandBack)
+			f.events()
+
+			require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
+			require.Eventually(t, func() bool {
+				_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+				require.NoError(t, err)
+				err = f.r.Get(context.Background(), triggerKey, &configbutleraiv1alpha3.FluxTrigger{})
+				return apierrors.IsNotFound(err)
+			}, 5*time.Second, 5*time.Millisecond, "the finalizer goes once the Kustomization is handed back")
+
+			ks := f.sim.Kustomization(checkoutKustomization)
+			assert.Equal(t, wasSuspended, suspendedSpec(ks))
+			assert.NotContains(t, ks.GetAnnotations(), meta.ReconcileRequestAnnotation,
+				"GitOps Reverser's requestedAt is given up either way")
+			events := f.events()
+			require.Len(t, events, 1)
+			want := "it is resumed, and applies on its own again"
+			if wasSuspended {
+				want = "it stays suspended, as it was before GitOps Reverser held it"
+			}
+			assert.Contains(t, events[0], want)
+		})
+	}
+}

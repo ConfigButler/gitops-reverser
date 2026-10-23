@@ -306,7 +306,9 @@ stateDiagram-v2
 - **The trigger hands the `Kustomization` back** when no eligible `GitTarget` references it any
   more, and when it is deleted. `Held` reads `Releasing`: it suspends the `Kustomization` once more
   if an apply has it resumed, waits until that is handled, and releases `spec.suspend`, so Flux
-  applies it on its own again (a `Released` Event), even one somebody had `flux suspend`ed before.
+  applies it on its own again (a `Released` Event). One somebody had `flux suspend`ed before the
+  trigger held it stays suspended, as it was: the trigger records how it stood in
+  `status.handBack` when it first suspends it.
   Until that is done it stays the holder, so no other trigger acts on the `Kustomization`. One
   whose `spec.suspend` another manager also applies stays suspended, and the Event names that
   manager. With another `FluxTrigger` in line, the `Kustomization` stays suspended for that one. A

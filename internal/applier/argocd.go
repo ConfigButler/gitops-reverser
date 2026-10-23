@@ -464,6 +464,9 @@ func (a *ArgoCD) Validate(ctx context.Context, ref types.NamespacedName) Verdict
 	held := "GitOps Reverser holds its automated sync off"
 	if owner.reason != "" {
 		held = fmt.Sprintf("its automated sync kept off by %s", owner.name)
+	} else if verdict := a.switchVerdict(ctx, ref); verdict != nil {
+		verdict.Source = read
+		return *verdict
 	}
 	return Verdict{
 		OK:      true,
@@ -471,6 +474,61 @@ func (a *ArgoCD) Validate(ctx context.Context, ref types.NamespacedName) Verdict
 		Message: fmt.Sprintf("%s %s syncs revision %q of %s; %s", kindApplication, ref, revision, url, held),
 		Source:  read,
 	}
+}
+
+// switchVerdict checks that the Application ref's API keeps the automated sync switch, before
+// GitOps Reverser ever writes it (switchKept), and returns the verdict when it does not, or nil.
+func (a *ArgoCD) switchVerdict(ctx context.Context, ref types.NamespacedName) *Verdict {
+	kept, err := a.switchKept(ctx, ref)
+	switch {
+	case err != nil:
+		return &Verdict{Reason: ReasonCheckFailed, Err: err, Message: fmt.Sprintf(
+			"could not check whether %s %s keeps spec.syncPolicy.automated.enabled: %v", kindApplication, ref, err)}
+	case !kept:
+		return &Verdict{Reason: ReasonApplierVersionUnsupported, Message: switchPrunedMessage(ref)}
+	}
+	return nil
+}
+
+// switchPrunedMessage is why an Application whose API drops the switch is not held.
+func switchPrunedMessage(ref types.NamespacedName) string {
+	return fmt.Sprintf("%s %s is served without spec.syncPolicy.automated.enabled, which Argo CD has from 3.1: "+
+		"the API server drops it, so GitOps Reverser cannot hold automated sync off, and writes nothing; "+
+		"upgrade Argo CD to 3.1 or later", kindApplication, ref)
+}
+
+// switchKept reports whether the Application ref's API keeps spec.syncPolicy.automated.enabled: a
+// server-side dry run of the apply SwitchOff makes, which writes nothing. Argo CD before 3.1 has no
+// enabled in its schema. Its API server refuses a server-side apply of a field the schema does not
+// declare (measured in envtest: a 500 that says "field not declared in schema"); one that pruned it
+// instead would, on an Application without an automated block, leave automated: {}, which is
+// automated sync ON. Either answer is false.
+func (a *ArgoCD) switchKept(ctx context.Context, ref types.NamespacedName) (bool, error) {
+	written, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Apply(ctx, ref.Name,
+		switchApply(ref, false), metav1.ApplyOptions{
+			FieldManager: SuspendFieldManager, Force: true, DryRun: []string{metav1.DryRunAll},
+		})
+	if err != nil && strings.Contains(err.Error(), fieldNotDeclared) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("dry-run switching off automated sync of %s %s: %w", kindApplication, ref, err)
+	}
+	_, kept, _ := unstructured.NestedFieldNoCopy(written.Object, automatedSwitch()...)
+	return kept, nil
+}
+
+// fieldNotDeclared is how the API server refuses a server-side apply of a field its schema does not
+// declare (structured-merge-diff's typed patch). It comes as a 500 with no reason, so it is told by
+// its message.
+const fieldNotDeclared = "field not declared in schema"
+
+// switchApply is the apply configuration of an Application that sets its automated sync switch to
+// enabled, and nothing else.
+func switchApply(ref types.NamespacedName, enabled bool) *unstructured.Unstructured {
+	obj := applicationApply(ref)
+	_ = unstructured.SetNestedField(obj.Object, enabled, automatedSwitch()...)
+	return obj
 }
 
 // automatedSwitch is the path of the Application's automated sync switch.
@@ -566,38 +624,78 @@ func (a *ArgoCD) AutomatedSync(ctx context.Context, ref types.NamespacedName) (A
 // spec.syncPolicy.automated.enabled: false under SuspendFieldManager. It is forced: a click in Argo
 // CD's UI, or a `kubectl edit`, took the switch with an update, and it returns to GitOps Reverser.
 // It touches nothing else of automated, so prune and selfHeal stay as they are, and prune keeps
-// applying to the syncs GitOps Reverser starts. It reports whether automated sync is still on after
-// the write: Argo CD before 3.1 has no enabled in its schema, and its API server drops the field.
+// applying to the syncs GitOps Reverser starts. It first checks that the API keeps the switch
+// (switchKept), and when it does not, reports false and writes nothing: on Argo CD before 3.1 the
+// write would switch a manual Application's automated sync ON.
 func (a *ArgoCD) SwitchOff(ctx context.Context, ref types.NamespacedName) (bool, error) {
-	obj := applicationApply(ref)
-	if err := unstructured.SetNestedField(obj.Object, false, automatedSwitch()...); err != nil {
+	kept, err := a.switchKept(ctx, ref)
+	if err != nil || !kept {
 		return false, err
 	}
-	written, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).
-		Apply(ctx, ref.Name, obj, metav1.ApplyOptions{FieldManager: SuspendFieldManager, Force: true})
+	_, err = a.client.Resource(applicationGVR()).Namespace(ref.Namespace).Apply(ctx, ref.Name,
+		switchApply(ref, false), metav1.ApplyOptions{FieldManager: SuspendFieldManager, Force: true})
 	if err != nil {
 		return false, fmt.Errorf("switch off automated sync of %s %s: %w", kindApplication, ref, err)
 	}
-	return automatedSyncEnabled(written), nil
+	return true, nil
 }
 
-// ReleaseAutomatedSync hands the Application ref's automated sync switch back: an empty apply under
-// SuspendFieldManager gives the switch up, and removes it when nobody else owns it, so the
-// Application is as its own spec says again: automated sync on when it has an automated block,
-// manual when it has none. A switch somebody else also set to false (with an update) stays false:
-// that was their own choice. It reports whether automated sync is on once released.
-// An Application that is gone is a NotFound error: an apply would create one.
-func (a *ArgoCD) ReleaseAutomatedSync(ctx context.Context, ref types.NamespacedName) (bool, error) {
+// Released is how an Application's automated sync switch was handed back.
+type Released struct {
+	// On is automated sync on once handed back.
+	On bool
+	// Kept says why GitOps Reverser's field manager kept the switch's value instead of giving it up,
+	// or is "" when it gave it up.
+	Kept string
+}
+
+// ReleaseAutomatedSync hands the Application ref's automated sync switch back. An empty apply under
+// SuspendFieldManager gives the switch up, and removes it when nobody else owns it, which leaves
+// the Application as its own spec says: on with an automated block, manual without one. That is
+// what the hand-back does when it leaves the Application as it should be:
+//
+//   - wasOn, when set, is whether automated sync was on before the trigger held it (the trigger's
+//     status.handBack), and the hand-back puts that back.
+//   - An ApplicationSet that generates the Application by then, or a field manager that applies its
+//     switch, owns the switch: the hand-back leaves the value they set. An ApplicationSet writes the
+//     switch with an update, which takes no share of a value that does not change, so giving it up
+//     would switch automated sync on against its template.
+//
+// When giving the switch up would leave anything else (a server-side dry run of the empty apply
+// says), the switch is set to what it should be and kept under GitOps Reverser's field manager,
+// where whoever owns it now changes it as any field. An Application that is gone is a NotFound
+// error: an apply would create one.
+func (a *ArgoCD) ReleaseAutomatedSync(ctx context.Context, ref types.NamespacedName, wasOn *bool) (Released, error) {
 	applications := a.client.Resource(applicationGVR()).Namespace(ref.Namespace)
-	if _, err := applications.Get(ctx, ref.Name, metav1.GetOptions{}); err != nil {
-		return false, fmt.Errorf("release automated sync of %s %s: %w", kindApplication, ref, err)
-	}
-	released, err := applications.Apply(ctx, ref.Name, applicationApply(ref),
-		metav1.ApplyOptions{FieldManager: SuspendFieldManager, Force: true})
+	app, err := applications.Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
-		return false, fmt.Errorf("release automated sync of %s %s: %w", kindApplication, ref, err)
+		return Released{}, fmt.Errorf("release automated sync of %s %s: %w", kindApplication, ref, err)
 	}
-	return automatedSyncEnabled(released), nil
+	options := metav1.ApplyOptions{FieldManager: SuspendFieldManager, Force: true}
+	want, why := wasOn, "as it was before GitOps Reverser held it"
+	if owner := switchOwner(app); owner.reason != "" {
+		on := automatedSyncEnabled(app)
+		want, why = &on, "as "+owner.name+" set it"
+	}
+	if want != nil {
+		dryRun := options
+		dryRun.DryRun = []string{metav1.DryRunAll}
+		givenUp, err := applications.Apply(ctx, ref.Name, applicationApply(ref), dryRun)
+		if err != nil {
+			return Released{}, fmt.Errorf("release automated sync of %s %s: %w", kindApplication, ref, err)
+		}
+		if automatedSyncEnabled(givenUp) != *want {
+			if _, err := applications.Apply(ctx, ref.Name, switchApply(ref, *want), options); err != nil {
+				return Released{}, fmt.Errorf("release automated sync of %s %s: %w", kindApplication, ref, err)
+			}
+			return Released{On: *want, Kept: why}, nil
+		}
+	}
+	released, err := applications.Apply(ctx, ref.Name, applicationApply(ref), options)
+	if err != nil {
+		return Released{}, fmt.Errorf("release automated sync of %s %s: %w", kindApplication, ref, err)
+	}
+	return Released{On: automatedSyncEnabled(released)}, nil
 }
 
 // applicationApply is the empty apply configuration of an Application.

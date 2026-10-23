@@ -734,7 +734,10 @@ func (f *Flux) Suspend(ctx context.Context, ref types.NamespacedName) (string, e
 // Release hands the Kustomization ref back to Flux: an empty apply under SuspendFieldManager drops
 // spec.suspend and the requestedAt GitOps Reverser held, so the Kustomization is resumed and Flux
 // owns its apply moments again. It returns the field manager that still keeps the Kustomization
-// suspended, or "" once it is resumed.
+// suspended, or "" once it is resumed. One that was suspended before GitOps Reverser held it
+// (wasSuspended, the trigger's status.handBack) is handed back suspended instead: an apply of
+// spec.suspend: true alone gives the requestedAt up and keeps the suspend, under GitOps Reverser's
+// field manager until somebody resumes it, and SuspendFieldManager is returned.
 //
 // An apply of the value a field holds shares the field with its owner, even forced, so a suspend
 // that took over a `flux suspend` co-owns spec.suspend with that update, and the empty apply alone
@@ -742,13 +745,23 @@ func (f *Flux) Suspend(ctx context.Context, ref types.NamespacedName) (string, e
 // internal/controller/fluxtrigger_suspend_apiserver_test.go). Such an update entry is taken back
 // first, with a forced spec.suspend: false, which a different value takes from every owner. A
 // manager that applies spec.suspend keeps it: its manifest sets the field.
-func (f *Flux) Release(ctx context.Context, ref types.NamespacedName) (string, error) {
+func (f *Flux) Release(ctx context.Context, ref types.NamespacedName, wasSuspended bool) (string, error) {
 	kustomizations := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace)
 	ks, err := kustomizations.Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("release %s %s: %w", kindKustomization, ref, err)
 	}
 	options := metav1.ApplyOptions{FieldManager: SuspendFieldManager, Force: true}
+	if wasSuspended {
+		keep := kustomizationApply(ref)
+		if err := unstructured.SetNestedField(keep.Object, true, "spec", "suspend"); err != nil {
+			return "", err
+		}
+		if _, err := kustomizations.Apply(ctx, ref.Name, keep, options); err != nil {
+			return "", fmt.Errorf("release %s %s: %w", kindKustomization, ref, err)
+		}
+		return SuspendFieldManager, nil
+	}
 	if suspended(ks) && suspendManager(ks, metav1.ManagedFieldsOperationUpdate) != "" {
 		resume := kustomizationApply(ref)
 		if err := unstructured.SetNestedField(resume.Object, false, "spec", "suspend"); err != nil {

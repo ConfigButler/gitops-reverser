@@ -10,6 +10,7 @@ package argosim
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -40,56 +41,142 @@ func switchPath() []string { return []string{"spec", "syncPolicy", "automated", 
 //   - An update (a merge patch) that writes the value the switch holds takes nothing.
 //   - A server-side apply of the value it holds shares it with its owners.
 //   - A server-side apply that leaves out a switch its manager owned gives it up, and removes it
-//     when nobody else owns it, with the syncPolicy maps it leaves empty.
+//     when nobody else owns it, with the syncPolicy maps a write of the switch created: a map
+//     somebody else wrote stays, even empty.
 //   - A merge patch that sets it to null removes it, as kubectl's client-side apply does for a field
 //     its last applied manifest had.
 //
 // Every other field of a merge patch is merged as a merge patch merges it. A server-side apply
-// carries only the switch here: nothing else applies an Application in these tests.
-func Serve(client *dynamicfake.FakeDynamicClient) {
-	var writes sync.Mutex
-	client.PrependReactor("patch", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		patch, ok := action.(k8stesting.PatchActionImpl)
-		if !ok {
-			return false, nil, nil
-		}
-		writes.Lock()
-		defer writes.Unlock()
-		current, err := client.Tracker().Get(ApplicationGVR(), patch.GetNamespace(), patch.GetName())
-		if err != nil {
-			return true, nil, err
-		}
-		app, ok := current.(*unstructured.Unstructured)
-		if !ok {
-			return true, nil, fmt.Errorf("an Application the tracker holds as %T", current)
-		}
-		app = app.DeepCopy()
-		var body map[string]any
-		if err := json.Unmarshal(patch.Patch, &body); err != nil {
-			return true, nil, apierrors.NewBadRequest(err.Error())
-		}
-		manager := patch.PatchOptions.FieldManager
-		if manager == "" {
-			manager = "unnamed"
-		}
-		writer := owner{manager: manager, operation: metav1.ManagedFieldsOperationUpdate}
-		if patch.PatchType == types.ApplyPatchType {
-			writer.operation = metav1.ManagedFieldsOperationApply
-		} else {
-			value, present, _ := unstructured.NestedFieldNoCopy(body, switchPath()...)
-			unstructured.RemoveNestedField(body, switchPath()...)
-			mergePatch(app.Object, body)
-			if present {
-				body = map[string]any{}
-				_ = unstructured.SetNestedField(body, value, switchPath()...)
-			}
-		}
-		writeSwitch(app, body, writer)
-		if err := client.Tracker().Update(ApplicationGVR(), app, app.GetNamespace()); err != nil {
-			return true, nil, err
-		}
+// carries only the switch here: nothing else applies an Application in these tests. A dry run
+// (DryRun: All) answers with the Application the write would leave, and stores nothing.
+func Serve(client *dynamicfake.FakeDynamicClient, opts ...Option) {
+	srv := &server{client: client, created: map[string]map[int]bool{}}
+	for _, opt := range opts {
+		opt(&srv.config)
+	}
+	client.PrependReactor("patch", "applications", srv.patch)
+}
+
+// server serves the patches of Applications.
+type server struct {
+	client *dynamicfake.FakeDynamicClient
+	config config
+	// writes makes each read-modify-write one step, as the API server's resourceVersion check does.
+	writes sync.Mutex
+	// created is the depths of switchPath whose maps a write of the switch created, by Application.
+	created map[string]map[int]bool
+}
+
+// patch serves one patch of an Application.
+func (s *server) patch(action k8stesting.Action) (bool, runtime.Object, error) {
+	patch, ok := action.(k8stesting.PatchActionImpl)
+	if !ok {
+		return false, nil, nil
+	}
+	s.writes.Lock()
+	defer s.writes.Unlock()
+	current, err := s.client.Tracker().Get(ApplicationGVR(), patch.GetNamespace(), patch.GetName())
+	if err != nil {
+		return true, nil, err
+	}
+	app, ok := current.(*unstructured.Unstructured)
+	if !ok {
+		return true, nil, fmt.Errorf("an Application the tracker holds as %T", current)
+	}
+	app = app.DeepCopy()
+	body, writer, err := s.write(app, patch)
+	if err != nil {
+		return true, nil, err
+	}
+	key := patch.GetNamespace() + "/" + patch.GetName()
+	made := maps.Clone(s.created[key])
+	if made == nil {
+		made = map[int]bool{}
+	}
+	writeSwitch(app, body, writer, made)
+	if len(patch.PatchOptions.DryRun) > 0 {
 		return true, app, nil
-	})
+	}
+	s.created[key] = made
+	if err := s.client.Tracker().Update(ApplicationGVR(), app, app.GetNamespace()); err != nil {
+		return true, nil, err
+	}
+	return true, app, nil
+}
+
+// write reads a patch's writer, merges into app everything of a merge patch but the switch, and
+// returns the body that leaves for the switch: the API server's typed patch, before ownership.
+func (s *server) write(
+	app *unstructured.Unstructured,
+	patch k8stesting.PatchActionImpl,
+) (map[string]any, owner, error) {
+	var body map[string]any
+	if err := json.Unmarshal(patch.Patch, &body); err != nil {
+		return nil, owner{}, apierrors.NewBadRequest(err.Error())
+	}
+	manager := patch.PatchOptions.FieldManager
+	if manager == "" {
+		manager = "unnamed"
+	}
+	writer := owner{manager: manager, operation: metav1.ManagedFieldsOperationUpdate}
+	if patch.PatchType == types.ApplyPatchType {
+		writer.operation = metav1.ManagedFieldsOperationApply
+	} else {
+		value, present, _ := unstructured.NestedFieldNoCopy(body, switchPath()...)
+		unstructured.RemoveNestedField(body, switchPath()...)
+		mergePatch(app.Object, body)
+		body = map[string]any{}
+		if present {
+			_ = unstructured.SetNestedField(body, value, switchPath()...)
+		}
+	}
+	if !s.config.withoutSwitch {
+		return body, writer, nil
+	}
+	if writer.operation == metav1.ManagedFieldsOperationApply && hasSwitch(body) {
+		return nil, owner{}, apierrors.NewInternalError(fmt.Errorf("failed to create typed patch object "+
+			"(%s/%s; argoproj.io/v1alpha1, Kind=Application): .spec.syncPolicy.automated.enabled: field not "+
+			"declared in schema", patch.GetNamespace(), patch.GetName()))
+	}
+	if pruneSwitch(body) {
+		parent := switchPath()[:len(switchPath())-1]
+		if _, found, _ := unstructured.NestedMap(app.Object, parent...); !found {
+			_ = unstructured.SetNestedField(app.Object, map[string]any{}, parent...)
+		}
+	}
+	return body, writer, nil
+}
+
+// hasSwitch reports whether a write's body carries the switch.
+func hasSwitch(body map[string]any) bool {
+	_, present, _ := unstructured.NestedFieldNoCopy(body, switchPath()...)
+	return present
+}
+
+// Option changes what Serve serves.
+type Option func(*config)
+
+type config struct {
+	withoutSwitch bool
+}
+
+// WithoutSwitch serves an Argo CD before 3.1, whose Application has no
+// spec.syncPolicy.automated.enabled in its schema. The API server refuses a server-side apply of it,
+// with a 500 that says "field not declared in schema", and prunes it from a merge patch, keeping the
+// maps around it: a merge patch of it to an Application without an automated block leaves
+// automated: {}, which is automated sync on.
+func WithoutSwitch() Option {
+	return func(c *config) { c.withoutSwitch = true }
+}
+
+// pruneSwitch removes the switch from a write's body, as the API server prunes a field its schema
+// does not know, and reports whether there was one. The maps around it stay, which Serve writes.
+func pruneSwitch(body map[string]any) bool {
+	if !hasSwitch(body) {
+		return false
+	}
+	unstructured.RemoveNestedField(body, switchPath()...)
+	return true
 }
 
 // owner is a managedFields entry's identity.
@@ -98,29 +185,30 @@ type owner struct {
 	operation metav1.ManagedFieldsOperationType
 }
 
-// writeSwitch writes the switch of body, by writer, to app and its managedFields.
-func writeSwitch(app *unstructured.Unstructured, body map[string]any, writer owner) {
+// writeSwitch writes the switch of body, by writer, to app and its managedFields. made is the
+// depths of switchPath whose maps a write of the switch created, which it keeps up to date.
+func writeSwitch(app *unstructured.Unstructured, body map[string]any, writer owner, made map[int]bool) {
 	owners := switchOwners(app)
 	value, present, _ := unstructured.NestedFieldNoCopy(body, switchPath()...)
 	switch {
 	case present:
-		owners = writeValue(app, owners, value, writer)
+		owners = writeValue(app, owners, value, writer, made)
 	case writer.operation == metav1.ManagedFieldsOperationApply && slices.Contains(owners, writer):
 		owners = slices.DeleteFunc(owners, func(o owner) bool { return o == writer })
 		if len(owners) == 0 {
-			removeSwitch(app)
+			removeSwitch(app, made)
 		}
 	}
 	setSwitchOwners(app, owners)
 }
 
 // writeValue writes value to the switch, by writer, and returns its owners after.
-func writeValue(app *unstructured.Unstructured, owners []owner, value any, writer owner) []owner {
+func writeValue(app *unstructured.Unstructured, owners []owner, value any, writer owner, made map[int]bool) []owner {
 	old, held, _ := unstructured.NestedFieldNoCopy(app.Object, switchPath()...)
 	unchanged := held && fmt.Sprint(old) == fmt.Sprint(value)
 	switch {
 	case value == nil:
-		removeSwitch(app)
+		removeSwitch(app, made)
 		return nil
 	case unchanged && writer.operation == metav1.ManagedFieldsOperationUpdate:
 		// An update owns only what it changed.
@@ -131,18 +219,25 @@ func writeValue(app *unstructured.Unstructured, owners []owner, value any, write
 		}
 		return owners
 	}
+	for depth := 2; depth < len(switchPath()); depth++ {
+		if _, found, _ := unstructured.NestedFieldNoCopy(app.Object, switchPath()[:depth]...); !found {
+			made[depth] = true
+		}
+	}
 	_ = unstructured.SetNestedField(app.Object, value, switchPath()...)
 	return []owner{writer}
 }
 
-// removeSwitch removes the switch, and the syncPolicy maps that leaves empty.
-func removeSwitch(app *unstructured.Unstructured) {
+// removeSwitch removes the switch, and the syncPolicy maps a write of it created that it leaves
+// empty.
+func removeSwitch(app *unstructured.Unstructured, made map[int]bool) {
 	unstructured.RemoveNestedField(app.Object, switchPath()...)
 	for depth := len(switchPath()) - 1; depth > 1; depth-- {
 		parent, found, _ := unstructured.NestedMap(app.Object, switchPath()[:depth]...)
-		if found && len(parent) == 0 {
+		if found && len(parent) == 0 && made[depth] {
 			unstructured.RemoveNestedField(app.Object, switchPath()[:depth]...)
 		}
+		delete(made, depth)
 	}
 }
 

@@ -76,8 +76,12 @@ func appliedBy(app *unstructured.Unstructured, manager string) *unstructured.Uns
 	return app
 }
 
+// newArgoSource is an applier cluster holding objs, serving the server-side applies of an
+// Application's automated sync switch as the API server does (argosim).
 func newArgoSource(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
-	return newSourceClient(objs...)
+	client := newSourceClient(objs...)
+	argosim.Serve(client)
+	return client
 }
 
 func pinnedArgo(client *dynamicfake.FakeDynamicClient) *ArgoCD {
@@ -987,9 +991,9 @@ func TestArgoCD_AutomatedSyncHoldAndRelease(t *testing.T) {
 			prune, _, _ := unstructured.NestedFieldNoCopy(readApp(t, client).Object,
 				"spec", "syncPolicy", "automated", "prune")
 
-			stillOn, err := argo.SwitchOff(ctx, platformApp)
+			written, err := argo.SwitchOff(ctx, platformApp)
 			require.NoError(t, err)
-			assert.False(t, stillOn)
+			assert.True(t, written)
 			held, err := argo.AutomatedSync(ctx, platformApp)
 			require.NoError(t, err)
 			assert.Equal(t, AutomatedSync{Held: true}, held)
@@ -1021,12 +1025,12 @@ func TestArgoCD_AutomatedSyncHoldAndRelease(t *testing.T) {
 					argosim.SwitchEntry(SuspendFieldManager, metav1.ManagedFieldsOperationApply)))
 				writeApp(t, client, app)
 			}
-			on, err := argo.ReleaseAutomatedSync(ctx, platformApp)
+			released, err := argo.ReleaseAutomatedSync(ctx, platformApp, nil)
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantOnAt, on)
-			released, err := argo.AutomatedSync(ctx, platformApp)
+			assert.Equal(t, Released{On: tt.wantOnAt}, released)
+			state, err := argo.AutomatedSync(ctx, platformApp)
 			require.NoError(t, err)
-			assert.False(t, released.Held, "nothing of GitOps Reverser's is left")
+			assert.False(t, state.Held, "nothing of GitOps Reverser's is left")
 			_, found, _ := unstructured.NestedFieldNoCopy(readApp(t, client).Object, "spec", "syncPolicy")
 			assert.Equal(t, !tt.wantGone, found)
 		})
@@ -1038,7 +1042,7 @@ func TestArgoCD_AutomatedSyncHoldAndRelease(t *testing.T) {
 func TestArgoCD_ReleaseAutomatedSyncOfAnApplicationThatIsGone(t *testing.T) {
 	client := newArgoSource()
 	argosim.Serve(client)
-	_, err := pinnedArgo(client).ReleaseAutomatedSync(context.Background(), platformApp)
+	_, err := pinnedArgo(client).ReleaseAutomatedSync(context.Background(), platformApp, nil)
 	require.True(t, apierrors.IsNotFound(err), "%v", err)
 	_, err = client.Resource(applicationGVR()).Namespace(argoNS).Get(context.Background(), "platform",
 		metav1.GetOptions{})
@@ -1071,4 +1075,90 @@ func TestArgoCD_AutomatedSyncNamesTheSwitchOwner(t *testing.T) {
 			assert.Equal(t, tc.want, state.Owner)
 		})
 	}
+}
+
+// TestArgoCD_ReleaseAutomatedSyncPutsBackHowItStood: the hand-back leaves the switch as it stood
+// before it was held (wasOn), or as the ApplicationSet that generates the Application by then set
+// it. Where giving the switch up would leave anything else, the value is set and kept.
+func TestArgoCD_ReleaseAutomatedSyncPutsBackHowItStood(t *testing.T) {
+	ctx := context.Background()
+	held := func(app *unstructured.Unstructured) *unstructured.Unstructured {
+		app.SetManagedFields([]metav1.ManagedFieldsEntry{argosim.SwitchEntry(SuspendFieldManager,
+			metav1.ManagedFieldsOperationApply)})
+		_ = unstructured.SetNestedField(app.Object, false, "spec", "syncPolicy", "automated", "enabled")
+		return app
+	}
+	tests := []struct {
+		name        string
+		app         *unstructured.Unstructured
+		wasOn       *bool
+		want        Released
+		wantEnabled any // the switch once released; nil when it is gone
+	}{
+		{name: "nothing recorded: given up", app: held(automatedApp()), want: Released{On: true}},
+		{name: "on before, and giving up puts it back", app: held(automatedApp()), wasOn: new(true),
+			want: Released{On: true}},
+		{name: "off before, but giving up would switch it on: kept off", app: held(automatedApp()),
+			wasOn: new(false),
+			want:  Released{Kept: "as it was before GitOps Reverser held it"}, wantEnabled: false},
+		{name: "an ApplicationSet adopted it: kept as its template set it", app: generated(held(automatedApp())),
+			wasOn: new(true),
+			want:  Released{Kept: "as ApplicationSet argocd/platforms set it"}, wantEnabled: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newArgoSource(tt.app)
+			released, err := pinnedArgo(client).ReleaseAutomatedSync(ctx, platformApp, tt.wasOn)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, released)
+			enabled, found, _ := unstructured.NestedFieldNoCopy(readApp(t, client).Object,
+				"spec", "syncPolicy", "automated", "enabled")
+			if tt.wantEnabled == nil {
+				assert.False(t, found, "given up")
+			} else {
+				assert.Equal(t, tt.wantEnabled, enabled)
+			}
+		})
+	}
+}
+
+// TestArgoCD_AnAPIWithoutTheSwitchIsNeverWritten: Argo CD before 3.1 refuses a server-side apply of
+// spec.syncPolicy.automated.enabled; the dry run tells, Validate refuses the Application, and
+// SwitchOff writes nothing.
+func TestArgoCD_AnAPIWithoutTheSwitchIsNeverWritten(t *testing.T) {
+	ctx := context.Background()
+	client := newSourceClient(manualApp())
+	argosim.Serve(client, argosim.WithoutSwitch())
+	argo := pinnedArgo(client)
+
+	verdict := argo.Validate(ctx, platformApp)
+	assert.Equal(t, ReasonApplierVersionUnsupported, verdict.Reason)
+	assert.Contains(t, verdict.Message, "which Argo CD has from 3.1")
+	assert.NotNil(t, verdict.Source)
+
+	written, err := argo.SwitchOff(ctx, platformApp)
+	require.NoError(t, err)
+	assert.False(t, written)
+	_, found, _ := unstructured.NestedFieldNoCopy(readApp(t, client).Object, "spec", "syncPolicy")
+	assert.False(t, found, "a manual Application stays manual")
+}
+
+// TestArgoCD_ADryRunThatFailsIsACheckThatFailed: a dry run that cannot tell says nothing about the
+// Application, so Validate keeps what it published (ReasonCheckFailed) and SwitchOff writes nothing.
+func TestArgoCD_ADryRunThatFailsIsACheckThatFailed(t *testing.T) {
+	ctx := context.Background()
+	client := newArgoSource(manualApp())
+	client.PrependReactor("patch", "applications", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("connection reset")
+	})
+	argo := pinnedArgo(client)
+
+	verdict := argo.Validate(ctx, platformApp)
+	assert.Equal(t, ReasonCheckFailed, verdict.Reason)
+	require.Error(t, verdict.Err)
+
+	_, err := argo.SwitchOff(ctx, platformApp)
+	require.ErrorContains(t, err, "connection reset")
+	_, err = argo.ReleaseAutomatedSync(ctx, platformApp, new(false))
+	require.ErrorContains(t, err, "connection reset")
 }

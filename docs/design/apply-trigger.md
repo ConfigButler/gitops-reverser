@@ -428,7 +428,9 @@ would not be pruned when Git later deletes it.
   judged yet keeps the hold, since a release is not undone. Until the hand-back is done the trigger
   is `Held=False`, `Releasing`, and stays the holder in line. It suspends the `Kustomization` with a
   token if an apply has it resumed, waits until that is handled, then releases `spec.suspend` with
-  an empty apply, so Flux owns it again (`Released`). An operation still recorded in flight that
+  an empty apply, so Flux owns it again (`Released`). A `Kustomization` that was suspended when the
+  trigger first held it (`status.handBack.suspended`) stays suspended instead ([decisions of
+  2026-10-23](#decisions)). An operation still recorded in flight that
   this process does not follow then completes as `Failed`. A reference that returns before the
   release is done holds the `Kustomization` again; one that returns after adopts it anew. Deleting
   or re-creating a `GitTarget` therefore hands it back, and Flux applies the tip at once: what Flux
@@ -587,6 +589,16 @@ Taken 2026-10-23:
    (`AutomatedSyncOwnedElsewhere`). Two owners would fight over it. It is refused only while
    automated sync is on, so an `ApplicationSet` whose template keeps it off is supported. Binding
    the `ApplicationSet` itself is parked.
+3. **A hand-back puts back how the applier stood before it was held**, recorded in
+   `status.handBack` (both kinds) on adoption: a `Kustomization` suspended before stays suspended
+   (until now it was resumed), an `Application`'s automated sync is as it was. A switch an
+   `ApplicationSet` adopted meanwhile keeps the value it set: its update takes no share of an
+   unchanged value, so giving the switch up would turn automated sync on against its template.
+   Where giving the field up would leave anything else, the value is set and left under
+   `gitops-reverser`, for its owner to change.
+4. **Argo CD before 3.1 is refused, `ApplierVersionUnsupported`, before any write.** Its schema has
+   no `enabled`, and the API server refuses a server-side apply of an undeclared field (measured);
+   a server-side dry run tells that apart from a cluster that keeps it, with no extra permission.
 
 ## The apply window
 
@@ -717,7 +729,8 @@ applier too, and two appliers applying one object fight each other.
 `Application`'s automated sync off: it owns `syncPolicy.automated.enabled: false` with a
 server-side apply under `gitops-reverser`, touching nothing else of `automated`, switches it off
 again when somebody switches it on (`AutomatedSyncSwitchedOn`), and on hand-back gives the switch
-up, which leaves the `Application` as its own spec says (measured in envtest:
+up, which leaves the `Application` as its own spec says, unless that is not how it stood before
+(`status.handBack`) or how an `ApplicationSet` that adopted it since set it (measured in envtest:
 [`argocdtrigger_apiserver_test.go`](../../internal/controller/argocdtrigger_apiserver_test.go)). So
 its timed refresh and its webhook only compare, and every sync it runs is one GitOps Reverser asked
 for, pinned to a commit the branch worker checked. A switch an `ApplicationSet` or another field

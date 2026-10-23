@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -177,9 +176,9 @@ func TestArgoCDTrigger_DeletionHandsTheSwitchBack(t *testing.T) {
 	}{
 		"automated sync was on": {
 			syncPolicy: map[string]any{"automated": map[string]any{"prune": true}}, wantOn: true,
-			wantEvent: "its automated sync is on again, and it syncs on its own",
+			wantEvent: "its automated sync is on, and it syncs on its own",
 		},
-		"it was manual": {wantEvent: "it stays manual"},
+		"it was manual": {wantEvent: "its automated sync is off"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newArgoHoldFixture(t, nil, applierArgoApplication(tc.syncPolicy))
@@ -331,24 +330,99 @@ func TestArgoCDTrigger_AManagerThatAppliesTheSwitchOwnsIt(t *testing.T) {
 	}
 }
 
-// TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNotHeld: Argo CD before 3.1 has no
-// spec.syncPolicy.automated.enabled in its schema, so its API server drops the switch. The trigger
-// must not claim a hold it does not have, nor announce an adoption every minute.
-func TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNotHeld(t *testing.T) {
+// TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNeverWritten: Argo CD before 3.1 has no
+// spec.syncPolicy.automated.enabled in its schema, and its API server prunes it, so switching a
+// manual Application off would leave automated: {}, which is automated sync ON. The trigger finds
+// that with a dry run, refuses the Application, and writes nothing.
+func TestArgoCDTrigger_AnArgoCDThatDropsTheSwitchIsNeverWritten(t *testing.T) {
+	for name, syncPolicy := range map[string]map[string]any{
+		"a manual Application":          nil,
+		"automated sync on":             {"automated": map[string]any{"prune": true}},
+		"an empty syncPolicy, no block": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newArgoHoldFixture(t, nil, applierArgoApplication(syncPolicy))
+			argosim.Serve(f.sim.Client, argosim.WithoutSwitch())
+			before, _ := f.automated(t)
+
+			got := reconcileTrigger(t, f.r)
+
+			configured := findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
+			require.NotNil(t, configured)
+			assert.Equal(t, metav1.ConditionFalse, configured.Status)
+			assert.Equal(t, applier.ReasonApplierVersionUnsupported, configured.Reason)
+			assert.Contains(t, configured.Message, "which Argo CD has from 3.1")
+			assert.True(t, conditionIsTrue(*got.StatusConditions(), ConditionTypeStalled))
+			after, _ := f.automated(t)
+			assert.Equal(t, before, after, "nothing is written")
+			assert.Empty(t, f.application(t).GetManagedFields())
+			assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDTriggerFinalizer))
+			assert.Empty(t, f.events())
+		})
+	}
+}
+
+// TestArgoCDTrigger_RecordsAndRestoresHowItStood: adoption records whether the Application synced on
+// its own in status.handBack, the hand-back puts exactly that back, and then forgets it. Giving the
+// switch up alone would not: here the owner's own enabled: false was taken by a click in the UI, so
+// giving the switch up would remove it, and an Application that was manual would sync on its own.
+func TestArgoCDTrigger_RecordsAndRestoresHowItStood(t *testing.T) {
+	app := argosim.OwnSwitch(
+		t,
+		applierArgoApplication(map[string]any{"automated": map[string]any{"prune": true}}).(*unstructured.Unstructured),
+		false,
+		"kubectl-client-side-apply",
+		metav1.ManagedFieldsOperationUpdate,
+	)
+	f := newArgoHoldFixture(t, nil, app)
+	got := reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.ArgoCDTrigger)
+	require.Equal(t, &configbutleraiv1alpha3.ArgoCDTriggerHandBack{AutomatedSync: false}, got.Status.HandBack)
+	f.switchOn(t)
+	reconcileTrigger(t, f.r)
+	assert.Equal(t, &configbutleraiv1alpha3.ArgoCDTriggerHandBack{AutomatedSync: false}, f.trigger(t).Status.HandBack,
+		"a switch-on is not how it stood")
+	f.events()
+
+	target := &configbutleraiv1alpha3.GitTarget{}
+	require.NoError(t, f.r.Get(context.Background(),
+		ctrlclient.ObjectKey{Namespace: "team-a", Name: "checkout-argo"}, target))
+	require.NoError(t, f.r.Delete(context.Background(), target))
+	got = reconcileTrigger(t, f.r).(*configbutleraiv1alpha3.ArgoCDTrigger)
+
+	automated, _ := f.automated(t)
+	assert.Equal(t, false, automated["enabled"], "manual, as it was")
+	assert.Nil(t, got.Status.HandBack, "forgotten once handed back")
+	events := f.events()
+	require.Len(t, events, 1)
+	assert.Contains(t, events[0], "its automated sync is off, as it was before GitOps Reverser held it")
+}
+
+// TestArgoCDTrigger_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue is the review's P2. An
+// ApplicationSet that takes over a held Application with enabled: false in its template writes the
+// switch with an update, which takes no share of a value that does not change: the switch stays
+// GitOps Reverser's alone. Giving it up would then switch automated sync on against the template, so
+// the hand-back keeps the value the ApplicationSet set.
+func TestArgoCDTrigger_AnApplicationSetThatAdoptsAHeldApplicationKeepsItsValue(t *testing.T) {
 	f := newArgoHoldFixture(t, nil, applierArgoApplication(map[string]any{"automated": map[string]any{"prune": true}}))
-	f.sim.Client.PrependReactor("patch", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		app, err := f.sim.Client.Tracker().
-			Get(argosim.ApplicationGVR(), action.GetNamespace(), checkoutApplication.Name)
-		return true, app, err
-	})
+	reconcileTrigger(t, f.r)
+	f.events()
+	adopted := f.application(t)
+	controller := true
+	adopted.SetOwnerReferences([]metav1.OwnerReference{{
+		APIVersion: "argoproj.io/v1alpha1", Kind: "ApplicationSet", Name: "checkouts", UID: "appset-uid",
+		Controller: &controller,
+	}})
+	_, err := f.sim.Client.Resource(argosim.ApplicationGVR()).Namespace(checkoutApplication.Namespace).
+		Update(context.Background(), adopted, metav1.UpdateOptions{FieldManager: "argocd-applicationset-controller"})
+	require.NoError(t, err)
 
-	got := reconcileTrigger(t, f.r)
+	require.NoError(t, f.r.Delete(context.Background(), f.trigger(t)))
+	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+	require.NoError(t, err)
 
-	held := findCondition(*got.StatusConditions(), ApplyTriggerConditionHeld)
-	require.NotNil(t, held)
-	assert.Equal(t, metav1.ConditionFalse, held.Status)
-	assert.Equal(t, ReasonAutomatedSyncOn, held.Reason)
-	assert.Contains(t, held.Message, "Argo CD before 3.1 drops spec.syncPolicy.automated.enabled")
-	assert.False(t, conditionIsTrue(*got.StatusConditions(), ConditionTypeReady))
-	assert.Empty(t, f.events())
+	automated, _ := f.automated(t)
+	assert.Equal(t, false, automated["enabled"], "as the ApplicationSet's template says")
+	events := f.events()
+	require.Len(t, events, 1)
+	assert.Contains(t, events[0], "its automated sync is off, as ApplicationSet argocd/checkouts set it")
 }

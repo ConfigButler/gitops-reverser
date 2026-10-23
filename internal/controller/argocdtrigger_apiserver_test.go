@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
@@ -71,11 +72,12 @@ var _ = Describe("Application automated sync switch on a real API server", Order
 
 	It("hands a manual Application back manual, with no syncPolicy left", func() {
 		ref := create("manual", nil)
-		Expect(argo.SwitchOff(ctx, ref)).To(BeFalse(), "switched off")
+		Expect(argo.SwitchOff(ctx, ref)).To(BeTrue(), "switched off")
 		Expect(syncPolicy(ref)).To(Equal(map[string]any{"automated": map[string]any{"enabled": false}}))
 		Expect(state(ref)).To(Equal(applier.AutomatedSync{Held: true}))
 
-		on, err := argo.ReleaseAutomatedSync(ctx, ref)
+		released, err := argo.ReleaseAutomatedSync(ctx, ref, nil)
+		on := released.On
 		Expect(err).NotTo(HaveOccurred())
 		Expect(on).To(BeFalse())
 		Expect(syncPolicy(ref)).To(BeNil(), "the maps the hold created go with it")
@@ -83,12 +85,13 @@ var _ = Describe("Application automated sync switch on a real API server", Order
 
 	It("hands an Application with automated sync on back on, its other settings untouched", func() {
 		ref := create("automated", map[string]any{"automated": map[string]any{"prune": true, "selfHeal": true}})
-		Expect(argo.SwitchOff(ctx, ref)).To(BeFalse(), "switched off")
+		Expect(argo.SwitchOff(ctx, ref)).To(BeTrue(), "switched off")
 		Expect(syncPolicy(ref)).To(Equal(map[string]any{
 			"automated": map[string]any{"enabled": false, "prune": true, "selfHeal": true},
 		}))
 
-		on, err := argo.ReleaseAutomatedSync(ctx, ref)
+		released, err := argo.ReleaseAutomatedSync(ctx, ref, nil)
+		on := released.On
 		Expect(err).NotTo(HaveOccurred())
 		Expect(on).To(BeTrue())
 		Expect(syncPolicy(ref)).To(Equal(map[string]any{"automated": map[string]any{"prune": true, "selfHeal": true}}))
@@ -96,10 +99,11 @@ var _ = Describe("Application automated sync switch on a real API server", Order
 
 	It("shares a switch its owner set off, and leaves it off on hand-back", func() {
 		ref := create("owner-off", map[string]any{"automated": map[string]any{"enabled": false, "prune": true}})
-		Expect(argo.SwitchOff(ctx, ref)).To(BeFalse(), "switched off")
+		Expect(argo.SwitchOff(ctx, ref)).To(BeTrue(), "switched off")
 		Expect(state(ref)).To(Equal(applier.AutomatedSync{Held: true}))
 
-		on, err := argo.ReleaseAutomatedSync(ctx, ref)
+		released, err := argo.ReleaseAutomatedSync(ctx, ref, nil)
+		on := released.On
 		Expect(err).NotTo(HaveOccurred())
 		Expect(on).To(BeFalse(), "the owner's own choice stays")
 		Expect(syncPolicy(ref)).To(Equal(map[string]any{"automated": map[string]any{"enabled": false, "prune": true}}))
@@ -107,7 +111,7 @@ var _ = Describe("Application automated sync switch on a real API server", Order
 
 	It("loses the switch to a click in Argo CD's UI, and takes it back", func() {
 		ref := create("clicked", nil)
-		Expect(argo.SwitchOff(ctx, ref)).To(BeFalse(), "switched off")
+		Expect(argo.SwitchOff(ctx, ref)).To(BeTrue(), "switched off")
 		_, err := applications.Patch(
 			ctx,
 			ref.Name,
@@ -120,9 +124,10 @@ var _ = Describe("Application automated sync switch on a real API server", Order
 		Expect(err).NotTo(HaveOccurred())
 		Expect(state(ref)).To(Equal(applier.AutomatedSync{On: true}), "a write of another value takes the switch")
 
-		Expect(argo.SwitchOff(ctx, ref)).To(BeFalse(), "switched off")
+		Expect(argo.SwitchOff(ctx, ref)).To(BeTrue(), "switched off")
 		Expect(state(ref)).To(Equal(applier.AutomatedSync{Held: true}), "and a forced apply takes it back")
-		on, err := argo.ReleaseAutomatedSync(ctx, ref)
+		released, err := argo.ReleaseAutomatedSync(ctx, ref, nil)
+		on := released.On
 		Expect(err).NotTo(HaveOccurred())
 		Expect(on).To(BeFalse())
 		Expect(syncPolicy(ref)).To(BeNil())
@@ -130,7 +135,7 @@ var _ = Describe("Application automated sync switch on a real API server", Order
 
 	It("keeps the switch through a sync, an update of the whole Application", func() {
 		ref := create("synced", nil)
-		Expect(argo.SwitchOff(ctx, ref)).To(BeFalse(), "switched off")
+		Expect(argo.SwitchOff(ctx, ref)).To(BeTrue(), "switched off")
 		app, err := applications.Get(ctx, ref.Name, metav1.GetOptions{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(unstructured.SetNestedField(app.Object, map[string]any{"sync": map[string]any{"revision": "abc"}},
@@ -138,6 +143,66 @@ var _ = Describe("Application automated sync switch on a real API server", Order
 		_, err = applications.Update(ctx, app, metav1.UpdateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(state(ref)).To(Equal(applier.AutomatedSync{Held: true}), "an update owns only what it changed")
+	})
+
+	// The review's P2: an ApplicationSet that adopts a held Application, with enabled: false in its
+	// template, writes the same value with an update and takes no share of it. Giving the switch up
+	// would remove it, and the automated block left behind would sync on its own.
+	It("keeps the value an ApplicationSet set on an Application it adopted while held", func() {
+		ref := create("adopted", map[string]any{"automated": map[string]any{"prune": true}})
+		Expect(argo.SwitchOff(ctx, ref)).To(BeTrue(), "switched off")
+		app, err := applications.Get(ctx, ref.Name, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		controller := true
+		app.SetOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: "argoproj.io/v1alpha1", Kind: "ApplicationSet", Name: "checkouts", UID: "appset-uid",
+			Controller: &controller,
+		}})
+		_, err = applications.Update(ctx, app, metav1.UpdateOptions{FieldManager: "argocd-applicationset-controller"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(
+			state(ref),
+		).To(Equal(applier.AutomatedSync{Held: true, Owner: "ApplicationSet " + namespace + "/checkouts"}),
+			"the update took no share of the switch")
+
+		released, err := argo.ReleaseAutomatedSync(ctx, ref, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(released.On).To(BeFalse())
+		Expect(released.Kept).To(ContainSubstring("as ApplicationSet " + namespace + "/checkouts set it"))
+		Expect(syncPolicy(ref)).To(Equal(map[string]any{"automated": map[string]any{"enabled": false, "prune": true}}))
+	})
+
+	// The review's P1, last because it takes enabled out of the schema, as Argo CD before 3.1 has it.
+	It("never writes the switch where the API server prunes it", func() {
+		manual := create("unsupported", nil)
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: applicationCRD().Name}, crd)).To(Succeed())
+		automated := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].
+			Properties["syncPolicy"].Properties["automated"]
+		delete(automated.Properties, "enabled")
+		crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["syncPolicy"].
+			Properties["automated"] = automated
+		Expect(k8sClient.Update(ctx, crd)).To(Succeed())
+
+		By("a server-side apply of the switch is refused, not pruned, once the schema reloads")
+		Eventually(func(g Gomega) {
+			obj := &unstructured.Unstructured{}
+			obj.SetAPIVersion("argoproj.io/v1alpha1")
+			obj.SetKind("Application")
+			obj.SetNamespace(namespace)
+			obj.SetName(manual.Name)
+			g.Expect(unstructured.SetNestedField(obj.Object, false, "spec", "syncPolicy", "automated", "enabled")).
+				To(Succeed())
+			_, err := applications.Apply(ctx, manual.Name, obj, metav1.ApplyOptions{
+				FieldManager: "probe", Force: true, DryRun: []string{metav1.DryRunAll},
+			})
+			g.Expect(err).To(MatchError(ContainSubstring("field not declared in schema")))
+		}, "10s", "100ms").Should(Succeed())
+		Expect(argo.SwitchOff(ctx, manual)).To(BeFalse(), "an unsupported switch is not written")
+
+		By("so SwitchOff writes nothing, and the Application stays manual")
+		Expect(syncPolicy(manual)).To(BeNil())
+		Expect(state(manual)).To(Equal(applier.AutomatedSync{}))
 	})
 })
 

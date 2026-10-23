@@ -218,6 +218,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              handBack:
+                description: |-
+                  HandBack is how the Kustomization stood when the trigger took it over, which handing it back
+                  restores: one that was suspended stays suspended. Recorded with the first suspend, and cleared
+                  once it is handed back. Absent, a hand-back resumes the Kustomization.
+                properties:
+                  suspended:
+                    description: Suspended is the Kustomization's spec.suspend then.
+                    type: boolean
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.

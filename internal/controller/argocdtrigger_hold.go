@@ -10,6 +10,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -35,15 +36,9 @@ import (
 // carries no finalizer for it. Configured refuses such an Application while its automated sync is
 // on, and the trigger is Held while the owner keeps it off.
 
-// Held reasons of an ArgoCDTrigger.
-const (
-	// ReasonAutomatedSyncOff is Held=True: the Application has automated sync off, held off by
-	// GitOps Reverser, or kept off by the switch's owner (the message says which).
-	ReasonAutomatedSyncOff = "AutomatedSyncOff"
-	// ReasonAutomatedSyncOn is Held=False: automated sync is still on after GitOps Reverser switched
-	// it off, which is an Argo CD before 3.1, whose API server drops spec.syncPolicy.automated.enabled.
-	ReasonAutomatedSyncOn = "AutomatedSyncOn"
-)
+// ReasonAutomatedSyncOff is Held=True on an ArgoCDTrigger whose Application has automated sync off:
+// held off by GitOps Reverser, or kept off by the switch's owner (the message says which).
+const ReasonAutomatedSyncOff = "AutomatedSyncOff"
 
 // EventReasonAutomatedSyncSwitchedOn is a held Application found with automated sync switched on by
 // somebody else, and switched off again.
@@ -124,30 +119,22 @@ func (r *ApplyTriggerReconciler) holdAutomatedSync(
 			fmt.Sprintf("cannot read Application %s: %v", ref, err)), nil
 	}
 	if state.Owner != "" {
-		// A share of the switch this trigger took before the owner applied it is given up on
-		// hand-back, by the finalizer it carries; nothing is written meanwhile.
-		if state.On {
-			// Switched on since Configured read it: the next reconcile refuses it.
-			return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonNotConfigured, Message: fmt.Sprintf(
-				"Application %s has automated sync on, switched by %s", ref, state.Owner)}, nil
-		}
-		return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonAutomatedSyncOff, Message: fmt.Sprintf(
-			"Application %s has automated sync kept off by %s, which owns the switch; GitOps Reverser starts "+
-				"every sync", ref, state.Owner)}, nil
+		return ownedSwitchCondition(ref, state), nil
 	}
 	if err := r.setFinalizer(ctx, st, trigger, true); err != nil {
 		return conditionValue{}, err
 	}
 	if !state.Held || state.On {
-		stillOn, err := argo.SwitchOff(ctx, ref)
+		recordApplicationHandBack(trigger, state)
+		written, err := argo.SwitchOff(ctx, ref)
 		switch {
 		case err != nil:
 			return keptCondition(trigger.Status.Conditions, ApplyTriggerConditionHeld, err.Error()), nil
-		case stillOn:
-			return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonAutomatedSyncOn, Message: fmt.Sprintf(
-				"Application %s still has automated sync on after GitOps Reverser switched it off: Argo CD before "+
-					"3.1 drops spec.syncPolicy.automated.enabled; upgrade Argo CD, or remove spec.syncPolicy.automated "+
-					"(its syncs then do not prune)", ref)}, nil
+		case !written:
+			// Configured checks this first; an Argo CD downgraded since is caught here, before a write.
+			return conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonApplierVersionUnsupported,
+				Message: fmt.Sprintf("Application %s is served without spec.syncPolicy.automated.enabled (Argo CD "+
+					"before 3.1), so GitOps Reverser writes nothing", ref)}, nil
 		}
 		switch {
 		case !heldBefore(trigger):
@@ -163,10 +150,34 @@ func (r *ApplyTriggerReconciler) holdAutomatedSync(
 		"Application %s has automated sync held off by GitOps Reverser, which starts every sync", ref)}, nil
 }
 
-// releaseAutomatedSync takes an ArgoCDTrigger's hand-back one step: it gives the Application's
-// automated sync switch up, unless a successor (nextInLine) takes it over, for which it is left held
-// off: released, Argo CD would sync on its own at once, before the successor could switch it off
-// again.
+// ownedSwitchCondition is the Held condition of a trigger whose Application's switch somebody else
+// owns. Nothing is written: a share of the switch the trigger took before the owner did is handed
+// back by the finalizer it carries.
+func ownedSwitchCondition(ref k8stypes.NamespacedName, state applier.AutomatedSync) conditionValue {
+	if state.On {
+		// Switched on since Configured read it: the next reconcile refuses it.
+		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonNotConfigured, Message: fmt.Sprintf(
+			"Application %s has automated sync on, switched by %s", ref, state.Owner)}
+	}
+	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonAutomatedSyncOff, Message: fmt.Sprintf(
+		"Application %s has automated sync kept off by %s, which owns the switch; GitOps Reverser starts "+
+			"every sync", ref, state.Owner)}
+}
+
+// recordApplicationHandBack records, on adoption, whether the Application synced on its own before
+// it was first held, which the hand-back puts back. Only on adoption, so the value is neither
+// GitOps Reverser's own nor a later switch-on.
+func recordApplicationHandBack(trigger *configbutleraiv1alpha3.ArgoCDTrigger, state applier.AutomatedSync) {
+	if trigger.Status.HandBack == nil && !state.Held && !heldBefore(trigger) {
+		trigger.Status.HandBack = &configbutleraiv1alpha3.ArgoCDTriggerHandBack{AutomatedSync: state.On}
+	}
+}
+
+// releaseAutomatedSync takes an ArgoCDTrigger's hand-back one step: it hands the Application's
+// automated sync switch back as status.handBack recorded it, or as the ApplicationSet or field
+// manager that owns the switch by then set it (applier.ArgoCD.ReleaseAutomatedSync). A successor
+// (nextInLine) takes it over instead, and it is left held off for it: released, Argo CD would sync on
+// its own at once, before the successor could switch it off again.
 func (r *ApplyTriggerReconciler) releaseAutomatedSync(
 	ctx context.Context, trigger *configbutleraiv1alpha3.ArgoCDTrigger, successor configbutleraiv1alpha3.ApplyTrigger,
 ) *pendingRelease {
@@ -186,7 +197,11 @@ func (r *ApplyTriggerReconciler) releaseAutomatedSync(
 	if dynamicClient == nil {
 		return nil
 	}
-	on, err := applier.NewArgoCD(dynamicClient).ReleaseAutomatedSync(ctx, ref)
+	var wasOn *bool
+	if trigger.Status.HandBack != nil {
+		wasOn = &trigger.Status.HandBack.AutomatedSync
+	}
+	released, err := applier.NewArgoCD(dynamicClient).ReleaseAutomatedSync(ctx, ref, wasOn)
 	switch {
 	case apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err):
 		return nil
@@ -194,9 +209,12 @@ func (r *ApplyTriggerReconciler) releaseAutomatedSync(
 		return r.releaseFailed(trigger, err, fmt.Sprintf("giving its automated sync switch up failed (%v); %s",
 			err, leftHeld(trigger)))
 	}
-	state := "it stays manual: its own spec has automated sync off"
-	if on {
-		state = "its automated sync is on again, and it syncs on its own"
+	state := "its automated sync is off"
+	if released.On {
+		state = "its automated sync is on, and it syncs on its own"
+	}
+	if released.Kept != "" {
+		state += ", " + released.Kept + "; GitOps Reverser's field manager keeps that value until its owner changes it"
 	}
 	r.event(trigger, corev1.EventTypeNormal, EventReasonReleased, "handed Application %s back to Argo CD: %s",
 		ref, state)
