@@ -9,6 +9,8 @@ spec:
   gitProviderRef:
     name: {{ .ProviderName }}
   branch: {{ .Branch }}
+  allowedGitTargets:
+    - from: Same
 {{- if .ParentBranch }}
   parentBranch: {{ .ParentBranch }}
 {{- end }}

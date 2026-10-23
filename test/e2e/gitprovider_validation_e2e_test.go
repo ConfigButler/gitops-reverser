@@ -100,8 +100,8 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 
 		By("verifying the GitBranch fails branch validation")
 		verifyResourceStatus("gitbranch", gitBranchName(gitProviderName, "different-branch"), testNs,
-			"False", "BranchNotAllowed", "allowedBranches")
-		verifyResourceStatus("gittarget", destName, testNs, "False", "GitBranchNotReady", "allowedBranches")
+			"False", "BranchNotAllowed", `requested branch "different-branch" is not allowed`)
+		verifyResourceStatus("gittarget", destName, testNs, "False", "GitBranchNotReady", "spec.allowedGitBranches")
 
 		cleanupGitTarget(destName, testNs)
 		deleteGitProvider(testNs, gitProviderName)

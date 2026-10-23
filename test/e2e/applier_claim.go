@@ -57,14 +57,30 @@ spec:
 }
 
 // allowCrossNamespaceAppliers lets the applier claims that reach their applier through the install's
-// KubeProvider name one in another namespace, as the e2e appliers are: in flux-system and argocd,
-// while each spec's applier claims live in its own namespace. Granting it is idempotent, and no spec
+// KubeProvider hold one in any namespace, as the e2e appliers are: in flux-system and argocd, while
+// each spec's applier claims live in its own namespace. Granting it is idempotent, and no spec
 // relies on its absence on that provider, so parallel specs may all ask for it.
 func allowCrossNamespaceAppliers() {
 	GinkgoHelper()
 	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
-		"--type=merge", "-p", `{"spec":{"allowCrossNamespace":{"appliers":true}}}`)
+		"--type=merge", "-p", `{"spec":{"allowedApplierClaims":[{"from":"All","applierNamespaces":["*"]}]}}`)
 	Expect(err).NotTo(HaveOccurred(), "failed to let the install KubeProvider's applier claims reach other namespaces")
+}
+
+// suiteKubeProviderGrants are the grants the suite needs on the install's KubeProvider: every
+// namespace mirrors its own namespace and any cluster-scoped resource, and holds an applier in its
+// own namespace. config/kubeprovider-local.yaml carries them; the chart grants nothing by default,
+// so grantSuiteAccess applies them whatever the install mode.
+const suiteKubeProviderGrants = `{"spec":{` +
+	`"allowedGitTargets":[{"from":"All","sourceNamespaces":["{namespace}"],"clusterResources":["*"]}],` +
+	`"allowedApplierClaims":[{"from":"All","applierNamespaces":["{namespace}"]}]}}`
+
+// grantSuiteAccess gives the install's KubeProvider the grants the suite needs.
+func grantSuiteAccess() {
+	GinkgoHelper()
+	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
+		"--type=merge", "-p", suiteKubeProviderGrants)
+	Expect(err).NotTo(HaveOccurred(), "failed to grant the suite's access on the install KubeProvider")
 }
 
 // nameApplierClaim points a GitTarget at the applier claim of kind (FluxClaim or ArgoCDClaim) and

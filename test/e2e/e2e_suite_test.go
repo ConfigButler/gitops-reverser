@@ -64,6 +64,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	By("preparing e2e cluster prerequisites via Task target")
 	prepareE2EClusterOnce()
 	waitForPreviousRunNamespaces()
+	grantSuiteAccess()
 
 	// After prepare, while this process still holds the exclusive cluster lock, so every spec runs
 	// against a Prometheus with no retained samples and a controller whose counters start at zero.
