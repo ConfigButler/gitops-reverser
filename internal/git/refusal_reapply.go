@@ -101,7 +101,7 @@ type unsentRefusal struct {
 // refusal. The worker asks before it decides a Refusal request and again before it sends one, and the
 // applier dispatcher asks before every attempt to deliver one.
 func ConsentsToReapply(gitTarget *v1alpha3.GitTarget) bool {
-	if gitTarget.EffectiveOnRefusal() != v1alpha3.RefusalActionReapply || gitTarget.Spec.ApplyTriggerRef == nil {
+	if gitTarget.EffectiveOnRefusal() != v1alpha3.RefusalActionReapply || gitTarget.Spec.ApplierClaimRef == nil {
 		return false
 	}
 	// A suspended target has stopped publishing the live edits a reapply would be weighed against.
@@ -160,7 +160,7 @@ func (l *branchWorkerEventLoop) reapplyForRefusal(
 	}
 	key := newRefusalKey(target, collection)
 
-	// An observation this collection's last request already covered is not a new trigger. Checked
+	// An observation this collection's last request already covered is not a new applier claim. Checked
 	// here, after consent and before the rate limit, so a recheck of unchanged input neither
 	// requests nor arms the trailing timer: arming it would turn the rate limit into a schedule,
 	// which is the loop this fence exists to close.

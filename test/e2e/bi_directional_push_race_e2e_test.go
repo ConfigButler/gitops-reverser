@@ -83,11 +83,11 @@ var _ = Describe("Bi Directional push race (Flux)", Label("bi-directional", "flu
 			pipeline.start()
 
 			applyFluxApplier(testNs, repo, fluxName, fluxName+"-git", "main", "./"+pipeline.gitPath)
-			createFluxTrigger(testNs, fluxName, fluxName)
-			nameApplyTrigger(testNs, pipeline.targetName, "FluxTrigger", fluxName, "")
+			createFluxClaim(testNs, fluxName, fluxName)
+			nameApplierClaim(testNs, pipeline.targetName, "FluxClaim", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
-				"ApplyTriggerReady", "True", "Succeeded", "")
-			verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
+				"ApplierClaimReady", "True", "Succeeded", "")
+			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
 		})
 
 		AfterAll(func() {
@@ -97,7 +97,7 @@ var _ = Describe("Bi Directional push race (Flux)", Label("bi-directional", "flu
 			if pipeline != nil {
 				pipeline.cleanup()
 			}
-			cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
+			cleanupNamespacedResource(testNs, fluxClaimResource, fluxName)
 			cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 			cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
 			cleanupNamespacedResource("flux-system", "secret", fluxName+"-git")
@@ -133,10 +133,10 @@ var _ = Describe("Bi Directional push race (Argo CD)", Label("bi-directional", "
 			cfg := run.baseAppConfig()
 			cfg.Path = pipeline.gitPath
 			run.applyArgoApp(cfg)
-			createArgoCDTrigger(testNs, run.appName, run.argoNs, run.appName)
-			nameApplyTrigger(testNs, pipeline.targetName, "ArgoCDTrigger", run.appName, "")
+			createArgoCDClaim(testNs, run.appName, run.argoNs, run.appName)
+			nameApplierClaim(testNs, pipeline.targetName, "ArgoCDClaim", run.appName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
-				"ApplyTriggerReady", "True", "Succeeded", "")
+				"ApplierClaimReady", "True", "Succeeded", "")
 		})
 
 		AfterAll(func() {
@@ -145,7 +145,7 @@ var _ = Describe("Bi Directional push race (Argo CD)", Label("bi-directional", "
 			}
 			cleanupNamespacedResource(run.argoNs, "application.argoproj.io", run.appName)
 			cleanupNamespacedResource(run.argoNs, "secret", run.repoSecretName)
-			cleanupNamespacedResource(testNs, argoCDTriggerResource, run.appName)
+			cleanupNamespacedResource(testNs, argoCDClaimResource, run.appName)
 			if pipeline != nil {
 				pipeline.cleanup()
 			}

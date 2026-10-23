@@ -283,7 +283,7 @@ first committed. The plan above decides two things on that tree: the upserts tha
 changed it, and the documents the sweep removed (by identity, under the target's
 `prune.mode`). The write then carries only those actions. An object whose upsert
 changed nothing is no action, and a resync that decided nothing settles at once
-and is never pushed. A resync into a folder an apply trigger applies that the
+and is never pushed. A resync into a coordinated folder that the
 branch does not hold yet also decides the folder's bootstrap files, with or
 without objects, so the applier is never asked to apply a missing path.
 
@@ -303,7 +303,7 @@ an orphan. The write-side mechanics are in
 
 ## Objects another applier owns
 
-In a folder an apply trigger applies (a `GitTarget` with `spec.applyTriggerRef`),
+In a coordinated folder (a `GitTarget` with `spec.applierClaimRef`),
 an object another applier owns is outside the resync. Mirrored into the folder,
 it would be applied by this folder's applier too, and two appliers applying one
 object fight each other.
@@ -313,12 +313,12 @@ object fight each other.
   a `Kustomization`), else Argo CD's tracking annotation
   (`argocd.argoproj.io/tracking-id`, naming an `Application`). It stamps the owner
   on every snapshot entry and live event.
-- A snapshot entry owned by an applier other than the one the folder's trigger
-  holds is neither upserted nor treated as missing, so the sweep leaves its
+- A snapshot entry owned by an applier other than the one the folder's applier
+  claim holds is neither upserted nor treated as missing, so the sweep leaves its
   document alone, under `prune.mode: Always` too. A live event for it is not
   mirrored.
 - An object nobody owns, or the folder's own applier owns, is a member as before.
-  A folder with no trigger excludes nothing.
+  An uncoordinated folder excludes nothing.
 - Each exclusion is counted in `apply_ownership_conflicts_total` and logged once
   per object; see
   [Interpreting metrics](../interpreting-metrics.md#apply-requests-and-the-push-receiver).
@@ -352,7 +352,7 @@ snapshot is ever parked.
 
 Three rules keep this from holding a resync forever:
 
-- A branch with no trigger never waits: nothing applies its commits.
+- A branch with no applier claim never waits: nothing applies its commits.
 - A collection's initial snapshot is exempt: the first snapshot of each collection
   a `GitTarget` watches, until one of them settles (applied, refused or failed; a
   discarded or superseded one does not settle). The watch side tracks this per

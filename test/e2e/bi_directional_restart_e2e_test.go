@@ -103,10 +103,10 @@ var _ = Describe("Bi Directional restart with work made while down (Flux)",
 			pipeline := newTimingPipeline(testNs, "flux-restart", repo)
 			pipeline.start()
 			applyFluxApplierWithPrune(testNs, repo, fluxName, fluxName+"-git", "main", "./"+pipeline.gitPath, true)
-			createFluxTrigger(testNs, fluxName, fluxName)
-			nameApplyTrigger(testNs, pipeline.targetName, "FluxTrigger", fluxName, "")
+			createFluxClaim(testNs, fluxName, fluxName)
+			nameApplierClaim(testNs, pipeline.targetName, "FluxClaim", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
-				"ApplyTriggerReady", "True", "Succeeded", "")
+				"ApplierClaimReady", "True", "Succeeded", "")
 			r = &echoRun{timingPipeline: pipeline, applier: fluxEchoApplier(testNs, fluxName, repo)}
 		})
 
@@ -115,7 +115,7 @@ var _ = Describe("Bi Directional restart with work made while down (Flux)",
 				return
 			}
 			r.cleanup()
-			cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
+			cleanupNamespacedResource(testNs, fluxClaimResource, fluxName)
 			cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 			cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
 			cleanupNamespacedResource("flux-system", "secret", fluxName+"-git")
@@ -151,10 +151,10 @@ var _ = Describe("Bi Directional restart with work made while down (Argo CD)",
 			cfg := run.baseAppConfig()
 			cfg.Path = pipeline.gitPath
 			run.applyArgoApp(cfg)
-			createArgoCDTrigger(testNs, run.appName, run.argoNs, run.appName)
-			nameApplyTrigger(testNs, pipeline.targetName, "ArgoCDTrigger", run.appName, "")
+			createArgoCDClaim(testNs, run.appName, run.argoNs, run.appName)
+			nameApplierClaim(testNs, pipeline.targetName, "ArgoCDClaim", run.appName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
-				"ApplyTriggerReady", "True", "Succeeded", "")
+				"ApplierClaimReady", "True", "Succeeded", "")
 			r = &echoRun{timingPipeline: pipeline, applier: argoEchoApplier(run)}
 		})
 
@@ -164,7 +164,7 @@ var _ = Describe("Bi Directional restart with work made while down (Argo CD)",
 			}
 			cleanupNamespacedResource(run.argoNs, "application.argoproj.io", run.appName)
 			cleanupNamespacedResource(run.argoNs, "secret", run.repoSecretName)
-			cleanupNamespacedResource(testNs, argoCDTriggerResource, run.appName)
+			cleanupNamespacedResource(testNs, argoCDClaimResource, run.appName)
 			r.cleanup()
 			cleanupNamespace(testNs)
 		})

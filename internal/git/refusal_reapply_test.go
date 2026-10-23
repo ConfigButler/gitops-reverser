@@ -48,8 +48,8 @@ func refusalTouchWorker(t *testing.T, spec configv1alpha3.GitTargetSpec) *Branch
 	if spec.Path == "" {
 		spec.Path = "apps"
 	}
-	if spec.OnRefusal == configv1alpha3.RefusalActionReapply && spec.ApplyTriggerRef == nil {
-		spec.ApplyTriggerRef = testApplier("editing")
+	if spec.OnRefusal == configv1alpha3.RefusalActionReapply && spec.ApplierClaimRef == nil {
+		spec.ApplierClaimRef = testApplier("editing")
 	}
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "editing", Namespace: "team-a", UID: editingUID},
@@ -57,7 +57,7 @@ func refusalTouchWorker(t *testing.T, spec configv1alpha3.GitTargetSpec) *Branch
 	}
 	client := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(testTriggersFor([]client.Object{target})...).
+		WithObjects(testClaimsFor([]client.Object{target})...).
 		Build()
 
 	w := newMetricsTestWorker()
@@ -408,7 +408,7 @@ func TestRefusalReapply_OneTargetDoesNotDropAnothersPendingRequest(t *testing.T)
 			Spec: configv1alpha3.GitTargetSpec{
 				Path:            "apps/" + name,
 				OnRefusal:       configv1alpha3.RefusalActionReapply,
-				ApplyTriggerRef: testApplier(name),
+				ApplierClaimRef: testApplier(name),
 				Suspend:         suspend,
 			},
 		}
@@ -417,7 +417,7 @@ func TestRefusalReapply_OneTargetDoesNotDropAnothersPendingRequest(t *testing.T)
 	}
 	// B is suspended, so its delayed request must be declined when the timer fires. A is not.
 	client := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(testTriggersFor([]client.Object{newTarget("alpha", false), newTarget("bravo", true)})...).Build()
+		WithObjects(testClaimsFor([]client.Object{newTarget("alpha", false), newTarget("bravo", true)})...).Build()
 
 	w := newMetricsTestWorker()
 	w.Client = client
@@ -473,79 +473,79 @@ func TestRefusalReapply_TheTimerTracksTheEarliestDeadline(t *testing.T) {
 	}
 }
 
-// testApplier is a GitTarget's reference to the FluxTrigger of the given name. testTriggersFor
-// creates the trigger, holding a Kustomization of the same name.
-func testApplier(name string) *configv1alpha3.ApplyTriggerReference {
-	return &configv1alpha3.ApplyTriggerReference{Kind: configv1alpha3.ApplyTriggerKindFlux, Name: name}
+// testApplier is a GitTarget's reference to the FluxClaim of the given name. testClaimsFor
+// creates the applier claim, holding a Kustomization of the same name.
+func testApplier(name string) *configv1alpha3.ApplierClaimReference {
+	return &configv1alpha3.ApplierClaimReference{Kind: configv1alpha3.ApplierClaimKindFlux, Name: name}
 }
 
-// testKubeProvider is the KubeProvider the test triggers reach their appliers through, in the
-// trigger's own namespace.
+// testKubeProvider is the KubeProvider the test applier claims reach their appliers through, in the
+// applier claim's own namespace.
 const testKubeProvider = "local"
 
-// fluxTrigger is a FluxTrigger in team-a holding the Kustomization of its own name, in the cluster of
+// fluxClaim is a FluxClaim in team-a holding the Kustomization of its own name, in the cluster of
 // testKubeProvider.
-func fluxTrigger(name string, mutate ...func(*configv1alpha3.FluxTrigger)) *configv1alpha3.FluxTrigger {
-	trigger := &configv1alpha3.FluxTrigger{
+func fluxClaim(name string, mutate ...func(*configv1alpha3.FluxClaim)) *configv1alpha3.FluxClaim {
+	applierClaim := &configv1alpha3.FluxClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
-		Spec: configv1alpha3.FluxTriggerSpec{
+		Spec: configv1alpha3.FluxClaimSpec{
 			KubeProviderRef:  meta.NamespacedObjectReference{Name: testKubeProvider},
 			KustomizationRef: meta.NamespacedObjectReference{Name: name},
 		},
 	}
 	for _, m := range mutate {
-		m(trigger)
+		m(applierClaim)
 	}
-	return trigger
+	return applierClaim
 }
 
-// testTriggersFor adds to objects the trigger each GitTarget among them names that objects does not
-// hold already: a FluxTrigger as fluxTrigger builds it, or an ArgoCDTrigger holding the Application
+// testClaimsFor adds to objects the applier claim each GitTarget among them names that objects does not
+// hold already: a FluxClaim as fluxClaim builds it, or an ArgoCDClaim holding the Application
 // argocd/<name>, each in the GitTarget's namespace.
-func testTriggersFor(objects []client.Object) []client.Object {
+func testClaimsFor(objects []client.Object) []client.Object {
 	held := map[string]bool{}
 	for _, obj := range objects {
-		if trigger, ok := obj.(configv1alpha3.ApplyTrigger); ok {
-			held[trigger.TriggerKind()+"/"+obj.GetNamespace()+"/"+obj.GetName()] = true
+		if applierClaim, ok := obj.(configv1alpha3.ApplierClaim); ok {
+			held[applierClaim.ClaimKind()+"/"+obj.GetNamespace()+"/"+obj.GetName()] = true
 		}
 	}
 	out := append([]client.Object(nil), objects...)
 	for _, obj := range objects {
 		target, ok := obj.(*configv1alpha3.GitTarget)
-		if !ok || target.Spec.ApplyTriggerRef == nil {
+		if !ok || target.Spec.ApplierClaimRef == nil {
 			continue
 		}
-		ref := target.Spec.ApplyTriggerRef
+		ref := target.Spec.ApplierClaimRef
 		key := ref.Kind + "/" + target.Namespace + "/" + ref.Name
 		if held[key] {
 			continue
 		}
 		held[key] = true
-		out = append(out, testTrigger(target.Namespace, ref))
+		out = append(out, testClaim(target.Namespace, ref))
 	}
 	return out
 }
 
-// testTrigger is the trigger testTriggersFor creates for ref, in namespace.
-func testTrigger(namespace string, ref *configv1alpha3.ApplyTriggerReference) client.Object {
-	if ref.Kind == configv1alpha3.ApplyTriggerKindArgoCD {
-		return &configv1alpha3.ArgoCDTrigger{
+// testClaim is the applier claim testClaimsFor creates for ref, in namespace.
+func testClaim(namespace string, ref *configv1alpha3.ApplierClaimReference) client.Object {
+	if ref.Kind == configv1alpha3.ApplierClaimKindArgoCD {
+		return &configv1alpha3.ArgoCDClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: namespace},
-			Spec: configv1alpha3.ArgoCDTriggerSpec{
+			Spec: configv1alpha3.ArgoCDClaimSpec{
 				KubeProviderRef: meta.NamespacedObjectReference{Name: testKubeProvider},
 				ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: ref.Name},
 			},
 		}
 	}
-	trigger := fluxTrigger(ref.Name)
-	trigger.Namespace = namespace
-	return trigger
+	applierClaim := fluxClaim(ref.Name)
+	applierClaim.Namespace = namespace
+	return applierClaim
 }
 
-// createTestTrigger creates, through c, the trigger target names, unless it exists.
-func createTestTrigger(t *testing.T, c client.Client, target *configv1alpha3.GitTarget) {
+// createTestClaim creates, through c, the applier claim target names, unless it exists.
+func createTestClaim(t *testing.T, c client.Client, target *configv1alpha3.GitTarget) {
 	t.Helper()
-	err := c.Create(context.Background(), testTrigger(target.Namespace, target.Spec.ApplyTriggerRef))
+	err := c.Create(context.Background(), testClaim(target.Namespace, target.Spec.ApplierClaimRef))
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		require.NoError(t, err)
 	}

@@ -27,7 +27,7 @@ import (
 // purpose: they catch a path that silently fell back to a periodic tick (minutes), not a slow CI
 // runner (seconds). The table is the measurement; the budget is the guarantee.
 //
-// The folder is SHARED, which is the case a trigger exists for: GitOps Reverser mirrors a
+// The folder is SHARED, which is the case an applier claim exists for: GitOps Reverser mirrors a
 // labeled ConfigMap into the folder the applier applies. The WatchRule selects only that label,
 // so the namespace's kube-root-ca.crt never reaches the folder and the applier applies exactly one
 // object.
@@ -43,7 +43,7 @@ const (
 	timingCommitBudget = 45 * time.Second
 	// A Git-side push the receiver hears of has reached the live object, through the applier.
 	timingReceiverBudget = 90 * time.Second
-	// An apply the trigger started has finished, and the trigger holds its applier again.
+	// An apply the applier claim started has finished, and the applier claim holds its applier again.
 	timingHeldBudget = 60 * time.Second
 
 	timingDefaultSamples = 3
@@ -263,13 +263,13 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 			pipeline = newTimingPipeline(testNs, "flux-timing", repo)
 			pipeline.start()
 
-			By("letting Flux apply the shared folder once, then naming a trigger")
+			By("letting Flux apply the shared folder once, then naming an applier claim")
 			applyFluxApplier(testNs, repo, fluxName, fluxName+"-git", "main", "./"+pipeline.gitPath)
-			createFluxTrigger(testNs, fluxName, fluxName)
-			nameApplyTrigger(testNs, pipeline.targetName, "FluxTrigger", fluxName, "")
+			createFluxClaim(testNs, fluxName, fluxName)
+			nameApplierClaim(testNs, pipeline.targetName, "FluxClaim", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
-				"ApplyTriggerReady", "True", "Succeeded", "")
-			verifyResourceCondition(fluxTriggerResource, fluxName, testNs, "Held", "True", "Suspended", "")
+				"ApplierClaimReady", "True", "Succeeded", "")
+			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
 		})
 
 		AfterAll(func() {
@@ -280,18 +280,18 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 				// nil when BeforeAll failed before building it.
 				pipeline.cleanup()
 			}
-			cleanupNamespacedResource(testNs, fluxTriggerResource, fluxName)
+			cleanupNamespacedResource(testNs, fluxClaimResource, fluxName)
 			cleanupNamespacedResource("flux-system", "kustomization", fluxName)
 			cleanupNamespacedResource("flux-system", "gitrepository", fluxName)
 			cleanupNamespacedResource("flux-system", "secret", fluxName+"-git")
 			cleanupNamespace(testNs)
 		})
 
-		// heldAgain passes once the trigger reports the operation for commit Succeeded, with the
+		// heldAgain passes once the applier claim reports the operation for commit Succeeded, with the
 		// Kustomization suspended again.
 
 		heldAgain := func(g Gomega, commit string) {
-			operation := readTriggerOperation(g, testNs, fluxTriggerResource, fluxName)
+			operation := readClaimOperation(g, testNs, fluxClaimResource, fluxName)
 			g.Expect(operation.Commit).To(Equal(commit))
 			g.Expect(operation.Phase).To(Equal("Succeeded"))
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue())
@@ -303,7 +303,7 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 			apiTimings(fluxEchoApplier(testNs, fluxName, pipeline.repo), pipeline, "Flux")
 		})
 
-		// The Git side: another writer pushes, Gitea tells the receiver, and the trigger asks Flux to
+		// The Git side: another writer pushes, Gitea tells the receiver, and the applier claim asks Flux to
 		// apply that commit. A ForeignCommit goes out after a flush.
 		It("times a Git-side push through the receiver to the live object", func() {
 			experiment := gmeasure.NewExperiment("Flux: Git-side push")
@@ -352,10 +352,10 @@ var _ = Describe("Bi Directional timing (Argo CD)", Label("bi-directional", "arg
 			cfg := run.baseAppConfig()
 			cfg.Path = pipeline.gitPath
 			run.applyArgoApp(cfg)
-			createArgoCDTrigger(testNs, run.appName, run.argoNs, run.appName)
-			nameApplyTrigger(testNs, pipeline.targetName, "ArgoCDTrigger", run.appName, "")
+			createArgoCDClaim(testNs, run.appName, run.argoNs, run.appName)
+			nameApplierClaim(testNs, pipeline.targetName, "ArgoCDClaim", run.appName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
-				"ApplyTriggerReady", "True", "Succeeded", "")
+				"ApplierClaimReady", "True", "Succeeded", "")
 		})
 
 		AfterAll(func() {
@@ -364,7 +364,7 @@ var _ = Describe("Bi Directional timing (Argo CD)", Label("bi-directional", "arg
 			}
 			cleanupNamespacedResource(run.argoNs, "application.argoproj.io", run.appName)
 			cleanupNamespacedResource(run.argoNs, "secret", run.repoSecretName)
-			cleanupNamespacedResource(testNs, argoCDTriggerResource, run.appName)
+			cleanupNamespacedResource(testNs, argoCDClaimResource, run.appName)
 			if pipeline != nil {
 				// nil when BeforeAll failed before building it.
 				pipeline.cleanup()
@@ -392,7 +392,7 @@ var _ = Describe("Bi Directional timing (Argo CD)", Label("bi-directional", "arg
 				})
 				timedUntil(experiment, measurePushToSyncDone, pushed, timingReceiverBudget+timingHeldBudget,
 					func(g Gomega) {
-						operation := run.triggerOperation(g)
+						operation := run.claimOperation(g)
 						g.Expect(operation.Reason).To(Equal("ForeignCommit"))
 						g.Expect(operation.Commit).To(Equal(head))
 						g.Expect(operation.Phase).To(Equal("Succeeded"))

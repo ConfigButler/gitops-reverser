@@ -19,7 +19,7 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// This file is the branch worker's half of the apply trigger: deciding WHEN the appliers of the
+// This file is the branch worker's half of the applier claim: deciding WHEN the appliers of the
 // GitTargets on this branch apply. See docs/design/apply-trigger.md and
 // docs/design/applier-echoes.md.
 //
@@ -39,7 +39,7 @@ import (
 //     ADOPTS it: it is pending once the worker observes an API create in a folder an applier applies,
 //     or a resync adds an object to Git, and is never skipped as already applied, because applying
 //     the same commit again is what stamps the object. A CatchUp also CONVERGES: once when the worker
-//     starts, and once when a GitTarget first names the trigger; that one asks nothing of an applier
+//     starts, and once when a GitTarget first names the applier claim; that one asks nothing of an applier
 //     that already applied the tip (S2 in docs/design/applier-echoes.md).
 //   - Repair: the apply window withheld a late apply over a newer API edit (apply_window.go), so
 //     the cluster runs an older value than Git. Asked like a Refusal, and of
@@ -166,20 +166,20 @@ type branchTarget struct {
 	applier ApplierRef
 	// consents is whether it asks for a Refusal request now (ConsentsToReapply).
 	consents bool
-	// recorded and repairPending are the trigger's status.operation and status.repairPending, as listed:
-	// what an earlier process, or the trigger's reconciler, recorded (apply_recovery.go).
+	// recorded and repairPending are the applier claim's status.operation and status.repairPending, as listed:
+	// what an earlier process, or the applier claim's reconciler, recorded (apply_recovery.go).
 	recorded      *v1alpha3.ApplyOperation
 	repairPending bool
-	// group names the GitRepository a Flux trigger's Kustomization applies, in its cluster; empty
+	// group names the GitRepository a Flux applier claim's Kustomization applies, in its cluster; empty
 	// for an Argo CD Application or a source not read yet (apply_groups.go).
 	group string
 }
 
 // appliersOnBranch lists the GitTargets that write this worker's branch through its GitProvider and
-// name an apply trigger that exists, with the applier each trigger holds. A GitTarget may name a
+// name an applier claim that exists, with the applier each applier claim holds. A GitTarget may name a
 // GitProvider in another namespace, so every namespace is looked in. The client is cached, so this
-// costs no round trip. A GitTarget whose trigger does not exist (yet) names no applier: its
-// ApplyTriggerReady condition says so, and so does one its providers do not admit.
+// costs no round trip. A GitTarget whose applier claim does not exist (yet) names no applier: its
+// ApplierClaimReady condition says so, and so does one its providers do not admit.
 func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, error) {
 	var targets v1alpha3.GitTargetList
 	if err := w.Client.List(ctx, &targets); err != nil {
@@ -188,22 +188,22 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 	listed := make([]branchTarget, 0, len(targets.Items))
 	for i := range targets.Items {
 		target := &targets.Items[i]
-		if !target.DeletionTimestamp.IsZero() || target.Spec.ApplyTriggerRef == nil ||
+		if !target.DeletionTimestamp.IsZero() || target.Spec.ApplierClaimRef == nil ||
 			!WritesThrough(target, w.GitBranch) {
 			continue
 		}
-		trigger, err := ResolveApplyTrigger(ctx, w.Client, target)
+		applierClaim, err := ResolveApplierClaim(ctx, w.Client, target)
 		if err != nil {
 			return nil, err
 		}
-		if trigger == nil || !trigger.GetDeletionTimestamp().IsZero() {
+		if applierClaim == nil || !applierClaim.GetDeletionTimestamp().IsZero() {
 			continue
 		}
 		// The dispatcher refuses an attempt for a GitTarget its providers do not admit. Listed, it
 		// would make the worker flush, raise its apply epoch and hold the applier, or its whole
 		// source group, for an attempt that cannot go.
 		if w.applierAdmitted != nil {
-			decision, err := w.applierAdmitted(ctx, w.Client, target, trigger)
+			decision, err := w.applierAdmitted(ctx, w.Client, target, applierClaim)
 			if err != nil {
 				return nil, fmt.Errorf("check whether %s may ask its applier: %w", target.Name, err)
 			}
@@ -214,11 +214,11 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 		listed = append(listed, branchTarget{
 			ref:           itypes.NewResourceReference(target.Name, target.Namespace),
 			uid:           target.UID,
-			applier:       ApplierOf(trigger),
+			applier:       ApplierOf(applierClaim),
 			consents:      ConsentsToReapply(target),
-			recorded:      trigger.Operation(),
-			repairPending: trigger.RepairPending(),
-			group:         sourceGroup(trigger),
+			recorded:      applierClaim.Operation(),
+			repairPending: applierClaim.RepairPending(),
+			group:         sourceGroup(applierClaim),
 		})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ref.String() < listed[j].ref.String() })
@@ -240,7 +240,7 @@ type applierState struct {
 	// time leaves a converge pending.
 	named map[k8stypes.UID]bool
 	// appliedRevision is the revision the last operation that succeeded applied, as the applier
-	// reported it, recovered on restart from the trigger's status.operation. A converge of the commit
+	// reported it, recovered on restart from the applier claim's status.operation. A converge of the commit
 	// it names asks nothing.
 	appliedRevision string
 	// inflight is the attempt whose report has not ended it yet. While it is out, nothing else is
@@ -261,18 +261,18 @@ type applierState struct {
 	// not sent yet, by objectKey: they are not in the commit the attempt applies, so its window holds
 	// them from the start (S1). Nil while no flush is waiting for this applier.
 	flushEdits map[string]time.Time
-	// operation is the last operation an attempt started, as its trigger's status.operation shows
+	// operation is the last operation an attempt started, as its applier claim's status.operation shows
 	// it, and operationID the attempt it belongs to. Nil until this worker started one.
 	operation   *v1alpha3.ApplyOperation
 	operationID uint64
-	// published is what was last handed to the trigger status writer, nil before the first.
-	published *ApplyTriggerStatus
-	// withdrawn is an operation an attempt recorded on the trigger and then did not start, until
+	// published is what was last handed to the applier claim status writer, nil before the first.
+	published *ApplierClaimStatus
+	// withdrawn is an operation an attempt recorded on the applier claim and then did not start, until
 	// it is published as withdrawn.
 	withdrawn *v1alpha3.ApplyOperation
-	// recovered is whether the trigger's recorded status was read back for this applier, once,
+	// recovered is whether the applier claim's recorded status was read back for this applier, once,
 	// when this process first listed it; followedSuspend is the suspend token of the last operation
-	// the trigger's reconciler recorded that this worker followed (apply_recovery.go).
+	// the applier claim's reconciler recorded that this worker followed (apply_recovery.go).
 	recovered       bool
 	followedSuspend string
 }
@@ -297,11 +297,11 @@ type inflightAttempt struct {
 	// put back should this attempt ask for no apply.
 	previous   *v1alpha3.ApplyOperation
 	previousID uint64
-	// recovered is an attempt that asks nothing: it follows an operation recorded on the trigger,
-	// by an earlier process or by the trigger's reconciler, to its end (apply_recovery.go).
+	// recovered is an attempt that asks nothing: it follows an operation recorded on the applier claim,
+	// by an earlier process or by the applier claim's reconciler, to its end (apply_recovery.go).
 	recovered bool
 	// recorded is set, on the requester's goroutine and before its reports, once the requester
-	// called the attempt's Record: from then on the trigger may hold its operation, so an ending
+	// called the attempt's Record: from then on the applier claim may hold its operation, so an ending
 	// that asked for no apply withdraws it.
 	recorded atomic.Bool
 	// abandon closes the request's Abandoned channel.
@@ -356,7 +356,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	if w.applyRequester == nil {
 		return
 	}
-	defer l.publishTriggerStatus()
+	defer l.publishClaimStatus()
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
@@ -379,7 +379,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	}
 	if !l.flushed(due) {
 		// The publication wakes the loop when it lands (a push, or its retry); a save, a parent
-		// recovery or a dirty checkout end with a wake of their own, and so does a sibling's flush.
+		// recovery or a dirty checkout end with a wake of their own.
 		l.armApplierTimer(now, wait)
 		return
 	}
@@ -472,7 +472,7 @@ func (l *branchWorkerEventLoop) alreadyConverged(
 // pastBarrier reports whether every initial snapshot of every GitTarget the applier covers is
 // published (initialSnapshotsPublished), so it may be asked for something. Before, an apply would
 // destroy what is not mirrored yet: at startup the edits made while the operator was down, and for a
-// GitTarget that newly names the trigger, what its folder does not hold yet.
+// GitTarget that newly names the applier claim, what its folder does not hold yet.
 func (l *branchWorkerEventLoop) pastBarrier(state *applierState) bool {
 	for _, target := range state.targets {
 		if !l.initialSnapshotsPublished(target.ref) {
@@ -570,7 +570,7 @@ func (l *branchWorkerEventLoop) appliersHaveWork() bool {
 // a converge pending, for Flux and Argo CD alike: a commit observed before was pending for nobody,
 // and was taken, so without one it would not be applied until some later push. It waits for that
 // GitTarget's initial snapshots (pastBarrier), and asks nothing of an applier that already applied
-// the tip. An applier listed for the first time starts from what its trigger recorded as last
+// the tip. An applier listed for the first time starts from what its applier claim recorded as last
 // applied. An unsent refusal of a GitTarget that is gone, or is now another incarnation, is dropped
 // the same way.
 func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
@@ -621,7 +621,7 @@ func (l *branchWorkerEventLoop) listApplier(ref ApplierRef, named []branchTarget
 	}
 }
 
-// lastApplied is the revision the last operation that succeeded applied, as an applier's trigger
+// lastApplied is the revision the last operation that succeeded applied, as an applier's applier claim
 // recorded it in status.operation: its appliedRevision, or the commit it was asked for when the
 // applier reported none. Empty when the last recorded operation did not succeed.
 func lastApplied(targets []branchTarget) string {
@@ -709,7 +709,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	for key := range refusals {
 		delete(l.unsentRefusals, key)
 	}
-	// What the trigger shows now goes out before the request, so the record replaces the latest of
+	// What the applier claim shows now goes out before the request, so the record replaces the latest of
 	// it: the operation before this one may have completed on this very pass.
 	l.publishStatusOf(state)
 	token := operationToken(sentAt)
@@ -848,9 +848,9 @@ func operationPhase(outcome ApplyOutcome) (v1alpha3.ApplyOperationPhase, bool) {
 	return "", false
 }
 
-// recordOperation records an attempt's report in the operation its trigger's status shows, which
+// recordOperation records an attempt's report in the operation its applier claim's status shows, which
 // sendAttempt started as Requested when it sent the attempt. A report that ends an attempt that
-// asked for no apply puts back the operation before it, and withdraws its own from the trigger if
+// asked for no apply puts back the operation before it, and withdraws its own from the applier claim if
 // the requester recorded it there. Unresolved stays until the operation completes, as
 // advanceOperation keeps it.
 func (s *applierState) recordOperation(attempt *inflightAttempt, res ApplyResult, now time.Time) {
@@ -897,24 +897,24 @@ func operationToken(sentAt time.Time) string {
 }
 
 // recorder is the attempt's ApplyRequest.Record: the requester writes the operation the attempt
-// starts through to the trigger, just before it starts the apply. That is the only way it reaches
-// the trigger before the requester reports it, so an attempt that ends before it leaves the trigger
-// as it was. Nil without a trigger status writer.
+// starts through to the applier claim, just before it starts the apply. That is the only way it reaches
+// the applier claim before the requester reports it, so an attempt that ends before it leaves the applier claim
+// as it was. Nil without an applier claim status writer.
 func (l *branchWorkerEventLoop) recorder(state *applierState, attempt *inflightAttempt) func(context.Context) error {
-	writer := l.w.triggerStatus
+	writer := l.w.claimStatus
 	if writer == nil {
 		return nil
 	}
-	trigger, operation := state.ref.Trigger, state.operation.DeepCopy()
+	applierClaim, operation := state.ref.ApplierClaim, state.operation.DeepCopy()
 	return func(ctx context.Context) error {
 		attempt.recorded.Store(true)
-		return writer.RecordApplyOperation(ctx, trigger, operation)
+		return writer.RecordApplyOperation(ctx, applierClaim, operation)
 	}
 }
 
-// shownOperation is the operation the applier's trigger is to show: the last one an attempt
+// shownOperation is the operation the applier's applier claim is to show: the last one an attempt
 // started, once the requester reported it, and the one before it until then. An attempt that
-// follows a recorded operation shows it from the start: the trigger holds it already.
+// follows a recorded operation shows it from the start: the applier claim holds it already.
 func (s *applierState) shownOperation() *v1alpha3.ApplyOperation {
 	if attempt := s.inflight; attempt != nil && !attempt.recovered && attempt.phase == "" &&
 		s.operationID == attempt.id {
@@ -923,24 +923,24 @@ func (s *applierState) shownOperation() *v1alpha3.ApplyOperation {
 	return s.operation
 }
 
-// publishTriggerStatus hands each applier's trigger what its status should show, when that changed
+// publishClaimStatus hands each applier's applier claim what its status should show, when that changed
 // since the last time.
-func (l *branchWorkerEventLoop) publishTriggerStatus() {
+func (l *branchWorkerEventLoop) publishClaimStatus() {
 	for _, ref := range l.sortedAppliers() {
 		l.publishStatusOf(l.appliers[ref])
 	}
 }
 
-// publishStatusOf hands one applier's trigger what its status should show, and the operation it
+// publishStatusOf hands one applier's applier claim what its status should show, and the operation it
 // withdraws, when that changed since the last time. A worker that has started no operation and
 // has no Repair pending has nothing to say yet, and says nothing: the status may hold what an earlier
 // process recorded.
 func (l *branchWorkerEventLoop) publishStatusOf(state *applierState) {
-	writer := l.w.triggerStatus
+	writer := l.w.claimStatus
 	if writer == nil {
 		return
 	}
-	next := ApplyTriggerStatus{
+	next := ApplierClaimStatus{
 		Operation: state.shownOperation(), Withdrawn: state.withdrawn, RepairPending: state.repairPending(),
 	}
 	if next.Withdrawn == nil {
@@ -952,7 +952,7 @@ func (l *branchWorkerEventLoop) publishStatusOf(state *applierState) {
 			return
 		}
 	}
-	writer.PublishApplyTriggerStatus(state.ref.Trigger, next)
+	writer.PublishApplierClaimStatus(state.ref.ApplierClaim, next)
 	state.published, state.withdrawn = &next, nil
 }
 

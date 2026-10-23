@@ -15,29 +15,33 @@ ordinary GitOps and needs nothing from this page.
 | --- | --- |
 | GitOps Reverser mirrors a folder that nothing applies: an audit trail, a backup, the start of a repository | A `GitTarget` and its watch rules |
 | Flux or Argo CD applies other folders or other repositories, next to GitOps Reverser | Nothing. Flux and Argo CD stay exactly as they are |
-| Flux or Argo CD applies a folder that GitOps Reverser writes | An apply trigger, as this page describes |
+| Flux or Argo CD applies a folder that GitOps Reverser writes | An applier claim, as this page describes |
 
 ```mermaid
 flowchart TD
     Q1{"Does Flux or Argo CD apply a folder<br/>that GitOps Reverser writes?"}
     Q1 -->|no| ONEWAY["One-way. Mirror only, or GitOps as usual beside it.<br/>Nothing on this page applies"]
-    Q1 -->|yes| Q2{"Does an apply trigger hold that applier?"}
-    Q2 -->|yes| BI["Bi-directional. GitOps Reverser decides when it applies"]
-    Q2 -->|no| EXPOSED["Shared folder without a trigger.<br/>Works, and the applier can revert live edits"]
+    Q1 -->|yes| Q2{"Does the GitTarget name an applier claim?"}
+    Q2 -->|yes| BI["Coordinated folder.<br/>GitOps Reverser decides when it applies"]
+    Q2 -->|no| EXPOSED["Uncoordinated shared folder.<br/>Works, and the applier can revert live edits"]
 
     style ONEWAY fill:#e8f5e9,stroke:#43a047
     style BI fill:#e8f5e9,stroke:#43a047
     style EXPOSED fill:#fff3e0,stroke:#ff9800
 ```
 
-Everything bi-directional is opt-in and off by default: the apply triggers, the push receiver,
+Everything bi-directional is opt-in and off by default: the applier claims, the push receiver,
 `onRefusal: Reapply`, the chart's `applierAccess` grants, and the `KubeProvider`'s
-`allowCrossNamespace.appliers`, which a trigger needs to hold an applier outside its own namespace,
-such as one in `flux-system` or `argocd`. A `GitTarget` without `spec.applyTriggerRef` never reads,
-patches or syncs anything of Flux's or Argo CD's, and neither does a trigger no `GitTarget` names, so
+`allowCrossNamespace.appliers`, which an applier claim needs to hold an applier outside its own namespace,
+such as one in `flux-system` or `argocd`. A `GitTarget` without `spec.applierClaimRef` never reads,
+patches or syncs anything of Flux's or Argo CD's, and neither does an applier claim no `GitTarget` names, so
 a `Kustomization` keeps its interval and an `Application` keeps automated sync.
 
-**A shared folder without a trigger works, and is exposed.** The applier keeps its own schedule,
+Naming an applier claim makes the `GitTarget`'s folder
+[coordinated](definitions.md#applying-back). This describes the setup; `ApplierClaimReady`
+reports whether the applier claim is ready.
+
+**An uncoordinated shared folder works, and is exposed.** The applier keeps its own schedule,
 and that schedule cannot see the edits GitOps Reverser has not pushed yet
 ([why](#why-the-applier-cannot-decide-for-itself)). An apply at the wrong moment reverts a live edit,
 and GitOps Reverser then commits the revert as the applier's change. With Argo CD's
@@ -51,15 +55,19 @@ GitOps Reverser decides when the cluster is applied from Git. Flux or Argo CD ke
 rendering, applying, pruning and reporting health, and applies when GitOps Reverser asks. Three
 things set that up:
 
-1. **An apply trigger holds the applier.** A `FluxTrigger` holds a Flux `Kustomization`, an
-   `ArgoCDTrigger` an Argo CD `Application`, and the `GitTarget` names the trigger in
-   `spec.applyTriggerRef`. A trigger acts only while an eligible `GitTarget` names it: one in its
+1. **An applier claim holds the applier.** A `FluxClaim` holds a Flux `Kustomization`, an
+   `ArgoCDClaim` an Argo CD `Application`, and the `GitTarget` names the applier claim in
+   `spec.applierClaimRef`. An applier claim acts only while an eligible `GitTarget` names it: one in its
    namespace, admitted by its `KubeProvider`s, that writes the repository and branch the applier
    fetches.
-2. **The applier's own triggers are off.** The `FluxTrigger` keeps its `Kustomization` suspended;
-   the `ArgoCDTrigger` keeps its `Application`'s automated sync off.
+2. **The applier's own schedule is off.** The `FluxClaim` keeps its `Kustomization` suspended;
+   the `ArgoCDClaim` keeps its `Application`'s automated sync off.
 3. **The Git host's push webhook reaches GitOps Reverser**, so a Git-side push is applied in
    seconds. See [telling GitOps Reverser that somebody else pushed](#telling-gitops-reverser-that-somebody-else-pushed).
+
+![Bi-directional setup: a GitTarget mirrors the cluster into a branch, and an ArgoCDClaim (or a
+FluxClaim) holds the Argo CD Application that applies the same folder, so it syncs only when GitOps
+Reverser asks; a GitReceiver picks up pushes made in Git](images/config-bi-directional.excalidraw.svg)
 
 ```mermaid
 flowchart LR
@@ -86,13 +94,13 @@ The two appliers get the same contract by different means:
 
 | | Flux | Argo CD |
 | --- | --- | --- |
-| Held by | A `FluxTrigger` | An `ArgoCDTrigger` |
-| Kept from applying on its own by | `spec.suspend`, which the trigger owns | `spec.syncPolicy.automated.enabled: false`, which the trigger owns, unless the `ApplicationSet` that generated the `Application` owns it |
+| Held by | A `FluxClaim` | An `ArgoCDClaim` |
+| Kept from applying on its own by | `spec.suspend`, which the applier claim owns | `spec.syncPolicy.automated.enabled: false`, which the applier claim owns, unless the `ApplicationSet` that generated the `Application` owns it |
 | One apply is | A resume for one reconcile, then a suspend | A sync operation pinned to the commit |
 | When it is asked to apply | [The same four reasons](#when-gitops-reverser-asks-for-an-apply), `CatchUp` included | The same four reasons |
 | The tool's own push webhook | Removed: GitOps Reverser's receiver replaces it | May stay: with automated sync off it only compares |
 | A human override | `flux resume` applies once; it is suspended again within a minute | Sync applies; GitOps Reverser waits for it to end. Automated sync switched on is switched off again within a minute |
-| Handing it back | Delete the trigger, or stop naming it from every `GitTarget`: the `Kustomization` is resumed, or stays suspended if it was before | Delete the trigger, or stop naming it from every `GitTarget`: automated sync is as it was before, unless an `ApplicationSet` or another field manager owns the switch by then, which keeps their value |
+| Handing it back | Delete the applier claim, or stop naming it from every `GitTarget`: the `Kustomization` is resumed, or stays suspended if it was before | Delete the applier claim, or stop naming it from every `GitTarget`: automated sync is as it was before, unless an `ApplicationSet` or another field manager owns the switch by then, which keeps their value |
 | Complete setup | [Bi-directional GitOps with Flux](bi-directional-flux.md) | [Bi-directional GitOps with Argo CD](bi-directional-argocd.md) |
 
 ## Why the applier cannot decide for itself
@@ -179,7 +187,7 @@ sequenceDiagram
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push | Every applier declared on the branch |
 | `Refusal` | An edit was refused and the target has `onRefusal: Reapply` | The refusing target's applier |
 | `Repair` | An apply reverted an API edit made after the flush; Git kept the edit | That applier |
-| `CatchUp` | To **adopt**: the API created an object in a folder the applier applies, or a resync added an object to Git. To **converge**: once when the operator starts, and once when a `GitTarget` first names the trigger | To adopt, that folder's applier; to converge, every applier on the branch at start, and the newly named one |
+| `CatchUp` | To **adopt**: the API created an object in a folder the applier applies, or a resync added an object to Git. To **converge**: once when the operator starts, and once when a `GitTarget` first names the applier claim | To adopt, that folder's applier; to converge, every applier on the branch at start, and the newly named one |
 
 The same rule holds for a Flux `Kustomization` and an Argo CD `Application`. The two differ only in
 how an apply is carried out, never in when one is asked for.
@@ -199,31 +207,31 @@ as already applied, because applying the same commit again is what stamps the ob
 creates is one apply: a pending `CatchUp` is one flag, and one attempt per applier is out at a time.
 
 **A converge asks nothing when it is already done.** The branch worker keeps, for each applier, the
-commit its last successful operation applied, and recovers it on restart from the trigger's
+commit its last successful operation applied, and recovers it on restart from the applier claim's
 `status.operation`. A converge of that commit asks nothing.
 
 **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
 reason, until every resource collection of every `GitTarget` it covers has a settled snapshot
 (applied, refused or failed) and the branch worker holds no resync of that `GitTarget` still to
 publish. At startup that is the moment the edits made while the operator was down are in Git; for a
-`GitTarget` that newly names the trigger, the moment its folder holds the cluster. An earlier apply
+`GitTarget` that newly names the applier claim, the moment its folder holds the cluster. An earlier apply
 would revert what is not mirrored yet. A `GitTarget` with no collection planned yet (its
 `WatchRule` not resolved, or a CRD not discovered) and one whose watch is `Blocked` hold their
 applier back the same way. A reason that comes due before stays pending, and so does one while the
 remote does not carry the branch, because there is no commit to apply.
 
-**The folder exists before it is applied.** A resync of a `GitTarget` that names a trigger, into a
+**The folder exists before it is applied.** A resync of a `GitTarget` that names an applier claim, into a
 folder the branch does not hold yet, commits the folder's bootstrap files (`README.md`,
 `.gittargetignore`, and `.sops.yaml` with encryption) even when there is no object to write: Argo CD
 retries a sync of a missing path for minutes, and Flux fails it. The bootstrap files are never
 deleted, so the folder outlives its last resource.
 
-Several `GitTarget`s may name one trigger, for a `Kustomization` or `Application` whose path covers
+Several `GitTarget`s may name one applier claim, for a `Kustomization` or `Application` whose path covers
 several folders: the applier is asked once for all of them.
 
 ## Objects another applier owns
 
-A folder a trigger applies belongs to that trigger's applier. An object that another applier owns
+A coordinated folder belongs to its applier. An object that another applier owns
 is not mirrored into it: a live change to it is not mirrored, and a resync neither writes it nor
 removes its document, even under `prune.mode: Always`. Mirrored, it would be applied by this applier
 too, and two appliers applying one object fight each other.
@@ -232,12 +240,12 @@ The owner is read from the object before its bookkeeping is stripped: Flux's
 `kustomize.toolkit.fluxcd.io/name` and `kustomize.toolkit.fluxcd.io/namespace` labels, or else Argo
 CD's `argocd.argoproj.io/tracking-id` annotation. Each excluded object is logged once and counted in
 `apply_ownership_conflicts_total`. An object no applier owns, or one the folder's own applier owns,
-is mirrored as usual. A folder with no trigger excludes nothing: mirroring another applier's objects
+is mirrored as usual. A folder with no applier claim excludes nothing: mirroring another applier's objects
 one way is what such a folder can exist for.
 
 ## The life of an apply
 
-An apply is an **operation**, recorded on the trigger's `status.operation` before the applier is
+An apply is an **operation**, recorded on the applier claim's `status.operation` before the applier is
 asked, so a restarted operator finds it and follows it to its end:
 
 ```mermaid
@@ -269,8 +277,8 @@ operation is in flight (`Requested`, `Running`, `Settling` or `Unresolved`), the
 nothing else.
 
 - **Just before it asks, GitOps Reverser checks the decision again**: the commit is still the branch
-  tip, each `GitTarget` still names this trigger on this branch, is still admitted by its
-  `KubeProvider`s, and, for a `Refusal`, still consents; and the trigger still holds the applier.
+  tip, each `GitTarget` still names this applier claim on this branch, is still admitted by its
+  `KubeProvider`s, and, for a `Refusal`, still consents; and the applier claim still holds the applier.
   When any of that changed, it asks nothing and decides again, after a new flush. It never asks for
   something weaker than what it was told.
 - **The apply's own writes are not mirrored.** Inside the apply window, a write whose newest field
@@ -421,7 +429,7 @@ until something applies Git over it.
 | `Ignore` (default) | Report the refusal | Recovery is left to a human or a later apply |
 | `Reapply` | Ask the target's applier to apply the tip, after a flush | The refused edit is reverted; nothing still waiting to be published is |
 
-`Reapply` needs an apply trigger. It fires only for an edit to a document the folder already holds,
+`Reapply` needs an applier claim. It fires only for an edit to a document the folder already holds,
 never for a write that removes one, and a reverted edit does not clear the refusal: the target
 returns to `Ready=True` only after a resync covering the refused scope. The eligibility rules are in
 [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
@@ -431,16 +439,13 @@ returns to `Ready=True` only after a resync covering the refused scope. The elig
 - **An edit made after the flush, while a requested apply runs,** is reverted on the cluster until
   the `Repair`. It keeps its value in Git. It can happen only during an apply GitOps Reverser asked
   for: after a foreign push, a refusal with `Reapply`, a `Repair`, or a `CatchUp`.
-- **An edit through another `GitProvider` on the same repository and branch, made after the
-  flush,** is not protected. The flush publishes what that worker decided before the apply, but it
-  has no apply window, so it mirrors the apply's revert of a later edit as an edit of its own.
 - **A human** running `flux resume` or pressing Sync applies whenever they do. GitOps Reverser
   suspends a resumed `Kustomization` again within a minute.
 - **GitOps Reverser becomes the only path to a deployment.** While it is down, the shared folders
   wait: a push reaches the cluster only through a manual sync or `flux resume`. A graceful stop
   suspends a `Kustomization` it had resumed; after a crash, the apply that was running finishes,
   and the next process suspends it. Monitor the operator the way you monitor the applier.
-- **A trigger may hold any applier its `KubeProvider` reaches.** With
+- **An applier claim may hold any applier its `KubeProvider` reaches.** With
   `allowCrossNamespace.appliers`, every namespace the provider admits may hold a `Kustomization` or
   `Application` in another namespace whose source is the repository its `GitProvider` names. That
   is a delegation by the provider's owner: nothing proves the namespace owns the applier, or may

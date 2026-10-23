@@ -18,7 +18,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
-// The rules Serve applies are the ones internal/controller/argocdtrigger_apiserver_test.go measures
+// The rules Serve applies are the ones internal/controller/argocdclaim_apiserver_test.go measures
 // on a real API server; these pin that the fake keeps them.
 
 func application(syncPolicy map[string]any) *unstructured.Unstructured {

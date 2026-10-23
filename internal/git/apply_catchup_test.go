@@ -16,8 +16,8 @@ import (
 // for Flux and Argo CD alike, decided in the branch worker; no apply goes out before every initial
 // snapshot is published.
 
-// appliedAt is a trigger whose last recorded operation succeeded, applying revision.
-func appliedAt(revision string) func(*configv1alpha3.FluxTrigger) {
+// appliedAt is an applier claim whose last recorded operation succeeded, applying revision.
+func appliedAt(revision string) func(*configv1alpha3.FluxClaim) {
 	return recording(&configv1alpha3.ApplyOperation{
 		Phase: configv1alpha3.ApplyOperationSucceeded, Reason: configv1alpha3.ApplyReasonCatchUp,
 		Commit: "older", AppliedRevision: revision,
@@ -32,12 +32,12 @@ func createdEvent(target string, managers ...string) Event {
 }
 
 // TestCatchUp_TheStartupConvergeAsksNothingOfAnApplierAtTheTip: the first observation leaves a
-// converge pending for every applier. One whose trigger recorded the tip as applied is asked
+// converge pending for every applier. One whose applier claim recorded the tip as applied is asked
 // nothing; the other is asked a CatchUp of the tip.
 func TestCatchUp_TheStartupConvergeAsksNothingOfAnApplierAtTheTip(t *testing.T) {
 	loop, requester := manualLoop(t,
 		applierTestTarget("fresh", true),
-		applierTestTarget("current", true), fluxTrigger("current", appliedAt("main@sha1:AAA")),
+		applierTestTarget("current", true), fluxClaim("current", appliedAt("main@sha1:AAA")),
 	)
 	loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
 	loop.serviceAppliers()
@@ -150,11 +150,11 @@ func TestCatchUp_AFirstNamingConvergesOnce(t *testing.T) {
 
 	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
 	shared := applierTestTarget("bravo", true,
-		func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("alpha") })
+		func(g *configv1alpha3.GitTarget) { g.Spec.ApplierClaimRef = testApplier("alpha") })
 	require.NoError(t, loop.w.Client.Create(t.Context(), shared))
 	loop.serviceAppliers()
 	second := requester.taken()
-	require.Len(t, second, 1, "bravo names alpha's trigger for the first time")
+	require.Len(t, second, 1, "bravo names alpha's applier claim for the first time")
 	assert.Equal(t, "bbb", second[0].Commit)
 	report(second[0], ApplySucceeded)
 

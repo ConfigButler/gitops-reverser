@@ -7,7 +7,7 @@ package git
 // The rate limit alone only decides how OFTEN a refusal may be requested, never whether the refusal
 // is the same one. A forced recheck re-lists from the API server every minute, so a refused live
 // edit that nobody corrects is observed again and again, and each observation used to be another
-// trigger: a request per interval, for ever, making the applier reapply each time. These pin that a repeat is recognised as a repeat, and — just as important — that a real
+// applier claim: a request per interval, for ever, making the applier reapply each time. These pin that a repeat is recognised as a repeat, and — just as important — that a real
 // second edit is not mistaken for one.
 
 import (
@@ -45,9 +45,9 @@ func standingRefusalFixture(t *testing.T, slug string) *ledgerFixture {
 	require.NoError(t, f.worker.Client.Get(f.worker.ctx,
 		client.ObjectKey{Name: ledgerTargetName, Namespace: "default"}, target))
 	target.Spec.OnRefusal = configv1alpha3.RefusalActionReapply
-	target.Spec.ApplyTriggerRef = testApplier(ledgerTargetName)
+	target.Spec.ApplierClaimRef = testApplier(ledgerTargetName)
 	require.NoError(t, f.worker.Client.Update(f.worker.ctx, target))
-	createTestTrigger(t, f.worker.Client, target)
+	createTestClaim(t, f.worker.Client, target)
 	f.worker.applyRequester = &recordingRequester{}
 
 	f.worker.mapper = deploymentMapper()
@@ -109,9 +109,9 @@ func refusalRequests(t *testing.T, f *ledgerFixture) int {
 	return requester.refusals()
 }
 
-// TestRefusalReapply_AnUnchangedRefusalIsNotASecondTrigger is the regression a review reproduced:
-// three rechecks of one refused edit, each with the window open, produced three triggers.
-func TestRefusalReapply_AnUnchangedRefusalIsNotASecondTrigger(t *testing.T) {
+// TestRefusalReapply_AnUnchangedRefusalIsNotASecondRequest is the regression a review reproduced:
+// three rechecks of one refused edit, each with the window open, produced three apply requests.
+func TestRefusalReapply_AnUnchangedRefusalIsNotASecondRequest(t *testing.T) {
 	f := standingRefusalFixture(t, "standing-refusal-unchanged")
 	l := newBranchWorkerEventLoop(f.worker, time.Hour)
 	t.Cleanup(l.stopTimers)
@@ -147,7 +147,7 @@ func TestRefusalReapply_ASecondRefusedEditEarnsItsOwnRequest(t *testing.T) {
 // TestRefusalReapply_AResyncsRefusalIsRequestedByTheLoopItself: a refusal a resync discovers is decided
 // while the resync's outcome is being settled, inside the commit pass, and the wake that ends the
 // pass has to send it. The fixture's refuseResync pushes by hand, which is how a pushed-by-hand unit
-// test once missed a trigger that never left the worker.
+// test once missed an applier claim that never left the worker.
 func TestRefusalReapply_AResyncsRefusalIsRequestedByTheLoopItself(t *testing.T) {
 	f := standingRefusalFixture(t, "standing-refusal-pushed")
 	l := newBranchWorkerEventLoop(f.worker, time.Hour)
@@ -395,7 +395,7 @@ func TestRefusalReapply_AQueuedRequestIsDroppedOnceSomethingElseCoveredIt(t *tes
 // A GitTarget watches more than one type. The Deployment stays refused; a ConfigMap reconcile for
 // the same target succeeds, as an empty or unchanged one does every time it runs. If that success
 // is read as recovery for the whole target, the next identical Deployment observation becomes a
-// new trigger, and one request per ConfigMap pass is the loop again wearing a different hat.
+// new applier claim, and one request per ConfigMap pass is the loop again wearing a different hat.
 func TestRefusalReapply_AnAcceptedSiblingTypeDoesNotRearmAStandingRefusal(t *testing.T) {
 	f := standingRefusalFixture(t, "standing-refusal-sibling-type")
 	l := newBranchWorkerEventLoop(f.worker, time.Hour)
@@ -522,9 +522,9 @@ func overlayRefusalFixture(t *testing.T, slug string) *ledgerFixture {
 	require.NoError(t, f.worker.Client.Get(f.worker.ctx,
 		client.ObjectKey{Name: ledgerTargetName, Namespace: "default"}, target))
 	target.Spec.OnRefusal = configv1alpha3.RefusalActionReapply
-	target.Spec.ApplyTriggerRef = testApplier(ledgerTargetName)
+	target.Spec.ApplierClaimRef = testApplier(ledgerTargetName)
 	require.NoError(t, f.worker.Client.Update(f.worker.ctx, target))
-	createTestTrigger(t, f.worker.Client, target)
+	createTestClaim(t, f.worker.Client, target)
 	f.worker.applyRequester = &recordingRequester{}
 	f.worker.mapper = deploymentMapper()
 	return f

@@ -139,10 +139,10 @@ func newExampleObject(kind string) any {
 		return &ClusterWatchRule{}
 	case "CommitRequest":
 		return &CommitRequest{}
-	case ApplyTriggerKindFlux:
-		return &FluxTrigger{}
-	case ApplyTriggerKindArgoCD:
-		return &ArgoCDTrigger{}
+	case ApplierClaimKindFlux:
+		return &FluxClaim{}
+	case ApplierClaimKindArgoCD:
+		return &ArgoCDClaim{}
 	}
 	return nil
 }

@@ -85,7 +85,7 @@ func TestRuleReadiness_StallsOnTheGitTargetsVerdictWhateverItsReason(t *testing.
 			metav1.ConditionTrue, GitTargetReasonAmbiguousLayout},
 		{"a conflicting path", stalledTarget(GitTargetReasonTargetConflict),
 			metav1.ConditionTrue, GitTargetReasonTargetConflict},
-		{"apply trigger on another source", stalledTarget(applier.ReasonSourceMismatch),
+		{"applier claim on another source", stalledTarget(applier.ReasonSourceMismatch),
 			metav1.ConditionTrue, applier.ReasonSourceMismatch},
 		{"a reason this package has never heard of", stalledTarget("SomeFutureReason"),
 			metav1.ConditionTrue, "SomeFutureReason"},

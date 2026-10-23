@@ -100,31 +100,31 @@ func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
 	return fluxsim.New(t, client)
 }
 
-// The trigger tests reach their appliers through KubeProviders in triggerProviderNamespace, a
+// The applier claim tests reach their appliers through KubeProviders in claimProviderNamespace, a
 // namespace of their own, so a provider admits team-a only through spec.accessFrom: the namespace
-// policy is what those tests exercise. triggerLocalProvider is the operator's own cluster there.
+// policy is what those tests exercise. claimLocalProvider is the operator's own cluster there.
 const (
-	triggerProviderNamespace = "clusters"
-	triggerLocalProvider     = "local"
+	claimProviderNamespace = "clusters"
+	claimLocalProvider     = "local"
 )
 
-// triggerProviderRef names the KubeProvider name in triggerProviderNamespace.
-func triggerProviderRef(name string) meta.NamespacedObjectReference {
-	return meta.NamespacedObjectReference{Namespace: triggerProviderNamespace, Name: name}
+// claimProviderRef names the KubeProvider name in claimProviderNamespace.
+func claimProviderRef(name string) meta.NamespacedObjectReference {
+	return meta.NamespacedObjectReference{Namespace: claimProviderNamespace, Name: name}
 }
 
-// triggerProviderKey is the key of the KubeProvider name in triggerProviderNamespace, as
+// claimProviderKey is the key of the KubeProvider name in claimProviderNamespace, as
 // ApplierClients is asked for it.
-func triggerProviderKey(name string) string {
-	return triggerProviderNamespace + "/" + name
+func claimProviderKey(name string) string {
+	return claimProviderNamespace + "/" + name
 }
 
-// admitting is a KubeProvider in triggerProviderNamespace whose accessFrom admits namespaces, and
-// which lets a trigger name an applier in another namespace (the test appliers live in flux-system
+// admitting is a KubeProvider in claimProviderNamespace whose accessFrom admits namespaces, and
+// which lets an applier claim name an applier in another namespace (the test appliers live in flux-system
 // and argocd).
 func admitting(name string, namespaces ...string) *configbutleraiv1alpha3.KubeProvider {
 	return &configbutleraiv1alpha3.KubeProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: triggerProviderNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: claimProviderNamespace},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster:           &configbutleraiv1alpha3.KubeProviderInCluster{},
 			AccessFrom:          &configbutleraiv1alpha3.NamespaceMatcher{Names: namespaces},
@@ -133,41 +133,41 @@ func admitting(name string, namespaces ...string) *configbutleraiv1alpha3.KubePr
 	}
 }
 
-// testFluxTrigger is the FluxTrigger team-a/checkout holding flux-system/checkout in the cluster of
-// the KubeProvider cluster in triggerProviderNamespace.
-func testFluxTrigger(cluster string) *configbutleraiv1alpha3.FluxTrigger {
-	return &configbutleraiv1alpha3.FluxTrigger{
+// testFluxClaim is the FluxClaim team-a/checkout holding flux-system/checkout in the cluster of
+// the KubeProvider cluster in claimProviderNamespace.
+func testFluxClaim(cluster string) *configbutleraiv1alpha3.FluxClaim {
+	return &configbutleraiv1alpha3.FluxClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a", Generation: 1},
-		Spec: configbutleraiv1alpha3.FluxTriggerSpec{
-			KubeProviderRef:  triggerProviderRef(cluster),
+		Spec: configbutleraiv1alpha3.FluxClaimSpec{
+			KubeProviderRef:  claimProviderRef(cluster),
 			KustomizationRef: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "checkout"},
 		},
 	}
 }
 
-// testArgoCDTrigger is the ArgoCDTrigger team-a/checkout holding argocd/checkout in the cluster of
-// the KubeProvider cluster in triggerProviderNamespace.
-func testArgoCDTrigger(cluster string) *configbutleraiv1alpha3.ArgoCDTrigger {
-	return &configbutleraiv1alpha3.ArgoCDTrigger{
+// testArgoCDClaim is the ArgoCDClaim team-a/checkout holding argocd/checkout in the cluster of
+// the KubeProvider cluster in claimProviderNamespace.
+func testArgoCDClaim(cluster string) *configbutleraiv1alpha3.ArgoCDClaim {
+	return &configbutleraiv1alpha3.ArgoCDClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "team-a", Generation: 1},
-		Spec: configbutleraiv1alpha3.ArgoCDTriggerSpec{
-			KubeProviderRef: triggerProviderRef(cluster),
+		Spec: configbutleraiv1alpha3.ArgoCDClaimSpec{
+			KubeProviderRef: claimProviderRef(cluster),
 			ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: "checkout"},
 		},
 	}
 }
 
 // referencingTarget is a GitTarget team-a/name mirroring through the KubeProvider
-// triggerLocalProvider and writing main of the test repository through the GitProvider platform,
-// naming the trigger kind/checkout.
+// claimLocalProvider and writing main of the test repository through the GitProvider platform,
+// naming the applier claim kind/checkout.
 func referencingTarget(name, kind string) *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			KubeProviderRef: triggerProviderRef(triggerLocalProvider),
+			KubeProviderRef: claimProviderRef(claimLocalProvider),
 			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("platform", "main")},
 			Path:            name,
-			ApplyTriggerRef: &configbutleraiv1alpha3.ApplyTriggerReference{Kind: kind, Name: "checkout"},
+			ApplierClaimRef: &configbutleraiv1alpha3.ApplierClaimReference{Kind: kind, Name: "checkout"},
 		},
 	}
 }
@@ -180,8 +180,8 @@ func platformProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-// referencedIn is a GitProvider platform and a GitTarget checkout-<kind> naming the trigger
-// kind/checkout, both in namespace: what makes a trigger there eligible.
+// referencedIn is a GitProvider platform and a GitTarget checkout-<kind> naming the applier claim
+// kind/checkout, both in namespace: what makes an applier claim there eligible.
 func referencedIn(namespace, kind string) []ctrlclient.Object {
 	provider := platformProvider()
 	provider.Namespace = namespace
@@ -190,14 +190,14 @@ func referencedIn(namespace, kind string) []ctrlclient.Object {
 	return []ctrlclient.Object{provider, target}
 }
 
-// unreferenced marks a triggerTestClient that holds no GitTarget naming the triggers.
+// unreferenced marks a claimTestClient that holds no GitTarget naming the applier claims.
 type unreferenced struct{ ctrlclient.Object }
 
-// triggerTestClient is a control cluster holding objects, the KubeProviders triggerLocalProvider and
+// claimTestClient is a control cluster holding objects, the KubeProviders claimLocalProvider and
 // "hub" admitting team-a unless objects carries its own, the GitProvider platform unless objects carries a
-// GitProvider, and a GitTarget naming each trigger kind's checkout unless objects carries a
+// GitProvider, and a GitTarget naming each applier claim kind's checkout unless objects carries a
 // GitTarget or unreferenced{}.
-func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Client {
+func claimTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -221,7 +221,7 @@ func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Cl
 		}
 	}
 	objects = kept
-	for _, name := range []string{triggerLocalProvider, "hub"} {
+	for _, name := range []string{claimLocalProvider, "hub"} {
 		if !held[name] {
 			objects = append(objects, admitting(name, "team-a"))
 		}
@@ -231,19 +231,19 @@ func triggerTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Cl
 	}
 	if !hasTarget {
 		objects = append(objects,
-			referencingTarget("checkout-flux", configbutleraiv1alpha3.ApplyTriggerKindFlux),
-			referencingTarget("checkout-argo", configbutleraiv1alpha3.ApplyTriggerKindArgoCD))
+			referencingTarget("checkout-flux", configbutleraiv1alpha3.ApplierClaimKindFlux),
+			referencingTarget("checkout-argo", configbutleraiv1alpha3.ApplierClaimKindArgoCD))
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
-		WithStatusSubresource(&configbutleraiv1alpha3.FluxTrigger{}, &configbutleraiv1alpha3.ArgoCDTrigger{}).
+		WithStatusSubresource(&configbutleraiv1alpha3.FluxClaim{}, &configbutleraiv1alpha3.ArgoCDClaim{}).
 		Build()
 }
 
-// triggerReconciler checks appliers against a fake cluster whose access review answers allowed.
-func triggerReconciler(
+// claimReconciler checks appliers against a fake cluster whose access review answers allowed.
+func claimReconciler(
 	c ctrlclient.Client, kind string, source dynamic.Interface, sourceErr error, allowed bool,
-) *ApplyTriggerReconciler {
-	return &ApplyTriggerReconciler{
+) *ApplierClaimReconciler {
+	return &ApplierClaimReconciler{
 		Client:         c,
 		Kind:           kind,
 		ApplierClients: func(context.Context, string) (dynamic.Interface, error) { return source, sourceErr },
@@ -261,47 +261,47 @@ func triggerReconciler(
 	}
 }
 
-// triggerKey is the trigger every test reconciles.
-var triggerKey = k8stypes.NamespacedName{Namespace: "team-a", Name: "checkout"}
+// claimKey is the applier claim every test reconciles.
+var claimKey = k8stypes.NamespacedName{Namespace: "team-a", Name: "checkout"}
 
-// reconcileTrigger reconciles team-a/checkout until it settles and returns the trigger as it is
-// then. While its Kustomization's suspend is being handled, a FluxTrigger is read again at the
+// reconcileClaim reconciles team-a/checkout until it settles and returns the applier claim as it is
+// then. While its Kustomization's suspend is being handled, a FluxClaim is read again at the
 // suspending interval. Every pass publishes its conditions: the one that adopts too, which also adds
-// the finalizer, since nothing re-enqueues a trigger for a metadata-only update. A FluxTrigger
+// the finalizer, since nothing re-enqueues an applier claim for a metadata-only update. A FluxClaim
 // carries the finalizer exactly while it is Configured: it holds its Kustomization. An
-// ArgoCDTrigger does too, unless the switch it holds is somebody else's.
-func reconcileTrigger(t *testing.T, r *ApplyTriggerReconciler) configbutleraiv1alpha3.ApplyTrigger {
+// ArgoCDClaim does too, unless the switch it holds is somebody else's.
+func reconcileClaim(t *testing.T, r *ApplierClaimReconciler) configbutleraiv1alpha3.ApplierClaim {
 	t.Helper()
-	var trigger configbutleraiv1alpha3.ApplyTrigger
+	var claim configbutleraiv1alpha3.ApplierClaim
 	require.Eventually(t, func() bool {
-		result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: triggerKey})
+		result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 		require.NoError(t, err)
-		trigger = configbutleraiv1alpha3.NewApplyTrigger(r.Kind)
-		require.NoError(t, r.Get(context.Background(), triggerKey, trigger))
-		require.NotNil(t, findCondition(*trigger.StatusConditions(), ConditionTypeReady),
+		claim = configbutleraiv1alpha3.NewApplierClaim(r.Kind)
+		require.NoError(t, r.Get(context.Background(), claimKey, claim))
+		require.NotNil(t, findCondition(*claim.StatusConditions(), ConditionTypeReady),
 			"every pass publishes Ready")
-		held := findCondition(*trigger.StatusConditions(), ApplyTriggerConditionHeld)
-		if conditionIsTrue(*trigger.StatusConditions(), ApplyTriggerConditionConfigured) && held != nil &&
+		held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
+		if conditionIsTrue(*claim.StatusConditions(), ApplierClaimConditionConfigured) && held != nil &&
 			!strings.Contains(held.Message, "which owns the switch") {
-			require.True(t, controllerutil.ContainsFinalizer(trigger, triggerFinalizer(trigger)),
-				"a trigger that holds its applier carries the finalizer")
+			require.True(t, controllerutil.ContainsFinalizer(claim, claimFinalizer(claim)),
+				"an applier claim that holds its applier carries the finalizer")
 		}
 		if held != nil && held.Reason == ReasonSuspending {
-			assert.Equal(t, applyTriggerSuspendingInterval, result.RequeueAfter, "a suspend is waited for closely")
+			assert.Equal(t, applierClaimSuspendingInterval, result.RequeueAfter, "a suspend is waited for closely")
 			return false
 		}
-		want := heldTriggerSteadyInterval
-		if !conditionIsTrue(*trigger.StatusConditions(), ConditionTypeReady) &&
-			!conditionIsTrue(*trigger.StatusConditions(), ConditionTypeStalled) {
-			want = applyTriggerSettleInterval
+		want := heldClaimSteadyInterval
+		if !conditionIsTrue(*claim.StatusConditions(), ConditionTypeReady) &&
+			!conditionIsTrue(*claim.StatusConditions(), ConditionTypeStalled) {
+			want = applierClaimSettleInterval
 		}
-		assert.Equal(t, want, result.RequeueAfter, "a trigger that may clear on its own is read again soon")
+		assert.Equal(t, want, result.RequeueAfter, "an applier claim that may clear on its own is read again soon")
 		return true
 	}, 5*time.Second, 5*time.Millisecond)
-	return trigger
+	return claim
 }
 
-func TestApplyTriggerReconcile_FluxVerdicts(t *testing.T) {
+func TestApplierClaimReconcile_FluxVerdicts(t *testing.T) {
 	cases := []struct {
 		name        string
 		objects     []runtime.Object
@@ -309,11 +309,11 @@ func TestApplyTriggerReconcile_FluxVerdicts(t *testing.T) {
 		wantStatus  metav1.ConditionStatus
 		wantReason  string
 		wantStalled bool
-		wantSource  *configbutleraiv1alpha3.FluxTriggerSource
+		wantSource  *configbutleraiv1alpha3.FluxClaimSource
 	}{
 		{name: "a Kustomization applying a GitRepository on a branch", objects: applierFluxObjects(),
 			allowed: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded,
-			wantSource: &configbutleraiv1alpha3.FluxTriggerSource{
+			wantSource: &configbutleraiv1alpha3.FluxClaimSource{
 				GitRepository: meta.NamespacedObjectReference{Namespace: "flux-system", Name: "platform"},
 				URL:           "https://github.com/acme/platform", Branch: "main",
 			}},
@@ -324,29 +324,29 @@ func TestApplyTriggerReconcile_FluxVerdicts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := triggerTestClient(t, testFluxTrigger(triggerLocalProvider))
-			r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux,
+			c := claimTestClient(t, testFluxClaim(claimLocalProvider))
+			r := claimReconciler(c, configbutleraiv1alpha3.ApplierClaimKindFlux,
 				applierFakeSource(t, tc.objects...), nil, tc.allowed)
 
-			trigger := reconcileTrigger(t, r).(*configbutleraiv1alpha3.FluxTrigger)
+			claim := reconcileClaim(t, r).(*configbutleraiv1alpha3.FluxClaim)
 
-			configured := findCondition(trigger.Status.Conditions, ApplyTriggerConditionConfigured)
+			configured := findCondition(claim.Status.Conditions, ApplierClaimConditionConfigured)
 			require.NotNil(t, configured)
 			assert.Equal(t, tc.wantStatus, configured.Status, configured.Message)
 			assert.Equal(t, tc.wantReason, configured.Reason)
-			ready := findCondition(trigger.Status.Conditions, ConditionTypeReady)
+			ready := findCondition(claim.Status.Conditions, ConditionTypeReady)
 			require.NotNil(t, ready)
 			assert.Equal(t, tc.wantStatus, ready.Status)
-			assert.Equal(t, tc.wantStalled, conditionIsTrue(trigger.Status.Conditions, ConditionTypeStalled))
-			assert.Equal(t, tc.wantSource, trigger.Status.Source)
-			assert.Equal(t, int64(1), trigger.Status.ObservedGeneration)
+			assert.Equal(t, tc.wantStalled, conditionIsTrue(claim.Status.Conditions, ConditionTypeStalled))
+			assert.Equal(t, tc.wantSource, claim.Status.Source)
+			assert.Equal(t, int64(1), claim.Status.ObservedGeneration)
 		})
 	}
 }
 
-// TestApplyTriggerReconcile_ArgoCDVerdicts: an ArgoCDTrigger checks an Application, with automated
+// TestApplierClaimReconcile_ArgoCDVerdicts: an ArgoCDClaim checks an Application, with automated
 // sync on as a verdict of its own.
-func TestApplyTriggerReconcile_ArgoCDVerdicts(t *testing.T) {
+func TestApplierClaimReconcile_ArgoCDVerdicts(t *testing.T) {
 	cases := []struct {
 		name        string
 		objects     []runtime.Object
@@ -374,48 +374,48 @@ func TestApplyTriggerReconcile_ArgoCDVerdicts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := triggerTestClient(t, testArgoCDTrigger(triggerLocalProvider))
-			r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindArgoCD,
+			c := claimTestClient(t, testArgoCDClaim(claimLocalProvider))
+			r := claimReconciler(c, configbutleraiv1alpha3.ApplierClaimKindArgoCD,
 				applierFakeSource(t, tc.objects...), nil, tc.allowed)
 
-			trigger := reconcileTrigger(t, r).(*configbutleraiv1alpha3.ArgoCDTrigger)
+			claim := reconcileClaim(t, r).(*configbutleraiv1alpha3.ArgoCDClaim)
 
-			configured := findCondition(trigger.Status.Conditions, ApplyTriggerConditionConfigured)
+			configured := findCondition(claim.Status.Conditions, ApplierClaimConditionConfigured)
 			require.NotNil(t, configured)
 			assert.Equal(t, tc.wantStatus, configured.Status, configured.Message)
 			assert.Equal(t, tc.wantReason, configured.Reason)
-			assert.Equal(t, tc.wantStalled, conditionIsTrue(trigger.Status.Conditions, ConditionTypeStalled))
+			assert.Equal(t, tc.wantStalled, conditionIsTrue(claim.Status.Conditions, ConditionTypeStalled))
 			if tc.wantStatus == metav1.ConditionTrue {
-				assert.Equal(t, &configbutleraiv1alpha3.ArgoCDTriggerSource{
+				assert.Equal(t, &configbutleraiv1alpha3.ArgoCDClaimSource{
 					RepoURL: "https://github.com/acme/platform", TargetRevision: "main",
-				}, trigger.Status.Source)
+				}, claim.Status.Source)
 			}
 		})
 	}
 }
 
-// TestApplyTriggerReconcile_AnUnreachableClusterKeepsThePublishedVerdict: a blip reading the
+// TestApplierClaimReconcile_AnUnreachableClusterKeepsThePublishedVerdict: a blip reading the
 // applier's cluster says nothing about the applier, so it must not flip a True to Unknown and back on
 // every hiccup, nor drop the source the GitTargets bind against.
-func TestApplyTriggerReconcile_AnUnreachableClusterKeepsThePublishedVerdict(t *testing.T) {
-	trigger := testFluxTrigger(triggerLocalProvider)
-	c := triggerTestClient(t, trigger)
-	r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux, nil, errors.New("connection refused"), true)
-	got := reconcileTrigger(t, r)
-	configured := findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
+func TestApplierClaimReconcile_AnUnreachableClusterKeepsThePublishedVerdict(t *testing.T) {
+	claim := testFluxClaim(claimLocalProvider)
+	c := claimTestClient(t, claim)
+	r := claimReconciler(c, configbutleraiv1alpha3.ApplierClaimKindFlux, nil, errors.New("connection refused"), true)
+	got := reconcileClaim(t, r)
+	configured := findCondition(*got.StatusConditions(), ApplierClaimConditionConfigured)
 	require.NotNil(t, configured)
 	assert.Equal(t, metav1.ConditionUnknown, configured.Status, "nothing published yet")
 
-	published := testFluxTrigger(triggerLocalProvider)
+	published := testFluxClaim(claimLocalProvider)
 	published.Status.Conditions = []metav1.Condition{{
-		Type: ApplyTriggerConditionConfigured, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
+		Type: ApplierClaimConditionConfigured, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
 		LastTransitionTime: metav1.Now(),
 	}}
-	published.Status.Source = &configbutleraiv1alpha3.FluxTriggerSource{URL: applierTestRepo, Branch: "main"}
-	c = triggerTestClient(t, published)
-	r = triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux, nil, errors.New("connection refused"), true)
-	got = reconcileTrigger(t, r)
-	configured = findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
+	published.Status.Source = &configbutleraiv1alpha3.FluxClaimSource{URL: applierTestRepo, Branch: "main"}
+	c = claimTestClient(t, published)
+	r = claimReconciler(c, configbutleraiv1alpha3.ApplierClaimKindFlux, nil, errors.New("connection refused"), true)
+	got = reconcileClaim(t, r)
+	configured = findCondition(*got.StatusConditions(), ApplierClaimConditionConfigured)
 	require.NotNil(t, configured)
 	assert.Equal(t, metav1.ConditionTrue, configured.Status, "the published verdict stands")
 	url, branch, known := got.SourceBinding()
@@ -424,20 +424,20 @@ func TestApplyTriggerReconcile_AnUnreachableClusterKeepsThePublishedVerdict(t *t
 	assert.Equal(t, "main", branch)
 }
 
-// TestApplyTriggerReconcile_AHangingClusterIsBounded: the applier's client has no request timeout,
+// TestApplierClaimReconcile_AHangingClusterIsBounded: the applier's client has no request timeout,
 // so a cluster that accepts the connection and never answers would hold the reconcile for as long as
 // it liked. The check gives up, and a check that could not be made keeps the published verdict.
-func TestApplyTriggerReconcile_AHangingClusterIsBounded(t *testing.T) {
+func TestApplierClaimReconcile_AHangingClusterIsBounded(t *testing.T) {
 	var sawDeadline bool
 	source := applierFakeSource(t, applierFluxObjects()...)
-	published := testFluxTrigger(triggerLocalProvider)
+	published := testFluxClaim(claimLocalProvider)
 	published.Status.Conditions = []metav1.Condition{{
-		Type: ApplyTriggerConditionConfigured, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
+		Type: ApplierClaimConditionConfigured, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
 		LastTransitionTime: metav1.Now(),
 	}}
-	r := &ApplyTriggerReconciler{
-		Client: triggerTestClient(t, published),
-		Kind:   configbutleraiv1alpha3.ApplyTriggerKindFlux,
+	r := &ApplierClaimReconciler{
+		Client: claimTestClient(t, published),
+		Kind:   configbutleraiv1alpha3.ApplierClaimKindFlux,
 		ApplierClients: func(ctx context.Context, _ string) (dynamic.Interface, error) {
 			_, sawDeadline = ctx.Deadline()
 			return source, nil
@@ -454,18 +454,18 @@ func TestApplyTriggerReconcile_AHangingClusterIsBounded(t *testing.T) {
 		},
 	}
 
-	got := reconcileTrigger(t, r)
+	got := reconcileClaim(t, r)
 
 	assert.True(t, sawDeadline, "the client lookup must run under a deadline")
-	configured := findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
+	configured := findCondition(*got.StatusConditions(), ApplierClaimConditionConfigured)
 	require.NotNil(t, configured)
 	assert.Equal(t, metav1.ConditionTrue, configured.Status, "a timed-out check keeps the published verdict")
 }
 
-// TestApplyTriggerReconcile_TheTriggersKubeProviderAdmitsIt: the applier is reached with the
-// trigger's KubeProvider's credential, so that provider's accessFrom gates the check before the
+// TestApplierClaimReconcile_TheClaimsKubeProviderAdmitsIt: the applier is reached with the
+// applier claim's KubeProvider's credential, so that provider's accessFrom gates the check before the
 // cluster is ever asked.
-func TestApplyTriggerReconcile_TheTriggersKubeProviderAdmitsIt(t *testing.T) {
+func TestApplierClaimReconcile_TheClaimsKubeProviderAdmitsIt(t *testing.T) {
 	cases := []struct {
 		name        string
 		cluster     string
@@ -481,7 +481,7 @@ func TestApplyTriggerReconcile_TheTriggersKubeProviderAdmitsIt(t *testing.T) {
 			hub:         admitting("hub", "team-a"),
 			wantStatus:  metav1.ConditionTrue,
 			wantReason:  ReasonSucceeded,
-			wantClients: []string{triggerProviderKey("hub")},
+			wantClients: []string{claimProviderKey("hub")},
 		},
 		{name: "a provider that does not admit it is never asked", cluster: "hub", hub: admitting("hub", "team-b"),
 			wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonNamespaceNotAuthorized, wantStalled: true},
@@ -490,12 +490,12 @@ func TestApplyTriggerReconcile_TheTriggersKubeProviderAdmitsIt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			objects := []ctrlclient.Object{testFluxTrigger(tc.cluster)}
+			objects := []ctrlclient.Object{testFluxClaim(tc.cluster)}
 			if tc.hub != nil {
 				objects = append(objects, tc.hub)
 			}
 			var asked []string
-			r := triggerReconciler(triggerTestClient(t, objects...), configbutleraiv1alpha3.ApplyTriggerKindFlux,
+			r := claimReconciler(claimTestClient(t, objects...), configbutleraiv1alpha3.ApplierClaimKindFlux,
 				applierFakeSource(t, applierFluxObjects()...), nil, true)
 			source := r.ApplierClients
 			r.ApplierClients = func(ctx context.Context, cluster string) (dynamic.Interface, error) {
@@ -503,32 +503,32 @@ func TestApplyTriggerReconcile_TheTriggersKubeProviderAdmitsIt(t *testing.T) {
 				return source(ctx, cluster)
 			}
 
-			got := reconcileTrigger(t, r)
+			got := reconcileClaim(t, r)
 
-			configured := findCondition(*got.StatusConditions(), ApplyTriggerConditionConfigured)
+			configured := findCondition(*got.StatusConditions(), ApplierClaimConditionConfigured)
 			require.NotNil(t, configured)
 			assert.Equal(t, tc.wantStatus, configured.Status, configured.Message)
 			assert.Equal(t, tc.wantReason, configured.Reason)
 			assert.Equal(t, tc.wantStalled, conditionIsTrue(*got.StatusConditions(), ConditionTypeStalled))
-			assert.Equal(t, tc.wantClients, slices.Compact(asked), "only the trigger's own cluster is asked")
+			assert.Equal(t, tc.wantClients, slices.Compact(asked), "only the applier claim's own cluster is asked")
 		})
 	}
 }
 
-// TestApplyTriggerReconcile_AnUnresolvedOperationIsNotReady is the third review's fourth finding,
-// seen from the trigger: an operation past its budget keeps its window open, and the trigger says so
+// TestApplierClaimReconcile_AnUnresolvedOperationIsNotReady is the third review's fourth finding,
+// seen from the applier claim: an operation past its budget keeps its window open, and the applier claim says so
 // in Ready until the operation completes. It clears on its own, so it is never Stalled.
-func TestApplyTriggerReconcile_AnUnresolvedOperationIsNotReady(t *testing.T) {
-	trigger := testFluxTrigger(triggerLocalProvider)
-	trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
+func TestApplierClaimReconcile_AnUnresolvedOperationIsNotReady(t *testing.T) {
+	claim := testFluxClaim(claimLocalProvider)
+	claim.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
 		Phase: configbutleraiv1alpha3.ApplyOperationUnresolved, Reason: configbutleraiv1alpha3.ApplyReasonCatchUp,
 		Commit: "4f2c1ab9d00d", Token: "T1", RequestedAt: metav1.Now(), Message: "still applying",
 	}
-	c := triggerTestClient(t, trigger)
-	r := triggerReconciler(c, configbutleraiv1alpha3.ApplyTriggerKindFlux,
+	c := claimTestClient(t, claim)
+	r := claimReconciler(c, configbutleraiv1alpha3.ApplierClaimKindFlux,
 		applierFakeSource(t, applierFluxObjects()...), nil, true)
 
-	got := reconcileTrigger(t, r)
+	got := reconcileClaim(t, r)
 
 	ready := findCondition(*got.StatusConditions(), ConditionTypeReady)
 	require.NotNil(t, ready)
@@ -540,17 +540,17 @@ func TestApplyTriggerReconcile_AnUnresolvedOperationIsNotReady(t *testing.T) {
 	assert.Equal(t, configbutleraiv1alpha3.ApplyOperationUnresolved, got.Operation().Phase)
 }
 
-// TestApplyTriggerSpecOrOperationChanged_ReadsTheOperationPhase: the worker's status writes reach the
+// TestApplierClaimSpecOrOperationChanged_ReadsTheOperationPhase: the worker's status writes reach the
 // reconciler only when they move the phase Ready reads.
-func TestApplyTriggerSpecOrOperationChanged_ReadsTheOperationPhase(t *testing.T) {
-	p := applyTriggerSpecOrOperationChanged()
+func TestApplierClaimSpecOrOperationChanged_ReadsTheOperationPhase(t *testing.T) {
+	p := applierClaimSpecOrOperationChanged()
 	at := func(phase configbutleraiv1alpha3.ApplyOperationPhase, generation int64) ctrlclient.Object {
-		trigger := testFluxTrigger(triggerLocalProvider)
-		trigger.Generation = generation
+		claim := testFluxClaim(claimLocalProvider)
+		claim.Generation = generation
 		if phase != "" {
-			trigger.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{Phase: phase}
+			claim.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{Phase: phase}
 		}
-		return trigger
+		return claim
 	}
 	assert.True(t, p.Update(event.UpdateEvent{
 		ObjectOld: at(configbutleraiv1alpha3.ApplyOperationRunning, 1),
@@ -563,37 +563,37 @@ func TestApplyTriggerSpecOrOperationChanged_ReadsTheOperationPhase(t *testing.T)
 	}), "a status write that moves nothing Ready reads")
 }
 
-// TestApplyTriggerReconcile_KubeProviderAndNamespaceEventsFindTheirTriggers: a provider event
-// re-runs every trigger, since it admits the GitTargets naming triggers too, and a namespace label
-// change the triggers in it.
-func TestApplyTriggerReconcile_KubeProviderAndNamespaceEventsFindTheirTriggers(t *testing.T) {
-	other := testFluxTrigger("other")
+// TestApplierClaimReconcile_KubeProviderAndNamespaceEventsFindTheirClaims: a provider event
+// re-runs every applier claim, since it admits the GitTargets naming applier claims too, and a namespace label
+// change the applier claims in it.
+func TestApplierClaimReconcile_KubeProviderAndNamespaceEventsFindTheirClaims(t *testing.T) {
+	other := testFluxClaim("other")
 	other.Name = "elsewhere"
-	c := triggerTestClient(t, testFluxTrigger("hub"), other)
-	r := &ApplyTriggerReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplyTriggerKindFlux}
+	c := claimTestClient(t, testFluxClaim("hub"), other)
+	r := &ApplierClaimReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplierClaimKindFlux}
 
-	assert.Len(t, r.kubeProviderToTriggers(context.Background(), admitting("hub")), 2)
+	assert.Len(t, r.kubeProviderToClaims(context.Background(), admitting("hub")), 2)
 
 	ns := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}}
-	assert.Len(t, r.namespaceToTriggers(context.Background(), ns), 2)
+	assert.Len(t, r.namespaceToClaims(context.Background(), ns), 2)
 }
 
-// TestApplyTriggerReconcile_ArgoCDEventsFindTheirTriggers: the Argo CD kind lists its own.
-func TestApplyTriggerReconcile_ArgoCDEventsFindTheirTriggers(t *testing.T) {
-	c := triggerTestClient(t, testArgoCDTrigger("hub"), testFluxTrigger("hub"))
-	r := &ApplyTriggerReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplyTriggerKindArgoCD}
-	requests := r.kubeProviderToTriggers(context.Background(), admitting("hub"))
-	assert.Len(t, requests, 1, "a FluxTrigger of the same name is another kind's")
+// TestApplierClaimReconcile_ArgoCDEventsFindTheirClaims: the Argo CD kind lists its own.
+func TestApplierClaimReconcile_ArgoCDEventsFindTheirClaims(t *testing.T) {
+	c := claimTestClient(t, testArgoCDClaim("hub"), testFluxClaim("hub"))
+	r := &ApplierClaimReconciler{Client: c, Kind: configbutleraiv1alpha3.ApplierClaimKindArgoCD}
+	requests := r.kubeProviderToClaims(context.Background(), admitting("hub"))
+	assert.Len(t, requests, 1, "a FluxClaim of the same name is another kind's")
 }
 
-// TestApplyTriggerReconcile_AGoneTriggerIsForgotten: a trigger that is gone has nothing to publish.
-func TestApplyTriggerReconcile_AGoneTriggerIsForgotten(t *testing.T) {
-	r := &ApplyTriggerReconciler{Client: triggerTestClient(t), Kind: configbutleraiv1alpha3.ApplyTriggerKindFlux}
+// TestApplierClaimReconcile_AGoneClaimIsForgotten: an applier claim that is gone has nothing to publish.
+func TestApplierClaimReconcile_AGoneClaimIsForgotten(t *testing.T) {
+	r := &ApplierClaimReconciler{Client: claimTestClient(t), Kind: configbutleraiv1alpha3.ApplierClaimKindFlux}
 	result, err := r.Reconcile(context.Background(),
 		ctrl.Request{NamespacedName: k8stypes.NamespacedName{Namespace: "team-a", Name: "gone"}})
 	require.NoError(t, err)
 	assert.Zero(t, result.RequeueAfter)
 
-	_, err = (&ApplyTriggerReconciler{Kind: "WebhookTrigger"}).Reconcile(context.Background(), ctrl.Request{})
+	_, err = (&ApplierClaimReconciler{Kind: "WebhookClaim"}).Reconcile(context.Background(), ctrl.Request{})
 	require.Error(t, err, "a kind this release does not serve")
 }

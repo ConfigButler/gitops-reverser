@@ -25,7 +25,7 @@ spec:
         tier: trusted
   # What those namespaces may reach outside themselves, each granted on purpose. sources: a
   # WatchRule may choose which SOURCE namespaces to mirror; while false (the default) it watches
-  # only its own namespace, and `sourceNamespace: "*"` is refused outright. appliers: a trigger may
+  # only its own namespace, and `sourceNamespace: "*"` is refused outright. appliers: an applier claim may
   # suspend and apply a Kustomization or Application in another namespace. Both delegate to every
   # admitted namespace; neither proves that a namespace owns what it reaches.
   allowCrossNamespace:

@@ -10,30 +10,30 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// ArgoCDTriggerFinalizer is the finalizer an ArgoCDTrigger carries while it holds its
+// ArgoCDClaimFinalizer is the finalizer an ArgoCDClaim carries while it holds its
 // Application's automated sync off: from before it first switches it off until it has handed the
-// switch back or over. Deleting the trigger, or the last eligible GitTarget naming it, hands the
-// switch back as status.previousSuspendState recorded it. A trigger that never held the
+// switch back or over. Deleting the applier claim, or the last eligible GitTarget naming it, hands the
+// switch back as status.previousSuspendState recorded it. An applier claim that never held the
 // switch (one whose Application an ApplicationSet generated, or whose switch another field manager
 // applies) has none.
-const ArgoCDTriggerFinalizer = "configbutler.ai/argocd-trigger"
+const ArgoCDClaimFinalizer = "configbutler.ai/argocd-claim"
 
 // spec.clusterProviderRef was replaced by spec.kubeProviderRef, with the cluster-scoped kind it
 // named. It stays in the schema only to be refused by name; the rule sits on spec so CRD validation
 // ratcheting cannot wave a stored value through on the next edit.
 
-// ArgoCDTriggerSpec names the Argo CD Application the trigger holds, and the cluster it is in.
+// ArgoCDClaimSpec names the Argo CD Application the applier claim holds, and the cluster it is in.
 // +kubebuilder:validation:XValidation:rule="!has(self.clusterProviderRef)",message="spec.clusterProviderRef was replaced by spec.kubeProviderRef, which names a namespaced KubeProvider"
-type ArgoCDTriggerSpec struct {
-	// Immutable for the reason FluxTriggerSpec's references are: the trigger holds what it names.
+type ArgoCDClaimSpec struct {
+	// Immutable for the reason FluxClaimSpec's references are: the applier claim holds what it names.
 
 	// KubeProviderRef names the KubeProvider whose cluster holds the Application, such as a
 	// management cluster running Argo CD for the source cluster. Namespace omitted means this
-	// trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
+	// applier claim's own namespace. The provider must admit this applier claim's namespace: its own, or one its
 	// spec.accessFrom admits. Its identity needs get, update and patch on the Application. Immutable.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the ArgoCDTrigger to hold an Application elsewhere"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the ArgoCDClaim to hold an Application elsewhere"
 	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef"`
 
 	// RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
@@ -42,39 +42,39 @@ type ArgoCDTriggerSpec struct {
 	RemovedClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// ApplicationRef is the Argo CD Application that applies the folders of the GitTargets naming
-	// this trigger. It must have a single spec.source whose targetRevision names a branch. The
-	// trigger holds its automated sync off: it applies spec.syncPolicy.automated.enabled: false,
+	// this applier claim. It must have a single spec.source whose targetRevision names a branch. The
+	// applier claim holds its automated sync off: it applies spec.syncPolicy.automated.enabled: false,
 	// which keeps automated.prune for the syncs GitOps Reverser starts, switches it off again when
 	// somebody switches it on, and gives it up when it lets go. An Application an ApplicationSet
 	// generated, or whose switch another field manager applies, must have automated sync off
-	// already: the switch is theirs, and the trigger only checks it. GitOps Reverser starts each
+	// already: the switch is theirs, and the applier claim only checks it. GitOps Reverser starts each
 	// sync by setting the Application's operation, as Argo CD's automated sync does, pinned to the
 	// commit it checked, and never replaces an operation that is running. Its namespace defaults to
-	// the trigger's namespace. Immutable.
+	// the applier claim's namespace. Immutable.
 	// +required
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.applicationRef is immutable; delete and recreate the ArgoCDTrigger to hold another Application"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.applicationRef is immutable; delete and recreate the ArgoCDClaim to hold another Application"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.applicationRef.name must not be empty"
 	ApplicationRef meta.NamespacedObjectReference `json:"applicationRef"`
 }
 
-// ArgoCDTriggerStatus is what the trigger knows about its Application, and the sync it started.
-type ArgoCDTriggerStatus struct {
+// ArgoCDClaimStatus is what the applier claim knows about its Application, and the sync it started.
+type ArgoCDClaimStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are Configured (an eligible GitTarget names the trigger; the Application exists,
-	// syncs a single source, has automated sync off or a switch the trigger may hold, may be
-	// written, and no other ArgoCDTrigger holds it), Held (AutomatedSyncOff: automated sync is off,
+	// Conditions are Configured (an eligible GitTarget names the applier claim; the Application exists,
+	// syncs a single source, has automated sync off or a switch the applier claim may hold, may be
+	// written, and no other ArgoCDClaim holds it), Held (AutomatedSyncOff: automated sync is off,
 	// held by GitOps Reverser or kept off by the switch's owner; Releasing: being handed back;
-	// NotReferenced; NotConfigured), and the kstatus Ready/Reconciling/Stalled trio. A trigger acts only while an
+	// NotReferenced; NotConfigured), and the kstatus Ready/Reconciling/Stalled trio. An applier claim acts only while an
 	// eligible GitTarget references it: one in its namespace that names it, is admitted by its
-	// KubeProviders, and writes the repository and branch the Application syncs. A trigger no
+	// KubeProviders, and writes the repository and branch the Application syncs. An applier claim no
 	// GitTarget names reads nothing in the Application's cluster and is Configured=Unknown,
 	// Ready=True, both NotReferenced; one named only by GitTargets that are not eligible is
-	// Configured NotBound or a refusal. Of the ArgoCDTriggers in line for one Application in one
+	// Configured NotBound or a refusal. Of the ArgoCDClaims in line for one Application in one
 	// cluster, one holds it: the one holding it already, then the one created first. The others are
-	// Configured=False (HeldByAnotherTrigger) until it lets go, and the next in line takes it over.
+	// Configured=False (HeldByAnotherClaim) until it lets go, and the next in line takes it over.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -83,10 +83,10 @@ type ArgoCDTriggerStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// Source is the Application's spec.source, as last read, published while an eligible GitTarget
-	// references the trigger. A GitTarget naming this trigger must write the repository it syncs, on
+	// references the applier claim. A GitTarget naming this applier claim must write the repository it syncs, on
 	// the branch its targetRevision names.
 	// +optional
-	Source *ArgoCDTriggerSource `json:"source,omitempty"`
+	Source *ArgoCDClaimSource `json:"source,omitempty"`
 
 	// Operation is the sync GitOps Reverser started on the Application: the one in flight, or the
 	// last one. Absent until the first.
@@ -99,7 +99,7 @@ type ArgoCDTriggerStatus struct {
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
 
-	// PreviousSuspendState is how the Application stood before the trigger first switched its
+	// PreviousSuspendState is how the Application stood before the applier claim first switched its
 	// automated sync off, which handing it back restores: NotSuspended (automated sync was on) or
 	// Suspended (it was off). Recorded with the first switch-off, and cleared once the Application is
 	// handed back. Absent, a hand-back gives the switch up and leaves what the Application's own spec
@@ -109,8 +109,8 @@ type ArgoCDTriggerStatus struct {
 	PreviousSuspendState SuspendState `json:"previousSuspendState,omitempty"`
 }
 
-// ArgoCDTriggerSource is the source an Application syncs.
-type ArgoCDTriggerSource struct {
+// ArgoCDClaimSource is the source an Application syncs.
+type ArgoCDClaimSource struct {
 	// RepoURL is the Application's spec.source.repoURL.
 	// +optional
 	RepoURL string `json:"repoURL,omitempty"`
@@ -135,55 +135,55 @@ type ArgoCDTriggerSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ArgoCDTrigger holds an Argo CD Application's automated sync off for GitOps Reverser, which starts
+// ArgoCDClaim holds an Argo CD Application's automated sync off for GitOps Reverser, which starts
 // every sync it runs, each after publishing the edits pending on the branch: after a commit
 // GitOps Reverser did not push, after a refused edit, after a reverted edit, and to adopt what the
-// API created or converge the Application (CatchUp). GitTargets name it with spec.applyTriggerRef.
-type ArgoCDTrigger struct {
+// API created or converge the Application (CatchUp). GitTargets name it with spec.applierClaimRef.
+type ArgoCDClaim struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the Application the trigger holds
+	// spec defines the Application the applier claim holds
 	// +required
-	Spec ArgoCDTriggerSpec `json:"spec"`
+	Spec ArgoCDClaimSpec `json:"spec"`
 
-	// status defines the observed state of ArgoCDTrigger
+	// status defines the observed state of ArgoCDClaim
 	// +optional
-	Status ArgoCDTriggerStatus `json:"status,omitempty,omitzero"`
+	Status ArgoCDClaimStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// ArgoCDTriggerList contains a list of ArgoCDTrigger.
-type ArgoCDTriggerList struct {
+// ArgoCDClaimList contains a list of ArgoCDClaim.
+type ArgoCDClaimList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 
-	Items []ArgoCDTrigger `json:"items"`
+	Items []ArgoCDClaim `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&ArgoCDTrigger{}, &ArgoCDTriggerList{})
+	SchemeBuilder.Register(&ArgoCDClaim{}, &ArgoCDClaimList{})
 }
 
-var _ ApplyTrigger = (*ArgoCDTrigger)(nil)
+var _ ApplierClaim = (*ArgoCDClaim)(nil)
 
-// TriggerKind is ArgoCDTrigger.
-func (t *ArgoCDTrigger) TriggerKind() string { return ApplyTriggerKindArgoCD }
+// ClaimKind is ArgoCDClaim.
+func (t *ArgoCDClaim) ClaimKind() string { return ApplierClaimKindArgoCD }
 
-// KubeProviderKey is spec.kubeProviderRef, its namespace defaulted to the trigger's own.
-func (t *ArgoCDTrigger) KubeProviderKey() types.NamespacedName {
+// KubeProviderKey is spec.kubeProviderRef, its namespace defaulted to the applier claim's own.
+func (t *ArgoCDClaim) KubeProviderKey() types.NamespacedName {
 	return kubeProviderKey(t.Spec.KubeProviderRef, t.Namespace)
 }
 
 // ApplierKind is Application.
-func (t *ArgoCDTrigger) ApplierKind() string { return ApplierKindApplication }
+func (t *ArgoCDClaim) ApplierKind() string { return ApplierKindApplication }
 
-// Applier is spec.applicationRef, its namespace defaulted to the trigger's own.
-func (t *ArgoCDTrigger) Applier() types.NamespacedName {
+// Applier is spec.applicationRef, its namespace defaulted to the applier claim's own.
+func (t *ArgoCDClaim) Applier() types.NamespacedName {
 	return types.NamespacedName{
 		Namespace: defaultedNamespace(t.Spec.ApplicationRef.Namespace, t.Namespace),
 		Name:      t.Spec.ApplicationRef.Name,
@@ -192,7 +192,7 @@ func (t *ArgoCDTrigger) Applier() types.NamespacedName {
 
 // SourceBinding is status.source's repoURL, and the branch its targetRevision names ("HEAD" for an
 // empty one, which follows no branch GitOps Reverser writes).
-func (t *ArgoCDTrigger) SourceBinding() (string, string, bool) {
+func (t *ArgoCDClaim) SourceBinding() (string, string, bool) {
 	if t.Status.Source == nil {
 		return "", "", false
 	}
@@ -205,25 +205,25 @@ func (t *ArgoCDTrigger) SourceBinding() (string, string, bool) {
 
 // SharedSource is none: every sync pins its own revision, so Applications reading one repository
 // do not disturb each other's operations.
-func (t *ArgoCDTrigger) SharedSource() (types.NamespacedName, bool) {
+func (t *ArgoCDClaim) SharedSource() (types.NamespacedName, bool) {
 	return types.NamespacedName{}, false
 }
 
 // Operation is status.operation.
-func (t *ArgoCDTrigger) Operation() *ApplyOperation { return t.Status.Operation }
+func (t *ArgoCDClaim) Operation() *ApplyOperation { return t.Status.Operation }
 
 // RepairPending is status.repairPending.
-func (t *ArgoCDTrigger) RepairPending() bool { return t.Status.RepairPending }
+func (t *ArgoCDClaim) RepairPending() bool { return t.Status.RepairPending }
 
 // SetOperation replaces status.operation and status.repairPending.
-func (t *ArgoCDTrigger) SetOperation(operation *ApplyOperation, repairPending bool) {
+func (t *ArgoCDClaim) SetOperation(operation *ApplyOperation, repairPending bool) {
 	t.Status.Operation, t.Status.RepairPending = operation, repairPending
 }
 
 // PreviousSuspendState is status.previousSuspendState.
-func (t *ArgoCDTrigger) PreviousSuspendState() SuspendState { return t.Status.PreviousSuspendState }
+func (t *ArgoCDClaim) PreviousSuspendState() SuspendState { return t.Status.PreviousSuspendState }
 
 // SetPreviousSuspendState replaces status.previousSuspendState.
-func (t *ArgoCDTrigger) SetPreviousSuspendState(state SuspendState) {
+func (t *ArgoCDClaim) SetPreviousSuspendState(state SuspendState) {
 	t.Status.PreviousSuspendState = state
 }

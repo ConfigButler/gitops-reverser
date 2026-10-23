@@ -29,7 +29,7 @@ import (
 // var, which no kustomize declaration in the overlay can express. Read scope reaches the base;
 // write scope never does.
 //
-// Flux applies the overlay when its Kustomization is created, and the trigger then holds it
+// Flux applies the overlay when its Kustomization is created, and the applier claim then holds it
 // suspended, so a revert of the drifted env var inside this spec is an apply GitOps Reverser started,
 // and nothing else: a resume of the unchanged commit, which is all a Refusal needs.
 var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"), Ordered, SpecPriority(80), func() {
@@ -80,7 +80,7 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 		DeferCleanup(func() { _ = os.RemoveAll(seedFolder) })
 		seedRenderedFolderIntoRepo(repo, testNs, seedFolder, "apps/checkout")
 
-		By("letting Flux apply the overlay once, before any trigger holds it")
+		By("letting Flux apply the overlay once, before any applier claim holds it")
 		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "main", "./"+gitPath)
 		Eventually(func(g Gomega) {
 			g.Expect(checkoutLogLevel(g, testNs)).To(Equal("info"))
@@ -96,9 +96,9 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 
 		By("creating the GitTarget on the OVERLAY, naming the Kustomization and asking it to reapply")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		createFluxTrigger(testNs, fluxName, fluxName)
-		nameApplyTrigger(testNs, destName, "FluxTrigger", fluxName, "Reapply")
-		verifyResourceCondition("gittarget", destName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
+		createFluxClaim(testNs, fluxName, fluxName)
+		nameApplierClaim(testNs, destName, "FluxClaim", fluxName, "Reapply")
+		verifyResourceCondition("gittarget", destName, testNs, "ApplierClaimReady", "True", "Succeeded", "")
 
 		// The overlay renders into THIS namespace, so the rule watches its own and needs no
 		// sourceNamespace override. ConfigMaps ride along so this target has an ACCEPTED watched
@@ -134,9 +134,9 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 		// (the env var changed back), so one more request may follow it. What must never grow is
 		// the count after that: a forced recheck re-observes the standing refusal every minute.
 		By("and it settles instead of asking on every recheck")
-		seen := map[string]struct{}{readTriggerOperation(Default, testNs, fluxTriggerResource, fluxName).Token: {}}
+		seen := map[string]struct{}{readClaimOperation(Default, testNs, fluxClaimResource, fluxName).Token: {}}
 		Consistently(func(g Gomega) {
-			seen[readTriggerOperation(g, testNs, fluxTriggerResource, fluxName).Token] = struct{}{}
+			seen[readClaimOperation(g, testNs, fluxClaimResource, fluxName).Token] = struct{}{}
 			g.Expect(len(seen)).To(BeNumerically("<=", 2),
 				"a standing refusal must not be requested once per recheck")
 		}, 150*time.Second, 10*time.Second).Should(Succeed())

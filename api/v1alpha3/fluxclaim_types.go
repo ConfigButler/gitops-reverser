@@ -8,33 +8,33 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// FluxTriggerFinalizer is the finalizer a FluxTrigger carries while it holds its Kustomization
+// FluxClaimFinalizer is the finalizer a FluxClaim carries while it holds its Kustomization
 // suspended: from before its first adoption write until it has handed the Kustomization back or
-// over. Deleting the trigger, or the last eligible GitTarget naming it, suspends the Kustomization
+// over. Deleting the applier claim, or the last eligible GitTarget naming it, suspends the Kustomization
 // once more, waits until nothing started before that suspend is running, and then hands it back to
 // Flux as status.previousSuspendState recorded it: spec.suspend is released, so the Kustomization is resumed,
-// unless it was suspended before the trigger held it, and stays so. A trigger that never held its
+// unless it was suspended before the applier claim held it, and stays so. An applier claim that never held its
 // Kustomization has none.
-const FluxTriggerFinalizer = "configbutler.ai/flux-trigger"
+const FluxClaimFinalizer = "configbutler.ai/flux-claim"
 
 // spec.clusterProviderRef was replaced by spec.kubeProviderRef, with the cluster-scoped kind it
 // named. It stays in the schema only to be refused by name; the rule sits on spec so CRD validation
 // ratcheting cannot wave a stored value through on the next edit.
 
-// FluxTriggerSpec names the Flux Kustomization the trigger holds, and the cluster it is in.
+// FluxClaimSpec names the Flux Kustomization the applier claim holds, and the cluster it is in.
 // +kubebuilder:validation:XValidation:rule="!has(self.clusterProviderRef)",message="spec.clusterProviderRef was replaced by spec.kubeProviderRef, which names a namespaced KubeProvider"
-type FluxTriggerSpec struct {
-	// Why immutable: the trigger holds the Kustomization it names (it suspends it while idle and
+type FluxClaimSpec struct {
+	// Why immutable: the applier claim holds the Kustomization it names (it suspends it while idle and
 	// hands it back when deleted), so pointing it elsewhere would leave the first one held by
-	// nothing. Delete and recreate the trigger instead; its finalizer hands the old one back.
+	// nothing. Delete and recreate the applier claim instead; its finalizer hands the old one back.
 
 	// KubeProviderRef names the KubeProvider whose cluster holds the Kustomization, such as a
 	// management cluster running Flux for the source cluster. Namespace omitted means this
-	// trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
+	// applier claim's own namespace. The provider must admit this applier claim's namespace: its own, or one its
 	// spec.accessFrom admits. Its identity needs get and patch on the Kustomization and its GitRepository. Immutable.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the FluxTrigger to hold a Kustomization elsewhere"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the FluxClaim to hold a Kustomization elsewhere"
 	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef"`
 
 	// RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
@@ -43,33 +43,33 @@ type FluxTriggerSpec struct {
 	RemovedClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// KustomizationRef is the Flux Kustomization that applies the folders of the GitTargets naming
-	// this trigger. Its spec.sourceRef must be a GitRepository that follows a branch. Its namespace
-	// defaults to the trigger's namespace. Immutable.
+	// this applier claim. Its spec.sourceRef must be a GitRepository that follows a branch. Its namespace
+	// defaults to the applier claim's namespace. Immutable.
 	// +required
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kustomizationRef is immutable; delete and recreate the FluxTrigger to hold another Kustomization"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kustomizationRef is immutable; delete and recreate the FluxClaim to hold another Kustomization"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kustomizationRef.name must not be empty"
 	KustomizationRef meta.NamespacedObjectReference `json:"kustomizationRef"`
 }
 
-// FluxTriggerStatus is what the trigger knows about its Kustomization, and the apply it started.
-type FluxTriggerStatus struct {
+// FluxClaimStatus is what the applier claim knows about its Kustomization, and the apply it started.
+type FluxClaimStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are Configured (an eligible GitTarget names the trigger; the Kustomization exists,
-	// applies a GitRepository that follows a branch, may be patched, and no other FluxTrigger holds
+	// Conditions are Configured (an eligible GitTarget names the applier claim; the Kustomization exists,
+	// applies a GitRepository that follows a branch, may be patched, and no other FluxClaim holds
 	// it), Held (Suspended: suspended under GitOps Reverser with the last suspend handled; Applying:
 	// resumed for an apply GitOps Reverser started; Suspending: a suspend is not handled yet;
 	// Releasing: being handed back; NotReferenced; NotConfigured), and the kstatus
-	// Ready/Reconciling/Stalled trio. A trigger acts only while an eligible GitTarget references it:
+	// Ready/Reconciling/Stalled trio. An applier claim acts only while an eligible GitTarget references it:
 	// one in its namespace that names it, is admitted by its KubeProviders, and writes the
-	// repository and branch the GitRepository fetches. A trigger no GitTarget names reads nothing
+	// repository and branch the GitRepository fetches. An applier claim no GitTarget names reads nothing
 	// in the Kustomization's cluster and is Configured=Unknown, Ready=True, both NotReferenced; one
 	// named only by GitTargets that are not eligible is Configured NotBound or a refusal. Of the
-	// FluxTriggers in line for one Kustomization in one cluster, one holds it: the one with an apply
+	// FluxClaims in line for one Kustomization in one cluster, one holds it: the one with an apply
 	// in flight, then the one holding it already, then the one created first. The others are
-	// Configured=False (HeldByAnotherTrigger) until it lets go, and the next in line takes it over.
+	// Configured=False (HeldByAnotherClaim) until it lets go, and the next in line takes it over.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -78,10 +78,10 @@ type FluxTriggerStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// Source is the GitRepository the Kustomization applies, as last read, published while an
-	// eligible GitTarget references the trigger. A GitTarget naming this trigger must write the
+	// eligible GitTarget references the applier claim. A GitTarget naming this applier claim must write the
 	// repository and branch it fetches.
 	// +optional
-	Source *FluxTriggerSource `json:"source,omitempty"`
+	Source *FluxClaimSource `json:"source,omitempty"`
 
 	// Operation is the apply GitOps Reverser started on the Kustomization: the one in flight, or
 	// the last one. Absent until the first.
@@ -94,7 +94,7 @@ type FluxTriggerStatus struct {
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
 
-	// PreviousSuspendState is how the Kustomization stood before the trigger first suspended it,
+	// PreviousSuspendState is how the Kustomization stood before the applier claim first suspended it,
 	// which handing it back restores: one that was Suspended stays suspended, one that was
 	// NotSuspended is resumed. Recorded with the first suspend, and cleared once the Kustomization is
 	// handed back. Absent, a hand-back resumes the Kustomization.
@@ -102,8 +102,8 @@ type FluxTriggerStatus struct {
 	PreviousSuspendState SuspendState `json:"previousSuspendState,omitempty"`
 }
 
-// FluxTriggerSource is the GitRepository a Kustomization applies.
-type FluxTriggerSource struct {
+// FluxClaimSource is the GitRepository a Kustomization applies.
+type FluxClaimSource struct {
 	// GitRepository is the Kustomization's spec.sourceRef, its namespace defaulted.
 	// +required
 	GitRepository meta.NamespacedObjectReference `json:"gitRepository"`
@@ -117,11 +117,11 @@ type FluxTriggerSource struct {
 	Branch string `json:"branch,omitempty"`
 
 	// Why information only (decision 2 of 2026-10-17 in docs/design/apply-trigger.md): one
-	// GitRepository for several Kustomizations is a normal setup, and a consumer no trigger names
+	// GitRepository for several Kustomizations is a normal setup, and a consumer no applier claim names
 	// applies a folder that has no promise of protection anyway.
 
 	// OtherConsumers are the other objects in the cluster that apply this GitRepository and that no
-	// FluxTrigger holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
+	// FluxClaim holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
 	// new artifact the moment it arrives. Information only: it never affects Ready.
 	// +optional
 	// +listType=atomic
@@ -142,55 +142,55 @@ type FluxTriggerSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// FluxTrigger holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes,
+// FluxClaim holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes,
 // each after publishing the edits pending on the branch: after a commit GitOps Reverser did not
 // push, after a refused edit, after a reverted edit, and to adopt what the API created or converge
-// the Kustomization (CatchUp). GitTargets name it with spec.applyTriggerRef.
-type FluxTrigger struct {
+// the Kustomization (CatchUp). GitTargets name it with spec.applierClaimRef.
+type FluxClaim struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the Kustomization the trigger holds
+	// spec defines the Kustomization the applier claim holds
 	// +required
-	Spec FluxTriggerSpec `json:"spec"`
+	Spec FluxClaimSpec `json:"spec"`
 
-	// status defines the observed state of FluxTrigger
+	// status defines the observed state of FluxClaim
 	// +optional
-	Status FluxTriggerStatus `json:"status,omitempty,omitzero"`
+	Status FluxClaimStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// FluxTriggerList contains a list of FluxTrigger.
-type FluxTriggerList struct {
+// FluxClaimList contains a list of FluxClaim.
+type FluxClaimList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 
-	Items []FluxTrigger `json:"items"`
+	Items []FluxClaim `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&FluxTrigger{}, &FluxTriggerList{})
+	SchemeBuilder.Register(&FluxClaim{}, &FluxClaimList{})
 }
 
-var _ ApplyTrigger = (*FluxTrigger)(nil)
+var _ ApplierClaim = (*FluxClaim)(nil)
 
-// TriggerKind is FluxTrigger.
-func (t *FluxTrigger) TriggerKind() string { return ApplyTriggerKindFlux }
+// ClaimKind is FluxClaim.
+func (t *FluxClaim) ClaimKind() string { return ApplierClaimKindFlux }
 
-// KubeProviderKey is spec.kubeProviderRef, its namespace defaulted to the trigger's own.
-func (t *FluxTrigger) KubeProviderKey() types.NamespacedName {
+// KubeProviderKey is spec.kubeProviderRef, its namespace defaulted to the applier claim's own.
+func (t *FluxClaim) KubeProviderKey() types.NamespacedName {
 	return kubeProviderKey(t.Spec.KubeProviderRef, t.Namespace)
 }
 
 // ApplierKind is Kustomization.
-func (t *FluxTrigger) ApplierKind() string { return ApplierKindKustomization }
+func (t *FluxClaim) ApplierKind() string { return ApplierKindKustomization }
 
-// Applier is spec.kustomizationRef, its namespace defaulted to the trigger's own.
-func (t *FluxTrigger) Applier() types.NamespacedName {
+// Applier is spec.kustomizationRef, its namespace defaulted to the applier claim's own.
+func (t *FluxClaim) Applier() types.NamespacedName {
 	return types.NamespacedName{
 		Namespace: defaultedNamespace(t.Spec.KustomizationRef.Namespace, t.Namespace),
 		Name:      t.Spec.KustomizationRef.Name,
@@ -198,7 +198,7 @@ func (t *FluxTrigger) Applier() types.NamespacedName {
 }
 
 // SourceBinding is status.source's url and branch.
-func (t *FluxTrigger) SourceBinding() (string, string, bool) {
+func (t *FluxClaim) SourceBinding() (string, string, bool) {
 	if t.Status.Source == nil {
 		return "", "", false
 	}
@@ -206,7 +206,7 @@ func (t *FluxTrigger) SourceBinding() (string, string, bool) {
 }
 
 // SharedSource is the GitRepository in status.source.
-func (t *FluxTrigger) SharedSource() (types.NamespacedName, bool) {
+func (t *FluxClaim) SharedSource() (types.NamespacedName, bool) {
 	if t.Status.Source == nil {
 		return types.NamespacedName{}, false
 	}
@@ -215,20 +215,20 @@ func (t *FluxTrigger) SharedSource() (types.NamespacedName, bool) {
 }
 
 // Operation is status.operation.
-func (t *FluxTrigger) Operation() *ApplyOperation { return t.Status.Operation }
+func (t *FluxClaim) Operation() *ApplyOperation { return t.Status.Operation }
 
 // RepairPending is status.repairPending.
-func (t *FluxTrigger) RepairPending() bool { return t.Status.RepairPending }
+func (t *FluxClaim) RepairPending() bool { return t.Status.RepairPending }
 
 // SetOperation replaces status.operation and status.repairPending.
-func (t *FluxTrigger) SetOperation(operation *ApplyOperation, repairPending bool) {
+func (t *FluxClaim) SetOperation(operation *ApplyOperation, repairPending bool) {
 	t.Status.Operation, t.Status.RepairPending = operation, repairPending
 }
 
 // PreviousSuspendState is status.previousSuspendState.
-func (t *FluxTrigger) PreviousSuspendState() SuspendState { return t.Status.PreviousSuspendState }
+func (t *FluxClaim) PreviousSuspendState() SuspendState { return t.Status.PreviousSuspendState }
 
 // SetPreviousSuspendState replaces status.previousSuspendState.
-func (t *FluxTrigger) SetPreviousSuspendState(state SuspendState) {
+func (t *FluxClaim) SetPreviousSuspendState(state SuspendState) {
 	t.Status.PreviousSuspendState = state
 }

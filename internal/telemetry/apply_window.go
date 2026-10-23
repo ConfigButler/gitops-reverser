@@ -38,7 +38,7 @@ var ApplyWindowCollisionsTotal metric.Int64Counter
 var ApplyEchoesTotal metric.Int64Counter
 
 // ApplyOwnershipConflictsTotal counts objects another applier owns that a branch worker kept out of a
-// folder an apply trigger applies: a live write not mirrored, or a snapshot object neither upserted
+// coordinated folder: a live write not mirrored, or a snapshot object neither upserted
 // nor swept (docs/design/applier-echoes.md, F4). Labelled by {provider_namespace, provider_name,
 // branch}. Any non-zero rate is a misconfiguration: another Kustomization or Application applies
 // objects into a namespace the folder mirrors, and its log line names both.

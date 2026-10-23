@@ -71,10 +71,10 @@ API source (`Accept`), does report a type it cannot follow, or a namespace outsi
 the GitTarget's scope, as a refusal.
 
 **An object another applier owns stays out of a folder an applier applies.** When a
-GitTarget names an apply trigger, an object another applier owns (Flux's owner labels, or
+GitTarget names an applier claim, an object another applier owns (Flux's owner labels, or
 Argo CD's tracking annotation) is not mirrored into its folder, and the sweep
-leaves its document alone: two appliers applying one object fight each other. A
-folder with no trigger mirrors such objects as before.
+leaves its document alone: two appliers applying one object fight each other. An
+uncoordinated folder mirrors such objects as before.
 
 **At most one editable document per resource identity.** Two documents claiming the
 same identity is not a prune opportunity, it is an invalid repository state: the
@@ -154,7 +154,7 @@ So when something changes Git *out of band* — an external push, a human deleti
 files on the branch — **nothing re-runs the path's reconcile to bring Git back in
 line.** The drift is detected but not acted on.
 
-A folder an apply trigger applies is the exception, in the other direction: when
+A coordinated folder is the exception, in the other direction: when
 the branch worker learns of a commit it did not push, it asks the applier to apply
 it (a `ForeignCommit`), so the cluster follows Git.
 

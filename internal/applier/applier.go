@@ -7,8 +7,8 @@ commit is safe to apply. The worker decides WHEN; this package decides HOW, off 
 so a slow or unreachable applier never holds a branch.
 
 Two kinds are served, behind one Client: a Flux Kustomization whose sourceRef is a GitRepository
-(a FluxTrigger's spec.kustomizationRef, flux.go), held suspended while idle and resumed for each
-apply, and an Argo CD Application held with automated sync off (an ArgoCDTrigger's
+(a FluxClaim's spec.kustomizationRef, flux.go), held suspended while idle and resumed for each
+apply, and an Argo CD Application held with automated sync off (an ArgoCDClaim's
 spec.applicationRef, argocd.go). Either way the applier applies only when GitOps Reverser asks.
 See docs/design/apply-trigger.md, "The Flux applier, suspended".
 
@@ -40,10 +40,10 @@ import (
 )
 
 // Client asks one kind of applier, in one cluster, to apply. The dispatcher (Dispatcher.client) and
-// the trigger's Configured check (NewClient) pick one by the applier's kind, and use nothing else of
+// the applier claim's Configured check (NewClient) pick one by the applier's kind, and use nothing else of
 // it.
 type Client interface {
-	// Validate answers a trigger's Configured condition: the applier exists, applies a source GitOps
+	// Validate answers an applier claim's Configured condition: the applier exists, applies a source GitOps
 	// Reverser can drive, and may be asked. It reports the source it read, whatever the verdict.
 	Validate(ctx context.Context, ref types.NamespacedName) Verdict
 	// Request starts one apply of ask.Commit, after checking the applier still applies ask.Want and
@@ -69,13 +69,13 @@ type Ask struct {
 	Token string
 	// Current reports whether the decision still holds; nil always does.
 	Current func() bool
-	// Record writes the operation on its trigger, and returns once it is written. It is called just
+	// Record writes the operation on its applier claim, and returns once it is written. It is called just
 	// before the write that starts the apply, so a restart finds every apply that may have started.
 	// Current is asked again after it, since it can wait on the status writer and the API server.
 	// Nil records nothing.
 	Record func(ctx context.Context) error
-	// Held reports, from a fresh read, whether the trigger holds its Flux Kustomization suspended
-	// (Held=True), and errs when it does not: a resume while the trigger's reconciler is still
+	// Held reports, from a fresh read, whether the applier claim holds its Flux Kustomization suspended
+	// (Held=True), and errs when it does not: a resume while the applier claim's reconciler is still
 	// suspending it (an adoption, an external resume) would race that suspend. It is asked just
 	// before Record. Nil always holds; the Argo CD client never asks it.
 	Held func(ctx context.Context) error
@@ -140,7 +140,7 @@ func selfSubjectAccessReviewGVR() schema.GroupVersionResource {
 // Outcome is what one request did.
 type Outcome string
 
-// Configured and ApplyTriggerReady reasons (docs/configuration.md, "Who applies this folder").
+// Configured and ApplierClaimReady reasons (docs/configuration.md, "Who applies this folder").
 // Succeeded and Failed are the generic reasons, aliased from Flux's meta package as the conditions
 // guide asks.
 const (
@@ -154,12 +154,12 @@ const (
 	// Kustomization that applies no GitRepository, or one pinned to anything but a branch, or an
 	// Application with several sources.
 	ReasonUnsupportedSource = "UnsupportedSource"
-	// ReasonSourceMismatch is ApplyTriggerReady=False on a GitTarget whose trigger's applier applies
+	// ReasonSourceMismatch is ApplierClaimReady=False on a GitTarget whose applier claim's applier applies
 	// a different repository or branch than the GitTarget writes.
 	ReasonSourceMismatch = "SourceMismatch"
 	// ReasonArgoCDVersionNotSupported is an Application served by an Argo CD before 3.1, which has no
 	// spec.syncPolicy.automated.enabled to hold automated sync off with. GitOps Reverser does not
-	// support it: the trigger writes nothing and is Stalled, so never Ready.
+	// support it: the applier claim writes nothing and is Stalled, so never Ready.
 	ReasonArgoCDVersionNotSupported = "ArgoCDVersionNotSupported"
 	// ReasonForbidden is a KubeProvider identity that may not read or write the applier.
 	ReasonForbidden = "Forbidden"
@@ -168,7 +168,7 @@ const (
 	ReasonCheckFailed = fluxmeta.FailedReason
 )
 
-// Verdict is the answer Validate gives for a trigger's Configured condition.
+// Verdict is the answer Validate gives for an applier claim's Configured condition.
 type Verdict struct {
 	// OK is Configured=True.
 	OK bool
@@ -196,7 +196,7 @@ type Source struct {
 }
 
 // Started is the operation one Request started, may have started (Unconfirmed), or read back from
-// the trigger's record (Recovered), for Progress to follow.
+// the applier claim's record (Recovered), for Progress to follow.
 type Started struct {
 	// Outcome is what was asked, if anything.
 	Outcome Outcome
@@ -210,7 +210,7 @@ type Started struct {
 	// Overdue is set by the dispatcher once the operation is Unresolved. A Flux Kustomization is
 	// then suspended at once, rather than once its apply was seen to end.
 	Overdue bool
-	// Recovered is an operation read back from the trigger's record rather than started by this
+	// Recovered is an operation read back from the applier claim's record rather than started by this
 	// process: the write that would start it (a Flux resume, an Argo CD update) may never have been
 	// made, and the record says nothing of that.
 	Recovered bool
@@ -235,22 +235,22 @@ type Started struct {
 }
 
 // Binding is the repository and branch an applier must apply from: the GitProvider's spec.url and
-// the GitTarget's spec.branch. Request checks it before it writes anything, because a trigger's
+// the GitTarget's spec.branch. Request checks it before it writes anything, because an applier claim's
 // published source can be older than the applier it describes.
 type Binding struct {
 	RepositoryURL string
 	Branch        string
 }
 
-// BindingMismatch returns why the source a trigger last read is not want, or "" when it is. The
-// GitTarget's ApplyTriggerReady condition reads it; Request checks the same against the applier
+// BindingMismatch returns why the source an applier claim last read is not want, or "" when it is. The
+// GitTarget's ApplierClaimReady condition reads it; Request checks the same against the applier
 // itself before it writes.
-func BindingMismatch(trigger v1alpha3.ApplyTrigger, want Binding) string {
-	url, branch, known := trigger.SourceBinding()
+func BindingMismatch(claim v1alpha3.ApplierClaim, want Binding) string {
+	url, branch, known := claim.SourceBinding()
 	if !known {
 		return ""
 	}
-	return bindingMismatch(trigger, url, branch, want)
+	return bindingMismatch(claim, url, branch, want)
 }
 
 // AccessCheck reports whether the KubeProvider identity may perform attrs.

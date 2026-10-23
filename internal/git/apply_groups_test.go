@@ -16,10 +16,10 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// applying gives a trigger the source its reconciler published.
-func applying(gitRepository string) func(*configv1alpha3.FluxTrigger) {
-	return func(trigger *configv1alpha3.FluxTrigger) {
-		trigger.Status.Source = &configv1alpha3.FluxTriggerSource{
+// applying gives an applier claim the source its reconciler published.
+func applying(gitRepository string) func(*configv1alpha3.FluxClaim) {
+	return func(applierClaim *configv1alpha3.FluxClaim) {
+		applierClaim.Status.Source = &configv1alpha3.FluxClaimSource{
 			GitRepository: meta.NamespacedObjectReference{Namespace: "flux-system", Name: gitRepository},
 			URL:           "https://example.com/repo", Branch: "main",
 		}
@@ -30,9 +30,9 @@ func applying(gitRepository string) func(*configv1alpha3.FluxTrigger) {
 // after the other, and two on different GitRepositories at once.
 func TestGroups_OneOperationAtATimePerSource(t *testing.T) {
 	loop, requester := manualLoop(t,
-		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform")),
-		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform")),
-		applierTestTarget("charlie", true), fluxTrigger("charlie", applying("other")),
+		applierTestTarget("alpha", true), fluxClaim("alpha", applying("platform")),
+		applierTestTarget("bravo", true), fluxClaim("bravo", applying("platform")),
+		applierTestTarget("charlie", true), fluxClaim("charlie", applying("other")),
 	)
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -57,8 +57,8 @@ func TestGroups_OneOperationAtATimePerSource(t *testing.T) {
 // turn waits for its siblings instead of going again.
 func TestGroups_TheSourceIsSharedInTurn(t *testing.T) {
 	loop, requester := manualLoop(t,
-		applierTestTarget("alpha", true), fluxTrigger("alpha", applying("platform")),
-		applierTestTarget("bravo", true), fluxTrigger("bravo", applying("platform")),
+		applierTestTarget("alpha", true), fluxClaim("alpha", applying("platform")),
+		applierTestTarget("bravo", true), fluxClaim("bravo", applying("platform")),
 	)
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -75,17 +75,17 @@ func TestGroups_TheSourceIsSharedInTurn(t *testing.T) {
 	}
 }
 
-// TestSourceGroup_KeysByTheTriggersKubeProvider: a group is one GitRepository in one cluster, and a
+// TestSourceGroup_KeysByTheClaimsKubeProvider: a group is one GitRepository in one cluster, and a
 // cluster is a KubeProvider's namespace/name, so the same GitRepository reached through providers
-// sharing a name in two namespaces is two groups. A trigger that has read no source shares none.
-func TestSourceGroup_KeysByTheTriggersKubeProvider(t *testing.T) {
-	assert.Empty(t, sourceGroup(fluxTrigger("alpha")), "a trigger with no source shares nothing")
+// sharing a name in two namespaces is two groups. An applier claim that has read no source shares none.
+func TestSourceGroup_KeysByTheClaimsKubeProvider(t *testing.T) {
+	assert.Empty(t, sourceGroup(fluxClaim("alpha")), "an applier claim with no source shares nothing")
 
-	own := fluxTrigger("alpha", applying("platform"))
+	own := fluxClaim("alpha", applying("platform"))
 	assert.Equal(t, "team-a/"+testKubeProvider+"/flux-system/platform", sourceGroup(own))
 
-	elsewhere := fluxTrigger("alpha", applying("platform"), func(trigger *configv1alpha3.FluxTrigger) {
-		trigger.Spec.KubeProviderRef.Namespace = "platform"
+	elsewhere := fluxClaim("alpha", applying("platform"), func(applierClaim *configv1alpha3.FluxClaim) {
+		applierClaim.Spec.KubeProviderRef.Namespace = "platform"
 	})
 	assert.Equal(t, "platform/"+testKubeProvider+"/flux-system/platform", sourceGroup(elsewhere))
 	assert.NotEqual(t, sourceGroup(own), sourceGroup(elsewhere))

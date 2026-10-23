@@ -339,7 +339,7 @@ type ResolvedTargetMetadata struct {
 	// against the right cluster's mapping.
 	SourceCluster string
 
-	// Applied is whether the GitTarget names an apply trigger: an applier applies its folder, which
+	// Applied is whether the GitTarget names an applier claim: an applier applies its folder, which
 	// must then exist before it is asked to. A resync into a folder that does not exist yet commits
 	// the folder's bootstrap files even when it holds no object (executeResyncPendingWrite).
 	Applied bool
@@ -424,7 +424,7 @@ type PendingWrite struct {
 	// documents its sweep removed. Nil until decided. See actionsDecided.
 	resyncActions *resyncActions
 	// ownedElsewhere names, by objectKey, the snapshot objects another applier owns, which a resync
-	// into a triggered folder neither upserts nor sweeps (apply_ownership.go).
+	// into a coordinated folder neither upserts nor sweeps (apply_ownership.go).
 	ownedElsewhere map[string]bool
 	// committedOnce is set once the loop has committed this write at least once. It stays set after
 	// a reset discards that commit: whether the checkout holds it now is checkoutApplied's to say. A
@@ -576,7 +576,7 @@ type ResyncRequest struct {
 	// The worker records that scope clean once the resync applies (recordReplayClean).
 	RenderFidelityRevision uint64
 	// Owners is the applier that owns each snapshot object some applier owns, read from the raw
-	// object (AppliedByOf). An object another applier owns is neither upserted into a triggered
+	// object (AppliedByOf). An object another applier owns is neither upserted into a claimed
 	// folder nor swept from it (apply_ownership.go).
 	Owners map[types.ResourceIdentifier]AppliedBy
 	// Initial marks the first snapshot of its collection for this GitTarget: none was applied for it
@@ -738,7 +738,7 @@ type Event struct {
 
 	// AppliedBy is the applier that owns the object, read from its raw labels and annotations
 	// (AppliedByOf). PROVENANCE like LastFieldManagers, stamped by the live watch; zero when no
-	// applier owns it. An object another applier owns is not mirrored into a folder a trigger applies
+	// applier owns it. An object another applier owns is not mirrored into a coordinated folder
 	// (apply_ownership.go).
 	AppliedBy AppliedBy
 
@@ -757,7 +757,7 @@ type Event struct {
 	Attribution AttributionOutcome
 
 	// Path is the POSIX-like relative path prefix for this event's files.
-	// This comes from the GitTarget that triggered this event.
+	// This comes from the GitTarget that claimed this event.
 	// Empty string means write to repository root.
 	Path string
 

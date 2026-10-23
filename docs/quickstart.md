@@ -8,7 +8,7 @@ there and writing them to
 chart also renders the `local` `KubeProvider` in the `gitops-reverser` namespace, the operator's own
 cluster, which the starter target names as its source.
 
-![Config basics diagram showing the relationship between GitProvider, GitTarget, and WatchRule](images/config-basics.excalidraw.svg)
+![Config basics: a WatchRule or ClusterWatchRule selects what a GitTarget mirrors; the GitTarget writes its folder through a GitBranch and a GitProvider with a credentials Secret, and reads the cluster through a KubeProvider. The direction is always from the cluster into Git](images/config-basics.excalidraw.svg)
 
 **Prerequisites:** a Kubernetes cluster with `kubectl`, Helm 3, and cert-manager for TLS.
 

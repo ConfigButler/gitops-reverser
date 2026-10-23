@@ -312,16 +312,16 @@ func TestGitTargetAdmitted_ReadErrorsSurfaceAsError(t *testing.T) {
 	}
 }
 
-// TestApplierAdmitted: an applier is reached with its trigger's KubeProvider's credential, so
+// TestApplierAdmitted: an applier is reached with its applier claim's KubeProvider's credential, so
 // that provider must admit the namespace too, and the source's denial comes first.
 func TestApplierAdmitted(t *testing.T) {
 	admits := func(name string, namespaces ...string) *configv1alpha3.KubeProvider {
 		return providerNamed(name, &configv1alpha3.NamespaceMatcher{Names: namespaces})
 	}
-	triggerOn := func(cluster string) configv1alpha3.ApplyTrigger {
-		return &configv1alpha3.FluxTrigger{
+	claimOn := func(cluster string) configv1alpha3.ApplierClaim {
+		return &configv1alpha3.FluxClaim{
 			ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "apps"},
-			Spec: configv1alpha3.FluxTriggerSpec{
+			Spec: configv1alpha3.FluxClaimSpec{
 				KubeProviderRef: meta.NamespacedObjectReference{Name: cluster, Namespace: platformNS},
 			},
 		}
@@ -329,41 +329,41 @@ func TestApplierAdmitted(t *testing.T) {
 	tests := []struct {
 		name        string
 		objects     []client.Object
-		trigger     configv1alpha3.ApplyTrigger
+		claim       configv1alpha3.ApplierClaim
 		wantAllowed bool
 		wantReason  string
 		wantMessage string
 	}{
 		{
-			name:        "the trigger's provider is the source's",
+			name:        "the applier claim's provider is the source's",
 			objects:     []client.Object{admits("prod-eu-1", testNS)},
-			trigger:     triggerOn("prod-eu-1"),
+			claim:       claimOn("prod-eu-1"),
 			wantAllowed: true,
 		},
 		{
 			name:        "another provider that admits the namespace",
 			objects:     []client.Object{admits("prod-eu-1", testNS), admits("hub", testNS)},
-			trigger:     triggerOn("hub"),
+			claim:       claimOn("hub"),
 			wantAllowed: true,
 		},
 		{
 			name:        "another provider that does not admit the namespace",
 			objects:     []client.Object{admits("prod-eu-1", testNS), admits("hub", "elsewhere")},
-			trigger:     triggerOn("hub"),
+			claim:       claimOn("hub"),
 			wantReason:  ReasonNamespaceNotAuthorized,
 			wantMessage: "KubeProvider platform/hub",
 		},
 		{
 			name:        "another provider that does not exist",
 			objects:     []client.Object{admits("prod-eu-1", testNS)},
-			trigger:     triggerOn("hub"),
+			claim:       claimOn("hub"),
 			wantReason:  ReasonKubeProviderNotFound,
-			wantMessage: "FluxTrigger " + testNS + "/apps spec.kubeProviderRef",
+			wantMessage: "FluxClaim " + testNS + "/apps spec.kubeProviderRef",
 		},
 		{
 			name:        "the source's denial comes first",
 			objects:     []client.Object{admits("prod-eu-1", "elsewhere"), admits("hub", testNS)},
-			trigger:     triggerOn("hub"),
+			claim:       claimOn("hub"),
 			wantReason:  ReasonNamespaceNotAuthorized,
 			wantMessage: "KubeProvider platform/prod-eu-1",
 		},
@@ -371,7 +371,7 @@ func TestApplierAdmitted(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			reader := fake.NewClientBuilder().WithScheme(admissionScheme(t)).WithObjects(tc.objects...).Build()
-			decision, err := ApplierAdmitted(context.Background(), reader, targetIn("prod-eu-1"), tc.trigger)
+			decision, err := ApplierAdmitted(context.Background(), reader, targetIn("prod-eu-1"), tc.claim)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantAllowed, decision.Allowed, decision.Message)
 			assert.Equal(t, tc.wantReason, decision.Reason)

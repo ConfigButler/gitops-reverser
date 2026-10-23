@@ -9,41 +9,41 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// What every apply trigger kind shares: the reference a GitTarget names one by, why an apply is
-// asked for, and the operation a trigger's status records. The kinds themselves are in
-// fluxtrigger_types.go and argocdtrigger_types.go. docs/definitions.md fixes the words: the
+// What every applier claim kind shares: the reference a GitTarget names one by, why an apply is
+// asked for, and the operation an applier claim's status records. The kinds themselves are in
+// fluxclaim_types.go and argocdclaim_types.go. docs/definitions.md fixes the words: the
 // APPLIER is the Flux Kustomization or Argo CD Application, and the TRIGGER is this operator's
 // resource that holds it.
 
-// The apply trigger kinds GitTarget.spec.applyTriggerRef can name.
+// The applier claim kinds GitTarget.spec.applierClaimRef can name.
 const (
-	// ApplyTriggerKindFlux is a FluxTrigger, which holds a Flux Kustomization.
-	ApplyTriggerKindFlux = "FluxTrigger"
-	// ApplyTriggerKindArgoCD is an ArgoCDTrigger, which holds an Argo CD Application.
-	ApplyTriggerKindArgoCD = "ArgoCDTrigger"
+	// ApplierClaimKindFlux is a FluxClaim, which holds a Flux Kustomization.
+	ApplierClaimKindFlux = "FluxClaim"
+	// ApplierClaimKindArgoCD is an ArgoCDClaim, which holds an Argo CD Application.
+	ApplierClaimKindArgoCD = "ArgoCDClaim"
 )
 
-// The kinds of applier a trigger holds.
+// The kinds of applier an applier claim holds.
 const (
-	// ApplierKindKustomization is a Flux Kustomization (FluxTrigger.spec.kustomizationRef).
+	// ApplierKindKustomization is a Flux Kustomization (FluxClaim.spec.kustomizationRef).
 	ApplierKindKustomization = "Kustomization"
-	// ApplierKindApplication is an Argo CD Application (ArgoCDTrigger.spec.applicationRef).
+	// ApplierKindApplication is an Argo CD Application (ArgoCDClaim.spec.applicationRef).
 	ApplierKindApplication = "Application"
 )
 
-// Why a kind and a name, and no namespace: the kind keeps each trigger its own schema, the way
-// Flux's sourceRef names a kind, and the namespace is the GitTarget's own because the trigger's
-// KubeProvider admits the namespace it is in. A GitTarget that could name a
-// trigger elsewhere would drive an applier that its own namespace was never admitted to.
+// Why a kind and a name, and no namespace: the kind keeps each applier claim its own schema, the way
+// Flux's sourceRef names a kind, and the namespace is the GitTarget's own because the applier claim's
+// KubeProvider admits the namespace it is in. A GitTarget that could name an
+// applier claim elsewhere would drive an applier that its own namespace was never admitted to.
 
-// ApplyTriggerReference names an apply trigger in the GitTarget's own namespace.
-type ApplyTriggerReference struct {
-	// Kind is the trigger's kind: FluxTrigger or ArgoCDTrigger.
+// ApplierClaimReference names an applier claim in the GitTarget's own namespace.
+type ApplierClaimReference struct {
+	// Kind is the applier claim's kind: FluxClaim or ArgoCDClaim.
 	// +required
-	// +kubebuilder:validation:Enum=FluxTrigger;ArgoCDTrigger
+	// +kubebuilder:validation:Enum=FluxClaim;ArgoCDClaim
 	Kind string `json:"kind"`
 
-	// Name is the trigger's name.
+	// Name is the applier claim's name.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
@@ -63,7 +63,7 @@ const (
 	ApplyReasonRepair ApplyReason = "Repair"
 	// ApplyReasonCatchUp adopts what the API created in the applier's folders, so the applier owns
 	// and can later prune it, and converges the applier once at startup and when a GitTarget first
-	// names its trigger.
+	// names its applier claim.
 	ApplyReasonCatchUp ApplyReason = "CatchUp"
 )
 
@@ -108,7 +108,7 @@ func (p ApplyOperationPhase) Completed() bool {
 	return p == ApplyOperationSucceeded || p == ApplyOperationFailed
 }
 
-// ApplyOperation is an apply GitOps Reverser started on the trigger's applier: the one in flight,
+// ApplyOperation is an apply GitOps Reverser started on the applier claim's applier: the one in flight,
 // or the last one, once it completed. The branch worker writes it on every transition.
 type ApplyOperation struct {
 	// Phase is where the operation stands. Requested, Running, Settling and Unresolved are in
@@ -117,7 +117,7 @@ type ApplyOperation struct {
 	// +required
 	Phase ApplyOperationPhase `json:"phase"`
 
-	// Reason is why the apply was asked for. With several GitTargets on the trigger, it is the
+	// Reason is why the apply was asked for. With several GitTargets on the applier claim, it is the
 	// strongest of their reasons.
 	// +optional
 	Reason ApplyReason `json:"reason,omitempty"`
@@ -156,26 +156,26 @@ type ApplyOperation struct {
 	Message string `json:"message,omitempty"`
 }
 
-// ApplyTrigger is what every trigger kind answers, so the controllers, the branch workers and the
-// dispatcher handle a FluxTrigger and an ArgoCDTrigger alike.
+// ApplierClaim is what every applier claim kind answers, so the controllers, the branch workers and the
+// dispatcher handle a FluxClaim and an ArgoCDClaim alike.
 // +kubebuilder:object:generate=false
-type ApplyTrigger interface {
+type ApplierClaim interface {
 	metav1.Object
 	runtime.Object
 
-	// TriggerKind is the trigger's kind (ApplyTriggerKind*).
-	TriggerKind() string
+	// ClaimKind is the applier claim's kind (ApplierClaimKind*).
+	ClaimKind() string
 	// KubeProviderKey is the KubeProvider whose cluster holds the applier.
 	KubeProviderKey() types.NamespacedName
-	// ApplierKind is the kind of applier the trigger holds (ApplierKind*).
+	// ApplierKind is the kind of applier the applier claim holds (ApplierKind*).
 	ApplierKind() string
-	// Applier is the object the trigger holds, its namespace defaulted to the trigger's own.
+	// Applier is the object the applier claim holds, its namespace defaulted to the applier claim's own.
 	Applier() types.NamespacedName
-	// SourceBinding is the repository and branch the applier applies, as the trigger last read
+	// SourceBinding is the repository and branch the applier applies, as the applier claim last read
 	// them, and false when it has not read them.
 	SourceBinding() (repositoryURL, branch string, known bool)
 	// SharedSource is the source object the applier reads, which other appliers may read too, and
-	// false when the applier has none it shares this way or the trigger has not read it. Appliers
+	// false when the applier has none it shares this way or the applier claim has not read it. Appliers
 	// sharing one have one operation at a time.
 	SharedSource() (source types.NamespacedName, known bool)
 	// Operation is status.operation, and SetOperation replaces it and status.repairPending.
@@ -190,13 +190,13 @@ type ApplyTrigger interface {
 	SetObservedGeneration(generation int64)
 }
 
-// NewApplyTrigger returns an empty trigger of kind, or nil for a kind this release does not know.
-func NewApplyTrigger(kind string) ApplyTrigger {
+// NewApplierClaim returns an empty applier claim of kind, or nil for a kind this release does not know.
+func NewApplierClaim(kind string) ApplierClaim {
 	switch kind {
-	case ApplyTriggerKindFlux:
-		return &FluxTrigger{}
-	case ApplyTriggerKindArgoCD:
-		return &ArgoCDTrigger{}
+	case ApplierClaimKindFlux:
+		return &FluxClaim{}
+	case ApplierClaimKindArgoCD:
+		return &ArgoCDClaim{}
 	default:
 		return nil
 	}

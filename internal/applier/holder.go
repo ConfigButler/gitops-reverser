@@ -12,49 +12,49 @@ import (
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// One applier, one trigger: two triggers holding the same Kustomization would both suspend it under
+// One applier, one applier claim: two applier claims holding the same Kustomization would both suspend it under
 // the same field manager, each would take the other's resume for an external one and suspend it
-// mid-apply, and deleting either would hand back the hold the other still needs. Two triggers on one
-// Application would both start syncs. So exactly one trigger holds an applier, by a rule every party
-// computes alike (precedes, over the triggers in line): the trigger reconciler, which holds and
+// mid-apply, and deleting either would hand back the hold the other still needs. Two applier claims on one
+// Application would both start syncs. So exactly one applier claim holds an applier, by a rule every party
+// computes alike (precedes, over the applier claims in line): the applier claim reconciler, which holds and
 // hands back only for the holder, and the dispatcher, which asks the applier only for it. Both
 // confirm it uncached before they write to a Kustomization.
 //
-// Only a trigger in line can hold: one an eligible GitTarget references (references.go), or one
+// Only an applier claim in line can hold: one an eligible GitTarget references (references.go), or one
 // that carries its finalizer, which it does from before its first write to the applier (a suspend,
-// or switching automated sync off) until it has handed the applier back or over. So an older trigger nothing eligible references
+// or switching automated sync off) until it has handed the applier back or over. So an older applier claim nothing eligible references
 // keeps no younger one out, and one that is retiring stays the holder until its release is done.
 
-// ReasonHeldByAnotherTrigger is Configured=False on a trigger whose applier another trigger of its
+// ReasonHeldByAnotherClaim is Configured=False on an applier claim whose applier another applier claim of its
 // kind holds: one in line that names the same object in the same KubeProvider's cluster, and has
-// an apply in flight, holds the Kustomization already, or was created first. The trigger takes the
+// an apply in flight, holds the Kustomization already, or was created first. The applier claim takes the
 // applier over once it no longer comes first.
-const ReasonHeldByAnotherTrigger = "HeldByAnotherTrigger"
+const ReasonHeldByAnotherClaim = "HeldByAnotherClaim"
 
-// sameApplier reports whether two triggers name one applier: the same kind of object, in the same
+// sameApplier reports whether two applier claims name one applier: the same kind of object, in the same
 // KubeProvider's cluster, with the same namespace and name.
-func sameApplier(a, b v1alpha3.ApplyTrigger) bool {
-	return a.TriggerKind() == b.TriggerKind() && a.KubeProviderKey() == b.KubeProviderKey() &&
+func sameApplier(a, b v1alpha3.ApplierClaim) bool {
+	return a.ClaimKind() == b.ClaimKind() && a.KubeProviderKey() == b.KubeProviderKey() &&
 		a.Applier() == b.Applier()
 }
 
-// sameTrigger reports whether a and b are the same trigger, by kind, namespace and name.
-func sameTrigger(a, b v1alpha3.ApplyTrigger) bool {
-	return a.TriggerKind() == b.TriggerKind() && a.GetNamespace() == b.GetNamespace() && a.GetName() == b.GetName()
+// sameClaim reports whether a and b are the same applier claim, by kind, namespace and name.
+func sameClaim(a, b v1alpha3.ApplierClaim) bool {
+	return a.ClaimKind() == b.ClaimKind() && a.GetNamespace() == b.GetNamespace() && a.GetName() == b.GetName()
 }
 
-// precedes reports whether a comes before b in line for an applier. A FluxTrigger with an operation
+// precedes reports whether a comes before b in line for an applier. A FluxClaim with an operation
 // in flight comes first: its worker follows that operation until the Kustomization is suspended
-// again, and a trigger that took the Kustomization over meanwhile would take that resume for an
+// again, and an applier claim that took the Kustomization over meanwhile would take that resume for an
 // external one and suspend it mid-apply. So a Kustomization changes hands only between operations,
-// whatever triggers appear; a trigger created in the same second as the holder, which can come
+// whatever applier claims appear; an applier claim created in the same second as the holder, which can come
 // before it by name, waits for the holder's apply to end. An Application has no such hold: a sync
-// somebody else started is never replaced, so an ArgoCDTrigger's operation does not count. Then a
-// trigger that holds its applier already (it carries the finalizer) comes first: a trigger that
+// somebody else started is never replaced, so an ArgoCDClaim's operation does not count. Then an
+// applier claim that holds its applier already (it carries the finalizer) comes first: an applier claim that
 // becomes eligible later takes it over only once the holder lets go, so an applier is never taken
-// from a holder still holding or releasing it. Then the trigger created first comes
+// from a holder still holding or releasing it. Then the applier claim created first comes
 // first, and then by namespace and name.
-func precedes(a, b v1alpha3.ApplyTrigger) bool {
+func precedes(a, b v1alpha3.ApplierClaim) bool {
 	if applying, other := holdsAnApply(a), holdsAnApply(b); applying != other {
 		return applying
 	}
@@ -64,24 +64,24 @@ func precedes(a, b v1alpha3.ApplyTrigger) bool {
 	return createdBefore(a, b)
 }
 
-// Holding reports whether trigger carries its kind's finalizer: it holds its applier (a
+// Holding reports whether claim carries its kind's finalizer: it holds its applier (a
 // Kustomization suspended, an Application's automated sync off), or hands it back or over.
-func Holding(trigger v1alpha3.ApplyTrigger) bool {
-	finalizer := v1alpha3.FluxTriggerFinalizer
-	if trigger.TriggerKind() == v1alpha3.ApplyTriggerKindArgoCD {
-		finalizer = v1alpha3.ArgoCDTriggerFinalizer
+func Holding(claim v1alpha3.ApplierClaim) bool {
+	finalizer := v1alpha3.FluxClaimFinalizer
+	if claim.ClaimKind() == v1alpha3.ApplierClaimKindArgoCD {
+		finalizer = v1alpha3.ArgoCDClaimFinalizer
 	}
-	return slices.Contains(trigger.GetFinalizers(), finalizer)
+	return slices.Contains(claim.GetFinalizers(), finalizer)
 }
 
-// holdsAnApply reports whether trigger is a FluxTrigger with an operation in flight.
-func holdsAnApply(trigger v1alpha3.ApplyTrigger) bool {
-	operation := trigger.Operation()
-	return trigger.TriggerKind() == v1alpha3.ApplyTriggerKindFlux && operation != nil && !operation.Phase.Completed()
+// holdsAnApply reports whether claim is a FluxClaim with an operation in flight.
+func holdsAnApply(claim v1alpha3.ApplierClaim) bool {
+	operation := claim.Operation()
+	return claim.ClaimKind() == v1alpha3.ApplierClaimKindFlux && operation != nil && !operation.Phase.Completed()
 }
 
-// createdBefore orders triggers by creation, then by namespace, then by name.
-func createdBefore(a, b v1alpha3.ApplyTrigger) bool {
+// createdBefore orders applier claims by creation, then by namespace, then by name.
+func createdBefore(a, b v1alpha3.ApplierClaim) bool {
 	at, bt := a.GetCreationTimestamp(), b.GetCreationTimestamp()
 	switch {
 	case !at.Equal(&bt):
@@ -93,19 +93,19 @@ func createdBefore(a, b v1alpha3.ApplyTrigger) bool {
 	}
 }
 
-// firstInLine is the trigger that holds trigger's applier: of the triggers of its kind in line for
-// the same applier, the one first (precedes). trigger itself counts as in line. A trigger being
-// deleted still holds it, until it is gone: its finalizer is handing the applier back. It is trigger
+// firstInLine is the applier claim that holds claim's applier: of the applier claims of its kind in line for
+// the same applier, the one first (precedes). applier claim itself counts as in line. An applier claim being
+// deleted still holds it, until it is gone: its finalizer is handing the applier back. It is claim
 // itself when no other comes before it.
 func firstInLine(
-	ctx context.Context, reader client.Reader, trigger v1alpha3.ApplyTrigger,
-) (v1alpha3.ApplyTrigger, error) {
-	others, err := TriggersOfApplier(ctx, reader, trigger)
+	ctx context.Context, reader client.Reader, claim v1alpha3.ApplierClaim,
+) (v1alpha3.ApplierClaim, error) {
+	others, err := ClaimsOfApplier(ctx, reader, claim)
 	if err != nil {
 		return nil, err
 	}
-	source := publishedSource(trigger)
-	first := trigger
+	source := publishedSource(claim)
+	first := claim
 	for _, other := range others {
 		if !precedes(other, first) {
 			continue
@@ -123,90 +123,90 @@ func firstInLine(
 
 // inLine reports whether other is in line for the applier whose source the caller read: it holds
 // it (Holding), or an eligible GitTarget references it.
-func inLine(ctx context.Context, reader client.Reader, other v1alpha3.ApplyTrigger, source *Source) (bool, error) {
+func inLine(ctx context.Context, reader client.Reader, other v1alpha3.ApplierClaim, source *Source) (bool, error) {
 	if Holding(other) {
 		return true, nil
 	}
 	return eligible(ctx, reader, other, source)
 }
 
-// publishedSource is the source trigger last read, which every trigger naming its applier shares,
+// publishedSource is the source applier claim last read, which every applier claim naming its applier shares,
 // or nil when it has read none.
-func publishedSource(trigger v1alpha3.ApplyTrigger) *Source {
-	url, branch, known := trigger.SourceBinding()
+func publishedSource(claim v1alpha3.ApplierClaim) *Source {
+	url, branch, known := claim.SourceBinding()
 	if !known {
 		return nil
 	}
 	return &Source{URL: url, Revision: branch}
 }
 
-// HeldByAnother is the trigger that holds trigger's applier when it is another, or nil when trigger
+// HeldByAnother is the applier claim that holds claim's applier when it is another, or nil when claim
 // holds it itself.
 func HeldByAnother(
-	ctx context.Context, reader client.Reader, trigger v1alpha3.ApplyTrigger,
-) (v1alpha3.ApplyTrigger, error) {
-	first, err := firstInLine(ctx, reader, trigger)
-	if err != nil || sameTrigger(first, trigger) {
+	ctx context.Context, reader client.Reader, claim v1alpha3.ApplierClaim,
+) (v1alpha3.ApplierClaim, error) {
+	first, err := firstInLine(ctx, reader, claim)
+	if err != nil || sameClaim(first, claim) {
 		return nil, err
 	}
 	return first, nil
 }
 
-// TriggersOfApplier lists the triggers other than trigger that name its applier.
-func TriggersOfApplier(
-	ctx context.Context, reader client.Reader, trigger v1alpha3.ApplyTrigger,
-) ([]v1alpha3.ApplyTrigger, error) {
-	triggers, err := ListApplyTriggers(ctx, reader, trigger.TriggerKind())
+// ClaimsOfApplier lists the applier claims other than claim that name its applier.
+func ClaimsOfApplier(
+	ctx context.Context, reader client.Reader, claim v1alpha3.ApplierClaim,
+) ([]v1alpha3.ApplierClaim, error) {
+	claims, err := ListApplierClaims(ctx, reader, claim.ClaimKind())
 	if err != nil {
 		return nil, err
 	}
-	var others []v1alpha3.ApplyTrigger
-	for _, other := range triggers {
-		if !sameTrigger(other, trigger) && sameApplier(other, trigger) {
+	var others []v1alpha3.ApplierClaim
+	for _, other := range claims {
+		if !sameClaim(other, claim) && sameApplier(other, claim) {
 			others = append(others, other)
 		}
 	}
 	return others, nil
 }
 
-// ListApplyTriggers lists the triggers of kind, with opts (everywhere without a namespace option).
-func ListApplyTriggers(
+// ListApplierClaims lists the applier claims of kind, with opts (everywhere without a namespace option).
+func ListApplierClaims(
 	ctx context.Context, reader client.Reader, kind string, opts ...client.ListOption,
-) ([]v1alpha3.ApplyTrigger, error) {
-	var triggers []v1alpha3.ApplyTrigger
+) ([]v1alpha3.ApplierClaim, error) {
+	var claims []v1alpha3.ApplierClaim
 	switch kind {
-	case v1alpha3.ApplyTriggerKindFlux:
-		var list v1alpha3.FluxTriggerList
+	case v1alpha3.ApplierClaimKindFlux:
+		var list v1alpha3.FluxClaimList
 		if err := reader.List(ctx, &list, opts...); err != nil {
 			return nil, fmt.Errorf("list %ss: %w", kind, err)
 		}
 		for i := range list.Items {
-			triggers = append(triggers, &list.Items[i])
+			claims = append(claims, &list.Items[i])
 		}
-	case v1alpha3.ApplyTriggerKindArgoCD:
-		var list v1alpha3.ArgoCDTriggerList
+	case v1alpha3.ApplierClaimKindArgoCD:
+		var list v1alpha3.ArgoCDClaimList
 		if err := reader.List(ctx, &list, opts...); err != nil {
 			return nil, fmt.Errorf("list %ss: %w", kind, err)
 		}
 		for i := range list.Items {
-			triggers = append(triggers, &list.Items[i])
+			claims = append(claims, &list.Items[i])
 		}
 	default:
-		return nil, fmt.Errorf("no apply trigger kind %q", kind)
+		return nil, fmt.Errorf("no applier claim kind %q", kind)
 	}
-	return triggers, nil
+	return claims, nil
 }
 
-// HeldByAnotherMessage is the Configured message of a trigger whose applier holder holds.
-func HeldByAnotherMessage(trigger, holder v1alpha3.ApplyTrigger) string {
-	held := fmt.Sprintf("%s %s in the cluster of KubeProvider %s is held by %s %s/%s", trigger.ApplierKind(),
-		trigger.Applier(), trigger.KubeProviderKey(), holder.TriggerKind(), holder.GetNamespace(), holder.GetName())
+// HeldByAnotherMessage is the Configured message of an applier claim whose applier holder holds.
+func HeldByAnotherMessage(claim, holder v1alpha3.ApplierClaim) string {
+	held := fmt.Sprintf("%s %s in the cluster of KubeProvider %s is held by %s %s/%s", claim.ApplierKind(),
+		claim.Applier(), claim.KubeProviderKey(), holder.ClaimKind(), holder.GetNamespace(), holder.GetName())
 	switch {
-	case holdsAnApply(holder) && !holdsAnApply(trigger):
-		return held + ", whose apply is in flight; this trigger takes it over once that apply ends"
-	case Holding(holder) && !Holding(trigger):
-		return held + ", which holds it now; this trigger takes it over once that one lets go of it"
+	case holdsAnApply(holder) && !holdsAnApply(claim):
+		return held + ", whose apply is in flight; this applier claim takes it over once that apply ends"
+	case Holding(holder) && !Holding(claim):
+		return held + ", which holds it now; this applier claim takes it over once that one lets go of it"
 	}
-	return held + ", which was created first; this trigger takes it over once that one is deleted or no " +
+	return held + ", which was created first; this applier claim takes it over once that one is deleted or no " +
 		"eligible GitTarget references it"
 }

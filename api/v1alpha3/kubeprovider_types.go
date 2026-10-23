@@ -94,10 +94,10 @@ type KubeProviderCrossNamespace struct {
 	// +optional
 	Sources bool `json:"sources,omitempty"`
 
-	// Appliers lets a FluxTrigger or ArgoCDTrigger reaching its applier through this provider name a
+	// Appliers lets a FluxClaim or ArgoCDClaim reaching its applier through this provider name a
 	// Kustomization or Application in another namespace than its own. False (the default): only
-	// the trigger's own namespace, which in a remote cluster is the namespace of the same name; a
-	// trigger naming another is Configured=False (ApplierNamespaceNotAllowed).
+	// the applier claim's own namespace, which in a remote cluster is the namespace of the same name; an
+	// applier claim naming another is Configured=False (ApplierNamespaceNotAllowed).
 	// +optional
 	Appliers bool `json:"appliers,omitempty"`
 }
@@ -193,8 +193,8 @@ type KubeProviderStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// KubeProvider names a source cluster: the cluster a GitTarget mirrors from, or an apply trigger
-// reaches its applier in. It holds the credential that reaches it (a kubeconfig Secret in its own
+// KubeProvider is a connection to a Kubernetes cluster and the identity used there. A GitTarget
+// mirrors from it; an applier claim reaches its applier through it. It holds the credential that reaches it (a kubeconfig Secret in its own
 // namespace, or the operator's own identity where the installation allows it), which control-cluster
 // namespaces may use it (its own, and those spec.accessFrom admits), and the audit route its
 // attribution facts are partitioned under.
@@ -270,7 +270,7 @@ func (p *KubeProvider) AllowsCrossNamespaceSources() bool {
 	return p.Spec.AllowCrossNamespace != nil && p.Spec.AllowCrossNamespace.Sources
 }
 
-// AllowsCrossNamespaceAppliers reports whether a trigger reaching its applier through this provider
+// AllowsCrossNamespaceAppliers reports whether an applier claim reaching its applier through this provider
 // may name one in another namespace than its own (spec.allowCrossNamespace.appliers).
 func (p *KubeProvider) AllowsCrossNamespaceAppliers() bool {
 	return p.Spec.AllowCrossNamespace != nil && p.Spec.AllowCrossNamespace.Appliers

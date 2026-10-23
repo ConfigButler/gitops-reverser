@@ -204,7 +204,7 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 			commit: testCommit, reason: v1alpha3.ApplyReasonCatchUp, want: OutcomeResumed,
 		},
 		{
-			// Not suspended yet (the trigger has not adopted it): it may apply on its own, so the
+			// Not suspended yet (the applier claim has not adopted it): it may apply on its own, so the
 			// operation runs, and its suspend after the apply holds it again.
 			name: "a catch-up applied but not suspended resumes", artifact: "main@sha1:" + testCommit,
 			applied: "main@sha1:" + testCommit,
@@ -243,7 +243,7 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 	}
 }
 
-// TestFluxRequest_TheOperationIsRecordedBeforeTheResume: a restart reads the trigger's
+// TestFluxRequest_TheOperationIsRecordedBeforeTheResume: a restart reads the applier claim's
 // status.operation to find every apply that may have started, so the record is written before the
 // resume, and a record that cannot be written resumes nothing.
 func TestFluxRequest_TheOperationIsRecordedBeforeTheResume(t *testing.T) {
@@ -260,7 +260,7 @@ func TestFluxRequest_TheOperationIsRecordedBeforeTheResume(t *testing.T) {
 	assert.True(t, recorded)
 
 	sim = simCluster(t, "main@sha1:"+testCommit, true)
-	a.Record = func(context.Context) error { return errors.New("the trigger is being deleted") }
+	a.Record = func(context.Context) error { return errors.New("the applier claim is being deleted") }
 	_, err = simFlux(sim).Request(context.Background(), checkoutKey, a)
 	require.ErrorContains(t, err, "record the operation")
 	assert.False(t, isPermanent(err))
@@ -611,7 +611,7 @@ func TestFluxProgress_ASuspendBeforeTheReconcileIsNoApply(t *testing.T) {
 				metav1.PatchOptions{FieldManager: "flux"})
 			require.NoError(t, err)
 		},
-		"the trigger's own suspend": func(t *testing.T, _ *fluxsim.Sim, flux *Flux) {
+		"the applier claim's own suspend": func(t *testing.T, _ *fluxsim.Sim, flux *Flux) {
 			_, err := flux.Suspend(context.Background(), checkoutKey)
 			require.NoError(t, err)
 		},
@@ -799,7 +799,7 @@ func TestReconcileMark_MovesOnAReconcileThatBuilt(t *testing.T) {
 	assert.False(t, before.since(time.Time{}), "no mark at all is no evidence")
 }
 
-// TestFlux_SuspendAndRelease: the trigger reconciler's half. Suspend suspends, Suspension reports
+// TestFlux_SuspendAndRelease: the applier claim reconciler's half. Suspend suspends, Suspension reports
 // held and handled once the token is handled, and Release hands spec.suspend back: the Kustomization
 // is resumed, and holds nothing of GitOps Reverser's.
 func TestFlux_SuspendAndRelease(t *testing.T) {
@@ -907,7 +907,7 @@ func eventually(t *testing.T, cond func() bool, why string) {
 	require.Eventually(t, cond, 5*time.Second, time.Millisecond, why)
 }
 
-// TestFluxProgress_AnExternalResumeIsJudgedAsItsReconcilerJudgesIt is review 6: the trigger's
+// TestFluxProgress_AnExternalResumeIsJudgedAsItsReconcilerJudgesIt is review 6: the applier claim's
 // reconciler records an external resume when it notices it, which can be after Flux applied it, and
 // completes it on the Kustomization's last apply. A worker that recovered the record judged it on a
 // reconcile run since the record's requestedAt, found none, and its Failed won over the

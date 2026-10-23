@@ -105,7 +105,7 @@ Endpoints/EndpointSlices, Leases, ControllerRevisions, Jobs, CronJobs — but it
 does **not** ignore Deployments, ReplicaSets, Services, or ConfigMaps, because
 those are often exactly the intent you *do* want to capture. Drawing the line is
 your job, and it is worth doing deliberately. The one line the operator draws
-itself is for a folder an apply trigger applies: it leaves out objects another
+itself is for a coordinated folder: it leaves out objects another
 Flux `Kustomization` or Argo CD `Application` owns
 ([why](bi-directional.md#objects-another-applier-owns)).
 

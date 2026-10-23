@@ -16,18 +16,18 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// ApplierRef is one applier, as the apply trigger that holds it names it: a Flux Kustomization or
-// an Argo CD Application in a cluster. Several GitTargets may name one trigger, and its applier is
+// ApplierRef is one applier, as the applier claim that holds it names it: a Flux Kustomization or
+// an Argo CD Application in a cluster. Several GitTargets may name one applier claim, and its applier is
 // asked once for all of them.
 type ApplierRef struct {
-	// Trigger is the apply trigger that holds the applier.
-	Trigger TriggerRef
-	// Cluster is the KubeProvider (namespace/name) whose cluster the applier lives in (the trigger's
+	// Applier claim is the applier claim that holds the applier.
+	ApplierClaim ApplierClaimRef
+	// Cluster is the KubeProvider (namespace/name) whose cluster the applier lives in (the applier claim's
 	// spec.kubeProviderRef).
 	Cluster string
 	// Kind is v1alpha3.ApplierKindKustomization or v1alpha3.ApplierKindApplication.
 	Kind string
-	// Namespace and Name are the object's, the namespace defaulted to the trigger's own.
+	// Namespace and Name are the object's, the namespace defaulted to the applier claim's own.
 	Namespace string
 	Name      string
 }
@@ -36,46 +36,52 @@ func (a ApplierRef) String() string {
 	return a.Cluster + "/" + a.Kind + "/" + a.Namespace + "/" + a.Name
 }
 
-// TriggerRef is one apply trigger: its kind (v1alpha3.ApplyTriggerKind*), namespace and name.
-type TriggerRef struct {
+// ApplierClaimRef is one applier claim: its kind (v1alpha3.ApplierClaimKind*), namespace and name.
+type ApplierClaimRef struct {
 	Kind      string
 	Namespace string
 	Name      string
 }
 
-func (t TriggerRef) String() string { return t.Kind + "/" + t.Namespace + "/" + t.Name }
+func (t ApplierClaimRef) String() string { return t.Kind + "/" + t.Namespace + "/" + t.Name }
 
-// ApplierOf is the applier a trigger holds.
-func ApplierOf(trigger v1alpha3.ApplyTrigger) ApplierRef {
-	applier := trigger.Applier()
+// ApplierOf is the applier an applier claim holds.
+func ApplierOf(applierClaim v1alpha3.ApplierClaim) ApplierRef {
+	applier := applierClaim.Applier()
 	return ApplierRef{
-		Trigger: TriggerRef{Kind: trigger.TriggerKind(), Namespace: trigger.GetNamespace(), Name: trigger.GetName()},
-		Cluster: trigger.KubeProviderKey().String(), Kind: trigger.ApplierKind(),
-		Namespace: applier.Namespace, Name: applier.Name,
+		ApplierClaim: ApplierClaimRef{
+			Kind:      applierClaim.ClaimKind(),
+			Namespace: applierClaim.GetNamespace(),
+			Name:      applierClaim.GetName(),
+		},
+		Cluster:   applierClaim.KubeProviderKey().String(),
+		Kind:      applierClaim.ApplierKind(),
+		Namespace: applier.Namespace,
+		Name:      applier.Name,
 	}
 }
 
-// ResolveApplyTrigger reads the apply trigger a GitTarget names, in the GitTarget's namespace. It
+// ResolveApplierClaim reads the applier claim a GitTarget names, in the GitTarget's namespace. It
 // returns nil, and no error, when the GitTarget names none, names a kind this release does not
 // know, or names one that does not exist.
-func ResolveApplyTrigger(
+func ResolveApplierClaim(
 	ctx context.Context, reader client.Reader, target *v1alpha3.GitTarget,
-) (v1alpha3.ApplyTrigger, error) {
-	ref := target.Spec.ApplyTriggerRef
+) (v1alpha3.ApplierClaim, error) {
+	ref := target.Spec.ApplierClaimRef
 	if ref == nil {
-		return nil, nil //nolint:nilnil // a GitTarget that names no trigger has none, and is no error
+		return nil, nil //nolint:nilnil // a GitTarget that names no applier claim has none, and is no error
 	}
-	trigger := v1alpha3.NewApplyTrigger(ref.Kind)
-	if trigger == nil {
+	applierClaim := v1alpha3.NewApplierClaim(ref.Kind)
+	if applierClaim == nil {
 		return nil, nil //nolint:nilnil // as above: a kind this release does not serve names none
 	}
-	if err := reader.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: ref.Name}, trigger); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: ref.Name}, applierClaim); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, nil //nolint:nilnil // as above: a trigger not created yet holds nothing
+			return nil, nil //nolint:nilnil // as above: an applier claim not created yet holds nothing
 		}
 		return nil, fmt.Errorf("read %s %s/%s: %w", ref.Kind, target.Namespace, ref.Name, err)
 	}
-	return trigger, nil
+	return applierClaim, nil
 }
 
 // ApplyRequest is one attempt, decided by a branch worker after a flush, to have one applier
@@ -100,7 +106,7 @@ type ApplyRequest struct {
 	// pushed or proved by a fetch. Empty when the remote does not carry the branch.
 	Commit string
 	// Token identifies the operation the attempt starts, in the applier's own status and in the
-	// trigger's status.operation, which Record writes with it.
+	// applier claim's status.operation, which Record writes with it.
 	Token string
 	// Targets are the GitTargets the request is for, each the incarnation the worker decided for
 	// and with its own reason. The requester asks nothing for a target that has changed since.
@@ -115,11 +121,11 @@ type ApplyRequest struct {
 	// yet pushed does not make it stale: the flush published every edit decided before the attempt,
 	// and the apply window holds the rest. Nil is always current. It does not block.
 	Current func() bool
-	// Record writes the operation this attempt starts on its trigger's status, and returns once it
-	// is written: the only way the operation reaches the trigger before the requester reports it.
+	// Record writes the operation this attempt starts on its applier claim's status, and returns once it
+	// is written: the only way the operation reaches the applier claim before the requester reports it.
 	// The requester calls it just before the write that starts the apply, and asks nothing when it
-	// fails: a restart reads status.operation to find every apply that may have started, and a
-	// trigger that is being deleted, or that records an apply somebody else started, starts none.
+	// fails: a restart reads status.operation to find every apply that may have started, and an
+	// applier claim that is being deleted, or that records an apply somebody else started, starts none.
 	// Nil records nothing.
 	Record func(ctx context.Context) error
 	// Report receives the attempt's reports, in order, and does not block. An attempt that asked the
@@ -127,8 +133,8 @@ type ApplyRequest struct {
 	// that ends it (ApplyOutcome.Ends); one that asked nothing reports once, with an outcome that
 	// ends it.
 	Report func(ApplyResult)
-	// Recovered, when set, is an operation recorded on the trigger (by an earlier process, or by the
-	// trigger's reconciler for an apply somebody else started) that the attempt follows to its end
+	// Recovered, when set, is an operation recorded on the applier claim (by an earlier process, or by the
+	// applier claim's reconciler for an apply somebody else started) that the attempt follows to its end
 	// instead of asking the applier for anything. Its token and suspend token are the ones to read.
 	Recovered *v1alpha3.ApplyOperation
 	// Abandoned is closed when the worker stops following the attempt: no GitTarget names its
@@ -216,9 +222,9 @@ type ApplyResult struct {
 	Err error
 }
 
-// ApplyTriggerStatus is what a branch worker publishes on an apply trigger: the operation it last
-// started on the trigger's applier, and whether a Repair is pending.
-type ApplyTriggerStatus struct {
+// ApplierClaimStatus is what a branch worker publishes on an applier claim: the operation it last
+// started on the applier claim's applier, and whether a Repair is pending.
+type ApplierClaimStatus struct {
 	// Operation is the operation status.operation shows, once it holds it: the writer moves an
 	// operation on, and writes one on a status that holds none, but never replaces another. Nil
 	// leaves it as it is: a worker that has started no operation since it began has nothing to say
@@ -231,17 +237,17 @@ type ApplyTriggerStatus struct {
 	RepairPending bool
 }
 
-// ApplyTriggerStatusWriter writes what the branch workers publish on their triggers' status.
-// PublishApplyTriggerStatus must not block: it is called on a branch worker's loop goroutine. A
-// later publication for the same trigger supersedes one not yet written, except for what that one
+// ApplierClaimStatusWriter writes what the branch workers publish on their applier claims' status.
+// PublishApplierClaimStatus must not block: it is called on a branch worker's loop goroutine. A
+// later publication for the same applier claim supersedes one not yet written, except for what that one
 // withdrew.
-type ApplyTriggerStatusWriter interface {
-	PublishApplyTriggerStatus(trigger TriggerRef, status ApplyTriggerStatus)
-	// RecordApplyOperation writes the operation an attempt starts on the trigger's status now, and
+type ApplierClaimStatusWriter interface {
+	PublishApplierClaimStatus(applierClaim ApplierClaimRef, status ApplierClaimStatus)
+	// RecordApplyOperation writes the operation an attempt starts on the applier claim's status now, and
 	// returns once it is written. It blocks, so it is never called on a worker's loop: the requester
-	// calls it (ApplyRequest.Record) just before it starts the apply. It fails when the trigger is
+	// calls it (ApplyRequest.Record) just before it starts the apply. It fails when the applier claim is
 	// gone or being deleted, or its status holds another operation that has not completed.
-	RecordApplyOperation(ctx context.Context, trigger TriggerRef, operation *v1alpha3.ApplyOperation) error
+	RecordApplyOperation(ctx context.Context, applierClaim ApplierClaimRef, operation *v1alpha3.ApplyOperation) error
 }
 
 // ApplyRequester carries out apply requests. RequestApply must not block: it is called on the branch

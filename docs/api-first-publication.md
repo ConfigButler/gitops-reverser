@@ -30,7 +30,7 @@ worker can plan locally and spend its network budget on publication.
 This guide describes the shipped behavior. Retained work is retried on the worker's own backoff;
 [failure timing](#failure-timing-and-memory-limits) says what that means in practice. The
 [push receiver](configuration.md#gitreceiver) lets a Git host report
-a push, the [apply trigger design](design/apply-trigger.md) covers what follows one, and
+a push, the [applier claim design](design/apply-trigger.md) covers what follows one, and
 [architecture](architecture.md) covers the wider operator.
 
 ## The structures and their responsibilities
@@ -238,7 +238,7 @@ preserved within the supported layout rules. See
 
 This is the consequence of API-first ownership: the captured API object drives the supported
 manifest edit. A Git-side change reaches the cluster through an applier such as Flux or Argo CD.
-Reverser does not apply Git to Kubernetes itself; with an apply trigger it decides when the applier
+Reverser does not apply Git to Kubernetes itself; with an applier claim it decides when the applier
 does.
 
 The [deferred three-way comparison investigation](future/git-api-three-way-comparison.md) records
@@ -352,7 +352,7 @@ fetched manifests, which is why a receiver delivery never triggers one.
 
 When Flux or Argo CD applies the same path on its own schedule, its refresh and apply cadence also
 affects whether a live edit survives long enough to be published. An
-[apply trigger](configuration.md#who-applies-this-folder-specapplytriggerref) takes that clock
+[applier claim](configuration.md#who-applies-this-folder-specapplierclaimref) takes that clock
 away: the applier then applies only when GitOps Reverser asks, after a flush that publishes every
 write decided before the apply came due. An edit decided after the flush is recorded in the apply
 window, so an apply that overwrites it is withheld and repaired. A push of GitOps Reverser's own

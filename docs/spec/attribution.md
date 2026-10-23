@@ -261,8 +261,8 @@ never admitted to. The namespace the route's first dot-segment names holds it wh
 carries it; otherwise the namespace of the oldest carrier does (`creationTimestamp`, then UID).
 Providers in the holding namespace may share the route: that is the case above, several
 connections to one API server. A provider in another namespace that carries it reports
-`Stalled=True` with reason `AuditRouteConflict` and is not used at all: `GitTarget`s and triggers
-through it are refused with the same reason. This is a status condition the controller recomputes on
+`Stalled=True` with reason `AuditRouteConflict` and is not used at all: `GitTarget`s and applier
+claims through it are refused with the same reason. This is a status condition the controller recomputes on
 every reconcile, not an admission refusal, so the provider that loses a route is admitted and then
 reports why it is idle; `Validated` keeps what its credential earned.
 

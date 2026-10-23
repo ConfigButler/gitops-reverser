@@ -51,7 +51,7 @@ const OutcomeResumed Outcome = "Resumed"
 // applier's managedFields say who holds it.
 const SuspendFieldManager = "gitops-reverser"
 
-// ReasonSuspendOwnedElsewhere is Configured=False on a FluxTrigger whose Kustomization's
+// ReasonSuspendOwnedElsewhere is Configured=False on a FluxClaim whose Kustomization's
 // spec.suspend is applied by another field manager: whatever applies the Kustomization's manifest
 // (a parent Kustomization, Helm, flux-operator) sets it, and would resume it on its next apply.
 const ReasonSuspendOwnedElsewhere = "SuspendOwnedElsewhere"
@@ -100,7 +100,7 @@ const fetchPollInterval = 100 * time.Millisecond
 // that was replaced, applies another source now, or has its spec.suspend applied by another
 // manager now is not resumed. It reads the artifact again and asks current: when either has moved,
 // the decision no longer holds and nothing is resumed (errStale). Then record writes the operation
-// on the trigger, so a restart finds it, current is asked again, since recording can wait, and
+// on the applier claim, so a restart finds it, current is asked again, since recording can wait, and
 // only then is the Kustomization resumed: one server-side apply sets spec.suspend: false and
 // reconcile.fluxcd.io/requestedAt to the token. That write is a new generation and a new
 // requestedAt, so it enqueues a reconcile that reads both, which applies. It is made over the
@@ -174,7 +174,7 @@ func (e *sourceElsewhereError) Error() string {
 const maxResumeConflicts = 5
 
 // resume reads the Kustomization again and checks it is still the object Request checked (read),
-// rechecks the artifact, the decision and the trigger's hold, records the operation, and resumes
+// rechecks the artifact, the decision and the applier claim's hold, records the operation, and resumes
 // the Kustomization with the request's token (Request).
 //
 // The resume carries the uid and resourceVersion of that last read, which the API server checks
@@ -253,7 +253,7 @@ func (f *Flux) readAgain(
 	return ks, nil
 }
 
-// mayResume rechecks the artifact, the decision and the trigger's hold, records the operation (the
+// mayResume rechecks the artifact, the decision and the applier claim's hold, records the operation (the
 // first time only), and asks the decision again once it is recorded.
 func (f *Flux) mayResume(
 	ctx context.Context, ref, sourceRef types.NamespacedName, ask Ask, record func(context.Context) error,
@@ -271,7 +271,7 @@ func (f *Flux) mayResume(
 		}
 	}
 	if err := record(ctx); err != nil {
-		return fmt.Errorf("record the operation on its trigger before resuming %s %s: %w",
+		return fmt.Errorf("record the operation on its applier claim before resuming %s %s: %w",
 			kindKustomization, ref, err)
 	}
 	// Recording can wait on the status writer and the API server, and the branch can move on
@@ -446,12 +446,12 @@ func (f *Flux) verdict(ctx context.Context, ks *unstructured.Unstructured, s *St
 // returns false with a Failed outcome when no reconcile that builds is seen to have run since the
 // resume, where it would read a Succeeded or (for an operation whose token was never seen) any
 // outcome. A token handled is no proof of that: a suspend that lands between the resume and the
-// reconcile that reads it (`flux suspend`, the trigger's own suspend) makes that reconcile a
+// reconcile that reads it (`flux suspend`, the applier claim's own suspend) makes that reconcile a
 // suspended return, which marks the token handled and leaves the Ready of an earlier apply.
 func (s *Started) judge(ks *unstructured.Unstructured) (Progress, bool) {
 	read := applyVerdict(ks, s.Commit)
 	if s.Token == "" {
-		// An external resume the trigger's reconciler recorded and suspended again: no resume of ours to
+		// An external resume the applier claim's reconciler recorded and suspended again: no resume of ours to
 		// have run since. It is judged as the reconciler judges it, on the Kustomization's last
 		// apply, so the two agree whichever completes the record.
 		return read, true
@@ -693,7 +693,7 @@ func suspendOwnedMessage(ref types.NamespacedName, owner string) string {
 		"next apply; remove spec.suspend from the manifest it applies", kindKustomization, ref, owner)
 }
 
-// Suspension is how a Kustomization stands with GitOps Reverser, for its FluxTrigger's reconciler.
+// Suspension is how a Kustomization stands with GitOps Reverser, for its FluxClaim's reconciler.
 type Suspension struct {
 	// Suspended is spec.suspend.
 	Suspended bool
@@ -735,14 +735,14 @@ func (f *Flux) Suspend(ctx context.Context, ref types.NamespacedName) (string, e
 // spec.suspend and the requestedAt GitOps Reverser held, so the Kustomization is resumed and Flux
 // owns its apply moments again. It returns the field manager that still keeps the Kustomization
 // suspended, or "" once it is resumed. One that was suspended before GitOps Reverser held it
-// (wasSuspended, the trigger's status.previousSuspendState) is handed back suspended instead: an
+// (wasSuspended, the applier claim's status.previousSuspendState) is handed back suspended instead: an
 // apply of spec.suspend: true alone gives the requestedAt up and keeps the suspend, under GitOps
 // Reverser's field manager until somebody resumes it, and SuspendFieldManager is returned.
 //
 // An apply of the value a field holds shares the field with its owner, even forced, so a suspend
 // that took over a `flux suspend` co-owns spec.suspend with that update, and the empty apply alone
 // would leave the field set, suspended (measured in envtest:
-// internal/controller/fluxtrigger_suspend_apiserver_test.go). Such an update entry is taken back
+// internal/controller/fluxclaim_suspend_apiserver_test.go). Such an update entry is taken back
 // first, with a forced spec.suspend: false, which a different value takes from every owner. A
 // manager that applies spec.suspend keeps it: its manifest sets the field.
 func (f *Flux) Release(ctx context.Context, ref types.NamespacedName, wasSuspended bool) (string, error) {
@@ -848,11 +848,11 @@ func splitRevision(revision string) (string, string) {
 	return named, revision
 }
 
-// Validate answers Configured for a FluxTrigger's Kustomization: that it exists in its cluster and
+// Validate answers Configured for a FluxClaim's Kustomization: that it exists in its cluster and
 // its kind is served there, that it applies a GitRepository that follows a branch, that no other
 // field manager applies its spec.suspend, and that this identity may patch both objects, since a
 // request stamps the one and suspends and resumes the other. Which repository and
-// branch that is, it reports in the verdict's Source, for the GitTargets naming the trigger to
+// branch that is, it reports in the verdict's Source, for the GitTargets naming the applier claim to
 // check against what they write.
 //
 // It reads; it never watches. A cluster without Flux installed answers ApplierNotFound from one

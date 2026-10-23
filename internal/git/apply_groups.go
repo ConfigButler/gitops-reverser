@@ -16,14 +16,14 @@ import (
 // another commit than the one it checked. The appliers of a group take turns (turnOrder). One
 // worker writes a repository branch (branch_owner.go), so a group's appliers are all its own.
 
-// sourceGroup is the group a trigger's applier belongs to: its cluster and GitRepository, or "" for
+// sourceGroup is the group an applier claim's applier belongs to: its cluster and GitRepository, or "" for
 // an applier that shares nothing this way.
-func sourceGroup(trigger v1alpha3.ApplyTrigger) string {
-	source, ok := trigger.SharedSource()
+func sourceGroup(applierClaim v1alpha3.ApplierClaim) string {
+	source, ok := applierClaim.SharedSource()
 	if !ok {
 		return ""
 	}
-	return trigger.KubeProviderKey().String() + "/" + source.Namespace + "/" + source.Name
+	return applierClaim.KubeProviderKey().String() + "/" + source.Namespace + "/" + source.Name
 }
 
 // group is the applier's group, as listed with any GitTarget naming it.

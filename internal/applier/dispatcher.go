@@ -61,7 +61,7 @@ const shortCommitLength = 8
 var errNotRunning = errors.New("the apply request dispatcher is not running")
 
 // Clients resolves the dynamic client of the cluster an applier lives in, by KubeProvider
-// name (a trigger's spec.kubeProviderRef). In production it is
+// name (an applier claim's spec.kubeProviderRef). In production it is
 // (*watch.Manager).ApplierDynamicClient.
 type Clients func(ctx context.Context, clusterID string) (dynamic.Interface, error)
 
@@ -101,7 +101,7 @@ const pollTimeout = 10 * time.Second
 //
 // What it does check is what can change between the worker's decision and the write. It reads each
 // GitTarget again and asks only for those that are still the incarnation the worker decided for,
-// still name a trigger that holds this applier on this branch, are still admitted by their
+// still name an applier claim that holds this applier on this branch, are still admitted by their
 // KubeProviders, and, for a Refusal, still consent. When no target still holds the request's
 // reason it asks nothing at all, rather than ask for something weaker: a weaker request is the
 // worker's to decide. Then the applier's client (Flux or Argo CD, by the applier's kind) checks the
@@ -125,7 +125,7 @@ type Dispatcher struct {
 	UnresolvedPollMax time.Duration
 	// Now is the clock request tokens are taken from.
 	Now func() time.Time
-	// APIReader reads a FluxTrigger uncached just before its Kustomization is resumed, so a suspend
+	// APIReader reads a FluxClaim uncached just before its Kustomization is resumed, so a suspend
 	// its reconciler is making is seen (Ask.Held). NewDispatcher sets it to the reader it was given.
 	APIReader client.Reader
 
@@ -138,16 +138,16 @@ type Dispatcher struct {
 	stopped bool
 	waiting []git.ApplyRequest
 
-	// following counts the attempts carrying out or following an operation, by trigger and token
+	// following counts the attempts carrying out or following an operation, by claim and token
 	// (Following).
 	followMu  sync.Mutex
 	following map[followKey]int
 }
 
-// followKey is one operation of one trigger, by its request token.
+// followKey is one operation of one applier claim, by its request token.
 type followKey struct {
-	trigger git.TriggerRef
-	token   string
+	claim git.ApplierClaimRef
+	token string
 }
 
 var (
@@ -239,14 +239,14 @@ func (d *Dispatcher) launch(ctx context.Context, req git.ApplyRequest) {
 	d.carryOut(ctx, req)
 }
 
-// followRecovered follows an operation recorded on the trigger to its end, asking the applier for
+// followRecovered follows an operation recorded on the applier claim to its end, asking the applier for
 // nothing: the request was made by an earlier process, or by somebody else. A cluster that cannot
 // be reached is tried again until the worker abandons the attempt, because the record can only be
 // completed by following it.
 func (d *Dispatcher) followRecovered(ctx context.Context, req git.ApplyRequest) {
 	log := d.log.WithValues("applier", req.Applier.String(), "branch", req.Branch.String(),
 		"reason", req.Reason, "commit", req.Commit, "recovered", true)
-	defer d.follows(req.Applier.Trigger, req.Recovered.Token)()
+	defer d.follows(req.Applier.ApplierClaim, req.Recovered.Token)()
 	interval := d.PollInterval
 	for {
 		applierClient, err := d.applierClients(ctx, req.Applier.Cluster)
@@ -280,21 +280,21 @@ func recoveredStarted(req git.ApplyRequest) Started {
 }
 
 // Following reports whether an attempt of this dispatcher is carrying out or following the
-// operation with token on trigger: from before it records the operation until the operation
-// completed, or, abandoned, the Kustomization was suspended again. The FluxTrigger's reconciler
-// asks it before it leaves a Kustomization resumed for an operation its trigger records: the
+// operation with token on claim: from before it records the operation until the operation
+// completed, or, abandoned, the Kustomization was suspended again. The FluxClaim's reconciler
+// asks it before it leaves a Kustomization resumed for an operation its applier claim records: the
 // dispatcher runs in the same process, on the leader, so an operation it does not follow is
 // followed by nobody.
-func (d *Dispatcher) Following(trigger git.TriggerRef, token string) bool {
+func (d *Dispatcher) Following(claim git.ApplierClaimRef, token string) bool {
 	d.followMu.Lock()
 	defer d.followMu.Unlock()
-	return d.following[followKey{trigger: trigger, token: token}] > 0
+	return d.following[followKey{claim: claim, token: token}] > 0
 }
 
-// follows registers an attempt as following the operation with token on trigger, and returns the
+// follows registers an attempt as following the operation with token on claim, and returns the
 // func that ends it.
-func (d *Dispatcher) follows(trigger git.TriggerRef, token string) func() {
-	key := followKey{trigger: trigger, token: token}
+func (d *Dispatcher) follows(claim git.ApplierClaimRef, token string) func() {
+	key := followKey{claim: claim, token: token}
 	d.followMu.Lock()
 	defer d.followMu.Unlock()
 	if d.following == nil {
@@ -316,7 +316,7 @@ func (d *Dispatcher) carryOut(ctx context.Context, req git.ApplyRequest) {
 	if req.Token == "" {
 		req.Token = requestToken(d.Now())
 	}
-	defer d.follows(req.Applier.Trigger, req.Token)()
+	defer d.follows(req.Applier.ApplierClaim, req.Token)()
 	res, op := d.attempt(ctx, req)
 	req.Report(res)
 	if op == nil {
@@ -374,7 +374,7 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	applier := d.client(req.Applier.Kind, applierClient)
 	started, err := applier.Request(ctx, applierName(req.Applier), Ask{
 		Want: want, Commit: req.Commit, Reason: req.Reason, Token: req.Token, Current: req.Current, Record: req.Record,
-		Held: func(ctx context.Context) error { return d.triggerHolds(ctx, req.Applier.Trigger) },
+		Held: func(ctx context.Context) error { return d.claimHolds(ctx, req.Applier.ApplierClaim) },
 	})
 	switch {
 	case errors.Is(err, errStale):
@@ -433,8 +433,8 @@ func (d *Dispatcher) client(kind string, applierClient dynamic.Interface) Client
 // An operation that has not completed within UnresolvedAfter is reported Unresolved, once, and is
 // read on at a doubling interval: the apply can still run, and only its completion closes the
 // window. The client is told it is overdue, so a Flux Kustomization is suspended at once. The
-// applier object being gone completes it as Failed, and so does its trigger being deleted: the
-// trigger's own finalizer suspends the Kustomization and hands it back, and a suspend from here
+// applier object being gone completes it as Failed, and so does its applier claim being deleted: the
+// applier claim's own finalizer suspends the Kustomization and hands it back, and a suspend from here
 // would undo that. It returns false, and reports nothing more, when the worker abandons the
 // attempt or the dispatcher stops; a Flux Kustomization this process resumed is suspended first.
 func (d *Dispatcher) follow(ctx context.Context, req git.ApplyRequest, op *operation) (git.ApplyResult, bool) {
@@ -490,7 +490,7 @@ func (d *Dispatcher) letGo(ctx context.Context, req git.ApplyRequest, op *operat
 // still be resumed, and nothing else follows the operation. It is treated as overdue, so it is
 // suspended at once, and read until that suspend's token is handled, within AttemptTimeout and
 // whether or not the dispatcher stops meanwhile. It reports nothing: nobody waits for the report.
-// A trigger being deleted completes it without a suspend, since the trigger hands its Kustomization
+// An applier claim being deleted completes it without a suspend, since the applier claim hands its Kustomization
 // back itself.
 func (d *Dispatcher) suspendAbandoned(ctx context.Context, req git.ApplyRequest, op *operation) {
 	if op.started.Outcome != OutcomeResumed {
@@ -508,7 +508,7 @@ func (d *Dispatcher) suspendAbandoned(ctx context.Context, req git.ApplyRequest,
 		}
 		if !wait(ctx, nil, d.PollInterval) {
 			op.log.Info("the worker abandoned the operation, and its Kustomization was not seen suspended again "+
-				"in time; the trigger's reconciler suspends it", "suspendToken", op.started.SuspendToken)
+				"in time; the applier claim's reconciler suspends it", "suspendToken", op.started.SuspendToken)
 			return
 		}
 	}
@@ -522,7 +522,7 @@ const stopSuspendTimeout = 5 * time.Second
 // as the dispatcher stops mid-apply: otherwise it stays resumed until the next process recovers the
 // operation, and Flux applies a new artifact, or a drift reconcile reverts live edits, on its own in
 // between. It does not wait for the suspend to be handled; the next process recovers a suspend of
-// its own that this one did not report, as it does after a crash. A trigger being deleted hands
+// its own that this one did not report, as it does after a crash. An applier claim being deleted hands
 // its Kustomization back itself, and a suspend from here would undo that.
 func (d *Dispatcher) suspendOnStop(ctx context.Context, req git.ApplyRequest, op *operation) {
 	flux, isFlux := op.applier.(*Flux)
@@ -531,7 +531,7 @@ func (d *Dispatcher) suspendOnStop(ctx context.Context, req git.ApplyRequest, op
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopSuspendTimeout)
 	defer cancel()
-	if released, err := d.triggerReleased(ctx, req.Applier.Trigger); err != nil || released {
+	if released, err := d.claimReleased(ctx, req.Applier.ApplierClaim); err != nil || released {
 		return
 	}
 	token, err := flux.Suspend(ctx, op.ref)
@@ -543,19 +543,19 @@ func (d *Dispatcher) suspendOnStop(ctx context.Context, req git.ApplyRequest, op
 	op.log.Info("stopping mid-apply: suspended the Kustomization", "suspendToken", token)
 }
 
-// progress reads an operation's progress once, within pollTimeout. An applier that is gone, or a
-// trigger that is being deleted, completes it as Failed.
+// progress reads an operation's progress once, within pollTimeout. An applier that is gone, or an
+// applier claim that is being deleted, completes it as Failed.
 func (d *Dispatcher) progress(ctx context.Context, req git.ApplyRequest, op *operation) (Progress, error) {
 	read, cancel := context.WithTimeout(ctx, pollTimeout)
 	defer cancel()
-	released, err := d.triggerReleased(read, req.Applier.Trigger)
+	released, err := d.claimReleased(read, req.Applier.ApplierClaim)
 	if err != nil {
 		return Progress{}, err
 	}
 	if released {
 		return Progress{
 			Outcome: git.ApplyFailed,
-			Message: "the trigger is being deleted, and hands its applier back",
+			Message: "the applier claim is being deleted, and hands its applier back",
 		}, nil
 	}
 	progress, err := op.applier.Progress(read, op.ref, &op.started)
@@ -565,66 +565,66 @@ func (d *Dispatcher) progress(ctx context.Context, req git.ApplyRequest, op *ope
 	return progress, err
 }
 
-// TriggerConditionHeld is a FluxTrigger's Held condition: True (reason Suspended) once its
+// ApplierClaimConditionHeld is a FluxClaim's Held condition: True (reason Suspended) once its
 // Kustomization is suspended under GitOps Reverser's field manager and that suspend's token is
 // handled, and True (reason Applying) while an operation of a branch worker has it resumed. The
-// trigger's reconciler sets it.
-const TriggerConditionHeld = "Held"
+// applier claim's reconciler sets it.
+const ApplierClaimConditionHeld = "Held"
 
-// triggerHolds is Ask.Held: it reads the FluxTrigger uncached, and errs unless it is
+// claimHolds is Ask.Held: it reads the FluxClaim uncached, and errs unless it is
 // Held=True and not being deleted. Its reconciler is otherwise suspending the Kustomization,
 // or about to (an adoption, an external resume it suspends again, a hand-back), and that suspend would land
 // on the resume: Flux would then handle the resume's token on a suspended return, and apply
-// nothing. It also errs when another trigger comes first in line for the Kustomization, read
+// nothing. It also errs when another applier claim comes first in line for the Kustomization, read
 // uncached as well: the recheck's cached read can still miss one. The attempt fails, and the worker
 // asks again after its backoff.
-func (d *Dispatcher) triggerHolds(ctx context.Context, ref git.TriggerRef) error {
-	if ref.Kind != v1alpha3.ApplyTriggerKindFlux {
+func (d *Dispatcher) claimHolds(ctx context.Context, ref git.ApplierClaimRef) error {
+	if ref.Kind != v1alpha3.ApplierClaimKindFlux {
 		return nil
 	}
-	trigger := &v1alpha3.FluxTrigger{}
-	if err := d.APIReader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger); err != nil {
+	claim := &v1alpha3.FluxClaim{}
+	if err := d.APIReader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, claim); err != nil {
 		return fmt.Errorf("read %s: %w", ref, err)
 	}
-	held := apimeta.FindStatusCondition(trigger.Status.Conditions, TriggerConditionHeld)
-	holder, err := HeldByAnother(ctx, d.APIReader, trigger)
+	held := apimeta.FindStatusCondition(claim.Status.Conditions, ApplierClaimConditionHeld)
+	holder, err := HeldByAnother(ctx, d.APIReader, claim)
 	switch {
 	case err != nil:
-		return fmt.Errorf("check which trigger holds the Kustomization of %s: %w", ref, err)
+		return fmt.Errorf("check which applier claim holds the Kustomization of %s: %w", ref, err)
 	case holder != nil:
-		return fmt.Errorf("FluxTrigger %s/%s no longer holds its Kustomization: %s", ref.Namespace, ref.Name,
-			HeldByAnotherMessage(trigger, holder))
-	case !trigger.DeletionTimestamp.IsZero():
-		return fmt.Errorf("FluxTrigger %s/%s is being deleted, and hands its Kustomization back",
+		return fmt.Errorf("FluxClaim %s/%s no longer holds its Kustomization: %s", ref.Namespace, ref.Name,
+			HeldByAnotherMessage(claim, holder))
+	case !claim.DeletionTimestamp.IsZero():
+		return fmt.Errorf("FluxClaim %s/%s is being deleted, and hands its Kustomization back",
 			ref.Namespace, ref.Name)
 	case held == nil || held.Status != metav1.ConditionTrue:
 		message := "it reports no Held condition yet"
 		if held != nil {
 			message = fmt.Sprintf("it is Held=%s, %s: %s", held.Status, held.Reason, held.Message)
 		}
-		return fmt.Errorf("FluxTrigger %s/%s does not hold its Kustomization suspended: %s",
+		return fmt.Errorf("FluxClaim %s/%s does not hold its Kustomization suspended: %s",
 			ref.Namespace, ref.Name, message)
 	}
 	return nil
 }
 
-// triggerReleased reports whether a trigger is gone or being deleted. It reads through APIReader,
+// claimReleased reports whether an applier claim is gone or being deleted. It reads through APIReader,
 // uncached in production, because the step that follows may suspend the Kustomization: after a
-// hand-back's release, a suspend from a cached read that still showed the trigger would hold a
-// Kustomization no trigger holds any more.
-func (d *Dispatcher) triggerReleased(ctx context.Context, ref git.TriggerRef) (bool, error) {
-	trigger := v1alpha3.NewApplyTrigger(ref.Kind)
-	if trigger == nil {
+// hand-back's release, a suspend from a cached read that still showed the applier claim would hold a
+// Kustomization no applier claim holds any more.
+func (d *Dispatcher) claimReleased(ctx context.Context, ref git.ApplierClaimRef) (bool, error) {
+	claim := v1alpha3.NewApplierClaim(ref.Kind)
+	if claim == nil {
 		return false, nil
 	}
-	err := d.APIReader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, trigger)
+	err := d.APIReader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, claim)
 	switch {
 	case apierrors.IsNotFound(err):
 		return true, nil
 	case err != nil:
 		return false, fmt.Errorf("read %s: %w", ref, err)
 	}
-	return !trigger.GetDeletionTimestamp().IsZero(), nil
+	return !claim.GetDeletionTimestamp().IsZero(), nil
 }
 
 // unresolvedBackoff is the factor an Unresolved operation's poll interval grows by on each read.
@@ -774,7 +774,7 @@ func (d *Dispatcher) recheck(ctx context.Context, req git.ApplyRequest) ([]eligi
 //
 // A KubeProvider's client is shared by every GitTarget that uses the cluster, so a client being
 // available is no permission to use it: a GitTarget its KubeProviders do not admit (its own, and
-// its trigger's) would otherwise drive the applier on the strength of another GitTarget's admission.
+// its applier claim's) would otherwise drive the applier on the strength of another GitTarget's admission.
 func (d *Dispatcher) recheckTarget(
 	ctx context.Context, req git.ApplyRequest, candidate git.ApplyTarget,
 ) (*v1alpha3.GitTarget, error) {
@@ -791,14 +791,14 @@ func (d *Dispatcher) recheckTarget(
 		log.V(1).Info("GitTarget is no longer the one that named this applier on this branch; not asking for it")
 		return nil, nil //nolint:nilnil // as above
 	}
-	trigger, err := holdingTrigger(ctx, d.reader, target, req)
-	if err != nil || trigger == nil {
+	claim, err := holdingClaim(ctx, d.reader, target, req)
+	if err != nil || claim == nil {
 		if err == nil {
-			log.V(1).Info("GitTarget no longer names a trigger that holds this applier; not asking for it")
+			log.V(1).Info("GitTarget no longer names an applier claim that holds this applier; not asking for it")
 		}
 		return nil, err
 	}
-	decision, err := authz.ApplierAdmitted(ctx, d.reader, target, trigger)
+	decision, err := authz.ApplierAdmitted(ctx, d.reader, target, claim)
 	if err != nil {
 		return nil, fmt.Errorf("check GitTarget %s against its KubeProviders: %w", candidate.Ref, err)
 	}
@@ -814,32 +814,32 @@ func (d *Dispatcher) recheckTarget(
 	return target, nil
 }
 
-// holdingTrigger is the trigger a GitTarget names when it still holds the request's applier, or nil.
-// A trigger in line behind another naming the same applier (Holder) holds none of it.
-func holdingTrigger(
+// holdingClaim is the applier claim a GitTarget names when it still holds the request's applier, or nil.
+// An applier claim in line behind another naming the same applier (Holder) holds none of it.
+func holdingClaim(
 	ctx context.Context, reader client.Reader, target *v1alpha3.GitTarget, req git.ApplyRequest,
-) (v1alpha3.ApplyTrigger, error) {
-	trigger, err := git.ResolveApplyTrigger(ctx, reader, target)
-	if err != nil || trigger == nil {
+) (v1alpha3.ApplierClaim, error) {
+	claim, err := git.ResolveApplierClaim(ctx, reader, target)
+	if err != nil || claim == nil {
 		return nil, err
 	}
-	if !trigger.GetDeletionTimestamp().IsZero() || git.ApplierOf(trigger) != req.Applier {
-		return nil, nil //nolint:nilnil // a trigger that holds another applier holds none of this one
+	if !claim.GetDeletionTimestamp().IsZero() || git.ApplierOf(claim) != req.Applier {
+		return nil, nil //nolint:nilnil // an applier claim that holds another applier holds none of this one
 	}
-	holder, err := HeldByAnother(ctx, reader, trigger)
+	holder, err := HeldByAnother(ctx, reader, claim)
 	if err != nil || holder != nil {
 		return nil, err
 	}
-	return trigger, nil
+	return claim, nil
 }
 
-// onBranch reports whether a GitTarget still names a trigger, on the request's branch.
+// onBranch reports whether a GitTarget still names an applier claim, on the request's branch.
 func onBranch(target *v1alpha3.GitTarget, req git.ApplyRequest) bool {
-	return target.Spec.ApplyTriggerRef != nil && git.WritesThrough(target, req.GitBranch)
+	return target.Spec.ApplierClaimRef != nil && git.WritesThrough(target, req.GitBranch)
 }
 
 // delivered records a delivered request as an ApplyRequested Event on every GitTarget it was for,
-// each with its own reason. The operation itself is recorded on the trigger, by the branch worker.
+// each with its own reason. The operation itself is recorded on the applier claim, by the branch worker.
 func (d *Dispatcher) delivered(req git.ApplyRequest, eligible []eligibleTarget) {
 	if d.recorder == nil {
 		return

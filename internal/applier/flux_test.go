@@ -377,7 +377,7 @@ func TestFluxValidate_ReportsTheSource(t *testing.T) {
 	}, got.Source)
 }
 
-// TestBindingMismatch_ComparesRepositoriesAndBranches: a trigger's source and the GitProvider's url
+// TestBindingMismatch_ComparesRepositoriesAndBranches: an applier claim's source and the GitProvider's url
 // are compared as repositories, not as strings, and the branch exactly.
 func TestBindingMismatch_ComparesRepositoriesAndBranches(t *testing.T) {
 	tests := []struct {
@@ -405,17 +405,17 @@ func TestBindingMismatch_ComparesRepositoriesAndBranches(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			trigger := &v1alpha3.FluxTrigger{ObjectMeta: metav1.ObjectMeta{Name: "apps"}}
-			assert.Empty(t, BindingMismatch(trigger, Binding{RepositoryURL: tt.provider, Branch: testBranch}),
-				"a trigger that has read nothing yet is not a mismatch")
-			trigger.Status.Source = &v1alpha3.FluxTriggerSource{URL: tt.sourceURL, Branch: tt.branch}
-			got := BindingMismatch(trigger, Binding{RepositoryURL: tt.provider, Branch: testBranch})
+			claim := &v1alpha3.FluxClaim{ObjectMeta: metav1.ObjectMeta{Name: "apps"}}
+			assert.Empty(t, BindingMismatch(claim, Binding{RepositoryURL: tt.provider, Branch: testBranch}),
+				"an applier claim that has read nothing yet is not a mismatch")
+			claim.Status.Source = &v1alpha3.FluxClaimSource{URL: tt.sourceURL, Branch: tt.branch}
+			got := BindingMismatch(claim, Binding{RepositoryURL: tt.provider, Branch: testBranch})
 			if tt.want == "" {
 				assert.Empty(t, got)
 				return
 			}
 			assert.Contains(t, got, tt.want)
-			assert.Contains(t, got, "FluxTrigger apps")
+			assert.Contains(t, got, "FluxClaim apps")
 		})
 	}
 }

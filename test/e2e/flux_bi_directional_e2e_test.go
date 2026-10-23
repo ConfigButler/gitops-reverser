@@ -77,8 +77,8 @@ var biDirectionalRepo *RepoArtifacts
 // only place Argo CD is installed, and the two specs share that one cluster.
 //
 // Exact commit counts are safe here because Flux is driven as a *manually
-// triggered applier* — every reconcile in this spec is explicit, until its last
-// phase hands the Kustomization to a FluxTrigger.
+// claimed applier* — every reconcile in this spec is explicit, until its last
+// phase hands the Kustomization to a FluxClaim.
 //
 // Not Serial: a whole-cluster bidirectional behavioral test (Flux applies from
 // git while gitops-reverser mirrors live state back) that asserts on *exact*
@@ -428,10 +428,10 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 	// edit onto the Git-side commit, and only then asks Flux to apply, so the commit Flux applies
 	// already carries the API side's answer. Nobody reconciles Flux by hand.
 	It("applies a Git-side push only after replaying the API edit made on top of it", func() {
-		By("naming a trigger that holds the live Kustomization")
-		createFluxTrigger(testNs, run.fluxLiveName, run.fluxLiveName)
-		nameApplyTrigger(testNs, run.gitTargetName, "FluxTrigger", run.fluxLiveName, "")
-		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplyTriggerReady", "True", "Succeeded", "")
+		By("naming an applier claim that holds the live Kustomization")
+		createFluxClaim(testNs, run.fluxLiveName, run.fluxLiveName)
+		nameApplierClaim(testNs, run.gitTargetName, "FluxClaim", run.fluxLiveName, "")
+		verifyResourceCondition("gittarget", run.gitTargetName, testNs, "ApplierClaimReady", "True", "Succeeded", "")
 		run.waitForGitTargetReady()
 
 		Expect(run.gitPull()).To(Succeed())

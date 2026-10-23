@@ -477,14 +477,14 @@ Read from the code at `47b171b9`.
 
 | Construct | Where | Why it can go |
 |---|---|---|
-| `branchQuiet` | [`apply_trigger.go`](../../internal/git/apply_trigger.go) | the quiet branch is the wait S1 replaces with the flush |
+| `branchQuiet` | [`apply_trigger.go`](../../internal/git/applier_claim.go) | the quiet branch is the wait S1 replaces with the flush |
 | `workWaiting` | `apply_trigger.go` | queued work items, here or on a sibling, no longer hold an apply |
 | The "nothing pending" half of `decisionHolds` (`busyWriting`, `inflightItems`, `siblingBusy`) | `apply_trigger.go` | `ApplyRequest.Current` checks only that the remote is still at the commit asked for |
 | `branchSiblings.othersBusy`, `BranchWorker.siblingBusy`, `publishWriteBusy`, the `busyWriting` atomic, and the `wakeOthers` calls for quietness | `apply_siblings.go` (since removed), [`branch_worker.go`](../../internal/git/branch_worker.go) | quietness across siblings existed only for the quiet branch; the claims for source groups stay |
 | `stashDeferredHeal`, `applyDeferredHeals`, `deferredHeals` | [`resync_flush.go`](../../internal/git/resync_flush.go), `branch_worker.go` | no snapshot is parked anymore (F3) |
 | The re-run of the mark-and-sweep on replay | `resync_flush.go` (`applyResyncToWorktree`), [`commit_executor.go`](../../internal/git/commit_executor.go) | a replayed resync applies its decided actions (F2) |
 | `ApplierRef.CatchesUp` | [`apply_request.go`](../../internal/git/apply_request.go) | both appliers catch up (S2) |
-| `FluxTrigger.spec.quietPeriod`, `EffectiveQuietPeriod` on both trigger types and the `ApplyTrigger` interface, `DefaultApplierQuietPeriod` | [`api/v1alpha3`](../../api/v1alpha3/applytrigger_types.go) | nothing waits for time to pass before a `CatchUp`; the CRDs are regenerated |
+| `FluxTrigger.spec.quietPeriod`, `EffectiveQuietPeriod` on both trigger types and the `ApplyTrigger` interface, `DefaultApplierQuietPeriod` | [`api/v1alpha3`](../../api/v1alpha3/applierclaim_types.go) | nothing waits for time to pass before a `CatchUp`; the CRDs are regenerated |
 | `branchTarget.quietPeriod`, `applierState.quietPeriod`, `quietSince`, the quiet term of `dueAt`, the reset of `quietSince` in `decide` | `apply_trigger.go`, `branch_worker.go`, [`pending_writes_loop.go`](../../internal/git/pending_writes_loop.go) | they only timed the quiet period |
 | The `OutcomeCurrent` of a `ForeignCommit` or `CatchUp` for a suspended `Kustomization` already at the commit | [`internal/applier/flux.go`](../../internal/applier/flux.go) | the worker decides from what each applier last applied |
 | The `OutcomeCurrent` for an empty commit, with the stamp of the source | `flux.go`, [`internal/applier/argocd.go`](../../internal/applier/argocd.go) | the worker sends nothing for an empty tip |
@@ -547,7 +547,7 @@ queue-depth gauge.
   [`../configuration.md`](../configuration.md) and [`../UPGRADING.md`](../UPGRADING.md): "on a quiet
   branch" becomes "after a flush", `quietPeriod` goes, adopt and converge are described for both
   appliers, and F4's ownership rule is stated where a triggered folder is set up.
-- [`config/samples/fluxtrigger.yaml`](../../config/samples/fluxtrigger.yaml), the field comment in
+- [`config/samples/fluxtrigger.yaml`](../../config/samples/fluxclaim.yaml), the field comment in
   [`gittarget_types.go`](../../api/v1alpha3/gittarget_types.go), and the comments in
   [`internal/telemetry/apply_requests.go`](../../internal/telemetry/apply_requests.go) and
   [`internal/telemetry/apply_window.go`](../../internal/telemetry/apply_window.go).
@@ -685,7 +685,7 @@ The build departs from the plan above in twelve places, decided on 2026-10-20:
 - [`internal/git/apply_window.go`](../../internal/git/apply_window.go): `withholdLateApply`.
 - [`internal/git/commit_executor.go`](../../internal/git/commit_executor.go): planning a write.
 - [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go): the resync.
-- [`internal/git/apply_trigger.go`](../../internal/git/apply_trigger.go): the flush and `CatchUp`.
+- [`internal/git/apply_trigger.go`](../../internal/git/applier_claim.go): the flush and `CatchUp`.
 - [`internal/git/apply_epoch.go`](../../internal/git/apply_epoch.go): stale snapshots (F3).
 - [`internal/git/apply_ownership.go`](../../internal/git/apply_ownership.go): another applier's
   objects (F4), and adopt.

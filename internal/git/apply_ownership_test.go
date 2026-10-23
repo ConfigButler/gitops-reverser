@@ -19,8 +19,8 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// F4 (docs/design/applier-echoes.md): an object another applier owns is not mirrored into a folder a
-// trigger applies.
+// F4 (docs/design/applier-echoes.md): an object another applier owns is not mirrored into a coordinated
+// folder.
 
 func ownedObject(labels map[string]string, annotations map[string]string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap"}}
@@ -67,9 +67,9 @@ func TestAppliedBy_IsTheApplierItNames(t *testing.T) {
 	assert.False(t, AppliedBy{Kind: argo.Kind, Namespace: "tenants", Name: "shop"}.is(argo))
 }
 
-// TestOwnership_ALiveWriteOfAnotherAppliersObjectIsNotMirrored: in alpha's triggered folder, an
+// TestOwnership_ALiveWriteOfAnotherAppliersObjectIsNotMirrored: in alpha's coordinated folder, an
 // object another Kustomization owns is kept out, counted; one alpha's applier owns, or nobody does,
-// is mirrored. bravo's folder names no trigger and excludes nothing.
+// is mirrored. bravo's folder names no applier claim and excludes nothing.
 func TestOwnership_ALiveWriteOfAnotherAppliersObjectIsNotMirrored(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -81,7 +81,11 @@ func TestOwnership_ALiveWriteOfAnotherAppliersObjectIsNotMirrored(t *testing.T) 
 	assert.True(t, loop.ownedElsewhere("alpha", "team-a", "cm/x", other))
 	assert.False(t, loop.ownedElsewhere("alpha", "team-a", "cm/y", own))
 	assert.False(t, loop.ownedElsewhere("alpha", "team-a", "cm/z", AppliedBy{}))
-	assert.False(t, loop.ownedElsewhere("bravo", "team-a", "cm/x", other), "a folder with no trigger excludes nothing")
+	assert.False(
+		t,
+		loop.ownedElsewhere("bravo", "team-a", "cm/x", other),
+		"a folder with no applier claim excludes nothing",
+	)
 	got, _ := telemetry.CollectInt64Sum(reader, "gitopsreverser_apply_ownership_conflicts_total", nil)
 	assert.Equal(t, int64(1), got)
 

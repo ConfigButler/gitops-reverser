@@ -40,13 +40,13 @@ To mirror live state into Git the controller must:
   one of those objects. This is a `get` by name, never a `list` or a `watch`.
 - **Receive audit events.** The kube-apiserver audit webhook posts events to the audit ingress.
   Those carry object metadata and, for some resources, request/response bodies.
-- **Drive an applier, only with an apply trigger.** Holding a Flux `Kustomization` takes `get` and
+- **Drive an applier, only with an applier claim.** Holding a Flux `Kustomization` takes `get` and
   `patch` on it and its `GitRepository`, plus `list` on `Kustomization`s, `HelmRelease`s and
   `HelmChart`s; holding an Argo CD `Application` takes `get` and `update` on it. For the operator's
   own cluster the chart grants these in ClusterRoles of their own, only with `applierAccess.flux`
   or `applierAccess.argocd`.
 
-Apart from the applier an apply trigger holds, the controller never writes to a watched type. Its
+Apart from the applier an applier claim holds, the controller never writes to a watched type. Its
 write targets are Git, that applier, and the Secrets it generates itself (the signing key, and the
 age key under `generateWhenMissing`).
 
@@ -119,7 +119,7 @@ namespace it already knows. Narrowing that further is
 | Generated Secret material | Signing keys and generated age keys live in cluster Secrets. |
 | `accessFrom` label selectors on `GitProvider` and `KubeProvider` | A selector admits every control-cluster namespace whose labels match, so it is only as strong as the right to set those labels. Whoever can label a namespace can admit it, including a tenant allowed to edit its own namespace. Select on labels only the platform can set, or list namespaces by `names`. |
 | `KubeProvider.spec.inCluster` and `--in-cluster-kube-providers` | `inCluster` wields the operator's own identity in the cluster it runs in. It is honored only for a `KubeProvider` the flag lists by exact `namespace/name` (no wildcards, empty by default); any other is `Stalled` (`InClusterNotAuthorized`) and never used. Anyone who can create a `KubeProvider` under a listed name wields that identity through it, so list only names in namespaces you control. |
-| `KubeProvider.spec.allowCrossNamespace.appliers` | Lets every namespace the provider admits suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`, through the provider's identity. A delegation, not owner consent: it does not prove the namespace owns the applier or its repository. A trigger only acts while an eligible `GitTarget` names it, and the binding check compares the `GitProvider` URL, not write access. |
+| `KubeProvider.spec.allowCrossNamespace.appliers` | Lets every namespace the provider admits suspend and apply a `Kustomization` or `Application` in another namespace, such as `flux-system`, through the provider's identity. A delegation, not owner consent: it does not prove the namespace owns the applier or its repository. An applier claim only acts while an eligible `GitTarget` names it, and the binding check compares the `GitProvider` URL, not write access. |
 
 ## Secret data the controller writes to Git
 

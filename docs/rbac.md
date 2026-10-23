@@ -17,10 +17,10 @@ Two more ClusterRoles exist only when asked for, for a folder that is both writt
 ([`bi-directional.md`](bi-directional.md)): `<release>-applier-flux` (chart value
 `applierAccess.flux`; for kustomize,
 [`config/rbac/flux-applier-role.yaml`](../config/rbac/flux-applier-role.yaml)) lets a
-`FluxTrigger` suspend and resume its `Kustomization`, and `<release>-applier-argocd`
+`FluxClaim` suspend and resume its `Kustomization`, and `<release>-applier-argocd`
 (`applierAccess.argocd`;
 [`config/rbac/argocd-applier-role.yaml`](../config/rbac/argocd-applier-role.yaml)) lets an
-`ArgoCDTrigger` start its `Application`'s syncs.
+`ArgoCDClaim` start its `Application`'s syncs.
 
 They are separate because **RBAC is additive**. A wildcard read folded into the manager role
 would grant cluster-wide Secret `list`/`watch` no matter how narrow the Secret rule beside

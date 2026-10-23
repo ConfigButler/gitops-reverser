@@ -1,0 +1,18 @@
+# A FluxClaim holds the Flux Kustomization that applies example-target's folder. Name it from the
+# GitTarget with spec.applierClaimRef: {kind: FluxClaim, name: example-claim}. See
+# docs/bi-directional-flux.md.
+apiVersion: configbutler.ai/v1alpha3
+kind: FluxClaim
+metadata:
+  name: example-claim
+  namespace: default
+spec:
+  # The cluster the Kustomization is in: here the chart's `local` KubeProvider, the operator's own.
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
+  # In another namespace than the applier claim's, so the KubeProvider must set
+  # allowCrossNamespace.appliers: true, or the applier claim reports ApplierNamespaceNotAllowed.
+  kustomizationRef:
+    namespace: flux-system
+    name: example-apps

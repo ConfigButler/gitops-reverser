@@ -122,7 +122,7 @@ func TestApplyEpoch_InitialSnapshotsAreExempt(t *testing.T) {
 }
 
 // TestApplyEpoch_ABranchWithNoTriggerNeverWaits: nothing applies its commits.
-func TestApplyEpoch_ABranchWithNoTriggerNeverWaits(t *testing.T) {
+func TestApplyEpoch_ABranchWithNoClaimNeverWaits(t *testing.T) {
 	loop, _ := manualLoop(t, applierTestTarget("alpha", false))
 	loop.followRecordedOperations(time.Now())
 	observeForeignCommit(loop.w)

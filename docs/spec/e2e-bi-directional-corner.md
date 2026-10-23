@@ -361,7 +361,7 @@ suite's CRD pre-clean loop (`iceCreamCRDGroups`, which `prepareE2EClusterOnce` i
 
 The Flux spec keeps its exact-commit-count discipline, which works because it
 drives Flux as a manually triggered applier until its last phase hands the
-`Kustomization` to a `FluxTrigger`.
+`Kustomization` to a `FluxClaim`.
 
 ### 5. Push-triggered reconciliation (the webhook)
 
@@ -398,7 +398,7 @@ A matched webhook triggers a **`normal`** refresh (`argo.RefreshApp` with
 webhook only refreshes: it makes Argo CD compare sooner, and the specs prove it
 never syncs. Every sync is one GitOps Reverser starts, learning of a push through
 its own receiver, which the corner registers as a second Gitea webhook. Spec E
-switches automated sync on, and the trigger switches it off again before the spec
+switches automated sync on, and the applier claim switches it off again before the spec
 pushes; Spec F's `ApplicationSet` generates an `Application` with automated sync on,
 which auto-syncs a folder of its own.
 
@@ -406,12 +406,12 @@ which auto-syncs a folder of its own.
 
 Specs A, B, C and E run the standard of [`docs/bi-directional-argocd.md`](../bi-directional-argocd.md): the `Application`
 has automated sync off (`automated: {enabled: false, prune: true}`) and is held by
-the `ArgoCDTrigger` the `GitTarget` names, so every sync it runs is one GitOps
+the `ArgoCDClaim` the `GitTarget` names, so every sync it runs is one GitOps
 Reverser started, pinned to a commit it checked. The earlier phases that ran
 automated sync (`selfHeal: true` losing the edit, `ignoreDifferences`, and
 `selfHeal: false` with the webhook) are gone with it: they characterized an Argo CD
 that synced on its own, which the standard no longer allows. Spec F is the exception: an
-`ApplicationSet` owns its `Application`'s switch, so the trigger never holds it, and starts out
+`ApplicationSet` owns its `Application`'s switch, so the applier claim never holds it, and starts out
 `Configured=False` (`OwnedByApplicationSet`).
 
 Specs A, B and E are three `It`s of one `Ordered` describe, sharing one Gitea repo,
@@ -423,7 +423,7 @@ path would each stamp their own tracking-id on the same objects and raise
 
 The `Application` lives in the `argocd` namespace, targets
 `spec.destination.namespace = <testNs>`, `spec.source.path = <livePath>`,
-`targetRevision: main`, `directory.recurse: true`. The trigger lives in the test
+`targetRevision: main`, `directory.recurse: true`. The applier claim lives in the test
 namespace, so each describe first grants `allowCrossNamespace.appliers` on the
 install's `local` `KubeProvider` in the operator's namespace, as a user must for an
 `Application` in `argocd`. The
@@ -432,8 +432,8 @@ CD's own.
 
 Ordering matters: `SetupRepo` leaves the Gitea repo **empty**, so the spec seeds
 `main` first, creates the `Application` (nothing to sync yet), and only then stands
-up the reverser pipeline, whose `GitTarget` needs its trigger's `Application` to
-report `ApplyTriggerReady=True`.
+up the reverser pipeline, whose `GitTarget` needs its applier claim's `Application` to
+report `ApplierClaimReady=True`.
 
 ### Spec A — a Git-side push is synced through a pinned `ForeignCommit`
 
@@ -444,7 +444,7 @@ report `ApplyTriggerReady=True`.
 3. Assert the `Application`'s operation state is GitOps Reverser's: initiated by
    `gitops-reverser` with `automated: true`, reason `ForeignCommit` in its info,
    `sync.revision` and `syncResult.revision` both the pushed commit, `Succeeded`,
-   with resources. The trigger's `status.operation` names the same commit, as
+   with resources. The applier claim's `status.operation` names the same commit, as
    `Succeeded`, written by the branch worker with no reconcile asked for.
 4. Assert the **live** object carries `argocd.argoproj.io/tracking-id` (exact
    value format) and `kubectl.kubernetes.io/last-applied-configuration`, and the
@@ -459,7 +459,7 @@ substring assertion — it catches keys nobody thought to name.
 
 ### Spec B — two quick API edits keep the later value
 
-The race the apply trigger exists for.
+The race the applier claim exists for.
 
 1. Push `order-4` from the Git side; it is synced by a `ForeignCommit`.
 2. Patch `container: Cup` through the API, wait for its commit, then patch
@@ -479,9 +479,9 @@ env var no overlay declaration can express.
 1. Seed the base and overlay, create the `Application` on the overlay
    (kustomize), and deploy it with one manual sync, before any `GitTarget` names it.
 2. Drift `LOG_LEVEL` to `debug`.
-3. Create the `GitTarget` on the overlay, an `ArgoCDTrigger` holding the `Application`,
-   name the trigger in the `GitTarget`'s `spec.applyTriggerRef` with
-   `onRefusal: Reapply`, wait for `ApplyTriggerReady=True`, and create a `WatchRule`
+3. Create the `GitTarget` on the overlay, an `ArgoCDClaim` holding the `Application`,
+   name the applier claim in the `GitTarget`'s `spec.applierClaimRef` with
+   `onRefusal: Reapply`, wait for `ApplierClaimReady=True`, and create a `WatchRule`
    on `deployments`.
 4. Assert the write is refused at the boundary (`WriteBoundaryRefused`), and that
    GitOps Reverser's `Refusal` sync, pinned to the tip, reverts `LOG_LEVEL` to
@@ -491,10 +491,10 @@ env var no overlay declaration can express.
 
 1. Re-apply the `Application` with automated sync on (an `automated` block with no
    `enabled`): the client-side apply removes the switch the manifest no longer has.
-   Request a trigger reconcile, since the applier is read on reconcile rather than
+   Request an applier claim reconcile, since the applier is read on reconcile rather than
    watched.
 2. Assert the switch is `false` again, with a `ClaimedResourceReconciled` Event on the
-   trigger, `Held=True` (`AutomatedSyncOff`), and `gitops-reverser` among the
+   applier claim, `Held=True` (`AutomatedSyncOff`), and `gitops-reverser` among the
    `Application`'s field managers.
 3. Push a Git-side change. Assert GitOps Reverser syncs it as a `ForeignCommit`
    pinned to the pushed commit, and the order is live.
@@ -504,14 +504,14 @@ env var no overlay declaration can express.
 1. Push a `ConfigMap` into a folder of its own, and apply an `ApplicationSet` whose
    template generates an `Application` over it with automated sync on.
 2. Name the generated `Application` from a `GitTarget` on that folder, through an
-   `ArgoCDTrigger`. Assert the trigger's `Configured=False` with
+   `ArgoCDClaim`. Assert the applier claim's `Configured=False` with
    `OwnedByApplicationSet`, its message naming the `ApplicationSet`, the
-   `GitTarget`'s `ApplyTriggerReady=False` with the same reason, and no
+   `GitTarget`'s `ApplierClaimReady=False` with the same reason, and no
    `gitops-reverser` field manager on the `Application`.
 3. Re-apply the `ApplicationSet` with `automated: {enabled: false}` in its template.
    Assert `Held=True` (`AutomatedSyncOff`, kept off by the `ApplicationSet`),
-   `ApplyTriggerReady=True`, still no `gitops-reverser` field manager, and no
-   finalizer on the trigger.
+   `ApplierClaimReady=True`, still no `gitops-reverser` field manager, and no
+   finalizer on the applier claim.
 
 ### Spec D — arming the landmine (phase 2)
 

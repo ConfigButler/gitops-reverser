@@ -48,13 +48,13 @@ func newDestinationFixture(t *testing.T) *destinationFixture {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			KubeProviderRef: triggerProviderRef(triggerLocalProvider),
+			KubeProviderRef: claimProviderRef(claimLocalProvider),
 			GitBranchRef:    meta.NamespacedObjectReference{Name: "main", Namespace: "platform"},
 			Path:            "apps",
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(provider, branch, target, admitting(triggerLocalProvider, "team-a")).
+		WithObjects(provider, branch, target, admitting(claimLocalProvider, "team-a")).
 		WithStatusSubresource(&configbutleraiv1alpha3.GitTarget{}).Build()
 	workers := git.NewWorkerManager(c, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -194,7 +194,7 @@ func TestGitBranchReadyOrSpecChanged(t *testing.T) {
 }
 
 // TestGitTargetsOn_FindsTheTargetsOfABranchOrItsProvider is the shared mapping behind the GitTarget
-// and apply-trigger watches on GitBranch and GitProvider.
+// and applier-claim watches on GitBranch and GitProvider.
 func TestGitTargetsOn_FindsTheTargetsOfABranchOrItsProvider(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))

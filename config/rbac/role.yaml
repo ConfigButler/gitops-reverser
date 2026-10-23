@@ -46,8 +46,8 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
-  - argocdtriggers
-  - fluxtriggers
+  - argocdclaims
+  - fluxclaims
   - gitbranches
   verbs:
   - get
@@ -58,8 +58,8 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
-  - argocdtriggers/finalizers
-  - fluxtriggers/finalizers
+  - argocdclaims/finalizers
+  - fluxclaims/finalizers
   - gitbranches/finalizers
   - gitproviders/finalizers
   verbs:
@@ -67,10 +67,10 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
-  - argocdtriggers/status
+  - argocdclaims/status
   - clusterwatchrules/status
   - commitrequests/status
-  - fluxtriggers/status
+  - fluxclaims/status
   - gitbranches/status
   - gitproviders/status
   - gitreceivers/status

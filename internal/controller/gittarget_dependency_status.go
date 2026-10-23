@@ -70,7 +70,7 @@ func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionV
 // with transient stream detail; including it would re-enqueue every rule of a target on churn that
 // changes no verdict. A message-only drift self-corrects on the next move of any of the three.
 //
-// The verdict is compared on its own because one reason can be either: the apply-trigger gate
+// The verdict is compared on its own because one reason can be either: the applier-claim gate
 // reports the same reason as a stall or as progress, so a target can flip Stalled while its mirrored
 // Status and Reason stay put, and the rule judges its stall from that verdict (see ruleReadiness).
 func gitTargetReadyProjectionChanged() predicate.Predicate {

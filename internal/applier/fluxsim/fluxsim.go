@@ -541,7 +541,7 @@ func SetReady(obj *unstructured.Unstructured, status metav1.ConditionStatus, rea
 // patchKustomization serves a patch of a Kustomization: a server-side apply (always forced, as the
 // client under test applies) or a merge patch, keeping managedFields for spec.suspend and the
 // requestedAt annotation, and the generation for a spec change. Ownership follows what a real API
-// server did (measured in envtest, internal/controller/fluxtrigger_suspend_apiserver_test.go): a
+// server did (measured in envtest, internal/controller/fluxclaim_suspend_apiserver_test.go): a
 // write that changes a field's value takes it from every other owner; an update that writes the
 // value the field holds takes nothing; an apply that does shares the field with its owners.
 func (s *Sim) patchKustomization(action k8stesting.Action) (bool, runtime.Object, error) {

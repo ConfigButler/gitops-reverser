@@ -117,7 +117,7 @@ kinds:
       - path: allowCrossNamespace.appliers
         default: "`false`"
         doc: >-
-          Whether triggers may name a `Kustomization` or `Application` in another namespace than
+          Whether applier claims may name a `Kustomization` or `Application` in another namespace than
           their own
       - path: client.qps
         default: "`20`"
@@ -187,12 +187,12 @@ kinds:
         doc: >-
           Which deletions reach Git. See
           [deletion policy](#deletion-policy-specprunemode)
-      - path: applyTriggerRef
+      - path: applierClaimRef
         default: the applier applies on its own schedule
         doc: >-
-          The `FluxTrigger` or `ArgoCDTrigger`, in this namespace, holding the applier of this
+          The `FluxClaim` or `ArgoCDClaim`, in this namespace, holding the applier of this
           folder, which GitOps Reverser then asks to apply. See
-          [who applies this folder](#who-applies-this-folder-specapplytriggerref)
+          [who applies this folder](#who-applies-this-folder-specapplierclaimref)
       - path: onRefusal
         doc: >-
           What happens to an edit with no legal destination. See
@@ -256,35 +256,35 @@ kinds:
           Label selector the API server applies to the item's LIST and WATCH. See
           [selecting objects by label](#selecting-objects-by-label-rulesobjectselector)
 
-  - kind: FluxTrigger
-    title: "`FluxTrigger` (namespaced): the Flux `Kustomization` GitOps Reverser asks to apply"
-    intro: "The references are immutable: to hold another `Kustomization`, delete the trigger and create a new one."
+  - kind: FluxClaim
+    title: "`FluxClaim` (namespaced): the Flux `Kustomization` GitOps Reverser asks to apply"
+    intro: "The references are immutable: to hold another `Kustomization`, delete the applier claim and create a new one."
     fields:
       - path: kubeProviderRef
         doc: >-
-          The `KubeProvider` whose cluster holds the `Kustomization`: the trigger's own namespace, or
+          The `KubeProvider` whose cluster holds the `Kustomization`: the applier claim's own namespace, or
           `namespace` names one whose `accessFrom` admits it
       - path: clusterProviderRef
         skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: kustomizationRef
         doc: >-
-          The `Kustomization` that applies the folders of the `GitTarget`s naming this trigger. See
-          [who applies this folder](#who-applies-this-folder-specapplytriggerref)
+          The `Kustomization` that applies the folders of the `GitTarget`s naming this applier claim. See
+          [who applies this folder](#who-applies-this-folder-specapplierclaimref)
 
-  - kind: ArgoCDTrigger
-    title: "`ArgoCDTrigger` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync"
-    intro: "The references are immutable: to hold another `Application`, delete the trigger and create a new one."
+  - kind: ArgoCDClaim
+    title: "`ArgoCDClaim` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync"
+    intro: "The references are immutable: to hold another `Application`, delete the applier claim and create a new one."
     fields:
       - path: kubeProviderRef
         doc: >-
-          The `KubeProvider` whose cluster holds the `Application`: the trigger's own namespace, or
+          The `KubeProvider` whose cluster holds the `Application`: the applier claim's own namespace, or
           `namespace` names one whose `accessFrom` admits it
       - path: clusterProviderRef
         skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: applicationRef
         doc: >-
           The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s
-          naming this trigger. See [who applies this folder](#who-applies-this-folder-specapplytriggerref)
+          naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref)
 
   - kind: CommitRequest
     title: "`CommitRequest` (namespaced): save now"

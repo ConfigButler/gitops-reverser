@@ -43,7 +43,7 @@ func TestPushNotice_ARunOfReportsQueuesOneLook(t *testing.T) {
 		{name: "somebody else's push, then ours", reports: []string{"theirs", "ours"}, wantClose: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true), &configv1alpha3.GitProvider{
+			loop, _ := applierClaimLoop(t, applierTestTarget("alpha", true), &configv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-provider", Namespace: "team-a"},
 				Spec:       configv1alpha3.GitProviderSpec{URL: "https://github.com/acme/platform"},
 			})
@@ -96,7 +96,7 @@ func TestPushNotice_LastPushNoticeIsWhenItWasReported(t *testing.T) {
 // TestDispatch_APushNoticeNotFoldedKeepsItsCommit: only a notice EnqueuePushNotification queued
 // takes the fold, so a refresh queued with its own commit keeps it.
 func TestDispatch_APushNoticeNotFoldedKeepsItsCommit(t *testing.T) {
-	loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	loop, _ := applierClaimLoop(t, applierTestTarget("alpha", true))
 	req := &RefreshRequest{PushNotice: true, After: "ccc"}
 	loop.dispatch(WorkItem{Refresh: req})
 	assert.Equal(t, "ccc", req.After)

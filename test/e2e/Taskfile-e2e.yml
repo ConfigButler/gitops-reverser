@@ -1329,7 +1329,7 @@ tasks:
           crd/commitrequests.configbutler.ai crd/gitproviders.configbutler.ai \
           crd/gitbranches.configbutler.ai crd/gitreceivers.configbutler.ai \
           crd/gittargets.configbutler.ai crd/watchrules.configbutler.ai \
-          crd/fluxtriggers.configbutler.ai crd/argocdtriggers.configbutler.ai
+          crd/fluxclaims.configbutler.ai crd/argocdclaims.configbutler.ai
       - touch "{{.CS}}/crds.installed"
 
   _install-config-dir:

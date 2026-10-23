@@ -131,7 +131,7 @@ func TestKubeProvider_DelegationFlagDefaultsClosed(t *testing.T) {
 	assert.False(t, provider.AllowsCrossNamespaceSources(),
 		"source-namespace delegation must never be on by default")
 	assert.False(t, provider.AllowsCrossNamespaceAppliers(),
-		"nor may a trigger reach another namespace's applier by default")
+		"nor may an applier claim reach another namespace's applier by default")
 	provider.Spec.AllowCrossNamespace = &KubeProviderCrossNamespace{Appliers: true}
 	assert.False(t, provider.AllowsCrossNamespaceSources(), "each power is granted on its own")
 	assert.True(t, provider.AllowsCrossNamespaceAppliers())

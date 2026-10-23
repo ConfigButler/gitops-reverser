@@ -13,91 +13,91 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// GitTargetConditionApplyTriggerReady reports whether spec.applyTriggerRef names a trigger that is
+// GitTargetConditionApplierClaimReady reports whether spec.applierClaimRef names an applier claim that is
 // Ready and whose applier applies this target's repository and branch. Present only while
-// spec.applyTriggerRef is set.
-const GitTargetConditionApplyTriggerReady = "ApplyTriggerReady"
+// spec.applierClaimRef is set.
+const GitTargetConditionApplierClaimReady = "ApplierClaimReady"
 
-// ReasonApplyTriggerNotFound is ApplyTriggerReady=False for a GitTarget naming a trigger that does
+// ReasonApplierClaimNotFound is ApplierClaimReady=False for a GitTarget naming an applier claim that does
 // not exist in its namespace.
-const ReasonApplyTriggerNotFound = "ApplyTriggerNotFound"
+const ReasonApplierClaimNotFound = "ApplierClaimNotFound"
 
-// applyTriggerVerdict is the ApplyTriggerReady value, and whether waiting will not clear it.
-type applyTriggerVerdict struct {
+// applierClaimVerdict is the ApplierClaimReady value, and whether waiting will not clear it.
+type applierClaimVerdict struct {
 	value   conditionValue
 	stalled bool
 }
 
-// observeApplyTrigger publishes the ApplyTriggerReady condition and returns it for the readiness
-// trio. present is false when the target names no trigger, in which case the condition is removed.
+// observeApplierClaim publishes the ApplierClaimReady condition and returns it for the readiness
+// trio. present is false when the target names no applier claim, in which case the condition is removed.
 //
-// It reads the trigger from the cache; the trigger's own reconciler checks its applier. What is
+// It reads the applier claim from the cache; the applier claim's own reconciler checks its applier. What is
 // left to check here is what only the GitTarget knows: the repository and branch it writes.
-func (r *GitTargetReconciler) observeApplyTrigger(
+func (r *GitTargetReconciler) observeApplierClaim(
 	ctx context.Context,
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
 	dest gitDestination,
-) (applyTriggerVerdict, bool) {
-	ref := target.Spec.ApplyTriggerRef
+) (applierClaimVerdict, bool) {
+	ref := target.Spec.ApplierClaimRef
 	if ref == nil {
-		st.remove(GitTargetConditionApplyTriggerReady)
-		return applyTriggerVerdict{}, false
+		st.remove(GitTargetConditionApplierClaimReady)
+		return applierClaimVerdict{}, false
 	}
-	verdict := r.applyTriggerVerdict(ctx, target, dest)
-	st.setValue(GitTargetConditionApplyTriggerReady, verdict.value)
+	verdict := r.applierClaimVerdict(ctx, target, dest)
+	st.setValue(GitTargetConditionApplierClaimReady, verdict.value)
 	return verdict, true
 }
 
-func (r *GitTargetReconciler) applyTriggerVerdict(
+func (r *GitTargetReconciler) applierClaimVerdict(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
 	dest gitDestination,
-) applyTriggerVerdict {
-	ref := target.Spec.ApplyTriggerRef
+) applierClaimVerdict {
+	ref := target.Spec.ApplierClaimRef
 	name := fmt.Sprintf("%s %s/%s", ref.Kind, target.Namespace, ref.Name)
-	trigger, err := git.ResolveApplyTrigger(ctx, r.Client, target)
+	applierClaim, err := git.ResolveApplierClaim(ctx, r.Client, target)
 	switch {
 	case err != nil:
-		return applyTriggerVerdict{value: keptCondition(target.Status.Conditions, GitTargetConditionApplyTriggerReady,
+		return applierClaimVerdict{value: keptCondition(target.Status.Conditions, GitTargetConditionApplierClaimReady,
 			fmt.Sprintf("Cannot read %s: %v", name, err))}
-	case trigger == nil:
-		return applyTriggerVerdict{value: conditionValue{
+	case applierClaim == nil:
+		return applierClaimVerdict{value: conditionValue{
 			Status:  metav1.ConditionFalse,
-			Reason:  ReasonApplyTriggerNotFound,
+			Reason:  ReasonApplierClaimNotFound,
 			Message: name + " not found",
 		}}
 	}
 
-	ready := findCondition(*trigger.StatusConditions(), ConditionTypeReady)
+	ready := findCondition(*applierClaim.StatusConditions(), ConditionTypeReady)
 	switch {
-	case ready == nil || ready.ObservedGeneration != trigger.GetGeneration() || ready.Status == metav1.ConditionUnknown:
+	case ready == nil || ready.ObservedGeneration != applierClaim.GetGeneration() || ready.Status == metav1.ConditionUnknown:
 		reason, message := conditionReasonMessage(ready, ReasonProgressing, "has not been checked yet")
-		return applyTriggerVerdict{value: conditionValue{
+		return applierClaimVerdict{value: conditionValue{
 			Status: metav1.ConditionUnknown, Reason: reason, Message: name + ": " + message,
 		}}
 	case ready.Reason == applier.ReasonNotReferenced:
-		// The trigger's reconcile has not seen this reference yet: naming a trigger does not change its
+		// The applier claim's reconcile has not seen this reference yet: naming an applier claim does not change its
 		// generation, so the generation check above cannot tell.
-		return applyTriggerVerdict{value: conditionValue{
+		return applierClaimVerdict{value: conditionValue{
 			Status: metav1.ConditionUnknown, Reason: applier.ReasonNotReferenced,
 			Message: name + " has not observed that this GitTarget names it yet",
 		}}
 	case ready.Status == metav1.ConditionFalse:
-		return applyTriggerVerdict{
+		return applierClaimVerdict{
 			value: conditionValue{
 				Status:  metav1.ConditionFalse,
 				Reason:  ready.Reason,
 				Message: name + ": " + ready.Message,
 			},
-			stalled: conditionIsTrue(*trigger.StatusConditions(), ConditionTypeStalled),
+			stalled: conditionIsTrue(*applierClaim.StatusConditions(), ConditionTypeStalled),
 		}
 	}
 
 	if dest.provider != nil && dest.branch != nil {
 		want := applier.Binding{RepositoryURL: dest.provider.Spec.URL, Branch: dest.branch.Spec.Branch}
-		if mismatch := applier.BindingMismatch(trigger, want); mismatch != "" {
-			return applyTriggerVerdict{
+		if mismatch := applier.BindingMismatch(applierClaim, want); mismatch != "" {
+			return applierClaimVerdict{
 				value: conditionValue{
 					Status:  metav1.ConditionFalse,
 					Reason:  applier.ReasonSourceMismatch,
@@ -107,18 +107,18 @@ func (r *GitTargetReconciler) applyTriggerVerdict(
 			}
 		}
 	}
-	return applyTriggerVerdict{value: conditionValue{
+	return applierClaimVerdict{value: conditionValue{
 		Status: metav1.ConditionTrue,
 		Reason: ReasonSucceeded,
 		Message: fmt.Sprintf("%s holds %s %s, which applies this repository and branch",
-			name, trigger.ApplierKind(), trigger.Applier()),
+			name, applierClaim.ApplierKind(), applierClaim.Applier()),
 	}}
 }
 
-// applyTriggerReadiness contributes ApplyTriggerReady to the trio. A trigger that applies another
+// applierClaimReadiness contributes ApplierClaimReady to the trio. An applier claim that applies another
 // repository, or one stalled itself, needs a human; one that is missing may be on its way, and one
 // that is not Ready yet is still settling.
-func applyTriggerReadiness(rd *readiness, verdict applyTriggerVerdict, present bool) {
+func applierClaimReadiness(rd *readiness, verdict applierClaimVerdict, present bool) {
 	if !present {
 		return
 	}

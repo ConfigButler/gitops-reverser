@@ -185,18 +185,18 @@ func main() {
 	// for anything before a GitTarget's initial snapshots are in Git: both read the streams.
 	workerManager.SetSnapshotHooks(watchMgr.InitialSnapshotsSettled, watchMgr.RequestRecheckForGitTarget)
 	// The branch workers decide when a GitTarget's applier may apply; the dispatcher delivers it,
-	// off their queues, to the applier its apply trigger holds, in the trigger's cluster. The status
-	// writer records each operation on the trigger, also off their queues.
+	// off their queues, to the applier its applier claim holds, in the applier claim's cluster. The status
+	// writer records each operation on the applier claim, also off their queues.
 	applyDispatcher := applier.NewDispatcher(
 		mgr.GetClient(), watchMgr.ApplierDynamicClient, mgr.GetEventRecorderFor("gittarget"),
 		ctrl.Log.WithName("applier"))
 	applyDispatcher.APIReader = mgr.GetAPIReader()
 	fatalIfErr(mgr.Add(applyDispatcher), "unable to add apply request dispatcher to manager")
 	workerManager.SetApplyRequester(applyDispatcher)
-	triggerStatusWriter := applier.NewStatusWriter(mgr.GetAPIReader(), mgr.GetClient(),
+	claimStatusWriter := applier.NewStatusWriter(mgr.GetAPIReader(), mgr.GetClient(),
 		ctrl.Log.WithName("applier").WithName("status"))
-	fatalIfErr(mgr.Add(triggerStatusWriter), "unable to add apply trigger status writer to manager")
-	workerManager.SetApplyTriggerStatusWriter(triggerStatusWriter)
+	fatalIfErr(mgr.Add(claimStatusWriter), "unable to add applier claim status writer to manager")
+	workerManager.SetApplierClaimStatusWriter(claimStatusWriter)
 
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{
@@ -386,8 +386,8 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
 	}
-	for _, kind := range []string{configbutleraiv1alpha3.ApplyTriggerKindFlux, configbutleraiv1alpha3.ApplyTriggerKindArgoCD} {
-		fatalIfErr((&controller.ApplyTriggerReconciler{
+	for _, kind := range []string{configbutleraiv1alpha3.ApplierClaimKindFlux, configbutleraiv1alpha3.ApplierClaimKindArgoCD} {
+		fatalIfErr((&controller.ApplierClaimReconciler{
 			Client:         mgr.GetClient(),
 			Kind:           kind,
 			Recorder:       mgr.GetEventRecorderFor(strings.ToLower(kind)),

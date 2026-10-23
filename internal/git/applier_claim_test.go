@@ -2,7 +2,7 @@
 
 package git
 
-// The branch worker's half of the apply trigger, from docs/design/apply-trigger.md: which reasons are
+// The branch worker's half of the applier claim, from docs/design/apply-trigger.md: which reasons are
 // pending for the appliers, and the rule that nothing is asked while anything live is unpublished.
 
 import (
@@ -86,25 +86,25 @@ func TestApplyInbox_RestorePutsBackWhatWasTaken(t *testing.T) {
 	assert.True(t, inbox.foreignPending())
 }
 
-// applierRef is the applier the trigger testApplier(name) names holds, for a GitTarget in team-a.
+// applierRef is the applier the applier claim testApplier(name) names holds, for a GitTarget in team-a.
 func applierRef(name string) ApplierRef {
 	return ApplierRef{
-		Trigger: TriggerRef{Kind: configv1alpha3.ApplyTriggerKindFlux, Namespace: "team-a", Name: name},
-		Cluster: "team-a/" + testKubeProvider, Kind: configv1alpha3.ApplierKindKustomization,
+		ApplierClaim: ApplierClaimRef{Kind: configv1alpha3.ApplierClaimKindFlux, Namespace: "team-a", Name: name},
+		Cluster:      "team-a/" + testKubeProvider, Kind: configv1alpha3.ApplierKindKustomization,
 		Namespace: "team-a", Name: name,
 	}
 }
 
-// argoApplierRef is the applier the ArgoCDTrigger argoApplier names holds.
+// argoApplierRef is the applier the ArgoCDClaim argoApplier names holds.
 func argoApplierRef(name string) ApplierRef {
 	return ApplierRef{
-		Trigger: TriggerRef{Kind: configv1alpha3.ApplyTriggerKindArgoCD, Namespace: "team-a", Name: name},
-		Cluster: "team-a/" + testKubeProvider, Kind: configv1alpha3.ApplierKindApplication,
+		ApplierClaim: ApplierClaimRef{Kind: configv1alpha3.ApplierClaimKindArgoCD, Namespace: "team-a", Name: name},
+		Cluster:      "team-a/" + testKubeProvider, Kind: configv1alpha3.ApplierKindApplication,
 		Namespace: "argocd", Name: name,
 	}
 }
 
-// applierTestTarget is a GitTarget on the trigger worker's provider and branch unless overridden.
+// applierTestTarget is a GitTarget on the applier claim worker's provider and branch unless overridden.
 func applierTestTarget(name string, applier bool, mutate ...func(*configv1alpha3.GitTarget)) *configv1alpha3.GitTarget {
 	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: k8stypes.UID("uid-" + name)},
@@ -114,7 +114,7 @@ func applierTestTarget(name string, applier bool, mutate ...func(*configv1alpha3
 		},
 	}
 	if applier {
-		target.Spec.ApplyTriggerRef = testApplier(name)
+		target.Spec.ApplierClaimRef = testApplier(name)
 	}
 	for _, m := range mutate {
 		m(target)
@@ -122,10 +122,10 @@ func applierTestTarget(name string, applier bool, mutate ...func(*configv1alpha3
 	return target
 }
 
-// applyTriggerLoop is an event loop on provider team-a/test-provider, branch main, whose fake client
-// holds the given objects and the trigger each GitTarget among them names, and whose requests are
+// applierClaimLoop is an event loop on provider team-a/test-provider, branch main, whose fake client
+// holds the given objects and the applier claim each GitTarget among them names, and whose requests are
 // recorded.
-func applyTriggerLoop(t *testing.T, targets ...client.Object) (*branchWorkerEventLoop, *recordingRequester) {
+func applierClaimLoop(t *testing.T, targets ...client.Object) (*branchWorkerEventLoop, *recordingRequester) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -135,8 +135,8 @@ func applyTriggerLoop(t *testing.T, targets ...client.Object) (*branchWorkerEven
 	w.GitProviderNamespace = "team-a"
 	w.GitBranch = testGitBranch(w.GitProviderRef, w.GitProviderNamespace, w.Branch)
 	w.repo = RepoIdentity{URL: "https://github.com/acme/platform"}
-	w.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testTriggersFor(targets)...).
-		WithStatusSubresource(&configv1alpha3.FluxTrigger{}, &configv1alpha3.ArgoCDTrigger{}).Build()
+	w.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(testClaimsFor(targets)...).
+		WithStatusSubresource(&configv1alpha3.FluxClaim{}, &configv1alpha3.ArgoCDClaim{}).Build()
 	w.Log = logr.Discard()
 	w.ctx = context.Background()
 	requester := &recordingRequester{}
@@ -162,7 +162,7 @@ func observeForeignCommit(w *BranchWorker) {
 }
 
 func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) {
-	loop, requester := applyTriggerLoop(t,
+	loop, requester := applierClaimLoop(t,
 		applierTestTarget("alpha", true),
 		applierTestTarget("bravo", true, func(g *configv1alpha3.GitTarget) { g.Spec.Suspend = true }),
 		applierTestTarget("no-applier", false),
@@ -206,7 +206,7 @@ func TestServiceAppliers_NothingIsSentWhileNoFlushCanBeMade(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
+			loop, requester := applierClaimLoop(t, applierTestTarget("alpha", true))
 			observeForeignCommit(loop.w)
 			tc.busy(loop)
 
@@ -218,11 +218,11 @@ func TestServiceAppliers_NothingIsSentWhileNoFlushCanBeMade(t *testing.T) {
 	}
 }
 
-// argoApplier makes a GitTarget name the ArgoCDTrigger of its own name, which holds the Application
+// argoApplier makes a GitTarget name the ArgoCDClaim of its own name, which holds the Application
 // argocd/<name>.
 func argoApplier(g *configv1alpha3.GitTarget) {
-	g.Spec.ApplyTriggerRef = &configv1alpha3.ApplyTriggerReference{
-		Kind: configv1alpha3.ApplyTriggerKindArgoCD, Name: g.Name,
+	g.Spec.ApplierClaimRef = &configv1alpha3.ApplierClaimReference{
+		Kind: configv1alpha3.ApplierClaimKindArgoCD, Name: g.Name,
 	}
 }
 
@@ -232,7 +232,7 @@ func TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal(t *test
 	argo := argoApplierRef("argo")
 
 	t.Run("a foreign commit", func(t *testing.T) {
-		loop, requester := applyTriggerLoop(t, applierTestTarget("argo", true, argoApplier))
+		loop, requester := applierClaimLoop(t, applierTestTarget("argo", true, argoApplier))
 		observeForeignCommit(loop.w)
 		loop.serviceAppliers()
 		requests := requester.taken()
@@ -243,7 +243,7 @@ func TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal(t *test
 	})
 
 	t.Run("a refusal", func(t *testing.T) {
-		loop, requester := applyTriggerLoop(t, applierTestTarget("argo", true, argoApplier,
+		loop, requester := applierClaimLoop(t, applierTestTarget("argo", true, argoApplier,
 			func(g *configv1alpha3.GitTarget) { g.Spec.OnRefusal = configv1alpha3.RefusalActionReapply }))
 		loop.w.inbox.observe(RemoteObservation{Commit: "aaa", By: ObservedByFetch})
 		loop.addUnsentRefusal(refusalKeyFor(itypes.NewResourceReference("argo", "team-a"), "deployments"),
@@ -257,7 +257,7 @@ func TestServiceAppliers_AnApplicationIsAskedOnAForeignCommitAndARefusal(t *test
 }
 
 func TestServiceAppliers_AForeignCommitAnswersEverythingElsePending(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	loop, requester := applierClaimLoop(t, applierTestTarget("alpha", true))
 	loop.addUnsentRefusal(refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments"),
 		unsentRefusal{detail: "refused", uid: "uid-alpha"}, "obs")
 	observeForeignCommit(loop.w)
@@ -272,7 +272,7 @@ func TestServiceAppliers_AForeignCommitAnswersEverythingElsePending(t *testing.T
 }
 
 func TestServiceAppliers_NoApplierOnTheBranchClearsThePendingReasons(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("plain", false))
+	loop, requester := applierClaimLoop(t, applierTestTarget("plain", false))
 	observeForeignCommit(loop.w)
 	loop.w.inbox.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
 
@@ -286,13 +286,13 @@ func TestServiceAppliers_NoApplierOnTheBranchClearsThePendingReasons(t *testing.
 
 // TestServiceAppliers_ANewlyNamedApplierIsCaughtUp is review 7's W1: a merge to the branch is
 // observed while no GitTarget names an applier, so the ForeignCommit is taken and dropped; then a
-// GitTarget names a trigger, whose Kustomization was suspended before its GitRepository fetched the
+// GitTarget names an applier claim, whose Kustomization was suspended before its GitRepository fetched the
 // merge. The new applier had nothing pending, so the merge was never deployed until some later push.
 // A GitTarget that names an applier for the first time leaves a converge pending, for a Kustomization
 // and an Application alike (S2).
 func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
-	loop, requester := applyTriggerLoop(t,
-		applierTestTarget("flux", false), fluxTrigger("flux"),
+	loop, requester := applierClaimLoop(t,
+		applierTestTarget("flux", false), fluxClaim("flux"),
 		applierTestTarget("argo", false))
 	observeForeignCommit(loop.w)
 	loop.serviceAppliers()
@@ -300,7 +300,7 @@ func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
 	require.False(t, loop.w.inbox.foreignPending(), "taken, with no applier to send it to")
 
 	for name, names := range map[string]func(*configv1alpha3.GitTarget){
-		"flux": func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("flux") },
+		"flux": func(g *configv1alpha3.GitTarget) { g.Spec.ApplierClaimRef = testApplier("flux") },
 		"argo": argoApplier,
 	} {
 		target := &configv1alpha3.GitTarget{}
@@ -309,9 +309,9 @@ func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
 		names(target)
 		require.NoError(t, loop.w.Client.Update(context.Background(), target))
 	}
-	require.NoError(t, loop.w.Client.Create(context.Background(), &configv1alpha3.ArgoCDTrigger{
+	require.NoError(t, loop.w.Client.Create(context.Background(), &configv1alpha3.ArgoCDClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "argo", Namespace: "team-a"},
-		Spec: configv1alpha3.ArgoCDTriggerSpec{
+		Spec: configv1alpha3.ArgoCDClaimSpec{
 			KubeProviderRef: meta.NamespacedObjectReference{Name: testKubeProvider},
 			ApplicationRef:  meta.NamespacedObjectReference{Namespace: "argocd", Name: "argo"},
 		},
@@ -328,8 +328,8 @@ func TestServiceAppliers_ANewlyNamedApplierIsCaughtUp(t *testing.T) {
 		[]ApplierRef{requests[0].Applier, requests[1].Applier})
 }
 
-func TestServiceAppliers_NoRequesterSwitchesTheTriggerOff(t *testing.T) {
-	loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true))
+func TestServiceAppliers_NoRequesterSwitchesTheClaimOff(t *testing.T) {
+	loop, _ := applierClaimLoop(t, applierTestTarget("alpha", true))
 	loop.w.applyRequester = nil
 	observeForeignCommit(loop.w)
 
@@ -370,9 +370,9 @@ func applierLedgerFixture(t *testing.T, slug string) (*ledgerFixture, *branchWor
 	target := &configv1alpha3.GitTarget{}
 	require.NoError(t, f.worker.Client.Get(f.worker.ctx,
 		client.ObjectKey{Name: ledgerTargetName, Namespace: "default"}, target))
-	target.Spec.ApplyTriggerRef = testApplier("apps")
+	target.Spec.ApplierClaimRef = testApplier("apps")
 	require.NoError(t, f.worker.Client.Update(f.worker.ctx, target))
-	createTestTrigger(t, f.worker.Client, target)
+	createTestClaim(t, f.worker.Client, target)
 
 	requester := &recordingRequester{}
 	f.worker.applyRequester = requester
@@ -391,11 +391,11 @@ func foreignRequests(requests []ApplyRequest) []ApplyRequest {
 	return foreign
 }
 
-// TestApplyTrigger_APushNoticeFindsAForeignCommit is §3.3 end to end over a real Git server: the
+// TestApplierClaim_APushNoticeFindsAForeignCommit is §3.3 end to end over a real Git server: the
 // notice names nothing the worker trusts, the advertisement shows a tip the worker did not push,
 // and the request names that tip.
-func TestApplyTrigger_APushNoticeFindsAForeignCommit(t *testing.T) {
-	f, loop, requester := applierLedgerFixture(t, "apply-trigger-notice")
+func TestApplierClaim_APushNoticeFindsAForeignCommit(t *testing.T) {
+	f, loop, requester := applierLedgerFixture(t, "applier-claim-notice")
 	f.publish("ours")
 	loop.endWake(0)
 	assert.Empty(t, foreignRequests(requester.taken()), "the worker's own push is not foreign")
@@ -416,11 +416,11 @@ func TestApplyTrigger_APushNoticeFindsAForeignCommit(t *testing.T) {
 	assert.Empty(t, foreignRequests(requester.taken()))
 }
 
-// TestApplyTrigger_ARejectedPushAsksForTheReplayedTip is §3.4: the foreign commit is found by the
+// TestApplierClaim_ARejectedPushAsksForTheReplayedTip is §3.4: the foreign commit is found by the
 // compare-and-swap, the pending write is replayed onto it, and the request names the replayed tip,
 // which carries the API side's answer.
-func TestApplyTrigger_ARejectedPushAsksForTheReplayedTip(t *testing.T) {
-	f, loop, requester := applierLedgerFixture(t, "apply-trigger-rejected")
+func TestApplierClaim_ARejectedPushAsksForTheReplayedTip(t *testing.T) {
+	f, loop, requester := applierLedgerFixture(t, "applier-claim-rejected")
 	f.publish("prime")
 	loop.endWake(0)
 	requester.taken()
@@ -437,76 +437,76 @@ func TestApplyTrigger_ARejectedPushAsksForTheReplayedTip(t *testing.T) {
 	assert.Equal(t, "from-another-writer", gitOut(t, f.repoDir, "show", head+":OUTSIDE.md"))
 }
 
-// TestApplierOf_KeysTheApplierByItsTriggerClusterAndKind: one name in two clusters is two appliers,
-// and the trigger's spec.kubeProviderRef, not the GitTarget's source, decides which cluster: the
-// KubeProvider's namespace/name, its namespace defaulted to the trigger's own. A Kustomization and
+// TestApplierOf_KeysTheApplierByItsClaimClusterAndKind: one name in two clusters is two appliers,
+// and the applier claim's spec.kubeProviderRef, not the GitTarget's source, decides which cluster: the
+// KubeProvider's namespace/name, its namespace defaulted to the applier claim's own. A Kustomization and
 // an Application of one name are two appliers too.
-func TestApplierOf_KeysTheApplierByItsTriggerClusterAndKind(t *testing.T) {
-	flux := fluxTrigger("apps", func(t *configv1alpha3.FluxTrigger) {
+func TestApplierOf_KeysTheApplierByItsClaimClusterAndKind(t *testing.T) {
+	flux := fluxClaim("apps", func(t *configv1alpha3.FluxClaim) {
 		t.Spec.KubeProviderRef.Name = "prod-eu-1"
 	})
 	kustomization := configv1alpha3.ApplierKindKustomization
-	byFlux := TriggerRef{Kind: configv1alpha3.ApplyTriggerKindFlux, Namespace: "team-a", Name: "apps"}
-	assert.Equal(t, ApplierRef{Trigger: byFlux, Cluster: "team-a/prod-eu-1", Kind: kustomization,
+	byFlux := ApplierClaimRef{Kind: configv1alpha3.ApplierClaimKindFlux, Namespace: "team-a", Name: "apps"}
+	assert.Equal(t, ApplierRef{ApplierClaim: byFlux, Cluster: "team-a/prod-eu-1", Kind: kustomization,
 		Namespace: "team-a", Name: "apps"}, ApplierOf(flux))
 
 	flux.Spec.KubeProviderRef.Name = "hub"
-	assert.NotEqual(t, ApplierRef{Trigger: byFlux, Cluster: "team-a/prod-eu-1", Kind: kustomization,
+	assert.NotEqual(t, ApplierRef{ApplierClaim: byFlux, Cluster: "team-a/prod-eu-1", Kind: kustomization,
 		Namespace: "team-a", Name: "apps"}, ApplierOf(flux))
 
 	// One provider name in another namespace is another cluster.
 	flux.Spec.KubeProviderRef = meta.NamespacedObjectReference{Namespace: "platform", Name: "prod-eu-1"}
-	assert.Equal(t, ApplierRef{Trigger: byFlux, Cluster: "platform/prod-eu-1", Kind: kustomization,
+	assert.Equal(t, ApplierRef{ApplierClaim: byFlux, Cluster: "platform/prod-eu-1", Kind: kustomization,
 		Namespace: "team-a", Name: "apps"}, ApplierOf(flux))
 
-	argo := testTrigger("team-a", &configv1alpha3.ApplyTriggerReference{
-		Kind: configv1alpha3.ApplyTriggerKindArgoCD, Name: "apps",
-	}).(configv1alpha3.ApplyTrigger)
+	argo := testClaim("team-a", &configv1alpha3.ApplierClaimReference{
+		Kind: configv1alpha3.ApplierClaimKindArgoCD, Name: "apps",
+	}).(configv1alpha3.ApplierClaim)
 	assert.Equal(t, argoApplierRef("apps"), ApplierOf(argo))
 }
 
-// TestResolveApplyTrigger_NamesNothingItCannotFind: a GitTarget that names no trigger, a kind this
-// release does not serve, or a trigger not created yet resolves to none, without an error; a read
+// TestResolveApplierClaim_NamesNothingItCannotFind: a GitTarget that names no applier claim, a kind this
+// release does not serve, or an applier claim not created yet resolves to none, without an error; a read
 // that fails is an error, so a blip never reads as "no applier".
-func TestResolveApplyTrigger_NamesNothingItCannotFind(t *testing.T) {
-	loop, _ := applyTriggerLoop(t, fluxTrigger("apps"))
+func TestResolveApplierClaim_NamesNothingItCannotFind(t *testing.T) {
+	loop, _ := applierClaimLoop(t, fluxClaim("apps"))
 	reader := loop.w.Client
-	resolve := func(ref *configv1alpha3.ApplyTriggerReference) (configv1alpha3.ApplyTrigger, error) {
-		target := applierTestTarget("alpha", false, func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = ref })
-		return ResolveApplyTrigger(context.Background(), reader, target)
+	resolve := func(ref *configv1alpha3.ApplierClaimReference) (configv1alpha3.ApplierClaim, error) {
+		target := applierTestTarget("alpha", false, func(g *configv1alpha3.GitTarget) { g.Spec.ApplierClaimRef = ref })
+		return ResolveApplierClaim(context.Background(), reader, target)
 	}
 
-	for name, ref := range map[string]*configv1alpha3.ApplyTriggerReference{
+	for name, ref := range map[string]*configv1alpha3.ApplierClaimReference{
 		"no reference":     nil,
-		"an unknown kind":  {Kind: "WebhookTrigger", Name: "apps"},
-		"a missing object": {Kind: configv1alpha3.ApplyTriggerKindArgoCD, Name: "apps"},
+		"an unknown kind":  {Kind: "WebhookClaim", Name: "apps"},
+		"a missing object": {Kind: configv1alpha3.ApplierClaimKindArgoCD, Name: "apps"},
 	} {
-		trigger, err := resolve(ref)
+		applierClaim, err := resolve(ref)
 		require.NoError(t, err, name)
-		assert.Nil(t, trigger, name)
+		assert.Nil(t, applierClaim, name)
 	}
 
-	trigger, err := resolve(testApplier("apps"))
+	applierClaim, err := resolve(testApplier("apps"))
 	require.NoError(t, err)
-	require.NotNil(t, trigger)
-	assert.Equal(t, "team-a/apps", trigger.Applier().String())
-	assert.Equal(t, "FluxTrigger/team-a/apps", ApplierOf(trigger).Trigger.String())
+	require.NotNil(t, applierClaim)
+	assert.Equal(t, "team-a/apps", applierClaim.Applier().String())
+	assert.Equal(t, "FluxClaim/team-a/apps", ApplierOf(applierClaim).ApplierClaim.String())
 
 	failing := interceptor.NewClient(reader.(client.WithWatch), interceptor.Funcs{
 		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
 			return errors.New("the API server is away")
 		},
 	})
-	_, err = ResolveApplyTrigger(
+	_, err = ResolveApplierClaim(
 		context.Background(),
 		failing,
 		applierTestTarget(
 			"alpha",
 			false,
-			func(g *configv1alpha3.GitTarget) { g.Spec.ApplyTriggerRef = testApplier("apps") },
+			func(g *configv1alpha3.GitTarget) { g.Spec.ApplierClaimRef = testApplier("apps") },
 		),
 	)
-	require.ErrorContains(t, err, "read FluxTrigger team-a/apps")
+	require.ErrorContains(t, err, "read FluxClaim team-a/apps")
 }
 
 // TestServiceAppliers_AFailedListingKeepsItsRetry: a listing of the branch's appliers that fails
@@ -514,7 +514,7 @@ func TestResolveApplyTrigger_NamesNothingItCannotFind(t *testing.T) {
 // armed that timer and then disarmed it, with nothing else to wait for, so the apply waited on some
 // unrelated activity to wake the loop.
 func TestServiceAppliers_AFailedListingKeepsItsRetry(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	loop, requester := applierClaimLoop(t, applierTestTarget("alpha", true))
 	reader := loop.w.Client
 	loop.w.Client = interceptor.NewClient(reader.(client.WithWatch), interceptor.Funcs{
 		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
@@ -538,7 +538,7 @@ func TestServiceAppliers_AFailedListingKeepsItsRetry(t *testing.T) {
 // operations, failing while nothing else is pending must leave its retry armed: the same pass found
 // no reason to send, and disarmed the timer.
 func TestServiceAppliers_AFailedRecordedListingKeepsItsRetry(t *testing.T) {
-	loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	loop, _ := applierClaimLoop(t, applierTestTarget("alpha", true))
 	loop.serviceAppliers()
 	loop.w.inbox.take()
 	for _, state := range loop.appliers {
@@ -564,9 +564,9 @@ func TestServiceAppliers_AFailedRecordedListingKeepsItsRetry(t *testing.T) {
 // for a GitTarget its providers do not admit, so the worker leaves it out before it flushes or holds
 // the applier. A check that fails is an error, retried like a failed listing, never a refusal.
 func TestServiceAppliers_AGitTargetItsProvidersDoNotAdmitAsksNothing(t *testing.T) {
-	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", true))
+	loop, requester := applierClaimLoop(t, applierTestTarget("alpha", true), applierTestTarget("bravo", true))
 	loop.w.applierAdmitted = func(
-		_ context.Context, _ client.Reader, target *configv1alpha3.GitTarget, _ configv1alpha3.ApplyTrigger,
+		_ context.Context, _ client.Reader, target *configv1alpha3.GitTarget, _ configv1alpha3.ApplierClaim,
 	) (authz.Decision, error) {
 		return authz.Decision{Allowed: target.Name != "alpha"}, nil
 	}
@@ -579,7 +579,7 @@ func TestServiceAppliers_AGitTargetItsProvidersDoNotAdmitAsksNothing(t *testing.
 	assert.Equal(t, applierRef("bravo"), requests[0].Applier, "alpha's applier is asked nothing")
 
 	loop.w.applierAdmitted = func(
-		context.Context, client.Reader, *configv1alpha3.GitTarget, configv1alpha3.ApplyTrigger,
+		context.Context, client.Reader, *configv1alpha3.GitTarget, configv1alpha3.ApplierClaim,
 	) (authz.Decision, error) {
 		return authz.Decision{}, errors.New("the cache is not having it")
 	}
