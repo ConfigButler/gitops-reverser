@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -554,13 +553,6 @@ func resolveE2EInstallName(namespace string) string {
 		return value
 	}
 	return namespace
-}
-
-func resolveE2EInstallMode() (string, error) {
-	if value := strings.TrimSpace(os.Getenv("INSTALL_MODE")); value != "" {
-		return value, nil
-	}
-	return "", errors.New("INSTALL_MODE environment variable must be set")
 }
 
 func resolveE2EContext() string {
