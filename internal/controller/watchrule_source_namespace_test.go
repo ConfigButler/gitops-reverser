@@ -29,7 +29,7 @@ const (
 	wrsnTarget   = "acme"
 	wrsnRule     = "repo-config-rule"
 	wrsnProvider = "workspaces"
-	// wrsnProviderNS holds the KubeProvider, so wrsnTenantNS reaches it only through accessFrom.
+	// wrsnProviderNS holds the KubeProvider, so wrsnTenantNS reaches it only through a grant.
 	wrsnProviderNS = "platform"
 )
 

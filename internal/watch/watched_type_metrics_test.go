@@ -23,7 +23,7 @@ func TestWatchTypeSamples_SumIsTheResolvedTypeCount(t *testing.T) {
 
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -58,7 +58,7 @@ func TestWatchTypeSamples_DepartedTargetStopsPublishing(t *testing.T) {
 
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -93,7 +93,7 @@ func TestWatchTypeSamples_DoesNotResolveOnTheScrapePath(t *testing.T) {
 
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -105,7 +105,7 @@ func TestWatchTypeSamples_DoesNotResolveOnTheScrapePath(t *testing.T) {
 
 	// A second type is declared, and nothing refreshes the tables.
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "nodes"),
+		clusterRuleForResource("rule-2", "nodes"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 

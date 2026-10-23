@@ -30,7 +30,7 @@ const (
 	bootTargetNS     = "team-a"
 	bootProviderName = "prod-eu-1"
 	// bootProviderNS is the KubeProvider's namespace, not the GitTarget's, so whether it admits the
-	// GitTarget is its spec.accessFrom's decision rather than the own-namespace rule's.
+	// GitTarget is decided by a Names grant in its spec.allowedGitTargets.
 	bootProviderNS = "platform"
 )
 
@@ -226,7 +226,7 @@ func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.
 	)
 
 	decision, err := CompileClusterWatchRule(
-		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget())
+		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget(), nil)
 	require.NoError(t, err)
 	require.True(t, decision.Admitted)
 	require.Len(t, bootCompiledNames(m), 1, "precondition: the rule is compiled")
@@ -239,7 +239,7 @@ func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.
 	require.NoError(t, m.Client.Update(ctx, &provider))
 
 	decision, err = CompileClusterWatchRule(
-		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget())
+		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget(), nil)
 
 	require.NoError(t, err)
 	assert.False(t, decision.Admitted)

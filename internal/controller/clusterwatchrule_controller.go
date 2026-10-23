@@ -234,22 +234,16 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 	target configbutleraiv1alpha3.GitTarget,
 	log logr.Logger,
 ) (bool, ctrl.Result, error) {
+	var groupsFor func(string) []string
+	if r.WatchManager != nil {
+		groupsFor = r.WatchManager.ClusterResourceGroupsFor(target)
+	}
 	decision, err := watch.CompileClusterWatchRule(
-		ctx, r.Client, r.RuleStore, *clusterRule, target)
+		ctx, r.Client, r.RuleStore, *clusterRule, target, groupsFor)
 	var selectorErr *watch.ObjectSelectorError
 	if errors.As(err, &selectorErr) {
-		// A refusal of the rule's own resources, not of its GitTarget, so it lands on
-		// ResourcesResolved rather than on the condition refuseClusterWatchRule writes.
-		log.Info("Refusing ClusterWatchRule", "name", clusterRule.Name,
-			"reason", watch.ReasonInvalidObjectSelector, "message", selectorErr.Message)
-		if r.WatchManager != nil {
-			r.WatchManager.TriggerRuleChange(clusterWatchRuleGitTarget(clusterRule))
-		}
-		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse,
-			watch.ReasonInvalidObjectSelector, selectorErr.Message)
-		st.set(ConditionTypeStreamsRunning, metav1.ConditionFalse,
-			watch.ReasonInvalidObjectSelector, "No streams: the ClusterWatchRule was refused")
-		result, stallErr := r.stallRule(ctx, st, watch.ReasonInvalidObjectSelector, selectorErr.Message)
+		result, stallErr := r.refuseRuleResources(ctx, st, clusterRule, watch.ReasonInvalidObjectSelector,
+			selectorErr.Message, log)
 		return true, result, stallErr
 	}
 	if err != nil {
@@ -262,9 +256,32 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 	if decision.Admitted {
 		return false, ctrl.Result{}, nil
 	}
+	if decision.ResourcesRefused {
+		result, stallErr := r.refuseRuleResources(ctx, st, clusterRule, decision.Reason, decision.Message, log)
+		return true, result, stallErr
+	}
 
 	result, refuseErr := r.refuseClusterWatchRule(ctx, st, clusterRule, decision, log)
 	return true, result, refuseErr
+}
+
+// refuseRuleResources is the refusal of the rule's own resources rather than of its GitTarget, so it
+// lands on ResourcesResolved rather than on the condition refuseClusterWatchRule writes. The compiled
+// rule is already out of the store; the replan tears down what it kept alive.
+func (r *ClusterWatchRuleReconciler) refuseRuleResources(
+	ctx context.Context,
+	st *reconcileStatus,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
+	reason, message string,
+	log logr.Logger,
+) (ctrl.Result, error) {
+	log.Info("Refusing ClusterWatchRule", "name", clusterRule.Name, "reason", reason, "message", message)
+	if r.WatchManager != nil {
+		r.WatchManager.TriggerRuleChange(clusterWatchRuleGitTarget(clusterRule))
+	}
+	st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, reason, message)
+	st.set(ConditionTypeStreamsRunning, metav1.ConditionFalse, reason, "No streams: the ClusterWatchRule was refused")
+	return r.stallRule(ctx, st, reason, message)
 }
 
 // refuseClusterWatchRule is the denial half of the ClusterWatchRule gate.

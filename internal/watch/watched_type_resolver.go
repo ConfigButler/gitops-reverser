@@ -389,6 +389,11 @@ func (m *Manager) collectClusterWatchRuleSelections(
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
 			for _, rec := range matched {
+				// The compile refused every type the rule names outside its grant. This keeps a type
+				// discovery serves only later, matched through an omitted apiGroups, out as well.
+				if !rule.AllowsType(rec.Identity.GVR.Group, rec.Identity.GVR.Resource) {
+					continue
+				}
 				ts.selections = append(ts.selections, watchSelection{
 					record: rec, namespace: "", labelSelector: rr.LabelSelector, rule: selecting,
 				})

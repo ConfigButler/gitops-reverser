@@ -57,7 +57,7 @@ func watchRuleForTarget(name, gitTargetName, namespace string) configv1alpha3.Wa
 func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 
@@ -74,7 +74,7 @@ func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	}
 	// Concurrently add a second rule mid-flight.
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "nodes"),
+		clusterRuleForResource("rule-2", "nodes"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	wg.Wait()

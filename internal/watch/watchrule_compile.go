@@ -5,6 +5,9 @@ package watch
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -91,26 +94,30 @@ func itemNamespaces(resolved authz.ResolvedSourceScope) [][]string {
 	return out
 }
 
-// CompileClusterWatchRule is THE ONLY PATH from a ClusterWatchRule to a compiled cluster rule, and
-// it is the compile-time half of the cluster-scope-only narrowing.
+// CompileClusterWatchRule is THE ONLY PATH from a ClusterWatchRule to a compiled cluster rule.
 //
 // Two refusals, both terminal, in this order:
 //
 //  1. the referenced GitTarget's namespace must be admitted by that target's KubeProvider — a
 //     ClusterWatchRule's gitTargetRef carries a namespace, so it can name a target in ANY namespace
 //     and widen that target's mirror scope cluster-wide;
-//  2. the rule must not carry a stored scope other than "Cluster". Admission rejects the value on
-//     write, but a pre-release object keeps it in etcd, and resolving it as if it had asked for
-//     cluster scope would silently change what a running rule mirrors.
+//  2. every type the rule names must be in the clusterResources the grants that admit the target
+//     give it (clusterResourcesRefusal). One forbidden type refuses the whole rule.
+//
+// groupsFor resolves the resource of an item that omits apiGroups to the groups that serve it, by
+// discovery; nil, or a cluster not discovered yet, resolves nothing. The compiled rule carries the
+// granted clusterResources too, so the planner never watches a type the grant does not name, also
+// one that discovery serves only later.
 //
 // Like CompileWatchRule it is shared by the reconciler and the startup bootstrap, so a restart
-// cannot open an unauthorized or namespaced watch before the first reconcile can publish status.
+// cannot open an unauthorized watch before the first reconcile can publish status.
 func CompileClusterWatchRule(
 	ctx context.Context,
 	reader client.Reader,
 	store *rulestore.RuleStore,
 	rule configv1alpha3.ClusterWatchRule,
 	target configv1alpha3.GitTarget,
+	groupsFor func(resource string) []string,
 ) (ClusterWatchRuleDecision, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name}
 
@@ -119,7 +126,7 @@ func CompileClusterWatchRule(
 		return ClusterWatchRuleDecision{}, &ObjectSelectorError{Message: err.Error()}
 	}
 
-	admitted, err := authz.GitTargetAdmitted(ctx, reader, &target)
+	admitted, scope, err := authz.GitTargetSourceScope(ctx, reader, &target)
 	if err != nil {
 		// Transient: leave whatever is compiled alone and let the caller requeue.
 		return ClusterWatchRuleDecision{}, err
@@ -132,9 +139,22 @@ func CompileClusterWatchRule(
 				target.Namespace, target.Name, admitted.Message),
 		}, nil
 	}
+	if forbidden := clusterResourcesRefusal(&rule, scope, groupsFor); len(forbidden) > 0 {
+		store.DeleteClusterWatchRule(key)
+		return ClusterWatchRuleDecision{
+			ResourcesRefused: true,
+			Reason:           ClusterWatchRuleReasonClusterResourceNotAllowed,
+			Message: fmt.Sprintf(
+				"KubeProvider %s lets namespace %q mirror cluster-scoped resources %s "+
+					"(spec.allowedGitTargets[].clusterResources); %s not allowed, so the ClusterWatchRule is refused",
+				target.KubeProviderKey(), target.Namespace, describeIdentities(scope.ClusterResources),
+				strings.Join(forbidden, "; ")),
+		}, nil
+	}
 
 	store.AddOrUpdateClusterWatchRule(
 		rule,
+		scope.ClusterResources,
 		target.Name, target.Namespace,
 		target.GitBranchKey().Name, target.GitBranchKey().Namespace,
 		target.Spec.Path,
@@ -146,6 +166,11 @@ func CompileClusterWatchRule(
 // bootstrap refuses on the same grounds without a controller in sight, and one vocabulary is what
 // keeps the two from drifting.
 const (
+	// ClusterWatchRuleReasonClusterResourceNotAllowed is the terminal ResourcesResolved reason when
+	// the rule names a cluster-scoped type outside the clusterResources the KubeProvider's grants give
+	// the GitTarget's namespace, or "*" in apiGroups or resources without clusterResources: ["*"].
+	ClusterWatchRuleReasonClusterResourceNotAllowed = "ClusterResourceNotAllowed"
+
 	// ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized is the terminal reason when the
 	// referenced GitTarget's namespace is not admitted by that target's KubeProvider — either
 	// because no grant in its spec.allowedGitTargets admits it or because the provider does not
@@ -161,6 +186,9 @@ const (
 type ClusterWatchRuleDecision struct {
 	// Admitted reports whether the rule compiled.
 	Admitted bool
+	// ResourcesRefused reports a refusal of the rule's own resources rather than of its GitTarget,
+	// which lands on ResourcesResolved.
+	ResourcesRefused bool
 	// Reason is the terminal condition reason when it did not.
 	Reason string
 	// Message explains the refusal to an operator.
@@ -183,3 +211,68 @@ type ObjectSelectorError struct {
 }
 
 func (e *ObjectSelectorError) Error() string { return e.Message }
+
+// clusterResourcesRefusal names what a ClusterWatchRule asks for outside scope's clusterResources,
+// decided on the rule's TEXT, as rules[].sourceNamespace: "*" is: an item with "*" in apiGroups or
+// resources needs clusterResources: ["*"], and an item naming its groups and resources is checked
+// pair by pair. An item that omits apiGroups is checked by the pair discovery resolves it to; one
+// that resolves to no group, or to several, watches nothing today, and the planner's filter on the
+// granted identities keeps it so when discovery changes. Under ["*"] nothing is refused.
+func clusterResourcesRefusal(
+	rule *configv1alpha3.ClusterWatchRule, scope configv1alpha3.SourceScope, groupsFor func(string) []string,
+) []string {
+	if scope.AllowsAllClusterResources() {
+		return nil
+	}
+	var forbidden []string
+	for i := range rule.Spec.Rules {
+		item := &rule.Spec.Rules[i]
+		if slices.Contains(item.APIGroups, "*") || slices.Contains(item.Resources, "*") {
+			forbidden = append(forbidden, fmt.Sprintf(
+				"spec.rules[%d] has \"*\" in apiGroups or resources, which needs clusterResources: [\"*\"]", i))
+			continue
+		}
+		var types []string
+		for _, resource := range item.Resources {
+			for _, group := range itemGroups(item, resource, groupsFor) {
+				if !scope.AllowsClusterResource(group, resource) {
+					types = append(types, configv1alpha3.ClusterResourceIdentityFor(group, resource))
+				}
+			}
+		}
+		if len(types) > 0 {
+			forbidden = append(
+				forbidden,
+				fmt.Sprintf("spec.rules[%d] asks for %s, which is", i, describeIdentities(types)),
+			)
+		}
+	}
+	return forbidden
+}
+
+// itemGroups is the groups an item's resource is checked in: the ones it names, or, with apiGroups
+// omitted, the one group discovery serves it from.
+func itemGroups(item *configv1alpha3.ClusterResourceRule, resource string, groupsFor func(string) []string) []string {
+	if len(item.APIGroups) > 0 {
+		return item.APIGroups
+	}
+	if groupsFor == nil {
+		return nil
+	}
+	if groups := groupsFor(resource); len(groups) == 1 {
+		return groups
+	}
+	return nil
+}
+
+// describeIdentities renders cluster-resource identities for a message.
+func describeIdentities(identities []string) string {
+	if len(identities) == 0 {
+		return "none"
+	}
+	quoted := make([]string, 0, len(identities))
+	for _, identity := range identities {
+		quoted = append(quoted, strconv.Quote(identity))
+	}
+	return strings.Join(quoted, ", ")
+}

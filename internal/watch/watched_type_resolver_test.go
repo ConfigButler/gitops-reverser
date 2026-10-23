@@ -38,7 +38,7 @@ func gitDestRef(name string) types.ResourceReference {
 func TestRefreshWatchedTypeTables_ClusterWatchRuleResolvesClusterWideType(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 
@@ -79,7 +79,7 @@ func TestRefreshWatchedTypeTables_WatchRuleScopesTypeToItsNamespace(t *testing.T
 func TestRefreshWatchedTypeTables_RuleChangeReResolves(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -88,7 +88,7 @@ func TestRefreshWatchedTypeTables_RuleChangeReResolves(t *testing.T) {
 
 	// A second rule selecting a different resource is reflected on the next refresh.
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "nodes"),
+		clusterRuleForResource("rule-2", "nodes"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -108,7 +108,7 @@ func TestResolveWatchedTypeTables_NilRuleStoreIsEmpty(t *testing.T) {
 func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -128,14 +128,14 @@ func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 func TestRulesFingerprint_StableUntilRuleChanges(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	fp1 := manager.rulesFingerprint()
 	assert.Equal(t, fp1, manager.rulesFingerprint(), "fingerprint must be stable for unchanged rules")
 
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "nodes"),
+		clusterRuleForResource("rule-2", "nodes"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	assert.NotEqual(t, fp1, manager.rulesFingerprint(), "a new rule must move the fingerprint")
@@ -146,7 +146,7 @@ func TestRefreshWatchedTypeTables_KeepsTargetWithUnresolvableRulesAsEmptyTable(t
 	// "ghosts" is not served by the common catalog: the rule resolves to nothing,
 	// but the GitTarget must still appear as an empty table, not vanish.
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "ghosts"),
+		clusterRuleForResource("rule-1", "ghosts"), []string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -174,6 +174,7 @@ func TestRefreshWatchedTypeTables_ExcludesAmbiguousGVK(t *testing.T) {
 				}},
 			},
 		},
+		[]string{"*"},
 		"test-target", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 

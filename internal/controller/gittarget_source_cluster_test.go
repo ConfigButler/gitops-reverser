@@ -666,7 +666,7 @@ func TestObserveSourceReachable_Defaults(t *testing.T) {
 }
 
 // TestKubeProviderToGitTargets: a provider event requeues the GitTargets that mirror through it,
-// in any namespace its accessFrom may admit, matched on the provider's namespace AND name.
+// in any namespace its grants may admit, matched on the provider's namespace AND name.
 func TestKubeProviderToGitTargets(t *testing.T) {
 	target := func(namespace, name string, ref meta.NamespacedObjectReference) *configbutleraiv1alpha3.GitTarget {
 		return &configbutleraiv1alpha3.GitTarget{

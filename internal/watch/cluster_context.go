@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -863,4 +864,31 @@ func (m *Manager) publishClusterOrderLocked() {
 		out = append(out, m.clusters[id])
 	}
 	m.clusterOrder.Store(&out)
+}
+
+// ClusterResourceGroupsFor resolves, in the cluster target mirrors from, the API groups that serve a
+// cluster-scoped resource by name: what a ClusterWatchRule item with apiGroups omitted resolves to.
+// It answers only once the target's cluster has been captured and discovered; before that it
+// resolves nothing, and the compiled rule's granted identities still bound what is planned.
+func (m *Manager) ClusterResourceGroupsFor(target configv1alpha3.GitTarget) func(resource string) []string {
+	ref := types.NewResourceReference(target.Name, target.Namespace)
+	return func(resource string) []string {
+		clusterID, captured := m.watchPlane().clusters[ref.Key()]
+		if !captured {
+			return nil
+		}
+		cc := m.clusterContextByID(clusterID)
+		if cc == nil {
+			return nil
+		}
+		var groups []string
+		for _, rec := range cc.registry.Followable() {
+			gvr := rec.Identity.GVR
+			if rec.Identity.Scope != typeset.ScopeNamespaced && gvr.Resource == resource &&
+				!slices.Contains(groups, gvr.Group) {
+				groups = append(groups, gvr.Group)
+			}
+		}
+		return groups
+	}
 }

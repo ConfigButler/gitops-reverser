@@ -101,7 +101,7 @@ func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
 }
 
 // The applier claim tests reach their appliers through KubeProviders in claimProviderNamespace, a
-// namespace of their own, so a provider admits team-a only through spec.accessFrom: the namespace
+// namespace of their own, so a provider admits team-a only through a grant: the namespace
 // policy is what those tests exercise. claimLocalProvider is the operator's own cluster there.
 const (
 	claimProviderNamespace = "clusters"
@@ -464,7 +464,7 @@ func TestApplierClaimReconcile_AHangingClusterIsBounded(t *testing.T) {
 }
 
 // TestApplierClaimReconcile_TheClaimsKubeProviderAdmitsIt: the applier is reached with the
-// applier claim's KubeProvider's credential, so that provider's accessFrom gates the check before the
+// applier claim's KubeProvider's credential, so that provider's allowedApplierClaims gate the check before the
 // cluster is ever asked.
 func TestApplierClaimReconcile_TheClaimsKubeProviderAdmitsIt(t *testing.T) {
 	cases := []struct {

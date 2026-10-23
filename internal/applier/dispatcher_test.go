@@ -42,7 +42,7 @@ const (
 )
 
 // kubeProviderNS is where the tests' KubeProviders live: a namespace of their own, so whether one
-// admits targetNS is its spec.accessFrom's decision rather than the own-namespace rule's.
+// admits targetNS is decided by its grants.
 const kubeProviderNS = "clusters"
 
 // localCluster is the KubeProvider a test GitTarget mirrors through when it names none.
@@ -472,7 +472,7 @@ func TestDispatcher_AsksAnApplierInItsOwnCluster(t *testing.T) {
 }
 
 // TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing: the applier's KubeProvider gates who
-// may wield its credential exactly as a source's does, so a GitTarget its accessFrom does not admit
+// may wield its credential exactly as a source's does, so a GitTarget its grants do not admit
 // asks nothing, though its own source admits it.
 func TestDispatcher_AnApplierClusterThatDoesNotAdmitAsksNothing(t *testing.T) {
 	hub := kustomizationApplier("hub", fluxSystemNS, "checkout")
