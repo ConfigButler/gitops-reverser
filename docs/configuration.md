@@ -26,7 +26,7 @@ attribution later only when you need named Kubernetes users or service accounts 
 
 ## How the objects fit together
 
-![Config basics diagram showing the relationship between GitProvider, GitTarget, and WatchRule](images/config-basics.excalidraw.svg)
+![Config basics: a WatchRule or ClusterWatchRule selects what a GitTarget mirrors; the GitTarget writes its folder through a GitBranch and a GitProvider with a credentials Secret, and reads the cluster through a KubeProvider. The direction is always from the cluster into Git](images/config-basics.excalidraw.svg)
 
 The usual flow is:
 
@@ -194,6 +194,10 @@ The references are immutable: to hold another `Application`, delete the applier 
 Each admits the objects in its own namespace, and its `spec.accessFrom` admits other namespaces. A
 team can keep its own connection to a remote cluster in its own namespace, and a platform team can
 publish one connection that several namespaces use.
+
+![A platform namespace holds one GitProvider with its credentials Secret, and a GitReceiver; each
+team namespace has its own WatchRule, GitTarget and GitBranch on that repository, and a push event is
+forwarded to the branch it names](images/config-platform-shared.excalidraw.svg)
 
 Neither has a default. The operator cannot infer a safe repository, branch, or write credential, nor
 which cluster a folder means, so every `GitTarget` names its `GitBranch` and its `KubeProvider`.
@@ -1380,6 +1384,10 @@ Git-host configuration. Seconds-fresh is the job of the
 Set this only when Flux or Argo CD applies the folder this `GitTarget` writes. A folder nothing
 applies, and every folder Flux or Argo CD applies that GitOps Reverser does not write, needs no
 applier claim: leave the field out, and GitOps Reverser never touches Flux or Argo CD.
+
+![Bi-directional setup: a GitTarget mirrors the cluster into a branch, and an ArgoCDClaim (or a
+FluxClaim) holds the Argo CD Application that applies the same folder, so it syncs only when GitOps
+Reverser asks; a GitReceiver picks up pushes made in Git](images/config-bi-directional.excalidraw.svg)
 
 When the folder is shared, an **applier claim** holds the object that applies it (its applier), and
 GitOps Reverser decides when it applies: a `FluxClaim` holds a Flux `Kustomization`, an

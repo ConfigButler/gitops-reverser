@@ -60,10 +60,14 @@ things set that up:
    `spec.applierClaimRef`. An applier claim acts only while an eligible `GitTarget` names it: one in its
    namespace, admitted by its `KubeProvider`s, that writes the repository and branch the applier
    fetches.
-2. **The applier's own applier claims are off.** The `FluxClaim` keeps its `Kustomization` suspended;
+2. **The applier's own schedule is off.** The `FluxClaim` keeps its `Kustomization` suspended;
    the `ArgoCDClaim` keeps its `Application`'s automated sync off.
 3. **The Git host's push webhook reaches GitOps Reverser**, so a Git-side push is applied in
    seconds. See [telling GitOps Reverser that somebody else pushed](#telling-gitops-reverser-that-somebody-else-pushed).
+
+![Bi-directional setup: a GitTarget mirrors the cluster into a branch, and an ArgoCDClaim (or a
+FluxClaim) holds the Argo CD Application that applies the same folder, so it syncs only when GitOps
+Reverser asks; a GitReceiver picks up pushes made in Git](images/config-bi-directional.excalidraw.svg)
 
 ```mermaid
 flowchart LR
