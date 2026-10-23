@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .ArgoNamespace }}
+spec:
+  # goTemplate keeps the template's {{ "{{" }} .app {{ "}}" }} from being read by fasttemplate, which would
+  # leave it literal (see templates/provenance/applicationset.tmpl).
+  goTemplate: true
+  generators:
+    - list:
+        elements:
+          - app: {{ .ApplicationName }}
+  template:
+    metadata:
+      name: '{{ "{{" }}.app{{ "}}" }}'
+    spec:
+      project: default
+      source:
+        repoURL: {{ .RepoURL }}
+        targetRevision: {{ .Branch }}
+        path: {{ .Path }}
+        directory:
+          recurse: true
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: {{ .DestinationNamespace }}
+      # The template owns the switch of every Application it generates.
+      syncPolicy:
+        automated:
+{{- if .Automated }}
+          prune: true
+{{- else }}
+          enabled: false
+          prune: true
+{{- end }}

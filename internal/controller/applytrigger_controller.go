@@ -34,7 +34,7 @@ import (
 
 // ApplyTriggerConditionConfigured reports whether a trigger's applier is one GitOps Reverser can
 // drive: it exists in its cluster, applies a source that follows a branch, may be written, and (an
-// Argo CD Application) has automated sync off. The trigger's KubeProvider must admit its
+// Argo CD Application) has automated sync off or a switch the trigger may hold. The trigger's KubeProvider must admit its
 // namespace first, and no trigger in line before it may name the same applier
 // (applier.ReasonHeldByAnotherTrigger).
 const ApplyTriggerConditionConfigured = "Configured"
@@ -43,13 +43,14 @@ const ApplyTriggerConditionConfigured = "Configured"
 // time it was given. It clears when the operation completes.
 const ReasonOperationUnresolved = "OperationUnresolved"
 
-// ApplyTriggerConditionHeld reports whether a FluxTrigger holds its Kustomization: suspended
-// under GitOps Reverser's field manager, with the last suspend's token handled, so nothing that
-// started before the suspend is still running, or resumed for an apply of GitOps Reverser's own. A
-// FluxTrigger is Ready only once it is.
+// ApplyTriggerConditionHeld reports whether a trigger holds its applier. A FluxTrigger holds its
+// Kustomization suspended under GitOps Reverser's field manager, with the last suspend's token
+// handled, so nothing that started before the suspend is still running, or resumed for an apply of
+// GitOps Reverser's own. An ArgoCDTrigger holds its Application's automated sync off
+// (argocdtrigger_hold.go). A trigger is Ready only once it holds its applier.
 const ApplyTriggerConditionHeld = applier.TriggerConditionHeld
 
-// Held reasons, and the Events of the suspend lifecycle on a FluxTrigger.
+// Held reasons, and the Events of the hold lifecycle on a trigger.
 const (
 	// ReasonSuspended is Held=True: the Kustomization is suspended, the last suspend handled, and
 	// nothing applies.
@@ -66,21 +67,23 @@ const (
 	// it is being deleted, or no eligible GitTarget references it any more. Held=False with
 	// applier.ReasonNotReferenced is a trigger with nothing to hold.
 	ReasonReleasing = "Releasing"
-	// EventReasonAdopted is a Kustomization suspended for the first time.
+	// EventReasonAdopted is a Kustomization suspended, or an Application's automated sync switched
+	// off, for the first time.
 	EventReasonAdopted = "Adopted"
 	// EventReasonResumedElsewhere is a held Kustomization found resumed by somebody else, such as
 	// `flux resume`, and suspended again.
 	EventReasonResumedElsewhere = "ResumedElsewhere"
-	// EventReasonReleased is a Kustomization handed back to Flux, or left suspended for the trigger
+	// EventReasonReleased is an applier handed back to Flux or Argo CD, or left held for the trigger
 	// next in line, when its trigger was deleted or no eligible GitTarget references it any more.
 	EventReasonReleased = "Released"
-	// EventReasonReleaseFailed is a retiring trigger that could not hand its Kustomization back.
+	// EventReasonReleaseFailed is a retiring trigger that could not hand its applier back.
 	EventReasonReleaseFailed = "ReleaseFailed"
 )
 
-// fluxTriggerSteadyInterval is how often a FluxTrigger that is Ready reads its Kustomization again:
-// that read is what finds a `flux resume`, so it is more often than other kinds settle.
-const fluxTriggerSteadyInterval = time.Minute
+// heldTriggerSteadyInterval is how often a trigger that is Ready reads its applier again: that read
+// is what finds a `flux resume`, or automated sync switched on in Argo CD, so it is more often than
+// other kinds settle.
+const heldTriggerSteadyInterval = time.Minute
 
 // applyTriggerSuspendingInterval is how soon a trigger waiting on its Kustomization's suspend is
 // read again: a suspended reconcile handles the token in tens of milliseconds.
@@ -95,7 +98,7 @@ const applierCheckTimeout = 10 * time.Second
 // Why the trigger reconciler reads the applier on every reconcile rather than watching it: Flux or
 // Argo CD may not be installed in the applier's cluster at all, and an informer on a kind that is
 // not served would be a failure to report rather than a check that answers "not found". The
-// cadence is its own: RequeueSteadyInterval (fluxTriggerSteadyInterval for a FluxTrigger),
+// cadence is its own: heldTriggerSteadyInterval,
 // applyTriggerSuspendingInterval while a Kustomization has not handled its suspend yet, or
 // applyTriggerSettleInterval while something is expected to clear on its own, such as an applier
 // created after its trigger.
@@ -105,8 +108,9 @@ const applyTriggerSettleInterval = 15 * time.Second
 
 // ApplyTriggerReconciler reconciles one apply trigger kind: it checks that the applier the trigger
 // holds is one GitOps Reverser can drive, and publishes what it applies (status.source) for the
-// GitTargets naming the trigger. For a FluxTrigger it also holds the Kustomization suspended, and
-// hands it back once the trigger is deleted (fluxtrigger_hold.go). It never starts an apply: the
+// GitTargets naming the trigger. It also holds the applier (a Kustomization suspended,
+// fluxtrigger_hold.go; an Application's automated sync off, argocdtrigger_hold.go), and hands it
+// back once the trigger is deleted. It never starts an apply: the
 // branch workers decide when, and write status.operation and status.repairPending. It writes
 // status.operation only for what no worker follows: an external resume, and an operation nobody
 // follows any more.
@@ -137,15 +141,16 @@ type ApplyTriggerReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers;argocdtriggers,verbs=get;list;watch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers,verbs=update;patch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers;argocdtriggers,verbs=update;patch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers/finalizers;argocdtriggers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=configbutler.ai,resources=fluxtriggers/status;argocdtriggers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=kubeproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets;gitproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// Reconcile publishes one trigger's Configured condition, its source and the readiness trio.
+// Reconcile publishes one trigger's Configured and Held conditions, its source and the readiness
+// trio.
 func (r *ApplyTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	trigger := configbutleraiv1alpha3.NewApplyTrigger(r.Kind)
 	if trigger == nil {
@@ -160,12 +165,13 @@ func (r *ApplyTriggerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	st := beginStatus(r.Client, r.Recorder, trigger)
-	if flux, holds := trigger.(*configbutleraiv1alpha3.FluxTrigger); holds {
-		return r.reconcileFlux(ctx, st, flux)
+	switch t := trigger.(type) {
+	case *configbutleraiv1alpha3.FluxTrigger:
+		return r.reconcileFlux(ctx, st, t)
+	case *configbutleraiv1alpha3.ArgoCDTrigger:
+		return r.reconcileArgoCD(ctx, st, t)
 	}
-	check := r.configuredVerdict(ctx, trigger)
-	publishCheck(st, trigger, check)
-	return r.commitTrigger(ctx, st, r.triggerReadiness(trigger, check.configured, nil), nil, RequeueSteadyInterval)
+	return ctrl.Result{}, fmt.Errorf("no apply trigger kind %q", r.Kind)
 }
 
 // reconcileFlux is Reconcile for a FluxTrigger: one being deleted, or that no eligible GitTarget
@@ -190,7 +196,7 @@ func (r *ApplyTriggerReconciler) reconcileFlux(
 	}
 	st.setValue(ApplyTriggerConditionHeld, held)
 	return r.commitTrigger(ctx, st, r.triggerReadiness(trigger, check.configured, &held), &held,
-		fluxTriggerSteadyInterval)
+		heldTriggerSteadyInterval)
 }
 
 // publishCheck sets Configured, and the source when the check was made.
@@ -272,10 +278,10 @@ type triggerCheck struct {
 	judged bool
 }
 
-// retiring reports whether trigger holds its Kustomization and no eligible GitTarget references it
-// any more, conclusively: none names it, or each is refused. A reference that cannot be judged yet
-// keeps the hold, since a release is not undone: Flux applies at once.
-func (c triggerCheck) retiring(trigger *configbutleraiv1alpha3.FluxTrigger) bool {
+// retiring reports whether trigger holds its applier and no eligible GitTarget references it any
+// more, conclusively: none names it, or each is refused. A reference that cannot be judged yet
+// keeps the hold, since a release is not undone: Flux applies at once, and Argo CD syncs.
+func (c triggerCheck) retiring(trigger configbutleraiv1alpha3.ApplyTrigger) bool {
 	return applier.Holding(trigger) && c.judged && (!c.refs.Named() || c.refs.Refused())
 }
 
@@ -447,8 +453,8 @@ func (r *ApplyTriggerReconciler) triggerReadiness(
 	return rd
 }
 
-// applyTriggerReadinessGates contributes Configured, the operation, and a FluxTrigger's Held
-// to the trio, in that order.
+// applyTriggerReadinessGates contributes Configured, the operation, and Held to the trio, in that
+// order.
 // An applier that is missing, or a KubeProvider that is, may be on its way (Flux and Argo CD
 // objects are often created after the trigger); anything else Configured=False needs a human. An
 // operation that has not completed in time clears on its own once it does. A trigger no GitTarget

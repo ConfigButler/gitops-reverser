@@ -397,8 +397,10 @@ A matched webhook triggers a **`normal`** refresh (`argo.RefreshApp` with
 `RefreshTypeNormal`). The specs run the standard (automated sync off), so the
 webhook only refreshes: it makes Argo CD compare sooner, and the specs prove it
 never syncs. Every sync is one GitOps Reverser starts, learning of a push through
-its own receiver, which the corner registers as a second Gitea webhook. Only Spec E
-turns automated sync on, and there the webhook's refresh does auto-sync.
+its own receiver, which the corner registers as a second Gitea webhook. Spec E
+switches automated sync on, and the trigger switches it off again before the spec
+pushes; Spec F's `ApplicationSet` generates an `Application` with automated sync on,
+which auto-syncs a folder of its own.
 
 ## Test design: `argocd_bi_directional_e2e_test.go`
 
@@ -483,18 +485,31 @@ env var no overlay declaration can express.
    GitOps Reverser's `Refusal` sync, pinned to the tip, reverts `LOG_LEVEL` to
    `info`, with no commit for it.
 
-### Spec E — an `Application` with automated sync on is never synced
+### Spec E — automated sync switched on is switched off again
 
 1. Re-apply the `Application` with automated sync on (an `automated` block with no
-   `enabled`), and request a trigger reconcile, since the applier is read on
-   reconcile rather than watched.
-2. Assert the trigger's `Configured=False` with `AutomatedSyncEnabled`, and the
-   `GitTarget`'s `ApplyTriggerReady=False` with the same reason, and `Stalled`.
-3. Push a Git-side change. Assert an `ApplyRequestFailed` Event: the `ForeignCommit`
-   was decided and refused at the `Application`.
-4. `Consistently` assert no operation initiated by `gitops-reverser` names the
-   pushed commit, and the trigger's `status.operation` is unchanged. Argo CD's own automated sync
-   applies the push; that is not GitOps Reverser's.
+   `enabled`): the client-side apply removes the switch the manifest no longer has.
+   Request a trigger reconcile, since the applier is read on reconcile rather than
+   watched.
+2. Assert the switch is `false` again, with an `AutomatedSyncSwitchedOn` Event on the
+   trigger, `Held=True` (`AutomatedSyncOff`), and `gitops-reverser` among the
+   `Application`'s field managers.
+3. Push a Git-side change. Assert GitOps Reverser syncs it as a `ForeignCommit`
+   pinned to the pushed commit, and the order is live.
+
+### Spec F — the switch of an `Application` an `ApplicationSet` generates is never written
+
+1. Push a `ConfigMap` into a folder of its own, and apply an `ApplicationSet` whose
+   template generates an `Application` over it with automated sync on.
+2. Name the generated `Application` from a `GitTarget` on that folder, through an
+   `ArgoCDTrigger`. Assert the trigger's `Configured=False` with
+   `OwnedByApplicationSet`, its message naming the `ApplicationSet`, the
+   `GitTarget`'s `ApplyTriggerReady=False` with the same reason, and no
+   `gitops-reverser` field manager on the `Application`.
+3. Re-apply the `ApplicationSet` with `automated: {enabled: false}` in its template.
+   Assert `Held=True` (`AutomatedSyncOff`, kept off by the `ApplicationSet`),
+   `ApplyTriggerReady=True`, still no `gitops-reverser` field manager, and no
+   finalizer on the trigger.
 
 ### Spec D — arming the landmine (phase 2)
 

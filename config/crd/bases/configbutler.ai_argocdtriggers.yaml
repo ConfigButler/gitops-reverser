@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Held")].reason
+      name: Held
+      type: string
     - jsonPath: .spec.applicationRef.name
       name: Application
       type: string
@@ -50,8 +53,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ArgoCDTrigger holds an Argo CD Application, with automated sync off, for GitOps Reverser, which
-          starts every sync it runs, each after publishing the edits pending on the branch: after a commit
+          ArgoCDTrigger holds an Argo CD Application's automated sync off for GitOps Reverser, which starts
+          every sync it runs, each after publishing the edits pending on the branch: after a commit
           GitOps Reverser did not push, after a refused edit, after a reverted edit, and to adopt what the
           API created or converge the Application (CatchUp). GitTargets name it with spec.applyTriggerRef.
         properties:
@@ -78,12 +81,15 @@ spec:
               applicationRef:
                 description: |-
                   ApplicationRef is the Argo CD Application that applies the folders of the GitTargets naming
-                  this trigger. It must have a single spec.source whose targetRevision names a branch, and
-                  automated sync off: either no spec.syncPolicy.automated, or automated.enabled: false, which
-                  keeps automated.prune for the syncs GitOps Reverser starts. GitOps Reverser starts each sync
-                  by setting the Application's operation, as Argo CD's automated sync does, pinned to the commit
-                  it checked, and never replaces an operation that is running. Its namespace defaults to the
-                  trigger's namespace. Immutable.
+                  this trigger. It must have a single spec.source whose targetRevision names a branch. The
+                  trigger holds its automated sync off: it applies spec.syncPolicy.automated.enabled: false,
+                  which keeps automated.prune for the syncs GitOps Reverser starts, switches it off again when
+                  somebody switches it on, and gives it up when it lets go. An Application an ApplicationSet
+                  generated, or whose switch another field manager applies, must have automated sync off
+                  already: the switch is theirs, and the trigger only checks it. GitOps Reverser starts each
+                  sync by setting the Application's operation, as Argo CD's automated sync does, pinned to the
+                  commit it checked, and never replaces an operation that is running. Its namespace defaults to
+                  the trigger's namespace. Immutable.
                 properties:
                   name:
                     description: Name of the referent.
@@ -117,7 +123,7 @@ spec:
                   KubeProviderRef names the KubeProvider whose cluster holds the Application, such as a
                   management cluster running Argo CD for the source cluster. Namespace omitted means this
                   trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
-                  spec.accessFrom admits. Its identity needs get and update on the Application. Immutable.
+                  spec.accessFrom admits. Its identity needs get, update and patch on the Application. Immutable.
                 properties:
                   name:
                     description: Name of the referent.
@@ -149,15 +155,17 @@ spec:
               conditions:
                 description: |-
                   Conditions are Configured (an eligible GitTarget names the trigger; the Application exists,
-                  syncs a single source, has automated sync off, may be updated, and no other ArgoCDTrigger
-                  holds it) and the kstatus Ready/Reconciling/Stalled trio. A trigger acts only while an
+                  syncs a single source, has automated sync off or a switch the trigger may hold, may be
+                  written, and no other ArgoCDTrigger holds it), Held (AutomatedSyncOff: automated sync is off,
+                  held by GitOps Reverser or kept off by the switch's owner; Releasing: being handed back;
+                  NotReferenced; NotConfigured), and the kstatus Ready/Reconciling/Stalled trio. A trigger acts only while an
                   eligible GitTarget references it: one in its namespace that names it, is admitted by its
                   KubeProviders, and writes the repository and branch the Application syncs. A trigger no
                   GitTarget names reads nothing in the Application's cluster and is Configured=Unknown,
                   Ready=True, both NotReferenced; one named only by GitTargets that are not eligible is
-                  Configured NotBound or a refusal. Of the ArgoCDTriggers in line for one Application in one cluster, the one
-                  created first holds it; the others are Configured=False (HeldByAnotherTrigger) until it is
-                  deleted or no longer referenced, and the next in line takes it over.
+                  Configured NotBound or a refusal. Of the ArgoCDTriggers in line for one Application in one
+                  cluster, one holds it: the one holding it already, then the one created first. The others are
+                  Configured=False (HeldByAnotherTrigger) until it lets go, and the next in line takes it over.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

@@ -129,8 +129,9 @@ applierAccess:
   # GitRepository's other consumers), plus create on SelfSubjectAccessReviews (to check that access
   # before relying on it). Cluster-wide, because a trigger's applier can live in any namespace.
   flux: false
-  # Grant get/update on argoproj.io Applications (a sync is started by updating the Application's
-  # operation, as Argo CD's own automated sync does), plus create on SelfSubjectAccessReviews.
+  # Grant get/update/patch on argoproj.io Applications (a sync is started by updating the
+  # Application's operation, as Argo CD's own automated sync does, and its automated sync is held off
+  # with a server-side apply), plus create on SelfSubjectAccessReviews.
   # Cluster-wide, like the Flux grant.
   argocd: false
 

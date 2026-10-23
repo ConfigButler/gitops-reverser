@@ -46,8 +46,9 @@ const (
 const OutcomeResumed Outcome = "Resumed"
 
 // SuspendFieldManager is the field manager GitOps Reverser holds a Kustomization's spec.suspend and
-// its reconcile.fluxcd.io/requestedAt with. Every write of them is a server-side apply under it, so
-// the Kustomization's managedFields say who holds it.
+// its reconcile.fluxcd.io/requestedAt with, and an Argo CD Application's
+// spec.syncPolicy.automated.enabled. Every write of them is a server-side apply under it, so the
+// applier's managedFields say who holds it.
 const SuspendFieldManager = "gitops-reverser"
 
 // ReasonSuspendOwnedElsewhere is Configured=False on a FluxTrigger whose Kustomization's

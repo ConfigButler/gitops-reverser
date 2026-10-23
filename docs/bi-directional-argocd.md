@@ -6,15 +6,16 @@ everything else exactly as they are. [Bi-directional GitOps](bi-directional.md) 
 this page is the complete Argo CD setup: what to change, what to declare, how to check it works,
 and which tests prove each part.
 
-The `Application` runs with automated sync **off**, and every sync it runs is one GitOps Reverser
-started, pinned to a commit it checked. Argo CD still renders, applies, prunes, runs hooks and
-reports health; it no longer decides when.
+The `ArgoCDTrigger` holds the `Application`'s automated sync **off**, and switches it off again
+whenever somebody switches it on, so every sync it runs is one GitOps Reverser started, pinned to a
+commit it checked. Argo CD still renders, applies, prunes, runs hooks and reports health; it no
+longer decides when.
 
 ## What changes
 
 | Before | With GitOps Reverser |
 | --- | --- |
-| `spec.syncPolicy.automated` syncs every new commit | Automated sync is off: `automated.enabled: false`, or no `automated` block |
+| `spec.syncPolicy.automated` syncs every new commit | Automated sync is off: the trigger holds `automated.enabled: false`, and hands it back when it goes |
 | A sync starts when Argo CD's refresh finds a new commit | A sync starts when GitOps Reverser sets the `Application`'s `operation`, pinned to a commit |
 | `selfHeal` reverts live drift | Nothing reverts live drift by itself; GitOps Reverser publishes it to Git |
 | The Git host's push webhook goes to Argo CD | It also goes to GitOps Reverser's receiver; Argo CD's may stay |
@@ -34,8 +35,26 @@ whatever is pending at that moment ([why that matters](bi-directional.md#why-the
 [support-boundary record](design/support-boundary/argocd-bi-directional.md) has Argo CD's code paths
 for each of these, and for the settings that look like a fix and are not.
 
-An `Application` with automated sync on makes its trigger report `Configured=False` with
-`AutomatedSyncEnabled`, and GitOps Reverser never syncs it.
+**The trigger holds it off.** It applies `spec.syncPolicy.automated.enabled: false` with a
+server-side apply under its own field manager, `gitops-reverser`, and touches nothing else of
+`automated`, so `prune` and `selfHeal` stay as they are. Switching automated sync on again (Argo
+CD's *Enable Auto-Sync*, `kubectl edit`) is undone within a minute, with an `AutomatedSyncSwitchedOn`
+Event; a sync Argo CD started in that minute runs to its end, unchecked against the branch.
+Deleting the trigger, or no longer naming it from any `GitTarget`, hands the switch back: the
+`Application` is as its own spec says again, syncing on its own if it did before, manual if it was.
+
+**Unless somebody else owns the switch.** Two owners would fight over it, so the trigger never
+writes a switch that is somebody else's, and only checks it:
+
+- An `Application` an `ApplicationSet` generated: the `ApplicationSet` rewrites its spec from its
+  template on every reconcile. Set `automated: {enabled: false, prune: true}` in the template.
+- A switch another field manager applies with server-side apply (Flux, Helm, an app of apps with
+  `ServerSideApply=true`): it sets the switch on every apply. Set `enabled: false` in the manifest it
+  applies, or leave `enabled` out of it and the trigger holds the switch.
+
+While that owner keeps automated sync off, the trigger is `Held` and GitOps Reverser syncs as usual.
+While it has it on, the trigger reports `Configured=False` with `OwnedByApplicationSet` or
+`AutomatedSyncOwnedElsewhere`, and GitOps Reverser never syncs the `Application`.
 
 **A catch-up is about ownership.** With automated sync off, Argo CD applies nothing on its own.
 GitOps Reverser's own commits hold values it read from the cluster, so they are already live, and
@@ -50,13 +69,13 @@ starts and once when a `GitTarget` first names the trigger ([one sync](#one-sync
 
 | Requirement | Why | When it is not met |
 | --- | --- | --- |
-| Argo CD 3.1 or later | `spec.syncPolicy.automated.enabled` exists from 3.1.0, and is the only way to switch automated sync off and keep `prune` | Before 3.1 the API server drops `enabled`, the block reads as on, and the trigger reports `AutomatedSyncEnabled`. Remove the `automated` block instead, and accept that a file deleted in Git leaves its object running |
-| Automated sync off | GitOps Reverser starts every sync, after a flush | `AutomatedSyncEnabled`; the `Application` is never synced by GitOps Reverser |
+| Argo CD 3.1 or later | `spec.syncPolicy.automated.enabled` exists from 3.1.0, and is the only way to switch automated sync off and keep `prune` | Before 3.1 the API server drops `enabled`, so the trigger cannot switch automated sync off, and reports `Held=False` with `AutomatedSyncOn`. Remove the `automated` block instead, and accept that a file deleted in Git leaves its object running |
+| Automated sync off: held by the trigger, or kept off by the `ApplicationSet` or field manager that owns the switch | GitOps Reverser starts every sync, after a flush | `OwnedByApplicationSet` or `AutomatedSyncOwnedElsewhere`; the `Application` is never synced by GitOps Reverser |
 | A single Git source, `spec.source`, on the `GitProvider`'s repository | A sync is pinned to one commit of one repository | `UnsupportedSource` for `spec.sources` or `spec.sourceHydrator`; `SourceMismatch` for another repository |
 | `targetRevision` is the `GitTarget`'s branch (`main` or `refs/heads/main`) | The tip GitOps Reverser checks is the tip of that branch | `SourceMismatch` for `HEAD`, an empty `targetRevision`, a tag or a commit |
 | The source renders the folder GitOps Reverser writes: `directory.recurse: true` for a plain directory, or a kustomization at the path | GitOps Reverser writes `<path>/<namespace>/<group>/<plural>/<name>.yaml` | A non-recursive directory sees no files, and the sync applies nothing |
 | Resource tracking by `annotation`, Argo CD's default | GitOps Reverser strips `argocd.argoproj.io/tracking-id`; it cannot strip `app.kubernetes.io/instance`, a label people set on purpose | With `label` or `annotation+label`, the tracking label reaches Git on every object |
-| `get` and `update` on the `Application`, for the identity of the `KubeProvider` that reaches it | A sync is an update of the `Application` | `Forbidden` |
+| `get`, `update` and `patch` on the `Application`, for the identity of the `KubeProvider` that reaches it | A sync is an update of the `Application`; holding automated sync off is a server-side apply, a patch | `Forbidden` |
 | Nothing but GitOps Reverser syncs the `Application` while GitOps Reverser runs | See [what not to do](#what-not-to-do) | Not checked: an unchecked sync can revert live edits |
 
 ## A complete example
@@ -67,7 +86,9 @@ test against the code that validates and drives the applier (see
 [what the tests prove](#what-the-tests-prove)), so this example cannot drift from what is accepted.
 
 The Argo CD side. The `Application` follows exactly the branch the `GitTarget` writes, and its
-automated sync is switched off while keeping `prune` for the syncs GitOps Reverser starts:
+automated sync is switched off while keeping `prune` for the syncs GitOps Reverser starts. The
+trigger would switch it off anyway; written in the manifest, it also stays off once the trigger
+hands the switch back:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -204,7 +225,7 @@ against them.
 | `spec.source.repoURL` is the `GitProvider`'s repository. The forms compare as one repository: `https://` and `ssh://`, `git@host:org/repo` (SCP style), a trailing `.git` or `/`, letter case, and the default port | `SourceMismatch`: `the applier of ArgoCDTrigger checkout applies <url>, not <url>`, on the `GitTarget`, and on the trigger when no `GitTarget` naming it matches |
 | `spec.source.targetRevision` is the `spec.branch` of the `GitTarget`'s `GitBranch`, as the name or as `refs/heads/<name>`. `HEAD` (and an empty `targetRevision`), a tag and a commit never follow the branch | `SourceMismatch`: `the applier of ArgoCDTrigger checkout applies branch "HEAD", not main`, on the same objects |
 | A single `spec.source`: no `spec.sources`, no `spec.sourceHydrator` | trigger `UnsupportedSource`: `syncs only a single-source Application` |
-| Automated sync is off: `spec.syncPolicy.automated` is absent, or has `enabled: false`. This is Argo CD's own rule; an `automated` block with no `enabled` is on | trigger `AutomatedSyncEnabled` |
+| Automated sync is off, or the trigger may switch it off: nobody else owns `spec.syncPolicy.automated.enabled`. Off is Argo CD's own rule: `automated` is absent, or has `enabled: false`; an `automated` block with no `enabled` is on | trigger `OwnedByApplicationSet` or `AutomatedSyncOwnedElsewhere`, only while automated sync is on |
 
 **Prune.** A sync GitOps Reverser starts prunes when `spec.syncPolicy.automated.prune` is `true`,
 read from the `automated` block that `enabled: false` switches off, exactly as automated sync reads
@@ -244,22 +265,23 @@ deploys to other clusters. The provider must admit the trigger's namespace: its 
 admits may then sync any `Application` in reach of its identity whose source is the repository its
 `GitProvider` names, and nothing proves it owns the `Application` or may write to the repository. See
 [what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
-Both references are immutable: delete and recreate the trigger to hold another `Application`. The
-trigger writes nothing to the `Application` until it syncs it, so deleting it, or no longer naming
-it, needs no hand-back: switch automated sync on afterwards if the `Application` should sync on its
-own again.
+Both references are immutable: delete and recreate the trigger to hold another `Application`. A
+trigger that holds the switch carries the finalizer `configbutler.ai/argocd-trigger`: deleting it,
+or no longer naming it from any eligible `GitTarget`, gives the switch up first, so the
+`Application` syncs on its own again if its own spec says so.
 
 ### What state the `Application` is in
 
 ```mermaid
 stateDiagram-v2
     [*] --> OnItsOwn
-    OnItsOwn --> Idle: automated sync off, trigger Configured
+    OnItsOwn --> Idle: trigger Configured, switches automated sync off (Adopted)
     Idle --> SyncRequested: GitOps Reverser sets operation, pinned to the commit
     SyncRequested --> Syncing: Argo CD starts the operation
     Syncing --> Idle: Succeeded, Failed or Error
     Idle --> Syncing: somebody else syncs (Sync button, argocd app sync)
-    Idle --> OnItsOwn: automated sync switched on (AutomatedSyncEnabled)
+    Idle --> Idle: automated sync switched on, and off again (AutomatedSyncSwitchedOn)
+    Idle --> OnItsOwn: trigger deleted or no longer named, switch handed back (Released)
 
     note right of OnItsOwn
         Argo CD syncs on its own,
@@ -274,26 +296,35 @@ stateDiagram-v2
 A trigger acts only while an eligible `GitTarget` references it: one in the trigger's namespace that
 names it, is admitted by its `KubeProvider`s, and writes the repository and branch the
 `Application` syncs. A trigger nothing eligible references starts no sync and is not in line for
-the `Application`; one no `GitTarget` names also reads nothing in the `Application`'s cluster. An
-`Application` has nothing to hold, so there is nothing to hand back either.
+the `Application`; one no `GitTarget` names also reads nothing in the `Application`'s cluster.
 
-The trigger reports `Configured`, and its `Ready` includes it:
+The trigger reports `Configured` and `Held`, and its `Ready` includes both:
 
 | Reason | Means | Readiness |
 | --- | --- | --- |
-| `Succeeded` | An eligible `GitTarget` names the trigger, and the `Application` exists, syncs a single source, has automated sync off, and may be updated | ready |
+| `Succeeded` | An eligible `GitTarget` names the trigger, and the `Application` exists, syncs a single source, has automated sync off or a switch the trigger may hold, and may be updated and patched | ready |
 | `NotReferenced` (`Unknown`) | No `GitTarget` names the trigger. Nothing is read or written | ready: `Ready=True`, `NotReferenced` |
 | `NotBound` (`Unknown`) | No `GitTarget` naming the trigger is eligible yet, and one cannot be judged yet | progressing |
 | `SourceMismatch`, `NamespaceNotAuthorized` or `NotBound` (`False`) | Every `GitTarget` naming the trigger is refused: it writes another repository or branch, or is not admitted. The message lists each | stalled |
 | `ApplierNotFound` | No such `Application` in the applier's cluster, or Argo CD is not installed there | progressing: `Application`s are often created after the trigger |
 | `UnsupportedSource` | The `Application` has several sources, a source hydrator, or no source | stalled |
-| `AutomatedSyncEnabled` | Automated sync is on | stalled |
-| `Forbidden` | The applier cluster's identity may not update the `Application` | stalled |
+| `OwnedByApplicationSet` | Automated sync is on, and an `ApplicationSet` generated the `Application`, so its template owns the switch | stalled: set `automated.enabled: false` in the template |
+| `AutomatedSyncOwnedElsewhere` | Automated sync is on, and another field manager applies the switch | stalled: set `enabled: false` in the manifest it applies, or leave it out |
+| `Forbidden` | The applier cluster's identity may not update or patch the `Application` | stalled |
 | `NamespaceNotAuthorized` | The `kubeProviderRef` names a provider in another namespace whose `accessFrom` does not admit the trigger's namespace | stalled |
 | `KubeProviderNotFound` | The `kubeProviderRef` names a provider that does not exist | progressing |
 | `AuditRouteConflict` | The provider carries an audit route another namespace holds, so it is not used | stalled |
 | `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger's, and the `KubeProvider` does not set `allowCrossNamespace.appliers` | stalled |
-| `HeldByAnotherTrigger` | Another `ArgoCDTrigger` in line for the same `Application` in the same cluster, one an eligible `GitTarget` references, was created first and holds it; this one starts no sync, and takes over once that one is deleted or no longer referenced | stalled: delete one of the two |
+| `HeldByAnotherTrigger` | Another `ArgoCDTrigger` in line for the same `Application` in the same cluster, one an eligible `GitTarget` references, holds it (it holds the switch already, or was created first); this one starts no sync, and takes over once that one lets go | stalled: delete one of the two |
+
+`Held` says whether automated sync is off:
+
+| Reason | Means |
+| --- | --- |
+| `AutomatedSyncOff` (`True`) | Automated sync is off: held off by GitOps Reverser, or kept off by the `ApplicationSet` or field manager that owns the switch (the message says which) |
+| `AutomatedSyncOn` (`False`) | Automated sync is still on after the trigger switched it off: Argo CD before 3.1 drops `enabled` |
+| `Releasing` (`False`) | The switch is being handed back |
+| `NotReferenced` (`False`), `NotConfigured` (`Unknown`) | Nothing is held: no `GitTarget` names the trigger, or it is not `Configured` |
 
 A sync that has not completed within 5 minutes also makes the trigger `Ready=False` with
 `OperationUnresolved`, a progressing state that clears when the sync completes.
@@ -310,11 +341,13 @@ with the identity of that `KubeProvider`. That identity needs:
 
 | API group | Resource | Verbs |
 | --- | --- | --- |
-| `argoproj.io` | `applications` | `get`, `update` |
+| `argoproj.io` | `applications` | `get`, `update`, `patch` |
 | `authorization.k8s.io` | `selfsubjectaccessreviews` | `create`, to check the one above |
 
 A sync is started by an `update` of the `Application`, the way Argo CD's own automated sync starts
-one. For the operator's own cluster, install the chart with `applierAccess.argocd: true`, or apply
+one, and automated sync is held off with a server-side apply, a `patch`. A trigger whose switch an
+`ApplicationSet` or another field manager owns never patches, and needs no `patch`. For the
+operator's own cluster, install the chart with `applierAccess.argocd: true`, or apply
 [`config/rbac/argocd-applier-role.yaml`](../config/rbac/argocd-applier-role.yaml) and its binding.
 For a remote cluster, grant the same to the identity in the `KubeProvider`'s kubeconfig. A `Role`
 in the `Application`'s namespace is enough. Argo CD's own RBAC does not apply: GitOps Reverser
@@ -437,15 +470,24 @@ the folder's `WatchRule`s.
 
 ### Switching automated sync back on
 
-The moment `enabled` turns true, Argo CD syncs every new commit on its own again, GitOps Reverser's
-included. GitOps Reverser stops syncing the `Application` and reports `AutomatedSyncEnabled`, but it
-cannot stop Argo CD. Delete the trigger, or point the `GitTarget` at another, before switching it on.
+The trigger switches it off again within a minute, but a sync Argo CD starts in that minute applies
+the tip over whatever is pending. To have the `Application` sync on its own again, delete the
+trigger, or stop naming it from the `GitTarget`: the hand-back gives the switch up.
+
+### Applying the switch on from a client-side app of apps
+
+A parent `Application` that applies this one with Argo CD's default client-side apply writes the
+switch with an update, which the trigger cannot tell from a click in the UI. With `enabled: true` in
+the child's manifest and `selfHeal` on the parent, the two switch it back and forth. Leave `enabled`
+out of that manifest, or set it to `false`.
 
 ### Generating the `Application` from an `ApplicationSet`
 
 The `ApplicationSet` controller writes its template back over any change to the `Application`s it
-generates, so the template must carry `automated: {enabled: false}`. This setup is not covered by
-tests.
+generates, so the switch is the template's: the template must carry
+`automated: {enabled: false, prune: true}` (or no `automated` block). The trigger checks it and
+never writes it. With automated sync on, the trigger is `OwnedByApplicationSet`, and its message
+says what to change. Pointing a trigger at the `ApplicationSet` itself is not supported.
 
 ### Relying on `Replace=true`
 
@@ -456,7 +498,7 @@ Argo CD's in the apply window, but no test measures it yet. The default apply, c
 ## Checking that it works
 
 ```bash
-# The Application is found, has automated sync off, and may be updated; and it syncs this target's branch.
+# The Application is found, its automated sync is held off, and it may be updated; and it syncs this target's branch.
 kubectl get argocdtrigger checkout -n team-a
 kubectl get gittarget checkout -n team-a \
   -o jsonpath='{.status.conditions[?(@.type=="ApplyTriggerReady")]}{"\n"}'
@@ -478,7 +520,10 @@ it.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Trigger `Configured=False`, `AutomatedSyncEnabled` | `spec.syncPolicy.automated` is present without `enabled: false` | Set `automated.enabled: false` (keep `prune`), or remove the block |
+| Trigger `Configured=False`, `OwnedByApplicationSet` | An `ApplicationSet` generated the `Application`, and its template has automated sync on | Set `automated: {enabled: false, prune: true}` in the `ApplicationSet`'s template |
+| Trigger `Configured=False`, `AutomatedSyncOwnedElsewhere` | Another field manager applies the switch on; the message names it | Set `enabled: false` in the manifest it applies, or leave `enabled` out of it |
+| A Normal `AutomatedSyncSwitchedOn` Event | Somebody switched automated sync on, and the trigger switched it off again | Delete the trigger to have the `Application` sync on its own; see [switching it back on](#switching-automated-sync-back-on) |
+| Trigger `Held=False`, `AutomatedSyncOn` | Argo CD before 3.1 drops `enabled` | Upgrade Argo CD, or remove the `automated` block |
 | Trigger `Configured=False`, `ApplierNotFound` | No `Application` with that namespace and name in the trigger's cluster, or Argo CD is not installed there | Create it, or recreate the trigger with the right `applicationRef`; an omitted namespace is the trigger's |
 | `ApplyTriggerReady=False`, `SourceMismatch`, or trigger `UnsupportedSource` | The message names the broken [`Application` rule](#the-application) | Fix the `Application`; a sync that was waiting is asked for afterward |
 | Trigger `Configured=False`, `ApplierNamespaceNotAllowed` | The `Application` is in another namespace than the trigger, such as `argocd` | Set `allowCrossNamespace.appliers: true` on the trigger's `KubeProvider` (Helm: `kubeProvider.allowCrossNamespace.appliers`), or move the trigger and `GitTarget` to the `Application`'s namespace |
@@ -507,14 +552,16 @@ applied the tip is asked nothing.
 | Covered | Where |
 | --- | --- |
 | The [complete example](#a-complete-example) decodes strictly, reports `Configured=True`, binds the `GitTarget`, and its request sets a sync pinned to the commit | [`argocd_guide_test.go`](../internal/applier/argocd_guide_test.go) |
-| The operation is the one automated sync builds, but for the pinned revision, the initiator and a pinned retry; a running sync is waited for and never replaced; a sync started between the read and the update makes it fail; an unanswered update is settled by a guarded write; every `Configured` reason; when a sync counts as finished | [`argocd_test.go`](../internal/applier/argocd_test.go) |
+| The operation is the one automated sync builds, but for the pinned revision, the initiator and a pinned retry; a running sync is waited for and never replaced; a sync started between the read and the update makes it fail; an unanswered update is settled by a guarded write; every `Configured` reason, the `ApplicationSet` and field-manager owners of the switch among them; when a sync counts as finished | [`argocd_test.go`](../internal/applier/argocd_test.go) |
+| The trigger switches automated sync off, keeping `prune`; switches it off again when somebody switches it on; hands it back on deletion and when no longer named, leaving the `Application` as its own spec says; leaves it held off for a trigger in line; never writes a switch an `ApplicationSet` or another field manager owns | [`argocdtrigger_hold_test.go`](../internal/controller/argocdtrigger_hold_test.go) |
+| Holding the switch and handing it back on a real API server: a manual `Application` is manual again, one with automated sync on syncs on its own again, an owner's own `enabled: false` stays | [`argocdtrigger_apiserver_test.go`](../internal/controller/argocdtrigger_apiserver_test.go) |
 | An `Application` converges once a `GitTarget` first names its trigger, is asked on a `ForeignCommit` and a `Refusal`, and adopts an API create even at the tip; Argo CD's late write over a newer edit is withheld, by its own field managers | [`apply_trigger_test.go`](../internal/git/apply_trigger_test.go), [`apply_catchup_test.go`](../internal/git/apply_catchup_test.go), [`apply_window_test.go`](../internal/git/apply_window_test.go) |
 | An object another applier owns, read from its tracking annotation, is neither mirrored nor swept | [`apply_ownership_test.go`](../internal/git/apply_ownership_test.go) |
 | A trigger nothing names reads nothing and is `Ready`; the binding over several `GitTarget`s; `ApplierNamespaceNotAllowed`; a sync whose `.operation` was removed while it ran ends | [`applytrigger_rule_test.go`](../internal/controller/applytrigger_rule_test.go), [`argocd_test.go`](../internal/applier/argocd_test.go) |
 | Two API edits seconds apart keep the later value, with no further commit | [Bi-directional (Argo CD)](../test/e2e/argocd_bi_directional_e2e_test.go) |
 | A Git-side push is synced by a `ForeignCommit` request, pinned to that commit | Bi-directional (Argo CD) |
 | A refused edit with `onRefusal: Reapply` is reverted by an Argo CD sync | Bi-directional (Argo CD) |
-| An `Application` with automated sync on is `AutomatedSyncEnabled` and is never synced | Bi-directional (Argo CD) |
+| Automated sync switched on is switched off again, and a Git-side push is then synced by GitOps Reverser; an `Application` an `ApplicationSet` generates with automated sync on is `OwnedByApplicationSet`, is never synced, and its switch is never written | Bi-directional (Argo CD) |
 | Argo CD's bookkeeping never reaches Git, asserted as zero commits during a sync | Bi-directional (Argo CD) |
 | An API create, and a delete and create with the same content, are adopted, so a Git-side delete prunes them; an edit made during an apply is in Git at once and back on the cluster after the `Repair`; a Git-side push is applied while edits keep arriving, and every edit is kept; a Git-side push survives a resync forced before its apply, and a Git-side addition survives one under `prune.mode: Always`; an API edit asks for no apply; another applier's object is neither mirrored nor adopted; a save made across a Git-side change resolves from the push | [Bi-directional applier echoes (Argo CD)](../test/e2e/bi_directional_echoes_e2e_test.go) |
 | A Git-side push made while the previous one is being applied stays in Git and on the cluster | [Bi-directional push race (Argo CD)](../test/e2e/bi_directional_push_race_e2e_test.go) |

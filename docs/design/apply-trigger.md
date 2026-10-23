@@ -1,7 +1,8 @@
 # The apply trigger
 
-> **design**: decided 2026-10-16, extended 2026-10-17, 2026-10-19 and 2026-10-20; built: the Flux
-> applier (its `Kustomization` held suspended), the Argo CD applier (automated sync off), the
+> **design**: decided 2026-10-16, extended 2026-10-17, 2026-10-19, 2026-10-20 and 2026-10-23; built:
+> the Flux applier (its `Kustomization` held suspended), the Argo CD applier (its automated sync
+> held off), the
 > trigger kinds that hold them and act only while an eligible `GitTarget` references them, the
 > cross-namespace grant for appliers, the push receiver, `onRefusal: Reapply`, the apply window,
 > and, since 2026-10-20, flush then apply, the applier's own writes kept out of Git, and `CatchUp`
@@ -16,7 +17,7 @@
 **GitOps Reverser decides when Git is applied to the cluster, and the applier never applies on its
 own.** Flux and Argo CD keep fetching, rendering, applying, pruning and reporting health. A Flux
 `Kustomization` is held suspended while it is idle and resumed for each apply; an Argo CD
-`Application` runs with automated sync off. Every apply is one GitOps Reverser started, at a moment
+`Application`'s automated sync is held off. Every apply is one GitOps Reverser started, at a moment
 it checked.
 
 This page is why, what we learned building it, and what is still open. "Applier" keeps its meaning
@@ -175,7 +176,9 @@ flowchart LR
   writer matches operations by their token, never by time. A `FluxTrigger` that is not
   `Held=True` (still adopting, releasing, or being deleted) is not resumed (`RequestFailed`). A source
   on another repository or branch, a `Kustomization` whose `spec.suspend` another manager applies,
-  or an `Application` with automated sync on, is `Rejected`. A decision that no longer holds when
+  or an `Application` with automated sync on whose switch an `ApplicationSet` or another manager
+  owns, is `Rejected`; one whose switch the trigger holds was switched on by somebody, and fails
+  (`RequestFailed`) until the trigger has switched it off again. A decision that no longer holds when
   the write is due (the commit is no longer the tip) asks nothing (`Stale`, no failure).
 - **Following.** The dispatcher follows the operation and reports each move, so the attempt is out
   for exactly the apply window. Flux: `Running`, `Settling` once suspended again, then `Succeeded`
@@ -572,6 +575,19 @@ Taken 2026-10-20, with [`applier-echoes.md`](applier-echoes.md), which carries t
 8. **The worker decides what needs no apply, and never sends an empty commit**, so the clients'
    `Current` outcome is gone.
 
+Taken 2026-10-23:
+
+1. **An `ArgoCDTrigger` holds automated sync off, as a `FluxTrigger` holds `spec.suspend`**
+   ([below](#the-argo-cd-applier)). It owns `spec.syncPolicy.automated.enabled: false` by
+   server-side apply, switches it off again when somebody switches it on, and hands it back. Only
+   checking it left an `Application` switched on silently uncoordinated while its `GitTarget` still
+   named a trigger; nothing recorded why Argo CD had been left to the user.
+2. **A switch somebody else owns is never written**: an `Application` an `ApplicationSet`
+   generated (`OwnedByApplicationSet`), or a switch another field manager applies
+   (`AutomatedSyncOwnedElsewhere`). Two owners would fight over it. It is refused only while
+   automated sync is on, so an `ApplicationSet` whose template keeps it off is supported. Binding
+   the `ApplicationSet` itself is parked.
+
 ## The apply window
 
 **An apply is asynchronous, and that leaves a window.** An API edit that lands while an apply runs,
@@ -697,13 +713,18 @@ applier too, and two appliers applying one object fight each other.
 
 ## The Argo CD applier
 
-**GitOps Reverser takes full control of when Argo CD syncs.** The `Application` an `ArgoCDTrigger`
-holds has automated sync off (`syncPolicy.automated.enabled: false`, or no
-`automated` block), so its timed refresh and its webhook only compare, and every sync it runs is
-one GitOps Reverser asked for, pinned to a commit the branch worker checked. This is the supported
-setup for bi-directional editing with Argo CD, not an option next to automated sync: an
-`Application` with automated sync on makes its trigger `Configured=False` (`AutomatedSyncEnabled`)
-and is never synced. The user guide is [`../bi-directional-argocd.md`](../bi-directional-argocd.md).
+**GitOps Reverser takes full control of when Argo CD syncs.** The `ArgoCDTrigger` holds its
+`Application`'s automated sync off: it owns `syncPolicy.automated.enabled: false` with a
+server-side apply under `gitops-reverser`, touching nothing else of `automated`, switches it off
+again when somebody switches it on (`AutomatedSyncSwitchedOn`), and on hand-back gives the switch
+up, which leaves the `Application` as its own spec says (measured in envtest:
+[`argocdtrigger_apiserver_test.go`](../../internal/controller/argocdtrigger_apiserver_test.go)). So
+its timed refresh and its webhook only compare, and every sync it runs is one GitOps Reverser asked
+for, pinned to a commit the branch worker checked. A switch an `ApplicationSet` or another field
+manager owns is never written, only checked: such an `Application` with automated sync on is
+`Configured=False` (`OwnedByApplicationSet`, `AutomatedSyncOwnedElsewhere`) and is never synced
+([decisions of 2026-10-23](#decisions)). The user guide is
+[`../bi-directional-argocd.md`](../bi-directional-argocd.md).
 
 Automated sync off is Argo CD's equivalent of a suspended `Kustomization`, and it needs no suspend
 after an apply: an Argo CD operation that has completed is not followed by another one nobody
@@ -718,7 +739,8 @@ Every rule the client relies on is Argo CD's own, read from its source (3.5.0):
 
 | Fact | Consequence |
 | --- | --- |
-| Automated sync is on when `syncPolicy.automated` is present and its `enabled` is unset or true (`IsAutomatedSyncEnabled`) | `AutomatedSyncEnabled` is exactly this rule; `automated: {enabled: false, prune: …}` is the off switch that keeps prune |
+| Automated sync is on when `syncPolicy.automated` is present and its `enabled` is unset or true (`IsAutomatedSyncEnabled`) | The trigger's off switch is exactly this rule; `automated: {enabled: false, prune: …}` is the off switch that keeps prune |
+| The `ApplicationSet` controller is the controller `ownerReference` of each `Application` it generates, and replaces its whole spec with the rendered template on every reconcile (`createOrUpdateInCluster`) | The switch of a generated `Application` is the template's: never written, only checked |
 | Automated sync builds `Operation{Sync{Revision, Prune: automated.prune, SyncOptions, Source}, InitiatedBy{Automated: true}, Retry: syncPolicy.retry or {Limit: 5}}` (`autoSync`) | A request builds the same, with `Revision` pinned to the checked commit |
 | A sync starts by setting `operation`, never while one is set, in an update that also clears `status.operationState` (`SetAppOperation`; the CRD has no status subresource) | A request updates the whole `Application`, guarded by the `resourceVersion` it read, and waits out a running operation instead of replacing it |
 | `NewOperationState` copies the operation, its `info` included, into `status.operationState`, and `operation` is cleared only once the operation completed | An update whose answer was lost, or one recovered after a restart, is followed by its token: in `operation` or `status.operationState` it landed. Neither means it was not made yet. The update carries the `resourceVersion` it was made from, so GitOps Reverser then writes the `Application` at the version it read, asking for a refresh (`argocd.argoproj.io/refresh`, which only compares). Once that write is made the update can never land, and the operation is `Failed` and asked again; a conflict means read again. No API-server deadline is assumed |
@@ -742,8 +764,9 @@ Three choices were decided (2026-10-17):
 
 A hub Argo CD keeps `Application`s in a management cluster: the trigger's `spec.clusterProviderRef`
 reaches it as it reaches a Flux in another cluster. Out of scope: multi-source `Application`s (and
-`sourceHydrator`), which are `UnsupportedSource`; `ApplicationSet`s, which own the spec of the
-`Application`s they generate; and Argo CD's own sharding and HA.
+`sourceHydrator`), which are `UnsupportedSource`; a trigger on an `ApplicationSet` itself (its
+generated `Application`s are supported while the template keeps automated sync off); and Argo CD's
+own sharding and HA.
 
 ## The aim beyond Flux and Argo CD
 
@@ -841,10 +864,10 @@ adopted by one apply.
 | A manager restarted during an apply suspends the `Kustomization` as it stops; the new one completes the same operation and leaves it suspended | [Flux Restart Recovery](../../test/e2e/flux_restart_recovery_e2e_test.go) |
 | A refused edit is reverted by a resume of its `Kustomization` | [Refusal reapply](../../test/e2e/refusal_reapply_e2e_test.go) |
 | The Flux guide's example is accepted by the code | [`flux_guide_test.go`](../../internal/applier/flux_guide_test.go) |
-| An Argo CD sync is the one automated sync builds, pinned to the commit, with a pinned retry; a running operation is waited out and never replaced; an operation set between the read and the update makes it fail; one whose `.operation` was removed while it ran ends; every `Configured` reason, `AutomatedSyncEnabled` among them; when a sync counts as finished | [`argocd_test.go`](../../internal/applier/argocd_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
+| An Argo CD sync is the one automated sync builds, pinned to the commit, with a pinned retry; a running operation is waited out and never replaced; an operation set between the read and the update makes it fail; one whose `.operation` was removed while it ran ends; every `Configured` reason, `OwnedByApplicationSet` and `AutomatedSyncOwnedElsewhere` among them; when a sync counts as finished | [`argocd_test.go`](../../internal/applier/argocd_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
 | An `Application` is asked on a `ForeignCommit` and on a `Refusal`; Argo CD's late write over a newer edit is withheld by its own managers | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go), [`apply_window_test.go`](../../internal/git/apply_window_test.go) |
 | Each trigger kind holds one applier in one cluster, immutably; a trigger nothing names is `Ready` with no finalizer, and a `GitTarget` naming it re-runs its check | [`applytrigger_schema_test.go`](../../internal/controller/applytrigger_schema_test.go) |
-| With Argo CD: two API edits keep the later value with no extra commit; a Git-side push is synced by a pinned `ForeignCommit`; a refused edit is reverted by a sync; an `Application` with automated sync on is `AutomatedSyncEnabled` and never synced | [bi-directional Argo CD corner](../../test/e2e/argocd_bi_directional_e2e_test.go) |
+| With Argo CD: two API edits keep the later value with no extra commit; a Git-side push is synced by a pinned `ForeignCommit`; a refused edit is reverted by a sync; automated sync switched on is switched off again; a generated `Application` with automated sync on is `OwnedByApplicationSet` and never synced | [bi-directional Argo CD corner](../../test/e2e/argocd_bi_directional_e2e_test.go) |
 | The Argo CD guide's example is accepted by the code | [`argocd_guide_test.go`](../../internal/applier/argocd_guide_test.go) |
 
 The history of how the first trigger was decided, with the options weighed and the Git-side

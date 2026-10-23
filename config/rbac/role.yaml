@@ -47,12 +47,23 @@ rules:
   - configbutler.ai
   resources:
   - argocdtriggers
-  - gitreceivers
-  - kubeproviders
+  - fluxtriggers
+  - gitbranches
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - argocdtriggers/finalizers
+  - fluxtriggers/finalizers
+  - gitbranches/finalizers
+  - gitproviders/finalizers
+  verbs:
+  - update
 - apiGroups:
   - configbutler.ai
   resources:
@@ -98,19 +109,9 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
-  - fluxtriggers
-  - gitbranches
+  - gitreceivers
+  - kubeproviders
   verbs:
   - get
   - list
-  - patch
-  - update
   - watch
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - fluxtriggers/finalizers
-  - gitbranches/finalizers
-  - gitproviders/finalizers
-  verbs:
-  - update

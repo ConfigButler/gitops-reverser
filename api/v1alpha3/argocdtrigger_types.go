@@ -10,6 +10,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// ArgoCDTriggerFinalizer is the finalizer an ArgoCDTrigger carries while it holds its
+// Application's automated sync off: from before it first switches it off until it has handed the
+// switch back or over. Deleting the trigger, or the last eligible GitTarget naming it, gives the
+// switch up, so the Application is as its own spec says again. A trigger that never held the
+// switch (one whose Application an ApplicationSet generated, or whose switch another field manager
+// applies) has none.
+const ArgoCDTriggerFinalizer = "configbutler.ai/argocd-trigger"
+
 // spec.clusterProviderRef was replaced by spec.kubeProviderRef, with the cluster-scoped kind it
 // named. It stays in the schema only to be refused by name; the rule sits on spec so CRD validation
 // ratcheting cannot wave a stored value through on the next edit.
@@ -22,7 +30,7 @@ type ArgoCDTriggerSpec struct {
 	// KubeProviderRef names the KubeProvider whose cluster holds the Application, such as a
 	// management cluster running Argo CD for the source cluster. Namespace omitted means this
 	// trigger's own namespace. The provider must admit this trigger's namespace: its own, or one its
-	// spec.accessFrom admits. Its identity needs get and update on the Application. Immutable.
+	// spec.accessFrom admits. Its identity needs get, update and patch on the Application. Immutable.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the ArgoCDTrigger to hold an Application elsewhere"
@@ -34,12 +42,15 @@ type ArgoCDTriggerSpec struct {
 	RemovedClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// ApplicationRef is the Argo CD Application that applies the folders of the GitTargets naming
-	// this trigger. It must have a single spec.source whose targetRevision names a branch, and
-	// automated sync off: either no spec.syncPolicy.automated, or automated.enabled: false, which
-	// keeps automated.prune for the syncs GitOps Reverser starts. GitOps Reverser starts each sync
-	// by setting the Application's operation, as Argo CD's automated sync does, pinned to the commit
-	// it checked, and never replaces an operation that is running. Its namespace defaults to the
-	// trigger's namespace. Immutable.
+	// this trigger. It must have a single spec.source whose targetRevision names a branch. The
+	// trigger holds its automated sync off: it applies spec.syncPolicy.automated.enabled: false,
+	// which keeps automated.prune for the syncs GitOps Reverser starts, switches it off again when
+	// somebody switches it on, and gives it up when it lets go. An Application an ApplicationSet
+	// generated, or whose switch another field manager applies, must have automated sync off
+	// already: the switch is theirs, and the trigger only checks it. GitOps Reverser starts each
+	// sync by setting the Application's operation, as Argo CD's automated sync does, pinned to the
+	// commit it checked, and never replaces an operation that is running. Its namespace defaults to
+	// the trigger's namespace. Immutable.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.applicationRef is immutable; delete and recreate the ArgoCDTrigger to hold another Application"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.applicationRef.name must not be empty"
@@ -53,15 +64,17 @@ type ArgoCDTriggerStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions are Configured (an eligible GitTarget names the trigger; the Application exists,
-	// syncs a single source, has automated sync off, may be updated, and no other ArgoCDTrigger
-	// holds it) and the kstatus Ready/Reconciling/Stalled trio. A trigger acts only while an
+	// syncs a single source, has automated sync off or a switch the trigger may hold, may be
+	// written, and no other ArgoCDTrigger holds it), Held (AutomatedSyncOff: automated sync is off,
+	// held by GitOps Reverser or kept off by the switch's owner; Releasing: being handed back;
+	// NotReferenced; NotConfigured), and the kstatus Ready/Reconciling/Stalled trio. A trigger acts only while an
 	// eligible GitTarget references it: one in its namespace that names it, is admitted by its
 	// KubeProviders, and writes the repository and branch the Application syncs. A trigger no
 	// GitTarget names reads nothing in the Application's cluster and is Configured=Unknown,
 	// Ready=True, both NotReferenced; one named only by GitTargets that are not eligible is
-	// Configured NotBound or a refusal. Of the ArgoCDTriggers in line for one Application in one cluster, the one
-	// created first holds it; the others are Configured=False (HeldByAnotherTrigger) until it is
-	// deleted or no longer referenced, and the next in line takes it over.
+	// Configured NotBound or a refusal. Of the ArgoCDTriggers in line for one Application in one
+	// cluster, one holds it: the one holding it already, then the one created first. The others are
+	// Configured=False (HeldByAnotherTrigger) until it lets go, and the next in line takes it over.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -103,6 +116,7 @@ type ArgoCDTriggerSource struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Held",type=string,JSONPath=`.status.conditions[?(@.type=="Held")].reason`
 // +kubebuilder:printcolumn:name="Application",type=string,JSONPath=`.spec.applicationRef.name`
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.phase`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1
@@ -111,8 +125,8 @@ type ArgoCDTriggerSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ArgoCDTrigger holds an Argo CD Application, with automated sync off, for GitOps Reverser, which
-// starts every sync it runs, each after publishing the edits pending on the branch: after a commit
+// ArgoCDTrigger holds an Argo CD Application's automated sync off for GitOps Reverser, which starts
+// every sync it runs, each after publishing the edits pending on the branch: after a commit
 // GitOps Reverser did not push, after a refused edit, after a reverted edit, and to adopt what the
 // API created or converge the Application (CatchUp). GitTargets name it with spec.applyTriggerRef.
 type ArgoCDTrigger struct {
