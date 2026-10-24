@@ -617,7 +617,7 @@ func (r *ApplierClaimReconciler) publishReleasing(
 ) {
 	why, reason := "the applier claim is being deleted", ReasonReleasing
 	switch {
-	case check != nil && (check.denied || releasingForDenial(claim)):
+	case check != nil && (check.denied || revoking(claim)):
 		why, reason = "the KubeProvider's spec.allowedApplierClaims no longer admit the applier claim", ReasonRevoking
 	case check != nil && check.refs.Named():
 		why = "no GitTarget naming the applier claim is eligible any more"
@@ -640,10 +640,10 @@ func (r *ApplierClaimReconciler) publishReleasing(
 	st.applyReadiness(r.claimReadiness(claim, check.configured, &held))
 }
 
-// releasingForDenial reports whether the applier claim is handing its applier back because its
+// revoking reports whether the applier claim is handing its applier back because its
 // KubeProvider's grants refused it (Held=False, Revoking): such a hand-back finishes even after a
 // regrant, and the applier is adopted anew once it has.
-func releasingForDenial(claim configbutleraiv1alpha3.ApplierClaim) bool {
+func revoking(claim configbutleraiv1alpha3.ApplierClaim) bool {
 	held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
 	return held != nil && held.Reason == ReasonRevoking
 }

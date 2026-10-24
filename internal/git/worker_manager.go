@@ -379,10 +379,6 @@ type WorkerRequest struct {
 	ParentBranch string
 }
 
-func (r WorkerRequest) provider() k8stypes.NamespacedName {
-	return r.Provider
-}
-
 // EnsureWorker ensures a worker exists for the repository branch req names, keyed by that branch
 // (BranchKey), and that it is the worker for the repository the GitProvider names NOW. Only the
 // GitBranch holding the branch's claim (branch_owner.go) gets one: any other is refused
@@ -416,7 +412,7 @@ func (m *WorkerManager) EnsureWorker(_ context.Context, req WorkerRequest) error
 	repo := req.Repo
 	key := BranchKeyFor(repo.URL, req.Branch)
 	if key == (BranchKey{}) {
-		return fmt.Errorf("GitProvider %s names no repository", req.provider())
+		return fmt.Errorf("GitProvider %s names no repository", req.Provider)
 	}
 	if err := m.refuseUnclaimed(key, req.GitBranch); err != nil {
 		return err
@@ -484,7 +480,7 @@ func (m *WorkerManager) refuseUnclaimed(key BranchKey, gitBranch k8stypes.Namesp
 // startWorkerLocked creates and starts the worker for key, writing through provider, and records
 // it. Called with lifecycleMu and mu held.
 func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest) error {
-	provider, repo, parentBranch := req.provider(), req.Repo, req.ParentBranch
+	provider, repo, parentBranch := req.Provider, req.Repo, req.ParentBranch
 	providerName, providerNamespace, branch := provider.Name, provider.Namespace, key.Branch
 	m.Log.Info("Creating new branch worker", "key", key.String(), "repository", repo.String())
 	worker := NewBranchWorker(

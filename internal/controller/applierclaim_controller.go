@@ -298,7 +298,7 @@ func (c claimCheck) retiring(claim configbutleraiv1alpha3.ApplierClaim) bool {
 	if !applier.Holding(claim) {
 		return false
 	}
-	return c.denied || releasingForDenial(claim) || (c.judged && (!c.refs.Named() || c.refs.Refused()))
+	return c.denied || revoking(claim) || (c.judged && (!c.refs.Named() || c.refs.Refused()))
 }
 
 // configuredVerdict judges the GitTargets naming the applier claim, and, while one may be eligible,

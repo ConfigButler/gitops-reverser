@@ -5,7 +5,7 @@ package v1alpha3
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -239,6 +239,18 @@ func (g *ApplierGrant) source() NamespaceGrant {
 	return NamespaceGrant{From: g.From, Names: g.Names, Selector: g.Selector}
 }
 
+// sourcesOf is the admitting half of each grant in a list.
+func sourcesOf[G any, PG interface {
+	*G
+	source() NamespaceGrant
+}](grants []G) []NamespaceGrant {
+	sources := make([]NamespaceGrant, len(grants))
+	for i := range grants {
+		sources[i] = PG(&grants[i]).source()
+	}
+	return sources
+}
+
 // Admits reports whether this grant, held by an object in holderNamespace, admits a referring
 // object in namespace, by the labels that namespace carries in the control cluster. A selector that
 // does not convert is an error, never a silent allow; an unknown from admits nothing.
@@ -339,21 +351,8 @@ func expandScope[S ~string](entries []S, namespace string) []string {
 	for _, entry := range entries {
 		out = append(out, strings.ReplaceAll(string(entry), NamespaceVariable, namespace))
 	}
-	return sortedUniqueStrings(out)
-}
-
-func sortedUniqueStrings(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	sort.Strings(out)
-	return out
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // MatchBranchPattern reports whether branch matches pattern for a GitBranch in namespace: the
@@ -411,11 +410,7 @@ func (p *GitProvider) AdmitsGitBranch(
 	namespace string, nsLabels map[string]string, branch string,
 ) (GitBranchAdmission, error) {
 	grants := p.Spec.AllowedGitBranches
-	sources := make([]NamespaceGrant, len(grants))
-	for i := range grants {
-		sources[i] = grants[i].source()
-	}
-	admitting, err := admitAll(sources, p.Namespace, namespace, nsLabels)
+	admitting, err := admitAll(sourcesOf(grants), p.Namespace, namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
 		return GitBranchAdmission{}, err
 	}
@@ -435,11 +430,7 @@ func (p *GitProvider) AdmitsGitBranch(
 
 // DescribeAllowedGitBranches names the namespaces spec.allowedGitBranches admits.
 func (p *GitProvider) DescribeAllowedGitBranches() string {
-	sources := make([]NamespaceGrant, len(p.Spec.AllowedGitBranches))
-	for i := range p.Spec.AllowedGitBranches {
-		sources[i] = p.Spec.AllowedGitBranches[i].source()
-	}
-	return describeAdmitted(sources, p.Namespace)
+	return describeAdmitted(sourcesOf(p.Spec.AllowedGitBranches), p.Namespace)
 }
 
 // AdmitsGitTarget reports whether spec.allowedGitTargets admits a GitTarget in namespace, by the
@@ -498,11 +489,7 @@ func scopeAllows(scope []string, value string) bool {
 // that namespace carries in the control cluster.
 func (p *KubeProvider) AdmitsGitTarget(namespace string, nsLabels map[string]string) (SourceScope, error) {
 	grants := p.Spec.AllowedGitTargets
-	sources := make([]NamespaceGrant, len(grants))
-	for i := range grants {
-		sources[i] = grants[i].source()
-	}
-	admitting, err := admitAll(sources, p.Namespace, namespace, nsLabels)
+	admitting, err := admitAll(sourcesOf(grants), p.Namespace, namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
 		return SourceScope{}, err
 	}
@@ -521,11 +508,7 @@ func (p *KubeProvider) AdmitsGitTarget(namespace string, nsLabels map[string]str
 
 // DescribeAllowedGitTargets names the namespaces spec.allowedGitTargets admits.
 func (p *KubeProvider) DescribeAllowedGitTargets() string {
-	sources := make([]NamespaceGrant, len(p.Spec.AllowedGitTargets))
-	for i := range p.Spec.AllowedGitTargets {
-		sources[i] = p.Spec.AllowedGitTargets[i].source()
-	}
-	return describeAdmitted(sources, p.Namespace)
+	return describeAdmitted(sourcesOf(p.Spec.AllowedGitTargets), p.Namespace)
 }
 
 // ApplierScope is what a KubeProvider's allowedApplierClaims give an applier claim's namespace.
@@ -547,11 +530,7 @@ func (s ApplierScope) AllowsApplierNamespace(namespace string) bool {
 // the labels that namespace carries in the control cluster.
 func (p *KubeProvider) AdmitsApplierClaim(namespace string, nsLabels map[string]string) (ApplierScope, error) {
 	grants := p.Spec.AllowedApplierClaims
-	sources := make([]NamespaceGrant, len(grants))
-	for i := range grants {
-		sources[i] = grants[i].source()
-	}
-	admitting, err := admitAll(sources, p.Namespace, namespace, nsLabels)
+	admitting, err := admitAll(sourcesOf(grants), p.Namespace, namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
 		return ApplierScope{}, err
 	}
@@ -564,9 +543,5 @@ func (p *KubeProvider) AdmitsApplierClaim(namespace string, nsLabels map[string]
 
 // DescribeAllowedApplierClaims names the namespaces spec.allowedApplierClaims admits.
 func (p *KubeProvider) DescribeAllowedApplierClaims() string {
-	sources := make([]NamespaceGrant, len(p.Spec.AllowedApplierClaims))
-	for i := range p.Spec.AllowedApplierClaims {
-		sources[i] = p.Spec.AllowedApplierClaims[i].source()
-	}
-	return describeAdmitted(sources, p.Namespace)
+	return describeAdmitted(sourcesOf(p.Spec.AllowedApplierClaims), p.Namespace)
 }

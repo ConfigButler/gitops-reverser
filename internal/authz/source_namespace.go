@@ -5,7 +5,7 @@ package authz
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,9 +52,8 @@ type SourceNamespaceDecision struct {
 // item, index-aligned, plus the aggregate the SourceNamespaceAuthorized condition publishes.
 //
 // It is a pure function of (rule spec, the grants that admit the GitTarget) and is recomputed on
-// every compile. Nothing
-// per-item is persisted across a spec change, which is what lets rule items have no stable API
-// identity: no state outlives the spec that produced it.
+// every compile. Nothing per-item is persisted across a spec change, which is what lets rule items
+// have no stable API identity: no state outlives the spec that produced it.
 type ResolvedSourceScope struct {
 	// Items is index-aligned with spec.rules.
 	Items []SourceNamespaceDecision
@@ -80,10 +79,9 @@ func (s ResolvedSourceScope) NamespacesFor(index int) []string {
 // Fingerprint renders the resolved scope as a stable string, per item, for the watched-type
 // re-projection gate.
 //
-// It is now derivable from the rule spec alone, since the resolution reads no cluster state. It is
-// still computed from the RESOLVED set rather than the requested one, because the two differ for a
-// wildcard — "*" resolves to the empty string — and the fingerprint's job is to describe what is
-// actually watched.
+// It is computed from the RESOLVED set rather than the requested one, because the two differ for a
+// wildcard — "*" resolves to the empty string — and for a denied item, which resolves to nothing:
+// the fingerprint's job is to describe what is actually watched.
 func (s ResolvedSourceScope) Fingerprint() string {
 	parts := make([]string, 0, len(s.Items))
 	for _, item := range s.Items {
@@ -231,21 +229,8 @@ func summariseAdmitted(items []SourceNamespaceDecision) string {
 			all = append(all, ns)
 		}
 	}
-	all = sortedUnique(all)
+	slices.Sort(all)
+	all = slices.Compact(all)
 	return fmt.Sprintf("all %d rule item(s) are authorized; watching source namespace(s) %s",
 		len(items), strings.Join(all, ", "))
-}
-
-func sortedUnique(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	sort.Strings(out)
-	return out
 }

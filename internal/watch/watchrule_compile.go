@@ -148,7 +148,7 @@ func CompileClusterWatchRule(
 			Reason:           ClusterWatchRuleReasonClusterResourceNotAllowed,
 			Message: fmt.Sprintf(
 				"KubeProvider %s lets namespace %q mirror cluster-scoped resources %s "+
-					"(spec.allowedGitTargets[].clusterResources); %s not allowed, so the ClusterWatchRule is refused",
+					"(spec.allowedGitTargets[].clusterResources), so the ClusterWatchRule is refused: %s",
 				target.KubeProviderKey(), target.Namespace, describeIdentities(scope.ClusterResources),
 				strings.Join(forbidden, "; ")),
 		}, nil
@@ -255,10 +255,7 @@ func clusterResourcesRefusal(
 			}
 		}
 		if len(types) > 0 {
-			forbidden = append(
-				forbidden,
-				fmt.Sprintf("spec.rules[%d] asks for %s, which is", i, describeIdentities(types)),
-			)
+			forbidden = append(forbidden, fmt.Sprintf("spec.rules[%d] asks for %s", i, describeIdentities(types)))
 		}
 	}
 	return forbidden

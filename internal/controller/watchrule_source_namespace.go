@@ -33,7 +33,7 @@ const (
 // The gate is cross-object (WatchRule → GitTarget → KubeProvider), so it is not expressible in
 // CEL and is a reconciler check rather than a webhook, per docs/spec/where-validation-lives.md —
 // the same shape and ordering as checkSourceAuthorization. Running it on every reconcile is what
-// makes a delegation WITHDRAWN after a rule was accepted revoke that rule.
+// makes a grant WITHDRAWN after a rule was accepted revoke that rule.
 //
 // Every item is resolved, and the aggregate is published as one condition. A DENIED item refuses
 // the whole rule rather than being trimmed away: mirroring two of the three namespaces a rule asked

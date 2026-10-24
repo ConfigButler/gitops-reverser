@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -58,6 +59,18 @@ func gitBranchesOf(
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+// requestsFor is a reconcile request for each object in a list.
+func requestsFor[T any, PT interface {
+	*T
+	client.Object
+}](objects []T) []ctrlreconcile.Request {
+	requests := make([]ctrlreconcile.Request, 0, len(objects))
+	for i := range objects {
+		requests = append(requests, ctrlreconcile.Request{NamespacedName: client.ObjectKeyFromObject(PT(&objects[i]))})
+	}
+	return requests
 }
 
 // ruleDependencyWatches adds the watches a WatchRule and a ClusterWatchRule share: their GitTarget,

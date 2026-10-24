@@ -271,10 +271,6 @@ func notAdmitted(
 	kind string, key k8stypes.NamespacedName, admits, field, namespace string, selErr error,
 ) Decision {
 	message := fmt.Sprintf("%s %s %s in %s; namespace %q is not admitted", kind, key, admits, field, namespace)
-	if admits == "admits no namespace" {
-		message = fmt.Sprintf("%s %s admits no namespace in %s; namespace %q is not admitted", kind, key, field,
-			namespace)
-	}
 	if selErr != nil {
 		message += fmt.Sprintf(" (a grant's selector is invalid: %v)", selErr)
 	}

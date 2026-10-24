@@ -13,9 +13,9 @@ import (
 )
 
 // GitTargetReasonNamespaceNotAuthorized is the Validated=False reason when a GitTarget's namespace
-// is not admitted by its referenced KubeProvider's spec.allowedGitTargets, or by its GitBranch's.
-// It runs on every
-// reconcile, so a policy tightened AFTER a GitTarget was created stops that target's watches too.
+// is not admitted by its referenced KubeProvider's spec.allowedGitTargets, or by its GitBranch's. It
+// runs on every reconcile, so a policy tightened AFTER a GitTarget was created stops that target's
+// watches too.
 const GitTargetReasonNamespaceNotAuthorized = authz.ReasonNamespaceNotAuthorized
 
 // GitTargetReasonKubeProviderNotFound is the Validated=False reason when a GitTarget's

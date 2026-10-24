@@ -465,11 +465,7 @@ func (r *GitBranchReconciler) gitProviderToGitBranches(ctx context.Context, obj 
 		logDependencyListError(ctx, err, "GitBranches", obj)
 		return nil
 	}
-	requests := make([]ctrlreconcile.Request, 0, len(branches))
-	for i := range branches {
-		requests = append(requests, ctrlreconcile.Request{NamespacedName: client.ObjectKeyFromObject(&branches[i])})
-	}
-	return requests
+	return requestsFor(branches)
 }
 
 // namespaceToGitBranches enqueues the GitBranches in a Namespace whose labels changed: a Selector
@@ -481,14 +477,7 @@ func (r *GitBranchReconciler) namespaceToGitBranches(ctx context.Context, obj cl
 		logDependencyListError(ctx, err, "GitBranches", obj)
 		return nil
 	}
-	requests := make([]ctrlreconcile.Request, 0, len(branches.Items))
-	for i := range branches.Items {
-		requests = append(
-			requests,
-			ctrlreconcile.Request{NamespacedName: client.ObjectKeyFromObject(&branches.Items[i])},
-		)
-	}
-	return requests
+	return requestsFor(branches.Items)
 }
 
 // gitTargetToGitBranch enqueues the GitBranch a GitTarget references.

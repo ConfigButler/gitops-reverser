@@ -481,8 +481,8 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 
 	// Namespace authorization: a GitTarget may reference a KubeProvider only while a grant in its
 	// spec.allowedGitTargets admits the GitTarget's namespace, and only while the provider holds its
-	// audit route. Enforced HERE and only here, on every reconcile — which
-	// also covers a policy tightened after the GitTarget was created. Failing this gate returns
+	// audit route. Enforced HERE and only here, on every reconcile — which also covers a policy
+	// tightened after the GitTarget was created. Failing this gate returns
 	// before DeclareForGitTarget below, so an unauthorized target starts no watch and writes no Git.
 	authorized, authReason, authMsg, authErr := r.checkSourceAuthorization(ctx, target)
 	if authErr != nil {
@@ -1465,8 +1465,8 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToGitTargets),
 			builder.WithPredicates(kubeProviderReadyOrSpecChanged()),
 		).
-		// React to a Namespace's LABELS changing: a Selector grant is
-		// evaluated against namespace labels, so a label change can grant or revoke a GitTarget's
+		// React to a Namespace's LABELS changing: a Selector grant is evaluated against namespace
+		// labels, so a label change can grant or revoke a GitTarget's
 		// authorization. Re-enqueue the GitTargets in that namespace so the reconcile-time refusal
 		// converges instead of waiting for the periodic reconcile. LabelChangedPredicate ignores the
 		// unrelated namespace churn (annotations, status).
@@ -1613,11 +1613,7 @@ func (r *GitTargetReconciler) gitDestinationToGitTargets(
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
-	requests := make([]ctrlreconcile.Request, 0, len(targets))
-	for i := range targets {
-		requests = append(requests, ctrlreconcile.Request{NamespacedName: client.ObjectKeyFromObject(&targets[i])})
-	}
-	return requests
+	return requestsFor(targets)
 }
 
 // kubeProviderToGitTargets maps a KubeProvider event to every GitTarget that references it as

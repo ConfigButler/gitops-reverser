@@ -297,15 +297,11 @@ func (r *WatchRuleReconciler) namespaceToWatchRules(ctx context.Context, obj cli
 		logDependencyListError(ctx, err, "WatchRules", obj)
 		return nil
 	}
-	requests := make([]ctrlreconcile.Request, 0, len(rules.Items))
-	for i := range rules.Items {
-		requests = append(requests, ctrlreconcile.Request{NamespacedName: client.ObjectKeyFromObject(&rules.Items[i])})
-	}
-	return requests
+	return requestsFor(rules.Items)
 }
 
 // kubeProviderToWatchRules maps a KubeProvider change to every WatchRule whose GitTarget
-// mirrors through that provider, so a delegation grant or revocation converges on the event rather
+// mirrors through that provider, so a grant or revocation converges on the event rather
 // than on the periodic reconcile.
 func (r *WatchRuleReconciler) kubeProviderToWatchRules(
 	ctx context.Context,
