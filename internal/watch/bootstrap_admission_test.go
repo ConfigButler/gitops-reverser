@@ -191,6 +191,35 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 		"the store must still be marked ready: a refused rule is a refusal, not a startup failure")
 }
 
+// TestBootstrapRuleStore_SeedsNoClusterWatchRuleAnotherInstanceServes: under --watch-namespaces a
+// ClusterWatchRule naming a GitTarget outside the served namespaces belongs to another instance,
+// and is not seeded even though its provider would admit it.
+func TestBootstrapRuleStore_SeedsNoClusterWatchRuleAnotherInstanceServes(t *testing.T) {
+	servedTarget := bootGitTarget()
+	servedTarget.Name, servedTarget.Namespace = "ok-mirror", "team-ok"
+	servedRule := bootClusterWatchRule()
+	servedRule.Name = "served-rule"
+	servedRule.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "ok-mirror", Namespace: "team-ok"}
+
+	m := bootManager(t,
+		bootGitTarget(), bootGitProvider(), bootClusterWatchRule(),
+		servedTarget,
+		&configv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Name: "git", Namespace: "team-ok"}},
+		servedRule,
+		bootKubeProvider(mirrorGrants(bootTargetNS, "team-ok")),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-ok"}},
+	)
+	var err error
+	m.ServedNamespaces, err = ParseServedNamespaces("team-ok," + bootProviderNS)
+	require.NoError(t, err)
+
+	require.NoError(t, m.bootstrapRuleStore(context.Background(), logr.Discard()))
+
+	assert.Equal(t, []string{"served-rule"}, bootCompiledNames(m))
+	assert.True(t, m.RuleStore.IsReady())
+}
+
 // TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes pins what a wildcard
 // selector means on the cluster kind. Which scope a rule watches is decided by which KIND you
 // write, never by a field, so `resources: ["*"]` on a ClusterWatchRule resolves the cluster-scoped

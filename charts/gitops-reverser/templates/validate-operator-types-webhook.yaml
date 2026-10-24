@@ -58,6 +58,16 @@ webhooks:
         resources:
           - watchrules
         scope: Namespaced
+    {{- with .Values.controllerManager.watchNamespaces }}
+    # Only the namespaces this release reconciles: another release sharing the cluster judges
+    # its own, against the objects its own cache holds.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            {{- toYaml . | nindent 12 }}
+    {{- end }}
     # Redis write on real requests; nothing on dry-run (the handler honors this).
     sideEffects: NoneOnDryRun
     timeoutSeconds: {{ .Values.servers.admission.timeoutSeconds }}

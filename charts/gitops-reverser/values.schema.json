@@ -105,6 +105,12 @@
           "items": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" },
           "description": "KubeProviders (namespace/name) besides the one the chart renders that may use spec.inCluster, the operator's own identity. Exact names, no wildcards."
         },
+        "watchNamespaces": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+          "description": "Config-plane namespaces this release reconciles (--watch-namespaces). Empty: every namespace."
+        },
         "insecureAllowGitHTTP": {
           "type": "boolean",
           "description": "Permit credentials with http:// GitProvider URLs for trusted in-cluster development Git servers."

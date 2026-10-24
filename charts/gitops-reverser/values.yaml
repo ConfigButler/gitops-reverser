@@ -68,6 +68,13 @@ controllerManager:
   # KubeProvider that sets inCluster and is not listed reports InClusterNotAuthorized and is never
   # used.
   inClusterKubeProviders: []
+  # Config-plane namespaces this release reconciles (--watch-namespaces). Empty: every namespace.
+  # Two releases sharing one cluster each list their own: a release reconciles the GitTargets,
+  # rules, providers and branches in these namespaces only, and a ClusterWatchRule only when its
+  # GitTarget is in one of them. Its admission webhook is scoped to them too. List every namespace
+  # whose objects reference each other, and this release's own namespace when the chart renders
+  # objects there (kubeProvider, below). The ClusterRole stays cluster-wide.
+  watchNamespaces: []
   # Permit credentials with http:// GitProvider URLs. This is only for trusted
   # in-cluster development Git servers; production remotes should use HTTPS or SSH.
   insecureAllowGitHTTP: false

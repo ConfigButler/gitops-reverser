@@ -73,6 +73,7 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 		wantGitHTTP      bool
 		wantQueueDepth   int
 		wantBufferBytes  int64
+		wantWatchNS      []string
 	}{
 		"chart defaults": {
 			wantKeyPrefix:   "gitops-reverser",
@@ -142,6 +143,12 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			wantQueueDepth:  4000,
 			wantBufferBytes: 32 * 1024 * 1024,
 		},
+		// A list joined into one quoted flag: quoting it wrong would make every name invalid.
+		"watch namespaces": {
+			setValues:     []string{"controllerManager.watchNamespaces={team-b,team-a}"},
+			wantKeyPrefix: "gitops-reverser",
+			wantWatchNS:   []string{"team-a", "team-b"},
+		},
 	}
 
 	for name, tc := range tests {
@@ -174,6 +181,8 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 				require.Equal(t, tc.wantBufferBytes, cfg.branchWorkerLimits.MaxBufferBytes,
 					"controllerManager.branchBufferMaxSize must reach the binary")
 			}
+			require.Equal(t, tc.wantWatchNS, cfg.watchNamespaces.Names(),
+				"controllerManager.watchNamespaces must reach the binary, and default to every namespace")
 		})
 	}
 }

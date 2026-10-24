@@ -37,6 +37,9 @@ func (m *Manager) bootstrapRuleStore(ctx context.Context, log logr.Logger) error
 	}
 	for i := range clusterWatchRules.Items {
 		rule := clusterWatchRules.Items[i]
+		if !m.ServedNamespaces.Serves(rule.Spec.GitTargetRef.Namespace) {
+			continue
+		}
 		if err := m.bootstrapClusterWatchRule(ctx, rule); err != nil {
 			log.Error(err, "Failed to seed ClusterWatchRule into store", "name", rule.Name)
 		}
