@@ -153,6 +153,9 @@ type BranchWorker struct {
 	// unresolvedOperations is how many of this branch's apply operations are Unresolved, as the
 	// loop last published it, for the apply_operations_unresolved gauge.
 	unresolvedOperations atomic.Int64
+	// heldAppliers is how many of this branch's appliers the barrier holds a reason back for, as the
+	// loop last published it, for the appliers_held gauge (barrier.go).
+	heldAppliers atomic.Int64
 	// applyEpoch, appliersAhead and hasAppliers are the loop's ApplyState for the watch side, which
 	// reads it when a snapshot's collection starts (apply_epoch.go).
 	applyEpoch    atomic.Uint64
@@ -1192,6 +1195,9 @@ type branchWorkerEventLoop struct {
 	// apply_epoch.go.
 	snapshotRerequests map[string]itypes.ResourceReference
 	snapshotHeldSince  map[string]time.Time
+	// awaitingFolders are the GitTargets whose folder the branch did not hold when their applier was
+	// about to be asked, and which a fresh snapshot was asked for, until it is there (barrier.go).
+	awaitingFolders map[itypes.ResourceReference]bool
 	// ownershipLogged is the objects another applier owns already logged as kept out of a folder.
 	// See apply_ownership.go.
 	ownershipLogged map[string]struct{}

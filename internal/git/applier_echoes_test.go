@@ -357,7 +357,8 @@ func TestApplierEchoes_FlushThenApply(t *testing.T) {
 func TestApplierEchoes_AnApplierThatJoinsAFlushHoldsTheEditsSinceItsMark(t *testing.T) {
 	const late = "team-b"
 	f := newEchoFixture(t, "echo-flush-join", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
-	createGitTargetWithPruneMode(t, f.worker, late, late, configv1alpha3.PruneOnEvent)
+	// Its folder is on the branch already, so the barrier holds nothing back for it.
+	createGitTargetWithPruneMode(t, f.worker, late, echoTarget, configv1alpha3.PruneOnEvent)
 	var lateTarget configv1alpha3.GitTarget
 	require.NoError(t, f.worker.Client.Get(f.worker.ctx, keyOf(late), &lateTarget))
 	lateTarget.Spec.ApplierClaimRef = testApplier(late)
@@ -402,6 +403,42 @@ func TestApplierEchoes_AnApplierThatJoinsAFlushHoldsTheEditsSinceItsMark(t *test
 	over.LastFieldManagedAt = time.Now().Add(time.Hour)
 	assert.True(t, f.loop.withholdLateApply(over), "the apply over the edit is withheld")
 	assert.True(t, applierFor(late).repair, "and a Repair puts the edit back once it is published")
+}
+
+// TestApplierEchoes_AFolderNotOnTheBranchIsCreatedBeforeItsApplierIsAsked is F-d: a GitTarget that
+// names its claim after its snapshots settled empty has no folder, since only a resync of a GitTarget
+// naming a claim creates one with no object. Its applier is not asked to apply a missing path: the
+// barrier holds it, says so (F-a), and asks for one fresh snapshot, which is used even with a foreign
+// commit pending, because the apply held for the folder would wait on it.
+func TestApplierEchoes_AFolderNotOnTheBranchIsCreatedBeforeItsApplierIsAsked(t *testing.T) {
+	f := newEchoFixture(t, "echo-folder-missing", configv1alpha3.PruneOnEvent, nil)
+	var asked []itypes.ResourceReference
+	f.worker.resyncRecheck = func(target itypes.ResourceReference) { asked = append(asked, target) }
+	requester := f.withClaim()
+	state := f.echoApplier()
+	state.foreign = true
+
+	f.loop.endWake(0)
+	f.loop.endWake(0)
+	assert.Empty(t, requester.taken(), "the folder is not on the branch")
+	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(echoTarget, "default")}, asked,
+		"one fresh snapshot is asked for, once")
+	assert.Contains(t, state.held, "is not on the branch", "the hold says why")
+	assert.EqualValues(t, 1, f.worker.heldAppliers.Load())
+
+	req := &ResyncRequest{GitTargetName: echoTarget, GitTargetNamespace: "default",
+		Result: make(chan ResyncResult, 1)}
+	f.loop.handleResyncRequest(req)
+	f.loop.endWake(0)
+	require.NoError(t, (<-req.Result).Err, "used, not discarded for the pending foreign commit")
+	assert.NotEmpty(t, f.onMain(echoTarget+"/README.md"), "its resync created the folder")
+
+	f.loop.endWake(0)
+	sent := requester.taken()
+	require.Len(t, sent, 1)
+	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, sent[0].Reason)
+	assert.Empty(t, state.held, "the hold lifted")
+	assert.Zero(t, f.worker.heldAppliers.Load())
 }
 
 // TestApplierEchoes_AResyncThatAddsAnObjectAdoptsIt is S2: an object a resync adds to Git runs on
