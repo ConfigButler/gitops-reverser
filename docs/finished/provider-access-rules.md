@@ -723,9 +723,10 @@ page:
 - **The scope variable is `{consumer.namespace}`, and `{consumer.name}` joined it.** This page
   writes `{namespace}`. That collided with the placement template's `{namespace}`, the mirrored
   resource's namespace, and did not say whose namespace it was among the three a grant involves.
-  The object a grant admits is now the consumer, and `{consumer.name}` lets one grant give each
-  consumer the source namespace, applier namespace or branch segment named after it. `{namespace}`
-  is refused as an unknown variable.
+  The object a grant admits is now the consumer. `{consumer.name}` is allowed only in a branch
+  pattern that also holds `{consumer.namespace}`, as a naming convention: the consumer picks its own
+  name, so in a namespace scope, or alone in a pattern, it would bound nothing. `{namespace}` is
+  refused as an unknown variable.
 - **A deleted `GitProvider` or `KubeProvider` is not a revocation.** The `GitBranch` keeps its claim,
   and the applier claim keeps its hold, as before.
 - **Watch-driven tests.** The drain, successor and two-candidate revocation tests, and the applier

@@ -65,7 +65,13 @@ var _ = Describe("Access grants at admission", func() {
 
 	It("accepts the branch patterns the grammar allows", func() {
 		accepted(gitProvider(branches("main", "release/*", "teams/{consumer.namespace}/*", "{consumer.namespace}",
-			"teams/{consumer.namespace}/{consumer.name}", "{consumer.name}/*", "*", "feature/*/v2")))
+			"teams/{consumer.namespace}/{consumer.name}", "{consumer.namespace}/{consumer.name}/*", "*",
+			"feature/*/v2")))
+	})
+
+	It("refuses {consumer.name} without {consumer.namespace} in the same pattern", func() {
+		refused(gitProvider(branches("env/{consumer.name}")), "{consumer.name} needs {consumer.namespace}")
+		refused(gitProvider(branches("{consumer.name}/*")), "{consumer.name} needs {consumer.namespace}")
 	})
 
 	It("refuses a consumer variable that is not a whole path segment", func() {
@@ -119,7 +125,7 @@ var _ = Describe("Access grants at admission", func() {
 			"sets sourceNamespaces, clusterResources, or both")
 		accepted(
 			kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
-				"sourceNamespaces": []any{"{consumer.namespace}", "{consumer.name}"}}),
+				"sourceNamespaces": []any{"{consumer.namespace}"}}),
 		)
 		accepted(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
 			"clusterResources": []any{"clusterroles.rbac.authorization.k8s.io", "nodes", "*"}}))
@@ -146,13 +152,17 @@ var _ = Describe("Access grants at admission", func() {
 	})
 
 	It("refuses a scope entry that is neither a name, a consumer variable alone, nor *", func() {
-		alone := "'{consumer.namespace}' or '{consumer.name}' alone, or '*' alone"
+		alone := "'{consumer.namespace}' alone, or '*' alone"
 		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
 			"sourceNamespaces": []any{"team-{consumer.namespace}"}}), alone)
 		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
 			"sourceNamespaces": []any{"{namespace}"}}), alone)
 		refused(kubeProvider("allowedApplierClaims", map[string]any{"from": "Same",
 			"applierNamespaces": []any{"flux-*"}}), alone)
+		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
+			"sourceNamespaces": []any{"{consumer.name}"}}), "the consumer picks its own name")
+		refused(kubeProvider("allowedApplierClaims", map[string]any{"from": "Same",
+			"applierNamespaces": []any{"{consumer.name}"}}), "the consumer picks its own name")
 		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
 			"clusterResources": []any{"cluster*"}}), "clusterResources[0]")
 	})

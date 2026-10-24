@@ -83,19 +83,23 @@ spec:
                     applierNamespaces:
                       description: |-
                         ApplierNamespaces are the source-cluster namespaces in which an admitted applier claim's
-                        Kustomization or Application may live: exact names, '{consumer.namespace}' or '{consumer.name}'
-                        for the namespace named like the applier claim's namespace or name, or '*' for every namespace.
-                        The list is the whole scope.
+                        Kustomization or Application may live: exact names, '{consumer.namespace}' for the namespace
+                        named like the applier claim's, or '*' for every namespace. The list is the whole scope.
                       items:
                         description: |-
                           ScopeNamespace is one namespace in a source or applier scope: a namespace name,
-                          "{consumer.namespace}" or "{consumer.name}" for the namespace of the same name as the consumer's
-                          namespace or name, or "*" for every namespace.
+                          "{consumer.namespace}" for the namespace of the same name as the consumer's, or "*" for every
+                          namespace.
                         maxLength: 63
                         type: string
                         x-kubernetes-validations:
+                        - message: '''{consumer.name}'' is refused in a namespace
+                            scope: the consumer picks its own name, so any namespace
+                            could be reached by naming an object after it; use ''{consumer.namespace}'',
+                            namespace names, or ''*'''
+                          rule: self != '{consumer.name}'
                         - message: a namespace scope holds a namespace name, '{consumer.namespace}'
-                            or '{consumer.name}' alone, or '*' alone
+                            alone, or '*' alone
                           rule: self == '*' || self == '{consumer.namespace}' || self
                             == '{consumer.name}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
                       maxItems: 64
@@ -325,20 +329,24 @@ spec:
                     sourceNamespaces:
                       description: |-
                         SourceNamespaces are the source-cluster namespaces the WatchRules feeding an admitted GitTarget
-                        may watch: exact names, '{consumer.namespace}' or '{consumer.name}' for the namespace named like
-                        the GitTarget's namespace or name, or '*' for every namespace, which also allows
-                        rules[].sourceNamespace: "*". The list is the whole scope; the GitTarget's own namespace is in it
+                        may watch: exact names, '{consumer.namespace}' for the namespace named like the GitTarget's, or
+                        '*' for every namespace, which also allows rules[].sourceNamespace: "*". The list is the whole scope; the GitTarget's own namespace is in it
                         only when listed. Omitted, no namespace.
                       items:
                         description: |-
                           ScopeNamespace is one namespace in a source or applier scope: a namespace name,
-                          "{consumer.namespace}" or "{consumer.name}" for the namespace of the same name as the consumer's
-                          namespace or name, or "*" for every namespace.
+                          "{consumer.namespace}" for the namespace of the same name as the consumer's, or "*" for every
+                          namespace.
                         maxLength: 63
                         type: string
                         x-kubernetes-validations:
+                        - message: '''{consumer.name}'' is refused in a namespace
+                            scope: the consumer picks its own name, so any namespace
+                            could be reached by naming an object after it; use ''{consumer.namespace}'',
+                            namespace names, or ''*'''
+                          rule: self != '{consumer.name}'
                         - message: a namespace scope holds a namespace name, '{consumer.namespace}'
-                            or '{consumer.name}' alone, or '*' alone
+                            alone, or '*' alone
                           rule: self == '*' || self == '{consumer.namespace}' || self
                             == '{consumer.name}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
                       maxItems: 64

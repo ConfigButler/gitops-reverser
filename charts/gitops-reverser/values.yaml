@@ -373,9 +373,8 @@ kubeProvider:
   # Each grant has a `from` (Same, Names with names, Selector with a non-empty selector, or All)
   # and a scope:
   #   allowedGitTargets[].sourceNamespaces  which namespaces the WatchRules feeding an admitted
-  #                                         GitTarget may watch: names, "{consumer.namespace}" or
-  #                                         "{consumer.name}" for the GitTarget's namespace or
-  #                                         name, or "*"
+  #                                         GitTarget may watch: names, "{consumer.namespace}" for
+  #                                         the GitTarget's own, or "*"
   #   allowedGitTargets[].clusterResources  which cluster-scoped types a ClusterWatchRule may mirror:
   #                                         resource.group, a bare core resource, or "*"
   #   allowedApplierClaims[].applierNamespaces  where an admitted applier claim's Kustomization or

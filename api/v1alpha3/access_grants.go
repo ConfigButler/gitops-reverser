@@ -39,8 +39,9 @@ const (
 // namespace: the control-cluster namespace of the object asking for access.
 const ConsumerNamespaceVariable = "{consumer.namespace}"
 
-// ConsumerNameVariable stands, in a grant's scope or branch pattern, for the consumer's name: the
-// name of the object asking for access.
+// ConsumerNameVariable stands, in a branch pattern that also holds ConsumerNamespaceVariable, for the
+// consumer's name: the name of the object asking for access. The consumer picks its own name, so the
+// name bounds nothing on its own; beside the namespace it is a naming convention.
 const ConsumerNameVariable = "{consumer.name}"
 
 // GrantNamespace is one control-cluster namespace a grant admits by name.
@@ -51,10 +52,11 @@ const ConsumerNameVariable = "{consumer.name}"
 type GrantNamespace string
 
 // ScopeNamespace is one namespace in a source or applier scope: a namespace name,
-// "{consumer.namespace}" or "{consumer.name}" for the namespace of the same name as the consumer's
-// namespace or name, or "*" for every namespace.
+// "{consumer.namespace}" for the namespace of the same name as the consumer's, or "*" for every
+// namespace.
 // +kubebuilder:validation:MaxLength=63
-// +kubebuilder:validation:XValidation:rule="self == '*' || self == '{consumer.namespace}' || self == '{consumer.name}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="a namespace scope holds a namespace name, '{consumer.namespace}' or '{consumer.name}' alone, or '*' alone"
+// +kubebuilder:validation:XValidation:rule="self != '{consumer.name}'",message="'{consumer.name}' is refused in a namespace scope: the consumer picks its own name, so any namespace could be reached by naming an object after it; use '{consumer.namespace}', namespace names, or '*'"
+// +kubebuilder:validation:XValidation:rule="self == '*' || self == '{consumer.namespace}' || self == '{consumer.name}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="a namespace scope holds a namespace name, '{consumer.namespace}' alone, or '*' alone"
 type ScopeNamespace string
 
 // ClusterResourceIdentity names a cluster-scoped resource type: resource.group, a bare resource for
@@ -69,13 +71,14 @@ type ClusterResourceIdentity string
 
 // BranchPattern is a pattern matched against a whole branch name: literal text, '*' for any
 // sequence of characters ('/' included), and '{consumer.namespace}' and '{consumer.name}' as whole
-// path segments.
+// path segments. '{consumer.name}' needs '{consumer.namespace}' in the same pattern.
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=255
 // +kubebuilder:validation:Pattern=`^[^\s~^:?\[\\]*$`
 // +kubebuilder:validation:XValidation:rule="!self.replace('{consumer.namespace}', 'x').replace('{consumer.name}', 'x').matches('[{][^{}]*[}]')",messageExpression="'branch pattern ' + self + ' references unknown variable ' + self.replace('{consumer.namespace}', 'x').replace('{consumer.name}', 'x').find('[{][^{}]*[}]') + '; the variables are {consumer.namespace} and {consumer.name}'"
 // +kubebuilder:validation:XValidation:rule="self.replace('{consumer.namespace}', 'x').replace('{consumer.name}', 'x').matches('[{][^{}]*[}]') || !self.replace('{consumer.namespace}', 'x').replace('{consumer.name}', 'x').matches('[{}]')",messageExpression="'branch pattern ' + self + ' has an unmatched brace; the variables are {consumer.namespace} and {consumer.name}'"
 // +kubebuilder:validation:XValidation:rule="!self.matches('[^/][{]consumer[.]name(space)?[}]') && !self.matches('[{]consumer[.]name(space)?[}][^/]')",messageExpression="'branch pattern ' + self + ': {consumer.namespace} and {consumer.name} must each be a whole path segment, at the start or after a /, and at the end or before a /'"
+// +kubebuilder:validation:XValidation:rule="!self.contains('{consumer.name}') || self.contains('{consumer.namespace}')",messageExpression="'branch pattern ' + self + ': {consumer.name} needs {consumer.namespace} in the same pattern; the consumer picks its own name, so on its own it would let any admitted namespace claim any branch the pattern leaves open'"
 // +kubebuilder:validation:XValidation:rule="!self.contains('..') && !self.contains('@{') && !self.startsWith('/') && !self.endsWith('/') && !self.contains('//')",messageExpression="'branch pattern ' + self + ' can match no branch name: git refuses .., @{, a leading or trailing / and //'"
 type BranchPattern string
 
@@ -139,8 +142,10 @@ type GitBranchGrant struct {
 	// Branches are the branches an admitted GitBranch may claim, as patterns matched against the
 	// whole branch name. '*' matches any sequence of characters, '/' included, so "*" alone is every
 	// branch. '{consumer.namespace}' and '{consumer.name}' are the claiming GitBranch's namespace and
-	// name, each a whole path segment: "teams/{consumer.namespace}/*". There is no escaping, '?' or
-	// character class.
+	// name, each a whole path segment: "teams/{consumer.namespace}/*". '{consumer.name}' needs
+	// '{consumer.namespace}' in the same pattern, "teams/{consumer.namespace}/{consumer.name}": it is a
+	// naming convention, not a bound, since a GitBranch picks its own name. There is no escaping, '?'
+	// or character class.
 	// +required
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -176,9 +181,8 @@ type SourceGrant struct {
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
 	// SourceNamespaces are the source-cluster namespaces the WatchRules feeding an admitted GitTarget
-	// may watch: exact names, '{consumer.namespace}' or '{consumer.name}' for the namespace named like
-	// the GitTarget's namespace or name, or '*' for every namespace, which also allows
-	// rules[].sourceNamespace: "*". The list is the whole scope; the GitTarget's own namespace is in it
+	// may watch: exact names, '{consumer.namespace}' for the namespace named like the GitTarget's, or
+	// '*' for every namespace, which also allows rules[].sourceNamespace: "*". The list is the whole scope; the GitTarget's own namespace is in it
 	// only when listed. Omitted, no namespace.
 	// +optional
 	// +listType=set
@@ -225,9 +229,8 @@ type ApplierGrant struct {
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
 	// ApplierNamespaces are the source-cluster namespaces in which an admitted applier claim's
-	// Kustomization or Application may live: exact names, '{consumer.namespace}' or '{consumer.name}'
-	// for the namespace named like the applier claim's namespace or name, or '*' for every namespace.
-	// The list is the whole scope.
+	// Kustomization or Application may live: exact names, '{consumer.namespace}' for the namespace
+	// named like the applier claim's, or '*' for every namespace. The list is the whole scope.
 	// +required
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1

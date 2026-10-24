@@ -78,13 +78,15 @@ spec:
                         Branches are the branches an admitted GitBranch may claim, as patterns matched against the
                         whole branch name. '*' matches any sequence of characters, '/' included, so "*" alone is every
                         branch. '{consumer.namespace}' and '{consumer.name}' are the claiming GitBranch's namespace and
-                        name, each a whole path segment: "teams/{consumer.namespace}/*". There is no escaping, '?' or
-                        character class.
+                        name, each a whole path segment: "teams/{consumer.namespace}/*". '{consumer.name}' needs
+                        '{consumer.namespace}' in the same pattern, "teams/{consumer.namespace}/{consumer.name}": it is a
+                        naming convention, not a bound, since a GitBranch picks its own name. There is no escaping, '?'
+                        or character class.
                       items:
                         description: |-
                           BranchPattern is a pattern matched against a whole branch name: literal text, '*' for any
                           sequence of characters ('/' included), and '{consumer.namespace}' and '{consumer.name}' as whole
-                          path segments.
+                          path segments. '{consumer.name}' needs '{consumer.namespace}' in the same pattern.
                         maxLength: 255
                         minLength: 1
                         pattern: ^[^\s~^:?\[\\]*$
@@ -108,6 +110,11 @@ spec:
                             /'''
                           rule: '!self.matches(''[^/][{]consumer[.]name(space)?[}]'')
                             && !self.matches(''[{]consumer[.]name(space)?[}][^/]'')'
+                        - messageExpression: '''branch pattern '' + self + '': {consumer.name}
+                            needs {consumer.namespace} in the same pattern; the consumer
+                            picks its own name, so on its own it would let any admitted
+                            namespace claim any branch the pattern leaves open'''
+                          rule: '!self.contains(''{consumer.name}'') || self.contains(''{consumer.namespace}'')'
                         - messageExpression: '''branch pattern '' + self + '' can
                             match no branch name: git refuses .., @{, a leading or
                             trailing / and //'''

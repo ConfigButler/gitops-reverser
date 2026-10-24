@@ -45,8 +45,8 @@ func TestMatchBranchPattern(t *testing.T) {
 		{"{consumer.namespace}/*", "team-a", "live", "team-b/x", false},
 		{"teams/{consumer.namespace}/{consumer.name}", "team-a", "checkout", "teams/team-a/checkout", true},
 		{"teams/{consumer.namespace}/{consumer.name}", "team-a", "checkout", "teams/team-a/payments", false},
-		{"{consumer.name}/*", "team-a", "checkout", "checkout/feature", true},
-		{"{consumer.name}/*", "team-a", "checkout", "team-a/feature", false},
+		{"{consumer.namespace}/{consumer.name}/*", "team-a", "checkout", "team-a/checkout/feature", true},
+		{"{consumer.namespace}/{consumer.name}/*", "team-a", "checkout", "team-a/payments/feature", false},
 		{"{namespace}", "team-a", "live", "team-a", false},
 	}
 	for _, tt := range tests {
@@ -269,28 +269,6 @@ func TestKubeProvider_AdmitsApplierClaim(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, scope.Admitted, "admission to mirror does not admit to apply")
 	assert.Equal(t, "admits team-a", provider.DescribeAllowedApplierClaims())
-}
-
-// TestKubeProvider_ConsumerNameInAScope: {consumer.name} is the consumer's own name, so one grant
-// gives each GitTarget, and each applier claim, the namespace named after it.
-func TestKubeProvider_ConsumerNameInAScope(t *testing.T) {
-	provider := &KubeProvider{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "platform"},
-		Spec: KubeProviderSpec{
-			AllowedGitTargets: []SourceGrant{{From: GrantFromAll,
-				SourceNamespaces: []ScopeNamespace{ConsumerNameVariable, ConsumerNamespaceVariable}}},
-			AllowedApplierClaims: []ApplierGrant{{From: GrantFromAll,
-				ApplierNamespaces: []ScopeNamespace{ConsumerNameVariable}}},
-		},
-	}
-	scope, err := provider.AdmitsGitTarget(consumer("team-a", "payments"), nil)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"payments", "team-a"}, scope.SourceNamespaces)
-	assert.False(t, scope.AllowsSourceNamespace("checkout"), "another GitTarget's name")
-
-	appliers, err := provider.AdmitsApplierClaim(consumer("team-a", "checkout"), nil)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"checkout"}, appliers.ApplierNamespaces)
 }
 
 func TestGitBranch_GitProviderKey(t *testing.T) {

@@ -331,35 +331,28 @@ The object asking for access is the **consumer**: the `GitBranch` for `allowedGi
 `GitTarget` for `allowedGitTargets`, and the applier claim for `allowedApplierClaims`. One grant
 serves many consumers, so its scope can name the consumer instead of listing each one:
 
-| Variable | Is | For `team-a`'s `GitTarget` `payments` |
-|---|---|---|
-| `{consumer.namespace}` | The consumer's namespace, in the control cluster | `team-a` |
-| `{consumer.name}` | The consumer's name | `payments` |
+| Variable | Is | Allowed in | For `team-a`'s `GitBranch` `live` |
+|---|---|---|---|
+| `{consumer.namespace}` | The consumer's namespace, in the control cluster | every scope and branch pattern | `team-a` |
+| `{consumer.name}` | The consumer's name | a branch pattern that also holds `{consumer.namespace}` | `live` |
 
 They are the only variables. Each is replaced with the consumer's value before the scope is
 compared, and nothing else about them is special. A grant has no variable for its own namespace:
 the grant sits on its object, so that namespace is known when the grant is written, and
 `from: Same` admits it.
 
-**In `sourceNamespaces` and `applierNamespaces`** an entry is an exact name, one variable alone, or
-`"*"` alone. The variable names a namespace **of the same name in the source cluster**:
-`sourceNamespaces: ["{consumer.namespace}"]` lets each `GitTarget` mirror the source namespace that
-shares its own namespace's name. For a `KubeProvider` that reaches another cluster, that is a
-namespace over there that happens to share the name. `{consumer.name}` lets each consumer reach the
-namespace named after it:
+**Only the namespace bounds anything.** Creating an object in a namespace takes RBAC there, and a
+grant's `from` decides which namespaces count. A name is whatever the object's creator types, so a
+scope bounded by `{consumer.name}` alone would be no bound: a `GitTarget` named `kube-system` would
+reach `kube-system`. That is why `{consumer.name}` is refused in `sourceNamespaces` and
+`applierNamespaces`, and allowed in a branch pattern only beside `{consumer.namespace}`, where the
+namespace segment does the bounding.
 
-```yaml
-# Each GitTarget mirrors the source namespace named after it: team-a's GitTarget payments mirrors
-# payments, and nothing else.
-allowedGitTargets:
-  - from: Selector
-    selector: {matchLabels: {platform.example.com/tenant: "true"}}
-    sourceNamespaces: ["{consumer.name}"]
-```
-
-`{consumer.name}` puts the consumer's name in charge of what it reaches, so whoever may create
-consumers in an admitted namespace may pick a name that matches any source namespace. Grant it only
-to namespaces whose owners you would let mirror any namespace by that name.
+**In `sourceNamespaces` and `applierNamespaces`** an entry is an exact name,
+`"{consumer.namespace}"` alone, or `"*"` alone. The variable names a namespace **of the same name in
+the source cluster**: `sourceNamespaces: ["{consumer.namespace}"]` lets each `GitTarget` mirror the
+source namespace that shares its own namespace's name. For a `KubeProvider` that reaches another
+cluster, that is a namespace over there that happens to share the name.
 
 **In a branch pattern** both variables may appear, each as a whole path segment, and the pattern is
 matched against the whole branch name:
@@ -370,6 +363,11 @@ matched against the whole branch name:
   `/`. `teams/{consumer.namespace}/*` and `teams/{consumer.namespace}/{consumer.name}` are valid.
   `teams/{consumer.namespace}*` is refused, because for `team-a` it would also match
   `teams/team-ab/live`, and so is `{consumer.namespace}-{consumer.name}`.
+- **`{consumer.name}` needs `{consumer.namespace}` in the same pattern.** `env/{consumer.name}` is
+  refused: any admitted namespace could claim `env/prod` by naming a `GitBranch` `prod`. Beside the
+  namespace the name is a naming convention, not a bound: `teams/{consumer.namespace}/{consumer.name}`
+  gives each `GitBranch` the one branch named after it, so a branch says which object claims it, but
+  a team that may create `GitBranch`es can still reach every branch under its own prefix.
 - **No escaping, `?` or character classes.** Git refuses `*`, `?` and `[` in a branch name, so a
   literal never needs escaping.
 - Any other `{...}` is refused when the object is applied, naming it:
@@ -2661,9 +2659,8 @@ Every item, the rule's own namespace included, is authorized by the grants of th
 
 1. a grant in its `spec.allowedGitTargets` admits the `GitTarget`'s namespace; and
 2. those grants' `sourceNamespaces` hold the namespace the item asks for: its name,
-   `"{consumer.namespace}"` for the `GitTarget`'s own (which is the `WatchRule`'s),
-   `"{consumer.name}"` for the one named after the `GitTarget`, or `"*"`. An item asking for `"*"`
-   needs `"*"` there.
+   `"{consumer.namespace}"` for the `GitTarget`'s own (which is the `WatchRule`'s), or `"*"`. An item
+   asking for `"*"` needs `"*"` there.
 
 There is no third condition on the `GitTarget`. What a target may read from its source cluster is
 bounded by that cluster's RBAC for the provider's credential: a request the grants permit still

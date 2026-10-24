@@ -157,7 +157,8 @@ scope. Not "permission" or "policy".
 
 **Consumer.** The object a grant admits or refuses: the `GitBranch` for `allowedGitBranches`, the
 `GitTarget` for `allowedGitTargets`, the applier claim for `allowedApplierClaims`. A grant's scope
-names it with `{consumer.namespace}` and `{consumer.name}`. The grant's own object is its holder,
+names it with `{consumer.namespace}`, and a branch pattern may add `{consumer.name}` beside it; the
+name alone bounds nothing, since the consumer picks it. The grant's own object is its holder,
 and `from: Same` is the holder's namespace, never the consumer's. Not "referrer", "requester" or
 "caller".
 

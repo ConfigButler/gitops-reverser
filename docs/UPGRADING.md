@@ -53,8 +53,8 @@ spec:
   `GitBranch.spec.gitProviderRef` may name a `GitProvider` in another namespace. Branch patterns match
   the whole branch name, `*` crosses `/`, and `teams/{consumer.namespace}/*` gives each namespace its
   own prefix. A branch outside the patterns is `BranchNotAllowed`. A grant's scope names the object
-  asking for access, the consumer, with `{consumer.namespace}` and `{consumer.name}`; see
-  [the consumer variables](configuration.md#the-consumer-variables).
+  asking for access, the consumer, with `{consumer.namespace}`; a branch pattern may add
+  `{consumer.name}` beside it. See [the consumer variables](configuration.md#the-consumer-variables).
 - **Who writes a branch is the `GitBranch`'s decision.** A `GitTarget` in another namespace writes
   through it only while its `spec.allowedGitTargets` admit that namespace.
 - **The chart's `local` provider grants nothing** unless `kubeProvider.allowedGitTargets` and
