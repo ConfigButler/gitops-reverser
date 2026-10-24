@@ -40,7 +40,8 @@ writes the branch, with one credential: the oldest admitted `GitBranch` whose cr
 push session on the remote holds it, and any other reports `BranchConflict`. A repository written
 from several namespaces needs no copy of the credential in each: their `GitTarget`s name the shared
 `GitBranch` with `spec.gitBranchRef.namespace`, admitted by that `GitBranch`'s
-`spec.allowedGitTargets`. Nothing is admitted automatically, the own namespace included
+`spec.allowedGitTargets`. Omitted, that list admits the `GitBranch`'s own namespace, and a written
+list is the whole policy
 ([configuration.md](configuration.md#sharing-connections-across-namespaces)). Neither kind can change scope later: a
 CRD's `spec.scope` is immutable once the definition is `Established`, so the change would mean
 deleting the definition (and every object of the kind with it) and recreating both.
@@ -501,7 +502,8 @@ Represents a Git repository and the credentials/configuration used to write it. 
 - `spec.url`: immutable repository URL.
 - `spec.secretRef`: optional Secret in the same namespace for HTTP/SSH authentication.
 - `spec.allowedGitBranches`: which namespaces' `GitBranch`es may claim which branches with this
-  credential, as grants with a `from` and branch patterns. Its own namespace needs a grant too. A
+  credential, as grants with a `from` and branch patterns. It has no default: its own namespace
+  needs a grant too. A
   `GitBranch` it no longer admits gives its branch up, keeping its finalizer.
 - `spec.knownHostsRef`: optional SSH known hosts source.
 - `spec.commit.committer`: committer identity (defaults to `GitOps Reverser` / `noreply@configbutler.ai`).

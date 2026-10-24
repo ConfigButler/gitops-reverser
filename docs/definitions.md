@@ -64,7 +64,9 @@ The two directions, which share the word "source" and must not share anything el
 
 - **Access** is the control-cluster direction: which control-cluster namespaces may reference an
   object that lends something (a `GitProvider`, a `GitBranch`, a `KubeProvider`). It is granted on
-  the referenced object, in a **grant** list, and nothing is automatic, the own namespace included.
+  the referenced object, in a **grant** list. An omitted list on a `GitBranch` or a `KubeProvider`
+  is one grant for the object's own namespace; a written list is the whole policy, and `[]` admits
+  nobody. A `GitProvider`'s list has no default.
 - **Source namespace** is the source-cluster direction: which source-cluster namespace a rule reads
   objects from. `WatchRule.spec.rules[].sourceNamespace`, bounded by the union of the
   `sourceNamespaces` of the `KubeProvider` grants that admit the `GitTarget`.

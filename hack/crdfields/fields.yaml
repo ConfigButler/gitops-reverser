@@ -70,10 +70,10 @@ kinds:
           Branch to write. Only one `GitBranch` holds a repository branch; see
           [who writes a repository branch](#who-writes-a-repository-branch)
       - path: allowedGitTargets
-        default: "**no `GitTarget`**, its own namespace included"
         doc: >-
           Which namespaces' `GitTarget`s may write through this branch, each grant with a
-          `consumerNamespaces` block. The only mutable field. See [the grants](#the-grants)
+          `consumerNamespaces` block. Omitted, this branch's own namespace; `[]` admits nobody. The
+          only mutable field. See [the grants](#the-grants)
       - path: parentBranch
         default: the remote's default branch
         doc: >-
@@ -109,16 +109,16 @@ kinds:
           `--in-cluster-kube-providers`. See
           [the operator's own identity](#the-operators-own-identity-specincluster)
       - path: allowedGitTargets
-        default: "**no `GitTarget`**, its own namespace included"
         doc: >-
           Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a
-          `consumerNamespaces` block, and `sourceNamespaces`, `clusterResources` or both. See
-          [the grants](#the-grants)
+          `consumerNamespaces` block, and `sourceNamespaces`, `clusterResources` or both. Omitted,
+          this provider's own namespace mirrors the namespace of the same name; `[]` admits nobody.
+          See [the grants](#the-grants)
       - path: allowedApplierClaims
-        default: "**no applier claim**, its own namespace included"
         doc: >-
           Which namespaces' applier claims may hold an applier through this provider, and the
-          `applierNamespaces` that applier may live in. See [the grants](#the-grants)
+          `applierNamespaces` that applier may live in. Omitted, this provider's own namespace, for
+          appliers in the namespace of the same name; `[]` admits nobody. See [the grants](#the-grants)
       - path: client.qps
         default: "`20`"
         doc: Client rate limit for this source cluster. Refused beside `inCluster`

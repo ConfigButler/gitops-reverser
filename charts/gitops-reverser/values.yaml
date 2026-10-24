@@ -364,9 +364,11 @@ kubeProvider:
     name: ""
     key: ""
   # Who may use the operator's identity, and for what: rendered as the provider's
-  # spec.allowedGitTargets and spec.allowedApplierClaims. Empty by default, so NOTHING mirrors or
-  # holds an applier through this provider until you grant it, the release namespace included; a
-  # refusal names spec.allowedGitTargets. The installer decides, never the chart.
+  # spec.allowedGitTargets and spec.allowedApplierClaims. Unset (null) by default, so the fields are
+  # omitted and the CRD defaults each to one grant for the release namespace: its GitTargets mirror
+  # the namespace of the same name, its applier claims hold appliers there, and nothing else uses
+  # the operator's identity. A list you set is the whole policy, the default is not added to it, and
+  # [] admits nobody, the release namespace included; a refusal names spec.allowedGitTargets.
   # quickstart.enabled=true adds a grant for exactly the quickstart namespace, and
   # values-playground.yaml grants every namespace its own namespace.
   #
@@ -394,8 +396,8 @@ kubeProvider:
   #         from: Names
   #         names: [team-a]
   #       applierNamespaces: [flux-system]
-  allowedGitTargets: []
-  allowedApplierClaims: []
+  allowedGitTargets: null
+  allowedApplierClaims: null
 
 # RBAC configuration
 rbac:

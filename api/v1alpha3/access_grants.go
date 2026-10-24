@@ -221,6 +221,59 @@ type KubeProviderApplierClaimGrant struct {
 	ApplierNamespaces []ScopeNamespace `json:"applierNamespaces"`
 }
 
+// The API server defaults an omitted grant list on GitBranch and KubeProvider (the
+// +kubebuilder:default markers on their fields), so a list read from it is never nil. These mirror
+// those markers for an object that did not come from the API server, such as one built in memory or
+// read through a fake client: nil is the default, and only a non-nil empty list admits nobody.
+// TestGrantDefaultsMatchCRDs keeps the two in step.
+
+// DefaultGitBranchGitTargetGrants is GitBranch.spec.allowedGitTargets when it is omitted: GitTargets
+// in the GitBranch's own namespace.
+func DefaultGitBranchGitTargetGrants() []GitBranchGitTargetGrant {
+	return []GitBranchGitTargetGrant{{ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame}}}
+}
+
+// DefaultKubeProviderGitTargetGrants is KubeProvider.spec.allowedGitTargets when it is omitted:
+// GitTargets in the provider's own namespace, mirroring the namespace of the same name.
+func DefaultKubeProviderGitTargetGrants() []KubeProviderGitTargetGrant {
+	return []KubeProviderGitTargetGrant{{
+		ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame},
+		SourceNamespaces:   []ScopeNamespace{ConsumerNamespaceVariable},
+	}}
+}
+
+// DefaultKubeProviderApplierClaimGrants is KubeProvider.spec.allowedApplierClaims when it is omitted:
+// applier claims in the provider's own namespace, holding appliers in the namespace of the same name.
+func DefaultKubeProviderApplierClaimGrants() []KubeProviderApplierClaimGrant {
+	return []KubeProviderApplierClaimGrant{{
+		ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame},
+		ApplierNamespaces:  []ScopeNamespace{ConsumerNamespaceVariable},
+	}}
+}
+
+// orDefault is grants, or def when grants is nil (omitted rather than empty).
+func orDefault[G any](grants []G, def func() []G) []G {
+	if grants == nil {
+		return def()
+	}
+	return grants
+}
+
+// gitTargetGrants is spec.allowedGitTargets as the API server serves it.
+func (b *GitBranch) gitTargetGrants() []GitBranchGitTargetGrant {
+	return orDefault(b.Spec.AllowedGitTargets, DefaultGitBranchGitTargetGrants)
+}
+
+// gitTargetGrants is spec.allowedGitTargets as the API server serves it.
+func (p *KubeProvider) gitTargetGrants() []KubeProviderGitTargetGrant {
+	return orDefault(p.Spec.AllowedGitTargets, DefaultKubeProviderGitTargetGrants)
+}
+
+// applierClaimGrants is spec.allowedApplierClaims as the API server serves it.
+func (p *KubeProvider) applierClaimGrants() []KubeProviderApplierClaimGrant {
+	return orDefault(p.Spec.AllowedApplierClaims, DefaultKubeProviderApplierClaimGrants)
+}
+
 // consumers is the admitting half of a GitProviderGitBranchGrant.
 func (g *GitProviderGitBranchGrant) consumers() ConsumerNamespaces { return g.ConsumerNamespaces }
 
@@ -438,13 +491,13 @@ func (p *GitProvider) DescribeAllowedGitBranches() string {
 // AdmitsGitTarget reports whether spec.allowedGitTargets admits a GitTarget in namespace, by the
 // labels that namespace carries in the control cluster.
 func (b *GitBranch) AdmitsGitTarget(namespace string, nsLabels map[string]string) (bool, error) {
-	admitting, err := admitAll(consumersOf(b.Spec.AllowedGitTargets), b.Namespace, namespace, nsLabels)
+	admitting, err := admitAll(consumersOf(b.gitTargetGrants()), b.Namespace, namespace, nsLabels)
 	return len(admitting) > 0, err
 }
 
 // DescribeAllowedGitTargets names the namespaces spec.allowedGitTargets admits.
 func (b *GitBranch) DescribeAllowedGitTargets() string {
-	return describeAdmitted(consumersOf(b.Spec.AllowedGitTargets), b.Namespace)
+	return describeAdmitted(consumersOf(b.gitTargetGrants()), b.Namespace)
 }
 
 // KubeProviderGitTargetScope is what a KubeProvider's allowedGitTargets give a GitTarget: whether it may mirror at
@@ -492,7 +545,7 @@ func scopeAllows(scope []string, value string) bool {
 func (p *KubeProvider) AdmitsGitTarget(
 	consumer types.NamespacedName, nsLabels map[string]string,
 ) (KubeProviderGitTargetScope, error) {
-	grants := p.Spec.AllowedGitTargets
+	grants := p.gitTargetGrants()
 	admitting, err := admitAll(consumersOf(grants), p.Namespace, consumer.Namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
 		return KubeProviderGitTargetScope{}, err
@@ -512,7 +565,7 @@ func (p *KubeProvider) AdmitsGitTarget(
 
 // DescribeAllowedGitTargets names the namespaces spec.allowedGitTargets admits.
 func (p *KubeProvider) DescribeAllowedGitTargets() string {
-	return describeAdmitted(consumersOf(p.Spec.AllowedGitTargets), p.Namespace)
+	return describeAdmitted(consumersOf(p.gitTargetGrants()), p.Namespace)
 }
 
 // KubeProviderApplierClaimScope is what a KubeProvider's allowedApplierClaims give an applier claim.
@@ -535,7 +588,7 @@ func (s KubeProviderApplierClaimScope) AllowsApplierNamespace(namespace string) 
 func (p *KubeProvider) AdmitsApplierClaim(
 	consumer types.NamespacedName, nsLabels map[string]string,
 ) (KubeProviderApplierClaimScope, error) {
-	grants := p.Spec.AllowedApplierClaims
+	grants := p.applierClaimGrants()
 	admitting, err := admitAll(consumersOf(grants), p.Namespace, consumer.Namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
 		return KubeProviderApplierClaimScope{}, err
@@ -549,5 +602,5 @@ func (p *KubeProvider) AdmitsApplierClaim(
 
 // DescribeAllowedApplierClaims names the namespaces spec.allowedApplierClaims admits.
 func (p *KubeProvider) DescribeAllowedApplierClaims() string {
-	return describeAdmitted(consumersOf(p.Spec.AllowedApplierClaims), p.Namespace)
+	return describeAdmitted(consumersOf(p.applierClaimGrants()), p.Namespace)
 }

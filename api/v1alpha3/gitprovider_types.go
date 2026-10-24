@@ -53,9 +53,10 @@ type GitProviderSpec struct {
 
 	// AllowedGitBranches says which GitBranches may claim a branch of this repository through this
 	// GitProvider, and which branches: a GitBranch claims only while a grant admits its namespace and
-	// one of that grant's branchPatterns matches its spec.branch. Nothing is admitted automatically, this
-	// GitProvider's own namespace included; omitted or empty, no GitBranch claims through it. Grants
-	// combine by union. Who may write through a claimed branch is that GitBranch's
+	// one of that grant's branchPatterns matches its spec.branch. It has no default, unlike the grant
+	// lists of GitBranch and KubeProvider, because which branches a namespace may claim is always
+	// written: omitted or empty, no GitBranch claims through it, this GitProvider's own namespace
+	// included. Grants combine by union. Who may write through a claimed branch is that GitBranch's
 	// spec.allowedGitTargets.
 	// +optional
 	// +listType=atomic

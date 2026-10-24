@@ -82,11 +82,15 @@ spec:
             description: spec defines the desired state of GitBranch
             properties:
               allowedGitTargets:
+                default:
+                - consumerNamespaces:
+                    from: Same
                 description: |-
-                  AllowedGitTargets says which GitTargets may write through this GitBranch. Nothing is admitted
-                  automatically, this GitBranch's own namespace included: a GitTarget there needs a grant too,
-                  such as consumerNamespaces: {from: Same}. Omitted or empty, no GitTarget writes through it.
-                  Grants combine by union. Mutable: claiming a branch includes the right to share it.
+                  AllowedGitTargets says which GitTargets may write through this GitBranch. Omitted, it defaults
+                  to one grant for this GitBranch's own namespace (consumerNamespaces: {from: Same}). A list you
+                  write is the whole policy: nothing is added to it, so a list without a from: Same grant shuts
+                  this namespace out, and [] admits no GitTarget. Grants combine by union. Mutable: claiming a
+                  branch includes the right to share it.
                 items:
                   description: |-
                     GitBranchGitTargetGrant admits GitTargets in some control-cluster namespaces to write through a

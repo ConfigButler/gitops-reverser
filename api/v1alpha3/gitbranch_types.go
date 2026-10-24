@@ -56,14 +56,16 @@ type GitBranchSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	ParentBranch string `json:"parentBranch,omitempty"`
 
-	// AllowedGitTargets says which GitTargets may write through this GitBranch. Nothing is admitted
-	// automatically, this GitBranch's own namespace included: a GitTarget there needs a grant too,
-	// such as consumerNamespaces: {from: Same}. Omitted or empty, no GitTarget writes through it.
-	// Grants combine by union. Mutable: claiming a branch includes the right to share it.
+	// AllowedGitTargets says which GitTargets may write through this GitBranch. Omitted, it defaults
+	// to one grant for this GitBranch's own namespace (consumerNamespaces: {from: Same}). A list you
+	// write is the whole policy: nothing is added to it, so a list without a from: Same grant shuts
+	// this namespace out, and [] admits no GitTarget. Grants combine by union. Mutable: claiming a
+	// branch includes the right to share it.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	AllowedGitTargets []GitBranchGitTargetGrant `json:"allowedGitTargets,omitempty"`
+	// +kubebuilder:default={{consumerNamespaces: {from: Same}}}
+	AllowedGitTargets []GitBranchGitTargetGrant `json:"allowedGitTargets"`
 }
 
 // GitBranchStatus defines the observed state of GitBranch.

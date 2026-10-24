@@ -82,7 +82,7 @@ Every field but `allowedGitTargets` is immutable: to change one, delete the `Git
 |---|---|---|
 | `gitProviderRef` | **required** | The `GitProvider` whose repository and credential write this branch: in this namespace, or `namespace` names another. Its `allowedGitBranches` must admit this namespace and `branch` |
 | `branch` | **required** | Branch to write. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
-| `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may write through this branch, each grant with a `consumerNamespaces` block. The only mutable field. See [the grants](#the-grants) |
+| `allowedGitTargets` | `[{"consumerNamespaces":{"from":"Same"}}]` | Which namespaces' `GitTarget`s may write through this branch, each grant with a `consumerNamespaces` block. Omitted, this branch's own namespace; `[]` admits nobody. The only mutable field. See [the grants](#the-grants) |
 | `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 
 ### `GitReceiver` (namespaced): the endpoint a Git host notifies on a push
@@ -100,8 +100,8 @@ Set exactly one of `secretRef` and `inCluster`. Both are immutable: delete and r
 |---|---|---|
 | `secretRef` | none; set `inCluster` instead | Secret in this provider's namespace holding a kubeconfig for the source cluster. `key` defaults to `value`, then `value.yaml`. See [`KubeProvider`](#kubeprovider) |
 | `inCluster` | none; set `secretRef` instead | `{}` uses the operator's own identity. Honored only for a provider listed in `--in-cluster-kube-providers`. See [the operator's own identity](#the-operators-own-identity-specincluster) |
-| `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a `consumerNamespaces` block, and `sourceNamespaces`, `clusterResources` or both. See [the grants](#the-grants) |
-| `allowedApplierClaims` | **no applier claim**, its own namespace included | Which namespaces' applier claims may hold an applier through this provider, and the `applierNamespaces` that applier may live in. See [the grants](#the-grants) |
+| `allowedGitTargets` | `[{"consumerNamespaces":{"from":"Same"},"sourceNamespaces":["{consumer.namespace}"]}]` | Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a `consumerNamespaces` block, and `sourceNamespaces`, `clusterResources` or both. Omitted, this provider's own namespace mirrors the namespace of the same name; `[]` admits nobody. See [the grants](#the-grants) |
+| `allowedApplierClaims` | `[{"applierNamespaces":["{consumer.namespace}"],"consumerNamespaces":{"from":"Same"}}]` | Which namespaces' applier claims may hold an applier through this provider, and the `applierNamespaces` that applier may live in. Omitted, this provider's own namespace, for appliers in the namespace of the same name; `[]` admits nobody. See [the grants](#the-grants) |
 | `client.qps` | `20` | Client rate limit for this source cluster. Refused beside `inCluster` |
 | `client.burst` | `30` | Client burst for this source cluster. Refused beside `inCluster` |
 | `attribution.auditRoute` | `<namespace>.<name>` | Audit route this provider joins. A route is held by one namespace. See [audit route](#audit-route-and-auditfactsreceived) |
@@ -291,9 +291,25 @@ object that lends something, and is named `allowed` plus the kind that refers to
 | `KubeProvider.spec.allowedGitTargets` | `GitTarget`s mirroring with its credential | `sourceNamespaces`, `clusterResources`, or both |
 | `KubeProvider.spec.allowedApplierClaims` | `FluxClaim`s and `ArgoCDClaim`s holding an applier with its credential | `applierNamespaces` (required) |
 
-- **Nothing is automatic, the object's own namespace included.** An omitted or empty list admits
-  nobody. GitOps Reverser is stricter than Flux here on purpose: administering a provider and
-  creating the objects that use it can then carry different RBAC permissions.
+- **An omitted list is the same-namespace default; a written list is the whole policy.** On a
+  `GitBranch` and a `KubeProvider` the API server fills an omitted list with one grant for the
+  object's own namespace, which you can read back with `kubectl get -o yaml`:
+
+  | You write | The list is |
+  |---|---|
+  | nothing | `GitBranch`: `[{consumerNamespaces: {from: Same}}]`. `KubeProvider`: `allowedGitTargets: [{consumerNamespaces: {from: Same}, sourceNamespaces: ["{consumer.namespace}"]}]` and `allowedApplierClaims: [{consumerNamespaces: {from: Same}, applierNamespaces: ["{consumer.namespace}"]}]` |
+  | a list | exactly that list; the default is not added, so a list without a `from: Same` grant shuts the own namespace out |
+  | `[]` | nobody, the own namespace included |
+
+  The default grants no cluster-scoped resource, and it reaches only the namespace of the same
+  name in the provider's cluster.
+- **`allowedGitBranches` has no default.** Which branches a namespace may claim is always written
+  as `branchPatterns`, so an omitted or empty list on a `GitProvider` admits no `GitBranch`, its own
+  namespace included.
+- **The default trusts the object's own namespace.** Whoever may create a `GitTarget` or an applier
+  claim beside a `KubeProvider` may use its credential within the default scope. To keep
+  administering a provider apart from using it, give the provider a namespace of its own, or write
+  `[]` and grant the namespaces you mean.
 - **Grants combine by union**, and order never matters.
 - **An explicit scope is the whole scope**, never "these plus your own":
   `applierNamespaces: [flux-system]` means `flux-system` only. An object's scope is the union of
@@ -319,8 +335,8 @@ allowedGitTargets:            # on a KubeProvider
     sourceNamespaces: ["{consumer.namespace}"]   # what: namespaces in this provider's cluster
 ```
 
-Unlike Gateway API, nothing defaults: `consumerNamespaces` is required on every grant, and so is
-its `from`. A grant without the block, with `consumerNamespaces: null`, or with
+Unlike Gateway API, nothing inside a grant defaults: `consumerNamespaces` is required on every
+grant you write, and so is its `from`. A grant without the block, with `consumerNamespaces: null`, or with
 `consumerNamespaces: {}` is refused.
 
 | `from` | Admits | Requires |
@@ -569,8 +585,8 @@ that wants an endpoint of its own creates a `GitReceiver` in its own namespace.
 
 Nothing has a default. The operator cannot infer a safe repository, branch, or write credential, nor
 which cluster a folder means, so every `GitTarget` names its `GitBranch` and its `KubeProvider`.
-Nothing falls back to the provider the chart renders, and that provider grants nothing until the
-installer says so.
+Nothing falls back to the provider the chart renders, and that provider admits only the release
+namespace's own objects until the installer grants more.
 
 ## `GitProvider`
 
@@ -584,7 +600,7 @@ The important fields are:
 - `spec.secretRef.name`: Secret with Git credentials such as SSH or HTTPS auth
 - `spec.knownHostsRef`: optional ConfigMap/Secret with SSH `known_hosts` shared across providers
 - `spec.allowedGitBranches`: which namespaces' `GitBranch`es may claim which branches with this
-  credential ([the grants](#the-grants)); its own namespace needs a grant too
+  credential ([the grants](#the-grants)). It has no default: its own namespace needs a grant too
 - `spec.commit`: committer identity and signing
 
 How writes are batched and phrased is **not** here: `spec.commit.window` and `spec.commit.message`
@@ -945,7 +961,8 @@ before it uses it, without dialing the cluster, and reports the verdict as `Vali
 | `KubeConfigInsecureTLSNotAllowed` | sets `insecure-skip-tls-verify`. Allowed with `--insecure-kubeconfig-tls` |
 | `KubeConfigFileReferenceNotAllowed` | names a token, certificate or key by file path, which the operator would read from its own Pod. Always refused: embed the `*-data` form instead |
 
-A `KubeProvider` is used only through its [grants](#the-grants), its own namespace included:
+A `KubeProvider` is used only through its [grants](#the-grants). Omitted, each list is one grant
+for the provider's own namespace, reaching the namespace of the same name; `[]` admits nobody:
 
 - **`spec.allowedGitTargets`** admits `GitTarget`s to mirror through it. The union of the admitting
   grants' `sourceNamespaces` bounds which namespaces the `WatchRule`s feeding a target may name, and
@@ -1004,7 +1021,9 @@ remote one: there the config plane *is* the watched cluster, so a scope delibera
 namespace RBAC and lets the owner of an admitted object act on the namespaces in its scope through
 the operator's own credential. A grant is a delegation, not owner consent: it does not prove that a
 namespace owns the objects it reaches, or the repository its `GitTarget` writes. That is legitimate
-to grant on purpose, which is why the chart's `local` provider grants nothing by default.
+to grant on purpose, which is why the chart's `local` provider grants only its default: objects in
+the release namespace, reaching the release namespace. Set `kubeProvider.allowedGitTargets: []` and
+`kubeProvider.allowedApplierClaims: []` to admit nobody.
 
 `spec.secretRef` and `spec.inCluster` are immutable, switching from one to the other included, and
 so is `GitTarget.spec.kubeProviderRef`: changing either would silently make an existing

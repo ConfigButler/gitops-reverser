@@ -149,8 +149,8 @@ Ordered by how much they matter now.
    - **R4:** `forgetSettledSnapshots` still runs only on `GitTarget` teardown, so a replaced worker
      can read the old worker's settled-snapshot record.
 
-   Both affect a user with a single `GitProvider`. The local review is
-   `docs/reviews/20261021-review-425.md`.
+   Both affect a user with a single `GitProvider`. Both are tracked in
+   [TODO.md](../TODO.md#before-the-next-release).
 
 5. **A rate bound on deliveries.** Folding bounds the queue but not the rate, so a token holder can
    keep a worker reading continuously. This is accepted for now; a per-worker cooldown would bound

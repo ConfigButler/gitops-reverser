@@ -4,10 +4,12 @@
 # makes Helm delete it again. Every GitTarget names its KubeProvider explicitly
 # (spec.kubeProviderRef); nothing falls back to this one. With kubeProvider.secretRef.name empty it
 # uses the operator's own identity (spec.inCluster), and the chart lists it in
-# --in-cluster-kube-providers, which is the only way an inCluster provider is honored. Nothing may
-# use it without a grant: by default it admits no namespace. kubeProvider.allowedGitTargets and
-# kubeProvider.allowedApplierClaims grant it; quickstart.enabled adds a grant for exactly the
-# quickstart namespace, and values-playground.yaml grants every namespace its own.
+# --in-cluster-kube-providers, which is the only way an inCluster provider is honored. Left unset,
+# kubeProvider.allowedGitTargets and kubeProvider.allowedApplierClaims are omitted, and the CRD
+# defaults each to one grant for the release namespace's own objects. A list set there is rendered
+# as written and is the whole policy, so [] renders as [] and admits nobody. quickstart.enabled adds
+# a grant for exactly the quickstart namespace, and values-playground.yaml grants every namespace
+# its own.
 apiVersion: configbutler.ai/v1alpha3
 kind: KubeProvider
 metadata:
@@ -31,15 +33,24 @@ spec:
   {{- $applierClaims := .Values.kubeProvider.allowedApplierClaims }}
   {{- if .Values.quickstart.enabled }}
   {{- $names := list .Values.quickstart.namespace }}
-  {{- $gitTargets = append $gitTargets (dict "consumerNamespaces" (dict "from" "Names" "names" $names) "sourceNamespaces" (list "{consumer.namespace}")) }}
-  {{- $applierClaims = append $applierClaims (dict "consumerNamespaces" (dict "from" "Names" "names" $names) "applierNamespaces" (list "{consumer.namespace}")) }}
+  {{- $gitTargets = append (default (list) $gitTargets) (dict "consumerNamespaces" (dict "from" "Names" "names" $names) "sourceNamespaces" (list "{consumer.namespace}")) }}
+  {{- $applierClaims = append (default (list) $applierClaims) (dict "consumerNamespaces" (dict "from" "Names" "names" $names) "applierNamespaces" (list "{consumer.namespace}")) }}
   {{- end }}
-  {{- with $gitTargets }}
+  {{- /* An unset list stays unset, so the CRD default applies; [] must reach the API as []. */}}
+  {{- if kindIs "slice" $gitTargets }}
+  {{- if $gitTargets }}
   allowedGitTargets:
-    {{- toYaml . | nindent 4 }}
+    {{- toYaml $gitTargets | nindent 4 }}
+  {{- else }}
+  allowedGitTargets: []
   {{- end }}
-  {{- with $applierClaims }}
+  {{- end }}
+  {{- if kindIs "slice" $applierClaims }}
+  {{- if $applierClaims }}
   allowedApplierClaims:
-    {{- toYaml . | nindent 4 }}
+    {{- toYaml $applierClaims | nindent 4 }}
+  {{- else }}
+  allowedApplierClaims: []
+  {{- end }}
   {{- end }}
 {{- end }}

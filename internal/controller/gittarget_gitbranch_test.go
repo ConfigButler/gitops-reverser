@@ -129,13 +129,14 @@ func TestReconcile_ATargetOnAHeldGitBranchInAnotherNamespaceIsWired(t *testing.T
 }
 
 // TestReconcile_AGitBranchThatDoesNotAdmitTheNamespace: who may write through a GitBranch is decided
-// by the GitBranch's spec.allowedGitTargets, against the TARGET's namespace.
+// by the GitBranch's spec.allowedGitTargets, against the TARGET's namespace. [] survives the update
+// as [], so it admits nobody instead of reading back as the omitted, same-namespace default.
 func TestReconcile_AGitBranchThatDoesNotAdmitTheNamespace(t *testing.T) {
 	f := newDestinationFixture(t)
 	branch := &configbutleraiv1alpha3.GitBranch{}
 	require.NoError(t, f.client.Get(context.Background(), k8stypes.NamespacedName{Namespace: "platform", Name: "main"},
 		branch))
-	branch.Spec.AllowedGitTargets = nil
+	branch.Spec.AllowedGitTargets = []configbutleraiv1alpha3.GitBranchGitTargetGrant{}
 	require.NoError(t, f.client.Update(context.Background(), branch))
 
 	_, got := f.reconcile(t)

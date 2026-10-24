@@ -7,40 +7,238 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Upgrading from 0.53.0: recreate the connection objects in one pass
+
+**Breaking, with no in-place conversion.** The objects that connect a folder to a cluster, a
+repository and an applier are reshaped, and the next five entries say how. `ClusterProvider` is a
+namespaced `KubeProvider`, a repository branch is a `GitBranch`, the push receiver is a
+`GitReceiver`, `FluxTrigger` and `ArgoCDTrigger` are `FluxClaim` and `ArgoCDClaim`, and grants say
+who may use each provider and branch. Every `GitTarget` and applier claim is recreated, because
+the references they gain are required and immutable. A `GitTarget`'s folder in Git is untouched:
+the new object takes it over on its first snapshot.
+
+1. Record what you have, against the running 0.53.0 operator. The new CRDs no longer serve the old
+   fields.
+
+   ```bash
+   kubectl get clusterproviders -o yaml > clusterproviders.yaml
+   kubectl get gitproviders,gittargets,fluxtriggers,argocdtriggers -A -o yaml > before-upgrade.yaml
+   ```
+
+2. Delete every `FluxTrigger` and `ArgoCDTrigger` while 0.53.0 still runs. A `FluxTrigger` removes
+   its finalizer and hands its `Kustomization` back to Flux, resumed, so Flux applies it on its own
+   until step 6. An `ArgoCDTrigger` holds no finalizer and changes nothing on delete: its
+   `Application` keeps automated sync off, as you set it for 0.53.0, so Argo CD syncs it only when
+   someone starts a sync until step 6. Then delete their CRDs:
+   `kubectl delete crd fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai`.
+3. Upgrade the CRDs, the operator and its permissions. The chart's `clusterProvider.*` values are
+   `kubeProvider.*`, and the provider it renders is a `KubeProvider` named `local` in the release
+   namespace, which admits only the release namespace's own objects until you set its grants (see
+   the grants entry).
+4. Create the new connection objects:
+   - a `KubeProvider` for each other `ClusterProvider`, in the namespace that should own the
+     credential, with its kubeconfig Secret copied into that namespace;
+   - for each `GitProvider`, in one write: remove `spec.receiver` and replace `spec.allowedBranches`
+     with `spec.allowedGitBranches`. For a provider that had a receiver, create a `GitReceiver` in
+     its namespace **with the provider's name**, so the Git host's webhook path stays the same;
+   - a `GitBranch` for each repository branch your `GitTarget`s wrote, from their `gitProviderRef`,
+     `branch` and `parentBranch`.
+5. Delete each `GitTarget` and create it again with `spec.gitBranchRef` and `spec.kubeProviderRef`,
+   and `spec.applierClaimRef` where it had `spec.applyTriggerRef`.
+6. Create a `FluxClaim` or `ArgoCDClaim` for each trigger you deleted: the same `spec`, with
+   `spec.kubeProviderRef` for `spec.clusterProviderRef` and without `spec.quietPeriod`. It takes
+   hold of its applier again once a `GitTarget` names it.
+7. Point each API server's audit webhook at its provider's new route, or set
+   `spec.attribution.auditRoute` to the route it posts under today.
+8. Delete the old CRD, which Helm leaves installed: `kubectl delete crd clusterproviders.configbutler.ai`.
+
+Check the result with `kubectl get kubeproviders,gitbranches,gitreceivers,gittargets,fluxclaims,argocdclaims -A`.
+`NamespaceNotAuthorized` anywhere means a grant is missing.
+
+## `KubeProvider` replaces `ClusterProvider`; every reference names one with `spec.kubeProviderRef`
+
+The source cluster is a namespaced `KubeProvider`. The cluster-scoped `ClusterProvider` kind is
+gone, and nothing converts one: a CRD cannot change its scope. `GitTarget`, `FluxClaim` and
+`ArgoCDClaim` name their provider with the required, immutable `spec.kubeProviderRef`, whose
+omitted namespace means the referrer's own. There is no provider named `default` that an omitted
+reference falls back to. `spec.clusterProviderRef` stays in the schema only so that setting it is
+refused at admission, with a message naming `spec.kubeProviderRef`.
+
+```yaml
+kind: KubeProvider
+metadata: {name: prod-eu-1, namespace: platform}
+spec:
+  secretRef:
+    name: prod-eu-1-kubeconfig   # a Secret in this namespace; key defaults to value, then value.yaml
+  allowedGitTargets:             # see "Grants say who may use a provider or a branch"
+    - consumerNamespaces:
+        from: Names
+        names: [team-a]
+      sourceNamespaces: ["{consumer.namespace}"]
+---
+kind: GitTarget
+metadata: {name: apps, namespace: team-a}
+spec:
+  gitBranchRef: {name: platform-main, namespace: platform}
+  kubeProviderRef: {name: prod-eu-1, namespace: platform}
+  path: apps
+```
+
+**The kubeconfig Secret is read from the provider's own namespace**, where 0.53.0 read the
+operator's. `spec.kubeConfig.secretRef` is `spec.secretRef`. The chart's values are `kubeProvider.create`,
+`kubeProvider.name`, `kubeProvider.secretRef`, `kubeProvider.allowedGitTargets` and
+`kubeProvider.allowedApplierClaims`.
+
+**The operator's own identity is an explicit arm, and the installation must allow it.** A provider
+that omitted `kubeConfig` used the operator's identity. A `KubeProvider` sets exactly one of
+`spec.secretRef` and `spec.inCluster: {}`, and `spec.inCluster` is honored only for a provider listed
+by exact `namespace/name` in `--in-cluster-kube-providers`. The chart lists the provider it renders,
+and `controllerManager.inClusterKubeProviders` adds others. Any other provider that sets
+`spec.inCluster` reports `Validated=False` and `Stalled=True` (`InClusterNotAuthorized`) and is never
+used. `spec.client` is refused beside `spec.inCluster`, where it was ignored.
+
+**`accessFrom` and `allowCrossNamespace` are replaced by grants.** Omitted, a `KubeProvider`'s
+`spec.allowedGitTargets` and `spec.allowedApplierClaims` admit only its own namespace; a written list
+is the whole policy, and `[]` admits nobody. See "Grants say who may use a provider or a branch".
+
+**Audit routes default to `<namespace>.<name>`, so the audit webhook URL changes.** The chart's
+provider posts under `/audit-webhook/<release namespace>.local`, `/audit-webhook/gitops-reverser.local`
+for a release in `gitops-reverser`. Point each API server's audit webhook configuration at its
+provider's new route, or set `spec.attribution.auditRoute` on the provider to the route it posts under
+today. A route belongs to one namespace: the namespace its first segment names, when a provider there
+carries it, and otherwise the namespace of the oldest provider carrying it. A provider in another
+namespace that carries it reports `Stalled=True` (`AuditRouteConflict`), and nothing mirrors or
+applies through it, so one tenant cannot read another namespace's attribution facts. Providers in one
+namespace may share a route, which several connections to one API server need.
+
+The reasons and conditions are renamed with the kind: `ClusterProviderNotFound` is
+`KubeProviderNotFound`, and a `GitTarget`'s `ClusterProviderReady` condition is `KubeProviderReady`,
+with reason `KubeProviderNotReady`. The resource-condition metrics report the kind as
+`KubeProvider`, and the `source_cluster` label carries `<namespace>/<name>` instead of the provider's
+name, so two providers with one name in two namespaces are two series.
+
+## `GitBranch` holds a repository branch; a `GitTarget` names one with `spec.gitBranchRef`
+
+A repository branch is its own object, `GitBranch`, claiming the branch through the `GitProvider`
+whose credential writes it. A `GitTarget` names one with the required, immutable
+`spec.gitBranchRef`, and `spec.gitProviderRef`, `spec.branch` and `spec.parentBranch` are gone from
+`GitTarget`: setting one is refused at admission, with a message naming `spec.gitBranchRef`.
+`GitTarget.status.remote` is now `GitBranch.status.remote`, and `GitProvider.status.branches` is
+gone; `kubectl get gitbranch -A` answers what it did.
+
+```yaml
+kind: GitBranch
+metadata: {name: platform-main, namespace: platform}
+spec:
+  gitProviderRef: {name: platform}    # namespace: omitted means this one
+  branch: main
+  # parentBranch: develop             # was GitTarget.spec.parentBranch
+  allowedGitTargets:                  # who may write through it; see the entry on grants
+    - consumerNamespaces: {from: Same}
+---
+kind: GitTarget
+metadata: {name: apps, namespace: platform}
+spec:
+  gitBranchRef: {name: platform-main}
+  kubeProviderRef: {name: platform-cluster}   # a KubeProvider in this namespace, which its omitted
+  path: apps                                  # grants admit
+```
+
+**One `GitBranch` holds a repository branch.** It holds it once a grant on its `GitProvider` admits
+it and the provider's credential opens a push session on the remote; the oldest such `GitBranch`
+holds it, keeps it through a later credential failure, and every other `GitBranch` for the same
+repository branch (compared as URLs, so an `https://` and an SSH spelling of one repository are one)
+reports `Stalled=True` (`BranchConflict`) and writes nothing. Create one `GitBranch` per repository
+branch, and point every `GitTarget` on that branch at it.
+
+**The push session is a new check, and it needs a credential that may push.** A `GitProvider` with
+no `secretRef` on a public repository used to be enough to write; its `GitBranch` now reports
+`Ready=False` (`PushSessionFailed`) and holds nothing. On GitHub and GitLab opening the session
+takes push permission. On Gitea and Forgejo it takes only a valid credential that can read the
+repository, because their AGit flow accepts pushes from readers and checks a branch write when it
+arrives. On a host that offers push sessions anonymously it proves only that the repository is
+reachable.
+
+**A repository branch can be shared across namespaces.** A `GitBranch` may name a `GitProvider` in
+another namespace with `spec.gitProviderRef.namespace`, and a `GitTarget` may name a `GitBranch` in
+another namespace with `spec.gitBranchRef.namespace`, each as far as the grants on the named object
+admit it. The tenant namespace holds no copy of the credential.
+
+New reasons follow from it. A `GitTarget` whose `GitBranch` does not exist reports
+`Validated=False` (`GitBranchNotFound`, which replaces `ProviderNotFound`); one whose `GitBranch` does
+not hold its branch, or is not `Ready`, reports `GitBranchReady=False` (`GitBranchNotReady`) and
+waits. That condition replaces `GitProviderReady`. `BranchNotAllowed`, `ParentBranchNotFound` and
+`RecoveringParentBranch` are now reported by the `GitBranch`, and `GitTarget`s on it show them in
+the `GitBranchReady` message. `TargetConflict` now means only overlapping paths on one `GitBranch`.
+A `WatchRule` or `ClusterWatchRule` no longer reads the GitProvider and no longer reports
+`GitProviderNotFound`; it follows its `GitTarget`'s readiness. The chart's quick start renders a
+`GitBranch` (`quickstart.gitBranch.name`, `quickstart.gitBranch.branch`), and
+`quickstart.gitTarget.branch` is gone.
+
+Deleting a `GitBranch` stops its branch worker after it has pushed or refused every pending write and
+settled every `CommitRequest` it held. It never deletes the branch on the remote.
+
+The metrics keep their `provider_namespace` and `provider_name` labels, which name the `GitProvider`
+of the `GitBranch` holding the branch. Log lines name a branch as `repository@branch`.
+
 ## Grants say who may use a provider or a branch; `allowedBranches` is `allowedGitBranches`
 
-**Breaking.** Who may use a `GitProvider`, a `GitBranch` or a `KubeProvider` is a list of grants on
-that object, and **nothing is admitted automatically, the object's own namespace included**. An
-omitted or empty list admits nobody.
+Who may use a `GitProvider`, a `GitBranch` or a `KubeProvider` is a list of grants on that object.
+**On a `GitBranch` and a `KubeProvider`, an omitted list is one grant for the object's own
+namespace**, filled in by the API server; **a written list is the whole policy**, with nothing
+added to it, and `[]` admits nobody. A `GitProvider`'s list has no default, because which branches
+may be claimed is always written: omitted or empty, it admits no `GitBranch`.
 
 | Grant list | Admits | Replaces |
 |---|---|---|
-| `GitProvider.spec.allowedGitBranches` | `GitBranch`es claiming its `branchPatterns` | `spec.allowedBranches`, and `spec.accessFrom` |
-| `GitBranch.spec.allowedGitTargets` | `GitTarget`s writing through it | the `GitProvider`'s `spec.accessFrom` |
-| `KubeProvider.spec.allowedGitTargets` | `GitTarget`s mirroring its `sourceNamespaces` and `clusterResources` | `spec.accessFrom`, `spec.allowCrossNamespace.sources` |
-| `KubeProvider.spec.allowedApplierClaims` | applier claims holding an applier in its `applierNamespaces` | `spec.accessFrom`, `spec.allowCrossNamespace.appliers` |
+| `GitProvider.spec.allowedGitBranches` | `GitBranch`es claiming its `branchPatterns` | `spec.allowedBranches` |
+| `GitBranch.spec.allowedGitTargets` | `GitTarget`s writing through it | nothing: a `GitTarget` named a `GitProvider` in its own namespace |
+| `KubeProvider.spec.allowedGitTargets` | `GitTarget`s mirroring its `sourceNamespaces` and `clusterResources` | `ClusterProvider.spec.accessFrom` and `spec.allowCrossNamespace.sources` |
+| `KubeProvider.spec.allowedApplierClaims` | applier claims holding an applier in its `applierNamespaces` | `ClusterProvider.spec.accessFrom` and `spec.allowCrossNamespace.appliers` |
 
 Every grant has a required `consumerNamespaces` block with a required `from`: `Same` (the namespace
 of the object holding the grant), `Names` with `names`, `Selector` with a non-empty `selector`, or
-`All`. Beside the block sits the scope the grant gives. `spec.accessFrom`,
-`spec.allowedBranches`, `spec.allowCrossNamespace` and their chart values are gone, and the API
-server prunes them. The equivalents of the old defaults:
+`All`. Beside the block sits the scope the grant gives. A grant's scope names the object asking for
+access, the consumer, with `{consumer.namespace}`; a branch pattern may add `{consumer.name}`
+beside it. See [the consumer variables](configuration.md#the-consumer-variables).
+`spec.allowedBranches`, `spec.accessFrom`, `spec.allowCrossNamespace` and their chart values are
+gone, and the API server prunes them.
+
+What 0.53.0 allowed, written as grants: a `GitTarget` wrote any `allowedBranches` branch of a
+`GitProvider` in its own namespace, and the chart's `default` provider admitted every namespace
+(`accessFrom.selector: {}`), each reaching only its own namespace.
 
 ```yaml
 kind: GitProvider
 spec:
-  allowedGitBranches:            # was allowedBranches: [main], for this namespace's GitBranches
+  allowedGitBranches:            # was allowedBranches: [main]; required, no default
     - consumerNamespaces: {from: Same}
       branchPatterns: [main]
 ---
 kind: GitBranch
+spec: {}                         # allowedGitTargets omitted: this namespace's GitTargets, as before
+---
+kind: KubeProvider
 spec:
-  allowedGitTargets:             # this namespace's GitTargets, as before; add from: Names to share
+  allowedGitTargets:             # was accessFrom: {selector: {}} without allowCrossNamespace:
+    - consumerNamespaces: {from: All}   # every namespace's GitTargets, each mirroring its own
+      sourceNamespaces: ["{consumer.namespace}"]
+  allowedApplierClaims:
+    - consumerNamespaces: {from: All}
+      applierNamespaces: ["{consumer.namespace}"]
+```
+
+The omitted defaults are, written out:
+
+```yaml
+kind: GitBranch
+spec:
+  allowedGitTargets:
     - consumerNamespaces: {from: Same}
 ---
 kind: KubeProvider
 spec:
-  allowedGitTargets:             # was its own namespace, plus accessFrom, without allowCrossNamespace
+  allowedGitTargets:             # no clusterResources
     - consumerNamespaces: {from: Same}
       sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
@@ -48,68 +246,87 @@ spec:
       applierNamespaces: ["{consumer.namespace}"]
 ```
 
-- **Every `GitBranch`, `GitTarget` and applier claim needs a grant, also in the provider's own
-  namespace.** Without one it reports `NamespaceNotAuthorized` and recovers once a grant admits it.
-- **`allowedBranches` became `allowedGitBranches`, which also says who may claim.** A
-  `GitBranch.spec.gitProviderRef` may name a `GitProvider` in another namespace. Branch patterns match
-  the whole branch name, `*` crosses `/`, and `teams/{consumer.namespace}/*` gives each namespace its
-  own prefix. A branch outside the patterns is `BranchNotAllowed`. A grant's scope names the object
-  asking for access, the consumer, with `{consumer.namespace}`; a branch pattern may add
-  `{consumer.name}` beside it. See [the consumer variables](configuration.md#the-consumer-variables).
+- **Branch patterns match the whole branch name**, `*` crosses `/`, and
+  `teams/{consumer.namespace}/*` gives each namespace its own prefix. A branch outside the patterns
+  is `BranchNotAllowed`.
 - **Who writes a branch is the `GitBranch`'s decision.** A `GitTarget` in another namespace writes
-  through it only while its `spec.allowedGitTargets` admit that namespace.
-- **The chart's `local` provider grants nothing** unless `kubeProvider.allowedGitTargets` and
-  `kubeProvider.allowedApplierClaims` do, or `quickstart.enabled=true`, which grants exactly the
-  quickstart namespace. To keep the old open default, every namespace mirroring its own, install with
-  the chart's `values-playground.yaml`.
+  through it only while its `spec.allowedGitTargets` admit that namespace; otherwise the target
+  reports `Validated=False` (`NamespaceNotAuthorized`).
+- **The chart's `local` provider admits only the release namespace** unless
+  `kubeProvider.allowedGitTargets` and `kubeProvider.allowedApplierClaims` say otherwise; `[]` there
+  admits nobody. `quickstart.enabled=true` replaces the default with a grant for exactly the
+  quickstart namespace. To keep 0.53.0's open default, every namespace mirroring its own, install
+  with the chart's `values-playground.yaml`, which sets the `KubeProvider` grants above.
+- **The default trusts the object's own namespace.** Whoever may create a `GitTarget` or an applier
+  claim beside a `KubeProvider` may use its credential within the default scope. Keep a provider in
+  a namespace of its own, or write `[]`, where administering it and using it are separate roles.
 - **A `ClusterWatchRule` needs `clusterResources`.** It mirrors only the types the grant admitting
   its `GitTarget` names (`clusterroles.rbac.authorization.k8s.io`, a bare `nodes`, or `"*"`), and
   one type outside them refuses the whole rule (`ClusterResourceNotAllowed`). No default grants any,
   the chart's included, so a `ClusterWatchRule` through `local` stops mirroring until a grant does.
-- **A `WatchRule`'s own namespace needs a grant too:** `sourceNamespaces: ["{consumer.namespace}"]`. An
-  explicit list is the whole scope, the union across the admitting grants, and
+- **A `WatchRule`'s own namespace is in scope through a grant**, the default one included:
+  `sourceNamespaces: ["{consumer.namespace}"]`. An explicit list is the whole scope, the union
+  across the admitting grants, and
   `sourceNamespace: "*"` needs `"*"` in at least one of them: it is refused, never narrowed.
-- **An applier claim refused by `allowedApplierClaims` hands its applier back**, as one no eligible
-  `GitTarget` references does. A `GitBranch` no grant admits any more gives up its branch after its
-  branch worker pushed or refused what it held, and keeps its finalizer.
+- **An applier claim refused by `allowedApplierClaims` hands its applier back** (`InControl=False`,
+  `Revoking`), as one no eligible `GitTarget` references does. A `GitBranch` no grant admits any more
+  gives up its branch after its branch worker pushed or refused what it held, and keeps its
+  finalizer.
 - `SourceNamespaceAuthorized` is `True` with reason `SourceNamespaceAllowed` for every admitted
   rule; `LegacySourceNamespace` is gone.
-
-Before upgrading, list what each provider admits today, and write the grants that keep it:
-
-```bash
-kubectl get gitproviders,kubeproviders -A -o yaml | grep -E '^  name:|namespace:|accessFrom|allowedBranches|allowCrossNamespace'
-```
 
 See [configuration.md](configuration.md#sharing-connections-across-namespaces) for the full model,
 including a platform and its tenants.
 
-## `FluxTrigger` and `ArgoCDTrigger` are now `FluxClaim` and `ArgoCDClaim`
+## `FluxTrigger` and `ArgoCDTrigger` are `FluxClaim` and `ArgoCDClaim`
 
-**Breaking, with no migration path.** Before upgrading, delete every `FluxTrigger` and
-`ArgoCDTrigger` (a `FluxTrigger` hands its `Kustomization` back to Flux, an `ArgoCDTrigger` its
-`Application`'s automated sync), then delete their CRDs. After upgrading, recreate them under the
-new kinds with the same `spec`, and on each `GitTarget` replace `spec.applyTriggerRef` with
-`spec.applierClaimRef`. The `GitTarget` condition is `ApplierClaimReady` (reason
-`ApplierClaimNotFound`), the reason `HeldByAnotherTrigger` is `HeldByAnotherClaim`, the
-finalizers are `configbutler.ai/flux-claim` and `configbutler.ai/argocd-claim`, and a `FluxClaim`'s
-`status.source.otherConsumers` is `status.source.alsoAppliedBy`. The entries below
-use the old names. See [applier claim](definitions.md#applying-back).
+The kinds are renamed, with every name that carried them. Nothing converts the old objects; step 2
+and step 6 of the upgrade above delete and recreate them.
 
-## An `ArgoCDTrigger` holds its `Application`'s automated sync off
+| 0.53.0 | Now |
+|---|---|
+| `FluxTrigger`, `ArgoCDTrigger` | `FluxClaim`, `ArgoCDClaim` |
+| `GitTarget.spec.applyTriggerRef` | `GitTarget.spec.applierClaimRef` |
+| `spec.clusterProviderRef` | `spec.kubeProviderRef` (see the `KubeProvider` entry) |
+| `GitTarget` condition `ApplyTriggerReady`, reason `ApplyTriggerNotFound` | `ApplierClaimReady`, `ApplierClaimNotFound` |
+| condition `Held`, printer column `Held` | condition `InControl`, printer column `Control` |
+| reason `HeldByAnotherTrigger` | `HeldByAnotherClaim` |
+| finalizer `configbutler.ai/flux-trigger` | `configbutler.ai/flux-claim`; an `ArgoCDClaim` holding its switch carries `configbutler.ai/argocd-claim` |
+| `FluxTrigger.status.source.otherConsumers` | `FluxClaim.status.source.alsoAppliedBy` |
+| `FluxTrigger.spec.quietPeriod`, `status.source.prefetch` | gone, with nothing in their place |
 
-An `ArgoCDTrigger` no longer only checks that automated sync is off: it switches it off, with a
-server-side apply of `spec.syncPolicy.automated.enabled: false` under the field manager
-`gitops-reverser`, switches it off again when somebody switches it on, and hands the switch back
-when it is deleted or no longer named, as it was before (`status.previousSuspendState`). A trigger
-that holds the switch carries the finalizer `configbutler.ai/argocd-trigger`. Argo CD before 3.1,
-which has no `enabled`, is not supported: the trigger reports `ArgoCDVersionNotSupported`, is
-Stalled and never Ready, and writes nothing. A `FluxTrigger` now records
-`status.previousSuspendState` too: a `Kustomization` that was suspended before the trigger held it
-stays suspended on hand-back, where it used to be resumed.
-Both kinds record a `ClaimedResourceReconciled` Event when they put back what somebody changed of
-the applier they hold: automated sync switched on, or a `flux resume`. It replaces the Flux Event
-`ResumedElsewhere`.
+Server-side apply and `kubectl`'s strict field validation reject a `FluxClaim` manifest that sets
+`spec.quietPeriod`. See [applier claim](definitions.md#applying-back).
+
+## An applier claim applies once the branch is published, and an `ArgoCDClaim` holds automated sync off
+
+**An apply waits for publishing, not for a quiet branch.** The branch worker publishes what is
+pending on the branch, then applies; no apply goes out before every initial snapshot of the
+`GitTarget`s naming the claim is published. A claim asks for an apply when somebody else pushes to
+the branch, after a refusal or a reverted edit, to adopt an object created through the API in the
+folder (Flux prunes only what it applied, so such an object would otherwise survive the deletion of
+its file in Git), and to converge, once when the operator starts and once when a `GitTarget` first
+names the claim. An API edit asks for no apply. A `GitTarget` that names a claim has its folder
+created before it is applied: a resync into a folder the branch does not hold yet commits the
+folder's bootstrap files (`README.md`, `.gittargetignore`, and `.sops.yaml` with encryption) even
+when there is nothing to mirror. An `Application` is asked to sync for the same reasons as a
+`Kustomization`, so its hooks also run after an API create in the folder.
+
+**Naming a claim narrows what the folder mirrors.** An object another applier owns, one whose Flux
+owner labels (`kustomize.toolkit.fluxcd.io/name` and `kustomize.toolkit.fluxcd.io/namespace`) or Argo
+CD tracking annotation (`argocd.argoproj.io/tracking-id`) name an applier other than the claim's, is
+no longer mirrored into that folder, and a resync leaves its document in Git alone. Mirrored, it
+would be applied by two appliers, which fight each other. After naming a claim, read
+`gitopsreverser_apply_ownership_conflicts_total` and the log line `Not mirroring an object another
+applier owns`: each object they report was mirrored before, and belongs to one applier only. See
+[objects another applier owns](bi-directional.md#objects-another-applier-owns).
+
+**An `ArgoCDClaim` switches automated sync off itself**, where an `ArgoCDTrigger` only checked that
+you had: a server-side apply of `spec.syncPolicy.automated.enabled: false` under the field manager
+`gitops-reverser`, applied again when somebody switches it on, and handed back as it was before
+(`status.previousSuspendState`) when the claim is deleted or no longer named. `InControl` is `True`
+with reason `AutomatedSyncOff`. Argo CD before 3.1, which has no `enabled`, is not supported: the
+claim reports `ArgoCDVersionNotSupported`, is Stalled and never Ready, and writes nothing.
 `AutomatedSyncEnabled` is gone. Automated sync on is refused only where the switch is somebody
 else's: `OwnedByApplicationSet` for an `Application` an `ApplicationSet` generated, and
 `AutomatedSyncOwnedElsewhere` for a switch another field manager applies. The operator now needs
@@ -117,15 +334,19 @@ else's: `OwnedByApplicationSet` for an `Application` an `ApplicationSet` generat
 grant it yourself where you applied `config/rbac/argocd-applier-role.yaml` or hold a remote
 cluster's role. See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
 
+**A `FluxClaim` records `status.previousSuspendState` too:** a `Kustomization` that was suspended
+before the claim held it stays suspended on hand-back, where a `FluxTrigger` resumed it. Both kinds
+record a `ClaimedResourceReconciled` Event when they put back what somebody changed of the applier
+they hold: automated sync switched on, or a `flux resume`. It replaces the Flux Event
+`ResumedElsewhere`.
+
 ## `GitReceiver` replaces `GitProvider.spec.receiver`
 
-**Breaking.** The push receiver is a namespaced kind of its own, `GitReceiver`, and nothing names it:
-a delivery wakes every `GitProvider`, in any namespace, whose `spec.url` names the repository the
-delivery reports. One `GitReceiver` therefore serves every repository its Git host delivers for, so a
-GitHub App or an organization webhook, which has one endpoint for many repositories, needs one route.
-`GitProvider.spec.receiver` stays in the schema only so that setting it is refused at admission,
-with a message naming the replacement. `GitProvider.status.webhookPath` is gone; the path is the
-`GitReceiver`'s `status.webhookPath`.
+The push receiver is a namespaced kind of its own, `GitReceiver`, and nothing names it: a delivery
+wakes every `GitProvider`, in any namespace, whose `spec.url` names the repository the delivery
+reports. One `GitReceiver` therefore serves every repository its Git host delivers for, so a GitHub
+App or an organization webhook, which has one endpoint for many repositories, needs one route.
+`GitProvider.status.webhookPath` is gone; the path is the `GitReceiver`'s `status.webhookPath`.
 
 ```yaml
 kind: GitReceiver
@@ -135,31 +356,23 @@ spec:
   secretRef: {name: platform-receiver}   # the old spec.receiver.secretRef, in this namespace
 ```
 
-Migrate in this order:
+**Give the `GitReceiver` the provider's name** and create it in the provider's namespace: the path
+is the same HMAC of the namespace and name, keyed by the same token, so the Git host's webhook needs
+no change. A receiver under another name publishes a new `status.webhookPath`; register that one.
+`kubectl get gitreceiver` shows `Ready=True` once its token is readable and the listener is on, and
+after the next push the `GitBranch`'s `status.lastPushNoticeAt` shows the delivery reached it.
 
-1. Record what you have, before upgrading the CRDs:
+`GitProvider.spec.receiver` stays in the schema only so that setting it is refused at admission,
+with a message naming the replacement. A `GitProvider` that still carries it keeps working as a
+provider, and its status keeps updating, but any write that changes its `spec` is refused until that
+same write removes the field. Nothing is served on its old path.
 
-   ```bash
-   kubectl get gitproviders -A -o jsonpath='{range .items[?(@.spec.receiver)]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.receiver.type}{"\t"}{.spec.receiver.secretRef.name}{"\t"}{.status.webhookPath}{"\n"}{end}'
-   ```
-
-2. Upgrade. A `GitProvider` that still carries `spec.receiver` keeps working as a provider, and its
-   status keeps updating, but any write that changes its `spec` is refused until that same write
-   removes the field. Nothing is served on its old path.
-3. For each, create a `GitReceiver` in the provider's namespace with the same `type` and
-   `secretRef`, and **give it the provider's name**: the path is the same HMAC of the namespace and
-   name, keyed by the same token, so the Git host's webhook needs no change. Then remove
-   `spec.receiver` from the provider.
-4. Check `kubectl get gitreceiver`: `Ready` is `True` once its token is readable and the listener is
-   on. A receiver under another name publishes a new `status.webhookPath`; register that one. After
-   the next push, the `GitBranch`'s `status.lastPushNoticeAt` shows the delivery reached it.
-
-**A delivery is routed by the repository it names.** A route used to name one provider, so the
-receiver read only the branch. Now the repository URLs in the payload (`repository.clone_url`,
-`ssh_url` and `html_url` from GitHub and Gitea, `project.git_http_url` and `git_ssh_url` from GitLab)
-are compared with every provider's `spec.url` as a branch claim compares repositories. A provider that
-reaches the host under another name, such as an SSH alias (`ssh.github.com:443`), is not matched, and
-its foreign pushes are found by the next rejected push or the periodic refresh instead.
+**A delivery is routed by the repository it names.** The repository URLs in the payload
+(`repository.clone_url`, `ssh_url` and `html_url` from GitHub and Gitea, `project.git_http_url` and
+`git_ssh_url` from GitLab) are compared with every provider's `spec.url` as a branch claim compares
+repositories. A provider that reaches the host under another name, such as an SSH alias
+(`ssh.github.com:443`), is not matched, and its foreign pushes are found by the next rejected push or
+the periodic refresh instead.
 
 **Any namespace's `GitReceiver` can wake any matching provider.** Waking only makes a branch worker
 read the remote with its own provider's credential, so a delivery cannot choose what is read, and a
@@ -182,171 +395,6 @@ without `--receiver-bind-address` (chart value `servers.receiver.enabled=false`)
 `unknown_repository` (no `GitProvider` has the repository the delivery names) and `unknown_branch`
 (one has, but no branch worker writes that branch). A query that read `outcome="unmatched"` reads
 both.
-
-## `KubeProvider` replaces `ClusterProvider`; every reference names one with `spec.kubeProviderRef`
-
-**Breaking.** The source cluster is a namespaced `KubeProvider`. The cluster-scoped
-`ClusterProvider` kind is gone, and nothing converts one: a CRD cannot change its scope. `GitTarget`,
-`FluxTrigger` and `ArgoCDTrigger` name their provider with the required, immutable
-`spec.kubeProviderRef`, whose omitted namespace means the referrer's own. There is no provider named
-`default` that an omitted reference falls back to. `spec.clusterProviderRef` stays in the schema only
-so that setting it is refused at admission, with a message naming `spec.kubeProviderRef`.
-
-```yaml
-kind: KubeProvider
-metadata: {name: prod-eu-1, namespace: platform}
-spec:
-  secretRef:
-    name: prod-eu-1-kubeconfig   # a Secret in this namespace; key defaults to value, then value.yaml
-  allowedGitTargets:             # see "Grants say who may use a provider or a branch"
-    - consumerNamespaces:
-        from: Names
-        names: [team-a]
-      sourceNamespaces: ["{consumer.namespace}"]
----
-kind: GitTarget
-metadata: {name: apps, namespace: team-a}
-spec:
-  gitBranchRef: {name: platform-main, namespace: platform}
-  kubeProviderRef: {name: prod-eu-1, namespace: platform}
-  path: apps
-```
-
-Migrate in this order:
-
-1. Record what you have, before upgrading the CRDs:
-
-   ```bash
-   kubectl get clusterproviders -o yaml > clusterproviders.yaml
-   kubectl get gittargets,fluxtriggers,argocdtriggers -A -o jsonpath='{range .items[*]}{.kind}{"\t"}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.clusterProviderRef.name}{"\n"}{end}'
-   ```
-
-2. Upgrade. The chart renders a `KubeProvider` named `local` in the release namespace, using the
-   operator's own identity (see below). Its values are `kubeProvider.create`, `kubeProvider.name`,
-   `kubeProvider.secretRef`, `kubeProvider.allowedGitTargets` and `kubeProvider.allowedApplierClaims`;
-   the `clusterProvider.*` values are gone.
-3. Create a `KubeProvider` for each other `ClusterProvider`, in the namespace that should own the
-   credential. **The kubeconfig Secret is read from the provider's own namespace**, not from the
-   operator's, so move or copy it there. `spec.kubeConfig.secretRef` is `spec.secretRef`.
-4. Delete and recreate each `GitTarget`, `FluxTrigger` and `ArgoCDTrigger` with
-   `spec.kubeProviderRef`. The reference is immutable and the old field is refused, so an edit cannot
-   do it. A `GitTarget`'s folder in Git is untouched: the new object takes it over on its first
-   snapshot. A `FluxTrigger` hands its `Kustomization` back to Flux when it is deleted, and the new
-   one takes hold of it again.
-5. Delete the old CRD, which Helm leaves installed: `kubectl delete crd clusterproviders.configbutler.ai`.
-
-**The operator's own identity is an explicit arm, and the installation must allow it.** A provider
-that omitted `kubeConfig` used the operator's identity. A `KubeProvider` sets exactly one of
-`spec.secretRef` and `spec.inCluster: {}`, and `spec.inCluster` is honored only for a provider listed
-by exact `namespace/name` in `--in-cluster-kube-providers`. The chart lists the provider it renders,
-and `controllerManager.inClusterKubeProviders` adds others. Any other provider that sets
-`spec.inCluster` reports `Validated=False` and `Stalled=True` (`InClusterNotAuthorized`) and is never
-used. `spec.client` is refused beside `spec.inCluster`, where it was ignored.
-
-**`accessFrom` and `allowCrossNamespace` are replaced by grants.** A `KubeProvider` admits nobody,
-its own namespace included, until a grant in `spec.allowedGitTargets` or `spec.allowedApplierClaims`
-does; see "Grants say who may use a provider or a branch".
-
-**Audit routes default to `<namespace>.<name>`, so the audit webhook URL changes.** The chart's
-provider posts under `/audit-webhook/<release namespace>.local`, `/audit-webhook/gitops-reverser.local`
-for a release in `gitops-reverser`. Point each API server's audit webhook configuration at its
-provider's new route, or set `spec.attribution.auditRoute` on the provider to the route it posts under
-today. A route belongs to one namespace: the namespace its first segment names, when a provider there
-carries it, and otherwise the namespace of the oldest provider carrying it. A provider in another
-namespace that carries it reports `Stalled=True` (`AuditRouteConflict`), and nothing mirrors or
-applies through it, so one tenant cannot read another namespace's attribution facts. Providers in one
-namespace may share a route, which several connections to one API server need.
-
-The reasons and conditions are renamed with the kind: `ClusterProviderNotFound` is
-`KubeProviderNotFound`, and a `GitTarget`'s `ClusterProviderReady` condition is `KubeProviderReady`,
-with reason `KubeProviderNotReady`. The resource-condition metrics report the kind as
-`KubeProvider`, and the `source_cluster` label carries `<namespace>/<name>` instead of the provider's
-name, so two providers with one name in two namespaces are two series.
-
-## `GitBranch` holds a repository branch; a `GitTarget` names one with `spec.gitBranchRef`
-
-**Breaking.** A repository branch is its own object, `GitBranch`, claiming the branch through the
-`GitProvider` whose credential writes it. A `GitTarget` names one with the required, immutable
-`spec.gitBranchRef`, and `spec.gitProviderRef`, `spec.branch` and `spec.parentBranch` are gone from
-`GitTarget`: setting one is refused at admission, with a message naming `spec.gitBranchRef`.
-`GitTarget.status.remote` is now `GitBranch.status.remote`, and `GitProvider.status.branches` is
-gone; `kubectl get gitbranch -A` answers what it did.
-
-Replace each GitTarget's three fields with a `GitBranch` and a reference to it:
-
-```yaml
-kind: GitBranch
-metadata: {name: platform-main, namespace: platform}
-spec:
-  gitProviderRef: {name: platform}    # namespace: omitted means this one
-  branch: main
-  # parentBranch: develop             # was GitTarget.spec.parentBranch
-  allowedGitTargets:                  # who may write through it; see the entry on grants
-    - consumerNamespaces: {from: Same}
----
-kind: GitTarget
-metadata: {name: apps, namespace: platform}
-spec:
-  gitBranchRef: {name: platform-main}
-  path: apps
-```
-
-`spec.gitBranchRef` is immutable and the old fields are refused, so delete each `GitTarget` and
-create it again with the new shape. Its folder in Git is untouched: the new object takes it over
-on its first snapshot. List the GitTargets to recreate, with what each `GitBranch` needs:
-
-```bash
-kubectl get gittargets -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.gitProviderRef.name}{"\t"}{.spec.branch}{"\t"}{.spec.parentBranch}{"\n"}{end}'
-```
-
-Run it before upgrading the CRDs: the new schema no longer serves the old fields.
-
-**One `GitBranch` holds a repository branch.** It holds it once a grant on its `GitProvider` admits
-it and the provider's credential opens a push session on the remote; the oldest such `GitBranch`
-holds it, keeps it through a later credential failure, and every other `GitBranch` for the same
-repository branch (compared as URLs, so an `https://` and an SSH spelling of one repository are one)
-reports `Stalled=True`
-(`BranchConflict`) and writes nothing. Create one `GitBranch` per repository branch, and point every
-`GitTarget` on that branch at it.
-
-**The push session is a new check, and it needs a credential that may push.** A `GitProvider` with
-no `secretRef` on a public repository used to be enough to write; its `GitBranch` now reports
-`Ready=False` (`PushSessionFailed`) and holds nothing. On GitHub and GitLab opening the session
-takes push permission. On Gitea and Forgejo it takes only a valid credential that can read the
-repository, because their AGit flow accepts pushes from readers and checks a branch write when it
-arrives. On a host that offers push sessions anonymously it proves only that the repository is
-reachable.
-
-**Sharing a repository branch across namespaces.** A `GitTarget` names a `GitBranch` in another
-namespace with `spec.gitBranchRef.namespace`; that `GitBranch`'s `spec.allowedGitTargets` must admit
-the `GitTarget`'s namespace, or the target reports `Validated=False` (`NamespaceNotAuthorized`). The
-tenant namespace holds no copy of the credential.
-
-New reasons follow from it. A `GitTarget` whose `GitBranch` does not exist reports
-`Validated=False` (`GitBranchNotFound`); one whose `GitBranch` does not hold its branch, or is not
-`Ready`, reports `GitBranchReady=False` (`GitBranchNotReady`) and waits. That condition replaces
-`GitProviderReady`. `NamespaceNotAuthorized`, `BranchNotAllowed`, `ParentBranchNotFound` and
-`RecoveringParentBranch` are now reported by the `GitBranch`, and `GitTarget`s on it show them in the `GitBranchReady` message.
-`TargetConflict` now means only overlapping paths on one `GitBranch`. A `WatchRule` or
-`ClusterWatchRule` no longer reads the GitProvider and no longer reports `GitProviderNotFound`; it
-follows its `GitTarget`'s readiness. The chart's quick start renders a `GitBranch`
-(`quickstart.gitBranch.name`, `quickstart.gitBranch.branch`), and `quickstart.gitTarget.branch` is
-gone.
-
-Deleting a `GitBranch` stops its branch worker after it has pushed or refused every pending write and
-settled every `CommitRequest` it held. It never deletes the branch on the remote.
-
-The metrics keep their `provider_namespace` and `provider_name` labels, which name the `GitProvider`
-of the `GitBranch` holding the branch. Log lines name a branch as `repository@branch`.
-
-## `FluxTrigger` `spec.quietPeriod` and `status.source.prefetch` are removed
-
-**Breaking.** An apply no longer waits for a quiet branch: the branch worker publishes what is
-pending, then applies, so `spec.quietPeriod` has nothing left to set. The source prefetch is gone
-with `status.source.prefetch`. Server-side apply and `kubectl`'s strict field validation reject a
-`FluxTrigger` manifest that still sets `spec.quietPeriod`; a client with field validation off drops
-the field without an error. Remove `spec.quietPeriod` from your `FluxTrigger` manifests before
-upgrading. Nothing replaces either field.
 
 ## `allowAnySourceNamespace` is gone; `allowCrossNamespace.sources` replaces it
 
@@ -372,12 +420,17 @@ default stored on every provider, is accepted.
 
 ## `onRefusal: PushEmptyCommit` is now `onRefusal: Reapply`, and needs an apply trigger
 
+This entry is as 0.53.0 shipped it, with 0.53.0's names. Upgrading past 0.53.0, read
+`FluxTrigger`, `ArgoCDTrigger` and `spec.applyTriggerRef` as the claims of
+[the rename above](#fluxtrigger-and-argocdtrigger-are-fluxclaim-and-argocdclaim), and step 3's
+`allowCrossNamespace.appliers` as a grant in `allowedApplierClaims`.
+
 **Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
 GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
-`Reapply` it asks the target's applier to apply the current tip, after closing the open commit
-window and publishing the writes pending on the branch. The applier is the Flux `Kustomization` a
-`FluxTrigger` holds, or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget`
-names the trigger in the new `spec.applyTriggerRef`. Only that applier applies, rather than every applier watching the
+`Reapply` it asks the target's applier to apply the current tip once the branch holds no open
+commit window and no pending writes. The applier is the Flux `Kustomization` a `FluxTrigger` holds,
+or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget` names the trigger in the
+new `spec.applyTriggerRef`. Only that applier applies, rather than every applier watching the
 branch; a `GitRepository` that has to fetch the tip wakes only the consumers no trigger holds. An
 allowed edit still in a commit window is published before the apply instead of being
 reverted with the refused one. The API rejects `Reapply` without `spec.applyTriggerRef`.
@@ -402,42 +455,25 @@ See [who applies this folder](configuration.md#who-applies-this-folder-specappli
 
 A trigger also changes what else applies the folder. A `FluxTrigger` holds its `Kustomization`
 suspended, so Flux applies it only when GitOps Reverser resumes it: when somebody else pushes to the
-branch, after a refusal or a reverted edit, to adopt an object created through the API in the folder
-(Flux prunes only what it applied, so such an object would otherwise survive the deletion of its
-file in Git), and to converge, once when the operator starts and once when a `GitTarget` first names
-the trigger. An API edit asks for no apply. Each apply goes out once the writes pending on the
-branch are published, and none before every initial snapshot of the `GitTarget`s naming the trigger
-is published. A `GitTarget` that names a trigger has its folder created before it is applied: a
-resync into a folder the branch does not hold yet commits the folder's bootstrap files (`README.md`,
-`.gittargetignore`, and `.sops.yaml` with encryption) even when there is nothing to mirror.
-`flux get ks` shows it `Suspended`, and while the operator is down it waits suspended: a graceful
-stop suspends one it had resumed, and after a crash the next process does. Remove
-`spec.suspend` from whatever applies the `Kustomization`'s manifest (the trigger reports
-`SuspendOwnedElsewhere` otherwise) and any Git-host webhook into a Flux `Receiver` for the
-repository, as [the Flux guide](bi-directional-flux.md) describes. A trigger acts only while an
-eligible `GitTarget` names it, so create the two in any order: until one names it, it is `Ready`
-(`NotReferenced`) and holds nothing. Deleting the trigger, or the last `GitTarget` naming it, hands
-the `Kustomization` back to Flux. The operator needs `get`, `list` and `patch` on `kustomizations`,
-`list` on `helmreleases` and `helmcharts`, `get` and `patch` on `gitrepositories`, and `create` on
-`selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true` grants them
-for the operator's own cluster.
+branch, after a refusal or a reverted edit, and to catch up with its own pushes, or with the branch
+once a `GitTarget` first names the trigger, after the branch has been quiet for the trigger's
+`quietPeriod`. `flux get ks` shows it `Suspended`, and while the
+operator is down it waits suspended: a graceful stop suspends one it had resumed, and after a crash
+the next process does. Remove `spec.suspend` from whatever applies the
+`Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
+webhook into a Flux `Receiver` for the repository, as [the Flux guide](bi-directional-flux.md)
+describes. A trigger acts only while an eligible `GitTarget` names it, so create the two in any
+order: until one names it, it is `Ready` (`NotReferenced`) and holds nothing. Deleting the trigger,
+or the last `GitTarget` naming it, hands the `Kustomization` back to Flux. The operator needs `get`,
+`list` and `patch` on `kustomizations`, `list` on `helmreleases` and `helmcharts`, `get` and `patch`
+on `gitrepositories`, and `create` on `selfsubjectaccessreviews`, in the trigger's cluster: Helm
+`applierAccess.flux: true` grants them for the operator's own cluster.
 
-For an Argo CD `Application`, GitOps Reverser starts every sync, so its trigger holds its automated
-sync off ([since](#an-argocdtrigger-holds-its-applications-automated-sync-off); before that, you
-switched it off yourself, and automated sync on was refused). An `Application` is asked to sync
-for the same reasons as a `Kustomization`, adopt and
-converge included, so its hooks also run after an API create in the folder and when a `GitTarget`
-first names the trigger. The operator needs `get`, `update` and `patch` on `applications`: Helm
-`applierAccess.argocd: true`. See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
-
-Naming a trigger also narrows what the folder mirrors. An object another applier owns, one whose
-Flux owner labels (`kustomize.toolkit.fluxcd.io/name` and `kustomize.toolkit.fluxcd.io/namespace`)
-or Argo CD tracking annotation (`argocd.argoproj.io/tracking-id`) name an applier other than the
-trigger's, is no longer mirrored into that folder, and a resync leaves its document in Git alone.
-Mirrored, it would be applied by two appliers, which fight each other. After naming a trigger, read
-`gitopsreverser_apply_ownership_conflicts_total` and the log line `Not mirroring an object another
-applier owns`: each object they report was mirrored before, and belongs to one applier only. See
-[objects another applier owns](bi-directional.md#objects-another-applier-owns).
+For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its automated sync off
+(`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before its trigger holds it; one with
+automated sync on reports `Configured=False` (`AutomatedSyncEnabled`) on the trigger and is never
+synced. The operator needs `get` and `update` on `applications`: Helm `applierAccess.argocd: true`.
+See [bi-directional GitOps with Argo CD](bi-directional-argocd.md).
 
 ## `git_queue_drops_total` is now `git_queue_refusals_total`
 
@@ -2177,7 +2213,7 @@ different one the namespace is now written explicitly — omitting it would have
 kustomize and rendered a different object than the one being mirrored. This also now applies to a path
 you declared, which previously wrote a `namespace:` line the rest of that folder omits.
 
-## 0.41.1 — the Go floor rises for module consumers (patch release; breaking for module consumers)
+## 0.41.1: the Go floor rises for module consumers (patch release; breaking for module consumers)
 
 `v0.41.1` raises the `go` directive in `go.mod` from `1.26.5` to `1.27.0`, in a release whose
 changelog entry reads only *"let's release some security updates"*. The floor rises again after it.
@@ -2216,7 +2252,7 @@ A `go` directive move is treated as consumer-breaking for module users. It gets 
 line in the release notes even when it ships in a patch release, so it is never again something you
 discover from a failing build.
 
-## 0.41.0 — attribution facts travel on a selectable transport, and Redis is no longer implied
+## 0.41.0: attribution facts travel on a selectable transport, and Redis is no longer implied
 
 Attribution stopped meaning Redis. The audit receiver appends its facts to a per-type **stream**,
 the watch side follows the streams for the types it watches into a bounded in-process index, and
@@ -2248,7 +2284,7 @@ New tuning knobs, all with behaviour-preserving defaults: `attribution.maxFactsP
 (10000). They bound the in-process index and the collection join; see
 [configuration.md](configuration.md).
 
-## 0.41.0 — the attribution metrics are relabeled and partly renamed (breaking for queries)
+## 0.41.0: the attribution metrics are relabeled and partly renamed (breaking for queries)
 
 The `result` label is **gone** from `gitopsreverser_attribution_resolutions_total` and
 `gitopsreverser_attribution_resolution_wait_seconds`. It crammed two orthogonal questions into one
@@ -2421,7 +2457,7 @@ is the acceptance gate's own issue" compile-checked rather than merely stated.
 - Record the `status.generator.version` you consumed a report with, if you pin our release
   elsewhere. That is the whole point of the field.
 
-## Unreleased: status vocabulary and two removed status fields (next minor; status-only change)
+## 0.39.2: status vocabulary and two removed status fields (status-only change)
 
 Nothing in `spec` changed and no manifest you wrote needs editing. Three things a **reader of
 status** may notice:
@@ -2466,7 +2502,7 @@ columns (`Ready`, `Reason`, `Streams`, `Age`); `Provider`, `Branch` and `Path` m
 visible in `kubectl describe` and routable by anything that consumes Events. The operator's
 ServiceAccount gained `create`/`patch` on `events` for it, which `helm upgrade` applies.
 
-## Unreleased — a resync no longer deletes Git documents by default (next minor; behavior change)
+## 0.39.0: a resync no longer deletes Git documents by default (behavior change)
 
 **`GitTarget` gained `spec.prune.mode`, and its effective default changes what a resync does.**
 Previously every resync mark-and-swept: a managed document whose resource was absent from the
@@ -2522,7 +2558,7 @@ This ships in the **same release** as the rule-kind scope change below, and is w
 migration non-destructive: a converted `WatchRule` that resolves to a narrower set of namespaces than
 you intended leaves the affected documents in Git instead of deleting them.
 
-## Unreleased — scope is now carried by the rule kind (next minor; breaking)
+## 0.39.0: scope is now carried by the rule kind (breaking)
 
 **Scope moved from a per-rule field onto the rule KIND.** `WatchRule` is the namespaced surface and
 gained `spec.rules[].sourceNamespace`; `ClusterWatchRule` is cluster-scoped only and lost its scope
@@ -2622,7 +2658,7 @@ The same skew exists inside a rolling upgrade: CRDs are cluster-wide, so an old 
 new `WatchRule`, ignore `rules[].sourceNamespace`, and mirror the wrong namespace's content into Git.
 **Complete the controller rollout before applying migrated manifests.**
 
-## Unreleased — unresolved attribution is visible in Git (next minor; author identity changes)
+## 0.39.0: unresolved attribution is visible in Git (author identity changes)
 
 When `attribution.enabled=true` and the operator cannot match a live watch event to an audit fact within
 `attribution.grace`, the Git author is now:
@@ -2645,7 +2681,7 @@ be attributable, this author normally means the audit policy, webhook route, sou
 connectivity, or grace window is not configured correctly. It can also represent a change with no usable
 audit actor, so use the audit metrics before assigning a cause.
 
-## Unreleased — a `patches:` block no longer refuses the folder (next minor; more folders accepted)
+## 0.37.0: a `patches:` block no longer refuses the folder (more folders accepted)
 
 A kustomization declaring `patches:` used to refuse the whole `GitTarget`. Not the edit — the
 **target**. A folder whose patch touched a replica count also lost `images:`/`replicas:`
@@ -2673,7 +2709,7 @@ Exactly one shape is tolerated. The rest are refused **by name**, so the message
 | a `path:` naming no file in the tree, or escaping it | refused: `patches-outside-tree` |
 | `patchesStrategicMerge:`, `patchesJson6902:` (deprecated spellings) | refused under their own names |
 
-## Unreleased — the build's output stops leaking into the build's input (next minor; bug fix + behavior change)
+## 0.37.0: the build's output stops leaking into the build's input (bug fix + behavior change)
 
 **If your kustomization declares `labels:`, `commonLabels:`, `commonAnnotations:` or `namespace:`,
 the operator has been writing those injected values into your source manifests.** Measured, on a
@@ -2719,7 +2755,7 @@ to say which of the source's bytes you meant to keep, and pairing the lists by p
 measurably wrong (kustomize *prepends* a container a patch adds), so the operator refuses rather
 than guesses.
 
-## Unreleased — kustomize decides what it renders, and what it touched (next minor; bug fixes + behavior change)
+## 0.36.0: kustomize decides what it renders, and what it touched (bug fixes + behavior change)
 
 The write path no longer contains a re-implementation of kustomize's image and replica
 transformers. It asks kustomize what a folder renders to, and — by rendering a second time
@@ -2763,7 +2799,7 @@ worked. If you see this refusal, the live state cannot be expressed in the repos
 stands — most often because something we do not model (a `patches:` block, a
 `replacements:` entry) owns the field. The refusal names it.
 
-## Unreleased — a folder kustomize cannot build is now refused (next minor; behavior change)
+## 0.36.0: a folder kustomize cannot build is now refused (behavior change)
 
 The analyzer now **builds** every render root with kustomize, instead of only parsing the
 kustomization structurally. A root that fails to build refuses the `GitTarget`, quoting
@@ -2800,7 +2836,7 @@ protecting it.
   now fails the target with `GitPathAccepted=False` / `UnsupportedContent` instead of writing
   into a folder whose render it cannot know. Fix the build.
 
-## Unreleased — a `digest:` override no longer strips the tag out of your source file (next patch; bug fix)
+## 0.36.0: a `digest:` override no longer strips the tag out of your source file (bug fix)
 
 **If any of your kustomizations use `images:` with `digest:`, or `newTag:` on an image
 that carries a digest, the operator has been rewriting your source manifests. This stops.**
@@ -2826,7 +2862,7 @@ concluded the user had *removed* the tag, and wrote the tag out of the source do
 - Nothing to configure. The behaviour is simply correct now, and pinned against a real
   `kustomize build` so it cannot regress.
 
-## Unreleased — `kustomization.yaml` is now read by kustomize itself (next minor; behavior change)
+## 0.36.0: `kustomization.yaml` is now read by kustomize itself (behavior change)
 
 The analyzer used to decode `kustomization.yaml` with a hand-written walk over a generic
 YAML map, checked against a hand-maintained list of 17 unsupported keys. It now decodes with
@@ -2857,7 +2893,7 @@ every case the new behaviour is the one that agrees with the renderer:
   in Git; edit the source field instead.
 - Nothing to do for the last two rows: they only ever accept more.
 
-## Unreleased — `pkg/manifestanalyzer`: the overlay fan-out refusal code was renamed (next minor; breaking for consumers)
+## 0.35.0: `pkg/manifestanalyzer`: the overlay fan-out refusal code was renamed (breaking for consumers)
 
 One refusal reason changed its name, in both the Go constant and the machine-readable
 value it carries:
@@ -2880,7 +2916,7 @@ our planning docs; the new one says what it means.
   a `switch` or `if` on `"overlay-fan-out-needs-f2"` simply stops matching, and the refusal
   falls through to whatever your default branch does. Grep for the old string.
 
-## Unreleased — the wildcard cluster read moved to its own, droppable ClusterRole (next minor; behavior change)
+## 0.34.0: the wildcard cluster read moved to its own, droppable ClusterRole (behavior change)
 
 The shipped RBAC now says what the binary actually does. Nothing is taken away from a default
 install; what changes is that the parts can be separated.
@@ -2930,9 +2966,7 @@ reflector retried the denial forever. Discovery reports what the server serves, 
 may read, so a narrowed role reached this path — which is exactly the path this release makes easy
 to enter.
 
-## Unreleased — `manifest-analyzer` scan modes renamed, and `--format json` now emits a
-
-versioned contract (next minor; breaking)
+## 0.34.0: `manifest-analyzer` scan modes renamed, and `--format json` now emits a versioned contract (breaking)
 
 The analyzer's machine-readable output moved to the new public
 [`pkg/manifestanalyzer`](../pkg/manifestanalyzer), which is a supported Go API and the single
@@ -2979,7 +3013,7 @@ release you are upgrading *across*, not as current advice.)
   adopt (or refuse) the folder.
 - If you parsed `plan` from folder-scan mode, you were reading an empty object; drop the field.
 
-## Unreleased — chart defaults now run Redis-free (next minor; behavior change)
+## 0.32.0: chart defaults now run Redis-free (behavior change)
 
 The Helm chart now defaults to the simple, Redis-free `configured-author` path, so a bare
 `helm install` comes up healthy without external infrastructure:
@@ -3005,7 +3039,7 @@ The Helm chart now defaults to the simple, Redis-free `configured-author` path, 
 - `helm upgrade --reuse-values` preserves your existing settings, so reused-value upgrades are
   unaffected; only fresh installs (or upgrades that re-specify values) pick up the new defaults.
 
-## Unreleased — API group version bumped `v1alpha2` → `v1alpha3` (next minor; breaking)
+## 0.29.0: API group version bumped `v1alpha2` → `v1alpha3` (breaking)
 
 The served API version moved from `configbutler.ai/v1alpha2` to `configbutler.ai/v1alpha3` to
 reflect the accumulated schema and status changes on this branch. `v1alpha2` is **removed**, not
@@ -3024,7 +3058,7 @@ CRDs are applied.
 - `kubectl` commands that pin the version (`kubectl get gittargets.v1alpha2.configbutler.ai`) must
   switch to `v1alpha3`. Unqualified short names (`kubectl get gittargets`) need no change.
 
-## Unreleased — first-run and status surface cleanup (next minor; breaking)
+## 0.29.0: first-run and status surface cleanup (breaking)
 
 This branch changes the default install to be easier to try, and it tightens the v1alpha3 status
 surface around conditions. Existing installs should check the items below before upgrading.
@@ -3130,7 +3164,7 @@ kubectl wait --for=condition=StreamsRunning=true gittarget/<name> -n <namespace>
 `WatchRule` and `ClusterWatchRule` use the same condition vocabulary for source readiness
 (`StreamsRunning`) and referenced target readiness (`GitTargetReady`).
 
-## Unreleased — Config flag naming pass (next minor; breaking)
+## 0.29.0: Config flag naming pass (breaking)
 
 Controller command-line flags were renamed to follow
 [`config-flag-conventions.md`](config-flag-conventions.md). The Helm chart and the
@@ -3154,7 +3188,7 @@ Redis/Valkey over TLS unless told otherwise. The Helm chart
 in-cluster Valkey. **If you run the controller directly against a plaintext Redis,
 add `--redis-insecure`** — otherwise startup fails on a TLS handshake.
 
-## Unreleased — Git credentials interop (next minor; breaking)
+## 0.28.0: Git credentials interop (breaking)
 
 Two user-visible breaking changes land together. Both come from
 [`design/git-credentials-interop.md`](finished/git-credentials-interop.md).

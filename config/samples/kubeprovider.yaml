@@ -17,7 +17,8 @@ metadata:
 spec:
   secretRef:
     name: prod-eu-1-kubeconfig
-  # Nothing uses this provider without a grant, its own namespace included. Each grant says where it
+  # Omitted, each list is one grant for this provider's own namespace; a list you write is the whole
+  # policy, and [] admits nobody. Each grant says where it
   # admits from (Same, Names, Selector or All) and what: the source namespaces a GitTarget's
   # WatchRules may watch ("{consumer.namespace}" is the GitTarget's own; "*" is every namespace,
   # which `sourceNamespace: "*"` needs), and the cluster-scoped resources a ClusterWatchRule may mirror.
