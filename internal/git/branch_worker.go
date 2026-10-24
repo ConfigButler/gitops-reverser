@@ -311,7 +311,8 @@ type BranchWorker struct {
 	retentionLoggedAt map[string]time.Time
 
 	// hasUnpushedWork mirrors whether the event loop is currently holding a live
-	// open window or any committed-but-not-yet-pushed pending writes. The event
+	// open window, any committed-but-not-yet-pushed pending writes, or live events
+	// held at a pending render-fidelity gate (render_fidelity_hold.go). The event
 	// loop is the only writer and, via syncUnpushedWorkFlag, the only reader; the
 	// atomic guards the store/load and lets the depth gauge account for retained
 	// work the channel length alone cannot see.
