@@ -972,8 +972,10 @@ func TestArgoCD_ARecoveredSyncIsJudgedByTheHistoryByTime(t *testing.T) {
 		started time.Time
 		want    git.ApplyOutcome
 	}{
-		{name: "started in the second it was asked for", started: stampTime.Truncate(time.Second),
-			want: git.ApplySucceeded},
+		{name: "started in the second after it was asked for",
+			started: stampTime.Truncate(time.Second).Add(time.Second), want: git.ApplySucceeded},
+		{name: "started in the second it was asked for, which may be an earlier sync",
+			started: stampTime.Truncate(time.Second), want: git.ApplyFailed},
 		{name: "started a second before", started: stampTime.Add(-time.Second), want: git.ApplyFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

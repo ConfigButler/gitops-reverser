@@ -36,7 +36,8 @@ the new object takes it over on its first snapshot.
    `kubeProvider.create`, `clusterProvider.default.kubeConfig.secretRef` is `kubeProvider.secretRef`,
    and `accessFrom` and `allowCrossNamespace` are `kubeProvider.allowedGitTargets` and
    `kubeProvider.allowedApplierClaims` (see the grants entry). The provider the chart renders is a
-   `KubeProvider` named `local` in the release namespace, where 0.53.0's was the `ClusterProvider`
+   `KubeProvider` named `local` (the default of `kubeProvider.name`; use yours where you set it) in
+   the release namespace, where 0.53.0's was the `ClusterProvider`
    `default`, and it admits only the release namespace's own objects until you set its grants.
 4. Create the new connection objects:
    - a `KubeProvider` for each other `ClusterProvider`, in the namespace that should own the
@@ -50,7 +51,8 @@ the new object takes it over on its first snapshot.
    and `spec.applierClaimRef` where it had `spec.applyTriggerRef`. `spec.kubeProviderRef` is
    required: a `GitTarget` whose `spec.clusterProviderRef` named `default`, which 0.53.0 filled in
    when it was omitted, now names the chart's provider,
-   `{name: local, namespace: <release namespace>}`, which admits a `GitTarget` in another
+   `{name: local, namespace: <release namespace>}` (your `kubeProvider.name` in place of `local` where
+   you set one), which admits a `GitTarget` in another
    namespace only through a grant.
 6. Create a `FluxClaim` or `ArgoCDClaim` for each trigger you deleted: the same `spec`, with the
    required `spec.kubeProviderRef` in place of `spec.clusterProviderRef`, named as in step 5, and

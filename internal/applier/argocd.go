@@ -405,10 +405,11 @@ func syncProgress(app *unstructured.Unstructured, token string) (Progress, bool)
 //
 // An entry proves it when it names the commit, GitOps Reverser as its initiator, and was recorded
 // since the operation was set: above the highest id the Application held then, or, for a Recovered
-// operation, which never read the history, started no earlier than the second it was asked for. The
-// second is the controller's clock against the operator's, so a controller clock behind by a second
-// or more reads the entry as older, and the commit is synced again, as before: that costs a repeat,
-// never an edit.
+// operation, which never read the history, started in a second after the one it was asked for. An
+// entry started in that same second may be an earlier sync of the commit, and taking it would skip an
+// apply the request never made, so it proves nothing. The second is the controller's clock against
+// the operator's, so a controller clock behind reads our entry as older, and the commit is synced
+// again, as before: that costs a repeat, never an apply.
 func historySucceeded(app *unstructured.Unstructured, s *Started) (string, bool) {
 	if s.Commit == "" {
 		return "", false
@@ -449,7 +450,7 @@ func (s *Started) recordedSince(entry map[string]any) bool {
 		started, _, _ = unstructured.NestedString(entry, "deployedAt")
 	}
 	at, err := time.Parse(time.RFC3339, started)
-	return err == nil && !at.Before(requested.Truncate(time.Second))
+	return err == nil && at.After(requested)
 }
 
 // lastHistoryID is the highest id in the Application's status.history, -1 when it holds none.
