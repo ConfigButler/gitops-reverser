@@ -167,6 +167,10 @@ type BranchWorker struct {
 	// admits every GitTarget.
 	applierAdmitted ApplierAdmission
 	resyncRecheck   func(target itypes.ResourceReference)
+	// replacementPending reports whether this worker replaced one whose GitTargets have not been told
+	// yet (WorkerManager.ReplacementPending): until they are, their snapshot record is the old
+	// worker's, and no applier is asked for anything. Nil in the CLI and in tests.
+	replacementPending func() bool
 
 	// Event processing
 	eventQueue chan WorkItem
@@ -1229,10 +1233,12 @@ type branchWorkerEventLoop struct {
 	pushHinted bool
 	// decisions numbers the decided writes (PendingWrite.decision). flushing is set while an apply is
 	// due and waits for the writes up to flushMark, the last decision when it came due, to be
-	// published (serviceAppliers).
-	decisions uint64
-	flushing  bool
-	flushMark uint64
+	// published (serviceAppliers). flushEdits holds the API-side edits decided since the mark, by
+	// GitTarget and objectKey: the attempts the flush sends hold them in their windows (S1).
+	decisions  uint64
+	flushing   bool
+	flushMark  uint64
+	flushEdits map[itypes.ResourceReference]map[string]time.Time
 
 	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:

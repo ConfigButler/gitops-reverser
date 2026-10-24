@@ -409,14 +409,20 @@ func TestApplyAttempt_ASourceElsewhereIsAHintToLook(t *testing.T) {
 func TestApplyAttempt_ANewFlushMarkStartsTheEditsOver(t *testing.T) {
 	loop, _ := manualLoop(t, applierTestTarget("alpha", true))
 	loop.followRecordedOperations(time.Now())
-	state := loop.appliers[applierRef("alpha")]
-	state.flushEdits = map[string]time.Time{"x": time.Now()}
+	alpha := itypes.NewResourceReference("alpha", "team-a")
+	edit := Event{
+		GitTargetName: "alpha", GitTargetNamespace: "team-a",
+		Identifier: itypes.ResourceIdentifier{Resource: "configmaps", Namespace: "team-a", Name: "x"},
+	}
 
-	loop.flushing = true
-	require.True(t, loop.flushed([]*applierState{state}))
-	assert.Len(t, state.flushEdits, 1, "the flush in progress keeps what it recorded")
+	require.True(t, loop.flushed())
+	loop.recordFlushEdit(edit)
+	require.True(t, loop.flushed())
+	assert.Len(t, loop.flushEdits[alpha], 1, "the flush in progress keeps what it recorded")
 
-	loop.flushing = false
-	require.True(t, loop.flushed([]*applierState{state}))
-	assert.Empty(t, state.flushEdits, "a new mark published them")
+	loop.endFlush()
+	loop.recordFlushEdit(edit)
+	assert.Empty(t, loop.flushEdits[alpha], "no flush, no record")
+	require.True(t, loop.flushed())
+	assert.Empty(t, loop.flushEdits[alpha], "a new mark published them")
 }

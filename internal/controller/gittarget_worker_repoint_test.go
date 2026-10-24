@@ -145,10 +145,22 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 	workers.RenderFidelityGate().Fail(appsRef, manifestanalyzer.RenderDivergence{})
 	require.False(t, workers.RenderFidelityGate().AllowsWrites(appsRef))
 
+	// The snapshot records the old worker settled.
+	generations := map[string]uint64{}
+	for _, name := range []string{"apps", "infra", "release", "other"} {
+		generations[name] = manager.SnapshotGenerationForTest(types.NewResourceReference(name, "shop"))
+	}
+
 	branch := git.BranchKeyFor("https://example.invalid/second.git", "main")
 	require.True(t, r.recoverBranchAfterReplacement(context.Background(), branch,
 		shopRepo1Main, logr.Discard()),
 		"the targets were listed and told, so the recovery is delivered")
+
+	for name, before := range generations {
+		restarted := manager.SnapshotGenerationForTest(types.NewResourceReference(name, "shop")) != before
+		assert.Equal(t, name == "apps" || name == "infra", restarted,
+			"%s: only the replaced worker's GitTargets start their snapshot record over", name)
+	}
 
 	assert.ElementsMatch(t, []string{"shop/apps", "shop/infra"}, manager.ForcedRecheckTargetsForTest(),
 		"every GitTarget the replaced worker served, and nothing else")

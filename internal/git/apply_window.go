@@ -213,9 +213,9 @@ func (state *applierState) covers(event Event) bool {
 // withholdLateApply reports whether a live event is the applier's own write in its apply window,
 // and must not be mirrored: the apply itself landing on an object nobody edited (F1), or the apply
 // arriving late over a newer API edit (withheld, with a Repair pending). Every other event is
-// recorded as an API-side edit in the windows of the appliers that cover it, and in the edits a due
-// attempt's window will hold once it is sent (applierState.flushEdits). It is called for each live
-// event before it reaches the commit window.
+// recorded as an API-side edit in the windows of the appliers that cover it, and in the edits the
+// attempts of a flush in progress will hold once they are sent (recordFlushEdit). It is called for
+// each live event before it reaches the commit window.
 func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 	if len(l.appliers) == 0 {
 		return false
@@ -238,13 +238,10 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 				l.recordApplyEcho(echoLate)
 			}
 		}
-		if applier.flushEdits != nil {
-			// Decided after the flush mark, so not in the commit the due attempt applies: its window
-			// holds it from the start (S1).
-			key := objectKey(event.Identifier)
-			applier.flushEdits[key] = latest(applier.flushEdits[key], event.LastFieldManagedAt)
-		}
 	}
+	// Decided after the flush mark, so not in the commit the flush's attempts apply: their windows
+	// hold it from the start (S1).
+	l.recordFlushEdit(event)
 	return false
 }
 

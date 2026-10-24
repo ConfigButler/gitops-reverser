@@ -368,17 +368,21 @@ func resyncScopeForWatchKey(key targetWatchKey) git.ResyncScope {
 // counts it as a background resync failure so a silently-recovered fault stays observable. The
 // steady-state live-event path and the next type transition recover a failed apply, so this
 // never re-fires the gather.
+//
+// snapshots is the generation of the GitTarget's settled-snapshot record the resync was enqueued
+// under (Manager.snapshotGeneration): its outcome settles the collection only in that record.
 func (r *EventRouter) drainScopedResync(
 	gitDest types.ResourceReference,
 	collection types.CollectionKey,
 	kind string,
 	renderFidelityEpoch uint64,
+	snapshots uint64,
 	resultCh chan git.ResyncResult,
 ) {
 	select {
 	case result := <-resultCh:
 		if settlesSnapshot(result.Err) && r.WatchManager != nil {
-			r.WatchManager.markSnapshotSettled(gitDest, collection)
+			r.WatchManager.markSnapshotSettled(gitDest, collection, snapshots)
 		}
 		if result.Err != nil {
 			r.handleScopedResyncError(gitDest, collection, kind, renderFidelityEpoch, result.Err)
@@ -409,7 +413,7 @@ func (r *EventRouter) drainScopedResync(
 		}
 	case <-time.After(resyncSignalTimeout):
 		if r.WatchManager != nil {
-			r.WatchManager.markSnapshotSettled(gitDest, collection)
+			r.WatchManager.markSnapshotSettled(gitDest, collection, snapshots)
 		}
 		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "collection", collection.String())
 		r.recordBackgroundResyncFailure(gitDest)

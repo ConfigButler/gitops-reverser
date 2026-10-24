@@ -257,10 +257,6 @@ type applierState struct {
 	// finished it (apply_window.go). Nil when no attempt was sent, or the last asked for no apply
 	// after the window before it had closed.
 	window *applyWindow
-	// flushEdits records the API-side edits made since the flush mark of an attempt that is due and
-	// not sent yet, by objectKey: they are not in the commit the attempt applies, so its window holds
-	// them from the start (S1). Nil while no flush is waiting for this applier.
-	flushEdits map[string]time.Time
 	// operation is the last operation an attempt started, as its applier claim's status.operation shows
 	// it, and operationID the attempt it belongs to. Nil until this worker started one.
 	operation   *v1alpha3.ApplyOperation
@@ -377,7 +373,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 		l.armApplierTimer(now, wait)
 		return
 	}
-	if !l.flushed(due) {
+	if !l.flushed() {
 		// The publication wakes the loop when it lands (a push, or its retry); a save, a parent
 		// recovery or a dirty checkout end with a wake of their own.
 		l.armApplierTimer(now, wait)
@@ -473,7 +469,13 @@ func (l *branchWorkerEventLoop) alreadyConverged(
 // published (initialSnapshotsPublished), so it may be asked for something. Before, an apply would
 // destroy what is not mirrored yet: at startup the edits made while the operator was down, and for a
 // GitTarget that newly names the applier claim, what its folder does not hold yet.
+//
+// A worker that replaced another holds every applier until its GitTargets were told: their record
+// of settled snapshots is the old worker's until then (RestartInitialSnapshots on the watch side).
 func (l *branchWorkerEventLoop) pastBarrier(state *applierState) bool {
+	if l.w.replacementPending != nil && l.w.replacementPending() {
+		return false
+	}
 	for _, target := range state.targets {
 		if !l.initialSnapshotsPublished(target.ref) {
 			return false
@@ -502,20 +504,19 @@ func revisionCommit(revision string) string {
 // flushed makes the flush an apply needs (see serviceAppliers), and reports whether the writes up to
 // its mark are published, so the attempts may go. The first call of a flush closes the open window
 // and takes the mark; later calls only look whether the publication landed.
-func (l *branchWorkerEventLoop) flushed(due []*applierState) bool {
+//
+// From the mark on, every edit is recorded for its GitTarget (flushEdits), not for the appliers due
+// when the flush began: an applier that comes due while the flush waits for its publication is sent
+// in the same flush, and an edit decided before it came due is not in the commit it applies either.
+func (l *branchWorkerEventLoop) flushed() bool {
 	if l.writeBusy() {
 		return false
 	}
-	for _, state := range due {
-		// A new mark publishes every edit recorded before it, so those are in the commit the
-		// attempt applies: carried into its window, they would withhold the apply's own write.
-		if state.flushEdits == nil || !l.flushing {
-			state.flushEdits = map[string]time.Time{}
-		}
-	}
 	if !l.flushing {
 		l.finalizeOpenWindowWithReason(windowFinalizeReasonApplyDue)
-		l.flushing, l.flushMark = true, l.decisions
+		// A new mark publishes every edit decided before it, so those are in the commit the attempts
+		// apply: carried into their windows, they would withhold the apply's own write.
+		l.flushing, l.flushMark, l.flushEdits = true, l.decisions, map[itypes.ResourceReference]map[string]time.Time{}
 		if l.pendingUpTo(l.flushMark) {
 			l.w.Log.Info("An apply is due; publishing the pending writes first", "branch", l.w.Branch,
 				"pendingWrites", len(l.pendingWrites))
@@ -535,15 +536,26 @@ func (l *branchWorkerEventLoop) pendingUpTo(mark uint64) bool {
 	return false
 }
 
-// endFlush ends the flush once nothing is due: the edits recorded for an applier that has nothing
-// pending any more are dropped with it.
+// endFlush ends the flush once its attempts went, or nothing is due any more: the edits recorded
+// since its mark are dropped with it, and the next flush records from its own mark.
 func (l *branchWorkerEventLoop) endFlush() {
-	l.flushing = false
-	for _, state := range l.appliers {
-		if state.inflight == nil && !state.hasReason(l.unsentRefusalsFor(state)) {
-			state.flushEdits = nil
-		}
+	l.flushing, l.flushEdits = false, nil
+}
+
+// recordFlushEdit records a live edit decided after the flush mark for its GitTarget, while a flush
+// is waiting for its publication: it is not in the commit the flush's attempts apply.
+func (l *branchWorkerEventLoop) recordFlushEdit(event Event) {
+	if !l.flushing {
+		return
 	}
+	target := itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace)
+	edits := l.flushEdits[target]
+	if edits == nil {
+		edits = map[string]time.Time{}
+		l.flushEdits[target] = edits
+	}
+	key := objectKey(event.Identifier)
+	edits[key] = latest(edits[key], event.LastFieldManagedAt)
 }
 
 // earliest is the earlier of two deadlines, a zero one being none.
@@ -702,10 +714,11 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	l.reportApplyWindow(state)
 	state.openApplyWindow(attempt.id, tip, sentAt)
 	// The edits decided after the flush mark are not in the commit, and the apply may overwrite them.
-	for key, at := range state.flushEdits {
-		state.window.recordEdit(key, at)
+	for _, target := range state.targets {
+		for key, at := range l.flushEdits[target.ref] {
+			state.window.recordEdit(key, at)
+		}
 	}
-	state.flushEdits = nil
 	for key := range refusals {
 		delete(l.unsentRefusals, key)
 	}

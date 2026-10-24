@@ -947,6 +947,10 @@ func (r *GitTargetReconciler) ensureEventStream(
 // It runs for every target on the branch and not only the one whose reconcile noticed. A worker
 // serves them all, and the siblings have no reason of their own to reconcile.
 //
+// The record of which collections' snapshots settled goes the same way: the old worker published
+// them, into the old repository, and the new worker's appliers must not be asked for anything until
+// its own snapshots are in the new one. The worker holds them until this recovery is acknowledged.
+//
 // The render-fidelity verdicts go the same way and for the same reason: they say a folder matches
 // live, about a folder in the other repository. They are INVALIDATED rather than forgotten —
 // forgetting a target leaves it unregistered, which the gate reads as writable, so the writes
@@ -983,6 +987,7 @@ func (r *GitTargetReconciler) recoverBranchAfterReplacement(
 		}
 		ref := types.NewResourceReference(affected.Name, affected.Namespace).WithUID(string(affected.UID))
 		gate.Invalidate(ref)
+		r.EventRouter.WatchManager.RestartInitialSnapshots(ref)
 		r.EventRouter.WatchManager.RequestRecheckForGitTarget(ref)
 		recovered++
 	}
