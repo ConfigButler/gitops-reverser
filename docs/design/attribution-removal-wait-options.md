@@ -14,6 +14,13 @@
 > deleter or in `absent`, never in the last writer. The cost this page is about is unchanged:
 > situation 5 still spends the whole grace. See
 > [what attribution gives up, on purpose](../spec/attribution.md#what-attribution-gives-up-on-purpose).
+>
+> **Direction, 2026-10-22.** The attribution pipeline review behind #431 recommends
+> [option F](#f-a-per-route-type-circuit-breaker-stop-waiting-for-a-fact-that-has-never-once-arrived)
+> in its own PR, with no new flag, now that #431 has made removal attribution independent of the
+> watch's label selector. C stays the follow-up for the intermittent case. Measure how often a
+> watched type is one the audit policy excludes before building C
+> ([what is not yet measured](#what-is-not-yet-measured)).
 
 ## The question
 
