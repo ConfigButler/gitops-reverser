@@ -228,7 +228,7 @@ type Started struct {
 	RequestedAt time.Time
 	// historyBefore is the highest status.history id an Argo CD Application held when this process
 	// set the sync's operation, -1 when it held none: an entry above it was recorded since. Nil for a
-	// Recovered operation, which is judged by RequestedAt.
+	// Recovered operation, which no entry proves.
 	historyBefore *int64
 	// verdict is the outcome of a Flux apply, read once the resume's token was handled and kept
 	// until the suspend after it is.

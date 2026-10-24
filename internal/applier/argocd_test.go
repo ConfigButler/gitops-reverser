@@ -964,19 +964,20 @@ func TestArgoCD_AGoneTokenIsJudgedByTheHistory(t *testing.T) {
 	}
 }
 
-// TestArgoCD_ARecoveredSyncIsJudgedByTheHistoryByTime: a Recovered operation never read the
-// history, so an entry proves it by when it started, to the second the controller records.
-func TestArgoCD_ARecoveredSyncIsJudgedByTheHistoryByTime(t *testing.T) {
+// TestArgoCD_NoHistoryEntryProvesARecoveredSync: a Recovered operation never read the history, so
+// only an entry's time could date it, and that is the controller's clock. With it ahead, an earlier
+// sync of the commit read as started after the request, and a request that crashed before its update
+// was Succeeded with the apply never made. No entry proves it now: the update is settled as never
+// made (settleUnseen), and the worker asks again.
+func TestArgoCD_NoHistoryEntryProvesARecoveredSync(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		started time.Time
-		want    git.ApplyOutcome
 	}{
-		{name: "started in the second after it was asked for",
-			started: stampTime.Truncate(time.Second).Add(time.Second), want: git.ApplySucceeded},
-		{name: "started in the second it was asked for, which may be an earlier sync",
-			started: stampTime.Truncate(time.Second), want: git.ApplyFailed},
-		{name: "started a second before", started: stampTime.Add(-time.Second), want: git.ApplyFailed},
+		{name: "an earlier sync, by a controller clock five seconds ahead", started: stampTime.Add(2 * time.Second)},
+		{name: "started in the second after it was asked for", started: stampTime.Truncate(time.Second).Add(time.Second)},
+		{name: "started in the second it was asked for", started: stampTime.Truncate(time.Second)},
+		{name: "started a second before", started: stampTime.Add(-time.Second)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			app := manualApp()
@@ -986,7 +987,7 @@ func TestArgoCD_ARecoveredSyncIsJudgedByTheHistoryByTime(t *testing.T) {
 			started := recoveredStarted(git.ApplyRequest{
 				Applier: git.ApplierRef{Kind: v1alpha3.ApplierKindApplication},
 				Recovered: &v1alpha3.ApplyOperation{
-					Phase: v1alpha3.ApplyOperationRequested, Reason: v1alpha3.ApplyReasonForeignCommit,
+					Phase: v1alpha3.ApplyOperationRequested, Reason: v1alpha3.ApplyReasonRefusal,
 					Commit: testCommit, Token: requestToken(stampTime), RequestedAt: metav1.NewTime(stampTime),
 				},
 			})
@@ -994,7 +995,7 @@ func TestArgoCD_ARecoveredSyncIsJudgedByTheHistoryByTime(t *testing.T) {
 			got, err := pinnedArgo(client).Progress(context.Background(), platformApp, &started)
 
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, got.Outcome)
+			assert.Equal(t, git.ApplyFailed, got.Outcome)
 		})
 	}
 }
