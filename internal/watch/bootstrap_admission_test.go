@@ -53,19 +53,19 @@ func bootGitProvider() *configv1alpha3.GitProvider {
 
 // mirrorGrants admits the named namespaces to mirror their own namespace and every cluster-scoped
 // resource, the reach a provider admitting them had before grants were scoped.
-func mirrorGrants(namespaces ...string) []configv1alpha3.SourceGrant {
+func mirrorGrants(namespaces ...string) []configv1alpha3.KubeProviderGitTargetGrant {
 	names := make([]configv1alpha3.GrantNamespace, 0, len(namespaces))
 	for _, ns := range namespaces {
 		names = append(names, configv1alpha3.GrantNamespace(ns))
 	}
-	return []configv1alpha3.SourceGrant{{
-		From: configv1alpha3.GrantFromNames, Names: names,
-		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable},
-		ClusterResources: []configv1alpha3.ClusterResourceIdentity{"*"},
+	return []configv1alpha3.KubeProviderGitTargetGrant{{
+		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromNames, Names: names},
+		SourceNamespaces:   []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable},
+		ClusterResources:   []configv1alpha3.ClusterResourceIdentity{"*"},
 	}}
 }
 
-func bootKubeProvider(policy []configv1alpha3.SourceGrant) *configv1alpha3.KubeProvider {
+func bootKubeProvider(policy []configv1alpha3.KubeProviderGitTargetGrant) *configv1alpha3.KubeProvider {
 	return &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: bootProviderNS, Name: bootProviderName},
 		Spec: configv1alpha3.KubeProviderSpec{

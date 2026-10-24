@@ -68,7 +68,7 @@ fields that need more than a line.
 | Field | Default | What it does |
 |---|---|---|
 | `url` | **required** | Repository URL, SSH or HTTPS |
-| `allowedGitBranches` | **no `GitBranch`**, its own namespace included | Which namespaces' `GitBranch`es may claim which branches through this provider. Each grant has a `from` (`Same`, `Names`, `Selector`, `All`) and the `branches` patterns it allows. See [the grants](#the-grants) |
+| `allowedGitBranches` | **no `GitBranch`**, its own namespace included | Which namespaces' `GitBranch`es may claim which branches through this provider. Each grant has a `consumerNamespaces` block (`from`: `Same`, `Names`, `Selector`, `All`) and the `branchPatterns` it allows. See [the grants](#the-grants) |
 | `secretRef` | anonymous access | Secret holding the write credential. See [the credentials Secret](#gitproviderspecsecretref-the-credentials-secret) |
 | `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
 | `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
@@ -82,7 +82,7 @@ Every field but `allowedGitTargets` is immutable: to change one, delete the `Git
 |---|---|---|
 | `gitProviderRef` | **required** | The `GitProvider` whose repository and credential write this branch: in this namespace, or `namespace` names another. Its `allowedGitBranches` must admit this namespace and `branch` |
 | `branch` | **required** | Branch to write. Only one `GitBranch` holds a repository branch; see [who writes a repository branch](#who-writes-a-repository-branch) |
-| `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may write through this branch, each grant with a `from`. The only mutable field. See [the grants](#the-grants) |
+| `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may write through this branch, each grant with a `consumerNamespaces` block. The only mutable field. See [the grants](#the-grants) |
 | `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 
 ### `GitReceiver` (namespaced): the endpoint a Git host notifies on a push
@@ -100,7 +100,7 @@ Set exactly one of `secretRef` and `inCluster`. Both are immutable: delete and r
 |---|---|---|
 | `secretRef` | none; set `inCluster` instead | Secret in this provider's namespace holding a kubeconfig for the source cluster. `key` defaults to `value`, then `value.yaml`. See [`KubeProvider`](#kubeprovider) |
 | `inCluster` | none; set `secretRef` instead | `{}` uses the operator's own identity. Honored only for a provider listed in `--in-cluster-kube-providers`. See [the operator's own identity](#the-operators-own-identity-specincluster) |
-| `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a `from`, and `sourceNamespaces`, `clusterResources` or both. See [the grants](#the-grants) |
+| `allowedGitTargets` | **no `GitTarget`**, its own namespace included | Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a `consumerNamespaces` block, and `sourceNamespaces`, `clusterResources` or both. See [the grants](#the-grants) |
 | `allowedApplierClaims` | **no applier claim**, its own namespace included | Which namespaces' applier claims may hold an applier through this provider, and the `applierNamespaces` that applier may live in. See [the grants](#the-grants) |
 | `client.qps` | `20` | Client rate limit for this source cluster. Refused beside `inCluster` |
 | `client.burst` | `30` | Client burst for this source cluster. Refused beside `inCluster` |

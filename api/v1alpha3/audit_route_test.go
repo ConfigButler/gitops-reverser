@@ -27,8 +27,8 @@ func TestKubeProvider_AuditRoute_SharedBySeveralProviders(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "srcns-delegating"},
 		Spec: KubeProviderSpec{
 			InCluster: &KubeProviderInCluster{},
-			AllowedGitTargets: []SourceGrant{
-				{From: GrantFromSame, SourceNamespaces: []ScopeNamespace{"*"}},
+			AllowedGitTargets: []KubeProviderGitTargetGrant{
+				{ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame}, SourceNamespaces: []ScopeNamespace{"*"}},
 			},
 			Attribution: &KubeProviderAttribution{AuditRoute: "platform.local"},
 		},

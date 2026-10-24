@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -59,8 +60,19 @@ var _ = Describe("Access grants at admission", func() {
 		GinkgoHelper()
 		Expect(create(obj)).To(Succeed())
 	}
+	same := map[string]any{"from": "Same"}
 	branches := func(patterns ...any) map[string]any {
-		return map[string]any{"from": "Same", "branches": patterns}
+		return map[string]any{"consumerNamespaces": same, "branchPatterns": patterns}
+	}
+	// consumers is a grant holding only its consumerNamespaces block, the whole of a GitBranch grant.
+	consumers := func(block map[string]any) map[string]any {
+		return map[string]any{"consumerNamespaces": block}
+	}
+	// withConsumers is scope plus a consumerNamespaces block.
+	withConsumers := func(block map[string]any, scope map[string]any) map[string]any {
+		grant := maps.Clone(scope)
+		grant["consumerNamespaces"] = block
+		return grant
 	}
 
 	It("accepts the branch patterns the grammar allows", func() {
@@ -90,80 +102,114 @@ var _ = Describe("Access grants at admission", func() {
 	})
 
 	It("refuses what no branch name can hold", func() {
-		refused(gitProvider(branches("feature/?")), "spec.allowedGitBranches[0].branches[0]")
-		refused(gitProvider(branches("feature/[ab]")), "spec.allowedGitBranches[0].branches[0]")
+		refused(gitProvider(branches("feature/?")), "spec.allowedGitBranches[0].branchPatterns[0]")
+		refused(gitProvider(branches("feature/[ab]")), "spec.allowedGitBranches[0].branchPatterns[0]")
 		refused(gitProvider(branches("a..b")), "can match no branch name")
 	})
 
 	It("refuses an empty scope or names list", func() {
-		refused(gitProvider(branches()), "spec.allowedGitBranches[0].branches")
-		refused(gitProvider(map[string]any{"from": "Same"}), "branches: Required value")
-		refused(gitBranch(map[string]any{"from": "Names", "names": []any{}}), "names")
-		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same", "sourceNamespaces": []any{}}),
+		refused(gitProvider(branches()), "spec.allowedGitBranches[0].branchPatterns")
+		refused(gitProvider(consumers(same)), "branchPatterns: Required value")
+		refused(gitBranch(consumers(map[string]any{"from": "Names", "names": []any{}})), "names")
+		refused(kubeProvider("allowedGitTargets", withConsumers(same, map[string]any{"sourceNamespaces": []any{}})),
 			"sourceNamespaces")
-		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same", "clusterResources": []any{}}),
+		refused(kubeProvider("allowedGitTargets", withConsumers(same, map[string]any{"clusterResources": []any{}})),
 			"clusterResources")
-		refused(kubeProvider("allowedApplierClaims", map[string]any{"from": "Same", "applierNamespaces": []any{}}),
+		refused(kubeProvider("allowedApplierClaims", withConsumers(same, map[string]any{"applierNamespaces": []any{}})),
 			"applierNamespaces")
-		refused(kubeProvider("allowedApplierClaims", map[string]any{"from": "Same"}),
-			"applierNamespaces: Required value")
+		refused(kubeProvider("allowedApplierClaims", consumers(same)), "applierNamespaces: Required value")
 	})
 
+	// consumerNamespaces is required on every grant type and from is required inside it, with no default
+	// for either, so a grant that leaves the "who" out admits nobody instead of its holder's namespace.
+	// The block's own rules cannot make it required, so each list is checked here.
+	for _, list := range []struct {
+		name  string
+		build func(grant map[string]any) *unstructured.Unstructured
+		scope map[string]any
+	}{
+		{"GitProvider allowedGitBranches",
+			func(g map[string]any) *unstructured.Unstructured { return gitProvider(g) },
+			map[string]any{"branchPatterns": []any{"main"}}},
+		{"GitBranch allowedGitTargets",
+			func(g map[string]any) *unstructured.Unstructured { return gitBranch(g) },
+			map[string]any{}},
+		{"KubeProvider allowedGitTargets",
+			func(g map[string]any) *unstructured.Unstructured { return kubeProvider("allowedGitTargets", g) },
+			map[string]any{"sourceNamespaces": []any{"{consumer.namespace}"}}},
+		{"KubeProvider allowedApplierClaims",
+			func(g map[string]any) *unstructured.Unstructured { return kubeProvider("allowedApplierClaims", g) },
+			map[string]any{"applierNamespaces": []any{"flux-system"}}},
+	} {
+		It("refuses a "+list.name+" grant without a complete consumerNamespaces block", func() {
+			refused(list.build(maps.Clone(list.scope)), "consumerNamespaces: Required value")
+			nullBlock := maps.Clone(list.scope)
+			nullBlock["consumerNamespaces"] = nil
+			refused(list.build(nullBlock), "consumerNamespaces: Required value")
+			refused(list.build(withConsumers(map[string]any{}, list.scope)), "from: Required value")
+			refused(list.build(withConsumers(map[string]any{"names": []any{"team-a"}}, list.scope)),
+				"from: Required value")
+			accepted(list.build(withConsumers(same, list.scope)))
+		})
+	}
+
 	It("refuses a grant without from, or with names or a selector beside the wrong from", func() {
-		refused(gitBranch(map[string]any{}), "from: Required value")
-		refused(gitBranch(map[string]any{"from": "Everyone"}), "Unsupported value")
-		refused(gitBranch(map[string]any{"from": "Names"}), "from: Names needs names")
-		refused(gitBranch(map[string]any{"from": "Same", "names": []any{"team-b"}}),
+		refused(gitBranch(consumers(map[string]any{})), "from: Required value")
+		refused(gitBranch(consumers(map[string]any{"from": "Everyone"})), "Unsupported value")
+		refused(gitBranch(consumers(map[string]any{"from": "Names"})), "from: Names needs names")
+		refused(gitBranch(consumers(map[string]any{"from": "Same", "names": []any{"team-b"}})),
 			"names goes only with from: Names")
-		refused(gitBranch(map[string]any{"from": "All",
-			"selector": map[string]any{"matchLabels": map[string]any{"a": "b"}}}),
+		refused(gitBranch(consumers(map[string]any{"from": "All",
+			"selector": map[string]any{"matchLabels": map[string]any{"a": "b"}}})),
 			"selector goes only with from: Selector")
 	})
 
-	It("refuses a KubeProvider source grant that grants nothing", func() {
-		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same"}),
+	It("refuses a KubeProvider GitTarget grant that grants nothing", func() {
+		refused(kubeProvider("allowedGitTargets", consumers(same)),
 			"sets sourceNamespaces, clusterResources, or both")
-		accepted(
-			kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
-				"sourceNamespaces": []any{"{consumer.namespace}"}}),
-		)
-		accepted(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
-			"clusterResources": []any{"clusterroles.rbac.authorization.k8s.io", "nodes", "*"}}))
+		accepted(kubeProvider("allowedGitTargets",
+			withConsumers(same, map[string]any{"sourceNamespaces": []any{"{consumer.namespace}"}})))
+		accepted(kubeProvider("allowedGitTargets", withConsumers(same,
+			map[string]any{"clusterResources": []any{"clusterroles.rbac.authorization.k8s.io", "nodes", "*"}})))
 	})
 
 	It("refuses a variable in names, pointing to from: All and Same, and * pointing to from: All", func() {
-		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"{consumer.namespace}"}}), "use from: All")
-		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"{consumer.name}"}}), "or from: Same")
-		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"*"}}), "use from: All")
-		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"Team_A"}}), "namespace names")
+		names := func(name string) map[string]any {
+			return consumers(map[string]any{"from": "Names", "names": []any{name}})
+		}
+		refused(gitBranch(names("{consumer.namespace}")), "use from: All")
+		refused(gitBranch(names("{consumer.name}")), "or from: Same")
+		refused(gitBranch(names("*")), "use from: All")
+		refused(gitBranch(names("Team_A")), "namespace names")
 	})
 
 	It("refuses a Selector grant without a selector or with an empty one, and accepts a real one", func() {
-		refused(gitBranch(map[string]any{"from": "Selector"}), "from: Selector needs a selector")
-		refused(gitBranch(map[string]any{"from": "Selector", "selector": map[string]any{}}),
+		refused(gitBranch(consumers(map[string]any{"from": "Selector"})), "from: Selector needs a selector")
+		refused(gitBranch(consumers(map[string]any{"from": "Selector", "selector": map[string]any{}})),
 			"selector: {} is refused; to admit every namespace, use from: All")
-		refused(gitBranch(map[string]any{"from": "Selector",
-			"selector": map[string]any{"matchLabels": map[string]any{}}}), "selector: {} is refused")
-		accepted(gitBranch(map[string]any{"from": "Selector",
-			"selector": map[string]any{"matchLabels": map[string]any{"tenant": "true"}}}))
-		accepted(gitBranch(map[string]any{"from": "Selector", "selector": map[string]any{
-			"matchExpressions": []any{map[string]any{"key": "tenant", "operator": "Exists"}}}}))
-		accepted(gitBranch(map[string]any{"from": "All"}, map[string]any{"from": "Same"}))
+		refused(gitBranch(consumers(map[string]any{"from": "Selector",
+			"selector": map[string]any{"matchLabels": map[string]any{}}})), "selector: {} is refused")
+		accepted(gitBranch(consumers(map[string]any{"from": "Selector",
+			"selector": map[string]any{"matchLabels": map[string]any{"tenant": "true"}}})))
+		accepted(gitBranch(consumers(map[string]any{"from": "Selector", "selector": map[string]any{
+			"matchExpressions": []any{map[string]any{"key": "tenant", "operator": "Exists"}}}})))
+		accepted(gitBranch(consumers(map[string]any{"from": "All"}), consumers(same)))
 	})
 
 	It("refuses a scope entry that is neither a name, a consumer variable alone, nor *", func() {
 		alone := "'{consumer.namespace}' alone, or '*' alone"
-		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
-			"sourceNamespaces": []any{"team-{consumer.namespace}"}}), alone)
-		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
-			"sourceNamespaces": []any{"{namespace}"}}), alone)
-		refused(kubeProvider("allowedApplierClaims", map[string]any{"from": "Same",
-			"applierNamespaces": []any{"flux-*"}}), alone)
-		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
-			"sourceNamespaces": []any{"{consumer.name}"}}), "the consumer picks its own name")
-		refused(kubeProvider("allowedApplierClaims", map[string]any{"from": "Same",
-			"applierNamespaces": []any{"{consumer.name}"}}), "the consumer picks its own name")
-		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
-			"clusterResources": []any{"cluster*"}}), "clusterResources[0]")
+		sources := func(entry string) map[string]any {
+			return withConsumers(same, map[string]any{"sourceNamespaces": []any{entry}})
+		}
+		appliers := func(entry string) map[string]any {
+			return withConsumers(same, map[string]any{"applierNamespaces": []any{entry}})
+		}
+		refused(kubeProvider("allowedGitTargets", sources("team-{consumer.namespace}")), alone)
+		refused(kubeProvider("allowedGitTargets", sources("{namespace}")), alone)
+		refused(kubeProvider("allowedApplierClaims", appliers("flux-*")), alone)
+		refused(kubeProvider("allowedGitTargets", sources("{consumer.name}")), "the consumer picks its own name")
+		refused(kubeProvider("allowedApplierClaims", appliers("{consumer.name}")), "the consumer picks its own name")
+		refused(kubeProvider("allowedGitTargets", withConsumers(same,
+			map[string]any{"clusterResources": []any{"cluster*"}})), "clusterResources[0]")
 	})
 })

@@ -11,8 +11,8 @@
 # share a cluster.
 kubeProvider:
   allowedGitTargets:
-    - from: All
+    - consumerNamespaces: {from: All}
       sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
-    - from: All
+    - consumerNamespaces: {from: All}
       applierNamespaces: ["{consumer.namespace}"]

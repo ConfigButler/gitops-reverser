@@ -153,7 +153,8 @@ type CompiledClusterRule struct {
 
 // AllowsType reports whether the grant the rule compiled under covers resource in group.
 func (c CompiledClusterRule) AllowsType(group, resource string) bool {
-	return configv1alpha3.SourceScope{ClusterResources: c.ClusterResources}.AllowsClusterResource(group, resource)
+	scope := configv1alpha3.KubeProviderGitTargetScope{ClusterResources: c.ClusterResources}
+	return scope.AllowsClusterResource(group, resource)
 }
 
 // CompiledClusterResourceRule represents a single cluster resource rule.

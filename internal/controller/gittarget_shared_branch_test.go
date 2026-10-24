@@ -48,8 +48,10 @@ func sharedProviderReconciler(t *testing.T, objects ...ctrlclient.Object) *GitTa
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 	// The KubeProvider every GitTarget here mirrors through admits every namespace.
 	local := admitting(claimLocalProvider)
-	local.Spec.AllowedGitTargets = []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromAll,
-		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable}}}
+	local.Spec.AllowedGitTargets = []configbutleraiv1alpha3.KubeProviderGitTargetGrant{{
+		ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{From: configbutleraiv1alpha3.GrantFromAll},
+		SourceNamespaces:   []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable},
+	}}
 	objects = append(objects, local)
 	for _, ns := range []string{"platform", "team-b"} {
 		objects = append(objects, &configbutleraiv1alpha3.GitProvider{
@@ -103,8 +105,14 @@ func TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder(t *testing.T) {
 
 	var stored configbutleraiv1alpha3.GitBranch
 	require.NoError(t, r.Get(context.Background(), ctrlclient.ObjectKeyFromObject(branch), &stored))
-	stored.Spec.AllowedGitTargets = append(stored.Spec.AllowedGitTargets, configbutleraiv1alpha3.NamespaceGrant{
-		From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames("intruder")})
+	stored.Spec.AllowedGitTargets = append(
+		stored.Spec.AllowedGitTargets,
+		configbutleraiv1alpha3.GitBranchGitTargetGrant{
+			ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+				From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames("intruder"),
+			},
+		},
+	)
 	require.NoError(t, r.Update(context.Background(), &stored))
 
 	conflict, msg, reason, err := r.checkForConflicts(context.Background(), owner)

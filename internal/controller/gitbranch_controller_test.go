@@ -43,8 +43,13 @@ func branchProvider(
 	return &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, UID: k8stypes.UID("uid-" + name)},
 		Spec: configbutleraiv1alpha3.GitProviderSpec{URL: gitBranchTestURL,
-			AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-				{From: configbutleraiv1alpha3.GrantFromSame, Branches: allowed},
+			AllowedGitBranches: []configbutleraiv1alpha3.GitProviderGitBranchGrant{
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From: configbutleraiv1alpha3.GrantFromSame,
+					},
+					BranchPatterns: allowed,
+				},
 			}},
 		Status: configbutleraiv1alpha3.GitProviderStatus{Conditions: []metav1.Condition{{
 			Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,

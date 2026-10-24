@@ -128,12 +128,14 @@ func TestChartKubeProvider_GrantsRenderAsWritten(t *testing.T) {
 	values := t.TempDir() + "/values.yaml"
 	require.NoError(t, os.WriteFile(values, []byte(`kubeProvider:
   allowedGitTargets:
-    - from: Selector
-      selector: {matchLabels: {platform.example.com/tenant: "true"}}
+    - consumerNamespaces:
+        from: Selector
+        selector: {matchLabels: {platform.example.com/tenant: "true"}}
       sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
-    - from: Names
-      names: [team-a]
+    - consumerNamespaces:
+        from: Names
+        names: [team-a]
       applierNamespaces: [flux-system]
 quickstart:
   enabled: true
@@ -141,8 +143,12 @@ quickstart:
 `), 0o600))
 	provider := renderLocalKubeProvider(t, "-f", values)
 	require.Len(t, provider.Spec.AllowedGitTargets, 2)
-	assert.Equal(t, configbutleraiv1alpha3.GrantFromSelector, provider.Spec.AllowedGitTargets[0].From)
-	assert.Equal(t, configbutleraiv1alpha3.GrantFromNames, provider.Spec.AllowedGitTargets[1].From)
+	assert.Equal(
+		t,
+		configbutleraiv1alpha3.GrantFromSelector,
+		provider.Spec.AllowedGitTargets[0].ConsumerNamespaces.From,
+	)
+	assert.Equal(t, configbutleraiv1alpha3.GrantFromNames, provider.Spec.AllowedGitTargets[1].ConsumerNamespaces.From)
 	require.Len(t, provider.Spec.AllowedApplierClaims, 2)
 	assert.Equal(t, []configbutleraiv1alpha3.ScopeNamespace{"flux-system"},
 		provider.Spec.AllowedApplierClaims[0].ApplierNamespaces)

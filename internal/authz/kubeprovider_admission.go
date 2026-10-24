@@ -93,28 +93,28 @@ func GitTargetSourceScope(
 	ctx context.Context,
 	reader client.Reader,
 	target *configv1alpha3.GitTarget,
-) (Decision, configv1alpha3.SourceScope, error) {
+) (Decision, configv1alpha3.KubeProviderGitTargetScope, error) {
 	key := target.KubeProviderKey()
 	decision, provider, err := kubeProviderUsable(ctx, reader, key, fmt.Sprintf(
 		"referenced KubeProvider %s was not found; a GitTarget may mirror a source cluster only "+
 			"through an existing KubeProvider, which the operator never creates", key))
 	if err != nil || !decision.Allowed {
-		return decision, configv1alpha3.SourceScope{}, err
+		return decision, configv1alpha3.KubeProviderGitTargetScope{}, err
 	}
 	nsLabels, err := namespaceLabels(ctx, reader, target.Namespace)
 	if err != nil {
-		return Decision{}, configv1alpha3.SourceScope{}, err
+		return Decision{}, configv1alpha3.KubeProviderGitTargetScope{}, err
 	}
 	scope, selErr := provider.AdmitsGitTarget(client.ObjectKeyFromObject(target), nsLabels)
 	if !scope.Admitted {
 		return notAdmitted("KubeProvider", key, provider.DescribeAllowedGitTargets(), "spec.allowedGitTargets",
-			target.Namespace, selErr), configv1alpha3.SourceScope{}, nil
+			target.Namespace, selErr), configv1alpha3.KubeProviderGitTargetScope{}, nil
 	}
 	if decision, err = AuditRouteHeld(ctx, reader, provider); err != nil || !decision.Allowed {
-		return decision, configv1alpha3.SourceScope{}, err
+		return decision, configv1alpha3.KubeProviderGitTargetScope{}, err
 	}
 	if decision, err = gitBranchAdmitted(ctx, reader, target, nsLabels); err != nil || !decision.Allowed {
-		return decision, configv1alpha3.SourceScope{}, err
+		return decision, configv1alpha3.KubeProviderGitTargetScope{}, err
 	}
 	return Decision{Allowed: true}, scope, nil
 }
@@ -175,7 +175,7 @@ func GitBranchClaimAdmitted(
 			Reason: ReasonBranchNotAllowed,
 			Message: fmt.Sprintf(
 				"namespace %q may claim %s through GitProvider %s (spec.allowedGitBranches); requested branch %q "+
-					"is not allowed", branch.Namespace, quoteAll(admission.Branches), key, branch.Spec.Branch),
+					"is not allowed", branch.Namespace, quoteAll(admission.BranchPatterns), key, branch.Spec.Branch),
 		}, nil
 	}
 	return Decision{Allowed: true}, nil

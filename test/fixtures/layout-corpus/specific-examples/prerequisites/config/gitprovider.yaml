@@ -10,8 +10,8 @@ spec:
   knownHostsRef:
     name: example-com-known-hosts
   allowedGitBranches:
-    - from: Same
-      branches: [main]
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [main]
   commit:
     committer:
       name: GitOps Reverser

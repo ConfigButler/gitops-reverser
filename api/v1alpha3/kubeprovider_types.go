@@ -51,7 +51,7 @@ type KubeProviderSpec struct {
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	AllowedGitTargets []SourceGrant `json:"allowedGitTargets,omitempty"`
+	AllowedGitTargets []KubeProviderGitTargetGrant `json:"allowedGitTargets,omitempty"`
 
 	// AllowedApplierClaims says which applier claims (FluxClaims and ArgoCDClaims) may hold an applier
 	// through this provider, and in which namespaces that applier may live (applierNamespaces).
@@ -60,7 +60,7 @@ type KubeProviderSpec struct {
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	AllowedApplierClaims []ApplierGrant `json:"allowedApplierClaims,omitempty"`
+	AllowedApplierClaims []KubeProviderApplierClaimGrant `json:"allowedApplierClaims,omitempty"`
 
 	// Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
 	// the built-in defaults apply (20 QPS, burst 30). Refused beside inCluster.

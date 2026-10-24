@@ -15,9 +15,9 @@ metadata:
 spec:
   inCluster: {}
   allowedGitTargets:
-    - from: All
+    - consumerNamespaces: {from: All}
       sourceNamespaces: ["{consumer.namespace}"]
       clusterResources: ["*"]
   allowedApplierClaims:
-    - from: All
+    - consumerNamespaces: {from: All}
       applierNamespaces: ["{consumer.namespace}"]

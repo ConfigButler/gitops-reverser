@@ -131,7 +131,7 @@ type itemGate struct {
 	rule     *configv1alpha3.WatchRule
 	target   *configv1alpha3.GitTarget
 	decision Decision
-	scope    configv1alpha3.SourceScope
+	scope    configv1alpha3.KubeProviderGitTargetScope
 }
 
 // decide resolves ONE rule item.

@@ -50,8 +50,11 @@ func snbGitProvider() *configv1alpha3.GitProvider {
 
 // snbKubeProvider admits snbTenantNS to watch its own namespace, and every namespace when wide.
 func snbKubeProvider(wide bool) *configv1alpha3.KubeProvider {
-	grant := configv1alpha3.SourceGrant{
-		From: configv1alpha3.GrantFromNames, Names: []configv1alpha3.GrantNamespace{snbTenantNS},
+	grant := configv1alpha3.KubeProviderGitTargetGrant{
+		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+			From:  configv1alpha3.GrantFromNames,
+			Names: []configv1alpha3.GrantNamespace{snbTenantNS},
+		},
 		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable},
 	}
 	if wide {
@@ -61,7 +64,7 @@ func snbKubeProvider(wide bool) *configv1alpha3.KubeProvider {
 		ObjectMeta: metav1.ObjectMeta{Namespace: snbProviderNS, Name: snbProvider},
 		Spec: configv1alpha3.KubeProviderSpec{
 			InCluster:         &configv1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []configv1alpha3.SourceGrant{grant},
+			AllowedGitTargets: []configv1alpha3.KubeProviderGitTargetGrant{grant},
 		},
 	}
 }

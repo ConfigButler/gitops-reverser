@@ -51,16 +51,21 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: "tilt-playground"},
 		Spec: configv1alpha3.KubeProviderSpec{
 			InCluster: &configv1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []configv1alpha3.SourceGrant{{From: configv1alpha3.GrantFromSame,
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable}}},
+			AllowedGitTargets: []configv1alpha3.KubeProviderGitTargetGrant{{
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+				SourceNamespaces:   []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable},
+			}},
 		},
 	}
 	existingGitProvider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-provider", Namespace: "tilt-playground"},
 		Spec: configv1alpha3.GitProviderSpec{
 			URL: "https://example.invalid/playground.git",
-			AllowedGitBranches: []configv1alpha3.GitBranchGrant{
-				{From: configv1alpha3.GrantFromSame, Branches: []configv1alpha3.BranchPattern{"main"}},
+			AllowedGitBranches: []configv1alpha3.GitProviderGitBranchGrant{
+				{
+					ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+					BranchPatterns:     []configv1alpha3.BranchPattern{"main"},
+				},
 			},
 		},
 	}
@@ -129,8 +134,11 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 		ObjectMeta: metav1.ObjectMeta{Name: "ops-provider", Namespace: "ops"},
 		Spec: configv1alpha3.GitProviderSpec{
 			URL: "https://example.invalid/ops.git",
-			AllowedGitBranches: []configv1alpha3.GitBranchGrant{
-				{From: configv1alpha3.GrantFromSame, Branches: []configv1alpha3.BranchPattern{"main"}},
+			AllowedGitBranches: []configv1alpha3.GitProviderGitBranchGrant{
+				{
+					ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+					BranchPatterns:     []configv1alpha3.BranchPattern{"main"},
+				},
 			},
 		},
 	}
@@ -144,8 +152,10 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: "ops"},
 		Spec: configv1alpha3.KubeProviderSpec{
 			InCluster: &configv1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []configv1alpha3.SourceGrant{{From: configv1alpha3.GrantFromSame,
-				ClusterResources: []configv1alpha3.ClusterResourceIdentity{"*"}}},
+			AllowedGitTargets: []configv1alpha3.KubeProviderGitTargetGrant{{
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+				ClusterResources:   []configv1alpha3.ClusterResourceIdentity{"*"},
+			}},
 		},
 	}
 

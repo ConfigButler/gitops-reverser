@@ -49,7 +49,7 @@ func targetIn(providerName string) *configv1alpha3.GitTarget {
 
 // providerNamed builds a KubeProvider in platformNS with grants as its spec.allowedGitTargets, so
 // the GitTarget in testNS is admitted only through a grant.
-func providerNamed(name string, grants ...configv1alpha3.SourceGrant) *configv1alpha3.KubeProvider {
+func providerNamed(name string, grants ...configv1alpha3.KubeProviderGitTargetGrant) *configv1alpha3.KubeProvider {
 	return &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: platformNS},
 		Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: grants},
@@ -66,9 +66,14 @@ func grantNames(namespaces ...string) []configv1alpha3.GrantNamespace {
 }
 
 // mirrorFrom is a grant that admits namespaces by name to mirror their own namespace.
-func mirrorFrom(namespaces ...string) configv1alpha3.SourceGrant {
-	return configv1alpha3.SourceGrant{From: configv1alpha3.GrantFromNames, Names: grantNames(namespaces...),
-		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable}}
+func mirrorFrom(namespaces ...string) configv1alpha3.KubeProviderGitTargetGrant {
+	return configv1alpha3.KubeProviderGitTargetGrant{
+		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+			From:  configv1alpha3.GrantFromNames,
+			Names: grantNames(namespaces...),
+		},
+		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable},
+	}
 }
 
 func namespaceLabeled(labels map[string]string) *corev1.Namespace {
@@ -76,7 +81,7 @@ func namespaceLabeled(labels map[string]string) *corev1.Namespace {
 }
 
 func TestGitTargetAdmitted_Policy(t *testing.T) {
-	ownNamespace := func(grants ...configv1alpha3.SourceGrant) *configv1alpha3.KubeProvider {
+	ownNamespace := func(grants ...configv1alpha3.KubeProviderGitTargetGrant) *configv1alpha3.KubeProvider {
 		return &configv1alpha3.KubeProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS},
 			Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: grants},
@@ -122,15 +127,19 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		},
 		{
 			name: "from: Same admits the provider's own namespace",
-			objects: []client.Object{ownNamespace(configv1alpha3.SourceGrant{From: configv1alpha3.GrantFromSame,
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}}), namespaceLabeled(nil)},
+			objects: []client.Object{ownNamespace(configv1alpha3.KubeProviderGitTargetGrant{
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+				SourceNamespaces:   []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+			}), namespaceLabeled(nil)},
 			target:      ownTarget,
 			wantAllowed: true,
 		},
 		{
 			name: "from: Same admits nothing else",
-			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
-				From: configv1alpha3.GrantFromSame, SourceNamespaces: []configv1alpha3.ScopeNamespace{"*"}}),
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.KubeProviderGitTargetGrant{
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+				SourceNamespaces:   []configv1alpha3.ScopeNamespace{"*"},
+			}),
 				namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
 			wantReason:  ReasonNamespaceNotAuthorized,
@@ -161,17 +170,25 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		},
 		{
 			name: "a Selector grant admits a namespace by its labels",
-			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
-				From: configv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}}), namespaceLabeled(tenant)},
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.KubeProviderGitTargetGrant{
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+					From:     configv1alpha3.GrantFromSelector,
+					Selector: &metav1.LabelSelector{MatchLabels: tenant},
+				},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+			}), namespaceLabeled(tenant)},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: true,
 		},
 		{
 			name: "a Selector grant does not admit a namespace without the labels",
-			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
-				From: configv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}}), namespaceLabeled(nil)},
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.KubeProviderGitTargetGrant{
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+					From:     configv1alpha3.GrantFromSelector,
+					Selector: &metav1.LabelSelector{MatchLabels: tenant},
+				},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+			}), namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
 			wantReason:  ReasonNamespaceNotAuthorized,
 			wantMessage: "admits namespaces labelled tenant=true",
@@ -186,19 +203,24 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		{
 			// A malformed selector must FAIL CLOSED, and say so.
 			name: "an invalid selector denies, and the message says why",
-			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
-				From: configv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{
-					MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tier", Operator: "NotAnOperator"}},
-				}, SourceNamespaces: []configv1alpha3.ScopeNamespace{"*"}}), namespaceLabeled(nil)},
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.KubeProviderGitTargetGrant{
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+					From: configv1alpha3.GrantFromSelector,
+					Selector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tier", Operator: "NotAnOperator"}},
+					},
+				},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"*"},
+			}), namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
 			wantReason:  ReasonNamespaceNotAuthorized,
 			wantMessage: "a grant's selector is invalid",
 		},
 		{
 			name: "from: All admits every namespace",
-			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
-				From:             configv1alpha3.GrantFromAll,
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.KubeProviderGitTargetGrant{
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromAll},
+				SourceNamespaces:   []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
 			}),
 				namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
@@ -304,9 +326,16 @@ func claimOn(cluster, applierNamespace string) configv1alpha3.ApplierClaim {
 }
 
 // appliersFrom is a grant that admits namespaces by name to hold appliers in scope.
-func appliersFrom(scope []configv1alpha3.ScopeNamespace, namespaces ...string) configv1alpha3.ApplierGrant {
-	return configv1alpha3.ApplierGrant{
-		From: configv1alpha3.GrantFromNames, Names: grantNames(namespaces...), ApplierNamespaces: scope,
+func appliersFrom(
+	scope []configv1alpha3.ScopeNamespace,
+	namespaces ...string,
+) configv1alpha3.KubeProviderApplierClaimGrant {
+	return configv1alpha3.KubeProviderApplierClaimGrant{
+		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+			From:  configv1alpha3.GrantFromNames,
+			Names: grantNames(namespaces...),
+		},
+		ApplierNamespaces: scope,
 	}
 }
 
@@ -314,7 +343,7 @@ func appliersFrom(scope []configv1alpha3.ScopeNamespace, namespaces ...string) c
 // scope that grant gives. An explicit list is the whole scope.
 func TestApplierClaimAdmitted(t *testing.T) {
 	own := []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}
-	provider := func(grants ...configv1alpha3.ApplierGrant) *configv1alpha3.KubeProvider {
+	provider := func(grants ...configv1alpha3.KubeProviderApplierClaimGrant) *configv1alpha3.KubeProvider {
 		p := providerNamed("hub", mirrorFrom(testNS))
 		p.Spec.AllowedApplierClaims = grants
 		return p
@@ -371,10 +400,10 @@ func TestApplierClaimAdmitted(t *testing.T) {
 func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
 	provider := &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS},
-		Spec: configv1alpha3.KubeProviderSpec{AllowedGitTargets: []configv1alpha3.SourceGrant{
+		Spec: configv1alpha3.KubeProviderSpec{AllowedGitTargets: []configv1alpha3.KubeProviderGitTargetGrant{
 			{
-				From:             configv1alpha3.GrantFromSame,
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+				ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+				SourceNamespaces:   []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
 			},
 		}},
 	}
@@ -400,7 +429,7 @@ func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
 // applying are granted separately, also on one KubeProvider from one namespace.
 func TestApplierAdmitted(t *testing.T) {
 	own := []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}
-	withAppliers := func(p *configv1alpha3.KubeProvider, grants ...configv1alpha3.ApplierGrant) *configv1alpha3.KubeProvider {
+	withAppliers := func(p *configv1alpha3.KubeProvider, grants ...configv1alpha3.KubeProviderApplierClaimGrant) *configv1alpha3.KubeProvider {
 		p.Spec.AllowedApplierClaims = grants
 		return p
 	}
@@ -472,7 +501,7 @@ func TestAuditRouteHeld(t *testing.T) {
 		p := &configv1alpha3.KubeProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, CreationTimestamp: created},
 			Spec: configv1alpha3.KubeProviderSpec{
-				AllowedGitTargets: []configv1alpha3.SourceGrant{mirrorFrom(testNS)},
+				AllowedGitTargets: []configv1alpha3.KubeProviderGitTargetGrant{mirrorFrom(testNS)},
 			},
 		}
 		if route != "" {

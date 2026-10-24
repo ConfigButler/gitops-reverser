@@ -62,8 +62,14 @@ func referenceFrom(t *testing.T, c client.Client, claim v1alpha3.ApplierClaim) {
 			continue
 		}
 		ns := v1alpha3.GrantNamespace(claim.GetNamespace())
-		provider.Spec.AllowedGitTargets[0].Names = append(provider.Spec.AllowedGitTargets[0].Names, ns)
-		provider.Spec.AllowedApplierClaims[0].Names = append(provider.Spec.AllowedApplierClaims[0].Names, ns)
+		provider.Spec.AllowedGitTargets[0].ConsumerNamespaces.Names = append(
+			provider.Spec.AllowedGitTargets[0].ConsumerNamespaces.Names,
+			ns,
+		)
+		provider.Spec.AllowedApplierClaims[0].ConsumerNamespaces.Names = append(
+			provider.Spec.AllowedApplierClaims[0].ConsumerNamespaces.Names,
+			ns,
+		)
 		require.NoError(t, c.Update(ctx, provider))
 	}
 }

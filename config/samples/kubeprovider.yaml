@@ -24,16 +24,17 @@ spec:
   # Here: every namespace labelled tier=trusted in the control cluster mirrors its own namespace,
   # and this namespace mirrors every namespace and the CRDs.
   allowedGitTargets:
-    - from: Selector
-      selector:
-        matchLabels:
-          tier: trusted
+    - consumerNamespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            tier: trusted
       sourceNamespaces: ["{consumer.namespace}"]
-    - from: Same
+    - consumerNamespaces: {from: Same}
       sourceNamespaces: ["*"]
       clusterResources: [customresourcedefinitions.apiextensions.k8s.io]
   # Which applier claims may hold a Flux Kustomization or an Argo CD Application through this
   # provider, and where it may live. Admission to mirror is no admission to apply.
   allowedApplierClaims:
-    - from: Same
+    - consumerNamespaces: {from: Same}
       applierNamespaces: ["{consumer.namespace}"]

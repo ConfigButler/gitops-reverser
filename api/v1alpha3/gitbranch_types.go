@@ -58,12 +58,12 @@ type GitBranchSpec struct {
 
 	// AllowedGitTargets says which GitTargets may write through this GitBranch. Nothing is admitted
 	// automatically, this GitBranch's own namespace included: a GitTarget there needs a grant too,
-	// such as from: Same. Omitted or empty, no GitTarget writes through it. Grants combine by union.
-	// Mutable: claiming a branch includes the right to share it.
+	// such as consumerNamespaces: {from: Same}. Omitted or empty, no GitTarget writes through it.
+	// Grants combine by union. Mutable: claiming a branch includes the right to share it.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	AllowedGitTargets []NamespaceGrant `json:"allowedGitTargets,omitempty"`
+	AllowedGitTargets []GitBranchGitTargetGrant `json:"allowedGitTargets,omitempty"`
 }
 
 // GitBranchStatus defines the observed state of GitBranch.

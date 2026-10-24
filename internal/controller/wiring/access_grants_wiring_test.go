@@ -122,13 +122,21 @@ func TestWatchRule_ANarrowedScopeRefusesOnALabelChange(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{
-				{From: configbutleraiv1alpha3.GrantFromSelector,
-					Selector:         &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
-					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"{consumer.namespace}"}},
-				{From: configbutleraiv1alpha3.GrantFromSelector,
-					Selector:         &metav1.LabelSelector{MatchLabels: map[string]string{"audit": "yes"}},
-					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"*"}},
+			AllowedGitTargets: []configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From:     configbutleraiv1alpha3.GrantFromSelector,
+						Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
+					},
+					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+				},
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From:     configbutleraiv1alpha3.GrantFromSelector,
+						Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"audit": "yes"}},
+					},
+					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"*"},
+				},
 			},
 		},
 	}))
@@ -211,11 +219,15 @@ func TestGitBranch_ALabelRemovedRevokesTheClaimAndItsGitTargetsFollow(t *testing
 			// Nothing listens here, so the push-session proof fails at once: the reasons tell an
 			// admitted GitBranch (PushSessionFailed) from a revoked one (NamespaceNotAuthorized).
 			URL: "https://127.0.0.1:1/platform/config.git",
-			AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{{
-				From:     configbutleraiv1alpha3.GrantFromSelector,
-				Selector: &metav1.LabelSelector{MatchLabels: tenant},
-				Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*"},
-			}},
+			AllowedGitBranches: []configbutleraiv1alpha3.GitProviderGitBranchGrant{
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From:     configbutleraiv1alpha3.GrantFromSelector,
+						Selector: &metav1.LabelSelector{MatchLabels: tenant},
+					},
+					BranchPatterns: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*"},
+				},
+			},
 		},
 	}))
 	branch := &configbutleraiv1alpha3.GitBranch{
@@ -223,10 +235,12 @@ func TestGitBranch_ALabelRemovedRevokesTheClaimAndItsGitTargetsFollow(t *testing
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
 			GitProviderRef: meta.NamespacedObjectReference{Name: "shared-repo", Namespace: "wiring-platform"},
 			Branch:         "teams/wiring-tenant/live",
-			AllowedGitTargets: []configbutleraiv1alpha3.NamespaceGrant{
+			AllowedGitTargets: []configbutleraiv1alpha3.GitBranchGitTargetGrant{
 				{
-					From:  configbutleraiv1alpha3.GrantFromNames,
-					Names: []configbutleraiv1alpha3.GrantNamespace{"wiring-writer"},
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From:  configbutleraiv1alpha3.GrantFromNames,
+						Names: []configbutleraiv1alpha3.GrantNamespace{"wiring-writer"},
+					},
 				},
 			},
 		},
@@ -236,8 +250,14 @@ func TestGitBranch_ALabelRemovedRevokesTheClaimAndItsGitTargetsFollow(t *testing
 		ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: "wiring-writer"},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromSame,
-				SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"{consumer.namespace}"}}},
+			AllowedGitTargets: []configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From: configbutleraiv1alpha3.GrantFromSame,
+					},
+					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+				},
+			},
 		},
 	}))
 	target := &configbutleraiv1alpha3.GitTarget{
@@ -270,7 +290,14 @@ func TestGitBranch_ALabelRemovedRevokesTheClaimAndItsGitTargetsFollow(t *testing
 	refused := func(c *metav1.Condition) bool { return c.Reason == controller.GitTargetReasonNamespaceNotAuthorized }
 	admitted := func(c *metav1.Condition) bool { return !refused(c) }
 	writers := branch.Spec.AllowedGitTargets
-	setWriters(ctx, t, branchKey, []configbutleraiv1alpha3.NamespaceGrant{{From: configbutleraiv1alpha3.GrantFromSame}})
+	setWriters(
+		ctx,
+		t,
+		branchKey,
+		[]configbutleraiv1alpha3.GitBranchGitTargetGrant{
+			{ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{From: configbutleraiv1alpha3.GrantFromSame}},
+		},
+	)
 	awaitTarget(ctx, t, targetKey, controller.GitTargetConditionValidated, refused)
 	setWriters(ctx, t, branchKey, writers)
 	awaitTarget(ctx, t, targetKey, controller.GitTargetConditionValidated, admitted)
@@ -289,7 +316,10 @@ func awaitTarget(
 
 // setWriters replaces a GitBranch's allowedGitTargets.
 func setWriters(
-	ctx context.Context, t *testing.T, key types.NamespacedName, grants []configbutleraiv1alpha3.NamespaceGrant,
+	ctx context.Context,
+	t *testing.T,
+	key types.NamespacedName,
+	grants []configbutleraiv1alpha3.GitBranchGitTargetGrant,
 ) {
 	t.Helper()
 	require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {

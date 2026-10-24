@@ -44,8 +44,13 @@ func newDestinationFixture(t *testing.T) *destinationFixture {
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 	provider := branchProvider("platform", "acme")
 	branch := branchObject("platform", "main", "acme", "main", time.Hour)
-	branch.Spec.AllowedGitTargets = []configbutleraiv1alpha3.NamespaceGrant{
-		{From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames("team-a")},
+	branch.Spec.AllowedGitTargets = []configbutleraiv1alpha3.GitBranchGitTargetGrant{
+		{
+			ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+				From:  configbutleraiv1alpha3.GrantFromNames,
+				Names: grantNames("team-a"),
+			},
+		},
 	}
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "apps"},
@@ -248,9 +253,12 @@ func TestReconcile_ACrossNamespaceGitBranchWritesWithItsProvidersCredential(t *t
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 	platform := branchProvider("platform", "acme")
-	platform.Spec.AllowedGitBranches[0] = configbutleraiv1alpha3.GitBranchGrant{
-		From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames("team-a"),
-		Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*"},
+	platform.Spec.AllowedGitBranches[0] = configbutleraiv1alpha3.GitProviderGitBranchGrant{
+		ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+			From:  configbutleraiv1alpha3.GrantFromNames,
+			Names: grantNames("team-a"),
+		},
+		BranchPatterns: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*"},
 	}
 	decoy := branchProvider("team-a", "acme")
 	decoy.UID = "uid-decoy"

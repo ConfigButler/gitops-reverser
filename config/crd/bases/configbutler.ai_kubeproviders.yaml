@@ -77,8 +77,8 @@ spec:
                   empty, no applier claim holds an applier through it. Grants combine by union.
                 items:
                   description: |-
-                    ApplierGrant admits applier claims in some control-cluster namespaces to hold an applier through a
-                    KubeProvider, and bounds where that applier may live.
+                    KubeProviderApplierClaimGrant admits applier claims in some control-cluster namespaces to hold an
+                    applier through a KubeProvider, and bounds where that applier may live.
                   properties:
                     applierNamespaces:
                       description: |-
@@ -113,109 +113,117 @@ spec:
                       minItems: 1
                       type: array
                       x-kubernetes-list-type: set
-                    from:
+                    consumerNamespaces:
                       description: |-
-                        From is where this grant admits from: Same (this KubeProvider's namespace), Names (the
-                        namespaces in names), Selector (the namespaces whose labels match selector) or All (every
-                        namespace).
-                      enum:
-                      - Same
-                      - Names
-                      - Selector
-                      - All
-                      type: string
-                    names:
-                      description: 'Names are the control-cluster namespaces admitted
-                        with from: Names, by exact name.'
-                      items:
-                        description: GrantNamespace is one control-cluster namespace
-                          a grant admits by name.
-                        maxLength: 63
-                        type: string
-                        x-kubernetes-validations:
-                        - message: 'names: a variable is refused, because names are
-                            matched against the consumer''s namespace and ''{consumer.namespace}''
-                            would admit every consumer; use from: All to admit every
-                            namespace, or from: Same for the namespace of the object
-                            holding the grant'
-                          rule: self != '{consumer.namespace}' && self != '{consumer.name}'
-                        - message: 'names: ''*'' is refused; use from: All to admit
-                            every namespace'
-                          rule: self != '*'
-                        - message: names holds namespace names (DNS labels)
-                          rule: self == '{consumer.namespace}' || self == '{consumer.name}'
-                            || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
-                      maxItems: 64
-                      minItems: 1
-                      type: array
-                      x-kubernetes-list-type: set
-                    selector:
-                      description: |-
-                        Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
-                        something: to admit every namespace, use from: All.
+                        ConsumerNamespaces are the control-cluster namespaces whose applier claims this grant admits.
+                        from: Same is this KubeProvider's namespace.
                       properties:
-                        matchExpressions:
-                          description: matchExpressions is a list of label selector
-                            requirements. The requirements are ANDed.
-                          items:
-                            description: |-
-                              A label selector requirement is a selector that contains values, a key, and an operator that
-                              relates the key and values.
-                            properties:
-                              key:
-                                description: key is the label key that the selector
-                                  applies to.
-                                type: string
-                              operator:
-                                description: |-
-                                  operator represents a key's relationship to a set of values.
-                                  Valid operators are In, NotIn, Exists and DoesNotExist.
-                                type: string
-                              values:
-                                description: |-
-                                  values is an array of string values. If the operator is In or NotIn,
-                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                  the values array must be empty. This array is replaced during a strategic
-                                  merge patch.
-                                items:
-                                  type: string
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - key
-                            - operator
-                            type: object
-                          type: array
-                          x-kubernetes-list-type: atomic
-                        matchLabels:
-                          additionalProperties:
-                            type: string
+                        from:
                           description: |-
-                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                            map is equivalent to an element of matchExpressions, whose key field is "key", the
-                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                            From is where this grant admits from: Same (the namespace of the object holding the grant, not
+                            the consumer's), Names (the namespaces in names), Selector (the namespaces whose labels match
+                            selector) or All (every namespace).
+                          enum:
+                          - Same
+                          - Names
+                          - Selector
+                          - All
+                          type: string
+                        names:
+                          description: 'Names are the control-cluster namespaces admitted
+                            with from: Names, by exact name.'
+                          items:
+                            description: GrantNamespace is one control-cluster namespace
+                              a grant admits by name.
+                            maxLength: 63
+                            type: string
+                            x-kubernetes-validations:
+                            - message: 'names: a variable is refused, because names
+                                are matched against the consumer''s namespace and
+                                ''{consumer.namespace}'' would admit every consumer;
+                                use from: All to admit every namespace, or from: Same
+                                for the namespace of the object holding the grant'
+                              rule: self != '{consumer.namespace}' && self != '{consumer.name}'
+                            - message: 'names: ''*'' is refused; use from: All to
+                                admit every namespace'
+                              rule: self != '*'
+                            - message: names holds namespace names (DNS labels)
+                              rule: self == '{consumer.namespace}' || self == '{consumer.name}'
+                                || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                          maxItems: 64
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        selector:
+                          description: |-
+                            Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
+                            something: to admit every namespace, use from: All.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
                           type: object
+                          x-kubernetes-map-type: atomic
+                      required:
+                      - from
                       type: object
-                      x-kubernetes-map-type: atomic
+                      x-kubernetes-validations:
+                      - message: 'from: Names needs names'
+                        rule: self.from != 'Names' || has(self.names)
+                      - message: 'names goes only with from: Names'
+                        rule: '!has(self.names) || self.from == ''Names'''
+                      - message: 'from: Selector needs a selector; to admit every
+                          namespace, use from: All'
+                        rule: self.from != 'Selector' || has(self.selector)
+                      - message: 'selector goes only with from: Selector'
+                        rule: '!has(self.selector) || self.from == ''Selector'''
+                      - message: 'selector: {} is refused; to admit every namespace,
+                          use from: All'
+                        rule: '!has(self.selector) || (has(self.selector.matchLabels)
+                          && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
+                          && size(self.selector.matchExpressions) > 0)'
                   required:
                   - applierNamespaces
-                  - from
+                  - consumerNamespaces
                   type: object
-                  x-kubernetes-validations:
-                  - message: 'from: Names needs names'
-                    rule: self.from != 'Names' || has(self.names)
-                  - message: 'names goes only with from: Names'
-                    rule: '!has(self.names) || self.from == ''Names'''
-                  - message: 'from: Selector needs a selector; to admit every namespace,
-                      use from: All'
-                    rule: self.from != 'Selector' || has(self.selector)
-                  - message: 'selector goes only with from: Selector'
-                    rule: '!has(self.selector) || self.from == ''Selector'''
-                  - message: 'selector: {} is refused; to admit every namespace, use
-                      from: All'
-                    rule: '!has(self.selector) || (has(self.selector.matchLabels)
-                      && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
-                      && size(self.selector.matchExpressions) > 0)'
                 maxItems: 64
                 type: array
                 x-kubernetes-list-type: atomic
@@ -228,8 +236,8 @@ spec:
                   included; omitted or empty, no GitTarget mirrors through it. Grants combine by union.
                 items:
                   description: |-
-                    SourceGrant admits GitTargets in some control-cluster namespaces to mirror through a KubeProvider,
-                    and bounds what they may mirror.
+                    KubeProviderGitTargetGrant admits GitTargets in some control-cluster namespaces to mirror through a
+                    KubeProvider, and bounds what they may mirror.
                   properties:
                     clusterResources:
                       description: |-
@@ -255,90 +263,113 @@ spec:
                       minItems: 1
                       type: array
                       x-kubernetes-list-type: set
-                    from:
+                    consumerNamespaces:
                       description: |-
-                        From is where this grant admits from: Same (this KubeProvider's namespace), Names (the
-                        namespaces in names), Selector (the namespaces whose labels match selector) or All (every
-                        namespace).
-                      enum:
-                      - Same
-                      - Names
-                      - Selector
-                      - All
-                      type: string
-                    names:
-                      description: 'Names are the control-cluster namespaces admitted
-                        with from: Names, by exact name.'
-                      items:
-                        description: GrantNamespace is one control-cluster namespace
-                          a grant admits by name.
-                        maxLength: 63
-                        type: string
-                        x-kubernetes-validations:
-                        - message: 'names: a variable is refused, because names are
-                            matched against the consumer''s namespace and ''{consumer.namespace}''
-                            would admit every consumer; use from: All to admit every
-                            namespace, or from: Same for the namespace of the object
-                            holding the grant'
-                          rule: self != '{consumer.namespace}' && self != '{consumer.name}'
-                        - message: 'names: ''*'' is refused; use from: All to admit
-                            every namespace'
-                          rule: self != '*'
-                        - message: names holds namespace names (DNS labels)
-                          rule: self == '{consumer.namespace}' || self == '{consumer.name}'
-                            || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
-                      maxItems: 64
-                      minItems: 1
-                      type: array
-                      x-kubernetes-list-type: set
-                    selector:
-                      description: |-
-                        Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
-                        something: to admit every namespace, use from: All.
+                        ConsumerNamespaces are the control-cluster namespaces whose GitTargets this grant admits.
+                        from: Same is this KubeProvider's namespace.
                       properties:
-                        matchExpressions:
-                          description: matchExpressions is a list of label selector
-                            requirements. The requirements are ANDed.
-                          items:
-                            description: |-
-                              A label selector requirement is a selector that contains values, a key, and an operator that
-                              relates the key and values.
-                            properties:
-                              key:
-                                description: key is the label key that the selector
-                                  applies to.
-                                type: string
-                              operator:
-                                description: |-
-                                  operator represents a key's relationship to a set of values.
-                                  Valid operators are In, NotIn, Exists and DoesNotExist.
-                                type: string
-                              values:
-                                description: |-
-                                  values is an array of string values. If the operator is In or NotIn,
-                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                  the values array must be empty. This array is replaced during a strategic
-                                  merge patch.
-                                items:
-                                  type: string
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - key
-                            - operator
-                            type: object
-                          type: array
-                          x-kubernetes-list-type: atomic
-                        matchLabels:
-                          additionalProperties:
-                            type: string
+                        from:
                           description: |-
-                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                            map is equivalent to an element of matchExpressions, whose key field is "key", the
-                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                            From is where this grant admits from: Same (the namespace of the object holding the grant, not
+                            the consumer's), Names (the namespaces in names), Selector (the namespaces whose labels match
+                            selector) or All (every namespace).
+                          enum:
+                          - Same
+                          - Names
+                          - Selector
+                          - All
+                          type: string
+                        names:
+                          description: 'Names are the control-cluster namespaces admitted
+                            with from: Names, by exact name.'
+                          items:
+                            description: GrantNamespace is one control-cluster namespace
+                              a grant admits by name.
+                            maxLength: 63
+                            type: string
+                            x-kubernetes-validations:
+                            - message: 'names: a variable is refused, because names
+                                are matched against the consumer''s namespace and
+                                ''{consumer.namespace}'' would admit every consumer;
+                                use from: All to admit every namespace, or from: Same
+                                for the namespace of the object holding the grant'
+                              rule: self != '{consumer.namespace}' && self != '{consumer.name}'
+                            - message: 'names: ''*'' is refused; use from: All to
+                                admit every namespace'
+                              rule: self != '*'
+                            - message: names holds namespace names (DNS labels)
+                              rule: self == '{consumer.namespace}' || self == '{consumer.name}'
+                                || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                          maxItems: 64
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        selector:
+                          description: |-
+                            Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
+                            something: to admit every namespace, use from: All.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
                           type: object
+                          x-kubernetes-map-type: atomic
+                      required:
+                      - from
                       type: object
-                      x-kubernetes-map-type: atomic
+                      x-kubernetes-validations:
+                      - message: 'from: Names needs names'
+                        rule: self.from != 'Names' || has(self.names)
+                      - message: 'names goes only with from: Names'
+                        rule: '!has(self.names) || self.from == ''Names'''
+                      - message: 'from: Selector needs a selector; to admit every
+                          namespace, use from: All'
+                        rule: self.from != 'Selector' || has(self.selector)
+                      - message: 'selector goes only with from: Selector'
+                        rule: '!has(self.selector) || self.from == ''Selector'''
+                      - message: 'selector: {} is refused; to admit every namespace,
+                          use from: All'
+                        rule: '!has(self.selector) || (has(self.selector.matchLabels)
+                          && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
+                          && size(self.selector.matchExpressions) > 0)'
                     sourceNamespaces:
                       description: |-
                         SourceNamespaces are source-cluster namespaces that a WatchRule feeding an admitted GitTarget may
@@ -381,23 +412,9 @@ spec:
                       type: array
                       x-kubernetes-list-type: set
                   required:
-                  - from
+                  - consumerNamespaces
                   type: object
                   x-kubernetes-validations:
-                  - message: 'from: Names needs names'
-                    rule: self.from != 'Names' || has(self.names)
-                  - message: 'names goes only with from: Names'
-                    rule: '!has(self.names) || self.from == ''Names'''
-                  - message: 'from: Selector needs a selector; to admit every namespace,
-                      use from: All'
-                    rule: self.from != 'Selector' || has(self.selector)
-                  - message: 'selector goes only with from: Selector'
-                    rule: '!has(self.selector) || self.from == ''Selector'''
-                  - message: 'selector: {} is refused; to admit every namespace, use
-                      from: All'
-                    rule: '!has(self.selector) || (has(self.selector.matchLabels)
-                      && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
-                      && size(self.selector.matchExpressions) > 0)'
                   - message: a grant in allowedGitTargets sets sourceNamespaces, clusterResources,
                       or both; one that grants neither grants nothing
                     rule: has(self.sourceNamespaces) || has(self.clusterResources)

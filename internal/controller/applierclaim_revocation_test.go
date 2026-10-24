@@ -30,7 +30,7 @@ import (
 var localProviderKey = k8stypes.NamespacedName{Namespace: claimProviderNamespace, Name: claimLocalProvider}
 
 // setApplierGrants replaces the local KubeProvider's allowedApplierClaims.
-func (f *holdFixture) setApplierGrants(t *testing.T, grants []configbutleraiv1alpha3.ApplierGrant) {
+func (f *holdFixture) setApplierGrants(t *testing.T, grants []configbutleraiv1alpha3.KubeProviderApplierClaimGrant) {
 	t.Helper()
 	provider := &configbutleraiv1alpha3.KubeProvider{}
 	require.NoError(t, f.r.Get(context.Background(), localProviderKey, provider))

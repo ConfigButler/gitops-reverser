@@ -56,34 +56,34 @@ func TestMatchBranchPattern(t *testing.T) {
 	}
 }
 
-func TestNamespaceGrant_Admits(t *testing.T) {
+func TestConsumerNamespaces_Admits(t *testing.T) {
 	tenant := map[string]string{"tenant": "true"}
 	tests := []struct {
 		name      string
-		grant     NamespaceGrant
+		grant     ConsumerNamespaces
 		namespace string
 		labels    map[string]string
 		admits    bool
 	}{
-		{"Same admits the holder's namespace", NamespaceGrant{From: GrantFromSame}, "platform", nil, true},
-		{"Same admits nothing else", NamespaceGrant{From: GrantFromSame}, "team-a", tenant, false},
+		{"Same admits the holder's namespace", ConsumerNamespaces{From: GrantFromSame}, "platform", nil, true},
+		{"Same admits nothing else", ConsumerNamespaces{From: GrantFromSame}, "team-a", tenant, false},
 		{"Names admits a listed namespace",
-			NamespaceGrant{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-a", nil, true},
+			ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-a", nil, true},
 		{"Names admits nothing else",
-			NamespaceGrant{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-b", nil, false},
+			ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-b", nil, false},
 		// An exact allow-list, never a prefix: otherwise "team-a-evil" would inherit team-a's grant.
 		{"Names is no prefix match",
-			NamespaceGrant{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-a-evil", nil, false},
+			ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "team-a-evil", nil, false},
 		{"Names is case-sensitive",
-			NamespaceGrant{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "Team-A", nil, false},
-		{"Selector admits a matching namespace", NamespaceGrant{From: GrantFromSelector,
+			ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"team-a"}}, "Team-A", nil, false},
+		{"Selector admits a matching namespace", ConsumerNamespaces{From: GrantFromSelector,
 			Selector: &metav1.LabelSelector{MatchLabels: tenant}}, "team-a", tenant, true},
-		{"Selector admits nothing else", NamespaceGrant{From: GrantFromSelector,
+		{"Selector admits nothing else", ConsumerNamespaces{From: GrantFromSelector,
 			Selector: &metav1.LabelSelector{MatchLabels: tenant}}, "team-a", nil, false},
-		{"an empty selector admits nobody", NamespaceGrant{From: GrantFromSelector,
+		{"an empty selector admits nobody", ConsumerNamespaces{From: GrantFromSelector,
 			Selector: &metav1.LabelSelector{}}, "team-a", tenant, false},
-		{"All admits every namespace", NamespaceGrant{From: GrantFromAll}, "anything", nil, true},
-		{"an unknown from admits nothing", NamespaceGrant{From: "Everyone"}, "platform", nil, false},
+		{"All admits every namespace", ConsumerNamespaces{From: GrantFromAll}, "anything", nil, true},
+		{"an unknown from admits nothing", ConsumerNamespaces{From: "Everyone"}, "platform", nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -94,12 +94,14 @@ func TestNamespaceGrant_Admits(t *testing.T) {
 	}
 }
 
-// TestNamespaceGrant_SameFollowsTheHolder: Same names no namespace, so a kustomize overlay that moves
+// TestConsumerNamespaces_SameFollowsTheHolder: Same names no namespace, so a kustomize overlay that moves
 // the object holding the grant moves what it admits with it.
-func TestNamespaceGrant_SameFollowsTheHolder(t *testing.T) {
+func TestConsumerNamespaces_SameFollowsTheHolder(t *testing.T) {
 	branch := &GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
-		Spec:       GitBranchSpec{AllowedGitTargets: []NamespaceGrant{{From: GrantFromSame}}},
+		Spec: GitBranchSpec{
+			AllowedGitTargets: []GitBranchGitTargetGrant{{ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame}}},
+		},
 	}
 	admits, err := branch.AdmitsGitTarget("team-a", nil)
 	require.NoError(t, err)
@@ -114,8 +116,8 @@ func TestNamespaceGrant_SameFollowsTheHolder(t *testing.T) {
 	assert.False(t, admits, "and nothing else")
 }
 
-func TestNamespaceGrant_InvalidSelectorIsAnError(t *testing.T) {
-	grant := NamespaceGrant{From: GrantFromSelector, Selector: &metav1.LabelSelector{
+func TestConsumerNamespaces_InvalidSelectorIsAnError(t *testing.T) {
+	grant := ConsumerNamespaces{From: GrantFromSelector, Selector: &metav1.LabelSelector{
 		MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tenant", Operator: "Bogus"}},
 	}}
 	_, err := grant.Admits("platform", "team-a", nil)
@@ -123,7 +125,9 @@ func TestNamespaceGrant_InvalidSelectorIsAnError(t *testing.T) {
 
 	// One malformed grant refuses nobody another grant admits, and admits nobody itself.
 	branch := &GitBranch{ObjectMeta: metav1.ObjectMeta{Namespace: "platform"},
-		Spec: GitBranchSpec{AllowedGitTargets: []NamespaceGrant{grant, {From: GrantFromSame}}}}
+		Spec: GitBranchSpec{AllowedGitTargets: []GitBranchGitTargetGrant{
+			{ConsumerNamespaces: grant}, {ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame}},
+		}}}
 	admits, err := branch.AdmitsGitTarget("platform", nil)
 	require.NoError(t, err)
 	assert.True(t, admits)
@@ -139,18 +143,28 @@ func TestGitBranch_AdmitsGitTarget_NothingAutomatic(t *testing.T) {
 	assert.False(t, admits, "an omitted list admits nobody, the GitBranch's own namespace included")
 	assert.Equal(t, "admits no namespace", branch.DescribeAllowedGitTargets())
 
-	branch.Spec.AllowedGitTargets = []NamespaceGrant{{From: GrantFromSame},
-		{From: GrantFromNames, Names: []GrantNamespace{"team-b"}}}
+	branch.Spec.AllowedGitTargets = []GitBranchGitTargetGrant{
+		{ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame}},
+		{ConsumerNamespaces: ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"team-b"}}},
+	}
 	assert.Equal(t, "admits team-a, team-b", branch.DescribeAllowedGitTargets())
 }
 
 func TestGitProvider_AdmitsGitBranch(t *testing.T) {
 	provider := &GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "shared-repo"},
-		Spec: GitProviderSpec{AllowedGitBranches: []GitBranchGrant{
-			{From: GrantFromSame, Branches: []BranchPattern{"main", "release/*"}},
-			{From: GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "true"}},
-				Branches: []BranchPattern{"teams/{consumer.namespace}/*", "feature/*"}},
+		Spec: GitProviderSpec{AllowedGitBranches: []GitProviderGitBranchGrant{
+			{
+				ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame},
+				BranchPatterns:     []BranchPattern{"main", "release/*"},
+			},
+			{
+				ConsumerNamespaces: ConsumerNamespaces{
+					From:     GrantFromSelector,
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "true"}},
+				},
+				BranchPatterns: []BranchPattern{"teams/{consumer.namespace}/*", "feature/*"},
+			},
 		}},
 	}
 	tenant := map[string]string{"tenant": "true"}
@@ -158,7 +172,7 @@ func TestGitProvider_AdmitsGitBranch(t *testing.T) {
 	got, err := provider.AdmitsGitBranch(consumer("team-a", "live"), tenant, "teams/team-a/live")
 	require.NoError(t, err)
 	assert.Equal(t, GitBranchAdmission{Admitted: true, Allowed: true,
-		Branches: []string{"feature/*", "teams/team-a/*"}}, got)
+		BranchPatterns: []string{"feature/*", "teams/team-a/*"}}, got)
 
 	got, err = provider.AdmitsGitBranch(consumer("team-a", "live"), tenant, "main")
 	require.NoError(t, err)
@@ -187,13 +201,23 @@ func TestKubeProvider_AdmitsGitTarget(t *testing.T) {
 	tenant := map[string]string{"tenant": "true"}
 	provider := &KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "production"},
-		Spec: KubeProviderSpec{AllowedGitTargets: []SourceGrant{
-			{From: GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
-				SourceNamespaces: []ScopeNamespace{"{consumer.namespace}"}},
-			{From: GrantFromNames, Names: []GrantNamespace{"platform-audit"},
-				SourceNamespaces: []ScopeNamespace{"*"}, ClusterResources: []ClusterResourceIdentity{"*"}},
-			{From: GrantFromNames, Names: []GrantNamespace{"rbac-mirror"},
-				ClusterResources: []ClusterResourceIdentity{"clusterroles.rbac.authorization.k8s.io", "nodes"}},
+		Spec: KubeProviderSpec{AllowedGitTargets: []KubeProviderGitTargetGrant{
+			{
+				ConsumerNamespaces: ConsumerNamespaces{
+					From:     GrantFromSelector,
+					Selector: &metav1.LabelSelector{MatchLabels: tenant},
+				},
+				SourceNamespaces: []ScopeNamespace{"{consumer.namespace}"},
+			},
+			{
+				ConsumerNamespaces: ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"platform-audit"}},
+				SourceNamespaces:   []ScopeNamespace{"*"},
+				ClusterResources:   []ClusterResourceIdentity{"*"},
+			},
+			{
+				ConsumerNamespaces: ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"rbac-mirror"}},
+				ClusterResources:   []ClusterResourceIdentity{"clusterroles.rbac.authorization.k8s.io", "nodes"},
+			},
 		}},
 	}
 
@@ -229,10 +253,18 @@ func TestKubeProvider_AdmitsGitTarget(t *testing.T) {
 func TestKubeProvider_AdmitsGitTarget_UnionOfScopes(t *testing.T) {
 	provider := &KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform"},
-		Spec: KubeProviderSpec{AllowedGitTargets: []SourceGrant{
-			{From: GrantFromAll, SourceNamespaces: []ScopeNamespace{"{consumer.namespace}"}},
-			{From: GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"audit": "true"}},
-				SourceNamespaces: []ScopeNamespace{"*"}},
+		Spec: KubeProviderSpec{AllowedGitTargets: []KubeProviderGitTargetGrant{
+			{
+				ConsumerNamespaces: ConsumerNamespaces{From: GrantFromAll},
+				SourceNamespaces:   []ScopeNamespace{"{consumer.namespace}"},
+			},
+			{
+				ConsumerNamespaces: ConsumerNamespaces{
+					From:     GrantFromSelector,
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"audit": "true"}},
+				},
+				SourceNamespaces: []ScopeNamespace{"*"},
+			},
 		}},
 	}
 	scope, err := provider.AdmitsGitTarget(consumer("team-a", "mirror"), map[string]string{"audit": "true"})
@@ -248,14 +280,16 @@ func TestKubeProvider_AdmitsApplierClaim(t *testing.T) {
 	provider := &KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform"},
 		Spec: KubeProviderSpec{
-			AllowedGitTargets: []SourceGrant{
-				{From: GrantFromAll, SourceNamespaces: []ScopeNamespace{"{consumer.namespace}"}},
-			},
-			AllowedApplierClaims: []ApplierGrant{
+			AllowedGitTargets: []KubeProviderGitTargetGrant{
 				{
-					From:              GrantFromNames,
-					Names:             []GrantNamespace{"team-a"},
-					ApplierNamespaces: []ScopeNamespace{"flux-system"},
+					ConsumerNamespaces: ConsumerNamespaces{From: GrantFromAll},
+					SourceNamespaces:   []ScopeNamespace{"{consumer.namespace}"},
+				},
+			},
+			AllowedApplierClaims: []KubeProviderApplierClaimGrant{
+				{
+					ConsumerNamespaces: ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"team-a"}},
+					ApplierNamespaces:  []ScopeNamespace{"flux-system"},
 				},
 			},
 		},

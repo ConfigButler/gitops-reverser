@@ -119,13 +119,13 @@ func scScheme(t *testing.T) *runtime.Scheme {
 
 func TestCheckSourceAuthorization(t *testing.T) {
 	// The provider lives in "platform", so team-a reaches it only through spec.allowedGitTargets.
-	provider := func(grant configbutleraiv1alpha3.SourceGrant) *configbutleraiv1alpha3.KubeProvider {
+	provider := func(grant configbutleraiv1alpha3.KubeProviderGitTargetGrant) *configbutleraiv1alpha3.KubeProvider {
 		p := remoteKubeProvider("kc", "")
 		p.Namespace = "platform"
 		grant.SourceNamespaces = []configbutleraiv1alpha3.ScopeNamespace{
 			configbutleraiv1alpha3.ConsumerNamespaceVariable,
 		}
-		p.Spec.AllowedGitTargets = []configbutleraiv1alpha3.SourceGrant{grant}
+		p.Spec.AllowedGitTargets = []configbutleraiv1alpha3.KubeProviderGitTargetGrant{grant}
 		return p
 	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{"tier": "trusted"}}}
@@ -163,9 +163,11 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			name: "provider allows the namespace by name",
 			objects: []client.Object{
 				provider(
-					configbutleraiv1alpha3.SourceGrant{
-						From:  configbutleraiv1alpha3.GrantFromNames,
-						Names: grantNames("team-a"),
+					configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+						ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+							From:  configbutleraiv1alpha3.GrantFromNames,
+							Names: grantNames("team-a"),
+						},
 					},
 				),
 				ns,
@@ -176,9 +178,11 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			name: "provider does not allow the namespace -> refused",
 			objects: []client.Object{
 				provider(
-					configbutleraiv1alpha3.SourceGrant{
-						From:  configbutleraiv1alpha3.GrantFromNames,
-						Names: grantNames("team-b"),
+					configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+						ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+							From:  configbutleraiv1alpha3.GrantFromNames,
+							Names: grantNames("team-b"),
+						},
 					},
 				),
 				ns,
@@ -188,9 +192,11 @@ func TestCheckSourceAuthorization(t *testing.T) {
 		{
 			name: "provider allows the namespace by label selector",
 			objects: []client.Object{
-				provider(configbutleraiv1alpha3.SourceGrant{
-					From:     configbutleraiv1alpha3.GrantFromSelector,
-					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
+				provider(configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From:     configbutleraiv1alpha3.GrantFromSelector,
+						Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
+					},
 				}), ns,
 			},
 			providerRef: "prod-eu-1", wantAuthorized: true,
@@ -200,11 +206,13 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			// unevaluatable policy as "allow" would hand a namespace access it was never granted.
 			name: "invalid selector -> refused, not allowed",
 			objects: []client.Object{
-				provider(configbutleraiv1alpha3.SourceGrant{
-					From: configbutleraiv1alpha3.GrantFromSelector,
-					Selector: &metav1.LabelSelector{
-						MatchExpressions: []metav1.LabelSelectorRequirement{
-							{Key: "tier", Operator: "BogusOperator", Values: []string{"trusted"}},
+				provider(configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From: configbutleraiv1alpha3.GrantFromSelector,
+						Selector: &metav1.LabelSelector{
+							MatchExpressions: []metav1.LabelSelectorRequirement{
+								{Key: "tier", Operator: "BogusOperator", Values: []string{"trusted"}},
+							},
 						},
 					},
 				}), ns,
@@ -217,9 +225,11 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			name: "namespace object absent -> evaluated with no labels, name allow still holds",
 			objects: []client.Object{
 				provider(
-					configbutleraiv1alpha3.SourceGrant{
-						From:  configbutleraiv1alpha3.GrantFromNames,
-						Names: grantNames("team-a"),
+					configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+						ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+							From:  configbutleraiv1alpha3.GrantFromNames,
+							Names: grantNames("team-a"),
+						},
 					},
 				),
 			},
@@ -228,9 +238,11 @@ func TestCheckSourceAuthorization(t *testing.T) {
 		{
 			name: "namespace object absent -> selector-only policy denies (no labels to match)",
 			objects: []client.Object{
-				provider(configbutleraiv1alpha3.SourceGrant{
-					From:     configbutleraiv1alpha3.GrantFromSelector,
-					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
+				provider(configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From:     configbutleraiv1alpha3.GrantFromSelector,
+						Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
+					},
 				}),
 			},
 			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
@@ -257,8 +269,10 @@ func TestCheckSourceAuthorization(t *testing.T) {
 // is denied to every consumer, its own namespace included.
 func TestCheckSourceAuthorization_OwnNamespaceAndAuditRoute(t *testing.T) {
 	own := inClusterKubeProvider("local")
-	own.Spec.AllowedGitTargets = []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromSame,
-		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable}}}
+	own.Spec.AllowedGitTargets = []configbutleraiv1alpha3.KubeProviderGitTargetGrant{{
+		ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{From: configbutleraiv1alpha3.GrantFromSame},
+		SourceNamespaces:   []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable},
+	}}
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: kpNamespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{

@@ -139,12 +139,14 @@ metadata:
 spec:
   inCluster: {}
   allowedGitTargets:
-    - from: Names
-      names: [team-a]
+    - consumerNamespaces:
+        from: Names
+        names: [team-a]
       sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
-    - from: Names
-      names: [team-a]
+    - consumerNamespaces:
+        from: Names
+        names: [team-a]
       applierNamespaces: [argocd]
 ---
 apiVersion: v1
@@ -173,8 +175,8 @@ metadata:
 spec:
   url: git@github.com:acme/platform.git
   allowedGitBranches:
-    - from: Same
-      branches: [main]
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [main]
   secretRef:
     name: platform-git
 ---
@@ -188,7 +190,7 @@ spec:
     name: platform
   branch: main
   allowedGitTargets:
-    - from: Same
+    - consumerNamespaces: {from: Same}
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget

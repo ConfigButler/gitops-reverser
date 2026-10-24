@@ -20,14 +20,17 @@ import (
 // granting is the boot KubeProvider admitting the boot GitTarget's namespace with clusterResources
 // identities; none at all gives it its own namespace and no cluster-scoped resource.
 func granting(identities ...configv1alpha3.ClusterResourceIdentity) *configv1alpha3.KubeProvider {
-	grant := configv1alpha3.SourceGrant{
-		From: configv1alpha3.GrantFromNames, Names: []configv1alpha3.GrantNamespace{bootTargetNS},
+	grant := configv1alpha3.KubeProviderGitTargetGrant{
+		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+			From:  configv1alpha3.GrantFromNames,
+			Names: []configv1alpha3.GrantNamespace{bootTargetNS},
+		},
 		ClusterResources: identities,
 	}
 	if len(identities) == 0 {
 		grant.SourceNamespaces = []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable}
 	}
-	return bootKubeProvider([]configv1alpha3.SourceGrant{grant})
+	return bootKubeProvider([]configv1alpha3.KubeProviderGitTargetGrant{grant})
 }
 
 // clusterRuleFor is a ClusterWatchRule on the boot GitTarget with items.

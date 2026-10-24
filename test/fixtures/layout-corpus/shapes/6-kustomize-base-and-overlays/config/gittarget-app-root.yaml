@@ -8,7 +8,7 @@ spec:
     name: app-repository
   branch: main
   allowedGitTargets:
-    - from: Same
+    - consumerNamespaces: {from: Same}
 ---
 # The MISTAKE this shape exists to name, kept as a fixture because a set where every write
 # succeeds is advertising rather than specification. Same repository as gittarget-prod.yaml,

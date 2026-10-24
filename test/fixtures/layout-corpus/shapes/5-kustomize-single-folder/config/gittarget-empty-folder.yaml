@@ -8,7 +8,7 @@ spec:
     name: app-repository
   branch: main
   allowedGitTargets:
-    - from: Same
+    - consumerNamespaces: {from: Same}
 ---
 # The same folder, when it does not exist yet. This is the ONLY difference
 # between adopting a kustomize folder and creating one.

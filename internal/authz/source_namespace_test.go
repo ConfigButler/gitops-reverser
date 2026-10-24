@@ -72,8 +72,11 @@ func snRule(sourceNamespaces ...string) *configv1alpha3.WatchRule {
 // snKubeProvider admits snTenantNS by name with scope as its sourceNamespaces, so the "provider
 // admits the target's namespace" leg of the gate passes and each case isolates the scope.
 func snKubeProvider(scope ...configv1alpha3.ScopeNamespace) *configv1alpha3.KubeProvider {
-	grant := configv1alpha3.SourceGrant{
-		From: configv1alpha3.GrantFromNames, Names: []configv1alpha3.GrantNamespace{snTenantNS},
+	grant := configv1alpha3.KubeProviderGitTargetGrant{
+		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+			From:  configv1alpha3.GrantFromNames,
+			Names: []configv1alpha3.GrantNamespace{snTenantNS},
+		},
 		SourceNamespaces: scope,
 	}
 	if len(scope) == 0 {
@@ -81,7 +84,9 @@ func snKubeProvider(scope ...configv1alpha3.ScopeNamespace) *configv1alpha3.Kube
 	}
 	return &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: snProvider, Namespace: snProviderNS},
-		Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: []configv1alpha3.SourceGrant{grant}},
+		Spec: configv1alpha3.KubeProviderSpec{
+			AllowedGitTargets: []configv1alpha3.KubeProviderGitTargetGrant{grant},
+		},
 	}
 }
 
@@ -245,7 +250,7 @@ func TestResolveWatchRuleSourceScope_DeniedItemRefusesTheWholeRule(t *testing.T)
 // admitted by.
 func TestResolveWatchRuleSourceScope_UnadmittedGitTargetGetsNoScope(t *testing.T) {
 	denying := snKubeProvider(own, all)
-	denying.Spec.AllowedGitTargets[0].Names = []configv1alpha3.GrantNamespace{"some-other-tenant"}
+	denying.Spec.AllowedGitTargets[0].ConsumerNamespaces.Names = []configv1alpha3.GrantNamespace{"some-other-tenant"}
 	reader := snReader(t, snTarget(), denying)
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(

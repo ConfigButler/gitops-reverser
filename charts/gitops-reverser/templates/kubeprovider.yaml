@@ -31,8 +31,8 @@ spec:
   {{- $applierClaims := .Values.kubeProvider.allowedApplierClaims }}
   {{- if .Values.quickstart.enabled }}
   {{- $names := list .Values.quickstart.namespace }}
-  {{- $gitTargets = append $gitTargets (dict "from" "Names" "names" $names "sourceNamespaces" (list "{consumer.namespace}")) }}
-  {{- $applierClaims = append $applierClaims (dict "from" "Names" "names" $names "applierNamespaces" (list "{consumer.namespace}")) }}
+  {{- $gitTargets = append $gitTargets (dict "consumerNamespaces" (dict "from" "Names" "names" $names) "sourceNamespaces" (list "{consumer.namespace}")) }}
+  {{- $applierClaims = append $applierClaims (dict "consumerNamespaces" (dict "from" "Names" "names" $names) "applierNamespaces" (list "{consumer.namespace}")) }}
   {{- end }}
   {{- with $gitTargets }}
   allowedGitTargets:

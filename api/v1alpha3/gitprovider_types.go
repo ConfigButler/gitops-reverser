@@ -53,14 +53,14 @@ type GitProviderSpec struct {
 
 	// AllowedGitBranches says which GitBranches may claim a branch of this repository through this
 	// GitProvider, and which branches: a GitBranch claims only while a grant admits its namespace and
-	// one of that grant's branches matches its spec.branch. Nothing is admitted automatically, this
+	// one of that grant's branchPatterns matches its spec.branch. Nothing is admitted automatically, this
 	// GitProvider's own namespace included; omitted or empty, no GitBranch claims through it. Grants
 	// combine by union. Who may write through a claimed branch is that GitBranch's
 	// spec.allowedGitTargets.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	AllowedGitBranches []GitBranchGrant `json:"allowedGitBranches,omitempty"`
+	AllowedGitBranches []GitProviderGitBranchGrant `json:"allowedGitBranches,omitempty"`
 
 	// Commit configures the commit identity and signing behavior this connection uses. Message
 	// formatting moved to GitTarget.spec.commit.message.

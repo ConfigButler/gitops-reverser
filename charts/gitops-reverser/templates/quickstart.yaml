@@ -21,9 +21,10 @@ metadata:
 spec:
   url: {{ .Values.quickstart.gitProvider.url | quote }}
   allowedGitBranches:
-    - from: Same
-      branches:
-        {{- toYaml .Values.quickstart.gitProvider.allowedGitBranches | nindent 8 }}
+    - consumerNamespaces:
+        from: Same
+      branchPatterns:
+        {{- toYaml .Values.quickstart.gitProvider.branchPatterns | nindent 8 }}
   secretRef:
     name: {{ .Values.quickstart.gitProvider.secretRef.name }}
 ---
@@ -40,7 +41,8 @@ spec:
     name: {{ .Values.quickstart.gitProvider.name }}
   branch: {{ .Values.quickstart.gitBranch.branch | quote }}
   allowedGitTargets:
-    - from: Same
+    - consumerNamespaces:
+        from: Same
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget

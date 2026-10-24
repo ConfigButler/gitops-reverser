@@ -13,5 +13,5 @@ spec:
   secretRef:
     name: home-kubeconfig
   allowedGitTargets:
-    - from: Same
+    - consumerNamespaces: {from: Same}
       sourceNamespaces: ["*"]

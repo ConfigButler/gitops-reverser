@@ -133,7 +133,7 @@ func cwaGitProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-func cwaKubeProvider(policy []configbutleraiv1alpha3.SourceGrant) *configbutleraiv1alpha3.KubeProvider {
+func cwaKubeProvider(policy []configbutleraiv1alpha3.KubeProviderGitTargetGrant) *configbutleraiv1alpha3.KubeProvider {
 	return &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaProviderName, Namespace: cwaProviderNS},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
@@ -157,11 +157,11 @@ func cwaClusterWatchRule() *configbutleraiv1alpha3.ClusterWatchRule {
 }
 
 // cwaAdmitting is the policy that admits cwaTargetNS; cwaDenying admits some other namespace.
-func cwaAdmitting() []configbutleraiv1alpha3.SourceGrant {
+func cwaAdmitting() []configbutleraiv1alpha3.KubeProviderGitTargetGrant {
 	return mirrorGrants(cwaTargetNS)
 }
 
-func cwaDenying() []configbutleraiv1alpha3.SourceGrant {
+func cwaDenying() []configbutleraiv1alpha3.KubeProviderGitTargetGrant {
 	return mirrorGrants("some-other-namespace")
 }
 
@@ -368,11 +368,15 @@ func TestReconcile_AdmittedBySelectorOnNamespaceLabels(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaKubeProvider([]configbutleraiv1alpha3.SourceGrant{{
-			From:             configbutleraiv1alpha3.GrantFromSelector,
-			Selector:         &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
-			ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
-		}}),
+		cwaKubeProvider([]configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+			{
+				ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+					From:     configbutleraiv1alpha3.GrantFromSelector,
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
+				},
+				ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
+			},
+		}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 			Name: cwaTargetNS, Labels: map[string]string{"mirror": "yes"},
 		}},

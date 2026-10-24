@@ -19,13 +19,17 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// branchIn is the GitBranch namespace/main, with writers as its spec.allowedGitTargets.
-func branchIn(namespace string, writers ...configv1alpha3.NamespaceGrant) *configv1alpha3.GitBranch {
+// branchIn is the GitBranch namespace/main, with one spec.allowedGitTargets grant per writers entry.
+func branchIn(namespace string, writers ...configv1alpha3.ConsumerNamespaces) *configv1alpha3.GitBranch {
+	grants := make([]configv1alpha3.GitBranchGitTargetGrant, 0, len(writers))
+	for _, w := range writers {
+		grants = append(grants, configv1alpha3.GitBranchGitTargetGrant{ConsumerNamespaces: w})
+	}
 	return &configv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "main"},
 		Spec: configv1alpha3.GitBranchSpec{
 			GitProviderRef: meta.NamespacedObjectReference{Name: "monorepo"}, Branch: "main",
-			AllowedGitTargets: writers,
+			AllowedGitTargets: grants,
 		},
 	}
 }
@@ -44,7 +48,7 @@ func targetWriting(namespace, name string) *configv1alpha3.GitTarget {
 func TestGitTargetAdmitted_GitBranchAllowedGitTargets(t *testing.T) {
 	// The KubeProvider gate passes in every case, so only the GitBranch's decides.
 	source := providerNamed("prod-eu-1", mirrorFrom(testNS))
-	same := configv1alpha3.NamespaceGrant{From: configv1alpha3.GrantFromSame}
+	same := configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame}
 	tests := []struct {
 		name        string
 		objects     []client.Object
@@ -74,7 +78,7 @@ func TestGitTargetAdmitted_GitBranchAllowedGitTargets(t *testing.T) {
 		{
 			name: "another namespace, admitted by name",
 			objects: []client.Object{source, namespaceLabeled(nil), branchIn("platform", same,
-				configv1alpha3.NamespaceGrant{From: configv1alpha3.GrantFromNames,
+				configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromNames,
 					Names: []configv1alpha3.GrantNamespace{testNS}})},
 			target:  targetWriting("platform", "main"),
 			allowed: true,
@@ -82,7 +86,7 @@ func TestGitTargetAdmitted_GitBranchAllowedGitTargets(t *testing.T) {
 		{
 			name: "another namespace, admitted by its labels",
 			objects: []client.Object{source, namespaceLabeled(map[string]string{"tenant": "yes"}),
-				branchIn("platform", configv1alpha3.NamespaceGrant{From: configv1alpha3.GrantFromSelector,
+				branchIn("platform", configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSelector,
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "yes"}}})},
 			target:  targetWriting("platform", "main"),
 			allowed: true,
@@ -90,7 +94,7 @@ func TestGitTargetAdmitted_GitBranchAllowedGitTargets(t *testing.T) {
 		{
 			name: "a grant naming other namespaces, listed in the message",
 			objects: []client.Object{source, namespaceLabeled(nil), branchIn("platform", same,
-				configv1alpha3.NamespaceGrant{From: configv1alpha3.GrantFromNames,
+				configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromNames,
 					Names: []configv1alpha3.GrantNamespace{"team-b", "team-c"}})},
 			target:      targetWriting("platform", "main"),
 			wantMessage: "GitBranch platform/main admits platform, team-b, team-c in spec.allowedGitTargets",
@@ -119,7 +123,7 @@ func TestGitTargetAdmitted_GitBranchAllowedGitTargets(t *testing.T) {
 }
 
 // sharedRepo is the GitProvider platform/shared-repo with grants as its spec.allowedGitBranches.
-func sharedRepo(grants ...configv1alpha3.GitBranchGrant) *configv1alpha3.GitProvider {
+func sharedRepo(grants ...configv1alpha3.GitProviderGitBranchGrant) *configv1alpha3.GitProvider {
 	return &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: platformNS, Name: "shared-repo"},
 		Spec: configv1alpha3.GitProviderSpec{
@@ -145,11 +149,17 @@ func claiming(namespace, branch string) *configv1alpha3.GitBranch {
 func TestGitBranchClaimAdmitted(t *testing.T) {
 	tenant := map[string]string{"platform.example.com/tenant": "true"}
 	provider := sharedRepo(
-		configv1alpha3.GitBranchGrant{From: configv1alpha3.GrantFromSame,
-			Branches: []configv1alpha3.BranchPattern{"main"}},
-		configv1alpha3.GitBranchGrant{From: configv1alpha3.GrantFromSelector,
-			Selector: &metav1.LabelSelector{MatchLabels: tenant},
-			Branches: []configv1alpha3.BranchPattern{"teams/{consumer.namespace}/*", "feature/*"}},
+		configv1alpha3.GitProviderGitBranchGrant{
+			ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+			BranchPatterns:     []configv1alpha3.BranchPattern{"main"},
+		},
+		configv1alpha3.GitProviderGitBranchGrant{
+			ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+				From:     configv1alpha3.GrantFromSelector,
+				Selector: &metav1.LabelSelector{MatchLabels: tenant},
+			},
+			BranchPatterns: []configv1alpha3.BranchPattern{"teams/{consumer.namespace}/*", "feature/*"},
+		},
 	)
 	namespaces := []client.Object{
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNS, Labels: tenant}},

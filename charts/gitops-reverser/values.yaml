@@ -370,11 +370,13 @@ kubeProvider:
   # quickstart.enabled=true adds a grant for exactly the quickstart namespace, and
   # values-playground.yaml grants every namespace its own namespace.
   #
-  # Each grant has a `from` (Same, Names with names, Selector with a non-empty selector, or All)
-  # and a scope:
+  # Each grant has a consumerNamespaces block saying which namespaces' objects it admits (from:
+  # Same, Names with names, Selector with a non-empty selector, or All), and a scope beside it. A
+  # scope is a permission, not a selection, and an object's scope is the union across the grants
+  # admitting it:
   #   allowedGitTargets[].sourceNamespaces  which namespaces the WatchRules feeding an admitted
-  #                                         GitTarget may watch: names, "{consumer.namespace}" for
-  #                                         the GitTarget's own, or "*"
+  #                                         GitTarget may name: names, "{consumer.namespace}" for
+  #                                         the GitTarget's own, or "*" (which a "*" rule item needs)
   #   allowedGitTargets[].clusterResources  which cluster-scoped types a ClusterWatchRule may mirror:
   #                                         resource.group, a bare core resource, or "*"
   #   allowedApplierClaims[].applierNamespaces  where an admitted applier claim's Kustomization or
@@ -383,12 +385,14 @@ kubeProvider:
   # identity: the owner of an admitted object acts on the namespaces in its scope.
   #
   #   allowedGitTargets:
-  #     - from: Selector
-  #       selector: {matchLabels: {platform.example.com/tenant: "true"}}
+  #     - consumerNamespaces:
+  #         from: Selector
+  #         selector: {matchLabels: {platform.example.com/tenant: "true"}}
   #       sourceNamespaces: ["{consumer.namespace}"]
   #   allowedApplierClaims:
-  #     - from: Names
-  #       names: [team-a]
+  #     - consumerNamespaces:
+  #         from: Names
+  #         names: [team-a]
   #       applierNamespaces: [flux-system]
   allowedGitTargets: []
   allowedApplierClaims: []
@@ -507,8 +511,8 @@ quickstart:
     # Required when quickstart.enabled=true.
     url: ""
     # The branch patterns the quickstart namespace may claim through this provider ("*" is every
-    # branch); rendered as a from: Same grant in spec.allowedGitBranches.
-    allowedGitBranches:
+    # branch); rendered as the branchPatterns of a from: Same grant in spec.allowedGitBranches.
+    branchPatterns:
       - "*"
     secretRef:
       # Required when quickstart.enabled=true.

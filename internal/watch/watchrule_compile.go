@@ -225,7 +225,9 @@ type ClusterResourceSelection func(item configv1alpha3.ClusterResourceRule) []sc
 // checked: by the planner's own matching, versions and ambiguity rule included. Under ["*"] nothing
 // is refused.
 func clusterResourcesRefusal(
-	rule *configv1alpha3.ClusterWatchRule, scope configv1alpha3.SourceScope, selected ClusterResourceSelection,
+	rule *configv1alpha3.ClusterWatchRule,
+	scope configv1alpha3.KubeProviderGitTargetScope,
+	selected ClusterResourceSelection,
 ) []string {
 	if scope.AllowsAllClusterResources() {
 		return nil

@@ -165,11 +165,15 @@ func kubeProvider(name string, admits ...string) *v1alpha3.KubeProvider {
 		ObjectMeta: metav1.ObjectMeta{Namespace: kubeProviderNS, Name: name},
 		Spec: v1alpha3.KubeProviderSpec{
 			InCluster: &v1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []v1alpha3.SourceGrant{{From: v1alpha3.GrantFromNames, Names: names,
-				SourceNamespaces: []v1alpha3.ScopeNamespace{v1alpha3.ConsumerNamespaceVariable}}},
+			AllowedGitTargets: []v1alpha3.KubeProviderGitTargetGrant{{
+				ConsumerNamespaces: v1alpha3.ConsumerNamespaces{From: v1alpha3.GrantFromNames, Names: names},
+				SourceNamespaces:   []v1alpha3.ScopeNamespace{v1alpha3.ConsumerNamespaceVariable},
+			}},
 			// The test appliers live in flux-system and argocd, not in the applier claims' namespace.
-			AllowedApplierClaims: []v1alpha3.ApplierGrant{{From: v1alpha3.GrantFromNames, Names: names,
-				ApplierNamespaces: []v1alpha3.ScopeNamespace{"*"}}},
+			AllowedApplierClaims: []v1alpha3.KubeProviderApplierClaimGrant{{
+				ConsumerNamespaces: v1alpha3.ConsumerNamespaces{From: v1alpha3.GrantFromNames, Names: names},
+				ApplierNamespaces:  []v1alpha3.ScopeNamespace{"*"},
+			}},
 		},
 	}
 }
@@ -185,8 +189,11 @@ func controlPlane() []client.Object {
 		&v1alpha3.GitBranch{
 			ObjectMeta: metav1.ObjectMeta{Namespace: testGitBranch.Namespace, Name: testGitBranch.Name},
 			Spec: v1alpha3.GitBranchSpec{
-				GitProviderRef: fluxmeta.NamespacedObjectReference{Name: testProvider.Name}, Branch: testBranch,
-				AllowedGitTargets: []v1alpha3.NamespaceGrant{{From: v1alpha3.GrantFromAll}},
+				GitProviderRef: fluxmeta.NamespacedObjectReference{Name: testProvider.Name},
+				Branch:         testBranch,
+				AllowedGitTargets: []v1alpha3.GitBranchGitTargetGrant{
+					{ConsumerNamespaces: v1alpha3.ConsumerNamespaces{From: v1alpha3.GrantFromAll}},
+				},
 			},
 		},
 		kubeProvider(localCluster, targetNS),

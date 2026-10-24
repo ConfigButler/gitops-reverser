@@ -17,30 +17,50 @@ func grantNames(namespaces ...string) []configbutleraiv1alpha3.GrantNamespace {
 
 // mirrorGrants admits the named namespaces to mirror their own namespace and every cluster-scoped
 // resource, the reach a provider admitting them had before grants were scoped.
-func mirrorGrants(namespaces ...string) []configbutleraiv1alpha3.SourceGrant {
-	return []configbutleraiv1alpha3.SourceGrant{{
-		From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames(namespaces...),
-		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable},
-		ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
-	}}
+func mirrorGrants(namespaces ...string) []configbutleraiv1alpha3.KubeProviderGitTargetGrant {
+	return []configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+		{
+			ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+				From:  configbutleraiv1alpha3.GrantFromNames,
+				Names: grantNames(namespaces...),
+			},
+			SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable},
+			ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
+		},
+	}
 }
 
 // applierGrants admits the named namespaces to hold appliers in scope.
 func applierGrants(
 	scope []configbutleraiv1alpha3.ScopeNamespace, namespaces ...string,
-) []configbutleraiv1alpha3.ApplierGrant {
-	return []configbutleraiv1alpha3.ApplierGrant{{
-		From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames(namespaces...), ApplierNamespaces: scope,
-	}}
+) []configbutleraiv1alpha3.KubeProviderApplierClaimGrant {
+	return []configbutleraiv1alpha3.KubeProviderApplierClaimGrant{
+		{
+			ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+				From:  configbutleraiv1alpha3.GrantFromNames,
+				Names: grantNames(namespaces...),
+			},
+			ApplierNamespaces: scope,
+		},
+	}
 }
 
 // branchesFromSame is the allowedGitBranches of a GitProvider that lets GitBranches in its own namespace
 // claim the branches patterns match.
-func branchesFromSame(patterns ...configbutleraiv1alpha3.BranchPattern) []configbutleraiv1alpha3.GitBranchGrant {
-	return []configbutleraiv1alpha3.GitBranchGrant{{From: configbutleraiv1alpha3.GrantFromSame, Branches: patterns}}
+func branchesFromSame(
+	patterns ...configbutleraiv1alpha3.BranchPattern,
+) []configbutleraiv1alpha3.GitProviderGitBranchGrant {
+	return []configbutleraiv1alpha3.GitProviderGitBranchGrant{
+		{
+			ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{From: configbutleraiv1alpha3.GrantFromSame},
+			BranchPatterns:     patterns,
+		},
+	}
 }
 
 // writersFromSame is the allowedGitTargets of a GitBranch shared with its own namespace only.
-func writersFromSame() []configbutleraiv1alpha3.NamespaceGrant {
-	return []configbutleraiv1alpha3.NamespaceGrant{{From: configbutleraiv1alpha3.GrantFromSame}}
+func writersFromSame() []configbutleraiv1alpha3.GitBranchGitTargetGrant {
+	return []configbutleraiv1alpha3.GitBranchGitTargetGrant{
+		{ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{From: configbutleraiv1alpha3.GrantFromSame}},
+	}
 }

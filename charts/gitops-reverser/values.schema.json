@@ -402,12 +402,12 @@
         },
         "allowedGitTargets": {
           "type": "array",
-          "description": "Rendered as the provider's spec.allowedGitTargets: which namespaces' GitTargets may mirror through it, and what (sourceNamespaces, clusterResources). Empty grants nothing. The CRD validates each grant.",
+          "description": "Rendered as the provider's spec.allowedGitTargets: which namespaces' GitTargets may mirror through it (consumerNamespaces), and what (sourceNamespaces, clusterResources). Empty grants nothing. The CRD validates each grant.",
           "items": { "type": "object" }
         },
         "allowedApplierClaims": {
           "type": "array",
-          "description": "Rendered as the provider's spec.allowedApplierClaims: which namespaces' applier claims may hold an applier through it, and where it may live (applierNamespaces). Empty grants nothing. The CRD validates each grant.",
+          "description": "Rendered as the provider's spec.allowedApplierClaims: which namespaces' applier claims may hold an applier through it (consumerNamespaces), and where it may live (applierNamespaces). Empty grants nothing. The CRD validates each grant.",
           "items": { "type": "object" }
         }
       }
@@ -555,7 +555,7 @@
           "properties": {
             "name": { "type": "string" },
             "url": { "type": "string" },
-            "allowedGitBranches": { "type": "array", "items": { "type": "string" } },
+            "branchPatterns": { "type": "array", "items": { "type": "string" } },
             "secretRef": {
               "type": "object",
               "additionalProperties": false,

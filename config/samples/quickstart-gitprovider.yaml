@@ -10,8 +10,8 @@ spec:
   # namespace included. '*' matches any branch; "teams/{consumer.namespace}/*" would give each
   # namespace its own prefix.
   allowedGitBranches:
-    - from: Same
-      branches: ["*"]
+    - consumerNamespaces: {from: Same}
+      branchPatterns: ["*"]
   secretRef:
     name: git-creds
 

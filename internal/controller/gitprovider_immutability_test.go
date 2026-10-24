@@ -42,7 +42,10 @@ var _ = Describe("GitProvider URL Immutability", func() {
 		Eventually(func(g Gomega) {
 			current := &configbutleraiv1alpha3.GitProvider{}
 			g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
-			current.Spec.AllowedGitBranches[0].Branches = []configbutleraiv1alpha3.BranchPattern{"main", "develop"}
+			current.Spec.AllowedGitBranches[0].BranchPatterns = []configbutleraiv1alpha3.BranchPattern{
+				"main",
+				"develop",
+			}
 			g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
 		}, timeout, interval).Should(Succeed())
 

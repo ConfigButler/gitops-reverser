@@ -127,8 +127,13 @@ func seedTarget(ctx context.Context, t *testing.T, name string) string {
 		ObjectMeta: metav1.ObjectMeta{Name: "provider", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
 			URL: "https://github.com/test/repo.git",
-			AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-				{From: configbutleraiv1alpha3.GrantFromSame, Branches: []configbutleraiv1alpha3.BranchPattern{"*"}},
+			AllowedGitBranches: []configbutleraiv1alpha3.GitProviderGitBranchGrant{
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From: configbutleraiv1alpha3.GrantFromSame,
+					},
+					BranchPatterns: []configbutleraiv1alpha3.BranchPattern{"*"},
+				},
 			},
 			SecretRef: &meta.LocalObjectReference{Name: "git-credentials"},
 		},
@@ -137,9 +142,11 @@ func seedTarget(ctx context.Context, t *testing.T, name string) string {
 		ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{
+			AllowedGitTargets: []configbutleraiv1alpha3.KubeProviderGitTargetGrant{
 				{
-					From: configbutleraiv1alpha3.GrantFromSame,
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From: configbutleraiv1alpha3.GrantFromSame,
+					},
 					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{
 						configbutleraiv1alpha3.ConsumerNamespaceVariable,
 					},

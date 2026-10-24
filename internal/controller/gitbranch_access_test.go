@@ -24,10 +24,15 @@ import (
 // branch.
 func sharedProvider(namespaces ...string) *configbutleraiv1alpha3.GitProvider {
 	provider := branchProvider("platform", "shared-repo")
-	provider.Spec.AllowedGitBranches = []configbutleraiv1alpha3.GitBranchGrant{{
-		From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames(namespaces...),
-		Branches: []configbutleraiv1alpha3.BranchPattern{"*"},
-	}}
+	provider.Spec.AllowedGitBranches = []configbutleraiv1alpha3.GitProviderGitBranchGrant{
+		{
+			ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+				From:  configbutleraiv1alpha3.GrantFromNames,
+				Names: grantNames(namespaces...),
+			},
+			BranchPatterns: []configbutleraiv1alpha3.BranchPattern{"*"},
+		},
+	}
 	return provider
 }
 
@@ -209,10 +214,15 @@ func TestGitBranch_OneEditRevokesTwoCandidates(t *testing.T) {
 func TestGitBranch_ANamespaceLabelLossRevokesASelectorGrant(t *testing.T) {
 	tenant := map[string]string{"tenant": "true"}
 	provider := branchProvider("platform", "shared-repo")
-	provider.Spec.AllowedGitBranches = []configbutleraiv1alpha3.GitBranchGrant{{
-		From: configbutleraiv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
-		Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*", "main"},
-	}}
+	provider.Spec.AllowedGitBranches = []configbutleraiv1alpha3.GitProviderGitBranchGrant{
+		{
+			ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+				From:     configbutleraiv1alpha3.GrantFromSelector,
+				Selector: &metav1.LabelSelector{MatchLabels: tenant},
+			},
+			BranchPatterns: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*", "main"},
+		},
+	}
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: tenant}}
 	f := newGitBranchFixture(t, provider, namespace, tenantBranch("team-a", time.Hour))
 	got := f.reconcile(t, "team-a", "main")

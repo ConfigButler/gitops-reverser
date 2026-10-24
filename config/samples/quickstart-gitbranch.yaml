@@ -16,4 +16,4 @@ spec:
   # parentBranch: develop
   # Which GitTargets may write through this branch. Its own namespace needs a grant too.
   allowedGitTargets:
-    - from: Same
+    - consumerNamespaces: {from: Same}

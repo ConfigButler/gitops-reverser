@@ -8,7 +8,7 @@ spec:
     name: artifacts-repository
   branch: main
   allowedGitTargets:
-    - from: Same
+    - consumerNamespaces: {from: Same}
 ---
 # The fence around "one namespace", as a fixture. Same folder and same flag as
 # gittarget.yaml; what differs is that TWO WatchRules reach it, from two source namespaces.

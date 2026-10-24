@@ -34,8 +34,8 @@ kinds:
         default: "**no `GitBranch`**, its own namespace included"
         doc: >-
           Which namespaces' `GitBranch`es may claim which branches through this provider. Each grant
-          has a `from` (`Same`, `Names`, `Selector`, `All`) and the `branches` patterns it allows. See
-          [the grants](#the-grants)
+          has a `consumerNamespaces` block (`from`: `Same`, `Names`, `Selector`, `All`) and the
+          `branchPatterns` it allows. See [the grants](#the-grants)
       - path: secretRef
         default: anonymous access
         doc: >-
@@ -72,8 +72,8 @@ kinds:
       - path: allowedGitTargets
         default: "**no `GitTarget`**, its own namespace included"
         doc: >-
-          Which namespaces' `GitTarget`s may write through this branch, each grant with a `from`. The
-          only mutable field. See [the grants](#the-grants)
+          Which namespaces' `GitTarget`s may write through this branch, each grant with a
+          `consumerNamespaces` block. The only mutable field. See [the grants](#the-grants)
       - path: parentBranch
         default: the remote's default branch
         doc: >-
@@ -112,7 +112,8 @@ kinds:
         default: "**no `GitTarget`**, its own namespace included"
         doc: >-
           Which namespaces' `GitTarget`s may mirror through this provider, and what: each grant has a
-          `from`, and `sourceNamespaces`, `clusterResources` or both. See [the grants](#the-grants)
+          `consumerNamespaces` block, and `sourceNamespaces`, `clusterResources` or both. See
+          [the grants](#the-grants)
       - path: allowedApplierClaims
         default: "**no applier claim**, its own namespace included"
         doc: >-
