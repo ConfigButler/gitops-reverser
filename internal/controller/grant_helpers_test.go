@@ -20,7 +20,7 @@ func grantNames(namespaces ...string) []configbutleraiv1alpha3.GrantNamespace {
 func mirrorGrants(namespaces ...string) []configbutleraiv1alpha3.SourceGrant {
 	return []configbutleraiv1alpha3.SourceGrant{{
 		From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames(namespaces...),
-		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable},
+		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable},
 		ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
 	}}
 }

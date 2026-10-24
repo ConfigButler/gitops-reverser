@@ -74,8 +74,8 @@ func grantAppliersInAnyNamespace() {
 // manifests need them patched in. On a config-dir install the patch restates what the manifest
 // already carries.
 const suiteKubeProviderGrants = `{"spec":{` +
-	`"allowedGitTargets":[{"from":"All","sourceNamespaces":["{namespace}"],"clusterResources":["*"]}],` +
-	`"allowedApplierClaims":[{"from":"All","applierNamespaces":["{namespace}"]}]}}`
+	`"allowedGitTargets":[{"from":"All","sourceNamespaces":["{consumer.namespace}"],"clusterResources":["*"]}],` +
+	`"allowedApplierClaims":[{"from":"All","applierNamespaces":["{consumer.namespace}"]}]}}`
 
 // grantSuiteAccess gives the install's KubeProvider the grants the suite needs. A Helm install already
 // carries them as values, and a patch there would take the fields from Helm, whose next server-side

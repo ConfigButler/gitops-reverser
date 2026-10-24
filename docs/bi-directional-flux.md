@@ -91,7 +91,7 @@ spec:
   allowedGitTargets:
     - from: Names
       names: [team-a]
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
     - from: Names
       names: [team-a]
@@ -199,7 +199,7 @@ covered by the apply window, but it is avoidable. An apply of an *older* revisio
 checked counts as failed, and GitOps Reverser asks again.
 
 **Shared sources.** Several `Kustomization`s may read one `GitRepository`. The applier claim lists its
-source's other consumers in `status.source.otherConsumers`: the `Kustomization`s no `FluxClaim`
+source's other users in `status.source.alsoAppliedBy`: the `Kustomization`s no `FluxClaim`
 holds and the `HelmRelease`s whose chart comes from it, directly or through a `HelmChart` their
 `chartRef` names. Each of them applies a new artifact the moment it arrives. The list is
 information only and never affects `Ready`: one source for `apps` and `infra` is a normal setup.
@@ -390,7 +390,7 @@ with the identity of that `KubeProvider`. That identity needs:
 | --- | --- | --- |
 | `kustomize.toolkit.fluxcd.io` | `kustomizations` | `get`, `list`, `patch` |
 | `source.toolkit.fluxcd.io` | `gitrepositories` | `get`, `patch` |
-| `helm.toolkit.fluxcd.io` | `helmreleases` | `list`, to find the source's other consumers; without it `status.source.otherConsumers` stays empty |
+| `helm.toolkit.fluxcd.io` | `helmreleases` | `list`, to find what else applies the source; without it `status.source.alsoAppliedBy` stays empty |
 | `source.toolkit.fluxcd.io` | `helmcharts` | `list`, for the same reason |
 | `authorization.k8s.io` | `selfsubjectaccessreviews` | `create`, which every authenticated identity has |
 
@@ -468,8 +468,8 @@ counted as `ambiguous`.
 
 **Reverting refused edits.** With `onRefusal: Reapply`, the target's `Kustomization` is resumed
 for one apply of the tip; no new commit is needed. If its `GitRepository` has to fetch to reach the
-tip, the consumers GitOps Reverser holds ignore the new artifact, and one in
-`status.source.otherConsumers` applies it, as it would for any push.
+tip, the `Kustomization`s GitOps Reverser holds ignore the new artifact, and one in
+`status.source.alsoAppliedBy` applies it, as it would for any push.
 
 ## Overriding by hand
 
@@ -552,8 +552,8 @@ applied the tip is asked nothing.
 | --- | --- |
 | The [complete example](#a-complete-example) decodes strictly, reports `Configured=True`, binds the `GitTarget`, and an apply fetches and resumes the `Kustomization`; the manifest omits `spec.suspend` | [`flux_guide_test.go`](../internal/applier/flux_guide_test.go) |
 | Every fact of kustomize-controller v1.9.6 the lifecycle relies on, in a fake that applies them | [`fluxsim`](../internal/applier/fluxsim/fluxsim_test.go) |
-| An operation is not finished when the revision is attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../internal/applier/flux_lifecycle_test.go), [`flux_consumers_test.go`](../internal/applier/flux_consumers_test.go) |
-| Adoption, an external resume suspended again with an Event each time, `SuspendOwnedElsewhere`, the hand-back on deletion (a `KubeProvider` gone included), and the source's other consumers | [`fluxclaim_hold_test.go`](../internal/controller/fluxclaim_hold_test.go) |
+| An operation is not finished when the revision is attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../internal/applier/flux_lifecycle_test.go), [`flux_applied_by_test.go`](../internal/applier/flux_applied_by_test.go) |
+| Adoption, an external resume suspended again with an Event each time, `SuspendOwnedElsewhere`, the hand-back on deletion (a `KubeProvider` gone included), and what else applies the source | [`fluxclaim_hold_test.go`](../internal/controller/fluxclaim_hold_test.go) |
 | An applier claim nothing names reads nothing and is `Ready`; the first eligible `GitTarget` adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; the binding over several `GitTarget`s; an older applier claim not in line keeps none out, and a retiring holder stays first until its release is done; `ApplierNamespaceNotAllowed` | [`applierclaim_rule_test.go`](../internal/controller/applierclaim_rule_test.go) |
 | Every operation checks the target again (incarnation, branch, admission, consent) and the source binding before it resumes, records itself first, and never asks for something weaker; a stop mid-apply suspends the `Kustomization` | [`dispatcher_test.go`](../internal/applier/dispatcher_test.go) |
 | A failed attempt is decided again; each `Kustomization` keeps its own backoff; a shared one is asked once; appliers sharing a source apply one at a time; nothing is sent while no flush can be made; an undo of an edit in the apply window is mirrored, and the applier's own write is not | [`apply_attempt_test.go`](../internal/git/apply_attempt_test.go), [`apply_groups_test.go`](../internal/git/apply_groups_test.go), [`applier_claim_test.go`](../internal/git/applier_claim_test.go), [`apply_window_test.go`](../internal/git/apply_window_test.go) |

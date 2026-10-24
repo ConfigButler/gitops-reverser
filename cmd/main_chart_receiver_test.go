@@ -164,7 +164,7 @@ func TestChartReceiver_MalformedBindAddressFailsTheRender(t *testing.T) {
 }
 
 // applierAccess.flux is off by default, and on it grants exactly what holding a Flux Kustomization
-// needs (suspend and resume it, fetch its source, list the source's consumers), to the operator's own
+// needs (suspend and resume it, fetch its source, list what else applies the source), to the operator's own
 // ServiceAccount.
 func TestChartApplierAccess_Flux(t *testing.T) {
 	assert.Empty(t, helmTemplateDocs(t, "templates/applier-rbac.yaml"), "off unless asked for")

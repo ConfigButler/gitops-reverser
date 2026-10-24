@@ -254,9 +254,9 @@ func sameClusterKubeConfig() string {
 func applyKubeProviderWithAuditRoute(
 	namespace, name, secretName string, admits []string, wide bool, auditRoute string,
 ) (string, error) {
-	scope := `["{namespace}"]`
+	scope := `["{consumer.namespace}"]`
 	if wide {
-		scope = `["{namespace}", "*"]`
+		scope = `["{consumer.namespace}", "*"]`
 	}
 	extra := fmt.Sprintf("\n  allowedGitTargets:\n    - from: Same\n      sourceNamespaces: %s", scope)
 	if len(admits) > 0 {

@@ -156,10 +156,12 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "the applier claim holds its Kustomization")
-		others, err := kubectlRunInNamespace(testNs, "get", fluxClaimResource, fluxName,
-			"-o", "jsonpath={.status.source.otherConsumers}")
+		alsoAppliedBy, err := kubectlRunInNamespace(testNs, "get", fluxClaimResource, fluxName,
+			"-o", "jsonpath={.status.source.alsoAppliedBy}")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(strings.TrimSpace(others)).To(BeEmpty(), "its Kustomization is the GitRepository's only consumer")
+		Expect(
+			strings.TrimSpace(alsoAppliedBy),
+		).To(BeEmpty(), "nothing but its Kustomization applies the GitRepository")
 
 		By("dropping the reference: the applier claim hands the Kustomization back, and is idle again")
 		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", destName, "--type=merge", "-p",

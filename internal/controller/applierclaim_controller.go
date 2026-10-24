@@ -248,7 +248,7 @@ func (r *ApplierClaimReconciler) holdFlux(
 		}
 		held := r.holdKustomization(ctx, st, claim)
 		if check.checked {
-			r.publishConsumers(ctx, claim)
+			r.publishAlsoAppliedBy(ctx, claim)
 		}
 		return held, nil
 	case configured.Reason == applier.ReasonNotReferenced:

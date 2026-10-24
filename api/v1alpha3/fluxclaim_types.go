@@ -119,15 +119,15 @@ type FluxClaimSource struct {
 	Branch string `json:"branch,omitempty"`
 
 	// Why information only (decision 2 of 2026-10-17 in docs/design/apply-trigger.md): one
-	// GitRepository for several Kustomizations is a normal setup, and a consumer no applier claim names
+	// GitRepository for several Kustomizations is a normal setup, and an object no applier claim names
 	// applies a folder that has no promise of protection anyway.
 
-	// OtherConsumers are the other objects in the cluster that apply this GitRepository and that no
+	// AlsoAppliedBy are the other objects in the cluster that apply this GitRepository and that no
 	// FluxClaim holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
 	// new artifact the moment it arrives. Information only: it never affects Ready.
 	// +optional
 	// +listType=atomic
-	OtherConsumers []meta.NamespacedObjectKindReference `json:"otherConsumers,omitempty"`
+	AlsoAppliedBy []meta.NamespacedObjectKindReference `json:"alsoAppliedBy,omitempty"`
 }
 
 // +kubebuilder:object:root=true

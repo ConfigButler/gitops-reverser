@@ -250,7 +250,7 @@ func TestReconcile_ACrossNamespaceGitBranchWritesWithItsProvidersCredential(t *t
 	platform := branchProvider("platform", "acme")
 	platform.Spec.AllowedGitBranches[0] = configbutleraiv1alpha3.GitBranchGrant{
 		From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames("team-a"),
-		Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{namespace}/*"},
+		Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*"},
 	}
 	decoy := branchProvider("team-a", "acme")
 	decoy.UID = "uid-decoy"

@@ -64,19 +64,23 @@ var _ = Describe("Access grants at admission", func() {
 	}
 
 	It("accepts the branch patterns the grammar allows", func() {
-		accepted(gitProvider(branches("main", "release/*", "teams/{namespace}/*", "{namespace}", "*",
-			"feature/*/v2")))
+		accepted(gitProvider(branches("main", "release/*", "teams/{consumer.namespace}/*", "{consumer.namespace}",
+			"teams/{consumer.namespace}/{consumer.name}", "{consumer.name}/*", "*", "feature/*/v2")))
 	})
 
-	It("refuses {namespace} that is not a whole path segment", func() {
-		refused(gitProvider(branches("teams/{namespace}*")), "must be a whole path segment")
-		refused(gitProvider(branches("teams/x{namespace}/live")), "must be a whole path segment")
+	It("refuses a consumer variable that is not a whole path segment", func() {
+		refused(gitProvider(branches("teams/{consumer.namespace}*")), "must each be a whole path segment")
+		refused(gitProvider(branches("teams/x{consumer.namespace}/live")), "must each be a whole path segment")
+		refused(gitProvider(branches("teams/{consumer.namespace}-{consumer.name}")),
+			"must each be a whole path segment")
+		refused(gitProvider(branches("{consumer.namespace}{consumer.name}")), "must each be a whole path segment")
 	})
 
-	It("refuses an unknown variable, naming it and the one that exists", func() {
-		refused(gitProvider(branches("teams/{ns}/*")),
-			"branch pattern teams/{ns}/* references unknown variable {ns}; the only variable is {namespace}")
-		refused(gitProvider(branches("teams/{namespace")), "unmatched brace")
+	It("refuses an unknown variable, naming it and the ones that exist", func() {
+		refused(gitProvider(branches("teams/{namespace}/*")),
+			"branch pattern teams/{namespace}/* references unknown variable {namespace}; "+
+				"the variables are {consumer.namespace} and {consumer.name}")
+		refused(gitProvider(branches("teams/{consumer.namespace")), "unmatched brace")
 	})
 
 	It("refuses what no branch name can hold", func() {
@@ -114,14 +118,16 @@ var _ = Describe("Access grants at admission", func() {
 		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same"}),
 			"sets sourceNamespaces, clusterResources, or both")
 		accepted(
-			kubeProvider("allowedGitTargets", map[string]any{"from": "Same", "sourceNamespaces": []any{"{namespace}"}}),
+			kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
+				"sourceNamespaces": []any{"{consumer.namespace}", "{consumer.name}"}}),
 		)
 		accepted(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
 			"clusterResources": []any{"clusterroles.rbac.authorization.k8s.io", "nodes", "*"}}))
 	})
 
-	It("refuses {namespace} in names, pointing to from: Same, and * pointing to from: All", func() {
-		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"{namespace}"}}), "use from: Same")
+	It("refuses a variable in names, pointing to from: All and Same, and * pointing to from: All", func() {
+		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"{consumer.namespace}"}}), "use from: All")
+		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"{consumer.name}"}}), "or from: Same")
 		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"*"}}), "use from: All")
 		refused(gitBranch(map[string]any{"from": "Names", "names": []any{"Team_A"}}), "namespace names")
 	})
@@ -139,11 +145,14 @@ var _ = Describe("Access grants at admission", func() {
 		accepted(gitBranch(map[string]any{"from": "All"}, map[string]any{"from": "Same"}))
 	})
 
-	It("refuses a scope entry that is neither a name, {namespace} nor *", func() {
+	It("refuses a scope entry that is neither a name, a consumer variable alone, nor *", func() {
+		alone := "'{consumer.namespace}' or '{consumer.name}' alone, or '*' alone"
 		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
-			"sourceNamespaces": []any{"team-{namespace}"}}), "'{namespace}' alone, or '*' alone")
+			"sourceNamespaces": []any{"team-{consumer.namespace}"}}), alone)
+		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
+			"sourceNamespaces": []any{"{namespace}"}}), alone)
 		refused(kubeProvider("allowedApplierClaims", map[string]any{"from": "Same",
-			"applierNamespaces": []any{"flux-*"}}), "'{namespace}' alone, or '*' alone")
+			"applierNamespaces": []any{"flux-*"}}), alone)
 		refused(kubeProvider("allowedGitTargets", map[string]any{"from": "Same",
 			"clusterResources": []any{"cluster*"}}), "clusterResources[0]")
 	})

@@ -137,9 +137,15 @@ func seedTarget(ctx context.Context, t *testing.T, name string) string {
 		ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromSame,
-				SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable},
-				ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"}}},
+			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{
+				{
+					From: configbutleraiv1alpha3.GrantFromSame,
+					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{
+						configbutleraiv1alpha3.ConsumerNamespaceVariable,
+					},
+					ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
+				},
+			},
 		},
 	}))
 	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.GitTarget{

@@ -211,7 +211,7 @@ func TestGitBranch_ANamespaceLabelLossRevokesASelectorGrant(t *testing.T) {
 	provider := branchProvider("platform", "shared-repo")
 	provider.Spec.AllowedGitBranches = []configbutleraiv1alpha3.GitBranchGrant{{
 		From: configbutleraiv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
-		Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{namespace}/*", "main"},
+		Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*", "main"},
 	}}
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: tenant}}
 	f := newGitBranchFixture(t, provider, namespace, tenantBranch("team-a", time.Hour))

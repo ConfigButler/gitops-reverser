@@ -60,7 +60,7 @@ func mirrorGrants(namespaces ...string) []configv1alpha3.SourceGrant {
 	}
 	return []configv1alpha3.SourceGrant{{
 		From: configv1alpha3.GrantFromNames, Names: names,
-		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable},
+		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable},
 		ClusterResources: []configv1alpha3.ClusterResourceIdentity{"*"},
 	}}
 }

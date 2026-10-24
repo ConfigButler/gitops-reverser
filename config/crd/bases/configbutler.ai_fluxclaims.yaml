@@ -316,26 +316,9 @@ spec:
                   eligible GitTarget references the applier claim. A GitTarget naming this applier claim must write the
                   repository and branch it fetches.
                 properties:
-                  branch:
-                    description: Branch is the GitRepository's spec.ref.branch.
-                    type: string
-                  gitRepository:
-                    description: GitRepository is the Kustomization's spec.sourceRef,
-                      its namespace defaulted.
-                    properties:
-                      name:
-                        description: Name of the referent.
-                        type: string
-                      namespace:
-                        description: Namespace of the referent, when not specified
-                          it acts as LocalObjectReference.
-                        type: string
-                    required:
-                    - name
-                    type: object
-                  otherConsumers:
+                  alsoAppliedBy:
                     description: |-
-                      OtherConsumers are the other objects in the cluster that apply this GitRepository and that no
+                      AlsoAppliedBy are the other objects in the cluster that apply this GitRepository and that no
                       FluxClaim holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
                       new artifact the moment it arrives. Information only: it never affects Ready.
                     items:
@@ -363,6 +346,23 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  branch:
+                    description: Branch is the GitRepository's spec.ref.branch.
+                    type: string
+                  gitRepository:
+                    description: GitRepository is the Kustomization's spec.sourceRef,
+                      its namespace defaulted.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        type: string
+                      namespace:
+                        description: Namespace of the referent, when not specified
+                          it acts as LocalObjectReference.
+                        type: string
+                    required:
+                    - name
+                    type: object
                   url:
                     description: URL is the GitRepository's spec.url.
                     type: string

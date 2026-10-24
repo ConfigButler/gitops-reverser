@@ -122,7 +122,9 @@ func TestCheckSourceAuthorization(t *testing.T) {
 	provider := func(grant configbutleraiv1alpha3.SourceGrant) *configbutleraiv1alpha3.KubeProvider {
 		p := remoteKubeProvider("kc", "")
 		p.Namespace = "platform"
-		grant.SourceNamespaces = []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable}
+		grant.SourceNamespaces = []configbutleraiv1alpha3.ScopeNamespace{
+			configbutleraiv1alpha3.ConsumerNamespaceVariable,
+		}
 		p.Spec.AllowedGitTargets = []configbutleraiv1alpha3.SourceGrant{grant}
 		return p
 	}
@@ -256,7 +258,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 func TestCheckSourceAuthorization_OwnNamespaceAndAuditRoute(t *testing.T) {
 	own := inClusterKubeProvider("local")
 	own.Spec.AllowedGitTargets = []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromSame,
-		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable}}}
+		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable}}}
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: kpNamespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{

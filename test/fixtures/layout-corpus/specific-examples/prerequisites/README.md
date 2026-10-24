@@ -26,7 +26,7 @@ Every `GitTarget` names its source cluster with `spec.kubeProviderRef`. The exam
 `KubeProvider` the chart renders, `local` in `gitops-reverser`, which uses the operator's own
 identity. Every target needs a grant from the owner of the `KubeProvider`
 (`spec.allowedGitTargets`), and the grant's `sourceNamespaces` bound which source namespaces its
-`WatchRule`s may watch, its own included only when listed (`"{namespace}"`). What may actually be read
+`WatchRule`s may watch, its own included only when listed (`"{consumer.namespace}"`). What may actually be read
 is bounded by that provider credential's own RBAC in the source cluster. Concrete specimens are in
 [`../../shapes/1-flat-serialized/config/`](../../shapes/1-flat-serialized/config/kubeprovider.yaml)
 and [`../../shapes/3-tree-serialized/config/`](../../shapes/3-tree-serialized/config/kubeprovider.yaml).

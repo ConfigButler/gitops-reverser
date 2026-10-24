@@ -102,8 +102,8 @@ type GitTargetSpec struct {
 	// apply the current tip after publishing the edits pending on the branch, which reverts the
 	// refused edit and nothing that was waiting to be published. Only this
 	// target's applier is asked. If its GitRepository has to fetch to reach the tip, the
-	// Kustomizations a FluxClaim holds stay suspended and ignore the new artifact; only the
-	// consumers no applier claim holds, listed in the applier claim's status.source.otherConsumers, apply it, as
+	// Kustomizations a FluxClaim holds stay suspended and ignore the new artifact; only the objects
+	// no applier claim holds, listed in the applier claim's status.source.alsoAppliedBy, apply it, as
 	// they would for any push.
 	//
 	// It fires only for an edit to a document the folder ALREADY holds, in a write that removes no

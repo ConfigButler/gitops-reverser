@@ -16,9 +16,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// A GitRepository's consumers (docs/design/apply-trigger.md, "Shared sources"). A suspended
-// Kustomization ignores a new artifact; one consumer that is not held applies each new artifact the
-// moment it arrives, so a FluxClaim lists the ones no applier claim holds in its status.
+// What else applies a GitRepository (docs/design/apply-trigger.md, "Shared sources"). A suspended
+// Kustomization ignores a new artifact; an object applying the source that is not held applies each
+// new artifact the moment it arrives, so a FluxClaim lists the ones no applier claim holds in its
+// status.alsoAppliedBy.
 
 // A HelmRelease applies a GitRepository through a HelmChart that source-controller builds from it:
 // one helm-controller creates from the release's spec.chart, or one the release names in
@@ -44,15 +45,15 @@ func helmChartGVR() schema.GroupVersionResource {
 func olderHelmReleaseVersions() []string { return []string{"v2beta2", "v2beta1"} }
 func olderHelmChartVersions() []string   { return []string{"v1beta2"} }
 
-// Consumers lists the objects in the cluster that apply the GitRepository source, sorted:
+// AppliedBy lists the objects in the cluster that apply the GitRepository source, sorted:
 // Kustomizations whose spec.sourceRef names it, and HelmReleases whose chart is built from it,
 // through spec.chart.spec.sourceRef or through a HelmChart spec.chartRef names. Any failure is an
 // error, and then nothing is known: the caller must treat the source as shared.
 //
 // A kind the cluster does not serve has no objects. For HelmReleases that holds only when no
 // HelmChart is built from the source either: a release at a version not listed here would still
-// apply through one, so then the consumers are unknown and that is an error.
-func (f *Flux) Consumers(
+// apply through one, so then what applies the source is unknown and that is an error.
+func (f *Flux) AppliedBy(
 	ctx context.Context,
 	source types.NamespacedName,
 ) ([]fluxmeta.NamespacedObjectKindReference, error) {
@@ -60,22 +61,22 @@ func (f *Flux) Consumers(
 	if err != nil {
 		return nil, err
 	}
-	var consumers []fluxmeta.NamespacedObjectKindReference
+	var appliedBy []fluxmeta.NamespacedObjectKindReference
 	for i := range kustomizations {
 		if consumes(&kustomizations[i], []string{"spec", "sourceRef"}, source) {
-			consumers = append(consumers, kindReference(kindKustomization, &kustomizations[i]))
+			appliedBy = append(appliedBy, kindReference(kindKustomization, &kustomizations[i]))
 		}
 	}
 	releases, err := f.helmReleasesOf(ctx, source)
 	if err != nil {
 		return nil, err
 	}
-	consumers = append(consumers, releases...)
-	sort.Slice(consumers, func(i, j int) bool {
-		a, b := consumers[i], consumers[j]
+	appliedBy = append(appliedBy, releases...)
+	sort.Slice(appliedBy, func(i, j int) bool {
+		a, b := appliedBy[i], appliedBy[j]
 		return a.Kind+"/"+a.Namespace+"/"+a.Name < b.Kind+"/"+b.Namespace+"/"+b.Name
 	})
-	return consumers, nil
+	return appliedBy, nil
 }
 
 // helmReleasesOf is the HelmReleases whose chart is built from the GitRepository source.
@@ -98,19 +99,19 @@ func (f *Flux) helmReleasesOf(
 		}
 		return nil, nil
 	}
-	var consumers []fluxmeta.NamespacedObjectKindReference
+	var appliedBy []fluxmeta.NamespacedObjectKindReference
 	var viaChart []*unstructured.Unstructured
 	for i := range releases {
 		release := &releases[i]
 		switch {
 		case consumes(release, []string{"spec", "chart", "spec", "sourceRef"}, source):
-			consumers = append(consumers, kindReference(kindHelmRelease, release))
+			appliedBy = append(appliedBy, kindReference(kindHelmRelease, release))
 		case namesHelmChart(release):
 			viaChart = append(viaChart, release)
 		}
 	}
 	if len(viaChart) == 0 {
-		return consumers, nil
+		return appliedBy, nil
 	}
 	charts, served, err := f.chartsBuiltFrom(ctx, source)
 	if err != nil {
@@ -122,10 +123,10 @@ func (f *Flux) helmReleasesOf(
 	}
 	for _, release := range viaChart {
 		if charts[chartRefOf(release)] {
-			consumers = append(consumers, kindReference(kindHelmRelease, release))
+			appliedBy = append(appliedBy, kindReference(kindHelmRelease, release))
 		}
 	}
-	return consumers, nil
+	return appliedBy, nil
 }
 
 // chartsBuiltFrom is the HelmCharts whose spec.sourceRef names the GitRepository source; a

@@ -10,13 +10,15 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // Access between objects (docs/configuration.md): consent lives on the object
 // that lends something, in a list named "allowed" plus the referring kind. Every grant says where
 // it admits from with an enum borrowed from Gateway API's allowedRoutes.namespaces.from, required
 // here so that no grant admits anyone by omission. Nothing is automatic, the object's own namespace
-// included: an omitted or empty list admits nobody, and grants combine by union.
+// included: an omitted or empty list admits nobody, and grants combine by union. The object
+// asking for access is the consumer, and a scope or branch pattern can name it with a variable.
 
 // GrantFrom is where a grant admits referring objects from.
 // +kubebuilder:validation:Enum=Same;Names;Selector;All
@@ -33,21 +35,26 @@ const (
 	GrantFromAll GrantFrom = "All"
 )
 
-// NamespaceVariable is the one variable a grant's scope may hold. It stands for the namespace of the
-// object asking for access, in the control cluster.
-const NamespaceVariable = "{namespace}"
+// ConsumerNamespaceVariable stands, in a grant's scope or branch pattern, for the consumer's
+// namespace: the control-cluster namespace of the object asking for access.
+const ConsumerNamespaceVariable = "{consumer.namespace}"
+
+// ConsumerNameVariable stands, in a grant's scope or branch pattern, for the consumer's name: the
+// name of the object asking for access.
+const ConsumerNameVariable = "{consumer.name}"
 
 // GrantNamespace is one control-cluster namespace a grant admits by name.
 // +kubebuilder:validation:MaxLength=63
-// +kubebuilder:validation:XValidation:rule="self != '{namespace}'",message="names: '{namespace}' is refused, because it would admit every referring namespace; use from: Same for the namespace of the object holding the grant"
+// +kubebuilder:validation:XValidation:rule="self != '{consumer.namespace}' && self != '{consumer.name}'",message="names: a variable is refused, because names are matched against the consumer's namespace and '{consumer.namespace}' would admit every consumer; use from: All to admit every namespace, or from: Same for the namespace of the object holding the grant"
 // +kubebuilder:validation:XValidation:rule="self != '*'",message="names: '*' is refused; use from: All to admit every namespace"
-// +kubebuilder:validation:XValidation:rule="self == '{namespace}' || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="names holds namespace names (DNS labels)"
+// +kubebuilder:validation:XValidation:rule="self == '{consumer.namespace}' || self == '{consumer.name}' || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="names holds namespace names (DNS labels)"
 type GrantNamespace string
 
-// ScopeNamespace is one namespace in a source or applier scope: a namespace name, "{namespace}" for
-// the namespace of the object asking for access, or "*" for every namespace.
+// ScopeNamespace is one namespace in a source or applier scope: a namespace name,
+// "{consumer.namespace}" or "{consumer.name}" for the namespace of the same name as the consumer's
+// namespace or name, or "*" for every namespace.
 // +kubebuilder:validation:MaxLength=63
-// +kubebuilder:validation:XValidation:rule="self == '*' || self == '{namespace}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="a namespace scope holds a namespace name, '{namespace}' alone, or '*' alone"
+// +kubebuilder:validation:XValidation:rule="self == '*' || self == '{consumer.namespace}' || self == '{consumer.name}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="a namespace scope holds a namespace name, '{consumer.namespace}' or '{consumer.name}' alone, or '*' alone"
 type ScopeNamespace string
 
 // ClusterResourceIdentity names a cluster-scoped resource type: resource.group, a bare resource for
@@ -61,13 +68,14 @@ type ClusterResourceIdentity string
 // one could never match, and with no '?' or '[' nothing in a pattern ever needs escaping.
 
 // BranchPattern is a pattern matched against a whole branch name: literal text, '*' for any
-// sequence of characters ('/' included), and '{namespace}' as a whole path segment.
+// sequence of characters ('/' included), and '{consumer.namespace}' and '{consumer.name}' as whole
+// path segments.
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=255
 // +kubebuilder:validation:Pattern=`^[^\s~^:?\[\\]*$`
-// +kubebuilder:validation:XValidation:rule="!self.replace('{namespace}', 'x').matches('[{][^{}]*[}]')",messageExpression="'branch pattern ' + self + ' references unknown variable ' + self.replace('{namespace}', 'x').find('[{][^{}]*[}]') + '; the only variable is {namespace}'"
-// +kubebuilder:validation:XValidation:rule="self.replace('{namespace}', 'x').matches('[{][^{}]*[}]') || !self.replace('{namespace}', 'x').matches('[{}]')",messageExpression="'branch pattern ' + self + ' has an unmatched brace; the only variable is {namespace}'"
-// +kubebuilder:validation:XValidation:rule="!self.matches('[^/][{]namespace[}]') && !self.matches('[{]namespace[}][^/]')",messageExpression="'branch pattern ' + self + ': {namespace} must be a whole path segment, at the start or after a /, and at the end or before a /'"
+// +kubebuilder:validation:XValidation:rule="!self.replace('{consumer.namespace}', 'x').replace('{consumer.name}', 'x').matches('[{][^{}]*[}]')",messageExpression="'branch pattern ' + self + ' references unknown variable ' + self.replace('{consumer.namespace}', 'x').replace('{consumer.name}', 'x').find('[{][^{}]*[}]') + '; the variables are {consumer.namespace} and {consumer.name}'"
+// +kubebuilder:validation:XValidation:rule="self.replace('{consumer.namespace}', 'x').replace('{consumer.name}', 'x').matches('[{][^{}]*[}]') || !self.replace('{consumer.namespace}', 'x').replace('{consumer.name}', 'x').matches('[{}]')",messageExpression="'branch pattern ' + self + ' has an unmatched brace; the variables are {consumer.namespace} and {consumer.name}'"
+// +kubebuilder:validation:XValidation:rule="!self.matches('[^/][{]consumer[.]name(space)?[}]') && !self.matches('[{]consumer[.]name(space)?[}][^/]')",messageExpression="'branch pattern ' + self + ': {consumer.namespace} and {consumer.name} must each be a whole path segment, at the start or after a /, and at the end or before a /'"
 // +kubebuilder:validation:XValidation:rule="!self.contains('..') && !self.contains('@{') && !self.startsWith('/') && !self.endsWith('/') && !self.contains('//')",messageExpression="'branch pattern ' + self + ' can match no branch name: git refuses .., @{, a leading or trailing / and //'"
 type BranchPattern string
 
@@ -130,8 +138,9 @@ type GitBranchGrant struct {
 
 	// Branches are the branches an admitted GitBranch may claim, as patterns matched against the
 	// whole branch name. '*' matches any sequence of characters, '/' included, so "*" alone is every
-	// branch. '{namespace}' is the claiming GitBranch's namespace, and must be a whole path segment:
-	// "teams/{namespace}/*". There is no escaping, '?' or character class.
+	// branch. '{consumer.namespace}' and '{consumer.name}' are the claiming GitBranch's namespace and
+	// name, each a whole path segment: "teams/{consumer.namespace}/*". There is no escaping, '?' or
+	// character class.
 	// +required
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -167,9 +176,10 @@ type SourceGrant struct {
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
 	// SourceNamespaces are the source-cluster namespaces the WatchRules feeding an admitted GitTarget
-	// may watch: exact names, '{namespace}' for the GitTarget's own namespace, or '*' for every
-	// namespace, which also allows rules[].sourceNamespace: "*". The list is the whole scope; the
-	// GitTarget's own namespace is in it only when listed. Omitted, no namespace.
+	// may watch: exact names, '{consumer.namespace}' or '{consumer.name}' for the namespace named like
+	// the GitTarget's namespace or name, or '*' for every namespace, which also allows
+	// rules[].sourceNamespace: "*". The list is the whole scope; the GitTarget's own namespace is in it
+	// only when listed. Omitted, no namespace.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -215,8 +225,9 @@ type ApplierGrant struct {
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
 	// ApplierNamespaces are the source-cluster namespaces in which an admitted applier claim's
-	// Kustomization or Application may live: exact names, '{namespace}' for the applier claim's own
-	// namespace, or '*' for every namespace. The list is the whole scope.
+	// Kustomization or Application may live: exact names, '{consumer.namespace}' or '{consumer.name}'
+	// for the namespace named like the applier claim's namespace or name, or '*' for every namespace.
+	// The list is the whole scope.
 	// +required
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -344,22 +355,29 @@ func describeAdmitted(sources []NamespaceGrant, holderNamespace string) string {
 	return "admits " + strings.Join(parts, ", ")
 }
 
-// expandScope replaces '{namespace}' in each scope entry with namespace, and returns the entries
-// sorted and without duplicates.
-func expandScope[S ~string](entries []S, namespace string) []string {
+// expandConsumer replaces the consumer variables in s with consumer's namespace and name.
+func expandConsumer(s string, consumer types.NamespacedName) string {
+	return strings.NewReplacer(ConsumerNamespaceVariable, consumer.Namespace, ConsumerNameVariable, consumer.Name).
+		Replace(s)
+}
+
+// expandScope expands the consumer variables in each scope entry, and returns the entries sorted and
+// without duplicates.
+func expandScope[S ~string](entries []S, consumer types.NamespacedName) []string {
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		out = append(out, strings.ReplaceAll(string(entry), NamespaceVariable, namespace))
+		out = append(out, expandConsumer(string(entry), consumer))
 	}
 	slices.Sort(out)
 	return slices.Compact(out)
 }
 
-// MatchBranchPattern reports whether branch matches pattern for a GitBranch in namespace: the
-// pattern is matched against the whole branch name, '*' matches any sequence of characters, '/'
-// included, and '{namespace}' is namespace. Nothing else is special.
-func MatchBranchPattern(pattern BranchPattern, namespace, branch string) bool {
-	return globMatch(strings.ReplaceAll(string(pattern), NamespaceVariable, namespace), branch)
+// MatchBranchPattern reports whether branch matches pattern for the GitBranch consumer: the pattern
+// is matched against the whole branch name, '*' matches any sequence of characters, '/' included,
+// and '{consumer.namespace}' and '{consumer.name}' are consumer's namespace and name. Nothing else is
+// special.
+func MatchBranchPattern(pattern BranchPattern, consumer types.NamespacedName, branch string) bool {
+	return globMatch(expandConsumer(string(pattern), consumer), branch)
 }
 
 // globMatch matches name against a pattern in which '*' is the only special character, and matches
@@ -393,24 +411,24 @@ func ClusterResourceIdentityFor(group, resource string) string {
 	return resource + "." + group
 }
 
-// GitBranchAdmission is what a GitProvider's allowedGitBranches give a GitBranch's namespace.
+// GitBranchAdmission is what a GitProvider's allowedGitBranches give a GitBranch.
 // +kubebuilder:object:generate=false
 type GitBranchAdmission struct {
-	// Admitted reports whether some grant admits the namespace.
+	// Admitted reports whether some grant admits the GitBranch's namespace.
 	Admitted bool
-	// Branches are the patterns the admitting grants give the namespace, '{namespace}' expanded.
+	// Branches are the patterns the admitting grants give the GitBranch, consumer variables expanded.
 	Branches []string
 	// Allowed reports whether the namespace is admitted and the branch matches one of Branches.
 	Allowed bool
 }
 
-// AdmitsGitBranch reports what spec.allowedGitBranches gives a GitBranch in namespace, by the labels
-// that namespace carries in the control cluster, and whether it may claim branch.
+// AdmitsGitBranch reports what spec.allowedGitBranches gives the GitBranch consumer, by the labels
+// its namespace carries in the control cluster, and whether it may claim branch.
 func (p *GitProvider) AdmitsGitBranch(
-	namespace string, nsLabels map[string]string, branch string,
+	consumer types.NamespacedName, nsLabels map[string]string, branch string,
 ) (GitBranchAdmission, error) {
 	grants := p.Spec.AllowedGitBranches
-	admitting, err := admitAll(sourcesOf(grants), p.Namespace, namespace, nsLabels)
+	admitting, err := admitAll(sourcesOf(grants), p.Namespace, consumer.Namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
 		return GitBranchAdmission{}, err
 	}
@@ -419,12 +437,12 @@ func (p *GitProvider) AdmitsGitBranch(
 	for _, i := range admitting {
 		for _, pattern := range grants[i].Branches {
 			patterns = append(patterns, pattern)
-			if MatchBranchPattern(pattern, namespace, branch) {
+			if MatchBranchPattern(pattern, consumer, branch) {
 				out.Allowed = true
 			}
 		}
 	}
-	out.Branches = expandScope(patterns, namespace)
+	out.Branches = expandScope(patterns, consumer)
 	return out, nil
 }
 
@@ -445,14 +463,14 @@ func (b *GitBranch) DescribeAllowedGitTargets() string {
 	return describeAdmitted(b.Spec.AllowedGitTargets, b.Namespace)
 }
 
-// SourceScope is what a KubeProvider's allowedGitTargets give a GitTarget's namespace: whether it may
-// mirror at all, and what.
+// SourceScope is what a KubeProvider's allowedGitTargets give a GitTarget: whether it may mirror at
+// all, and what.
 // +kubebuilder:object:generate=false
 type SourceScope struct {
-	// Admitted reports whether some grant admits the namespace.
+	// Admitted reports whether some grant admits the GitTarget's namespace.
 	Admitted bool
-	// SourceNamespaces is the union of the admitting grants' sourceNamespaces, '{namespace}' expanded.
-	// "*" is every namespace.
+	// SourceNamespaces is the union of the admitting grants' sourceNamespaces, consumer variables
+	// expanded. "*" is every namespace.
 	SourceNamespaces []string
 	// ClusterResources is the union of the admitting grants' clusterResources. "*" is every
 	// cluster-scoped resource.
@@ -485,11 +503,13 @@ func scopeAllows(scope []string, value string) bool {
 	return false
 }
 
-// AdmitsGitTarget reports what spec.allowedGitTargets gives a GitTarget in namespace, by the labels
-// that namespace carries in the control cluster.
-func (p *KubeProvider) AdmitsGitTarget(namespace string, nsLabels map[string]string) (SourceScope, error) {
+// AdmitsGitTarget reports what spec.allowedGitTargets gives the GitTarget consumer, by the labels its
+// namespace carries in the control cluster.
+func (p *KubeProvider) AdmitsGitTarget(
+	consumer types.NamespacedName, nsLabels map[string]string,
+) (SourceScope, error) {
 	grants := p.Spec.AllowedGitTargets
-	admitting, err := admitAll(sourcesOf(grants), p.Namespace, namespace, nsLabels)
+	admitting, err := admitAll(sourcesOf(grants), p.Namespace, consumer.Namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
 		return SourceScope{}, err
 	}
@@ -501,8 +521,8 @@ func (p *KubeProvider) AdmitsGitTarget(namespace string, nsLabels map[string]str
 	}
 	return SourceScope{
 		Admitted:         true,
-		SourceNamespaces: expandScope(namespaces, namespace),
-		ClusterResources: expandScope(resources, namespace),
+		SourceNamespaces: expandScope(namespaces, consumer),
+		ClusterResources: expandScope(resources, consumer),
 	}, nil
 }
 
@@ -511,12 +531,12 @@ func (p *KubeProvider) DescribeAllowedGitTargets() string {
 	return describeAdmitted(sourcesOf(p.Spec.AllowedGitTargets), p.Namespace)
 }
 
-// ApplierScope is what a KubeProvider's allowedApplierClaims give an applier claim's namespace.
+// ApplierScope is what a KubeProvider's allowedApplierClaims give an applier claim.
 // +kubebuilder:object:generate=false
 type ApplierScope struct {
-	// Admitted reports whether some grant admits the namespace.
+	// Admitted reports whether some grant admits the applier claim's namespace.
 	Admitted bool
-	// ApplierNamespaces is the union of the admitting grants' applierNamespaces, '{namespace}'
+	// ApplierNamespaces is the union of the admitting grants' applierNamespaces, consumer variables
 	// expanded. "*" is every namespace.
 	ApplierNamespaces []string
 }
@@ -526,11 +546,13 @@ func (s ApplierScope) AllowsApplierNamespace(namespace string) bool {
 	return scopeAllows(s.ApplierNamespaces, namespace)
 }
 
-// AdmitsApplierClaim reports what spec.allowedApplierClaims gives an applier claim in namespace, by
-// the labels that namespace carries in the control cluster.
-func (p *KubeProvider) AdmitsApplierClaim(namespace string, nsLabels map[string]string) (ApplierScope, error) {
+// AdmitsApplierClaim reports what spec.allowedApplierClaims gives the applier claim consumer, by the
+// labels its namespace carries in the control cluster.
+func (p *KubeProvider) AdmitsApplierClaim(
+	consumer types.NamespacedName, nsLabels map[string]string,
+) (ApplierScope, error) {
 	grants := p.Spec.AllowedApplierClaims
-	admitting, err := admitAll(sourcesOf(grants), p.Namespace, namespace, nsLabels)
+	admitting, err := admitAll(sourcesOf(grants), p.Namespace, consumer.Namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
 		return ApplierScope{}, err
 	}
@@ -538,7 +560,7 @@ func (p *KubeProvider) AdmitsApplierClaim(namespace string, nsLabels map[string]
 	for _, i := range admitting {
 		namespaces = append(namespaces, grants[i].ApplierNamespaces...)
 	}
-	return ApplierScope{Admitted: true, ApplierNamespaces: expandScope(namespaces, namespace)}, nil
+	return ApplierScope{Admitted: true, ApplierNamespaces: expandScope(namespaces, consumer)}, nil
 }
 
 // DescribeAllowedApplierClaims names the namespaces spec.allowedApplierClaims admits.

@@ -99,9 +99,9 @@ func (s ResolvedSourceScope) Fingerprint() string {
 // policy TIGHTENED after a rule was accepted revokes it.
 //
 // An item may watch a namespace only while the KubeProvider's spec.allowedGitTargets admit the
-// GitTarget's namespace and give it that namespace in sourceNamespaces: a name, '{namespace}' for the
-// GitTarget's own namespace (which is the WatchRule's), or "*" for every namespace, which is also
-// what an item asking for "*" needs. The rule's own namespace is in scope only when a grant lists it.
+// GitTarget's namespace and give it that namespace in sourceNamespaces: a name, '{consumer.namespace}'
+// for the GitTarget's own namespace (which is the WatchRule's), '{consumer.name}' for the one named
+// after the GitTarget, or "*" for every namespace, which is also what an item asking for "*" needs. The rule's own namespace is in scope only when a grant lists it.
 // The source credential's RBAC stays the hard maximum: a request this gate permits still fails 403
 // at the apiserver if the credential cannot read that namespace.
 //

@@ -125,7 +125,7 @@ func TestWatchRule_ANarrowedScopeRefusesOnALabelChange(t *testing.T) {
 			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{
 				{From: configbutleraiv1alpha3.GrantFromSelector,
 					Selector:         &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
-					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"{namespace}"}},
+					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"{consumer.namespace}"}},
 				{From: configbutleraiv1alpha3.GrantFromSelector,
 					Selector:         &metav1.LabelSelector{MatchLabels: map[string]string{"audit": "yes"}},
 					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"*"}},
@@ -214,7 +214,7 @@ func TestGitBranch_ALabelRemovedRevokesTheClaimAndItsGitTargetsFollow(t *testing
 			AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{{
 				From:     configbutleraiv1alpha3.GrantFromSelector,
 				Selector: &metav1.LabelSelector{MatchLabels: tenant},
-				Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{namespace}/*"},
+				Branches: []configbutleraiv1alpha3.BranchPattern{"teams/{consumer.namespace}/*"},
 			}},
 		},
 	}))
@@ -237,7 +237,7 @@ func TestGitBranch_ALabelRemovedRevokesTheClaimAndItsGitTargetsFollow(t *testing
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
 			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromSame,
-				SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"{namespace}"}}},
+				SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"{consumer.namespace}"}}},
 		},
 	}))
 	target := &configbutleraiv1alpha3.GitTarget{

@@ -52,7 +52,7 @@ func snbGitProvider() *configv1alpha3.GitProvider {
 func snbKubeProvider(wide bool) *configv1alpha3.KubeProvider {
 	grant := configv1alpha3.SourceGrant{
 		From: configv1alpha3.GrantFromNames, Names: []configv1alpha3.GrantNamespace{snbTenantNS},
-		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable},
+		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable},
 	}
 	if wide {
 		grant.SourceNamespaces = append(grant.SourceNamespaces, "*")
@@ -221,7 +221,7 @@ func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing
 	providerKey := k8stypes.NamespacedName{Namespace: snbProviderNS, Name: snbProvider}
 	require.NoError(t, m.Client.Get(ctx, providerKey, &stored))
 	stored.Spec.AllowedGitTargets[0].SourceNamespaces = []configv1alpha3.ScopeNamespace{
-		configv1alpha3.NamespaceVariable}
+		configv1alpha3.ConsumerNamespaceVariable}
 	require.NoError(t, m.Client.Update(ctx, &stored))
 
 	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target)

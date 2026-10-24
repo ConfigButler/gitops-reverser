@@ -7,8 +7,8 @@ spec:
   # Replace with your own repository URL
   url: "git@github.com:YOUR_USERNAME/my-k8s-audit.git"
   # Which GitBranches may claim which branches through this provider. Nothing is automatic, this
-  # namespace included. '*' matches any branch; "teams/{namespace}/*" would give each namespace its
-  # own prefix.
+  # namespace included. '*' matches any branch; "teams/{consumer.namespace}/*" would give each
+  # namespace its own prefix.
   allowedGitBranches:
     - from: Same
       branches: ["*"]

@@ -112,15 +112,18 @@ spec:
                         maxLength: 63
                         type: string
                         x-kubernetes-validations:
-                        - message: 'names: ''{namespace}'' is refused, because it
-                            would admit every referring namespace; use from: Same
-                            for the namespace of the object holding the grant'
-                          rule: self != '{namespace}'
+                        - message: 'names: a variable is refused, because names are
+                            matched against the consumer''s namespace and ''{consumer.namespace}''
+                            would admit every consumer; use from: All to admit every
+                            namespace, or from: Same for the namespace of the object
+                            holding the grant'
+                          rule: self != '{consumer.namespace}' && self != '{consumer.name}'
                         - message: 'names: ''*'' is refused; use from: All to admit
                             every namespace'
                           rule: self != '*'
                         - message: names holds namespace names (DNS labels)
-                          rule: self == '{namespace}' || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                          rule: self == '{consumer.namespace}' || self == '{consumer.name}'
+                            || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
                       maxItems: 64
                       minItems: 1
                       type: array

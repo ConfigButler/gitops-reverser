@@ -697,8 +697,8 @@ func (in *FluxClaimList) DeepCopyObject() runtime.Object {
 func (in *FluxClaimSource) DeepCopyInto(out *FluxClaimSource) {
 	*out = *in
 	out.GitRepository = in.GitRepository
-	if in.OtherConsumers != nil {
-		in, out := &in.OtherConsumers, &out.OtherConsumers
+	if in.AlsoAppliedBy != nil {
+		in, out := &in.AlsoAppliedBy, &out.AlsoAppliedBy
 		*out = make([]meta.NamespacedObjectKindReference, len(*in))
 		copy(*out, *in)
 	}

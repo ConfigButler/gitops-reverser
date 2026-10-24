@@ -155,6 +155,12 @@ reports `HeldByAnotherClaim`.
 `clusterResources`, `applierNamespaces`). Grants combine by union; an explicit scope is the whole
 scope. Not "permission" or "policy".
 
+**Consumer.** The object a grant admits or refuses: the `GitBranch` for `allowedGitBranches`, the
+`GitTarget` for `allowedGitTargets`, the applier claim for `allowedApplierClaims`. A grant's scope
+names it with `{consumer.namespace}` and `{consumer.name}`. The grant's own object is its holder,
+and `from: Same` is the holder's namespace, never the consumer's. Not "referrer", "requester" or
+"caller".
+
 **Parent branch.** The branch a write branch is created from, and compared against while the write
 branch does not exist on the remote: the `GitBranch`'s `spec.parentBranch`, or the remote's default
 branch when that is omitted. Say "parent branch"; a bare "parent" is fine where the subject is
@@ -531,3 +537,4 @@ outage.
 | fence, fenced (for what an applier claim does to its applier) | suspend, held | the `Kustomization` is suspended, and the applier claim holds it; say which, and whether the suspend is handled |
 | trigger, apply trigger (for an applier claim) | applier claim | the resource does not declare when to apply, and "trigger" already names watch-plan, API-surface and Argo Events triggers |
 | quiet branch | flush | no apply waits for a branch with nothing pending; it goes after a flush |
+| consumer (for what applies a `GitRepository`) | what applies it, `alsoAppliedBy` | consumer names the object a grant admits |

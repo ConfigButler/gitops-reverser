@@ -46,7 +46,7 @@ var _ = Describe("Manager branch grants", Label("manager"), Ordered, func() {
 		_, err := kubectlRunInNamespace(platformNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to the platform namespace")
 
-		By("creating the platform's GitProvider: main for itself, teams/{namespace}/* for tenants")
+		By("creating the platform's GitProvider: main for itself, teams/{consumer.namespace}/* for tenants")
 		_, err = kubectlRunWithStdin("", fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider
 metadata:
@@ -63,7 +63,7 @@ spec:
       selector:
         matchLabels:
           %s: "true"
-      branches: ["teams/{namespace}/*"]
+      branches: ["teams/{consumer.namespace}/*"]
 `, providerName, platformNs, repo.RepoURLHTTP, repo.GitSecretHTTP, tenantLabel), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
 		verifyResourceStatus("gitprovider", providerName, platformNs,

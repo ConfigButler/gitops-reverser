@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
 
@@ -83,12 +84,18 @@ func TestChartKubeProvider_TheQuickstartGrantsItsNamespaceOnly(t *testing.T) {
 	provider := renderLocalKubeProvider(t, "--set", "quickstart.enabled=true",
 		"--set", "quickstart.gitProvider.url=https://example.com/repo.git")
 
-	scope, err := provider.AdmitsGitTarget("gitops-reverser-quickstart-demo", nil)
+	scope, err := provider.AdmitsGitTarget(
+		types.NamespacedName{Namespace: "gitops-reverser-quickstart-demo", Name: "mirror"},
+		nil,
+	)
 	require.NoError(t, err)
 	assert.True(t, scope.AllowsSourceNamespace("gitops-reverser-quickstart-demo"))
 	assert.False(t, scope.AllowsSourceNamespace("kube-system"))
 	assert.Empty(t, scope.ClusterResources)
-	appliers, err := provider.AdmitsApplierClaim("gitops-reverser-quickstart-demo", nil)
+	appliers, err := provider.AdmitsApplierClaim(
+		types.NamespacedName{Namespace: "gitops-reverser-quickstart-demo", Name: "checkout"},
+		nil,
+	)
 	require.NoError(t, err)
 	assert.True(t, appliers.AllowsApplierNamespace("gitops-reverser-quickstart-demo"))
 	assert.False(t, appliers.AllowsApplierNamespace("flux-system"))
@@ -103,13 +110,13 @@ func TestChartKubeProvider_TheQuickstartGrantsItsNamespaceOnly(t *testing.T) {
 func TestChartKubeProvider_ThePlaygroundGrantsEveryNamespaceItsOwn(t *testing.T) {
 	provider := renderLocalKubeProvider(t, "-f", "../charts/gitops-reverser/values-playground.yaml")
 	for _, namespace := range []string{"team-a", "gitops-reverser"} {
-		scope, err := provider.AdmitsGitTarget(namespace, nil)
+		scope, err := provider.AdmitsGitTarget(types.NamespacedName{Namespace: namespace, Name: "mirror"}, nil)
 		require.NoError(t, err)
 		assert.True(t, scope.AllowsSourceNamespace(namespace))
 		assert.False(t, scope.AllowsSourceNamespace("kube-system"), "no other namespace")
 		assert.False(t, scope.AllowsSourceNamespace("*"))
 		assert.Empty(t, scope.ClusterResources, "no default grants clusterResources")
-		appliers, err := provider.AdmitsApplierClaim(namespace, nil)
+		appliers, err := provider.AdmitsApplierClaim(types.NamespacedName{Namespace: namespace, Name: "checkout"}, nil)
 		require.NoError(t, err)
 		assert.Equal(t, []string{namespace}, appliers.ApplierNamespaces)
 	}
@@ -123,7 +130,7 @@ func TestChartKubeProvider_GrantsRenderAsWritten(t *testing.T) {
   allowedGitTargets:
     - from: Selector
       selector: {matchLabels: {platform.example.com/tenant: "true"}}
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
     - from: Names
       names: [team-a]

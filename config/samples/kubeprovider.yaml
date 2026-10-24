@@ -19,8 +19,8 @@ spec:
     name: prod-eu-1-kubeconfig
   # Nothing uses this provider without a grant, its own namespace included. Each grant says where it
   # admits from (Same, Names, Selector or All) and what: the source namespaces a GitTarget's
-  # WatchRules may watch ("{namespace}" is the GitTarget's own; "*" is every namespace, which
-  # `sourceNamespace: "*"` needs), and the cluster-scoped resources a ClusterWatchRule may mirror.
+  # WatchRules may watch ("{consumer.namespace}" is the GitTarget's own; "*" is every namespace,
+  # which `sourceNamespace: "*"` needs), and the cluster-scoped resources a ClusterWatchRule may mirror.
   # Here: every namespace labelled tier=trusted in the control cluster mirrors its own namespace,
   # and this namespace mirrors every namespace and the CRDs.
   allowedGitTargets:
@@ -28,7 +28,7 @@ spec:
       selector:
         matchLabels:
           tier: trusted
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
     - from: Same
       sourceNamespaces: ["*"]
       clusterResources: [customresourcedefinitions.apiextensions.k8s.io]
@@ -36,4 +36,4 @@ spec:
   # provider, and where it may live. Admission to mirror is no admission to apply.
   allowedApplierClaims:
     - from: Same
-      applierNamespaces: ["{namespace}"]
+      applierNamespaces: ["{consumer.namespace}"]

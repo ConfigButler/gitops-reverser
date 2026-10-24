@@ -141,7 +141,7 @@ spec:
   allowedGitTargets:
     - from: Names
       names: [team-a]
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
     - from: Names
       names: [team-a]

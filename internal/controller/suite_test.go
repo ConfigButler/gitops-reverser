@@ -205,11 +205,15 @@ var _ = BeforeSuite(func() {
 		ObjectMeta: metav1.ObjectMeta{Namespace: testKubeProviderNamespace, Name: testKubeProviderName},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
-			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{{
-				From:             configbutleraiv1alpha3.GrantFromAll,
-				SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable},
-				ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
-			}},
+			AllowedGitTargets: []configbutleraiv1alpha3.SourceGrant{
+				{
+					From: configbutleraiv1alpha3.GrantFromAll,
+					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{
+						configbutleraiv1alpha3.ConsumerNamespaceVariable,
+					},
+					ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
+				},
+			},
 			AllowedApplierClaims: []configbutleraiv1alpha3.ApplierGrant{{
 				From:              configbutleraiv1alpha3.GrantFromAll,
 				ApplierNamespaces: []configbutleraiv1alpha3.ScopeNamespace{"*"},

@@ -166,7 +166,7 @@ func kubeProvider(name string, admits ...string) *v1alpha3.KubeProvider {
 		Spec: v1alpha3.KubeProviderSpec{
 			InCluster: &v1alpha3.KubeProviderInCluster{},
 			AllowedGitTargets: []v1alpha3.SourceGrant{{From: v1alpha3.GrantFromNames, Names: names,
-				SourceNamespaces: []v1alpha3.ScopeNamespace{v1alpha3.NamespaceVariable}}},
+				SourceNamespaces: []v1alpha3.ScopeNamespace{v1alpha3.ConsumerNamespaceVariable}}},
 			// The test appliers live in flux-system and argocd, not in the applier claims' namespace.
 			AllowedApplierClaims: []v1alpha3.ApplierGrant{{From: v1alpha3.GrantFromNames, Names: names,
 				ApplierNamespaces: []v1alpha3.ScopeNamespace{"*"}}},

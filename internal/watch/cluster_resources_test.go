@@ -25,7 +25,7 @@ func granting(identities ...configv1alpha3.ClusterResourceIdentity) *configv1alp
 		ClusterResources: identities,
 	}
 	if len(identities) == 0 {
-		grant.SourceNamespaces = []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable}
+		grant.SourceNamespaces = []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable}
 	}
 	return bootKubeProvider([]configv1alpha3.SourceGrant{grant})
 }

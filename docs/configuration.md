@@ -201,7 +201,7 @@ it](images/config-platform-shared.excalidraw.svg)
 A platform team keeps one repository credential and one cluster connection in its namespace,
 `platform`. Namespace `team-a` carries the label `platform.example.com/tenant: "true"`.
 
-1. The platform lets tenants claim `teams/<own namespace>/*` and mirror their own namespace.
+1. The platform lets tenants claim `teams/<their namespace>/*` and mirror their own namespace.
 2. Team A creates a `GitBranch` for `teams/team-a/live`, and lets `GitTarget`s from its own
    namespace write it.
 3. Team A creates a `GitTarget` that references that branch and the platform's `KubeProvider`.
@@ -219,7 +219,7 @@ spec:
   allowedGitBranches:
     - from: Selector
       selector: {matchLabels: {platform.example.com/tenant: "true"}}
-      branches: ["teams/{namespace}/*"]
+      branches: ["teams/{consumer.namespace}/*"]
 ---
 # platform: the cluster connection, and who may mirror which namespaces
 apiVersion: configbutler.ai/v1alpha3
@@ -230,7 +230,7 @@ spec:
   allowedGitTargets:
     - from: Selector
       selector: {matchLabels: {platform.example.com/tenant: "true"}}
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
 ---
 # team-a: the branch it claims, and who may write it
 apiVersion: configbutler.ai/v1alpha3
@@ -254,11 +254,11 @@ spec:
 
 | Request | Result | Because |
 |---|---|---|
-| `team-a`'s `GitBranch` claims `teams/team-a/live` | Allowed | The provider's grant selects `team-a`, and `teams/{namespace}/*` expands to `teams/team-a/*` |
+| `team-a`'s `GitBranch` claims `teams/team-a/live` | Allowed | The provider's grant selects `team-a`, and `teams/{consumer.namespace}/*` expands to `teams/team-a/*` |
 | `team-a`'s `GitBranch` claims `main` or `teams/team-b/live` | Refused, `BranchNotAllowed` | No grant gives `team-a` either branch |
 | `team-a`'s `GitTarget` writes through `team-a/live` | Allowed | `from: Same` on the `GitBranch` |
 | `team-b`'s `GitTarget` writes through `team-a/live` | Refused, until team A adds `from: Names, names: [team-b]` | The branch's owner decides who shares it |
-| A `WatchRule` in `team-a` watches `team-a` | Allowed | `sourceNamespaces: ["{namespace}"]` |
+| A `WatchRule` in `team-a` watches `team-a` | Allowed | `sourceNamespaces: ["{consumer.namespace}"]` |
 | A `WatchRule` in `team-a` watches `kube-system` | Refused, `SourceNamespaceNotAllowed` | The grant's scope is `team-a` only |
 | A `GitTarget` in `platform` mirrors through `production` | Refused, `NamespaceNotAuthorized` | No grant admits `platform`; its own namespace is not automatic |
 
@@ -267,7 +267,7 @@ Two expressions name a namespace, and they name different ones:
 | Expression | Whose namespace |
 |---|---|
 | `from: Same` | The object **containing** the grant: for this `GitBranch`, `team-a`; for the providers, `platform` |
-| `{namespace}` in a scope | The object **asking** for access: for `team-a`'s `GitBranch`, `team-a` |
+| `{consumer.namespace}` in a scope | The **consumer**, the object asking for access: for `team-a`'s `GitBranch`, `team-a` |
 
 **Platform administrators manage provider grants and authorization labels. Branch owners manage
 writer grants on their branches.** That split is why team A can share its branch without asking
@@ -316,7 +316,7 @@ follow. Admitting everyone takes `from: All`, a word a reviewer sees: `from: Sel
 | A grant list | No access | No access | Grants, combined by union | (not a value) |
 | `from` | Refused: required | (not a list) | `Same`, `Names`, `Selector` or `All` | Refused: use `All` |
 | `selector` (with `Selector`) | Refused | (not a list) | A label selector on control-cluster Namespaces | `selector: {}` is refused: use `from: All` |
-| `names` (with `Names`) | Refused | Refused | Exact control-cluster namespace names; `{namespace}` is refused, because it would admit every referrer (use `from: Same`) | Refused: use `from: All` |
+| `names` (with `Names`) | Refused | Refused | Exact control-cluster namespace names; a consumer variable is refused, because `{consumer.namespace}` would admit every consumer (use `from: All`, or `from: Same` for the grant's own namespace) | Refused: use `from: All` |
 | `allowedGitBranches[].branches` | Refused: required | Refused | Branch patterns | Every branch |
 | `allowedGitTargets[].sourceNamespaces` | No namespace | Refused | Exactly these source-cluster namespaces | Every namespace; also allows `rules[].sourceNamespace: "*"` |
 | `allowedGitTargets[].clusterResources` | No cluster-scoped resource | Refused | Exactly these, by identity | Every cluster-scoped resource, including CRDs installed later |
@@ -325,29 +325,60 @@ follow. Admitting everyone takes `from: All`, a word a reviewer sees: `from: Sel
 A `KubeProvider` `allowedGitTargets` grant sets `sourceNamespaces`, `clusterResources`, or both;
 one that grants neither is refused.
 
-### `{namespace}` and branch patterns
+### The consumer variables
 
-`{namespace}` in a scope always means the namespace, in the control cluster, of the object asking for
-access: the `GitBranch`'s in `branches`, the `GitTarget`'s in `sourceNamespaces`, and the applier
-claim's in `applierNamespaces`. In a source-namespace or applier scope it becomes a namespace of the
-same name in the source cluster. The syntax is the one a [placement template](#template-variables)
-uses, but the subject differs: there `{namespace}` is the mirrored resource's namespace, and can be
-`_cluster`; here it is the referring object's, which always exists. A grant renders nothing, so
-placement's `|fallback`, sanitizing and empty-segment dropping do not carry over.
+The object asking for access is the **consumer**: the `GitBranch` for `allowedGitBranches`, the
+`GitTarget` for `allowedGitTargets`, and the applier claim for `allowedApplierClaims`. One grant
+serves many consumers, so its scope can name the consumer instead of listing each one:
 
-A branch pattern is a small language of its own, matched against the whole branch name:
+| Variable | Is | For `team-a`'s `GitTarget` `payments` |
+|---|---|---|
+| `{consumer.namespace}` | The consumer's namespace, in the control cluster | `team-a` |
+| `{consumer.name}` | The consumer's name | `payments` |
+
+They are the only variables. Each is replaced with the consumer's value before the scope is
+compared, and nothing else about them is special. A grant has no variable for its own namespace:
+the grant sits on its object, so that namespace is known when the grant is written, and
+`from: Same` admits it.
+
+**In `sourceNamespaces` and `applierNamespaces`** an entry is an exact name, one variable alone, or
+`"*"` alone. The variable names a namespace **of the same name in the source cluster**:
+`sourceNamespaces: ["{consumer.namespace}"]` lets each `GitTarget` mirror the source namespace that
+shares its own namespace's name. For a `KubeProvider` that reaches another cluster, that is a
+namespace over there that happens to share the name. `{consumer.name}` lets each consumer reach the
+namespace named after it:
+
+```yaml
+# Each GitTarget mirrors the source namespace named after it: team-a's GitTarget payments mirrors
+# payments, and nothing else.
+allowedGitTargets:
+  - from: Selector
+    selector: {matchLabels: {platform.example.com/tenant: "true"}}
+    sourceNamespaces: ["{consumer.name}"]
+```
+
+`{consumer.name}` puts the consumer's name in charge of what it reaches, so whoever may create
+consumers in an admitted namespace may pick a name that matches any source namespace. Grant it only
+to namespaces whose owners you would let mirror any namespace by that name.
+
+**In a branch pattern** both variables may appear, each as a whole path segment, and the pattern is
+matched against the whole branch name:
 
 - **`*` matches any sequence of characters, `/` included, and the empty one.** `feature/*` matches
   `feature/checkout/v2`, and `*` alone is every branch. `main` does not match `main-old`.
-- **`{namespace}` must be a whole path segment:** at the start or after a `/`, and at the end or
-  before a `/`. `teams/{namespace}/*` is valid; `teams/{namespace}*` is refused, because for `team-a`
-  it would also match `teams/team-ab/live`.
+- **A variable is a whole path segment:** at the start or after a `/`, and at the end or before a
+  `/`. `teams/{consumer.namespace}/*` and `teams/{consumer.namespace}/{consumer.name}` are valid.
+  `teams/{consumer.namespace}*` is refused, because for `team-a` it would also match
+  `teams/team-ab/live`, and so is `{consumer.namespace}-{consumer.name}`.
 - **No escaping, `?` or character classes.** Git refuses `*`, `?` and `[` in a branch name, so a
   literal never needs escaping.
 - Any other `{...}` is refused when the object is applied, naming it:
-  `branch pattern teams/{ns}/* references unknown variable {ns}; the only variable is {namespace}`.
+  `branch pattern teams/{namespace}/* references unknown variable {namespace}; the variables are
+  {consumer.namespace} and {consumer.name}`.
 
-`sourceNamespaces` and `applierNamespaces` take exact names, `{namespace}` alone, or `"*"` alone.
+A [placement template](#template-variables) also has a `{namespace}`, and it means something else:
+the mirrored resource's namespace, which is `_cluster` for a cluster-scoped resource. A grant
+renders nothing, so placement's `|fallback`, sanitizing and empty-segment dropping do not apply.
 
 ### Cluster-scoped resources
 
@@ -861,12 +892,12 @@ spec:
   allowedGitTargets:
     - from: Names
       names: [team-a]
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
     - from: Selector
       selector:
         matchLabels:
           gitops.configbutler.ai/source-access: "true"
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
     - from: Names
       names: [team-a]
@@ -1852,7 +1883,7 @@ status:
     gitRepository: {namespace: flux-system, name: platform}
     url: https://github.com/acme/platform
     branch: main
-    otherConsumers:            # what else applies this GitRepository, held by no FluxClaim
+    alsoAppliedBy:             # what else applies this GitRepository, held by no FluxClaim
       - {kind: HelmRelease, namespace: platform, name: ingress}
   operation:
     phase: Succeeded           # Requested | Running | Settling | Unresolved | Succeeded | Failed
@@ -1873,7 +1904,7 @@ status:
 | `operation.suspendToken` | Flux only: the token of the suspend after the apply. Once it is handled, nothing that started before the suspend is still running |
 | `operation.appliedRevision` | The revision the applier reports it applied. It can differ from `commit` when the branch moved between the check and the apply |
 | `repairPending` | `true` while an apply reverted an API edit made after its flush: Git kept the edit, and the cluster runs the older value until the `Repair` |
-| `source.otherConsumers` | Flux only: the `Kustomization`s and `HelmRelease`s that apply the same `GitRepository` and that no `FluxClaim` holds. Information only; it never affects `Ready` |
+| `source.alsoAppliedBy` | Flux only: the `Kustomization`s and `HelmRelease`s that apply the same `GitRepository` and that no `FluxClaim` holds. Information only; it never affects `Ready` |
 
 A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is suspended again and recorded as
 an `Unresolved` operation with no `reason` and no `commit`, which completes once the suspend is
@@ -1935,7 +1966,7 @@ to this target's applier alone, and it goes out after a flush, so an allowed edi
 commit window is published before the apply and is not reverted with the refused one. An
 `Application` is asked to sync the tip. When a `Kustomization`'s `GitRepository` has to fetch to
 reach the tip, the `Kustomization`s a `FluxClaim` holds stay suspended and ignore the new artifact;
-only the consumers no applier claim holds, listed in the applier claim's `status.source.otherConsumers`, apply
+only the objects no applier claim holds, listed in the applier claim's `status.source.alsoAppliedBy`, apply
 it, as they would for any push. The
 [bi-directional guide](bi-directional.md#choosing-speconrefusal) covers when to choose it.
 
@@ -2629,9 +2660,10 @@ Every item, the rule's own namespace included, is authorized by the grants of th
 `KubeProvider`:
 
 1. a grant in its `spec.allowedGitTargets` admits the `GitTarget`'s namespace; and
-2. those grants' `sourceNamespaces` hold the namespace the item asks for: its name, `"{namespace}"`
-   for the `GitTarget`'s own (which is the `WatchRule`'s), or `"*"`. An item asking for `"*"` needs
-   `"*"` there.
+2. those grants' `sourceNamespaces` hold the namespace the item asks for: its name,
+   `"{consumer.namespace}"` for the `GitTarget`'s own (which is the `WatchRule`'s),
+   `"{consumer.name}"` for the one named after the `GitTarget`, or `"*"`. An item asking for `"*"`
+   needs `"*"` there.
 
 There is no third condition on the `GitTarget`. What a target may read from its source cluster is
 bounded by that cluster's RBAC for the provider's credential: a request the grants permit still

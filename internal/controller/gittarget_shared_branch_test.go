@@ -49,7 +49,7 @@ func sharedProviderReconciler(t *testing.T, objects ...ctrlclient.Object) *GitTa
 	// The KubeProvider every GitTarget here mirrors through admits every namespace.
 	local := admitting(claimLocalProvider)
 	local.Spec.AllowedGitTargets = []configbutleraiv1alpha3.SourceGrant{{From: configbutleraiv1alpha3.GrantFromAll,
-		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable}}}
+		SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable}}}
 	objects = append(objects, local)
 	for _, ns := range []string{"platform", "team-b"} {
 		objects = append(objects, &configbutleraiv1alpha3.GitProvider{

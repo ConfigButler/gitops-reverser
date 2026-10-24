@@ -456,9 +456,9 @@ func kustomizationManagers(ks *unstructured.Unstructured) []string {
 	return managers
 }
 
-// TestFluxClaim_PublishesTheSourcesOtherConsumers is decision 2: the consumers of the
+// TestFluxClaim_PublishesWhatElseAppliesTheSource is decision 2: the objects applying the
 // GitRepository that no FluxClaim holds are listed, information only.
-func TestFluxClaim_PublishesTheSourcesOtherConsumers(t *testing.T) {
+func TestFluxClaim_PublishesWhatElseAppliesTheSource(t *testing.T) {
 	objs := applierFluxObjects()
 	infra := objs[0].(*unstructured.Unstructured).DeepCopy()
 	infra.SetName("infra")
@@ -478,7 +478,7 @@ func TestFluxClaim_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	assert.Equal(t, []meta.NamespacedObjectKindReference{
 		{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"},
 		{Kind: "Kustomization", Namespace: "flux-system", Name: "infra"},
-	}, source.OtherConsumers, "itself is not another consumer")
+	}, source.AlsoAppliedBy, "it does not list itself")
 	assert.True(t, conditionIsTrue(f.claim(t).Status.Conditions, ConditionTypeReady), "information only")
 
 	// The fourth review's finding C: an applier claim holds its Kustomization only once it says so
@@ -498,7 +498,7 @@ func TestFluxClaim_PublishesTheSourcesOtherConsumers(t *testing.T) {
 		setClaimCondition(t, f.r, "infra", suspended)
 		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 		require.NoError(t, err)
-		assert.Equal(t, infraOther, f.claim(t).Status.Source.OtherConsumers,
+		assert.Equal(t, infraOther, f.claim(t).Status.Source.AlsoAppliedBy,
 			"an applier claim that is %s does not hold its Kustomization", suspended.Reason)
 	}
 
@@ -508,14 +508,14 @@ func TestFluxClaim_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
 	assert.Equal(t, []meta.NamespacedObjectKindReference{{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"}},
-		f.claim(t).Status.Source.OtherConsumers, "a Kustomization another applier claim holds is not listed")
+		f.claim(t).Status.Source.AlsoAppliedBy, "a Kustomization another applier claim holds is not listed")
 
 	require.NoError(t, f.sim.Client.Resource(k8sschema.GroupVersionResource{
 		Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases",
 	}).Namespace("apps").Delete(context.Background(), "podinfo", metav1.DeleteOptions{}))
 	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
-	assert.Empty(t, f.claim(t).Status.Source.OtherConsumers, "every consumer is held")
+	assert.Empty(t, f.claim(t).Status.Source.AlsoAppliedBy, "everything applying the source is held")
 }
 
 // setClaimCondition publishes a condition on the FluxClaim team-a/name.

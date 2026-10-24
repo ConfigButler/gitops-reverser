@@ -172,10 +172,12 @@ func applyKubeProvider(namespace, name, secretName, key string, admits ...string
 	if key != "" {
 		keyLine = "\n    key: " + key
 	}
-	grants := "\n  allowedGitTargets:\n    - from: Same\n      sourceNamespaces: [\"{namespace}\"]"
+	grants := "\n  allowedGitTargets:\n    - from: Same\n      sourceNamespaces: [\"{consumer.namespace}\"]"
 	if len(admits) > 0 {
-		grants += fmt.Sprintf("\n    - from: Names\n      names: [%s]\n      sourceNamespaces: [\"{namespace}\"]",
-			strings.Join(admits, ", "))
+		grants += fmt.Sprintf(
+			"\n    - from: Names\n      names: [%s]\n      sourceNamespaces: [\"{consumer.namespace}\"]",
+			strings.Join(admits, ", "),
+		)
 	}
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: KubeProvider
@@ -438,7 +440,7 @@ spec:
   inCluster: {}
   allowedGitTargets:
     - from: Same
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
 `, name, testNs), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
 		verifyResourceCondition("kubeprovider", name, testNs, "Validated", "False", "InClusterNotAuthorized", "")

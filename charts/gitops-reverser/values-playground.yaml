@@ -12,7 +12,7 @@
 kubeProvider:
   allowedGitTargets:
     - from: All
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
     - from: All
-      applierNamespaces: ["{namespace}"]
+      applierNamespaces: ["{consumer.namespace}"]

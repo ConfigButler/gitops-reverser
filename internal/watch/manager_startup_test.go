@@ -52,7 +52,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 		Spec: configv1alpha3.KubeProviderSpec{
 			InCluster: &configv1alpha3.KubeProviderInCluster{},
 			AllowedGitTargets: []configv1alpha3.SourceGrant{{From: configv1alpha3.GrantFromSame,
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable}}},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable}}},
 		},
 	}
 	existingGitProvider := &configv1alpha3.GitProvider{

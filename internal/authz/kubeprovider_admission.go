@@ -105,7 +105,7 @@ func GitTargetSourceScope(
 	if err != nil {
 		return Decision{}, configv1alpha3.SourceScope{}, err
 	}
-	scope, selErr := provider.AdmitsGitTarget(target.Namespace, nsLabels)
+	scope, selErr := provider.AdmitsGitTarget(client.ObjectKeyFromObject(target), nsLabels)
 	if !scope.Admitted {
 		return notAdmitted("KubeProvider", key, provider.DescribeAllowedGitTargets(), "spec.allowedGitTargets",
 			target.Namespace, selErr), configv1alpha3.SourceScope{}, nil
@@ -165,7 +165,7 @@ func GitBranchClaimAdmitted(
 		return Decision{}, err
 	}
 	key := client.ObjectKeyFromObject(provider)
-	admission, selErr := provider.AdmitsGitBranch(branch.Namespace, nsLabels, branch.Spec.Branch)
+	admission, selErr := provider.AdmitsGitBranch(client.ObjectKeyFromObject(branch), nsLabels, branch.Spec.Branch)
 	switch {
 	case !admission.Admitted:
 		return notAdmitted("GitProvider", key, provider.DescribeAllowedGitBranches(), "spec.allowedGitBranches",
@@ -202,7 +202,7 @@ func ApplierClaimAdmitted(
 	if err != nil {
 		return Decision{}, err
 	}
-	scope, selErr := provider.AdmitsApplierClaim(claim.GetNamespace(), nsLabels)
+	scope, selErr := provider.AdmitsApplierClaim(client.ObjectKeyFromObject(claim), nsLabels)
 	if !scope.Admitted {
 		return notAdmitted("KubeProvider", key, provider.DescribeAllowedApplierClaims(), "spec.allowedApplierClaims",
 			claim.GetNamespace(), selErr), nil

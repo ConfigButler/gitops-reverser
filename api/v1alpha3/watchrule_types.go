@@ -111,8 +111,8 @@ type ResourceRule struct {
 	// "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
 	// is the credential's own RBAC and nothing else. Every value, this rule's own namespace
 	// included, needs a grant: the GitTarget's KubeProvider must admit the target's namespace in
-	// spec.allowedGitTargets with that namespace in sourceNamespaces ("{namespace}" is the target's
-	// own). "*" needs "*" there.
+	// spec.allowedGitTargets with that namespace in sourceNamespaces ("{consumer.namespace}" is the
+	// target's own). "*" needs "*" there.
 	//
 	// This changes only which namespace is WATCHED, never where objects are written: Git placement
 	// follows each mirrored object's own namespace.

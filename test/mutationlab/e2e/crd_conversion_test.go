@@ -32,8 +32,16 @@ const (
 )
 
 var (
-	crdGVR   = schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
-	vwcGVR   = schema.GroupVersionResource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingwebhookconfigurations"}
+	crdGVR = schema.GroupVersionResource{
+		Group:    "apiextensions.k8s.io",
+		Version:  "v1",
+		Resource: "customresourcedefinitions",
+	}
+	vwcGVR = schema.GroupVersionResource{
+		Group:    "admissionregistration.k8s.io",
+		Version:  "v1",
+		Resource: "validatingwebhookconfigurations",
+	}
 	widgetV1 = schema.GroupVersionResource{Group: widgetGroup, Version: "v1", Resource: "widgets"}
 	widgetV2 = schema.GroupVersionResource{Group: widgetGroup, Version: "v2", Resource: "widgets"}
 	vwcName  = "gitops-reverser-validating-webhook"

@@ -157,7 +157,7 @@ func wrsnBaseObjects(
 }
 
 // TestReconcile_OwnNamespaceRuleNeedsOnlyANamespaceGrant: a WatchRule that omits sourceNamespace
-// watches its own namespace, which a grant giving sourceNamespaces '{namespace}' covers. It needs no
+// watches its own namespace, which a grant giving sourceNamespaces '{consumer.namespace}' covers. It needs no
 // wider grant.
 func TestReconcile_OwnNamespaceRuleNeedsOnlyANamespaceGrant(t *testing.T) {
 	ctx := context.Background()
@@ -167,7 +167,7 @@ func TestReconcile_OwnNamespaceRuleNeedsOnlyANamespaceGrant(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{wrsnRule}, f.compiledNames(),
-		"an own-namespace WatchRule needs only a '{namespace}' grant")
+		"an own-namespace WatchRule needs only a '{consumer.namespace}' grant")
 
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
@@ -179,7 +179,7 @@ func TestReconcile_OwnNamespaceRuleNeedsOnlyANamespaceGrant(t *testing.T) {
 // The gate has to stop the data plane, not just describe it.
 func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	ctx := context.Background()
-	// The rule asks for another namespace, but the grant gives only '{namespace}'.
+	// The rule asks for another namespace, but the grant gives only '{consumer.namespace}'.
 	f := newWRSNFixture(t, wrsnBaseObjects(
 		false, wrsnSourceNS))
 
@@ -265,7 +265,7 @@ func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *tes
 	require.NoError(t, f.client.Get(ctx,
 		k8stypes.NamespacedName{Namespace: wrsnProviderNS, Name: wrsnProvider}, &provider))
 	provider.Spec.AllowedGitTargets[0].SourceNamespaces = []configbutleraiv1alpha3.ScopeNamespace{
-		configbutleraiv1alpha3.NamespaceVariable}
+		configbutleraiv1alpha3.ConsumerNamespaceVariable}
 	require.NoError(t, f.client.Update(ctx, &provider))
 
 	// Observe the world at the exact moment the data plane is replanned.

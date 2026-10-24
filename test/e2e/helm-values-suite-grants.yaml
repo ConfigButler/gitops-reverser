@@ -6,8 +6,8 @@
 kubeProvider:
   allowedGitTargets:
     - from: All
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
       clusterResources: ["*"]
   allowedApplierClaims:
     - from: All
-      applierNamespaces: ["{namespace}"]
+      applierNamespaces: ["{consumer.namespace}"]

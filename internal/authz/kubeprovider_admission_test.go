@@ -68,7 +68,7 @@ func grantNames(namespaces ...string) []configv1alpha3.GrantNamespace {
 // mirrorFrom is a grant that admits namespaces by name to mirror their own namespace.
 func mirrorFrom(namespaces ...string) configv1alpha3.SourceGrant {
 	return configv1alpha3.SourceGrant{From: configv1alpha3.GrantFromNames, Names: grantNames(namespaces...),
-		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable}}
+		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable}}
 }
 
 func namespaceLabeled(labels map[string]string) *corev1.Namespace {
@@ -123,7 +123,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		{
 			name: "from: Same admits the provider's own namespace",
 			objects: []client.Object{ownNamespace(configv1alpha3.SourceGrant{From: configv1alpha3.GrantFromSame,
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"}}), namespaceLabeled(nil)},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}}), namespaceLabeled(nil)},
 			target:      ownTarget,
 			wantAllowed: true,
 		},
@@ -163,7 +163,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			name: "a Selector grant admits a namespace by its labels",
 			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
 				From: configv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"}}), namespaceLabeled(tenant)},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}}), namespaceLabeled(tenant)},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: true,
 		},
@@ -171,7 +171,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			name: "a Selector grant does not admit a namespace without the labels",
 			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
 				From: configv1alpha3.GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
-				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"}}), namespaceLabeled(nil)},
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}}), namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
 			wantReason:  ReasonNamespaceNotAuthorized,
 			wantMessage: "admits namespaces labelled tenant=true",
@@ -197,7 +197,9 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		{
 			name: "from: All admits every namespace",
 			objects: []client.Object{providerNamed("prod-eu-1", configv1alpha3.SourceGrant{
-				From: configv1alpha3.GrantFromAll, SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"}}),
+				From:             configv1alpha3.GrantFromAll,
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+			}),
 				namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: true,
@@ -311,7 +313,7 @@ func appliersFrom(scope []configv1alpha3.ScopeNamespace, namespaces ...string) c
 // TestApplierClaimAdmitted: an applier claim needs its own grant, and the applier must live in the
 // scope that grant gives. An explicit list is the whole scope.
 func TestApplierClaimAdmitted(t *testing.T) {
-	own := []configv1alpha3.ScopeNamespace{"{namespace}"}
+	own := []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}
 	provider := func(grants ...configv1alpha3.ApplierGrant) *configv1alpha3.KubeProvider {
 		p := providerNamed("hub", mirrorFrom(testNS))
 		p.Spec.AllowedApplierClaims = grants
@@ -327,9 +329,9 @@ func TestApplierClaimAdmitted(t *testing.T) {
 	}{
 		{"admitted to mirror is not admitted to apply", provider(), testNS, false, ReasonNamespaceNotAuthorized,
 			`KubeProvider platform/hub admits no namespace in spec.allowedApplierClaims; namespace "team-a"`},
-		{"{namespace} admits an applier in the claim's own namespace",
+		{"{consumer.namespace} admits an applier in the claim's own namespace",
 			provider(appliersFrom(own, testNS)), testNS, true, "", ""},
-		{"{namespace} refuses an applier elsewhere", provider(appliersFrom(own, testNS)), "flux-system", false,
+		{"{consumer.namespace} refuses an applier elsewhere", provider(appliersFrom(own, testNS)), "flux-system", false,
 			ReasonApplierNamespaceNotAllowed, `KubeProvider platform/hub lets namespace "team-a" hold appliers in ` +
 				`"team-a" (spec.allowedApplierClaims); Kustomization flux-system/apps is in namespace "flux-system"`},
 		{"an explicit list refuses the claim's own namespace",
@@ -369,9 +371,12 @@ func TestApplierClaimAdmitted(t *testing.T) {
 func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
 	provider := &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS},
-		Spec: configv1alpha3.KubeProviderSpec{AllowedGitTargets: []configv1alpha3.SourceGrant{{
-			From: configv1alpha3.GrantFromSame, SourceNamespaces: []configv1alpha3.ScopeNamespace{"{namespace}"},
-		}}},
+		Spec: configv1alpha3.KubeProviderSpec{AllowedGitTargets: []configv1alpha3.SourceGrant{
+			{
+				From:             configv1alpha3.GrantFromSame,
+				SourceNamespaces: []configv1alpha3.ScopeNamespace{"{consumer.namespace}"},
+			},
+		}},
 	}
 	claim := &configv1alpha3.FluxClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "apps"},
@@ -394,7 +399,7 @@ func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
 // TestApplierAdmitted: asking an applier to apply needs both admissions, always. Mirroring and
 // applying are granted separately, also on one KubeProvider from one namespace.
 func TestApplierAdmitted(t *testing.T) {
-	own := []configv1alpha3.ScopeNamespace{"{namespace}"}
+	own := []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}
 	withAppliers := func(p *configv1alpha3.KubeProvider, grants ...configv1alpha3.ApplierGrant) *configv1alpha3.KubeProvider {
 		p.Spec.AllowedApplierClaims = grants
 		return p

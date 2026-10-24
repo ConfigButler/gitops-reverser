@@ -8,38 +8,50 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
+
+// consumer is the object asking for access, by namespace and name.
+func consumer(namespace, name string) types.NamespacedName {
+	return types.NamespacedName{Namespace: namespace, Name: name}
+}
 
 func TestMatchBranchPattern(t *testing.T) {
 	tests := []struct {
 		pattern   BranchPattern
 		namespace string
+		name      string
 		branch    string
 		matches   bool
 	}{
-		{"teams/{namespace}/*", "team-a", "teams/team-a/live", true},
-		{"teams/{namespace}/*", "team-a", "teams/team-ab/live", false},
-		{"teams/{namespace}/*", "team-a", "teams/team-a", false},
-		{"teams/{namespace}/*", "team-a", "teams/team-a/", true},
-		{"feature/*", "x", "feature/checkout/v2", true},
-		{"feature/*", "x", "feature", false},
-		{"*", "x", "main", true},
-		{"*", "x", "teams/a/b", true},
-		{"teams/*", "x", "teams/a/b", true},
-		{"main", "x", "main", true},
-		{"main", "x", "main-old", false},
-		{"main", "x", "old-main", false},
-		{"release/*/hotfix", "x", "release/1.2/hotfix", true},
-		{"release/*/hotfix", "x", "release/1.2/hotfix/2", false},
-		{"*-old", "x", "main-old", true},
-		{"a*a", "x", "a", false},
-		{"a*a", "x", "aa", true},
-		{"{namespace}", "team-a", "team-a", true},
-		{"{namespace}/*", "team-a", "team-b/x", false},
+		{"teams/{consumer.namespace}/*", "team-a", "live", "teams/team-a/live", true},
+		{"teams/{consumer.namespace}/*", "team-a", "live", "teams/team-ab/live", false},
+		{"teams/{consumer.namespace}/*", "team-a", "live", "teams/team-a", false},
+		{"teams/{consumer.namespace}/*", "team-a", "live", "teams/team-a/", true},
+		{"feature/*", "x", "live", "feature/checkout/v2", true},
+		{"feature/*", "x", "live", "feature", false},
+		{"*", "x", "live", "main", true},
+		{"*", "x", "live", "teams/a/b", true},
+		{"teams/*", "x", "live", "teams/a/b", true},
+		{"main", "x", "live", "main", true},
+		{"main", "x", "live", "main-old", false},
+		{"main", "x", "live", "old-main", false},
+		{"release/*/hotfix", "x", "live", "release/1.2/hotfix", true},
+		{"release/*/hotfix", "x", "live", "release/1.2/hotfix/2", false},
+		{"*-old", "x", "live", "main-old", true},
+		{"a*a", "x", "live", "a", false},
+		{"a*a", "x", "live", "aa", true},
+		{"{consumer.namespace}", "team-a", "live", "team-a", true},
+		{"{consumer.namespace}/*", "team-a", "live", "team-b/x", false},
+		{"teams/{consumer.namespace}/{consumer.name}", "team-a", "checkout", "teams/team-a/checkout", true},
+		{"teams/{consumer.namespace}/{consumer.name}", "team-a", "checkout", "teams/team-a/payments", false},
+		{"{consumer.name}/*", "team-a", "checkout", "checkout/feature", true},
+		{"{consumer.name}/*", "team-a", "checkout", "team-a/feature", false},
+		{"{namespace}", "team-a", "live", "team-a", false},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.pattern)+"~"+tt.branch, func(t *testing.T) {
-			assert.Equal(t, tt.matches, MatchBranchPattern(tt.pattern, tt.namespace, tt.branch))
+			assert.Equal(t, tt.matches, MatchBranchPattern(tt.pattern, consumer(tt.namespace, tt.name), tt.branch))
 		})
 	}
 }
@@ -138,35 +150,35 @@ func TestGitProvider_AdmitsGitBranch(t *testing.T) {
 		Spec: GitProviderSpec{AllowedGitBranches: []GitBranchGrant{
 			{From: GrantFromSame, Branches: []BranchPattern{"main", "release/*"}},
 			{From: GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "true"}},
-				Branches: []BranchPattern{"teams/{namespace}/*", "feature/*"}},
+				Branches: []BranchPattern{"teams/{consumer.namespace}/*", "feature/*"}},
 		}},
 	}
 	tenant := map[string]string{"tenant": "true"}
 
-	got, err := provider.AdmitsGitBranch("team-a", tenant, "teams/team-a/live")
+	got, err := provider.AdmitsGitBranch(consumer("team-a", "live"), tenant, "teams/team-a/live")
 	require.NoError(t, err)
 	assert.Equal(t, GitBranchAdmission{Admitted: true, Allowed: true,
 		Branches: []string{"feature/*", "teams/team-a/*"}}, got)
 
-	got, err = provider.AdmitsGitBranch("team-a", tenant, "main")
+	got, err = provider.AdmitsGitBranch(consumer("team-a", "live"), tenant, "main")
 	require.NoError(t, err)
 	assert.True(t, got.Admitted)
 	assert.False(t, got.Allowed, "main is the platform's")
 
-	got, err = provider.AdmitsGitBranch("team-a", tenant, "teams/team-b/live")
+	got, err = provider.AdmitsGitBranch(consumer("team-a", "live"), tenant, "teams/team-b/live")
 	require.NoError(t, err)
 	assert.False(t, got.Allowed, "another team's prefix")
 
-	got, err = provider.AdmitsGitBranch("team-c", nil, "teams/team-c/live")
+	got, err = provider.AdmitsGitBranch(consumer("team-c", "live"), nil, "teams/team-c/live")
 	require.NoError(t, err)
 	assert.False(t, got.Admitted, "no grant admits an unlabelled namespace")
 
-	got, err = provider.AdmitsGitBranch("platform", nil, "release/1.0")
+	got, err = provider.AdmitsGitBranch(consumer("platform", "live"), nil, "release/1.0")
 	require.NoError(t, err)
 	assert.True(t, got.Allowed)
 
 	provider.Spec.AllowedGitBranches = nil
-	got, err = provider.AdmitsGitBranch("platform", nil, "main")
+	got, err = provider.AdmitsGitBranch(consumer("platform", "live"), nil, "main")
 	require.NoError(t, err)
 	assert.False(t, got.Admitted, "nothing is automatic, the provider's own namespace included")
 }
@@ -177,7 +189,7 @@ func TestKubeProvider_AdmitsGitTarget(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: "production"},
 		Spec: KubeProviderSpec{AllowedGitTargets: []SourceGrant{
 			{From: GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: tenant},
-				SourceNamespaces: []ScopeNamespace{"{namespace}"}},
+				SourceNamespaces: []ScopeNamespace{"{consumer.namespace}"}},
 			{From: GrantFromNames, Names: []GrantNamespace{"platform-audit"},
 				SourceNamespaces: []ScopeNamespace{"*"}, ClusterResources: []ClusterResourceIdentity{"*"}},
 			{From: GrantFromNames, Names: []GrantNamespace{"rbac-mirror"},
@@ -185,21 +197,21 @@ func TestKubeProvider_AdmitsGitTarget(t *testing.T) {
 		}},
 	}
 
-	scope, err := provider.AdmitsGitTarget("team-a", tenant)
+	scope, err := provider.AdmitsGitTarget(consumer("team-a", "mirror"), tenant)
 	require.NoError(t, err)
 	assert.True(t, scope.Admitted)
 	assert.True(t, scope.AllowsSourceNamespace("team-a"))
 	assert.False(t, scope.AllowsSourceNamespace("kube-system"))
-	assert.False(t, scope.AllowsSourceNamespace("*"), "{namespace} does not allow a wildcard")
+	assert.False(t, scope.AllowsSourceNamespace("*"), "{consumer.namespace} does not allow a wildcard")
 	assert.False(t, scope.AllowsClusterResource("", "nodes"))
 
-	scope, err = provider.AdmitsGitTarget("platform-audit", nil)
+	scope, err = provider.AdmitsGitTarget(consumer("platform-audit", "mirror"), nil)
 	require.NoError(t, err)
 	assert.True(t, scope.AllowsSourceNamespace("*"))
 	assert.True(t, scope.AllowsSourceNamespace("kube-system"))
 	assert.True(t, scope.AllowsAllClusterResources())
 
-	scope, err = provider.AdmitsGitTarget("rbac-mirror", nil)
+	scope, err = provider.AdmitsGitTarget(consumer("rbac-mirror", "mirror"), nil)
 	require.NoError(t, err)
 	assert.True(t, scope.Admitted)
 	assert.Empty(t, scope.SourceNamespaces, "clusterResources alone grants no namespace")
@@ -208,7 +220,7 @@ func TestKubeProvider_AdmitsGitTarget(t *testing.T) {
 	assert.False(t, scope.AllowsClusterResource("", "clusterroles"), "a bare name is the core group only")
 	assert.False(t, scope.AllowsAllClusterResources())
 
-	scope, err = provider.AdmitsGitTarget("platform", nil)
+	scope, err = provider.AdmitsGitTarget(consumer("platform", "mirror"), nil)
 	require.NoError(t, err)
 	assert.False(t, scope.Admitted, "the provider's own namespace needs a grant")
 }
@@ -218,16 +230,16 @@ func TestKubeProvider_AdmitsGitTarget_UnionOfScopes(t *testing.T) {
 	provider := &KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform"},
 		Spec: KubeProviderSpec{AllowedGitTargets: []SourceGrant{
-			{From: GrantFromAll, SourceNamespaces: []ScopeNamespace{"{namespace}"}},
+			{From: GrantFromAll, SourceNamespaces: []ScopeNamespace{"{consumer.namespace}"}},
 			{From: GrantFromSelector, Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"audit": "true"}},
 				SourceNamespaces: []ScopeNamespace{"*"}},
 		}},
 	}
-	scope, err := provider.AdmitsGitTarget("team-a", map[string]string{"audit": "true"})
+	scope, err := provider.AdmitsGitTarget(consumer("team-a", "mirror"), map[string]string{"audit": "true"})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"*", "team-a"}, scope.SourceNamespaces)
 
-	scope, err = provider.AdmitsGitTarget("team-a", nil)
+	scope, err = provider.AdmitsGitTarget(consumer("team-a", "mirror"), nil)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"team-a"}, scope.SourceNamespaces, "losing the label narrows the scope")
 }
@@ -236,7 +248,9 @@ func TestKubeProvider_AdmitsApplierClaim(t *testing.T) {
 	provider := &KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform"},
 		Spec: KubeProviderSpec{
-			AllowedGitTargets: []SourceGrant{{From: GrantFromAll, SourceNamespaces: []ScopeNamespace{"{namespace}"}}},
+			AllowedGitTargets: []SourceGrant{
+				{From: GrantFromAll, SourceNamespaces: []ScopeNamespace{"{consumer.namespace}"}},
+			},
 			AllowedApplierClaims: []ApplierGrant{
 				{
 					From:              GrantFromNames,
@@ -246,15 +260,37 @@ func TestKubeProvider_AdmitsApplierClaim(t *testing.T) {
 			},
 		},
 	}
-	scope, err := provider.AdmitsApplierClaim("team-a", nil)
+	scope, err := provider.AdmitsApplierClaim(consumer("team-a", "checkout"), nil)
 	require.NoError(t, err)
 	assert.True(t, scope.AllowsApplierNamespace("flux-system"))
 	assert.False(t, scope.AllowsApplierNamespace("team-a"), "an explicit list is the whole scope")
 
-	scope, err = provider.AdmitsApplierClaim("team-b", nil)
+	scope, err = provider.AdmitsApplierClaim(consumer("team-b", "checkout"), nil)
 	require.NoError(t, err)
 	assert.False(t, scope.Admitted, "admission to mirror does not admit to apply")
 	assert.Equal(t, "admits team-a", provider.DescribeAllowedApplierClaims())
+}
+
+// TestKubeProvider_ConsumerNameInAScope: {consumer.name} is the consumer's own name, so one grant
+// gives each GitTarget, and each applier claim, the namespace named after it.
+func TestKubeProvider_ConsumerNameInAScope(t *testing.T) {
+	provider := &KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "platform"},
+		Spec: KubeProviderSpec{
+			AllowedGitTargets: []SourceGrant{{From: GrantFromAll,
+				SourceNamespaces: []ScopeNamespace{ConsumerNameVariable, ConsumerNamespaceVariable}}},
+			AllowedApplierClaims: []ApplierGrant{{From: GrantFromAll,
+				ApplierNamespaces: []ScopeNamespace{ConsumerNameVariable}}},
+		},
+	}
+	scope, err := provider.AdmitsGitTarget(consumer("team-a", "payments"), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"payments", "team-a"}, scope.SourceNamespaces)
+	assert.False(t, scope.AllowsSourceNamespace("checkout"), "another GitTarget's name")
+
+	appliers, err := provider.AdmitsApplierClaim(consumer("team-a", "checkout"), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"checkout"}, appliers.ApplierNamespaces)
 }
 
 func TestGitBranch_GitProviderKey(t *testing.T) {

@@ -41,18 +41,20 @@ kind: KubeProvider
 spec:
   allowedGitTargets:             # was its own namespace, plus accessFrom, without allowCrossNamespace
     - from: Same
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
     - from: Same
-      applierNamespaces: ["{namespace}"]
+      applierNamespaces: ["{consumer.namespace}"]
 ```
 
 - **Every `GitBranch`, `GitTarget` and applier claim needs a grant, also in the provider's own
   namespace.** Without one it reports `NamespaceNotAuthorized` and recovers once a grant admits it.
 - **`allowedBranches` became `allowedGitBranches`, which also says who may claim.** A
   `GitBranch.spec.gitProviderRef` may name a `GitProvider` in another namespace. Branch patterns match
-  the whole branch name, `*` crosses `/`, and `teams/{namespace}/*` gives each namespace its own
-  prefix. A branch outside the patterns is `BranchNotAllowed`.
+  the whole branch name, `*` crosses `/`, and `teams/{consumer.namespace}/*` gives each namespace its
+  own prefix. A branch outside the patterns is `BranchNotAllowed`. A grant's scope names the object
+  asking for access, the consumer, with `{consumer.namespace}` and `{consumer.name}`; see
+  [the consumer variables](configuration.md#the-consumer-variables).
 - **Who writes a branch is the `GitBranch`'s decision.** A `GitTarget` in another namespace writes
   through it only while its `spec.allowedGitTargets` admit that namespace.
 - **The chart's `local` provider grants nothing** unless `kubeProvider.allowedGitTargets` and
@@ -63,7 +65,7 @@ spec:
   its `GitTarget` names (`clusterroles.rbac.authorization.k8s.io`, a bare `nodes`, or `"*"`), and
   one type outside them refuses the whole rule (`ClusterResourceNotAllowed`). No default grants any,
   the chart's included, so a `ClusterWatchRule` through `local` stops mirroring until a grant does.
-- **A `WatchRule`'s own namespace needs a grant too:** `sourceNamespaces: ["{namespace}"]`. An
+- **A `WatchRule`'s own namespace needs a grant too:** `sourceNamespaces: ["{consumer.namespace}"]`. An
   explicit list is the whole scope, and `sourceNamespace: "*"` needs `"*"`.
 - **An applier claim refused by `allowedApplierClaims` hands its applier back**, as one no eligible
   `GitTarget` references does. A `GitBranch` no grant admits any more gives up its branch after its
@@ -87,8 +89,9 @@ including a platform and its tenants.
 `Application`'s automated sync), then delete their CRDs. After upgrading, recreate them under the
 new kinds with the same `spec`, and on each `GitTarget` replace `spec.applyTriggerRef` with
 `spec.applierClaimRef`. The `GitTarget` condition is `ApplierClaimReady` (reason
-`ApplierClaimNotFound`), the reason `HeldByAnotherTrigger` is `HeldByAnotherClaim`, and the
-finalizers are `configbutler.ai/flux-claim` and `configbutler.ai/argocd-claim`. The entries below
+`ApplierClaimNotFound`), the reason `HeldByAnotherTrigger` is `HeldByAnotherClaim`, the
+finalizers are `configbutler.ai/flux-claim` and `configbutler.ai/argocd-claim`, and a `FluxClaim`'s
+`status.source.otherConsumers` is `status.source.alsoAppliedBy`. The entries below
 use the old names. See [applier claim](definitions.md#applying-back).
 
 ## An `ArgoCDTrigger` holds its `Application`'s automated sync off
@@ -196,7 +199,7 @@ spec:
   allowedGitTargets:             # see "Grants say who may use a provider or a branch"
     - from: Names
       names: [team-a]
-      sourceNamespaces: ["{namespace}"]
+      sourceNamespaces: ["{consumer.namespace}"]
 ---
 kind: GitTarget
 metadata: {name: apps, namespace: team-a}

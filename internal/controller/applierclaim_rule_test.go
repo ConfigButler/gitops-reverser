@@ -439,7 +439,7 @@ func TestApplierClaimRule_AGitTargetEventRerunsTheClaimsItNames(t *testing.T) {
 
 // TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsItInTheGrant is B1: a namespace a KubeProvider
 // admits may suspend and apply an applier in another namespace only when the applierNamespaces its
-// spec.allowedApplierClaims give it include that namespace; '{namespace}' covers the applier claim's own.
+// spec.allowedApplierClaims give it include that namespace; '{consumer.namespace}' covers the applier claim's own.
 // Refused, the applier claim never asks the applier's cluster, and holds nothing.
 func TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsItInTheGrant(t *testing.T) {
 	for _, kind := range []string{configbutleraiv1alpha3.ApplierClaimKindFlux, configbutleraiv1alpha3.ApplierClaimKindArgoCD} {
@@ -452,7 +452,7 @@ func TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsItInTheGrant(t *testin
 				wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonApplierNamespaceNotAllowed,
 			},
 			"another namespace, granted": {granted: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded},
-			"its own namespace, which '{namespace}' grants": {
+			"its own namespace, which '{consumer.namespace}' grants": {
 				sameNamespace: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded,
 			},
 		} {
@@ -479,7 +479,7 @@ func TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsItInTheGrant(t *testin
 // applierNamespaceReconciler is a reconciler of kind over the applier claim team-a/checkout, whose
 // applier is in team-a when sameNamespace is set and in flux-system or argocd otherwise, with the
 // KubeProvider claimLocalProvider giving applierNamespaces "*" when granted is set, and only
-// '{namespace}' otherwise. It counts the lookups of the applier's cluster.
+// '{consumer.namespace}' otherwise. It counts the lookups of the applier's cluster.
 func applierNamespaceReconciler(
 	t *testing.T, kind string, sameNamespace, granted bool,
 ) (*ApplierClaimReconciler, *int) {
@@ -504,7 +504,7 @@ func applierNamespaceReconciler(
 	provider := admitting(claimLocalProvider, "team-a")
 	if !granted {
 		provider.Spec.AllowedApplierClaims = applierGrants(
-			[]configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable}, "team-a")
+			[]configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable}, "team-a")
 	}
 	r := claimReconciler(claimTestClient(t, claim, provider), kind, applierFakeSource(t, appliers...), nil, true)
 	calls := new(int)

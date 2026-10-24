@@ -149,7 +149,7 @@ func TestGitBranchClaimAdmitted(t *testing.T) {
 			Branches: []configv1alpha3.BranchPattern{"main"}},
 		configv1alpha3.GitBranchGrant{From: configv1alpha3.GrantFromSelector,
 			Selector: &metav1.LabelSelector{MatchLabels: tenant},
-			Branches: []configv1alpha3.BranchPattern{"teams/{namespace}/*", "feature/*"}},
+			Branches: []configv1alpha3.BranchPattern{"teams/{consumer.namespace}/*", "feature/*"}},
 	)
 	namespaces := []client.Object{
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNS, Labels: tenant}},
@@ -169,8 +169,13 @@ func TestGitBranchClaimAdmitted(t *testing.T) {
 				`(spec.allowedGitBranches); requested branch "main" is not allowed`},
 		{"a tenant may not claim another team's branch", claiming(testNS, "teams/team-b/live"), provider,
 			ReasonBranchNotAllowed, `requested branch "teams/team-b/live" is not allowed`},
-		{"{namespace} is a whole segment: team-a never matches team-ab", claiming(testNS, "teams/team-ab/live"),
-			provider, ReasonBranchNotAllowed, ""},
+		{
+			"{consumer.namespace} is a whole segment: team-a never matches team-ab",
+			claiming(testNS, "teams/team-ab/live"),
+			provider,
+			ReasonBranchNotAllowed,
+			"",
+		},
 		{"an unlabelled namespace is not admitted at all", claiming("team-c", "teams/team-c/live"), provider,
 			ReasonNamespaceNotAuthorized, `GitProvider platform/shared-repo admits platform, namespaces labelled ` +
 				`platform.example.com/tenant=true in spec.allowedGitBranches; namespace "team-c" is not admitted`},

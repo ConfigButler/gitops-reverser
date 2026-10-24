@@ -86,7 +86,7 @@ func snKubeProvider(scope ...configv1alpha3.ScopeNamespace) *configv1alpha3.Kube
 }
 
 const (
-	own = configv1alpha3.ScopeNamespace(configv1alpha3.NamespaceVariable)
+	own = configv1alpha3.ScopeNamespace(configv1alpha3.ConsumerNamespaceVariable)
 	all = configv1alpha3.ScopeNamespace("*")
 )
 
@@ -113,7 +113,7 @@ func TestResolveWatchRuleSourceScope(t *testing.T) {
 		says       string
 	}{
 		{
-			name:       "an omitted item watches the rule's own namespace, granted by {namespace}",
+			name:       "an omitted item watches the rule's own namespace, granted by {consumer.namespace}",
 			items:      []string{""},
 			scope:      []configv1alpha3.ScopeNamespace{own},
 			admitted:   true,
@@ -146,7 +146,7 @@ func TestResolveWatchRuleSourceScope(t *testing.T) {
 			namespaces: [][]string{{snSourceNS}},
 		},
 		{
-			name:     "a named namespace is refused under {namespace}",
+			name:     "a named namespace is refused under {consumer.namespace}",
 			items:    []string{snSourceNS},
 			scope:    []configv1alpha3.ScopeNamespace{own},
 			admitted: false,
@@ -160,7 +160,7 @@ func TestResolveWatchRuleSourceScope(t *testing.T) {
 			says:       `"*" is one cluster-wide list and watch, which is the empty namespace`,
 		},
 		{
-			name:     "the wildcard is refused under {namespace}",
+			name:     "the wildcard is refused under {consumer.namespace}",
 			items:    []string{snWildcard},
 			scope:    []configv1alpha3.ScopeNamespace{own},
 			admitted: false,

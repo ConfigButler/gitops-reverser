@@ -905,27 +905,27 @@ func (r *ApplierClaimReconciler) event(object client.Object, eventType, reason, 
 	}
 }
 
-// publishConsumers sets the applier claim's status.source.otherConsumers: the consumers of its GitRepository
-// in the applier's cluster, other than its own Kustomization, that no FluxClaim on the same
-// KubeProvider holds. A listing that fails publishes none. Information only (decision 2): it never
+// publishAlsoAppliedBy sets the applier claim's status.source.alsoAppliedBy: the objects applying its
+// GitRepository in the applier's cluster, other than its own Kustomization, that no FluxClaim on the
+// same KubeProvider holds. A listing that fails publishes none. Information only (decision 2): it never
 // affects Ready.
-func (r *ApplierClaimReconciler) publishConsumers(ctx context.Context, claim *configbutleraiv1alpha3.FluxClaim) {
+func (r *ApplierClaimReconciler) publishAlsoAppliedBy(ctx context.Context, claim *configbutleraiv1alpha3.FluxClaim) {
 	source := claim.Status.Source
 	if source == nil || r.ApplierClients == nil {
 		return
 	}
-	source.OtherConsumers = nil
+	source.AlsoAppliedBy = nil
 	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
 	defer cancel()
 	flux, err := r.fluxClient(ctx, claim)
 	if err != nil {
 		return
 	}
-	consumers, err := flux.Consumers(ctx, k8stypes.NamespacedName{
+	appliedBy, err := flux.AppliedBy(ctx, k8stypes.NamespacedName{
 		Namespace: source.GitRepository.Namespace, Name: source.GitRepository.Name,
 	})
 	if err != nil {
-		logf.FromContext(ctx).V(1).Info("cannot list the GitRepository's consumers",
+		logf.FromContext(ctx).V(1).Info("cannot list what applies the GitRepository",
 			"gitRepository", source.GitRepository.Namespace+"/"+source.GitRepository.Name, "error", err.Error())
 		return
 	}
@@ -933,13 +933,13 @@ func (r *ApplierClaimReconciler) publishConsumers(ctx context.Context, claim *co
 	if err != nil {
 		return
 	}
-	for _, consumer := range consumers {
-		key := k8stypes.NamespacedName{Namespace: consumer.Namespace, Name: consumer.Name}
+	for _, applying := range appliedBy {
+		key := k8stypes.NamespacedName{Namespace: applying.Namespace, Name: applying.Name}
 		itself := key == claim.Applier()
-		if consumer.Kind == configbutleraiv1alpha3.ApplierKindKustomization && (itself || others[key]) {
+		if applying.Kind == configbutleraiv1alpha3.ApplierKindKustomization && (itself || others[key]) {
 			continue
 		}
-		source.OtherConsumers = append(source.OtherConsumers, consumer)
+		source.AlsoAppliedBy = append(source.AlsoAppliedBy, applying)
 	}
 }
 

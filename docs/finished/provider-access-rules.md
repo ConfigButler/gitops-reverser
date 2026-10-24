@@ -720,6 +720,12 @@ page:
   `releaseDeadline`. A hand-back a denial began reads `Held=False`, reason `Revoking`, rather than
   `Releasing`, which is how a regrant knows to let it finish before adopting the applier again. A
   first cut marked it by the opening words of the `Releasing` message instead.
+- **The scope variable is `{consumer.namespace}`, and `{consumer.name}` joined it.** This page
+  writes `{namespace}`. That collided with the placement template's `{namespace}`, the mirrored
+  resource's namespace, and did not say whose namespace it was among the three a grant involves.
+  The object a grant admits is now the consumer, and `{consumer.name}` lets one grant give each
+  consumer the source namespace, applier namespace or branch segment named after it. `{namespace}`
+  is refused as an unknown variable.
 - **A deleted `GitProvider` or `KubeProvider` is not a revocation.** The `GitBranch` keeps its claim,
   and the applier claim keeps its hold, as before.
 - **Watch-driven tests.** The drain, successor and two-candidate revocation tests, and the applier

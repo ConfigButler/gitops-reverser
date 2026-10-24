@@ -125,8 +125,8 @@ git:
 # Application, synced for each apply. Off unless asked for, since one-way mirroring needs neither.
 applierAccess:
   # Grant get/patch on kustomize.toolkit.fluxcd.io Kustomizations and source.toolkit.fluxcd.io
-  # GitRepositories, list on Kustomizations, HelmReleases and HelmCharts (to find a
-  # GitRepository's other consumers), plus create on SelfSubjectAccessReviews (to check that access
+  # GitRepositories, list on Kustomizations, HelmReleases and HelmCharts (to find what else applies
+  # a GitRepository), plus create on SelfSubjectAccessReviews (to check that access
   # before relying on it). Cluster-wide, because an applier claim's applier can live in any namespace.
   flux: false
   # Grant get/update/patch on argoproj.io Applications (a sync is started by updating the
@@ -373,8 +373,9 @@ kubeProvider:
   # Each grant has a `from` (Same, Names with names, Selector with a non-empty selector, or All)
   # and a scope:
   #   allowedGitTargets[].sourceNamespaces  which namespaces the WatchRules feeding an admitted
-  #                                         GitTarget may watch: names, "{namespace}" for the
-  #                                         GitTarget's own, or "*"
+  #                                         GitTarget may watch: names, "{consumer.namespace}" or
+  #                                         "{consumer.name}" for the GitTarget's namespace or
+  #                                         name, or "*"
   #   allowedGitTargets[].clusterResources  which cluster-scoped types a ClusterWatchRule may mirror:
   #                                         resource.group, a bare core resource, or "*"
   #   allowedApplierClaims[].applierNamespaces  where an admitted applier claim's Kustomization or
@@ -385,7 +386,7 @@ kubeProvider:
   #   allowedGitTargets:
   #     - from: Selector
   #       selector: {matchLabels: {platform.example.com/tenant: "true"}}
-  #       sourceNamespaces: ["{namespace}"]
+  #       sourceNamespaces: ["{consumer.namespace}"]
   #   allowedApplierClaims:
   #     - from: Names
   #       names: [team-a]
