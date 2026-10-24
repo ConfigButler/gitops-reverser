@@ -121,8 +121,13 @@ func (l *branchWorkerEventLoop) snapshotStale(req *ResyncRequest) string {
 // snapshotsWait reports whether F3 applies to a resync: the branch has an applier, the snapshot is
 // not its collection's initial one, and the GitTarget's snapshots have not been held for
 // snapshotHoldLimit already. A snapshot let through by the limit is logged and counted as used.
+//
+// The snapshot of a GitTarget whose folder the barrier waits for (missingFolders) is used too: the
+// branch holds nothing of that folder for an apply to put on the cluster first, and the apply held
+// for the folder would wait on the snapshot.
 func (l *branchWorkerEventLoop) snapshotsWait(req *ResyncRequest) bool {
-	if len(l.appliers) == 0 || req.Initial {
+	if len(l.appliers) == 0 || req.Initial ||
+		l.awaitingFolders[itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace)] {
 		return false
 	}
 	since, held := l.snapshotHeldSince[resyncTargetKey(req)]

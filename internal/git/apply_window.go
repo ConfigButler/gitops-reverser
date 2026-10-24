@@ -43,6 +43,17 @@ import (
 // second-resolution times tie, with another manager or with the edit, the write could be either, and
 // it is mirrored as before; the collision is logged and counted as ambiguous so it is still seen. A
 // DELETE carries no managedFields of its deleter and is never withheld.
+//
+// Two clocks meet here. A send is the operator's time, a managedFields entry the source API server's,
+// to the second. An entry is compared with an edit's, the same server's clock, wherever the window
+// recorded an edit of the object, so a late apply over an edit and an undo of one are told apart
+// whatever the skew. Only an object nobody edited in the window is judged against the send, and only
+// to tell the apply landing from an undo of an edit published before it. A server clock behind the
+// operator's dates the apply before the send: it is mirrored as an edit, which costs a commit of what
+// Git holds, never an edit. A server clock ahead by more than the time between the earlier apply and
+// the send dates that undo after the send: it is not mirrored, and the next apply reverts it. A skew
+// under a second shifts neither across the send's second, and no grace is added: one would withhold
+// such an undo when the earlier apply was that close to the send.
 
 // FluxFieldManager is the field manager kustomize-controller applies with (operation Apply). It is
 // fixed in Flux, not configurable (allFluxManagers in external-sources/flux/flux-operator
@@ -213,9 +224,9 @@ func (state *applierState) covers(event Event) bool {
 // withholdLateApply reports whether a live event is the applier's own write in its apply window,
 // and must not be mirrored: the apply itself landing on an object nobody edited (F1), or the apply
 // arriving late over a newer API edit (withheld, with a Repair pending). Every other event is
-// recorded as an API-side edit in the windows of the appliers that cover it, and in the edits a due
-// attempt's window will hold once it is sent (applierState.flushEdits). It is called for each live
-// event before it reaches the commit window.
+// recorded as an API-side edit in the windows of the appliers that cover it, and in the edits the
+// attempts of a flush in progress will hold once they are sent (recordFlushEdit). It is called for
+// each live event before it reaches the commit window.
 func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 	if len(l.appliers) == 0 {
 		return false
@@ -238,13 +249,10 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 				l.recordApplyEcho(echoLate)
 			}
 		}
-		if applier.flushEdits != nil {
-			// Decided after the flush mark, so not in the commit the due attempt applies: its window
-			// holds it from the start (S1).
-			key := objectKey(event.Identifier)
-			applier.flushEdits[key] = latest(applier.flushEdits[key], event.LastFieldManagedAt)
-		}
 	}
+	// Decided after the flush mark, so not in the commit the flush's attempts apply: their windows
+	// hold it from the start (S1).
+	l.recordFlushEdit(event)
 	return false
 }
 
@@ -269,9 +277,12 @@ func (l *branchWorkerEventLoop) judgeInWindow(applier *applierState, event Event
 			l.recordApplyWindowCollision(applier, window, event, collisionAmbiguous)
 		}
 		window.recordEdit(key, written)
-	case written.Before(window.earliestSend(now).Truncate(time.Second)):
+	case !editedSince && written.Before(window.earliestSend(now).Truncate(time.Second)):
 		// Older than every send still open: an earlier apply's entry, left newest by an update
-		// that removed every field the editor owned. It is an edit, the undo of one.
+		// that removed every field the editor owned. It is an edit, the undo of one. With an edit
+		// recorded, the undo is told by the edit's time instead (below), one server clock against
+		// itself: against the send, a server clock behind the operator's dated the apply over the
+		// edit before the send, and its revert was mirrored.
 		window.recordEdit(key, written)
 	case !editedSince:
 		// The apply itself, on an object nobody edited since the attempt: its content is the
@@ -289,8 +300,11 @@ func (l *branchWorkerEventLoop) judgeInWindow(applier *applierState, event Event
 		// apply over the edit: events arrive in resourceVersion order, so the edit, recorded
 		// already, was written first, and mirroring this would revert it in Git and on the
 		// cluster. Only an undo in that same second is lost (C4 in docs/design/applier-echoes.md).
+		// An edit still held for render fidelity is repaired once it reaches Git.
 		l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
-		applier.repair = true
+		if !l.repairOnRelease(applier.ref, event) {
+			applier.repair = true
+		}
 		return true
 	}
 	return false

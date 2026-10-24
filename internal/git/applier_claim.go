@@ -173,6 +173,8 @@ type branchTarget struct {
 	// group names the GitRepository a Flux applier claim's Kustomization applies, in its cluster; empty
 	// for an Argo CD Application or a source not read yet (apply_groups.go).
 	group string
+	// folder is the GitTarget's spec.path, sanitized: the folder its applier is asked to apply.
+	folder string
 }
 
 // appliersOnBranch lists the GitTargets that write this worker's branch through its GitProvider and
@@ -219,6 +221,7 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 			recorded:      applierClaim.Operation(),
 			repairPending: applierClaim.RepairPending(),
 			group:         sourceGroup(applierClaim),
+			folder:        sanitizePath(target.Spec.Path),
 		})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ref.String() < listed[j].ref.String() })
@@ -257,10 +260,6 @@ type applierState struct {
 	// finished it (apply_window.go). Nil when no attempt was sent, or the last asked for no apply
 	// after the window before it had closed.
 	window *applyWindow
-	// flushEdits records the API-side edits made since the flush mark of an attempt that is due and
-	// not sent yet, by objectKey: they are not in the commit the attempt applies, so its window holds
-	// them from the start (S1). Nil while no flush is waiting for this applier.
-	flushEdits map[string]time.Time
 	// operation is the last operation an attempt started, as its applier claim's status.operation shows
 	// it, and operationID the attempt it belongs to. Nil until this worker started one.
 	operation   *v1alpha3.ApplyOperation
@@ -270,6 +269,9 @@ type applierState struct {
 	// withdrawn is an operation an attempt recorded on the applier claim and then did not start, until
 	// it is published as withdrawn.
 	withdrawn *v1alpha3.ApplyOperation
+	// held is why the barrier holds back a reason pending for it, as last logged; empty while
+	// nothing is held (barrier.go).
+	held string
 	// recovered is whether the applier claim's recorded status was read back for this applier, once,
 	// when this process first listed it; followedSuspend is the suspend token of the last operation
 	// the applier claim's reconciler recorded that this worker followed (apply_recovery.go).
@@ -357,6 +359,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 		return
 	}
 	defer l.publishClaimStatus()
+	defer l.publishHeld()
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
@@ -377,7 +380,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 		l.armApplierTimer(now, wait)
 		return
 	}
-	if !l.flushed(due) {
+	if !l.flushed() {
 		// The publication wakes the loop when it lands (a push, or its retry); a save, a parent
 		// recovery or a dirty checkout end with a wake of their own.
 		l.armApplierTimer(now, wait)
@@ -446,15 +449,24 @@ func (l *branchWorkerEventLoop) dueAppliers(now time.Time) ([]*applierState, tim
 			l.w.Log.V(1).Info("The applier already applied the tip; the converge asks nothing",
 				"branch", l.w.Branch, "applier", state.ref.String(), "commit", tip)
 		}
+		held := ""
 		switch {
 		case !state.hasReason(refusals) || tip == "":
-		case !l.pastBarrier(state):
-			wait = earliest(wait, now.Add(barrierRecheckInterval))
+		case l.barrierHold(state) != "":
+			held = l.barrierHold(state)
 		case now.Before(state.retryAt):
 			wait = earliest(wait, state.retryAt)
 		default:
-			due = append(due, state)
+			// Looked at last: it reads the branch, and only an attempt that would go now needs it.
+			held = l.missingFolders(state)
+			if held == "" {
+				due = append(due, state)
+			}
 		}
+		if held != "" {
+			wait = earliest(wait, now.Add(barrierRecheckInterval))
+		}
+		l.noteHeld(state, held)
 	}
 	return due, wait
 }
@@ -469,17 +481,11 @@ func (l *branchWorkerEventLoop) alreadyConverged(
 		revisionNamesCommit(state.appliedRevision, tip)
 }
 
-// pastBarrier reports whether every initial snapshot of every GitTarget the applier covers is
-// published (initialSnapshotsPublished), so it may be asked for something. Before, an apply would
-// destroy what is not mirrored yet: at startup the edits made while the operator was down, and for a
-// GitTarget that newly names the applier claim, what its folder does not hold yet.
+// pastBarrier reports whether the barrier lets the applier be asked for something (barrierHold),
+// leaving out its folders, which only an attempt about to go reads (missingFolders). A folder already
+// found missing still holds it.
 func (l *branchWorkerEventLoop) pastBarrier(state *applierState) bool {
-	for _, target := range state.targets {
-		if !l.initialSnapshotsPublished(target.ref) {
-			return false
-		}
-	}
-	return true
+	return l.barrierHold(state) == "" && !l.awaitsFolder(state)
 }
 
 // revisionNamesCommit reports whether an applier's revision names commit: Flux writes main@sha1:<hash>,
@@ -502,20 +508,19 @@ func revisionCommit(revision string) string {
 // flushed makes the flush an apply needs (see serviceAppliers), and reports whether the writes up to
 // its mark are published, so the attempts may go. The first call of a flush closes the open window
 // and takes the mark; later calls only look whether the publication landed.
-func (l *branchWorkerEventLoop) flushed(due []*applierState) bool {
+//
+// From the mark on, every edit is recorded for its GitTarget (flushEdits), not for the appliers due
+// when the flush began: an applier that comes due while the flush waits for its publication is sent
+// in the same flush, and an edit decided before it came due is not in the commit it applies either.
+func (l *branchWorkerEventLoop) flushed() bool {
 	if l.writeBusy() {
 		return false
 	}
-	for _, state := range due {
-		// A new mark publishes every edit recorded before it, so those are in the commit the
-		// attempt applies: carried into its window, they would withhold the apply's own write.
-		if state.flushEdits == nil || !l.flushing {
-			state.flushEdits = map[string]time.Time{}
-		}
-	}
 	if !l.flushing {
 		l.finalizeOpenWindowWithReason(windowFinalizeReasonApplyDue)
-		l.flushing, l.flushMark = true, l.decisions
+		// A new mark publishes every edit decided before it, so those are in the commit the attempts
+		// apply: carried into their windows, they would withhold the apply's own write.
+		l.flushing, l.flushMark, l.flushEdits = true, l.decisions, map[itypes.ResourceReference]map[string]time.Time{}
 		if l.pendingUpTo(l.flushMark) {
 			l.w.Log.Info("An apply is due; publishing the pending writes first", "branch", l.w.Branch,
 				"pendingWrites", len(l.pendingWrites))
@@ -535,15 +540,42 @@ func (l *branchWorkerEventLoop) pendingUpTo(mark uint64) bool {
 	return false
 }
 
-// endFlush ends the flush once nothing is due: the edits recorded for an applier that has nothing
-// pending any more are dropped with it.
+// endFlush ends the flush once its attempts went, or nothing is due any more: the edits recorded
+// since its mark are dropped with it, and the next flush records from its own mark.
 func (l *branchWorkerEventLoop) endFlush() {
-	l.flushing = false
-	for _, state := range l.appliers {
-		if state.inflight == nil && !state.hasReason(l.unsentRefusalsFor(state)) {
-			state.flushEdits = nil
+	l.flushing, l.flushEdits = false, nil
+}
+
+// recordUnpublishedEdits records in the window of an attempt being sent the edits its commit does
+// not hold, which the apply may overwrite: those decided after the flush mark, and the live events
+// held for a GitTarget's render fidelity.
+func (l *branchWorkerEventLoop) recordUnpublishedEdits(state *applierState) {
+	for _, target := range state.targets {
+		for key, at := range l.flushEdits[target.ref] {
+			state.window.recordEdit(key, at)
+		}
+		if held := l.held[target.ref]; held != nil {
+			for _, h := range held.events {
+				state.window.recordEdit(objectKey(h.event.Identifier), h.event.LastFieldManagedAt)
+			}
 		}
 	}
+}
+
+// recordFlushEdit records a live edit decided after the flush mark for its GitTarget, while a flush
+// is waiting for its publication: it is not in the commit the flush's attempts apply.
+func (l *branchWorkerEventLoop) recordFlushEdit(event Event) {
+	if !l.flushing {
+		return
+	}
+	target := itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace)
+	edits := l.flushEdits[target]
+	if edits == nil {
+		edits = map[string]time.Time{}
+		l.flushEdits[target] = edits
+	}
+	key := objectKey(event.Identifier)
+	edits[key] = latest(edits[key], event.LastFieldManagedAt)
 }
 
 // earliest is the earlier of two deadlines, a zero one being none.
@@ -579,10 +611,13 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	}
 	named := map[ApplierRef][]branchTarget{}
 	uids := map[itypes.ResourceReference]k8stypes.UID{}
+	listed := map[itypes.ResourceReference]bool{}
 	for _, target := range targets {
 		named[target.applier] = append(named[target.applier], target)
 		uids[target.ref] = target.uid
+		listed[target.ref] = true
 	}
+	l.forgetFolders(listed)
 	for ref, state := range l.appliers {
 		if _, ok := named[ref]; !ok {
 			if state.inflight != nil {
@@ -701,11 +736,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	state.lastTurn = attempt.id
 	l.reportApplyWindow(state)
 	state.openApplyWindow(attempt.id, tip, sentAt)
-	// The edits decided after the flush mark are not in the commit, and the apply may overwrite them.
-	for key, at := range state.flushEdits {
-		state.window.recordEdit(key, at)
-	}
-	state.flushEdits = nil
+	l.recordUnpublishedEdits(state)
 	for key := range refusals {
 		delete(l.unsentRefusals, key)
 	}

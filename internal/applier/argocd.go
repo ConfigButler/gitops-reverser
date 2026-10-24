@@ -243,7 +243,8 @@ func (a *ArgoCD) setOperation(
 		return Started{}, fmt.Errorf("build the sync operation for %s %s: %w", kindApplication, ref, err)
 	}
 	unstructured.RemoveNestedField(update.Object, "status", "operationState")
-	started := Started{Outcome: OutcomeSyncRequested, Token: token, Commit: ask.Commit}
+	before := lastHistoryID(app)
+	started := Started{Outcome: OutcomeSyncRequested, Token: token, Commit: ask.Commit, historyBefore: &before}
 	_, err := a.client.Resource(applicationGVR()).Namespace(ref.Namespace).
 		Update(ctx, update, metav1.UpdateOptions{})
 	switch {
@@ -355,6 +356,9 @@ func (a *ArgoCD) Progress(ctx context.Context, ref types.NamespacedName, s *Star
 		}
 		return progress, nil
 	}
+	if revision, synced := historySucceeded(app, s); synced {
+		return Progress{Outcome: git.ApplySucceeded, AppliedRevision: revision}, nil
+	}
 	if s.Recovered || s.Unconfirmed != nil {
 		return a.settleUnseen(ctx, ref, app, s)
 	}
@@ -390,6 +394,76 @@ func syncProgress(app *unstructured.Unstructured, token string) (Progress, bool)
 		return Progress{Outcome: git.ApplyRequested}, true
 	}
 	return Progress{}, false
+}
+
+// historySucceeded reports the revision of the sync s asked for, from Argo CD's status.history, and
+// false when no entry proves it ran. The controller appends an entry only for a sync that succeeded
+// (appendHistory, controller/appcontroller.go), with its revision and initiatedBy, so the token can
+// be gone and the sync still have succeeded: somebody synced again once ours completed, which
+// replaced its operationState. Read as gone, it failed, and the worker asked again, so the commit
+// was synced twice and its hooks ran twice.
+//
+// An entry proves it when it names the commit, GitOps Reverser as its initiator, and was recorded
+// since the operation was set: above the highest id the Application held then. A Recovered operation
+// never read the history, so no entry proves it. Its time cannot: an entry carries the controller's
+// clock, to the second, and with that clock ahead an earlier sync of the commit reads as started
+// after the request, which skipped an apply the request never made. Without the proof, a Recovered
+// sync that ran and was then replaced is synced again, as before: that costs a repeat, never an apply.
+func historySucceeded(app *unstructured.Unstructured, s *Started) (string, bool) {
+	if s.Commit == "" {
+		return "", false
+	}
+	history, _, _ := unstructured.NestedSlice(app.Object, "status", "history")
+	for _, item := range history {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		revision, _, _ := unstructured.NestedString(entry, "revision")
+		initiator, _, _ := unstructured.NestedString(entry, "initiatedBy", "username")
+		if !strings.EqualFold(revision, s.Commit) || initiator != ArgoCDInitiator || !s.recordedSince(entry) {
+			continue
+		}
+		return revision, true
+	}
+	return "", false
+}
+
+// recordedSince reports whether a status.history entry was recorded after the operation was set
+// (historySucceeded), which only an operation this process set can tell.
+func (s *Started) recordedSince(entry map[string]any) bool {
+	if s.historyBefore == nil {
+		return false
+	}
+	id, ok := historyID(entry)
+	return ok && id > *s.historyBefore
+}
+
+// lastHistoryID is the highest id in the Application's status.history, -1 when it holds none.
+func lastHistoryID(app *unstructured.Unstructured) int64 {
+	last := int64(-1)
+	history, _, _ := unstructured.NestedSlice(app.Object, "status", "history")
+	for _, item := range history {
+		if entry, ok := item.(map[string]any); ok {
+			if id, ok := historyID(entry); ok && id > last {
+				last = id
+			}
+		}
+	}
+	return last
+}
+
+// historyID is a status.history entry's id, which JSON decodes as int64 or float64.
+func historyID(entry map[string]any) (int64, bool) {
+	switch id := entry["id"].(type) {
+	case int64:
+		return id, true
+	case float64:
+		return int64(id), true
+	case int:
+		return int64(id), true
+	}
+	return 0, false
 }
 
 // settleUnseen decides an operation whose update may have been sent without an answer (Unconfirmed,

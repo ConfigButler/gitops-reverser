@@ -1040,6 +1040,9 @@ func (m *Manager) enqueueReplayResync(
 		enqueued bool
 		err      error
 	)
+	// Read before the request is built: whether it is initial, and the record its outcome settles,
+	// are the same record (RestartInitialSnapshots).
+	snapshots := m.snapshotGeneration(gitDest)
 	// A retired stream's snapshot is dropped here, at the producer: see producerGate.
 	if !stream.gate.enqueue(ctx, func() {
 		resultCh, enqueued, err = m.EventRouter.enqueueScopedResync(
@@ -1062,7 +1065,8 @@ func (m *Manager) enqueueReplayResync(
 	// The stream.key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
-	go m.EventRouter.drainScopedResync(gitDest, stream.key.Collection(), "reconcile", stream.revision, resultCh)
+	go m.EventRouter.drainScopedResync(
+		gitDest, stream.key.Collection(), "reconcile", stream.revision, snapshots, resultCh)
 	if !enqueued {
 		return fmt.Errorf("target replay resync for %s on %s dropped: %w",
 			stream.key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)

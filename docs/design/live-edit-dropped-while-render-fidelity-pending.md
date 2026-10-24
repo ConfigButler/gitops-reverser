@@ -1,11 +1,18 @@
 # A live edit dropped while a GitTarget's watches start
 
-> **Status (2026-10-24): Fix 1 is built, Fix 2 needs a decision.** Fix 1 and the drop counter
-> shipped with #420 (d7ce1bd4): the worker records a scope clean itself (`recordReplayClean` in
+> **Status (2026-10-24): Fix 1 and Fix 2a are built.** Fix 1 and the drop counter shipped with #420
+> (d7ce1bd4): the worker records a scope clean itself (`recordReplayClean` in
 > `internal/git/render_fidelity_drops.go`), and `gitopsreverser_git_writes_dropped_total{kind,
-> reason}` counts every drop, the first per gate status logged at Info. What is left is
-> [Fix 2](#fix-2-stop-dropping-live-events-while-the-gate-is-pending): an edit that arrives while
-> another collection of the same `GitTarget` is still replaying is still dropped.
+> reason}` counts every drop. [Fix 2a](#2a-hold-the-events-release-them-when-the-gate-opens) is
+> built in `internal/git/render_fidelity_hold.go`: a live event that meets a pending gate is held and
+> committed with its author once the gate opens. Three choices were made while building it. The
+> event is judged against the apply windows when it arrives, and a held create is noted for adoption
+> only when it is released or a snapshot that holds it supersedes it. A snapshot supersedes only the
+> events of its collection held before it was taken off the queue, and never a DELETE of an object
+> it does not hold, since under the default prune mode a snapshot does not remove a document. The
+> 2b fallback runs past a 10-minute hold or the branch's retained-byte budget: it drops what was
+> held, counts it, and asks for a fresh snapshot. The sections below are the argument as it was
+> made.
 
 The e2e spec `Audit route attribution` › *attributes a commit reached through a
 `rules[].sourceNamespace` override* has failed 9 times in CI since 2026-09-21, and passes on a

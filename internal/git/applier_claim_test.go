@@ -218,6 +218,25 @@ func TestServiceAppliers_NothingIsSentWhileNoFlushCanBeMade(t *testing.T) {
 	}
 }
 
+// TestServiceAppliers_AReplacedWorkerAsksNothingUntilItsGitTargetsWereTold is R4's worker half: a
+// worker that replaced another starts while its GitTargets' snapshot record is still the old
+// worker's, which says their snapshots settled. Until the recovery restarted that record, the
+// startup converge would pass the barrier and ask for a folder the new repository does not hold.
+func TestServiceAppliers_AReplacedWorkerAsksNothingUntilItsGitTargetsWereTold(t *testing.T) {
+	loop, requester := applierClaimLoop(t, applierTestTarget("alpha", true))
+	pending := true
+	loop.w.replacementPending = func() bool { return pending }
+	observeForeignCommit(loop.w)
+
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken(), "the GitTargets were not told yet")
+	assert.True(t, loop.appliers[applierRef("alpha")].foreign, "the reason waits")
+
+	pending = false
+	loop.serviceAppliers()
+	assert.Len(t, requester.taken(), 1)
+}
+
 // argoApplier makes a GitTarget name the ArgoCDClaim of its own name, which holds the Application
 // argocd/<name>.
 func argoApplier(g *configv1alpha3.GitTarget) {

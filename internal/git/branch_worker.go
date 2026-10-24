@@ -153,6 +153,9 @@ type BranchWorker struct {
 	// unresolvedOperations is how many of this branch's apply operations are Unresolved, as the
 	// loop last published it, for the apply_operations_unresolved gauge.
 	unresolvedOperations atomic.Int64
+	// heldAppliers is how many of this branch's appliers the barrier holds a reason back for, as the
+	// loop last published it, for the appliers_held gauge (barrier.go).
+	heldAppliers atomic.Int64
 	// applyEpoch, appliersAhead and hasAppliers are the loop's ApplyState for the watch side, which
 	// reads it when a snapshot's collection starts (apply_epoch.go).
 	applyEpoch    atomic.Uint64
@@ -167,6 +170,10 @@ type BranchWorker struct {
 	// admits every GitTarget.
 	applierAdmitted ApplierAdmission
 	resyncRecheck   func(target itypes.ResourceReference)
+	// replacementPending reports whether this worker replaced one whose GitTargets have not been told
+	// yet (WorkerManager.ReplacementPending): until they are, their snapshot record is the old
+	// worker's, and no applier is asked for anything. Nil in the CLI and in tests.
+	replacementPending func() bool
 
 	// Event processing
 	eventQueue chan WorkItem
@@ -304,7 +311,8 @@ type BranchWorker struct {
 	retentionLoggedAt map[string]time.Time
 
 	// hasUnpushedWork mirrors whether the event loop is currently holding a live
-	// open window or any committed-but-not-yet-pushed pending writes. The event
+	// open window, any committed-but-not-yet-pushed pending writes, or live events
+	// held at a pending render-fidelity gate (render_fidelity_hold.go). The event
 	// loop is the only writer and, via syncUnpushedWorkFlag, the only reader; the
 	// atomic guards the store/load and lets the depth gauge account for retained
 	// work the channel length alone cannot see.
@@ -1188,6 +1196,9 @@ type branchWorkerEventLoop struct {
 	// apply_epoch.go.
 	snapshotRerequests map[string]itypes.ResourceReference
 	snapshotHeldSince  map[string]time.Time
+	// awaitingFolders are the GitTargets whose folder the branch did not hold when their applier was
+	// about to be asked, and which a fresh snapshot was asked for, until it is there (barrier.go).
+	awaitingFolders map[itypes.ResourceReference]bool
 	// ownershipLogged is the objects another applier owns already logged as kept out of a folder.
 	// See apply_ownership.go.
 	ownershipLogged map[string]struct{}
@@ -1229,10 +1240,12 @@ type branchWorkerEventLoop struct {
 	pushHinted bool
 	// decisions numbers the decided writes (PendingWrite.decision). flushing is set while an apply is
 	// due and waits for the writes up to flushMark, the last decision when it came due, to be
-	// published (serviceAppliers).
-	decisions uint64
-	flushing  bool
-	flushMark uint64
+	// published (serviceAppliers). flushEdits holds the API-side edits decided since the mark, by
+	// GitTarget and objectKey: the attempts the flush sends hold them in their windows (S1).
+	decisions  uint64
+	flushing   bool
+	flushMark  uint64
+	flushEdits map[itypes.ResourceReference]map[string]time.Time
 
 	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
@@ -1246,6 +1259,14 @@ type branchWorkerEventLoop struct {
 	// fidelityDropsLogged is, per GitTarget, the gate status under which its last drop was logged at
 	// Info, so a closed gate logs its first drop and counts the rest. See render_fidelity_drops.go.
 	fidelityDropsLogged map[string]renderFidelityDropMark
+
+	// held is, per GitTarget, the live events held while its render fidelity is pending; heldSeq
+	// numbers them, heldEventBytes is what they are charged, and holdTimer looks at their gates again
+	// (render_fidelity_hold.go).
+	held           map[itypes.ResourceReference]*heldWrites
+	heldSeq        uint64
+	heldEventBytes int64
+	holdTimer      *time.Timer
 }
 
 // commitWindowDefaults are a GitTarget's commit window timers when it declares none.
@@ -1306,6 +1327,9 @@ func (l *branchWorkerEventLoop) run() {
 			// serviceAppliers, at the end of the wake, sends what has come due.
 		case <-l.w.applyWake:
 			// An attempt reported back; serviceAppliers settles and sends.
+		case <-l.holdTimerC():
+			l.holdTimer = nil
+			// serviceHeldWrites, at the start of the wake, looks at the held GitTargets' gates.
 		}
 		l.endWake(0)
 	}
@@ -1319,6 +1343,8 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 // endWake is what every wake of the loop ends with, whatever woke it. released is the intake charge
 // of the item the wake handled, or zero.
 //
+//   - Release the live events held for a GitTarget whose render fidelity is now established, or drop
+//     them on a divergence or past the hold's bounds (serviceHeldWrites).
 //   - Bind any waiting CommitRequest to an open window, resolve any whose attach deadline has
 //     passed, and re-arm the deadline timer.
 //   - Close the open window early if a Git host reported a push (closeWindowForPushHint).
@@ -1329,6 +1355,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 //     ApplyState (apply_epoch.go).
 //   - Publish the result, moving the handled item's charge to what the loop holds.
 func (l *branchWorkerEventLoop) endWake(released int64) {
+	l.serviceHeldWrites()
 	l.serviceCommitRequests()
 	l.closeWindowForPushHint()
 	l.advance()
@@ -1348,7 +1375,7 @@ func (l *branchWorkerEventLoop) endWake(released int64) {
 // publishing the flag second would let both read empty while a window is open, and a scrape landing
 // there would report a drained queue for a worker that has work.
 func (l *branchWorkerEventLoop) publishLoopState(released int64) {
-	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
+	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0 || len(l.held) > 0)
 	l.syncAdmission(released)
 }
 
@@ -1390,6 +1417,8 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 		// marker waited in the FIFO. Running it here keeps the original queue position, so a resync
 		// still lands before the live events buffered behind it.
 		req, charge := l.w.takePendingResync(item.Resync)
+		// Every live event held so far was queued before this snapshot was taken.
+		req.heldUpTo = l.heldSeq
 		l.handleResyncRequest(req)
 		return charge
 	case item.Refresh != nil:
@@ -1422,6 +1451,14 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 		if !l.mirrors(event) {
 			continue
 		}
+		l.appendLiveEvent(event)
+	}
+}
+
+// appendLiveEvent appends one live event that is mirrored to the commit window, splitting and
+// finalizing it as identity, the byte cap or a zero window require.
+func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
+	{
 		if l.openWindow != nil && !l.openWindow.canAppend(event) {
 			// Log the identity that broke the window so an unexpected split is
 			// diagnosable: the common cause is an incoming event whose author is empty
@@ -1471,7 +1508,7 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 			l.noteForeignWindow()
 			l.attachWaitingCommitRequests()
 			if l.openWindow == nil {
-				continue // the attached request's maxDuration: 0s closed it already
+				return // the attached request's maxDuration: 0s closed it already
 			}
 		}
 
@@ -1482,26 +1519,38 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 			// fails on a stuck remote will not free memory, but that's the
 			// known stuck-push pathology documented in the design.
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonBufferLimit)
-			continue
+			return
 		}
 		l.closeOrArmWindow()
 	}
 }
 
-// mirrors reports whether a live event reaches the commit window. It does not while the target's
-// render fidelity is not established, for an object another applier owns in a folder an applier claim
-// applies (F4), and for the applier's own write in its apply window (apply_window.go).
+// mirrors reports whether a live event reaches the commit window now. It does not for an object
+// another applier owns in a folder an applier claim applies (F4), for the applier's own write in its
+// apply window (apply_window.go), and while the target's render fidelity is not established: on a
+// divergence the event is dropped, and while the gate is pending it is held, once judged as on
+// arrival, and committed in order when the gate opens (render_fidelity_hold.go). Events held for the
+// target earlier go first, once its gate opened.
 func (l *branchWorkerEventLoop) mirrors(event Event) bool {
-	if status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace); closed {
-		l.dropAtRenderFidelity(itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace),
-			status, writeDroppedEvent, event.Identifier.String())
+	target := itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace)
+	l.serviceHeld(target)
+	status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace)
+	if closed && status.State == RenderFidelityFalse {
+		l.dropAtRenderFidelity(target, status, writeDroppedEvent, event.Identifier.String())
 		return false
 	}
 	if l.ownedElsewhere(event.GitTargetName, event.GitTargetNamespace, event.Identifier.String(),
 		event.AppliedBy) {
 		return false
 	}
+	// Judged when it arrives, held or not: the apply windows and the flush record an edit when it
+	// was made.
 	if l.withholdLateApply(event) {
+		return false
+	}
+	if closed || l.held[target] != nil {
+		// Its adoption waits with it (F-c): an apply before the create is in a commit stamps nothing.
+		l.holdAtRenderFidelity(target, event, status)
 		return false
 	}
 	if event.Operation == string(itypes.OperationCreate) {
@@ -1546,6 +1595,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 func (l *branchWorkerEventLoop) handleShutdown() {
 	l.w.Log.Info("Handling shutdown, finalizing open window and pushing pending commits")
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonShutdown)
+	l.dropHeldAtShutdown()
 	if len(l.pendingWrites) > 0 {
 		// Shutdown bypasses the cooldown and the retry: pending work needs to land before the
 		// worker exits, even if a push was just sent. The push commits what was just decided.
@@ -1892,6 +1942,7 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopAttachTimer()
 	l.stopRefusalTimer()
 	l.stopApplierTimer()
+	l.stopHoldTimer()
 	if l.retry.timer != nil {
 		l.retry.timer.Stop()
 		l.retry.timer = nil

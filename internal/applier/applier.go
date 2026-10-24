@@ -226,6 +226,10 @@ type Started struct {
 	// RequestedAt is when a Recovered operation was asked for, as its record says. A reconcile
 	// that ran since is the only evidence of its apply this process can read.
 	RequestedAt time.Time
+	// historyBefore is the highest status.history id an Argo CD Application held when this process
+	// set the sync's operation, -1 when it held none: an entry above it was recorded since. Nil for a
+	// Recovered operation, which no entry proves.
+	historyBefore *int64
 	// verdict is the outcome of a Flux apply, read once the resume's token was handled and kept
 	// until the suspend after it is.
 	verdict *Progress

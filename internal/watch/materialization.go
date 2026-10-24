@@ -83,6 +83,12 @@ func (m *Manager) ForcedRecheckTargetsForTest() []string {
 	return forced
 }
 
+// SnapshotGenerationForTest is the generation of the GitTarget's settled-snapshot record, so a test
+// in another package can assert that a recovery restarted it; nothing in production calls it.
+func (m *Manager) SnapshotGenerationForTest(gitDest types.ResourceReference) uint64 {
+	return m.snapshotGeneration(gitDest)
+}
+
 // ForgetGitTargetDeclaration drops in-memory watch state for a deleted GitTarget, and tears down
 // its source cluster's context when it was the last GitTarget mirroring from it.
 //

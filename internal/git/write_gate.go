@@ -36,8 +36,8 @@ var (
 	// errTargetSuspended is a request's failure on a suspended GitTarget, which writes nothing.
 	errTargetSuspended = errors.New("the GitTarget is suspended")
 	// errRenderFidelityClosed is a request's failure while the GitTarget's render-vs-live check has
-	// not passed. The gate drops the target's writes on arrival, so the save cannot know what it
-	// would have contained.
+	// not passed. The gate holds the target's live writes until it opens, or drops them on a
+	// divergence, so the save cannot know in time what it would have contained.
 	errRenderFidelityClosed = errors.New(
 		"the GitTarget's render fidelity is not established, so its writes are held back")
 )

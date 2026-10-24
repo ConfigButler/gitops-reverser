@@ -111,9 +111,11 @@ type Manager struct {
 	SourceClusters SourceClusterResolver
 
 	// snapshotsMu guards settledSnapshots: per GitTarget key, the collections a snapshot of which
-	// the branch worker applied, refused or failed (apply_state.go).
-	snapshotsMu      sync.Mutex
-	settledSnapshots map[string]map[types.CollectionKey]bool
+	// the branch worker applied, refused or failed, under the generation the record was started with;
+	// snapshotGenerations is the last generation drawn (apply_state.go).
+	snapshotsMu         sync.Mutex
+	settledSnapshots    map[string]*snapshotRecord
+	snapshotGenerations uint64
 
 	// clusters holds one clusterContext per distinct cluster — its API catalog, type registry,
 	// and clients. configPlaneClusterID is the operator's own cluster (always present, never a

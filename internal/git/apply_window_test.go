@@ -8,6 +8,7 @@ package git
 // apply_window.go.
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -431,4 +432,69 @@ func TestApplyWindow_AnApplierWriteWithNoWindowIsLate(t *testing.T) {
 	assert.False(t, loop.withholdLateApply(windowEvent("alpha", "2", "kubectl-edit")))
 	assert.False(t, loop.withholdLateApply(windowEvent("bravo", "2", FluxFieldManager)), "no applier covers bravo")
 	assert.Equal(t, int64(1), echoes(t, reader, echoLate))
+}
+
+// TestApplyWindow_ClockSkew is F-e: the send is the operator's clock and a managedFields time is the
+// source API server's, to the second, so a skew between the two moves an entry across the send.
+// Each case runs with the server's clock behind and ahead of the operator's by up to two seconds.
+func TestApplyWindow_ClockSkew(t *testing.T) {
+	sent := time.Unix(1_800_000_000, 400_000_000)
+	type step struct {
+		at       time.Duration // operator time of the write, from the send
+		managers []string
+		withheld bool
+		// echo is the apply landing on an object nobody edited: a server clock that dates it before
+		// the send makes it look like an earlier apply's entry left by an undo, and it is mirrored as
+		// an edit. That is the cost the window takes rather than ever withhold an undo.
+		echo bool
+	}
+	cases := []struct {
+		name   string
+		steps  []step
+		repair bool
+	}{
+		{
+			name: "the apply lands on an object nobody edited",
+			steps: []step{
+				{at: 300 * time.Millisecond, managers: []string{FluxFieldManager}, withheld: true, echo: true},
+			},
+		},
+		{
+			name: "a late apply over a newer edit",
+			steps: []step{
+				{at: 200 * time.Millisecond, managers: []string{"kubectl-edit"}},
+				{at: 800 * time.Millisecond, managers: []string{FluxFieldManager}, withheld: true},
+			},
+			repair: true,
+		},
+		{
+			name: "an undo of an edit made in the window leaves an earlier apply's entry",
+			steps: []step{
+				{at: 200 * time.Millisecond, managers: []string{"kubectl-label"}},
+				{at: -30 * time.Second, managers: []string{FluxFieldManager}},
+			},
+		},
+		{
+			name:  "an undo of an edit published before the send leaves an earlier apply's entry",
+			steps: []step{{at: -10 * time.Second, managers: []string{FluxFieldManager}}},
+		},
+	}
+	for _, skew := range []time.Duration{-2 * time.Second, -time.Second, 0, time.Second, 2 * time.Second} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%s, server clock %+v", tc.name, skew), func(t *testing.T) {
+				loop, _ := sentAttempt(t)
+				state := loop.appliers[applierRef("alpha")]
+				state.window.sentAt = sent
+				for i, s := range tc.steps {
+					written := sent.Add(s.at + skew).Truncate(time.Second)
+					datedBeforeSend := written.Before(sent.Truncate(time.Second))
+					want := s.withheld && (!s.echo || !datedBeforeSend)
+					assert.Equal(t, want,
+						loop.withholdLateApply(windowEventAt("alpha", "2", written, s.managers...)),
+						"step %d, %v", i, s.managers)
+				}
+				assert.Equal(t, tc.repair, state.repair, "repair")
+			})
+		}
+	}
 }

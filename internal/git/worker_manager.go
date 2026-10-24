@@ -513,6 +513,7 @@ func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest) erro
 	worker.claimStatus = m.claimStatus
 	worker.initialSnapshots = m.initialSnapshots
 	worker.resyncRecheck = m.resyncRecheck
+	worker.replacementPending = func() bool { return m.ReplacementPending(key) }
 	worker.applierAdmitted = m.applierAdmitted
 	worker.renderFidelityGate = m.renderFidelityGate
 	worker.crOwners = m.commitRequests

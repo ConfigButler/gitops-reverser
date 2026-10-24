@@ -181,8 +181,11 @@ func TestArgoCDRequest_TheOperationIsWhatAutomatedSyncWouldBuild(t *testing.T) {
 			})
 
 			require.NoError(t, err)
-			assert.Equal(t, Started{Outcome: OutcomeSyncRequested, Token: requestToken(stampTime), Commit: testCommit},
-				started)
+			none := int64(-1)
+			assert.Equal(t, Started{
+				Outcome: OutcomeSyncRequested, Token: requestToken(stampTime), Commit: testCommit,
+				historyBefore: &none,
+			}, started, "an Application with no history yet: every entry recorded is since")
 			operation, found, _ := unstructured.NestedMap(readApp(t, client).Object, "operation")
 			require.True(t, found)
 			assert.Equal(t, map[string]any{
@@ -877,6 +880,124 @@ func TestArgoCD_Progress(t *testing.T) {
 	assert.Equal(t, Progress{Outcome: git.ApplySucceeded}, progress(t))
 	setState(t, theirOperation(), "Succeeded", false)
 	assert.Equal(t, git.ApplyFailed, progress(t).Outcome, "ours was cleared before it recorded an outcome")
+}
+
+// historyEntry is a status.history entry: a sync of revision that succeeded, started at startedAt.
+func historyEntry(id int64, revision, initiator string, startedAt time.Time) map[string]any {
+	return map[string]any{
+		"id": id, "revision": revision, "initiatedBy": map[string]any{"username": initiator},
+		"deployStartedAt": startedAt.UTC().Format(time.RFC3339),
+		"deployedAt":      startedAt.Add(2 * time.Second).UTC().Format(time.RFC3339),
+	}
+}
+
+// TestArgoCD_AGoneTokenIsJudgedByTheHistory is A2: a sync somebody started once ours completed
+// replaces its operationState, and the token with it. Read as gone, ours failed, so the worker
+// synced the commit again and its hooks ran twice. Argo CD records every sync that succeeded in
+// status.history, with its initiator: an entry of the commit, by GitOps Reverser, recorded since the
+// operation was set, is ours succeeding. An entry from before it, or by somebody else, is not.
+func TestArgoCD_AGoneTokenIsJudgedByTheHistory(t *testing.T) {
+	earlier := stampTime.Add(-time.Hour)
+	cases := []struct {
+		name    string
+		history []any
+		want    git.ApplyOutcome
+	}{
+		{
+			name: "ours, then a manual sync",
+			history: []any{
+				historyEntry(3, testCommit, ArgoCDInitiator, earlier),
+				historyEntry(4, testCommit, ArgoCDInitiator, stampTime),
+				historyEntry(5, olderCommit, "alice", stampTime.Add(time.Minute)),
+			},
+			want: git.ApplySucceeded,
+		},
+		{
+			name:    "only an older sync of the same commit",
+			history: []any{historyEntry(3, testCommit, ArgoCDInitiator, earlier)},
+			want:    git.ApplyFailed,
+		},
+		{
+			name: "a newer sync of the commit by somebody else",
+			history: []any{
+				historyEntry(3, testCommit, ArgoCDInitiator, earlier),
+				historyEntry(4, testCommit, "alice", stampTime),
+			},
+			want: git.ApplyFailed,
+		},
+		{
+			name: "a newer sync by us of another commit",
+			history: []any{
+				historyEntry(3, testCommit, ArgoCDInitiator, earlier),
+				historyEntry(4, olderCommit, ArgoCDInitiator, stampTime),
+			},
+			want: git.ApplyFailed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := manualApp()
+			_ = unstructured.SetNestedSlice(app.Object, []any{tc.history[0]}, "status", "history")
+			client := newArgoSource(app)
+			argo := pinnedArgo(client)
+			started, err := argo.Request(context.Background(), platformApp, Ask{
+				Want: testBinding, Commit: testCommit, Reason: v1alpha3.ApplyReasonForeignCommit,
+				Token: requestToken(stampTime),
+			})
+			require.NoError(t, err)
+
+			app = readApp(t, client)
+			unstructured.RemoveNestedField(app.Object, "operation")
+			_ = unstructured.SetNestedMap(app.Object, map[string]any{
+				"operation": theirOperation(), "phase": "Succeeded", "finishedAt": "2026-10-20T11:15:00Z",
+			}, "status", "operationState")
+			_ = unstructured.SetNestedSlice(app.Object, tc.history, "status", "history")
+			writeApp(t, client, app)
+
+			got, err := argo.Progress(context.Background(), platformApp, &started)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got.Outcome)
+			if tc.want == git.ApplySucceeded {
+				assert.Equal(t, testCommit, got.AppliedRevision)
+			}
+		})
+	}
+}
+
+// TestArgoCD_NoHistoryEntryProvesARecoveredSync: a Recovered operation never read the history, so
+// only an entry's time could date it, and that is the controller's clock. With it ahead, an earlier
+// sync of the commit read as started after the request, and a request that crashed before its update
+// was Succeeded with the apply never made. No entry proves it now: the update is settled as never
+// made (settleUnseen), and the worker asks again.
+func TestArgoCD_NoHistoryEntryProvesARecoveredSync(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		started time.Time
+	}{
+		{name: "an earlier sync, by a controller clock five seconds ahead", started: stampTime.Add(2 * time.Second)},
+		{name: "started in the second after it was asked for", started: stampTime.Truncate(time.Second).Add(time.Second)},
+		{name: "started in the second it was asked for", started: stampTime.Truncate(time.Second)},
+		{name: "started a second before", started: stampTime.Add(-time.Second)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := manualApp()
+			_ = unstructured.SetNestedSlice(app.Object,
+				[]any{historyEntry(7, testCommit, ArgoCDInitiator, tc.started)}, "status", "history")
+			client := newArgoSource(app)
+			started := recoveredStarted(git.ApplyRequest{
+				Applier: git.ApplierRef{Kind: v1alpha3.ApplierKindApplication},
+				Recovered: &v1alpha3.ApplyOperation{
+					Phase: v1alpha3.ApplyOperationRequested, Reason: v1alpha3.ApplyReasonRefusal,
+					Commit: testCommit, Token: requestToken(stampTime), RequestedAt: metav1.NewTime(stampTime),
+				},
+			})
+
+			got, err := pinnedArgo(client).Progress(context.Background(), platformApp, &started)
+
+			require.NoError(t, err)
+			assert.Equal(t, git.ApplyFailed, got.Outcome)
+		})
+	}
 }
 
 // TestArgoCD_ASyncWhoseOperationWasRemovedEnds is review 7's A1. Removing .operation is the

@@ -33,7 +33,7 @@ func TestInitialSnapshots_TrackedPerCollection(t *testing.T) {
 	drain := func(collection types.CollectionKey, result git.ResyncResult) {
 		resultCh := make(chan git.ResyncResult, 1)
 		resultCh <- result
-		router.drainScopedResync(gitDest, collection, "reconcile", 0, resultCh)
+		router.drainScopedResync(gitDest, collection, "reconcile", 0, m.snapshotGeneration(gitDest), resultCh)
 	}
 	drain(configmaps, git.ResyncResult{Err: git.ErrResyncDiscarded})
 	assert.True(t, router.initialSnapshot(gitDest, configmaps), "a discarded snapshot did not settle")
@@ -50,6 +50,34 @@ func TestInitialSnapshots_TrackedPerCollection(t *testing.T) {
 
 	m.forgetSettledSnapshots(gitDest)
 	assert.True(t, router.initialSnapshot(gitDest, configmaps), "a recreation starts over")
+}
+
+// TestInitialSnapshots_AReplacedWorkerStartsOver is R4: a branch worker replaced because its
+// GitProvider names another repository holds nothing the old one published, so every collection's
+// next snapshot is initial again and the barrier holds until each one settled. A snapshot the old
+// worker answers after the restart settles nothing: it was published into the old repository.
+func TestInitialSnapshots_AReplacedWorkerStartsOver(t *testing.T) {
+	configmaps := types.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "")
+	gitDest := types.NewResourceReference("alpha", "team-a")
+	m := &Manager{Log: logr.Discard()}
+	router := &EventRouter{WatchManager: m, Log: logr.Discard()}
+	drain := func(generation uint64) {
+		resultCh := make(chan git.ResyncResult, 1)
+		resultCh <- git.ResyncResult{}
+		router.drainScopedResync(gitDest, configmaps, "reconcile", 0, generation, resultCh)
+	}
+
+	drain(m.snapshotGeneration(gitDest))
+	require.False(t, router.initialSnapshot(gitDest, configmaps))
+	inFlight := m.snapshotGeneration(gitDest) // enqueued to the old worker, answered late
+
+	m.RestartInitialSnapshots(gitDest)
+	assert.True(t, router.initialSnapshot(gitDest, configmaps), "the new worker's first snapshot is initial")
+	drain(inFlight)
+	assert.True(t, router.initialSnapshot(gitDest, configmaps), "the old worker's answer settles nothing")
+
+	drain(m.snapshotGeneration(gitDest))
+	assert.False(t, router.initialSnapshot(gitDest, configmaps), "the new worker's own snapshot settles it")
 }
 
 // TestOwnerIsReadBeforeSanitize: the applier that owns an object is stamped on its live event and on

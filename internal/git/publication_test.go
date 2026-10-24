@@ -113,6 +113,10 @@ func TestPublication_MetricsDescribeTheBacklog(t *testing.T) {
 	unresolved, ok := gauge(telemetry.GaugeApplyOperationsUnresolved)
 	require.True(t, ok)
 	assert.Equal(t, int64(1), unresolved, "an operation past its budget is still followed, and seen")
+	f.worker.heldAppliers.Store(1)
+	held, ok := gauge(telemetry.GaugeAppliersHeld)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), held, "an applier the barrier holds back is seen")
 
 	f.worker.branchBufferMaxBytes = 1
 	loop.publishLoopState(0)

@@ -745,6 +745,7 @@ func registerObservableGauges() error {
 		{"gitopsreverser_resource_condition", GaugeResourceCondition},
 		{"gitopsreverser_git_branch_targets", GaugeGitBranchTargets},
 		{"gitopsreverser_apply_operations_unresolved", GaugeApplyOperationsUnresolved},
+		{"gitopsreverser_appliers_held", GaugeAppliersHeld},
 	}
 	for _, o := range observable {
 		if _, err := otelMeter.Int64ObservableGauge(

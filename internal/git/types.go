@@ -595,6 +595,10 @@ type ResyncRequest struct {
 	// payloadBytes is the snapshot's estimated serialized size once sized is set. See payloadSize.
 	payloadBytes int64
 	sized        bool
+	// heldUpTo is the last live event the loop had held at a pending render-fidelity gate when it
+	// took this request off the queue: those were queued before the snapshot was taken, so once it
+	// applies it supersedes the ones of its collection (render_fidelity_hold.go).
+	heldUpTo uint64
 }
 
 // refusalCollection is the watched collection this request speaks for: its scope's collection for a per-type
@@ -778,8 +782,9 @@ type Event struct {
 	BootstrapOptions pathBootstrapOptions
 
 	// SourceCollection names the target-watch collection that produced this event. Zero for every
-	// non-stream producer (reconcile, bootstrap, the admission path). Diagnostic only:
-	// nothing filters the queue on it. See source_collection.go.
+	// non-stream producer (reconcile, bootstrap, the admission path). Nothing filters the queue on
+	// it; a snapshot of that collection supersedes the event while it is held at a pending
+	// render-fidelity gate (render_fidelity_hold.go). See source_collection.go.
 	SourceCollection types.CollectionKey
 
 	// payloadBytes is the object's estimated serialized size once sized is set. See payloadSize.

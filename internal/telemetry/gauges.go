@@ -64,6 +64,10 @@ const (
 	// within the dispatcher's budget and are still followed, each holding its applier's apply
 	// window open and its next attempt back. Read from what the branch worker's loop last published.
 	GaugeApplyOperationsUnresolved = "apply_operations_unresolved"
+	// GaugeAppliersHeld is how many appliers on a branch have a reason pending that the initial
+	// snapshot barrier holds back: a GitTarget they cover is not mirrored yet, or its folder is not on
+	// the branch. Read from what the branch worker's loop last published.
+	GaugeAppliersHeld = "appliers_held"
 )
 
 var (

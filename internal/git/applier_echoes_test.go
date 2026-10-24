@@ -324,7 +324,7 @@ func TestApplierEchoes_FlushThenApply(t *testing.T) {
 
 	assert.Nil(t, f.loop.openWindow, "the apply closed the open window")
 	assert.Empty(t, requester.taken(), "the writes up to the mark are not published yet")
-	require.NotNil(t, f.echoApplier().flushEdits, "edits are recorded from the mark")
+	require.NotNil(t, f.loop.flushEdits, "edits are recorded from the mark")
 
 	f.writeWindow(echoEvent("y", "y2")) // E1, decided after the mark
 	require.NotNil(t, f.loop.openWindow, "it opens a window of its own")
@@ -347,6 +347,98 @@ func TestApplierEchoes_FlushThenApply(t *testing.T) {
 	late.LastFieldManagedAt = time.Now().Add(time.Hour)
 	assert.True(t, f.loop.withholdLateApply(late), "E1 was recorded in the window: the apply over it is withheld")
 	assert.True(t, f.echoApplier().repair, "and a Repair puts E1 back once it is published")
+}
+
+// TestApplierEchoes_AnApplierThatJoinsAFlushHoldsTheEditsSinceItsMark is S1 for an applier that comes
+// due while a flush waits for its publication. It is sent in that flush, for the tip it produces, so
+// an edit decided after the mark and before it came due is not in the commit it applies either. Its
+// window recorded edits only from when it joined: the apply over such an edit was taken for the apply
+// landing, not mirrored, and no Repair put the edit back on the cluster.
+func TestApplierEchoes_AnApplierThatJoinsAFlushHoldsTheEditsSinceItsMark(t *testing.T) {
+	const late = "team-b"
+	f := newEchoFixture(t, "echo-flush-join", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
+	// Its folder is on the branch already, so the barrier holds nothing back for it.
+	createGitTargetWithPruneMode(t, f.worker, late, echoTarget, configv1alpha3.PruneOnEvent)
+	var lateTarget configv1alpha3.GitTarget
+	require.NoError(t, f.worker.Client.Get(f.worker.ctx, keyOf(late), &lateTarget))
+	lateTarget.Spec.ApplierClaimRef = testApplier(late)
+	require.NoError(t, f.worker.Client.Update(f.worker.ctx, &lateTarget))
+	createTestClaim(t, f.worker.Client, &lateTarget)
+	requester := f.withClaim()
+	require.Len(t, f.loop.appliers, 2)
+	applierFor := func(target string) *applierState {
+		for _, state := range f.loop.appliers {
+			if state.covers(Event{GitTargetName: target, GitTargetNamespace: "default"}) {
+				return state
+			}
+		}
+		t.Fatalf("no applier covers %s", target)
+		return nil
+	}
+	f.loop.lastPushAt = time.Now()
+
+	f.writeWindow(echoEvent("x", "x2"))
+	restore := failPushes(t, f.worker)
+	applierFor(echoTarget).repair = true
+	f.loop.endWake(0)
+	require.Empty(t, requester.taken(), "the flush waits for its publication")
+
+	edit := configMapTargetEvent("y", "alice", late)
+	edit.Operation = string(itypes.OperationUpdate)
+	f.writeWindow(edit) // decided after the mark, before team-b's applier comes due
+	applierFor(late).repair = true
+	f.loop.endWake(0)
+	require.Empty(t, requester.taken())
+
+	restore()
+	f.loop.retry.due = time.Now().Add(-time.Second)
+	f.loop.runRetry()
+	f.loop.endWake(0)
+	require.Len(t, requester.taken(), 2, "both appliers are sent in the one flush")
+
+	applierFor(late).repair = false
+	over := configMapTargetEvent("y", "alice", late)
+	over.Operation = string(itypes.OperationUpdate)
+	over.LastFieldManagers = []string{FluxFieldManager}
+	over.LastFieldManagedAt = time.Now().Add(time.Hour)
+	assert.True(t, f.loop.withholdLateApply(over), "the apply over the edit is withheld")
+	assert.True(t, applierFor(late).repair, "and a Repair puts the edit back once it is published")
+}
+
+// TestApplierEchoes_AFolderNotOnTheBranchIsCreatedBeforeItsApplierIsAsked is F-d: a GitTarget that
+// names its claim after its snapshots settled empty has no folder, since only a resync of a GitTarget
+// naming a claim creates one with no object. Its applier is not asked to apply a missing path: the
+// barrier holds it, says so (F-a), and asks for one fresh snapshot, which is used even with a foreign
+// commit pending, because the apply held for the folder would wait on it.
+func TestApplierEchoes_AFolderNotOnTheBranchIsCreatedBeforeItsApplierIsAsked(t *testing.T) {
+	f := newEchoFixture(t, "echo-folder-missing", configv1alpha3.PruneOnEvent, nil)
+	var asked []itypes.ResourceReference
+	f.worker.resyncRecheck = func(target itypes.ResourceReference) { asked = append(asked, target) }
+	requester := f.withClaim()
+	state := f.echoApplier()
+	state.foreign = true
+
+	f.loop.endWake(0)
+	f.loop.endWake(0)
+	assert.Empty(t, requester.taken(), "the folder is not on the branch")
+	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(echoTarget, "default")}, asked,
+		"one fresh snapshot is asked for, once")
+	assert.Contains(t, state.held, "is not on the branch", "the hold says why")
+	assert.EqualValues(t, 1, f.worker.heldAppliers.Load())
+
+	req := &ResyncRequest{GitTargetName: echoTarget, GitTargetNamespace: "default",
+		Result: make(chan ResyncResult, 1)}
+	f.loop.handleResyncRequest(req)
+	f.loop.endWake(0)
+	require.NoError(t, (<-req.Result).Err, "used, not discarded for the pending foreign commit")
+	assert.NotEmpty(t, f.onMain(echoTarget+"/README.md"), "its resync created the folder")
+
+	f.loop.endWake(0)
+	sent := requester.taken()
+	require.Len(t, sent, 1)
+	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, sent[0].Reason)
+	assert.Empty(t, state.held, "the hold lifted")
+	assert.Zero(t, f.worker.heldAppliers.Load())
 }
 
 // TestApplierEchoes_AResyncThatAddsAnObjectAdoptsIt is S2: an object a resync adds to Git runs on

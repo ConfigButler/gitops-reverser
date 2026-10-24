@@ -141,9 +141,10 @@ func TestRenderFidelity_AReplayFromARetiredStreamDoesNotOpenTheGate(t *testing.T
 	assert.False(t, f.gate.AllowsWrites(f.target), "only the current stream's replay opens the gate")
 }
 
-// TestRenderFidelity_ADroppedWriteIsCountedAndLoggedOncePerGateStatus: a write the closed gate
-// drops is gone for good, so every drop is counted, and the first under each gate status is
-// logged at Info with what the gate waits for. A burst of edits against one closed gate logs once.
+// TestRenderFidelity_ADroppedWriteIsCountedAndLoggedOncePerGateStatus: a pending gate holds live
+// writes (render_fidelity_hold.go), and a divergence drops them, with every later one. A write the
+// gate drops is gone for good, so every drop is counted, and the first under each gate status is
+// logged at Info with what the gate waits for or found. A burst against one closed gate logs once.
 func TestRenderFidelity_ADroppedWriteIsCountedAndLoggedOncePerGateStatus(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -158,19 +159,23 @@ func TestRenderFidelity_ADroppedWriteIsCountedAndLoggedOncePerGateStatus(t *test
 	}})
 
 	assert.Nil(t, f.loop.openWindow, "a pending scope closes the GitTarget")
-	assert.Equal(t, int64(2), writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityPending))
+	require.NotNil(t, f.loop.held[f.target])
+	assert.Len(t, f.loop.held[f.target].events, 2, "its live writes are held, not dropped")
+	assert.Len(t, logged.matching("Holding the GitTarget's live writes"), 1, "the hold is said once")
+	assert.Zero(t, writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityPending))
 	assert.Equal(t, int64(1), writesDropped(t, reader, writeDroppedAtomic, writeDropRenderFidelityPending))
 	drops := logged.matching("Dropped a write")
-	require.Len(t, drops, 1, "one Info line for the burst")
+	require.Len(t, drops, 1)
 	assert.Contains(t, drops[0], "Waiting for 1 of 1", "it says which scopes the gate waits for")
-	assert.Contains(t, drops[0], "configmaps/first")
 
 	_, applied := f.gate.RecordScopeDivergence(f.target, f.revision, f.scope.Collection,
 		manifestanalyzer.RenderDivergence{Field: "data.region", Token: "${REGION}"})
 	require.True(t, applied)
 	f.liveEvent("third")
-	assert.Equal(t, int64(1), writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityDiverged))
-	assert.Len(t, logged.matching("Dropped a write"), 2, "a new gate status logs again")
+	assert.Nil(t, f.loop.held[f.target], "a divergence drops what was held")
+	assert.Equal(t, int64(3), writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityDiverged))
+	assert.Len(t, logged.matching("Dropped a write"), 2, "a new gate status logs again, once")
+	assert.Nil(t, f.loop.openWindow)
 }
 
 // infoLines collects the worker's Info-level log lines.
