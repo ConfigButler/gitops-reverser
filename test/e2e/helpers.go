@@ -243,9 +243,9 @@ spec:
 // gitBranchWritersYAML is the entries of a GitBranch's allowedGitTargets, each on its own line and
 // indented under that key: its own namespace, and the namespaces in sharedWith.
 func gitBranchWritersYAML(sharedWith ...string) string {
-	writers := "\n    - from: Same"
+	writers := "\n    - consumerNamespaces: {from: Same}"
 	if len(sharedWith) > 0 {
-		writers += fmt.Sprintf("\n    - from: Names\n      names: [%s]", strings.Join(sharedWith, ", "))
+		writers += fmt.Sprintf("\n    - consumerNamespaces: {from: Names, names: [%s]}", strings.Join(sharedWith, ", "))
 	}
 	return writers
 }

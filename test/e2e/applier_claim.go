@@ -63,7 +63,8 @@ spec:
 func grantAppliersInAnyNamespace() {
 	GinkgoHelper()
 	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
-		"--type=merge", "-p", `{"spec":{"allowedApplierClaims":[{"from":"All","applierNamespaces":["*"]}]}}`)
+		"--type=merge", "-p",
+		`{"spec":{"allowedApplierClaims":[{"consumerNamespaces":{"from":"All"},"applierNamespaces":["*"]}]}}`)
 	Expect(err).NotTo(HaveOccurred(), "failed to let the install KubeProvider's applier claims reach other namespaces")
 }
 
@@ -74,8 +75,9 @@ func grantAppliersInAnyNamespace() {
 // manifests need them patched in. On a config-dir install the patch restates what the manifest
 // already carries.
 const suiteKubeProviderGrants = `{"spec":{` +
-	`"allowedGitTargets":[{"from":"All","sourceNamespaces":["{consumer.namespace}"],"clusterResources":["*"]}],` +
-	`"allowedApplierClaims":[{"from":"All","applierNamespaces":["{consumer.namespace}"]}]}}`
+	`"allowedGitTargets":[{"consumerNamespaces":{"from":"All"},` +
+	`"sourceNamespaces":["{consumer.namespace}"],"clusterResources":["*"]}],` +
+	`"allowedApplierClaims":[{"consumerNamespaces":{"from":"All"},"applierNamespaces":["{consumer.namespace}"]}]}}`
 
 // grantSuiteAccess gives the install's KubeProvider the grants the suite needs. A Helm install already
 // carries them as values, and a patch there would take the fields from Helm, whose next server-side

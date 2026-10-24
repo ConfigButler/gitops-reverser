@@ -5,9 +5,9 @@
 # same grants in the suite's setup (grantSuiteAccess); config/kubeprovider-local.yaml carries them.
 kubeProvider:
   allowedGitTargets:
-    - from: All
+    - consumerNamespaces: {from: All}
       sourceNamespaces: ["{consumer.namespace}"]
       clusterResources: ["*"]
   allowedApplierClaims:
-    - from: All
+    - consumerNamespaces: {from: All}
       applierNamespaces: ["{consumer.namespace}"]

@@ -15,13 +15,14 @@ omitted or empty list admits nobody.
 
 | Grant list | Admits | Replaces |
 |---|---|---|
-| `GitProvider.spec.allowedGitBranches` | `GitBranch`es claiming its `branches` patterns | `spec.allowedBranches`, and `spec.accessFrom` |
+| `GitProvider.spec.allowedGitBranches` | `GitBranch`es claiming its `branchPatterns` | `spec.allowedBranches`, and `spec.accessFrom` |
 | `GitBranch.spec.allowedGitTargets` | `GitTarget`s writing through it | the `GitProvider`'s `spec.accessFrom` |
 | `KubeProvider.spec.allowedGitTargets` | `GitTarget`s mirroring its `sourceNamespaces` and `clusterResources` | `spec.accessFrom`, `spec.allowCrossNamespace.sources` |
 | `KubeProvider.spec.allowedApplierClaims` | applier claims holding an applier in its `applierNamespaces` | `spec.accessFrom`, `spec.allowCrossNamespace.appliers` |
 
-Every grant has a required `from`: `Same` (the namespace of the object holding the grant), `Names`
-with `names`, `Selector` with a non-empty `selector`, or `All`. `spec.accessFrom`,
+Every grant has a required `consumerNamespaces` block with a required `from`: `Same` (the namespace
+of the object holding the grant), `Names` with `names`, `Selector` with a non-empty `selector`, or
+`All`. Beside the block sits the scope the grant gives. `spec.accessFrom`,
 `spec.allowedBranches`, `spec.allowCrossNamespace` and their chart values are gone, and the API
 server prunes them. The equivalents of the old defaults:
 
@@ -29,21 +30,21 @@ server prunes them. The equivalents of the old defaults:
 kind: GitProvider
 spec:
   allowedGitBranches:            # was allowedBranches: [main], for this namespace's GitBranches
-    - from: Same
-      branches: [main]
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [main]
 ---
 kind: GitBranch
 spec:
   allowedGitTargets:             # this namespace's GitTargets, as before; add from: Names to share
-    - from: Same
+    - consumerNamespaces: {from: Same}
 ---
 kind: KubeProvider
 spec:
   allowedGitTargets:             # was its own namespace, plus accessFrom, without allowCrossNamespace
-    - from: Same
+    - consumerNamespaces: {from: Same}
       sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
-    - from: Same
+    - consumerNamespaces: {from: Same}
       applierNamespaces: ["{consumer.namespace}"]
 ```
 
@@ -66,7 +67,8 @@ spec:
   one type outside them refuses the whole rule (`ClusterResourceNotAllowed`). No default grants any,
   the chart's included, so a `ClusterWatchRule` through `local` stops mirroring until a grant does.
 - **A `WatchRule`'s own namespace needs a grant too:** `sourceNamespaces: ["{consumer.namespace}"]`. An
-  explicit list is the whole scope, and `sourceNamespace: "*"` needs `"*"`.
+  explicit list is the whole scope, the union across the admitting grants, and
+  `sourceNamespace: "*"` needs `"*"` in at least one of them: it is refused, never narrowed.
 - **An applier claim refused by `allowedApplierClaims` hands its applier back**, as one no eligible
   `GitTarget` references does. A `GitBranch` no grant admits any more gives up its branch after its
   branch worker pushed or refused what it held, and keeps its finalizer.
@@ -197,8 +199,9 @@ spec:
   secretRef:
     name: prod-eu-1-kubeconfig   # a Secret in this namespace; key defaults to value, then value.yaml
   allowedGitTargets:             # see "Grants say who may use a provider or a branch"
-    - from: Names
-      names: [team-a]
+    - consumerNamespaces:
+        from: Names
+        names: [team-a]
       sourceNamespaces: ["{consumer.namespace}"]
 ---
 kind: GitTarget
@@ -279,7 +282,7 @@ spec:
   branch: main
   # parentBranch: develop             # was GitTarget.spec.parentBranch
   allowedGitTargets:                  # who may write through it; see the entry on grants
-    - from: Same
+    - consumerNamespaces: {from: Same}
 ---
 kind: GitTarget
 metadata: {name: apps, namespace: platform}

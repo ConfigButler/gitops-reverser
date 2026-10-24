@@ -57,13 +57,14 @@ spec:
   secretRef:
     name: %s
   allowedGitBranches:
-    - from: Same
-      branches: [main]
-    - from: Selector
-      selector:
-        matchLabels:
-          %s: "true"
-      branches: ["teams/{consumer.namespace}/*"]
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [main]
+    - consumerNamespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            %s: "true"
+      branchPatterns: ["teams/{consumer.namespace}/*"]
 `, providerName, platformNs, repo.RepoURLHTTP, repo.GitSecretHTTP, tenantLabel), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
 		verifyResourceStatus("gitprovider", providerName, platformNs,

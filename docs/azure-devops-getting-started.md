@@ -45,8 +45,8 @@ spec:
   secretRef:
     name: ado-creds
   allowedGitBranches:
-    - from: Same
-      branches: [<branch>]
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [<branch>]
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitBranch

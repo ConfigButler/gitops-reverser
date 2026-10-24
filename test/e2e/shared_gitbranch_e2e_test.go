@@ -167,8 +167,8 @@ metadata:
 spec:
   url: %s
   allowedGitBranches:
-    - from: Same
-      branches: ["main", "release"]
+    - consumerNamespaces: {from: Same}
+      branchPatterns: ["main", "release"]
   secretRef:
     name: %s
 `, name, namespace, url, secret), "apply", "-f", "-")

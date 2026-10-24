@@ -258,9 +258,10 @@ func applyKubeProviderWithAuditRoute(
 	if wide {
 		scope = `["{consumer.namespace}", "*"]`
 	}
-	extra := fmt.Sprintf("\n  allowedGitTargets:\n    - from: Same\n      sourceNamespaces: %s", scope)
+	extra := fmt.Sprintf(
+		"\n  allowedGitTargets:\n    - consumerNamespaces: {from: Same}\n      sourceNamespaces: %s", scope)
 	if len(admits) > 0 {
-		extra += fmt.Sprintf("\n    - from: Names\n      names: [%s]\n      sourceNamespaces: %s",
+		extra += fmt.Sprintf("\n    - consumerNamespaces: {from: Names, names: [%s]}\n      sourceNamespaces: %s",
 			strings.Join(admits, ", "), scope)
 	}
 	if auditRoute != "" {

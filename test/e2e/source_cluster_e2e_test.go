@@ -172,10 +172,10 @@ func applyKubeProvider(namespace, name, secretName, key string, admits ...string
 	if key != "" {
 		keyLine = "\n    key: " + key
 	}
-	grants := "\n  allowedGitTargets:\n    - from: Same\n      sourceNamespaces: [\"{consumer.namespace}\"]"
+	grants := "\n  allowedGitTargets:\n    - consumerNamespaces: {from: Same}\n      sourceNamespaces: [\"{consumer.namespace}\"]"
 	if len(admits) > 0 {
 		grants += fmt.Sprintf(
-			"\n    - from: Names\n      names: [%s]\n      sourceNamespaces: [\"{consumer.namespace}\"]",
+			"\n    - consumerNamespaces: {from: Names, names: [%s]}\n      sourceNamespaces: [\"{consumer.namespace}\"]",
 			strings.Join(admits, ", "),
 		)
 	}
@@ -439,7 +439,7 @@ metadata: {name: %s, namespace: %s}
 spec:
   inCluster: {}
   allowedGitTargets:
-    - from: Same
+    - consumerNamespaces: {from: Same}
       sourceNamespaces: ["{consumer.namespace}"]
 `, name, testNs), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())

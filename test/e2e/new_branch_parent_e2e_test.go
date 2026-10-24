@@ -79,8 +79,8 @@ metadata:
 spec:
   url: %s
   allowedGitBranches:
-    - from: Same
-      branches: ["main", %q]
+    - consumerNamespaces: {from: Same}
+      branchPatterns: ["main", %q]
   secretRef:
     name: %s
 `, providerName, namespace, repo.RepoURLHTTP, writeBranch, repo.GitSecretHTTP)

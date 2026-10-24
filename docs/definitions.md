@@ -27,7 +27,7 @@ rather than per field:
 | readiness shape (`Ready`, `Reconciling`, `Stalled`, `observedGeneration`) | Flux and kstatus | the tools that read a cluster's health read this shape |
 | flags and their chart values | Flux | [`config-flag-conventions.md`](config-flag-conventions.md) is built on it |
 | a field we mirror verbatim | Flux | `meta.KubeConfigReference`, `suspend`, `sops` |
-| the source of a grant (`from: Same`, `Names`, `Selector`, `All`) | Gateway API | `allowedRoutes.namespaces.from`; `Names` is ours, a plain list where Gateway API matches a label |
+| who a grant admits (`consumerNamespaces`, with `from: Same`, `Names`, `Selector`, `All`) | Gateway API | `allowedRoutes.namespaces` and its `from`; `Names` is ours, a plain list where Gateway API matches a label, and nothing defaults where Gateway API defaults to `Same` |
 | enum value shape | Kubernetes `core/v1` | Flux is inconsistent here, and `core/v1` is not. See rule 7 |
 | field, block and timestamp shape | Kubernetes API conventions, then Flux | rules 2 through 4 |
 
@@ -66,8 +66,8 @@ The two directions, which share the word "source" and must not share anything el
   object that lends something (a `GitProvider`, a `GitBranch`, a `KubeProvider`). It is granted on
   the referenced object, in a **grant** list, and nothing is automatic, the own namespace included.
 - **Source namespace** is the source-cluster direction: which source-cluster namespace a rule reads
-  objects from. `WatchRule.spec.rules[].sourceNamespace`, bounded by the `sourceNamespaces` of the
-  `KubeProvider` grant that admits the `GitTarget`.
+  objects from. `WatchRule.spec.rules[].sourceNamespace`, bounded by the union of the
+  `sourceNamespaces` of the `KubeProvider` grants that admit the `GitTarget`.
 
 A sentence about namespace policy names one of those two. Never "namespace access" unqualified.
 
@@ -150,8 +150,9 @@ reports `HeldByAnotherClaim`.
 
 **Grant.** One entry in a list named `allowed` plus the kind that refers to it
 (`GitProvider.spec.allowedGitBranches`, `GitBranch.spec.allowedGitTargets`,
-`KubeProvider.spec.allowedGitTargets` and `spec.allowedApplierClaims`). It says where it admits from
-(`from`) and, where the object lends reach, the scope it gives (`branches`, `sourceNamespaces`,
+`KubeProvider.spec.allowedGitTargets` and `spec.allowedApplierClaims`). It says which
+control-cluster namespaces it admits consumers from (`consumerNamespaces`, with its `from`) and,
+where the object lends reach, the scope it gives (`branchPatterns`, `sourceNamespaces`,
 `clusterResources`, `applierNamespaces`). Grants combine by union; an explicit scope is the whole
 scope. Not "permission" or "policy".
 
