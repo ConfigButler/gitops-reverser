@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.53.0...v0.54.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** every grant in GitProvider.spec.allowedGitBranches, GitBranch.spec.allowedGitTargets, KubeProvider.spec.allowedGitTargets and KubeProvider.spec.allowedApplierClaims moves from/names/selector into a required consumerNamespaces block, and allowedGitBranches[].branches is renamed branchPatterns:
+* **applier:** rename FluxTrigger/ArgoCDTrigger to FluxClaim/ArgoCDClaim ([#438](https://github.com/ConfigButler/gitops-reverser/issues/438))
+* **applier:** hold an Argo CD Application's automated sync off, as a suspend ([#437](https://github.com/ConfigButler/gitops-reverser/issues/437))
+* one GitReceiver for many repositories ([#432](https://github.com/ConfigButler/gitops-reverser/issues/432))
+* replace ClusterProvider with a namespaced KubeProvider ([#430](https://github.com/ConfigButler/gitops-reverser/issues/430))
+* hold a repository branch with a GitBranch ([#429](https://github.com/ConfigButler/gitops-reverser/issues/429))
+* a repository branch has one branch worker, keyed by the repository's URL and the branch, so an https and an SSH spelling of one repository are one branch. The GitBranch holding the branch decides which GitProvider's credential pushes it, and a GitProvider in another namespace is shared through the grants on it (spec.allowedGitBranches) and the GitBranch's spec.gitProviderRef.namespace, never copied. See docs/UPGRADING.md, "GitBranch holds a repository branch" and "Grants say who may use a provider or a branch".
+* FluxTrigger spec.quietPeriod and status.source.prefetch are removed. An apply no longer waits for a quiet branch: the branch worker publishes what is pending, then applies. Server-side apply and kubectl's strict field validation reject a manifest that still sets spec.quietPeriod; a client with field validation off drops the field without an error. Remove spec.quietPeriod from FluxTrigger manifests before upgrading.
+
+### Features
+
+* **api:** explicit access grants between providers, branches and their users ([#441](https://github.com/ConfigButler/gitops-reverser/issues/441)) ([1c4fade](https://github.com/ConfigButler/gitops-reverser/commit/1c4fade43d29c746605a86d4df04c48945004cce))
+* **applier:** hold an Argo CD Application's automated sync off, as a suspend ([#437](https://github.com/ConfigButler/gitops-reverser/issues/437)) ([dec7056](https://github.com/ConfigButler/gitops-reverser/commit/dec7056b5d6df87f03392b3b83d011bb1e592d27))
+* hold a repository branch with a GitBranch ([#429](https://github.com/ConfigButler/gitops-reverser/issues/429)) ([17c0c96](https://github.com/ConfigButler/gitops-reverser/commit/17c0c969b48e3d6aad89a15a1d6d3ce68bc5a330))
+* one branch worker per repository branch, whatever GitProvider names it ([#428](https://github.com/ConfigButler/gitops-reverser/issues/428)) ([c49803f](https://github.com/ConfigButler/gitops-reverser/commit/c49803f396149aec2f7e9103f3e107746a7d1448))
+* one GitReceiver for many repositories ([#432](https://github.com/ConfigButler/gitops-reverser/issues/432)) ([6ae6272](https://github.com/ConfigButler/gitops-reverser/commit/6ae62722d6547246af6879d7bf5ea19489c9a878))
+* recognize the applier's own writes, and flush before applying ([#425](https://github.com/ConfigButler/gitops-reverser/issues/425)) ([2d98259](https://github.com/ConfigButler/gitops-reverser/commit/2d982594a0916379720f59603e5b2014b5df1db7))
+* replace ClusterProvider with a namespaced KubeProvider ([#430](https://github.com/ConfigButler/gitops-reverser/issues/430)) ([5d7d5f8](https://github.com/ConfigButler/gitops-reverser/commit/5d7d5f8802194c18eab35f6290dc288c961425e6))
+
+
+### Bug Fixes
+
+* **attribution:** credit a removal by what caused it, never by the watch's selector ([#431](https://github.com/ConfigButler/gitops-reverser/issues/431)) ([a52caca](https://github.com/ConfigButler/gitops-reverser/commit/a52caca2acaa9aac6bbac68d3fa7a996dcb19240))
+* **controller:** publish a refreshed status.remote when the floor lifts, and time the bi-directional loop ([#424](https://github.com/ConfigButler/gitops-reverser/issues/424)) ([3f00e09](https://github.com/ConfigButler/gitops-reverser/commit/3f00e098077af896d4853978eb58ed8d9697536f))
+
+
+### Code Refactoring
+
+* **applier:** rename FluxTrigger/ArgoCDTrigger to FluxClaim/ArgoCDClaim ([#438](https://github.com/ConfigButler/gitops-reverser/issues/438)) ([efc0203](https://github.com/ConfigButler/gitops-reverser/commit/efc0203551820dd44a95c33f9aa5b7b8c87adb5c))
+
 ## [0.53.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.52.0...v0.53.0) (2026-10-20)
 
 
