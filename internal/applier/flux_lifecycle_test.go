@@ -472,6 +472,61 @@ func TestFluxRequest_AFetchThatEndsElsewhere(t *testing.T) {
 	assert.True(t, suspended(sim.Kustomization(checkoutKey)))
 }
 
+// stampOverOurs makes every stamp of the GitRepository platform land and be stamped over at once by
+// another, as `flux reconcile source git` or another controller would: source-controller then
+// handles that token, never ours.
+func stampOverOurs(t *testing.T, sim *fluxsim.Sim) {
+	t.Helper()
+	sim.Client.PrependReactor("patch", "gitrepositories", func(k8stesting.Action) (bool, runtime.Object, error) {
+		obj, err := sim.Client.Tracker().Get(fluxsim.GitRepositoryGVR(), platformKey.Namespace, platformKey.Name)
+		if err != nil {
+			return true, nil, err
+		}
+		source, ok := obj.(*unstructured.Unstructured)
+		if !ok {
+			return true, nil, errors.New("not unstructured")
+		}
+		source = source.DeepCopy()
+		source.SetAnnotations(map[string]string{fluxmeta.ReconcileRequestAnnotation: "theirs"})
+		return true, source, sim.Client.Tracker().Update(fluxsim.GitRepositoryGVR(), source, platformKey.Namespace)
+	})
+}
+
+// TestFluxRequest_AFetchStampedOverEndsWithTheirs is F2: a fetch whose stamp somebody else replaced
+// waited for its own token, which source-controller never handles, and failed after the whole wait
+// though the artifact held the commit. Now the fetch that read the stamp over ours ends ours too:
+// the request goes on when it brought the commit, and fails at once, as any fetch elsewhere does,
+// when it did not.
+func TestFluxRequest_AFetchStampedOverEndsWithTheirs(t *testing.T) {
+	t.Run("the artifact holds the commit", func(t *testing.T) {
+		sim := simCluster(t, "main@sha1:"+olderCommit, true)
+		stampOverOurs(t, sim)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		flux := simFlux(sim)
+
+		started, err := flux.Request(ctx, checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+
+		require.NoError(t, err, "no wait for a token nobody handles")
+		steps := follow(t, flux, &started)
+		assert.Equal(t, git.ApplySucceeded, steps[len(steps)-1].Outcome)
+	})
+	t.Run("the artifact holds another commit", func(t *testing.T) {
+		sim := simCluster(t, "main@sha1:"+olderCommit, true)
+		sim.Fetches(platformKey, "main@sha1:"+olderCommit)
+		stampOverOurs(t, sim)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, err := simFlux(sim).Request(ctx, checkoutKey, ask(v1alpha3.ApplyReasonForeignCommit))
+
+		var elsewhere *sourceElsewhereError
+		require.ErrorAs(t, err, &elsewhere, "the fetch that read their stamp ended ours: %v", err)
+		require.NoError(t, ctx.Err(), "it did not wait the request out")
+		assert.True(t, suspended(sim.Kustomization(checkoutKey)), "nothing resumed")
+	})
+}
+
 // TestFluxRequest_TakesSuspendBackFromAnUpdate: `flux resume` and `flux suspend` write spec.suspend
 // with a merge patch, once. That is no manifest owning the field, so a request takes it back.
 func TestFluxRequest_TakesSuspendBackFromAnUpdate(t *testing.T) {

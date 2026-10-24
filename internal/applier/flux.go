@@ -141,7 +141,7 @@ func (f *Flux) fetchCommit(
 	if artifactHolds(source, ask.Commit) {
 		return nil
 	}
-	source, err := f.fetch(ctx, sourceRef)
+	source, err := f.fetch(ctx, sourceRef, ask.Commit)
 	if err != nil {
 		return err
 	}
@@ -302,9 +302,16 @@ func (f *Flux) readSource(
 	return source, nil
 }
 
-// fetch stamps the GitRepository and waits for it to handle the stamp, which it marks once the
-// fetch ended, whatever it found. A suspended Kustomization ignores the new artifact.
-func (f *Flux) fetch(ctx context.Context, sourceRef types.NamespacedName) (*unstructured.Unstructured, error) {
+// fetch stamps the GitRepository and waits for the fetch to end, which source-controller marks by
+// handling the stamp, whatever it found. It also ends once the artifact holds commit, and once the
+// GitRepository handled a stamp somebody wrote over ours: that fetch started after ours was asked
+// for, so it read the remote no earlier than ours would have (tokenHandled). Waiting for our own
+// token alone failed a request whose stamp `flux reconcile source git` or another controller
+// replaced, after the whole wait, with the commit already in the artifact. A suspended
+// Kustomization ignores the new artifact.
+func (f *Flux) fetch(
+	ctx context.Context, sourceRef types.NamespacedName, commit string,
+) (*unstructured.Unstructured, error) {
 	token, err := f.stampSource(ctx, sourceRef)
 	if err != nil {
 		return nil, err
@@ -315,7 +322,7 @@ func (f *Flux) fetch(ctx context.Context, sourceRef types.NamespacedName) (*unst
 		if err != nil {
 			return nil, fmt.Errorf("get %s %s: %w", kindGitRepository, sourceRef, err)
 		}
-		if statusString(source, "lastHandledReconcileAt") == token {
+		if artifactHolds(source, commit) || tokenHandled(source, token) {
 			return source, nil
 		}
 		select {
@@ -566,8 +573,9 @@ func readyCondition(ks *unstructured.Unstructured) (metav1.Condition, bool) {
 	return metav1.Condition{}, false
 }
 
-// tokenHandled reports whether the reconcile that read token has ended: the Kustomization reports
-// it handled, or reports handled a token stamped over it, which a later reconcile read.
+// tokenHandled reports whether the reconcile that read token has ended: the object, a Kustomization
+// or a GitRepository, reports it handled, or reports handled a token stamped over it, which a later
+// reconcile read.
 func tokenHandled(ks *unstructured.Unstructured, token string) bool {
 	handled := statusString(ks, "lastHandledReconcileAt")
 	stamped := ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation]
