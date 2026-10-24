@@ -34,6 +34,12 @@ func applierGrants(
 	}}
 }
 
+// branchesFromSame is the allowedGitBranches of a GitProvider that lets GitBranches in its own namespace
+// claim the branches patterns match.
+func branchesFromSame(patterns ...configbutleraiv1alpha3.BranchPattern) []configbutleraiv1alpha3.GitBranchGrant {
+	return []configbutleraiv1alpha3.GitBranchGrant{{From: configbutleraiv1alpha3.GrantFromSame, Branches: patterns}}
+}
+
 // writersFromSame is the allowedGitTargets of a GitBranch shared with its own namespace only.
 func writersFromSame() []configbutleraiv1alpha3.NamespaceGrant {
 	return []configbutleraiv1alpha3.NamespaceGrant{{From: configbutleraiv1alpha3.GrantFromSame}}

@@ -43,8 +43,6 @@ func conditionsOf(obj client.Object) []metav1.Condition {
 		return typed.Status.Conditions
 	case *configbutleraiv1alpha3.GitTarget:
 		return typed.Status.Conditions
-	case *configbutleraiv1alpha3.FluxClaim:
-		return typed.Status.Conditions
 	}
 	return nil
 }
@@ -55,21 +53,32 @@ func awaitCondition(
 	conditionType, want string, budget time.Duration,
 ) *metav1.Condition {
 	t.Helper()
+	return pollCondition(ctx, t, key, fresh, conditionType, "reason "+want,
+		func(c *metav1.Condition) bool { return c.Reason == want }, budget)
+}
+
+// pollCondition polls key until its condition conditionType satisfies want, or fails naming what, the
+// state waited for.
+func pollCondition(
+	ctx context.Context, t *testing.T, key types.NamespacedName, fresh func() client.Object,
+	conditionType, what string, want func(*metav1.Condition) bool, budget time.Duration,
+) *metav1.Condition {
+	t.Helper()
 	deadline := time.Now().Add(budget)
 	last := "absent"
 	for time.Now().Before(deadline) {
 		obj := fresh()
 		if err := k8sClient.Get(ctx, key, obj); err == nil {
 			if c := apimeta.FindStatusCondition(conditionsOf(obj), conditionType); c != nil {
-				if c.Reason == want {
+				if want(c) {
 					return c
 				}
-				last = c.Reason + ": " + c.Message
+				last = string(c.Status) + " " + c.Reason + ": " + c.Message
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("%s %s never reached reason %q within %s (last seen %q)", key, conditionType, want, budget, last)
+	t.Fatalf("%s %s never reached %s within %s (last seen %q)", key, conditionType, what, budget, last)
 	return nil
 }
 
@@ -274,18 +283,8 @@ func awaitTarget(
 	want func(*metav1.Condition) bool,
 ) {
 	t.Helper()
-	deadline := time.Now().Add(propagationBudget)
-	var last *metav1.Condition
-	for time.Now().Before(deadline) {
-		got := &configbutleraiv1alpha3.GitTarget{}
-		require.NoError(t, k8sClient.Get(ctx, key, got))
-		if last = apimeta.FindStatusCondition(got.Status.Conditions, conditionType); last != nil && want(last) {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("GitTarget %s %s never reached what was waited for within %s: %+v", key, conditionType,
-		propagationBudget, last)
+	pollCondition(ctx, t, key, func() client.Object { return &configbutleraiv1alpha3.GitTarget{} },
+		conditionType, "what was waited for", want, propagationBudget)
 }
 
 // setWriters replaces a GitBranch's allowedGitTargets.

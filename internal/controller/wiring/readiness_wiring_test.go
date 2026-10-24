@@ -196,29 +196,8 @@ func awaitMirroredReady(
 	budget time.Duration,
 ) {
 	t.Helper()
-
-	deadline := time.Now().Add(budget)
-	last := "absent"
-	for time.Now().Before(deadline) {
-		obj := fresh()
-		if err := k8sClient.Get(ctx, key, obj); err == nil {
-			var conditions []metav1.Condition
-			switch typed := obj.(type) {
-			case *configbutleraiv1alpha3.WatchRule:
-				conditions = typed.Status.Conditions
-			case *configbutleraiv1alpha3.ClusterWatchRule:
-				conditions = typed.Status.Conditions
-			}
-			if c := apimeta.FindStatusCondition(conditions, controller.ConditionTypeGitTargetReady); c != nil {
-				if c.Status == want {
-					return
-				}
-				last = string(c.Status)
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("GitTargetReady never reached %q within %s (last seen %q)", want, budget, last)
+	pollCondition(ctx, t, key, fresh, controller.ConditionTypeGitTargetReady, "status "+string(want),
+		func(c *metav1.Condition) bool { return c.Status == want }, budget)
 }
 
 // TestWatchRule_FollowsGitTargetStatusOnlyRecovery is the regression test for a rule whose mirrored

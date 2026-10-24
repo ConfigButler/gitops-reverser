@@ -223,10 +223,6 @@ func deleteGitProvider(namespace, name string) {
 // GitTargets in its own namespace may write through it, and in sharedWith.
 func gitBranchManifest(namespace, providerName string, sharedWith ...string) string {
 	const branch = "main"
-	shared := ""
-	if len(sharedWith) > 0 {
-		shared = fmt.Sprintf("\n    - from: Names\n      names: [%s]", strings.Join(sharedWith, ", "))
-	}
 	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitBranch
 metadata:
@@ -238,11 +234,20 @@ spec:
   gitProviderRef:
     name: %s
   branch: %s
-  allowedGitTargets:
-    - from: Same%s
+  allowedGitTargets:%s
 ---
 `, gitBranchName(providerName, branch), namespace, gitBranchProviderLabel, providerName, providerName, branch,
-		shared)
+		gitBranchWritersYAML(sharedWith...))
+}
+
+// gitBranchWritersYAML is the entries of a GitBranch's allowedGitTargets, each on its own line and
+// indented under that key: its own namespace, and the namespaces in sharedWith.
+func gitBranchWritersYAML(sharedWith ...string) string {
+	writers := "\n    - from: Same"
+	if len(sharedWith) > 0 {
+		writers += fmt.Sprintf("\n    - from: Names\n      names: [%s]", strings.Join(sharedWith, ", "))
+	}
+	return writers
 }
 
 // createGitTarget creates a GitTarget on the GitBranch of a GitProvider's branch, creating that

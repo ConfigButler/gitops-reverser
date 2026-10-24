@@ -262,9 +262,7 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 	provider := &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "provider-a", Namespace: ns},
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
-			AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-				{From: configbutleraiv1alpha3.GrantFromSame, Branches: []configbutleraiv1alpha3.BranchPattern{"main"}},
-			},
+			AllowedGitBranches: branchesFromSame("main"),
 		},
 	}
 	target := &configbutleraiv1alpha3.GitTarget{

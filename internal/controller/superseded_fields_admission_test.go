@@ -183,14 +183,9 @@ var _ = Describe("Reference names must not be empty", func() {
 		provider := &configbutleraiv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "empty-secret-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitProviderSpec{
-				URL: "https://example.com/repo.git",
-				AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-					{
-						From:     configbutleraiv1alpha3.GrantFromSame,
-						Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-					},
-				},
-				SecretRef: &meta.LocalObjectReference{Name: ""},
+				URL:                "https://example.com/repo.git",
+				AllowedGitBranches: branchesFromSame("main"),
+				SecretRef:          &meta.LocalObjectReference{Name: ""},
 			},
 		}
 

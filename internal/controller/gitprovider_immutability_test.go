@@ -31,13 +31,8 @@ var _ = Describe("GitProvider URL Immutability", func() {
 		provider := &configbutleraiv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitProviderSpec{
-				URL: "https://example.com/repo.git",
-				AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-					{
-						From:     configbutleraiv1alpha3.GrantFromSame,
-						Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-					},
-				},
+				URL:                "https://example.com/repo.git",
+				AllowedGitBranches: branchesFromSame("main"),
 			},
 		}
 		Expect(k8sClient.Create(ctx, provider)).Should(Succeed())

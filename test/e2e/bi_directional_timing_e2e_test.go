@@ -254,7 +254,7 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 
 		BeforeAll(func() {
 			skipUnlessBiDirectionalEnabled()
-			allowCrossNamespaceAppliers()
+			grantAppliersInAnyNamespace()
 			testNs = testNamespaceFor("bi-timing-flux")
 			_, _ = kubectlRun("create", "namespace", testNs)
 			fluxName = "bi-timing-" + testNs
@@ -338,7 +338,7 @@ var _ = Describe("Bi Directional timing (Argo CD)", Label("bi-directional", "arg
 		BeforeAll(func() {
 			skipUnlessBiDirectionalEnabled()
 			requireArgoCDInstalled()
-			allowCrossNamespaceAppliers()
+			grantAppliersInAnyNamespace()
 			testNs = testNamespaceFor("bi-timing-argo")
 			_, _ = kubectlRun("create", "namespace", testNs)
 

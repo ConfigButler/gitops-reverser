@@ -5,7 +5,6 @@ package e2e
 import (
 	"fmt"
 	"path"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -84,10 +83,6 @@ spec:
 	// GitProvider, written by its own namespace and the namespaces in sharedWith.
 	applyTenantGitBranch := func(name, namespace, branch string, sharedWith ...string) {
 		GinkgoHelper()
-		writers := "\n    - from: Same"
-		if len(sharedWith) > 0 {
-			writers += fmt.Sprintf("\n    - from: Names\n      names: [%s]", strings.Join(sharedWith, ", "))
-		}
 		_, err := kubectlRunWithStdin("", fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitBranch
 metadata:
@@ -99,7 +94,7 @@ spec:
     namespace: %s
   branch: %s
   allowedGitTargets:%s
-`, name, namespace, providerName, platformNs, branch, writers), "apply", "-f", "-")
+`, name, namespace, providerName, platformNs, branch, gitBranchWritersYAML(sharedWith...)), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "failed to apply GitBranch %s/%s", namespace, name)
 	}
 

@@ -115,7 +115,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 	BeforeAll(func() {
 		skipUnlessBiDirectionalEnabled()
 		requireArgoCDInstalled()
-		allowCrossNamespaceAppliers()
+		grantAppliersInAnyNamespace()
 
 		By("creating test namespace")
 		testNs = testNamespaceFor("argo-bi-directional")
@@ -405,7 +405,7 @@ var _ = Describe("Bi Directional (Argo CD) refusal", Label("bi-directional", "ar
 	BeforeAll(func() {
 		skipUnlessBiDirectionalEnabled()
 		requireArgoCDInstalled()
-		allowCrossNamespaceAppliers()
+		grantAppliersInAnyNamespace()
 
 		testNs = testNamespaceFor("argo-refusal")
 		_, _ = kubectlRun("create", "namespace", testNs)

@@ -410,9 +410,7 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	gitProvider := &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "gp", Namespace: ns},
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
-			AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-				{From: configbutleraiv1alpha3.GrantFromSame, Branches: []configbutleraiv1alpha3.BranchPattern{"main"}},
-			},
+			AllowedGitBranches: branchesFromSame("main"),
 		},
 	}
 	target := &configbutleraiv1alpha3.GitTarget{

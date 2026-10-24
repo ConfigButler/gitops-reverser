@@ -437,27 +437,27 @@ func TestApplierClaimRule_AGitTargetEventRerunsTheClaimsItNames(t *testing.T) {
 	assert.Empty(t, argo.gitDestinationToClaims(context.Background(), platformProvider()), "another kind's")
 }
 
-// TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsTheOptIn is B1: a namespace a KubeProvider
-// admits may suspend and apply an applier in another namespace only when the provider sets
-// spec.allowCrossNamespace.appliers; one in the applier claim's own namespace needs nothing. Refused, the
-// applier claim never asks the applier's cluster, and holds nothing.
-func TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsTheOptIn(t *testing.T) {
+// TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsItInTheGrant is B1: a namespace a KubeProvider
+// admits may suspend and apply an applier in another namespace only when the applierNamespaces its
+// spec.allowedApplierClaims give it include that namespace; '{namespace}' covers the applier claim's own.
+// Refused, the applier claim never asks the applier's cluster, and holds nothing.
+func TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsItInTheGrant(t *testing.T) {
 	for _, kind := range []string{configbutleraiv1alpha3.ApplierClaimKindFlux, configbutleraiv1alpha3.ApplierClaimKindArgoCD} {
 		for name, tc := range map[string]struct {
-			sameNamespace, optIn bool
-			wantStatus           metav1.ConditionStatus
-			wantReason           string
+			sameNamespace, granted bool
+			wantStatus             metav1.ConditionStatus
+			wantReason             string
 		}{
-			"another namespace, without the opt-in": {
+			"another namespace, outside applierNamespaces": {
 				wantStatus: metav1.ConditionFalse, wantReason: authz.ReasonApplierNamespaceNotAllowed,
 			},
-			"another namespace, with the opt-in": {optIn: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded},
-			"its own namespace, which needs nothing": {
+			"another namespace, granted": {granted: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded},
+			"its own namespace, which '{namespace}' grants": {
 				sameNamespace: true, wantStatus: metav1.ConditionTrue, wantReason: ReasonSucceeded,
 			},
 		} {
 			t.Run(kind+"/"+name, func(t *testing.T) {
-				r, calls := applierNamespaceReconciler(t, kind, tc.sameNamespace, tc.optIn)
+				r, calls := applierNamespaceReconciler(t, kind, tc.sameNamespace, tc.granted)
 
 				got := reconcileClaim(t, r)
 
@@ -478,10 +478,10 @@ func TestApplierClaimRule_AnApplierInAnotherNamespaceNeedsTheOptIn(t *testing.T)
 
 // applierNamespaceReconciler is a reconciler of kind over the applier claim team-a/checkout, whose
 // applier is in team-a when sameNamespace is set and in flux-system or argocd otherwise, with the
-// KubeProvider claimLocalProvider setting allowCrossNamespace.appliers when optIn is set. It counts the
-// lookups of the applier's cluster.
+// KubeProvider claimLocalProvider giving applierNamespaces "*" when granted is set, and only
+// '{namespace}' otherwise. It counts the lookups of the applier's cluster.
 func applierNamespaceReconciler(
-	t *testing.T, kind string, sameNamespace, optIn bool,
+	t *testing.T, kind string, sameNamespace, granted bool,
 ) (*ApplierClaimReconciler, *int) {
 	t.Helper()
 	claim := ctrlclient.Object(testFluxClaim(claimLocalProvider))
@@ -502,7 +502,7 @@ func applierNamespaceReconciler(
 		}
 	}
 	provider := admitting(claimLocalProvider, "team-a")
-	if !optIn {
+	if !granted {
 		provider.Spec.AllowedApplierClaims = applierGrants(
 			[]configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.NamespaceVariable}, "team-a")
 	}

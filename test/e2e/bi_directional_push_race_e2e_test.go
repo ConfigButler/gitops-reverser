@@ -73,7 +73,7 @@ var _ = Describe("Bi Directional push race (Flux)", Label("bi-directional", "flu
 
 		BeforeAll(func() {
 			skipUnlessBiDirectionalEnabled()
-			allowCrossNamespaceAppliers()
+			grantAppliersInAnyNamespace()
 			testNs = testNamespaceFor("push-race-flux")
 			_, _ = kubectlRun("create", "namespace", testNs)
 			fluxName = "push-race-" + testNs
@@ -120,7 +120,7 @@ var _ = Describe("Bi Directional push race (Argo CD)", Label("bi-directional", "
 		BeforeAll(func() {
 			skipUnlessBiDirectionalEnabled()
 			requireArgoCDInstalled()
-			allowCrossNamespaceAppliers()
+			grantAppliersInAnyNamespace()
 			testNs = testNamespaceFor("push-race-argo")
 			_, _ = kubectlRun("create", "namespace", testNs)
 

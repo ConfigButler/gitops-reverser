@@ -426,7 +426,7 @@ var _ = Describe("Bi Directional applier echoes (Flux)", Label("bi-directional",
 
 		BeforeAll(func() {
 			skipUnlessBiDirectionalEnabled()
-			allowCrossNamespaceAppliers()
+			grantAppliersInAnyNamespace()
 			testNs = testNamespaceFor("echoes-flux")
 			_, _ = kubectlRun("create", "namespace", testNs)
 			fluxName = "echoes-" + testNs
@@ -471,7 +471,7 @@ var _ = Describe("Bi Directional applier echoes (Argo CD)", Label("bi-directiona
 		BeforeAll(func() {
 			skipUnlessBiDirectionalEnabled()
 			requireArgoCDInstalled()
-			allowCrossNamespaceAppliers()
+			grantAppliersInAnyNamespace()
 			testNs = testNamespaceFor("echoes-argo")
 			_, _ = kubectlRun("create", "namespace", testNs)
 

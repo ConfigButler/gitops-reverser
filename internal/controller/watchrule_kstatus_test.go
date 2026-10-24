@@ -62,7 +62,7 @@ func TestWatchRuleSourceNamespaceKstatusContract(t *testing.T) {
 		},
 		wantStatus: kstatus.CurrentStatus,
 	}, {
-		name: "delegation disabled: the refusal is terminal",
+		name: "namespace outside the grant: the refusal is terminal",
 		conds: []map[string]interface{}{
 			conditionMap(ConditionTypeSourceNamespaceAuthorized, "False",
 				WatchRuleReasonSourceNamespaceNotAllowed,

@@ -70,13 +70,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
@@ -135,13 +130,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main", "develop"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main", "develop"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
@@ -260,13 +250,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
@@ -354,13 +339,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
@@ -478,13 +458,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
@@ -549,13 +524,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
@@ -632,13 +602,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha3.GitProviderSpec{
-						URL: "https://github.com/test-org/test-repo.git",
-						AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-							{
-								From:     configbutleraiv1alpha3.GrantFromSame,
-								Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-							},
-						},
+						URL:                "https://github.com/test-org/test-repo.git",
+						AllowedGitBranches: branchesFromSame("main"),
 					},
 				}
 				Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
@@ -719,13 +684,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
@@ -797,13 +757,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
@@ -882,13 +837,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test-org/test-repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/test-org/test-repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())

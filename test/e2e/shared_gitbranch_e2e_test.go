@@ -180,9 +180,9 @@ spec:
 func applySharedGitBranch(name, namespace, provider, branch, sharedWith string) {
 	By(fmt.Sprintf("creating GitBranch '%s/%s' for branch '%s' through GitProvider '%s'",
 		namespace, name, branch, provider))
-	shared := ""
+	var shared []string
 	if sharedWith != "" {
-		shared = fmt.Sprintf("\n    - from: Names\n      names: [%s]", sharedWith)
+		shared = []string{sharedWith}
 	}
 	_, err := kubectlRunWithStdin("", fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitBranch
@@ -193,9 +193,8 @@ spec:
   gitProviderRef:
     name: %s
   branch: %s
-  allowedGitTargets:
-    - from: Same%s
-`, name, namespace, provider, branch, shared), "apply", "-f", "-")
+  allowedGitTargets:%s
+`, name, namespace, provider, branch, gitBranchWritersYAML(shared...)), "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply GitBranch %s/%s", namespace, name)
 }
 

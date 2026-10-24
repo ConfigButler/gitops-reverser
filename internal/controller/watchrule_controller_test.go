@@ -63,13 +63,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/test/repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"*"},
-						},
-					},
+					URL:                "https://github.com/test/repo.git",
+					AllowedGitBranches: branchesFromSame("*"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "git-credentials",
 					},
@@ -184,13 +179,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "https://github.com/octocat/Hello-World",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "https://github.com/octocat/Hello-World",
+					AllowedGitBranches: branchesFromSame("main"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())

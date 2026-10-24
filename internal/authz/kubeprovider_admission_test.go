@@ -56,13 +56,18 @@ func providerNamed(name string, grants ...configv1alpha3.SourceGrant) *configv1a
 	}
 }
 
-// mirrorFrom is a grant that admits namespaces by name to mirror their own namespace.
-func mirrorFrom(namespaces ...string) configv1alpha3.SourceGrant {
+// grantNames converts namespace names into a grant's names.
+func grantNames(namespaces ...string) []configv1alpha3.GrantNamespace {
 	names := make([]configv1alpha3.GrantNamespace, 0, len(namespaces))
 	for _, ns := range namespaces {
 		names = append(names, configv1alpha3.GrantNamespace(ns))
 	}
-	return configv1alpha3.SourceGrant{From: configv1alpha3.GrantFromNames, Names: names,
+	return names
+}
+
+// mirrorFrom is a grant that admits namespaces by name to mirror their own namespace.
+func mirrorFrom(namespaces ...string) configv1alpha3.SourceGrant {
+	return configv1alpha3.SourceGrant{From: configv1alpha3.GrantFromNames, Names: grantNames(namespaces...),
 		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.NamespaceVariable}}
 }
 
@@ -298,11 +303,9 @@ func claimOn(cluster, applierNamespace string) configv1alpha3.ApplierClaim {
 
 // appliersFrom is a grant that admits namespaces by name to hold appliers in scope.
 func appliersFrom(scope []configv1alpha3.ScopeNamespace, namespaces ...string) configv1alpha3.ApplierGrant {
-	names := make([]configv1alpha3.GrantNamespace, 0, len(namespaces))
-	for _, ns := range namespaces {
-		names = append(names, configv1alpha3.GrantNamespace(ns))
+	return configv1alpha3.ApplierGrant{
+		From: configv1alpha3.GrantFromNames, Names: grantNames(namespaces...), ApplierNamespaces: scope,
 	}
-	return configv1alpha3.ApplierGrant{From: configv1alpha3.GrantFromNames, Names: names, ApplierNamespaces: scope}
 }
 
 // TestApplierClaimAdmitted: an applier claim needs its own grant, and the applier must live in the

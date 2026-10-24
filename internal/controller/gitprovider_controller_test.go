@@ -315,13 +315,8 @@ var _ = Describe("GitProvider Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "git@github.com:test/repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "git@github.com:test/repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "nonexistent-secret",
 					},
@@ -381,13 +376,8 @@ var _ = Describe("GitProvider Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "git@github.com:test/repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "git@github.com:test/repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "malformed-secret",
 					},
@@ -446,13 +436,8 @@ var _ = Describe("GitProvider Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL: "git@github.com:test/repo.git",
-					AllowedGitBranches: []configbutleraiv1alpha3.GitBranchGrant{
-						{
-							From:     configbutleraiv1alpha3.GrantFromSame,
-							Branches: []configbutleraiv1alpha3.BranchPattern{"main"},
-						},
-					},
+					URL:                "git@github.com:test/repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					Commit: &configbutleraiv1alpha3.CommitSpec{
 						Signing: &configbutleraiv1alpha3.CommitSigningSpec{
 							SecretRef: meta.LocalObjectReference{

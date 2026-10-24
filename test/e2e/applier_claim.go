@@ -56,11 +56,11 @@ spec:
 	Expect(err).NotTo(HaveOccurred(), "failed to create ArgoCDClaim %s/%s", namespace, name)
 }
 
-// allowCrossNamespaceAppliers lets the applier claims that reach their applier through the install's
+// grantAppliersInAnyNamespace lets the applier claims that reach their applier through the install's
 // KubeProvider hold one in any namespace, as the e2e appliers are: in flux-system and argocd, while
 // each spec's applier claims live in its own namespace. Granting it is idempotent, and no spec
 // relies on its absence on that provider, so parallel specs may all ask for it.
-func allowCrossNamespaceAppliers() {
+func grantAppliersInAnyNamespace() {
 	GinkgoHelper()
 	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
 		"--type=merge", "-p", `{"spec":{"allowedApplierClaims":[{"from":"All","applierNamespaces":["*"]}]}}`)
@@ -71,7 +71,8 @@ func allowCrossNamespaceAppliers() {
 // namespace mirrors its own namespace and any cluster-scoped resource, and holds an applier in its
 // own namespace. config/kubeprovider-local.yaml carries them, and the Helm install passes them as
 // values (test/e2e/helm-values-suite-grants.yaml); the chart grants nothing by default, so the plain
-// manifests need them patched in.
+// manifests need them patched in. On a config-dir install the patch restates what the manifest
+// already carries.
 const suiteKubeProviderGrants = `{"spec":{` +
 	`"allowedGitTargets":[{"from":"All","sourceNamespaces":["{namespace}"],"clusterResources":["*"]}],` +
 	`"allowedApplierClaims":[{"from":"All","applierNamespaces":["{namespace}"]}]}}`
