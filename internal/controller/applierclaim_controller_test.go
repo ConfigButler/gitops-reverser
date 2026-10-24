@@ -281,13 +281,13 @@ func reconcileClaim(t *testing.T, r *ApplierClaimReconciler) configbutleraiv1alp
 		require.NoError(t, r.Get(context.Background(), claimKey, claim))
 		require.NotNil(t, findCondition(*claim.StatusConditions(), ConditionTypeReady),
 			"every pass publishes Ready")
-		held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
-		if conditionIsTrue(*claim.StatusConditions(), ApplierClaimConditionConfigured) && held != nil &&
-			!strings.Contains(held.Message, "which owns the switch") {
+		inControl := findCondition(*claim.StatusConditions(), ApplierClaimConditionInControl)
+		if conditionIsTrue(*claim.StatusConditions(), ApplierClaimConditionConfigured) && inControl != nil &&
+			!strings.Contains(inControl.Message, "which owns the switch") {
 			require.True(t, controllerutil.ContainsFinalizer(claim, claimFinalizer(claim)),
 				"an applier claim that holds its applier carries the finalizer")
 		}
-		if held != nil && held.Reason == ReasonSuspending {
+		if inControl != nil && inControl.Reason == ReasonSuspending {
 			assert.Equal(t, applierClaimSuspendingInterval, result.RequeueAfter, "a suspend is waited for closely")
 			return false
 		}

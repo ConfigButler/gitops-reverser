@@ -144,15 +144,15 @@ var _ = Describe("A Kustomization resume guarded by uid and resourceVersion, on 
 		_, err = applier.NewFlux(dyn).Suspend(ctx, ref)
 		Expect(err).NotTo(HaveOccurred())
 	}
-	// request asks Flux.Request for an apply of commit, with held run where the applier claim's hold is
-	// checked: after the resume's read of the Kustomization, before its write.
-	request := func(held func(context.Context) error) (applier.Started, error) {
+	// request asks Flux.Request for an apply of commit, with inControl run where the applier claim's
+	// InControl is checked: after the resume's read of the Kustomization, before its write.
+	request := func(inControl func(context.Context) error) (applier.Started, error) {
 		return applier.NewFlux(dyn).Request(ctx, ref, applier.Ask{
-			Want:   applier.Binding{RepositoryURL: repositoryURL, Branch: branch},
-			Commit: commit,
-			Reason: configbutleraiv1alpha3.ApplyReasonRepair,
-			Token:  "guarded-resume",
-			Held:   held,
+			Want:      applier.Binding{RepositoryURL: repositoryURL, Branch: branch},
+			Commit:    commit,
+			Reason:    configbutleraiv1alpha3.ApplyReasonRepair,
+			Token:     "guarded-resume",
+			InControl: inControl,
 		})
 	}
 	read := func() *unstructured.Unstructured {

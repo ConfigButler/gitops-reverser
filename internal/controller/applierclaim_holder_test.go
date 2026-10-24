@@ -64,8 +64,8 @@ func (f *holdFixture) reconcileKey(t *testing.T, key k8stypes.NamespacedName) *c
 		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
 		require.NoError(t, err)
 		require.NoError(t, f.r.Get(context.Background(), key, claim))
-		held := findCondition(claim.Status.Conditions, ApplierClaimConditionHeld)
-		return held == nil || held.Reason != ReasonSuspending
+		inControl := findCondition(claim.Status.Conditions, ApplierClaimConditionInControl)
+		return inControl == nil || inControl.Reason != ReasonSuspending
 	}, 5*time.Second, 5*time.Millisecond)
 	return claim
 }
@@ -94,7 +94,7 @@ func TestFluxClaim_OneClaimHoldsAKustomization(t *testing.T) {
 	second := f.reconcileKey(t, inLineKey)
 	first := f.reconcileKey(t, claimKey)
 
-	assert.True(t, conditionIsTrue(first.Status.Conditions, ApplierClaimConditionHeld), "the first holds it")
+	assert.True(t, conditionIsTrue(first.Status.Conditions, ApplierClaimConditionInControl), "the first holds it")
 	assert.True(t, conditionIsTrue(first.Status.Conditions, ConditionTypeReady))
 	configured := findCondition(second.Status.Conditions, ApplierClaimConditionConfigured)
 	require.NotNil(t, configured)
@@ -108,10 +108,10 @@ func TestFluxClaim_OneClaimHoldsAKustomization(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, ready.Status)
 	assert.Equal(t, applier.ReasonHeldByAnotherClaim, ready.Reason)
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ConditionTypeStalled), "a human removes one of them")
-	held := findCondition(second.Status.Conditions, ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	assert.Equal(t, metav1.ConditionUnknown, held.Status)
-	assert.Equal(t, ReasonNotConfigured, held.Reason)
+	inControl := findCondition(second.Status.Conditions, ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	assert.Equal(t, metav1.ConditionUnknown, inControl.Status)
+	assert.Equal(t, ReasonNotConfigured, inControl.Reason)
 
 	events := f.events()
 	require.Len(t, events, 1, "one adoption, by the holder: %v", events)
@@ -174,7 +174,7 @@ func TestFluxClaim_DeletingTheClaimInLineHandsNothingBack(t *testing.T) {
 	assert.Contains(t, kustomizationManagers(ks), applier.SuspendFieldManager)
 	assert.Empty(t, f.events(), "nothing released")
 	holder := f.reconcileKey(t, claimKey)
-	assert.True(t, conditionIsTrue(holder.Status.Conditions, ApplierClaimConditionHeld))
+	assert.True(t, conditionIsTrue(holder.Status.Conditions, ApplierClaimConditionInControl))
 }
 
 // TestFluxClaim_DeletingTheHolderHandsOverToTheNextInLine: the holder suspends the Kustomization as
@@ -205,7 +205,7 @@ func TestFluxClaim_DeletingTheHolderHandsOverToTheNextInLine(t *testing.T) {
 	second := f.reconcileKey(t, inLineKey)
 
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ApplierClaimConditionConfigured))
-	assert.True(t, conditionIsTrue(second.Status.Conditions, ApplierClaimConditionHeld))
+	assert.True(t, conditionIsTrue(second.Status.Conditions, ApplierClaimConditionInControl))
 	assert.True(t, conditionIsTrue(second.Status.Conditions, ConditionTypeReady))
 	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
 	assert.Equal(t, []string{"Normal Released left Kustomization flux-system/checkout suspended for FluxClaim " +

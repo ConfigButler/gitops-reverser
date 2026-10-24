@@ -66,10 +66,12 @@ type ArgoCDClaimStatus struct {
 
 	// Conditions are Configured (an eligible GitTarget names the applier claim; the Application exists,
 	// syncs a single source, has automated sync off or a switch the applier claim may hold, may be
-	// written, and no other ArgoCDClaim holds it), Held (AutomatedSyncOff: automated sync is off,
-	// held by GitOps Reverser or kept off by the switch's owner; Releasing: being handed back;
-	// Revoking: being handed back because a grant no longer admits it; NotReferenced; NotConfigured),
-	// and the kstatus Ready/Reconciling/Stalled trio. An applier claim acts only while an
+	// written, and no other ArgoCDClaim holds it), InControl (whether GitOps Reverser decides, right
+	// now, when the Application syncs. True: AutomatedSyncOff, automated sync is off, held by GitOps
+	// Reverser or kept off by the switch's owner. False: Releasing, being handed back; Revoking, being
+	// handed back because a grant no longer admits it; NotReferenced. NotConfigured: the applier claim
+	// is not Configured, or automated sync was switched on since it was), and the kstatus
+	// Ready/Reconciling/Stalled trio. An applier claim acts only while an
 	// eligible GitTarget references it: one in its namespace that names it, is admitted by its
 	// KubeProviders, and writes the repository and branch the Application syncs. An applier claim no
 	// GitTarget names reads nothing in the Application's cluster and is Configured=Unknown,
@@ -127,7 +129,7 @@ type ArgoCDClaimSource struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="Held",type=string,JSONPath=`.status.conditions[?(@.type=="Held")].reason`
+// +kubebuilder:printcolumn:name="Control",type=string,JSONPath=`.status.conditions[?(@.type=="InControl")].reason`
 // +kubebuilder:printcolumn:name="Application",type=string,JSONPath=`.spec.applicationRef.name`
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.phase`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1

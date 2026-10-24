@@ -302,7 +302,7 @@ Canonical reads:
 
 ### Applier claims
 
-`FluxClaim` and `ArgoCDClaim` use the trio with `Configured` as their gate, and `Held` as a second
+`FluxClaim` and `ArgoCDClaim` use the trio with `Configured` as their gate, and `InControl` as a second
 one.
 
 Canonical reads:
@@ -311,15 +311,15 @@ Canonical reads:
   reason `NotReferenced`, `Reconciling=False`, `Stalled=False`. As for a `GitTarget` with nothing to
   mirror, doing nothing when nothing is asked is converged, and a Flux health check that waits on
   the applier claim must not wait for the `GitTarget` that will name it
-- holding its applier: `Configured=True`, for a `FluxClaim` `Held=True` (`Suspended` or
-  `Applying`), and `Ready=True`
+- in control of its applier: `Configured=True`, `InControl=True` (`Suspended` or `Applying` for a
+  `FluxClaim`, `AutomatedSyncOff` for an `ArgoCDClaim`), and `Ready=True`
 - applier or `KubeProvider` missing (`ApplierNotFound`, `KubeProviderNotFound`):
   `Ready=False`, `Reconciling=True`, `Stalled=False`, because Flux and Argo CD objects are often
   created after the applier claim. Every other `Configured=False` reason is `Stalled=True`
 - an operation past its time (`status.operation.phase: Unresolved`): `Ready=False`,
   `Reconciling=True`, reason `OperationUnresolved`. It clears when the operation completes
 - a `FluxClaim` whose suspend is not handled yet, or that is handing its `Kustomization` back:
-  `Held=False` (`Suspending`, `Releasing`), `Ready=False`, `Reconciling=True`
+  `InControl=False` (`Suspending`, `Releasing`), `Ready=False`, `Reconciling=True`
 
 A `GitTarget` naming an applier claim gains `ApplierClaimReady`, a gate on its own trio.
 `SourceMismatch`, or an applier claim that is itself `Stalled`, stalls the target; a missing applier

@@ -47,7 +47,7 @@ func fluxTarget() *configbutleraiv1alpha3.GitTarget {
 	return referencingTarget("checkout-flux", configbutleraiv1alpha3.ApplierClaimKindFlux)
 }
 
-// settle reconciles the applier claim at key until its Held condition is neither Suspending nor
+// settle reconciles the applier claim at key until its InControl condition is neither Suspending nor
 // Releasing, and returns it.
 func (f *holdFixture) settle(t *testing.T, key k8stypes.NamespacedName) *configbutleraiv1alpha3.FluxClaim {
 	t.Helper()
@@ -56,18 +56,18 @@ func (f *holdFixture) settle(t *testing.T, key k8stypes.NamespacedName) *configb
 		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
 		require.NoError(t, err)
 		require.NoError(t, f.r.Get(context.Background(), key, claim))
-		held := findCondition(claim.Status.Conditions, ApplierClaimConditionHeld)
-		return held != nil && held.Reason != ReasonSuspending && !handingBack(held)
+		inControl := findCondition(claim.Status.Conditions, ApplierClaimConditionInControl)
+		return inControl != nil && inControl.Reason != ReasonSuspending && !handingBack(inControl)
 	}, 5*time.Second, 5*time.Millisecond)
 	return claim
 }
 
-// heldReason is the applier claim's Held reason.
-func heldReason(t *testing.T, claim *configbutleraiv1alpha3.FluxClaim) string {
+// inControlReason is the applier claim's InControl reason.
+func inControlReason(t *testing.T, claim *configbutleraiv1alpha3.FluxClaim) string {
 	t.Helper()
-	held := findCondition(claim.Status.Conditions, ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	return held.Reason
+	inControl := findCondition(claim.Status.Conditions, ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	return inControl.Reason
 }
 
 // TestApplierClaimRule_AnUnreferencedClaimDoesNothingAndIsReady: no call reaches the applier's
@@ -103,7 +103,7 @@ func TestApplierClaimRule_AnUnreferencedClaimDoesNothingAndIsReady(t *testing.T)
 			url, _, known := got.SourceBinding()
 			assert.False(t, known, "no source is published: %s", url)
 			if flux, ok := got.(*configbutleraiv1alpha3.FluxClaim); ok {
-				assert.Equal(t, applier.ReasonNotReferenced, heldReason(t, flux))
+				assert.Equal(t, applier.ReasonNotReferenced, inControlReason(t, flux))
 			}
 		})
 	}
@@ -114,13 +114,13 @@ func TestApplierClaimRule_AnUnreferencedClaimDoesNothingAndIsReady(t *testing.T)
 func TestApplierClaimRule_TheFirstEligibleReferenceAdoptsAndTheLastReleases(t *testing.T) {
 	f := ruleFixture(t, testFluxClaim(claimLocalProvider))
 	idle := f.settle(t, claimKey)
-	assert.Equal(t, applier.ReasonNotReferenced, heldReason(t, idle))
+	assert.Equal(t, applier.ReasonNotReferenced, inControlReason(t, idle))
 	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "Flux applies it on its own")
 
 	target := fluxTarget()
 	require.NoError(t, f.r.Create(context.Background(), target))
 	held := f.settle(t, claimKey)
-	assert.Equal(t, ReasonSuspended, heldReason(t, held))
+	assert.Equal(t, ReasonSuspended, inControlReason(t, held))
 	assert.True(t, conditionIsTrue(held.Status.Conditions, ConditionTypeReady))
 	assert.True(t, controllerutil.ContainsFinalizer(held, configbutleraiv1alpha3.FluxClaimFinalizer))
 	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
@@ -130,7 +130,7 @@ func TestApplierClaimRule_TheFirstEligibleReferenceAdoptsAndTheLastReleases(t *t
 
 	require.NoError(t, f.r.Delete(context.Background(), target))
 	released := f.settle(t, claimKey)
-	assert.Equal(t, applier.ReasonNotReferenced, heldReason(t, released))
+	assert.Equal(t, applier.ReasonNotReferenced, inControlReason(t, released))
 	ready := findCondition(released.Status.Conditions, ConditionTypeReady)
 	require.NotNil(t, ready)
 	assert.Equal(t, metav1.ConditionTrue, ready.Status)
@@ -160,7 +160,7 @@ func TestApplierClaimRule_ARecreatedGitTargetReleasesAndReadopts(t *testing.T) {
 	require.NoError(t, f.r.Create(context.Background(), fluxTarget()))
 	again := f.settle(t, claimKey)
 
-	assert.Equal(t, ReasonSuspended, heldReason(t, again))
+	assert.Equal(t, ReasonSuspended, inControlReason(t, again))
 	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
 	var reasons []string
 	for _, event := range f.events() {
@@ -264,7 +264,7 @@ func TestApplierClaimRule_AnOlderClaimNotInLineKeepsNoneOut(t *testing.T) {
 
 			assert.True(t, conditionIsTrue(got.Status.Conditions, ApplierClaimConditionConfigured),
 				findCondition(got.Status.Conditions, ApplierClaimConditionConfigured).Message)
-			assert.Equal(t, ReasonSuspended, heldReason(t, got))
+			assert.Equal(t, ReasonSuspended, inControlReason(t, got))
 			strayConfigured := findCondition(f.settle(t, inLineKey).Status.Conditions, ApplierClaimConditionConfigured)
 			require.NotNil(t, strayConfigured)
 			assert.NotEqual(t, metav1.ConditionTrue, strayConfigured.Status)
@@ -276,7 +276,7 @@ func TestApplierClaimRule_AnOlderClaimNotInLineKeepsNoneOut(t *testing.T) {
 
 // TestApplierClaimRule_ARetiringHolderStaysInLineUntilItsReleaseIsDone: the holder's GitTarget goes
 // while a successor waits. Until the holder has suspended the Kustomization and seen that handled,
-// it stays first in line, Held=False (Releasing), and the successor does nothing; then the holder
+// it stays first in line, InControl=False (Releasing), and the successor does nothing; then the holder
 // leaves the Kustomization suspended for it, and the successor takes it over.
 func TestApplierClaimRule_ARetiringHolderStaysInLineUntilItsReleaseIsDone(t *testing.T) {
 	holder := testFluxClaim(claimLocalProvider)
@@ -304,7 +304,7 @@ func TestApplierClaimRule_ARetiringHolderStaysInLineUntilItsReleaseIsDone(t *tes
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
 	retiring := f.claim(t)
-	assert.Equal(t, ReasonReleasing, heldReason(t, retiring))
+	assert.Equal(t, ReasonReleasing, inControlReason(t, retiring))
 	assert.True(t, controllerutil.ContainsFinalizer(retiring, configbutleraiv1alpha3.FluxClaimFinalizer))
 	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "suspended first")
 	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: inLineKey})
@@ -322,7 +322,7 @@ func TestApplierClaimRule_ARetiringHolderStaysInLineUntilItsReleaseIsDone(t *tes
 	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "left suspended for the successor")
 	taken := f.settle(t, inLineKey)
 	assert.True(t, conditionIsTrue(taken.Status.Conditions, ApplierClaimConditionConfigured))
-	assert.Equal(t, ReasonSuspended, heldReason(t, taken))
+	assert.Equal(t, ReasonSuspended, inControlReason(t, taken))
 	assert.Equal(t, configbutleraiv1alpha3.SuspendStateNotSuspended, taken.Status.PreviousSuspendState,
 		"passed on by the holder: the successor took the Kustomization over suspended already")
 	events := f.events()
@@ -355,13 +355,13 @@ func TestApplierClaimRule_AReferenceReturningDuringTheReleaseHoldsAgain(t *testi
 	require.NoError(t, f.r.Delete(context.Background(), target))
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
-	assert.Equal(t, ReasonReleasing, heldReason(t, f.claim(t)))
+	assert.Equal(t, ReasonReleasing, inControlReason(t, f.claim(t)))
 
 	require.NoError(t, f.r.Create(context.Background(), fluxTarget()))
 	unpause()
 	back := f.settle(t, claimKey)
 
-	assert.Equal(t, ReasonSuspended, heldReason(t, back))
+	assert.Equal(t, ReasonSuspended, inControlReason(t, back))
 	assert.True(t, controllerutil.ContainsFinalizer(back, configbutleraiv1alpha3.FluxClaimFinalizer))
 	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "never handed back")
 	for _, event := range f.events() {
@@ -413,11 +413,11 @@ func TestApplierClaimRule_AHolderLeftUnconfiguredSaysTheKustomizationIsSuspended
 	configured := findCondition(got.Status.Conditions, ApplierClaimConditionConfigured)
 	require.NotNil(t, configured)
 	assert.Equal(t, applier.ReasonForbidden, configured.Reason)
-	held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	assert.Equal(t, metav1.ConditionUnknown, held.Status)
-	assert.Equal(t, ReasonNotConfigured, held.Reason)
-	assert.Contains(t, held.Message, "is left suspended under GitOps Reverser's field manager")
+	inControl := findCondition(got.Status.Conditions, ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	assert.Equal(t, metav1.ConditionUnknown, inControl.Status)
+	assert.Equal(t, ReasonNotConfigured, inControl.Reason)
+	assert.Contains(t, inControl.Message, "is left suspended under GitOps Reverser's field manager")
 	assert.True(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.FluxClaimFinalizer))
 	assert.True(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)))
 }

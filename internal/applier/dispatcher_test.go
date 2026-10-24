@@ -135,12 +135,12 @@ func claimsFor(objects []client.Object) []client.Object {
 		}
 		if ks, ok := target.Annotations[testKustomizationAnnotation]; ok {
 			namespace, name, _ := strings.Cut(ks, "/")
-			// Its reconciler holds the Kustomization (Ask.Held), unless a test says otherwise.
+			// Its reconciler is in control of the Kustomization (Ask.InControl), unless a test says otherwise.
 			claims = append(claims, &v1alpha3.FluxClaim{ObjectMeta: meta, Spec: v1alpha3.FluxClaimSpec{
 				KubeProviderRef:  provider,
 				KustomizationRef: fluxmeta.NamespacedObjectReference{Namespace: namespace, Name: name},
 			}, Status: v1alpha3.FluxClaimStatus{Conditions: []metav1.Condition{{
-				Type: ApplierClaimConditionHeld, Status: metav1.ConditionTrue, Reason: "Suspended",
+				Type: ApplierClaimConditionInControl, Status: metav1.ConditionTrue, Reason: "Suspended",
 				LastTransitionTime: metav1.Now(),
 			}}}})
 		}
@@ -866,11 +866,11 @@ func TestDispatcher_AStopMidApplySuspendsTheKustomization(t *testing.T) {
 	f.sim.Release()
 }
 
-// TestDispatcher_AnUnheldClaimIsNotResumed is review 4's F: the applier claim's reconciler suspends the
+// TestDispatcher_AClaimNotInControlIsNotResumed is review 4's F: the applier claim's reconciler suspends the
 // Kustomization on its own reads (an adoption, an external resume), and a resume between its read
 // and its suspend would be suspended under the apply. So a request resumes only a Kustomization its
-// applier claim reports Held=True, read uncached; any other is a failed attempt the worker retries.
-func TestDispatcher_AnUnheldClaimIsNotResumed(t *testing.T) {
+// applier claim reports InControl=True, read uncached; any other is a failed attempt the worker retries.
+func TestDispatcher_AClaimNotInControlIsNotResumed(t *testing.T) {
 	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
 	claim := &v1alpha3.FluxClaim{}
 	require.NoError(t, f.control.Get(context.Background(), client.ObjectKey{Namespace: targetNS, Name: "checkout"},
@@ -881,7 +881,7 @@ func TestDispatcher_AnUnheldClaimIsNotResumed(t *testing.T) {
 	res := f.attempt(request(checkout, v1alpha3.ApplyReasonForeignCommit, "a"))
 
 	assert.Equal(t, git.ApplyRequestFailed, res.Outcome)
-	require.ErrorContains(t, res.Err, "does not hold its Kustomization suspended: it is Held=False, Suspending")
+	require.ErrorContains(t, res.Err, "is not in control of its Kustomization: it is InControl=False, Suspending")
 	for _, write := range f.patches() {
 		assert.NotContains(t, write, "suspend=false", "nothing is resumed")
 	}

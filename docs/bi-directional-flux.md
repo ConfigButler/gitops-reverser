@@ -319,7 +319,7 @@ stateDiagram-v2
   `HeldByAnotherClaim`, does nothing, and takes over once the holder lets go. An applier claim nothing
   eligible references is not in line, so it keeps no other out.
 - **The applier claim hands the `Kustomization` back** when no eligible `GitTarget` references it any
-  more, and when it is deleted. `Held` reads `Releasing`: it suspends the `Kustomization` once more
+  more, and when it is deleted. `InControl` reads `Releasing`: it suspends the `Kustomization` once more
   if an apply has it resumed, waits until that is handled, and releases `spec.suspend`, so Flux
   applies it on its own again (a `Released` Event). A `Kustomization` that somebody suspended
   before the applier claim held it stays suspended. The applier claim records how it stood in
@@ -331,21 +331,22 @@ stateDiagram-v2
   which inherits `status.previousSuspendState`. A
   `KubeProvider` that is gone does not stop the hand-back: it goes on through whatever still
   reaches the cluster, which for an `inCluster` provider is the operator's own. When nothing
-  does, or the hand-back has not finished 10 minutes after `Held` turned `Releasing`, the applier claim
+  does, or the hand-back has not finished 10 minutes after `InControl` turned `Releasing`, the applier claim
   lets go with a `ReleaseFailed` Event saying where the `Kustomization` was left. A reference that
   returns before the release is done holds the `Kustomization` again; one that returns after adopts
   it anew. When the `KubeProvider`'s `allowedApplierClaims` no longer admit the applier claim, the
-  hand-back is the same, but `Held` reads `Revoking`, and it finishes even if a grant admits the
+  hand-back is the same, but `InControl` reads `Revoking`, and it finishes even if a grant admits the
   applier claim again meanwhile; the applier claim then adopts the `Kustomization` anew.
 - **Deleting or re-creating a `GitTarget` hands the `Kustomization` back.** Flux then applies the
   Git tip at once, which overwrites live edits not yet in Git, and the applier claim adopts the
   `Kustomization` again once the `GitTarget` is back. That is what Flux does without GitOps
   Reverser, and with no `GitTarget` nobody would carry those edits to Git anyway.
-- **An applier claim whose configuration turns invalid keeps its hold.** It reports `Held=Unknown`
+- **An applier claim whose configuration turns invalid keeps its hold.** It reports `InControl=Unknown`
   (`NotConfigured`), and the message says the `Kustomization` is left suspended under GitOps
   Reverser's field manager; deleting the applier claim, or its `GitTarget`s, hands it back.
 
-The applier claim reports `Configured` and `Held`, and its `Ready` includes both:
+The applier claim reports `Configured` and `InControl` (whether GitOps Reverser decides, right now,
+when the `Kustomization` applies), and its `Ready` includes both:
 
 | Reason | Means | Readiness |
 | --- | --- | --- |
@@ -362,13 +363,13 @@ The applier claim reports `Configured` and `Held`, and its `Ready` includes both
 | `Configured`: `AuditRouteConflict` | The provider carries an audit route another namespace holds, so it is not used | stalled |
 | `Configured`: `ApplierNamespaceNotAllowed` | The `Kustomization`'s namespace is not in the `applierNamespaces` the provider's grants give the applier claim's namespace | stalled |
 | `Configured`: `HeldByAnotherClaim` | Another `FluxClaim` holds this `Kustomization` | stalled: delete one of the two |
-| `Held`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
-| `Held`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |
-| `Held`: `Suspending` | Just suspended; waiting for the `Kustomization` to handle it | progressing |
-| `Held`: `Releasing` | Handing the `Kustomization` back: suspending it if needed, then releasing `spec.suspend`, within 10 minutes | progressing |
-| `Held`: `Revoking` | The same hand-back, because the provider's `allowedApplierClaims` no longer admit the applier claim. It finishes even if a grant returns meanwhile | progressing |
-| `Held`: `NotReferenced` | Nothing to hold: no `GitTarget` names the applier claim | ready |
-| `Held`: `NotConfigured` | The applier claim is not `Configured`, so nothing is held, or the `Kustomization` is left suspended as the applier claim last held it (the message says which) | follows `Configured` |
+| `InControl`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
+| `InControl`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |
+| `InControl`: `Suspending` | Just suspended; waiting for the `Kustomization` to handle it | progressing |
+| `InControl`: `Releasing` | Handing the `Kustomization` back: suspending it if needed, then releasing `spec.suspend`, within 10 minutes | progressing |
+| `InControl`: `Revoking` | The same hand-back, because the provider's `allowedApplierClaims` no longer admit the applier claim. It finishes even if a grant returns meanwhile | progressing |
+| `InControl`: `NotReferenced` | Nothing to hold: no `GitTarget` names the applier claim | ready |
+| `InControl`: `NotConfigured` | The applier claim is not `Configured`, so nothing is held, or the `Kustomization` is left suspended as the applier claim last held it (the message says which) | follows `Configured` |
 | `Ready`: `OperationUnresolved` | An apply has not completed within 5 minutes, or the `Kustomization` was [resumed by hand](#overriding-by-hand) | progressing; it clears when the apply does |
 
 `Ready=True` for an applier claim no `GitTarget` names is deliberate: it does all it is asked to, which is

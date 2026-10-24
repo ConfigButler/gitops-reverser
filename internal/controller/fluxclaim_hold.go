@@ -29,7 +29,7 @@ import (
 // lifecycle, from docs/design/apply-trigger.md ("Who owns spec.suspend"):
 //
 //   - Adoption: a Configured applier claim suspends its Kustomization, under GitOps Reverser's field
-//     manager, with a token; Held (and so Ready) waits until the Kustomization handled it.
+//     manager, with a token; InControl (and so Ready) waits until the Kustomization handled it.
 //   - External resume: a held Kustomization found resumed with no operation of a branch worker in
 //     flight was resumed by somebody else (`flux resume`). It is suspended again with a token, every
 //     time, with a Normal ClaimedResourceReconciled Event, and recorded as an Unresolved operation
@@ -43,7 +43,7 @@ import (
 // once the holder is gone.
 
 // holdKustomization holds a Configured FluxClaim's Kustomization suspended, and returns the
-// applier claim's Held condition. It writes nothing while a branch worker's operation is in flight
+// applier claim's InControl condition. It writes nothing while a branch worker's operation is in flight
 // and followed: the worker resumes the Kustomization and suspends it again itself. One nobody
 // follows any more is suspended here (suspendUnfollowed), so the Kustomization is never left resumed
 // with nothing guarding it.
@@ -54,7 +54,7 @@ func (r *ApplierClaimReconciler) holdKustomization(
 	defer cancel()
 	held, err := r.readHold(ctx, claim)
 	if err != nil {
-		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error())
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, err.Error())
 	}
 	if !held.inFlight() || held.operation.Token == "" {
 		r.unfollowed.forget(claim, "")
@@ -68,7 +68,7 @@ func (r *ApplierClaimReconciler) holdKustomization(
 	return r.hold(ctx, st, claim, held)
 }
 
-// applyingCondition is Held=True (Applying) for a branch worker's operation in flight that is
+// applyingCondition is InControl=True (Applying) for a branch worker's operation in flight that is
 // followed: the Kustomization is resumed for it, or about to be, and suspended again when it ends.
 func applyingCondition(operation *configbutleraiv1alpha3.ApplyOperation) conditionValue {
 	return conditionValue{Status: metav1.ConditionTrue, Reason: ReasonApplying, Message: fmt.Sprintf(
@@ -123,7 +123,7 @@ func (r *ApplierClaimReconciler) suspendUnfollowed(
 	case !held.suspension.Suspended || !held.suspension.Held:
 		token, err := held.flux.Suspend(ctx, ref)
 		if err != nil {
-			return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error())
+			return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, err.Error())
 		}
 		r.event(claim, corev1.EventTypeWarning, EventReasonOperationUnfollowed,
 			"the %s apply of %s is followed by nobody; suspended Kustomization %s again", operation.Reason,
@@ -255,7 +255,7 @@ func (r *ApplierClaimReconciler) hold(
 		return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending, Message: message}
 	}
 	unrecorded := func(err error) conditionValue {
-		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, fmt.Sprintf(
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, fmt.Sprintf(
 			"cannot record how Kustomization %s stood before it is held: %v", ref, err))
 	}
 	adopt := adopting(claim, held.operation)
@@ -272,9 +272,9 @@ func (r *ApplierClaimReconciler) hold(
 		}
 		token, err := held.flux.Suspend(ctx, ref)
 		if err != nil {
-			return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error())
+			return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, err.Error())
 		}
-		r.suspended(claim, token, heldBefore(claim) || held.inFlight())
+		r.suspended(claim, token, wasInControl(claim) || held.inFlight())
 		return suspending(fmt.Sprintf("Kustomization %s is being suspended", ref))
 	case !held.suspension.Held || adopt:
 		return r.takeOverSuspend(ctx, st, claim, held)
@@ -303,18 +303,18 @@ func (r *ApplierClaimReconciler) takeOverSuspend(
 		}
 	}
 	if err := r.recordPreviousSuspendState(ctx, st, claim, false, true); err != nil {
-		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, fmt.Sprintf(
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, fmt.Sprintf(
 			"cannot record how Kustomization %s stood before it is held: %v", ref, err))
 	}
 	if _, err := held.flux.Suspend(ctx, ref); err != nil {
-		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error())
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, err.Error())
 	}
 	return conditionValue{Status: metav1.ConditionFalse, Reason: ReasonSuspending,
 		Message: fmt.Sprintf("Kustomization %s is being suspended under GitOps Reverser", ref)}
 }
 
 // heldElsewhere reports, from an uncached read, whether the applier claim's applier is free of any
-// other applier claim's hold, and when it is not (or cannot be told) the Held condition that says so.
+// other applier claim's hold, and when it is not (or cannot be told) the InControl condition that says so.
 // The cached read Configured was judged on can predate another applier claim coming first in line, and
 // that one's hold looks like a hand-back's or an apply's from the applier alone.
 func (r *ApplierClaimReconciler) heldElsewhere(
@@ -333,13 +333,13 @@ func (r *ApplierClaimReconciler) heldElsewhere(
 }
 
 // adopting reports whether the applier claim takes its applier anew: it records nothing of how the
-// applier stood, did not last say it held it, and has no operation in flight (operation, read
+// applier stood, did not last say it was in control, and has no operation in flight (operation, read
 // uncached where it matters). A hand-back forgets the record and ends the operation, and a successor
 // is passed its predecessor's record. So a field GitOps Reverser's field manager holds when an
 // applier claim adopts is no hold in place but one a hand-back kept, set to how the applier stood:
 // it is recorded as such, and held anew.
 func adopting(claim configbutleraiv1alpha3.ApplierClaim, operation *configbutleraiv1alpha3.ApplyOperation) bool {
-	return claim.PreviousSuspendState() == "" && !heldBefore(claim) &&
+	return claim.PreviousSuspendState() == "" && !wasInControl(claim) &&
 		(operation == nil || operation.Phase.Completed())
 }
 
@@ -352,7 +352,7 @@ func adopting(claim configbutleraiv1alpha3.ApplierClaim, operation *configbutler
 func (r *ApplierClaimReconciler) recordPreviousSuspendState(
 	ctx context.Context, st *reconcileStatus, claim configbutleraiv1alpha3.ApplierClaim, held, suspended bool,
 ) error {
-	if held || claim.PreviousSuspendState() != "" || heldBefore(claim) {
+	if held || claim.PreviousSuspendState() != "" || wasInControl(claim) {
 		return nil
 	}
 	state := suspendState(suspended)
@@ -453,9 +453,9 @@ func completeExternalOperation(
 	claim.Status.Operation = operation
 }
 
-// heldBefore reports whether the applier claim last said it held its applier.
-func heldBefore(claim configbutleraiv1alpha3.ApplierClaim) bool {
-	return apimeta.IsStatusConditionTrue(*claim.StatusConditions(), ApplierClaimConditionHeld)
+// wasInControl reports whether the applier claim last said it was in control of its applier.
+func wasInControl(claim configbutleraiv1alpha3.ApplierClaim) bool {
+	return apimeta.IsStatusConditionTrue(*claim.StatusConditions(), ApplierClaimConditionInControl)
 }
 
 // liveOperation reads the applier claim's status.operation uncached: a branch worker writes it just before
@@ -490,7 +490,7 @@ func (r *ApplierClaimReconciler) fluxClient(
 }
 
 // releaseDeadline is how long a retiring applier claim tries to hand its applier back, counted from when
-// its Held condition turned Releasing, before it lets go anyway with a Warning Event that says what
+// its InControl condition turned Releasing, before it lets go anyway with a Warning Event that says what
 // the applier is left as. A Kustomization's suspend is handled once the apply running then ends, so
 // the deadline is longer than an apply usually takes; a kustomize-controller that is down never
 // handles it, and the deletion must not wait on that forever.
@@ -501,8 +501,8 @@ const releaseDeadline = 10 * time.Minute
 // FluxClaim suspends its Kustomization once more if it is resumed (a branch worker's apply may
 // still be running), waits until that suspend's token is handled, and releases spec.suspend; an
 // ArgoCDClaim gives its Application's automated sync switch up (releaseStep). Neither hands back
-// what an applier claim in line takes over. Until that is done the applier claim stays the holder, Held=False
-// (Releasing), so no successor acts on the applier meanwhile. An applier that is gone has nothing
+// what an applier claim in line takes over. Until that is done the applier claim stays the holder,
+// InControl=False (Releasing), so no successor acts on the applier meanwhile. An applier that is gone has nothing
 // to hand back; a cluster no client reaches any more since its KubeProvider went (releaseClient),
 // and an applier the identity may not write, are let go with a Warning Event: none should hold the
 // applier claim forever. Nor does anything else past releaseDeadline. An applier claim behind another in line
@@ -554,9 +554,9 @@ func (r *ApplierClaimReconciler) retire(
 	}
 	r.letGoOfOperation(claim)
 	clearPreviousSuspendState(claim)
-	held := handedBackCondition(claim, check)
-	st.setValue(ApplierClaimConditionHeld, held)
-	st.applyReadiness(r.claimReadiness(claim, check.configured, &held))
+	inControl := handedBackCondition(claim, check)
+	st.setValue(ApplierClaimConditionInControl, inControl)
+	st.applyReadiness(r.claimReadiness(claim, check.configured, &inControl))
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -567,7 +567,7 @@ func (r *ApplierClaimReconciler) retire(
 	return ctrl.Result{RequeueAfter: st.requeueAfter(heldClaimSteadyInterval)}, nil
 }
 
-// handedBackCondition is the Held condition of a live applier claim that has handed its applier
+// handedBackCondition is the InControl condition of a live applier claim that has handed its applier
 // back, saying what makes it hold the applier again.
 func handedBackCondition(claim configbutleraiv1alpha3.ApplierClaim, check *claimCheck) conditionValue {
 	switch {
@@ -608,7 +608,7 @@ func applierTool(claim configbutleraiv1alpha3.ApplierClaim) string {
 	return "Flux"
 }
 
-// publishReleasing sets Held=False (Releasing, or Revoking for a hand-back a denial began) and the
+// publishReleasing sets InControl=False (Releasing, or Revoking for a hand-back a denial began) and the
 // trio on an applier claim whose hand-back is not done, its deadline counted from since. The condition
 // is written anew when no hand-back was under way before, so its lastTransitionTime says when the
 // release began.
@@ -624,44 +624,44 @@ func (r *ApplierClaimReconciler) publishReleasing(
 	case check != nil:
 		why = "no GitTarget names the applier claim any more"
 	}
-	held := conditionValue{Status: metav1.ConditionFalse, Reason: reason, Message: fmt.Sprintf(
+	inControl := conditionValue{Status: metav1.ConditionFalse, Reason: reason, Message: fmt.Sprintf(
 		"%s: handing %s %s back to %s, by %s at the latest", why, claim.ApplierKind(), claim.Applier(),
 		applierTool(claim), since.Add(releaseDeadline).UTC().Format(time.RFC3339))}
-	if !handingBack(findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)) {
-		st.remove(ApplierClaimConditionHeld)
+	if !handingBack(findCondition(*claim.StatusConditions(), ApplierClaimConditionInControl)) {
+		st.remove(ApplierClaimConditionInControl)
 	}
-	st.setValue(ApplierClaimConditionHeld, held)
+	st.setValue(ApplierClaimConditionInControl, inControl)
 	if check == nil {
 		rd := newReadiness("", claim.ClaimKind()+" is not stalled")
-		rd.progressing(held.Status, held.Reason, held.Message)
+		rd.progressing(inControl.Status, inControl.Reason, inControl.Message)
 		st.applyReadiness(rd)
 		return
 	}
-	st.applyReadiness(r.claimReadiness(claim, check.configured, &held))
+	st.applyReadiness(r.claimReadiness(claim, check.configured, &inControl))
 }
 
 // revoking reports whether the applier claim is handing its applier back because its
-// KubeProvider's grants refused it (Held=False, Revoking): such a hand-back finishes even after a
+// KubeProvider's grants refused it (InControl=False, Revoking): such a hand-back finishes even after a
 // regrant, and the applier is adopted anew once it has.
 func revoking(claim configbutleraiv1alpha3.ApplierClaim) bool {
-	held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
-	return held != nil && held.Reason == ReasonRevoking
+	inControl := findCondition(*claim.StatusConditions(), ApplierClaimConditionInControl)
+	return inControl != nil && inControl.Reason == ReasonRevoking
 }
 
-// handingBack reports whether a Held condition says a hand-back is under way: Releasing, or Revoking.
-// A denial arriving during a release continues the same hand-back, with the same deadline.
-func handingBack(held *metav1.Condition) bool {
-	return held != nil && (held.Reason == ReasonReleasing || held.Reason == ReasonRevoking)
+// handingBack reports whether an InControl condition says a hand-back is under way: Releasing, or
+// Revoking. A denial arriving during a release continues the same hand-back, with the same deadline.
+func handingBack(inControl *metav1.Condition) bool {
+	return inControl != nil && (inControl.Reason == ReasonReleasing || inControl.Reason == ReasonRevoking)
 }
 
-// releasingSince is when the applier claim's Held condition turned Releasing or Revoking, or now when
-// it has not.
+// releasingSince is when the applier claim's InControl condition turned Releasing or Revoking, or now
+// when it has not.
 func releasingSince(claim configbutleraiv1alpha3.ApplierClaim) time.Time {
-	held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
-	if !handingBack(held) || held.LastTransitionTime.IsZero() {
+	inControl := findCondition(*claim.StatusConditions(), ApplierClaimConditionInControl)
+	if !handingBack(inControl) || inControl.LastTransitionTime.IsZero() {
 		return time.Now()
 	}
-	return held.LastTransitionTime.Time
+	return inControl.LastTransitionTime.Time
 }
 
 // letGoOfOperation completes an operation a retired applier claim still records in flight, when this
@@ -929,7 +929,7 @@ func (r *ApplierClaimReconciler) publishAlsoAppliedBy(ctx context.Context, claim
 			"gitRepository", source.GitRepository.Namespace+"/"+source.GitRepository.Name, "error", err.Error())
 		return
 	}
-	others, err := r.heldKustomizations(ctx, claim.KubeProviderKey())
+	others, err := r.kustomizationsInControl(ctx, claim.KubeProviderKey())
 	if err != nil {
 		return
 	}
@@ -943,10 +943,11 @@ func (r *ApplierClaimReconciler) publishAlsoAppliedBy(ctx context.Context, claim
 	}
 }
 
-// heldKustomizations is every Kustomization a FluxClaim on the KubeProvider holds: one whose
-// Held condition is True. An applier claim that is not Configured (SuspendOwnedElsewhere), or whose
-// Kustomization has not handled its suspend yet, does not hold it: Flux may still apply a new artifact on its own.
-func (r *ApplierClaimReconciler) heldKustomizations(
+// kustomizationsInControl is every Kustomization a FluxClaim on the KubeProvider is in control of: one
+// whose InControl condition is True. An applier claim that is not Configured (SuspendOwnedElsewhere),
+// or whose Kustomization has not handled its suspend yet, is not in control of it: Flux may still
+// apply a new artifact on its own.
+func (r *ApplierClaimReconciler) kustomizationsInControl(
 	ctx context.Context,
 	cluster k8stypes.NamespacedName,
 ) (map[k8stypes.NamespacedName]bool, error) {
@@ -954,12 +955,12 @@ func (r *ApplierClaimReconciler) heldKustomizations(
 	if err := r.List(ctx, &claims); err != nil {
 		return nil, err
 	}
-	held := map[k8stypes.NamespacedName]bool{}
+	inControl := map[k8stypes.NamespacedName]bool{}
 	for i := range claims.Items {
 		claim := &claims.Items[i]
-		if claim.DeletionTimestamp.IsZero() && claim.KubeProviderKey() == cluster && heldBefore(claim) {
-			held[claim.Applier()] = true
+		if claim.DeletionTimestamp.IsZero() && claim.KubeProviderKey() == cluster && wasInControl(claim) {
+			inControl[claim.Applier()] = true
 		}
 	}
-	return held, nil
+	return inControl, nil
 }

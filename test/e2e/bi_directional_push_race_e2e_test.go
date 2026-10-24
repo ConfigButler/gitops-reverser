@@ -87,7 +87,7 @@ var _ = Describe("Bi Directional push race (Flux)", Label("bi-directional", "flu
 			nameApplierClaim(testNs, pipeline.targetName, "FluxClaim", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
 				"ApplierClaimReady", "True", "Succeeded", "")
-			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
+			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "True", "Suspended", "")
 		})
 
 		AfterAll(func() {

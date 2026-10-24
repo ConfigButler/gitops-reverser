@@ -430,7 +430,7 @@ admits no new work under the revoked permission. Work it already held may comple
 - **A `GitTarget`, `WatchRule`, `ClusterWatchRule` or applier claim** that loses admission or scope is
   refused on its next reconcile. A write already decided is still committed and pushed.
 - **An applier claim its `allowedApplierClaims` refuse** hands its applier back, as one no eligible
-  `GitTarget` references does: it stays the holder (`Held=False`, `Revoking`) while it hands back,
+  `GitTarget` references does: it stays the holder (`InControl=False`, `Revoking`) while it hands back,
   keeps a `Kustomization` that was suspended before adoption suspended, and gives up after ten
   minutes with a Warning Event if it cannot finish. A regrant during the hand-back lets it finish, and
   the applier claim then adopts the applier anew. A read error never starts a hand-back. Once the
@@ -1872,7 +1872,7 @@ status:
       status: "True"
       reason: Succeeded
       message: Kustomization flux-system/checkout applies GitRepository flux-system/platform, ...
-    - type: Held               # FluxClaim only
+    - type: InControl
       status: "True"
       reason: Suspended        # Suspended | Applying | Suspending | Releasing | Revoking | NotReferenced | NotConfigured
     - type: Ready
@@ -1908,9 +1908,10 @@ A `Kustomization` resumed outside GitOps Reverser (`flux resume`) is suspended a
 an `Unresolved` operation with no `reason` and no `commit`, which completes once the suspend is
 handled.
 
-**Conditions.** `Configured` is a gate, and the applier claim's `Ready` aggregates it; a `FluxClaim` is
-also `Ready` only once `Held` is `True` (`Suspended`, or `Applying` while an apply of GitOps
-Reverser's is in flight). Either kind is `Ready=False` (`OperationUnresolved`) while its operation
+**Conditions.** `Configured` is a gate, and the applier claim's `Ready` aggregates it; either kind is
+also `Ready` only once `InControl` is `True`: GitOps Reverser decides when the applier applies
+(`Suspended`, or `Applying` while an apply of GitOps Reverser's is in flight; `AutomatedSyncOff`
+for an `ArgoCDClaim`). Either kind is `Ready=False` (`OperationUnresolved`) while its operation
 is `Unresolved`. An unreferenced applier claim is `Ready=True` (`NotReferenced`). The
 `GitTarget`s naming the applier claim are reported as `NotBound` (`Unknown` while one cannot be judged
 yet, `False` once each is refused for different reasons), or as the refusal they share,

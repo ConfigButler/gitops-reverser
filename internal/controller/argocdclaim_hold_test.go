@@ -124,11 +124,11 @@ func TestArgoCDClaim_SwitchesAutomatedSyncOff(t *testing.T) {
 
 	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
 
-	held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	assert.Equal(t, metav1.ConditionTrue, held.Status, held.Message)
-	assert.Equal(t, ReasonAutomatedSyncOff, held.Reason)
-	assert.Contains(t, held.Message, "held off by GitOps Reverser")
+	inControl := findCondition(got.Status.Conditions, ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	assert.Equal(t, metav1.ConditionTrue, inControl.Status, inControl.Message)
+	assert.Equal(t, ReasonAutomatedSyncOff, inControl.Reason)
+	assert.Contains(t, inControl.Message, "held off by GitOps Reverser")
 	assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeReady))
 	assert.True(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDClaimFinalizer))
 	automated, _ := f.automated(t)
@@ -221,9 +221,9 @@ func TestArgoCDClaim_NoLongerReferencedHandsTheSwitchBack(t *testing.T) {
 	got := reconcileClaim(t, f.r)
 
 	assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDClaimFinalizer))
-	held := findCondition(*got.StatusConditions(), ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	assert.Equal(t, applier.ReasonNotReferenced, held.Reason)
+	inControl := findCondition(*got.StatusConditions(), ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	assert.Equal(t, applier.ReasonNotReferenced, inControl.Reason)
 	automated, _ := f.automated(t)
 	assert.NotContains(t, automated, "enabled", "automated sync is on again")
 	events := f.events()
@@ -266,7 +266,7 @@ func TestArgoCDClaim_ASuccessorInLineKeepsTheSwitchOff(t *testing.T) {
 }
 
 // TestArgoCDClaim_AnApplicationSetOwnsTheSwitch: the switch of an Application an ApplicationSet
-// generated is the ApplicationSet's template's. With automated sync off the applier claim is Held and
+// generated is the ApplicationSet's template's. With automated sync off the applier claim is InControl and
 // writes nothing; with it on, it is refused with a reason and message that say what to change.
 func TestArgoCDClaim_AnApplicationSetOwnsTheSwitch(t *testing.T) {
 	t.Run("kept off by the ApplicationSet", func(t *testing.T) {
@@ -277,10 +277,10 @@ func TestArgoCDClaim_AnApplicationSetOwnsTheSwitch(t *testing.T) {
 		got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.ArgoCDClaim)
 
 		assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeReady))
-		held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
-		require.NotNil(t, held)
-		assert.Equal(t, ReasonAutomatedSyncOff, held.Reason)
-		assert.Contains(t, held.Message, "kept off by ApplicationSet argocd/checkouts, which owns the switch")
+		inControl := findCondition(got.Status.Conditions, ApplierClaimConditionInControl)
+		require.NotNil(t, inControl)
+		assert.Equal(t, ReasonAutomatedSyncOff, inControl.Reason)
+		assert.Contains(t, inControl.Message, "kept off by ApplicationSet argocd/checkouts, which owns the switch")
 		assert.False(t, controllerutil.ContainsFinalizer(got, configbutleraiv1alpha3.ArgoCDClaimFinalizer),
 			"nothing of the applier claim's to hand back")
 		assert.Empty(t, f.application(t).GetManagedFields(), "the switch is never written")
@@ -308,7 +308,7 @@ func TestArgoCDClaim_AnApplicationSetOwnsTheSwitch(t *testing.T) {
 }
 
 // TestArgoCDClaim_AManagerThatAppliesTheSwitchOwnsIt: whatever applies the Application's manifest
-// with the switch in it sets it on every apply, so the applier claim leaves it alone: Held while it is
+// with the switch in it sets it on every apply, so the applier claim leaves it alone: InControl while it is
 // off, refused while it is on.
 func TestArgoCDClaim_AManagerThatAppliesTheSwitchOwnsIt(t *testing.T) {
 	for name, tc := range map[string]struct {

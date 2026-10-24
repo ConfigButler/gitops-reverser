@@ -269,7 +269,7 @@ var _ = Describe("Bi Directional timing (Flux)", Label("bi-directional", "flux",
 			nameApplierClaim(testNs, pipeline.targetName, "FluxClaim", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
 				"ApplierClaimReady", "True", "Succeeded", "")
-			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
+			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "True", "Suspended", "")
 		})
 
 		AfterAll(func() {

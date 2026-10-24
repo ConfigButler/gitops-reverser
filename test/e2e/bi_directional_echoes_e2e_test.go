@@ -440,7 +440,7 @@ var _ = Describe("Bi Directional applier echoes (Flux)", Label("bi-directional",
 			nameApplierClaim(testNs, pipeline.targetName, "FluxClaim", fluxName, "")
 			verifyResourceCondition("gittarget", pipeline.targetName, testNs,
 				"ApplierClaimReady", "True", "Succeeded", "")
-			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
+			verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "True", "Suspended", "")
 
 			r = &echoRun{timingPipeline: pipeline, applier: fluxEchoApplier(testNs, fluxName, repo)}
 		})

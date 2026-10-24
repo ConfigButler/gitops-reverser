@@ -77,9 +77,9 @@ var _ = Describe("Applier claim schema", func() {
 			g.Expect(ready.Reason).To(Equal(applier.ReasonNotReferenced))
 		}, 20*time.Second, 100*time.Millisecond).Should(Succeed())
 		Expect(claim.Finalizers).NotTo(ContainElement(configbutleraiv1alpha3.FluxClaimFinalizer))
-		held := findCondition(claim.Status.Conditions, ApplierClaimConditionHeld)
-		Expect(held).NotTo(BeNil())
-		Expect(held.Reason).To(Equal(applier.ReasonNotReferenced))
+		inControl := findCondition(claim.Status.Conditions, ApplierClaimConditionInControl)
+		Expect(inControl).NotTo(BeNil())
+		Expect(inControl.Reason).To(Equal(applier.ReasonNotReferenced))
 	})
 
 	It("never points an applier claim at another applier or cluster", func() {

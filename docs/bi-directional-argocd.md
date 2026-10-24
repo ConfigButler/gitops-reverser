@@ -55,7 +55,7 @@ writes a switch that is somebody else's, and only checks it:
   `ServerSideApply=true`): it sets the switch on every apply. Set `enabled: false` in the manifest it
   applies, or leave `enabled` out of it and the applier claim holds the switch.
 
-While that owner keeps automated sync off, the applier claim is `Held` and GitOps Reverser syncs as usual.
+While that owner keeps automated sync off, the applier claim is `InControl` and GitOps Reverser syncs as usual.
 While it has it on, the applier claim reports `Configured=False` with `OwnedByApplicationSet` or
 `AutomatedSyncOwnedElsewhere`, and GitOps Reverser never syncs the `Application`.
 
@@ -313,7 +313,7 @@ names it, is admitted by its `KubeProvider`s, and writes the repository and bran
 `Application` syncs. An applier claim nothing eligible references starts no sync and is not in line for
 the `Application`; one no `GitTarget` names also reads nothing in the `Application`'s cluster.
 
-The applier claim reports `Configured` and `Held`, and its `Ready` includes both:
+The applier claim reports `Configured` and `InControl`, and its `Ready` includes both:
 
 | Reason | Means | Readiness |
 | --- | --- | --- |
@@ -333,7 +333,8 @@ The applier claim reports `Configured` and `Held`, and its `Ready` includes both
 | `ApplierNamespaceNotAllowed` | The `Application`'s namespace is not in the `applierNamespaces` the provider's grants give the applier claim's namespace | stalled |
 | `HeldByAnotherClaim` | Another `ArgoCDClaim` in line for the same `Application` in the same cluster, one an eligible `GitTarget` references, holds it (it holds the switch already, or was created first); this one starts no sync, and takes over once that one lets go | stalled: delete one of the two |
 
-`Held` says whether automated sync is off:
+`InControl` says whether GitOps Reverser decides, right now, when the `Application` syncs, which
+is whether automated sync is off:
 
 | Reason | Means |
 | --- | --- |

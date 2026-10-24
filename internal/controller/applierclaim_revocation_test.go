@@ -70,9 +70,9 @@ func TestFluxClaim_ADenialHandsTheKustomizationBack(t *testing.T) {
 	require.NotNil(t, configured)
 	assert.Equal(t, authz.ReasonNamespaceNotAuthorized, configured.Reason)
 	assert.Contains(t, configured.Message, "spec.allowedApplierClaims")
-	held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	assert.Contains(t, held.Message, "held again once the KubeProvider's spec.allowedApplierClaims admit")
+	inControl := findCondition(got.Status.Conditions, ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	assert.Contains(t, inControl.Message, "held again once the KubeProvider's spec.allowedApplierClaims admit")
 	events := f.events()
 	require.Len(t, events, 1)
 	assert.Contains(t, events[0], EventReasonReleased)
@@ -157,9 +157,9 @@ func TestFluxClaim_ADenialThatCannotHandBackGivesUp(t *testing.T) {
 			got := f.claim(t)
 			if !tc.atOnce {
 				require.False(t, handedBack(got))
-				assert.Equal(t, ReasonRevoking, heldReason(t, got), "the hand-back shows in status")
-				held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
-				held.LastTransitionTime = metav1.NewTime(time.Now().Add(-releaseDeadline - time.Minute))
+				assert.Equal(t, ReasonRevoking, inControlReason(t, got), "the hand-back shows in status")
+				inControl := findCondition(got.Status.Conditions, ApplierClaimConditionInControl)
+				inControl.LastTransitionTime = metav1.NewTime(time.Now().Add(-releaseDeadline - time.Minute))
 				require.NoError(t, f.r.Status().Update(context.Background(), got))
 				_, _ = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 				got = f.claim(t)
@@ -184,16 +184,16 @@ func TestFluxClaim_ARegrantDuringTheHandBackLetsItFinish(t *testing.T) {
 	f.setApplierGrants(t, nil)
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
-	require.Equal(t, ReasonRevoking, heldReason(t, f.claim(t)))
+	require.Equal(t, ReasonRevoking, inControlReason(t, f.claim(t)))
 
 	f.setApplierGrants(t, grants)
 	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
-	assert.Equal(t, ReasonRevoking, heldReason(t, f.claim(t)), "the hand-back is not abandoned")
+	assert.Equal(t, ReasonRevoking, inControlReason(t, f.claim(t)), "the hand-back is not abandoned")
 
 	unpause()
 	f.reconcileUntil(t, func(claim *configbutleraiv1alpha3.FluxClaim) bool {
-		return heldReason(t, claim) == ReasonSuspended
+		return inControlReason(t, claim) == ReasonSuspended
 	})
 	assert.True(t, controllerutil.ContainsFinalizer(f.claim(t), configbutleraiv1alpha3.FluxClaimFinalizer))
 	var reasons []string

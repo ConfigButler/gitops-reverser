@@ -483,7 +483,7 @@ Status has a kstatus-compatible summary layer plus domain conditions:
   applier applies this repository and branch. It is a gate.
 - `status.streams` is a bounded count summary, not a per-type list.
 
-An applier claim has `Configured` (a `FluxClaim` also `Held`) and the kstatus trio, `status.source`
+An applier claim has `Configured`, `InControl` and the kstatus trio, `status.source`
 (what its applier applies, as last read), and `status.operation` and `status.repairPending`, which
 the branch worker writes at every move of the operation it started.
 

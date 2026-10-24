@@ -43,31 +43,33 @@ const ApplierClaimConditionConfigured = "Configured"
 // time it was given. It clears when the operation completes.
 const ReasonOperationUnresolved = "OperationUnresolved"
 
-// ApplierClaimConditionHeld reports whether an applier claim holds its applier. A FluxClaim holds its
-// Kustomization suspended under GitOps Reverser's field manager, with the last suspend's token
-// handled, so nothing that started before the suspend is still running, or resumed for an apply of
-// GitOps Reverser's own. An ArgoCDClaim holds its Application's automated sync off
-// (argocdclaim_hold.go). An applier claim is Ready only once it holds its applier.
-const ApplierClaimConditionHeld = applier.ApplierClaimConditionHeld
+// ApplierClaimConditionInControl reports whether an applier claim decides, right now, when its applier
+// applies. A FluxClaim is in control while its Kustomization is suspended under GitOps Reverser's
+// field manager, with the last suspend's token handled, so nothing that started before the suspend
+// is still running, or resumed for an apply of GitOps Reverser's own. An ArgoCDClaim is in control
+// while its Application's automated sync is off (argocdclaim_hold.go). Holding the applier is
+// something else: an applier claim handing its applier back still holds it, and is not in control.
+// An applier claim is Ready only once it is in control.
+const ApplierClaimConditionInControl = applier.ApplierClaimConditionInControl
 
-// Held reasons, and the Events of the hold lifecycle on an applier claim.
+// InControl reasons, and the Events of the hold lifecycle on an applier claim.
 const (
-	// ReasonSuspended is Held=True: the Kustomization is suspended, the last suspend handled, and
+	// ReasonSuspended is InControl=True: the Kustomization is suspended, the last suspend handled, and
 	// nothing applies.
 	ReasonSuspended = "Suspended"
-	// ReasonApplying is Held=True while an operation of a branch worker is in flight and followed:
+	// ReasonApplying is InControl=True while an operation of a branch worker is in flight and followed:
 	// the Kustomization is resumed for it, and suspended again when it ends.
 	ReasonApplying = "Applying"
-	// ReasonSuspending is Held=False while the token of the suspend is not handled yet.
+	// ReasonSuspending is InControl=False while the token of the suspend is not handled yet.
 	ReasonSuspending = "Suspending"
-	// ReasonNotConfigured is Held=Unknown on an applier claim that is not Configured: nothing is held, or
+	// ReasonNotConfigured is InControl=Unknown on an applier claim that is not Configured: nothing is held, or
 	// the Kustomization is left suspended as the applier claim last held it (the message says which).
 	ReasonNotConfigured = "NotConfigured"
-	// ReasonReleasing is Held=False on an applier claim that held its Kustomization and is handing it back:
-	// it is being deleted, or no eligible GitTarget references it any more. Held=False with
+	// ReasonReleasing is InControl=False on an applier claim that held its Kustomization and is handing
+	// it back: it is being deleted, or no eligible GitTarget references it any more. InControl=False with
 	// applier.ReasonNotReferenced is an applier claim with nothing to hold.
 	ReasonReleasing = "Releasing"
-	// ReasonRevoking is Held=False on an applier claim that held its applier and is handing it back
+	// ReasonRevoking is InControl=False on an applier claim that held its applier and is handing it back
 	// because its KubeProvider's spec.allowedApplierClaims no longer admit it. The hand-back finishes
 	// even if a grant admits the applier claim again meanwhile, which then adopts its applier anew.
 	ReasonRevoking = "Revoking"
@@ -154,7 +156,7 @@ type ApplierClaimReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// Reconcile publishes one applier claim's Configured and Held conditions, its source and the readiness
+// Reconcile publishes one applier claim's Configured and InControl conditions, its source and the readiness
 // trio.
 func (r *ApplierClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	claim := configbutleraiv1alpha3.NewApplierClaim(r.Kind)
@@ -195,12 +197,12 @@ func (r *ApplierClaimReconciler) reconcileFlux(
 	if check.retiring(claim) {
 		return r.retire(ctx, st, claim, &check)
 	}
-	held, err := r.holdFlux(ctx, st, claim, check)
+	inControl, err := r.holdFlux(ctx, st, claim, check)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	st.setValue(ApplierClaimConditionHeld, held)
-	return r.commitClaim(ctx, st, r.claimReadiness(claim, check.configured, &held), &held,
+	st.setValue(ApplierClaimConditionInControl, inControl)
+	return r.commitClaim(ctx, st, r.claimReadiness(claim, check.configured, &inControl), &inControl,
 		heldClaimSteadyInterval)
 }
 
@@ -216,7 +218,7 @@ func publishCheck(st *reconcileStatus, claim configbutleraiv1alpha3.ApplierClaim
 // applier claim again on: steady, or sooner while a suspend is waited for or something may clear on its
 // own.
 func (r *ApplierClaimReconciler) commitClaim(
-	ctx context.Context, st *reconcileStatus, rd *readiness, held *conditionValue, steady time.Duration,
+	ctx context.Context, st *reconcileStatus, rd *readiness, inControl *conditionValue, steady time.Duration,
 ) (ctrl.Result, error) {
 	st.applyReadiness(rd)
 	if err := st.commit(ctx); err != nil {
@@ -224,7 +226,7 @@ func (r *ApplierClaimReconciler) commitClaim(
 	}
 	requeue := steady
 	switch {
-	case held != nil && held.Reason == ReasonSuspending:
+	case inControl != nil && inControl.Reason == ReasonSuspending:
 		requeue = applierClaimSuspendingInterval
 	case rd.converging():
 		requeue = applierClaimSettleInterval
@@ -232,7 +234,7 @@ func (r *ApplierClaimReconciler) commitClaim(
 	return ctrl.Result{RequeueAfter: st.requeueAfter(requeue)}, nil
 }
 
-// holdFlux returns a FluxClaim's Held condition. A Configured applier claim holds its Kustomization,
+// holdFlux returns a FluxClaim's InControl condition. A Configured applier claim holds its Kustomization,
 // with its finalizer put in place before the first adoption write, and then publishes its source
 // consumers. One that is not Configured holds nothing,
 // and one in line behind another holder lets go of a finalizer it carries, handing nothing back.
@@ -246,11 +248,11 @@ func (r *ApplierClaimReconciler) holdFlux(
 		if err := r.setFinalizer(ctx, st, claim, true); err != nil {
 			return conditionValue{}, err
 		}
-		held := r.holdKustomization(ctx, st, claim)
+		inControl := r.holdKustomization(ctx, st, claim)
 		if check.checked {
 			r.publishAlsoAppliedBy(ctx, claim)
 		}
-		return held, nil
+		return inControl, nil
 	case configured.Reason == applier.ReasonNotReferenced:
 		return conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonNotReferenced,
 			Message: "nothing to hold: no GitTarget names this applier claim"}, nil
@@ -464,15 +466,15 @@ func claimSourceSummary(claim configbutleraiv1alpha3.ApplierClaim) string {
 
 // claimReadiness is the trio's accumulator for an applier claim, its gates contributed.
 func (r *ApplierClaimReconciler) claimReadiness(
-	claim configbutleraiv1alpha3.ApplierClaim, configured conditionValue, held *conditionValue,
+	claim configbutleraiv1alpha3.ApplierClaim, configured conditionValue, inControl *conditionValue,
 ) *readiness {
 	rd := newReadiness(fmt.Sprintf("%s %s %s can be asked to apply", claim.ApplierKind(), claim.Applier(),
 		claimSourceSummary(claim)), claim.ClaimKind()+" is not stalled")
-	applierClaimReadinessGates(rd, configured, held, claim.Operation())
+	applierClaimReadinessGates(rd, configured, inControl, claim.Operation())
 	return rd
 }
 
-// applierClaimReadinessGates contributes Configured, the operation, and Held to the trio, in that
+// applierClaimReadinessGates contributes Configured, the operation, and InControl to the trio, in that
 // order.
 // An applier that is missing, or a KubeProvider that is, may be on its way (Flux and Argo CD
 // objects are often created after the applier claim); anything else Configured=False needs a human. An
@@ -480,7 +482,8 @@ func (r *ApplierClaimReconciler) claimReadiness(
 // names is Ready (NotReferenced): it does all it is asked to, which is nothing, and a Flux health
 // check that waits on it must not wait for the GitTarget that will name it.
 func applierClaimReadinessGates(
-	rd *readiness, configured conditionValue, held *conditionValue, operation *configbutleraiv1alpha3.ApplyOperation,
+	rd *readiness, configured conditionValue, inControl *conditionValue,
+	operation *configbutleraiv1alpha3.ApplyOperation,
 ) {
 	if configured.Reason == applier.ReasonNotReferenced {
 		rd.convergesAs(conditionValue{Status: metav1.ConditionTrue, Reason: applier.ReasonNotReferenced,
@@ -502,9 +505,9 @@ func applierClaimReadinessGates(
 		rd.progressing(metav1.ConditionFalse, ReasonOperationUnresolved, fmt.Sprintf(
 			"%s %s, has not completed: %s", what, operation.RequestedAt.UTC().Format(time.RFC3339), operation.Message))
 	}
-	if held != nil {
-		rd.progressingIf(held.Status != metav1.ConditionTrue && held.Reason != applier.ReasonNotReferenced,
-			held.Status, held.Reason, held.Message)
+	if inControl != nil {
+		rd.progressingIf(inControl.Status != metav1.ConditionTrue && inControl.Reason != applier.ReasonNotReferenced,
+			inControl.Status, inControl.Reason, inControl.Message)
 	}
 }
 
@@ -597,7 +600,7 @@ func (r *ApplierClaimReconciler) listClaims(
 }
 
 // claimLineChanged passes the event of an applier claim that is gone, and an update that can move it in
-// or out of line for its applier: its finalizer, its Configured condition, or its Held one.
+// or out of line for its applier: its finalizer, its Configured condition, or its InControl one.
 func claimLineChanged() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(event.CreateEvent) bool { return false },
@@ -615,7 +618,7 @@ func claimLineChanged() predicate.Predicate {
 func lineSummary(claim configbutleraiv1alpha3.ApplierClaim) string {
 	var summary strings.Builder
 	summary.WriteString(strconv.FormatBool(applier.Holding(claim)))
-	for _, conditionType := range []string{ApplierClaimConditionConfigured, ApplierClaimConditionHeld} {
+	for _, conditionType := range []string{ApplierClaimConditionConfigured, ApplierClaimConditionInControl} {
 		if cond := findCondition(*claim.StatusConditions(), conditionType); cond != nil {
 			summary.WriteString("|" + string(cond.Status) + "/" + cond.Reason)
 		}

@@ -265,8 +265,8 @@ func (f *Flux) mayResume(
 	if !artifactHolds(source, ask.Commit) || !ask.holds() {
 		return errStale
 	}
-	if ask.Held != nil {
-		if err := ask.Held(ctx); err != nil {
+	if ask.InControl != nil {
+		if err := ask.InControl(ctx); err != nil {
 			return fmt.Errorf("not resuming %s %s: %w", kindKustomization, ref, err)
 		}
 	}

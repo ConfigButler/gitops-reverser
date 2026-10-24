@@ -234,8 +234,8 @@ timing and nothing else: the applier still fetches, renders, applies, prunes and
 The applier claim does not say when to apply either; the branch worker decides that. Among applier
 claims that reach an applier through the same `KubeProvider`, one holds it and the others report
 `HeldByAnotherClaim`; applier claims made through two `KubeProvider`s for one cluster are not
-arbitrated (see **In line**). Whether an applier claim holds its applier is **Held**, not
-**Bound**. While it holds a `Kustomization`, a `FluxClaim` keeps it suspended and resumes it only
+arbitrated (see **In line**). Holding the applier is not the same as being **in control** of it,
+and neither is being **Bound**. While it holds a `Kustomization`, a `FluxClaim` keeps it suspended and resumes it only
 for an apply GitOps Reverser asks for. While it holds an `Application`, an `ArgoCDClaim` keeps
 automated sync off and starts each sync itself. Deleting either hands the applier back as
 `status.previousSuspendState` recorded it. A `GitTarget` names one with `spec.applierClaimRef` and
@@ -254,7 +254,8 @@ claim's namespace, not being deleted, admitted by its `KubeProvider`s, and write
 and branch the applier fetches. An applier claim acts only while an eligible `GitTarget` references
 it; one nothing references is `NotReferenced`. Eligibility is judged from those inputs alone, never
 from the `GitTarget`'s `Ready`. **Bound** names an applier claim with at least one eligible
-`GitTarget`; it says nothing about whether the applier claim holds its applier, which is **Held**.
+`GitTarget`; it says nothing about whether the applier claim holds its applier, or is **in
+control** of it.
 
 **In line.** The applier claims that may hold one applier: those an eligible `GitTarget`
 references, and one that holds the applier or is handing it back. One of them holds it; the others
@@ -262,16 +263,19 @@ report `HeldByAnotherClaim`. Applier claims are in line together only when they 
 through the same `KubeProvider`. GitOps Reverser cannot tell that two `KubeProvider`s reach the same
 cluster, so name one `KubeProvider` for every applier claim that reaches a given cluster.
 
-**Held.** How an applier claim reports its applier, from its own side. For a `FluxClaim`:
-`Suspended` (suspended under GitOps Reverser's field manager, the last suspend handled, nothing
-applies), `Applying` (resumed for an apply GitOps Reverser started), `Suspending` (a suspend was
-sent, and Flux has not handled its token yet), `Releasing` (being handed back to Flux). For an
-`ArgoCDClaim`: `AutomatedSyncOff` (held off by GitOps Reverser, or kept off by whoever owns the
-switch) and `Releasing`. Either may be `Revoking` (being handed back because a grant no longer
-admits it), `NotReferenced` (nothing to hold) or `NotConfigured`. A
-suspend counts as done only once it is handled: by then no
-reconcile that started before it is still running. Not "fenced", and not "resumed", which says what
-happens to the `Kustomization` rather than what the applier claim does. **Hand back** is releasing
+**In control.** An applier claim is in control when it decides, right now, when its applier
+applies: nothing the applier starts on its own can apply. Its `InControl` condition reports this,
+and the reason says how the applier stands. The reasons and their values are listed with each kind,
+in [The `FluxClaim`](bi-directional-flux.md#the-fluxclaim) and
+[The `ArgoCDClaim`](bi-directional-argocd.md#the-argocdclaim) (and in
+`kubectl explain fluxclaim.status.conditions`). In control is not **holding**: an applier claim
+holds its applier from the moment it is first in line until it has handed it back, and while it
+hands it back (`Releasing`, `Revoking`) it still holds it but is no longer in control. Nor is it
+**Bound**. For a `FluxClaim`, a suspend counts only once it is handled: by then no reconcile that
+started before it is still running, so a `Kustomization` suspended but not yet handled is not in
+control. Not "held", which names holding; not "controlled", which reads as if the applier claim
+were the one controlled; not "fenced"; and not "suspended", which says what happens to a
+`Kustomization` rather than what the applier claim does. **Hand back** is releasing
 `spec.suspend`, or switching automated sync back, so the applier applies on its own again.
 
 **Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason

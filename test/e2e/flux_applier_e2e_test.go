@@ -91,7 +91,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
 		createFluxClaim(testNs, fluxName, fluxName)
 		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Ready", "True", "NotReferenced", "")
-		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "False", "NotReferenced", "")
+		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "False", "NotReferenced", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeFalse(), "Flux applies it on its own")
 
 		By("naming it from a GitTarget that writes main: the applier claim is refused, and holds nothing")
@@ -154,7 +154,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
 			g.Expect(appliedColor(g, appliedNs)).To(Equal("green"))
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
-		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
+		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "True", "Suspended", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue(), "the applier claim holds its Kustomization")
 		alsoAppliedBy, err := kubectlRunInNamespace(testNs, "get", fluxClaimResource, fluxName,
 			"-o", "jsonpath={.status.source.alsoAppliedBy}")
@@ -167,7 +167,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", destName, "--type=merge", "-p",
 			`{"spec":{"applierClaimRef":null}}`)
 		Expect(err).NotTo(HaveOccurred(), "failed to drop the GitTarget's applierClaimRef")
-		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "False", "NotReferenced", "")
+		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "False", "NotReferenced", "")
 		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Ready", "True", "NotReferenced", "")
 		Eventually(func(g Gomega) {
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeFalse())
@@ -178,7 +178,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 
 		By("naming the applier claim again: it adopts the Kustomization anew")
 		nameApplierClaim(testNs, destName, "FluxClaim", fluxName, "")
-		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
+		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "True", "Suspended", "")
 		Expect(kustomizationSuspended(Default, fluxName)).To(BeTrue())
 	})
 
@@ -292,7 +292,7 @@ data:
 				To(ContainSubstring("was resumed outside GitOps Reverser"))
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue(), "suspended again")
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
-		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "Held", "True", "Suspended", "")
+		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "True", "Suspended", "")
 	})
 
 	// Deleting the applier claim hands the Kustomization back: its finalizer waits until nothing is
