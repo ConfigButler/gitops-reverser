@@ -5,9 +5,9 @@
 # spec.inCluster is honored only because deployment.yaml lists gitops-reverser/local in
 # --in-cluster-kube-providers.
 #
-# Unlike the chart, whose provider grants nothing by default, this one grants what the e2e suite
-# needs: every namespace mirrors its own namespace and any cluster-scoped resource, and holds an
-# applier in its own namespace. Do not copy it into a shared cluster.
+# Unlike the chart, whose provider grants only the release namespace by default, this one grants
+# what the e2e suite needs: every namespace mirrors its own namespace and any cluster-scoped
+# resource, and holds an applier in its own namespace. Do not copy it into a shared cluster.
 apiVersion: configbutler.ai/v1alpha3
 kind: KubeProvider
 metadata:

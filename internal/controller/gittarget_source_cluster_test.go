@@ -287,8 +287,17 @@ func TestCheckSourceAuthorization_OwnNamespaceAndAuditRoute(t *testing.T) {
 		assert.True(t, ok)
 	})
 
-	t.Run("own namespace is refused with no grant", func(t *testing.T) {
+	t.Run("own namespace is admitted by an omitted list", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(inClusterKubeProvider("local")).Build()
+		ok, _, _, err := (&GitTargetReconciler{Client: cl}).checkSourceAuthorization(context.Background(), target)
+		require.NoError(t, err)
+		assert.True(t, ok)
+	})
+
+	t.Run("own namespace is refused by an empty list", func(t *testing.T) {
+		denyAll := inClusterKubeProvider("local")
+		denyAll.Spec.AllowedGitTargets = []configbutleraiv1alpha3.KubeProviderGitTargetGrant{}
+		cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(denyAll).Build()
 		ok, reason, msg, err := (&GitTargetReconciler{Client: cl}).checkSourceAuthorization(
 			context.Background(), target)
 		require.NoError(t, err)

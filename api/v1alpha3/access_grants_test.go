@@ -136,18 +136,55 @@ func TestConsumerNamespaces_InvalidSelectorIsAnError(t *testing.T) {
 	assert.False(t, admits)
 }
 
-func TestGitBranch_AdmitsGitTarget_NothingAutomatic(t *testing.T) {
+func TestGitBranch_AdmitsGitTarget_DefaultsToSameNamespace(t *testing.T) {
 	branch := &GitBranch{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}}
 	admits, err := branch.AdmitsGitTarget("team-a", nil)
 	require.NoError(t, err)
-	assert.False(t, admits, "an omitted list admits nobody, the GitBranch's own namespace included")
+	assert.True(t, admits, "an omitted list is the default grant for the GitBranch's own namespace")
+	admits, err = branch.AdmitsGitTarget("team-b", nil)
+	require.NoError(t, err)
+	assert.False(t, admits, "the default admits only the GitBranch's own namespace")
+	assert.Equal(t, "admits team-a", branch.DescribeAllowedGitTargets())
+
+	branch.Spec.AllowedGitTargets = []GitBranchGitTargetGrant{}
+	admits, err = branch.AdmitsGitTarget("team-a", nil)
+	require.NoError(t, err)
+	assert.False(t, admits, "[] admits nobody, the GitBranch's own namespace included")
 	assert.Equal(t, "admits no namespace", branch.DescribeAllowedGitTargets())
 
 	branch.Spec.AllowedGitTargets = []GitBranchGitTargetGrant{
-		{ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame}},
 		{ConsumerNamespaces: ConsumerNamespaces{From: GrantFromNames, Names: []GrantNamespace{"team-b"}}},
 	}
-	assert.Equal(t, "admits team-a, team-b", branch.DescribeAllowedGitTargets())
+	admits, err = branch.AdmitsGitTarget("team-a", nil)
+	require.NoError(t, err)
+	assert.False(t, admits, "a written list is the whole policy: the default is not added to it")
+	assert.Equal(t, "admits team-b", branch.DescribeAllowedGitTargets())
+}
+
+func TestKubeProvider_DefaultsToSameNamespace(t *testing.T) {
+	provider := &KubeProvider{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}}
+	scope, err := provider.AdmitsGitTarget(consumer("team-a", "apps"), nil)
+	require.NoError(t, err)
+	assert.True(t, scope.Admitted)
+	assert.Equal(t, []string{"team-a"}, scope.SourceNamespaces,
+		"an omitted list mirrors the namespace of the same name")
+	assert.Empty(t, scope.ClusterResources, "and no cluster-scoped resource")
+	scope, err = provider.AdmitsGitTarget(consumer("team-b", "apps"), nil)
+	require.NoError(t, err)
+	assert.False(t, scope.Admitted)
+
+	claim, err := provider.AdmitsApplierClaim(consumer("team-a", "checkout"), nil)
+	require.NoError(t, err)
+	assert.Equal(t, KubeProviderApplierClaimScope{Admitted: true, ApplierNamespaces: []string{"team-a"}}, claim)
+
+	provider.Spec.AllowedGitTargets = []KubeProviderGitTargetGrant{}
+	provider.Spec.AllowedApplierClaims = []KubeProviderApplierClaimGrant{}
+	scope, err = provider.AdmitsGitTarget(consumer("team-a", "apps"), nil)
+	require.NoError(t, err)
+	assert.False(t, scope.Admitted, "[] admits nobody")
+	claim, err = provider.AdmitsApplierClaim(consumer("team-a", "checkout"), nil)
+	require.NoError(t, err)
+	assert.False(t, claim.Admitted, "[] admits nobody")
 }
 
 func TestGitProvider_AdmitsGitBranch(t *testing.T) {
@@ -194,7 +231,7 @@ func TestGitProvider_AdmitsGitBranch(t *testing.T) {
 	provider.Spec.AllowedGitBranches = nil
 	got, err = provider.AdmitsGitBranch(consumer("platform", "live"), nil, "main")
 	require.NoError(t, err)
-	assert.False(t, got.Admitted, "nothing is automatic, the provider's own namespace included")
+	assert.False(t, got.Admitted, "allowedGitBranches has no default, the provider's own namespace included")
 }
 
 func TestKubeProvider_AdmitsGitTarget(t *testing.T) {

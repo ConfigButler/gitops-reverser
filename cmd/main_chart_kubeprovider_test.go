@@ -64,11 +64,26 @@ func mirrors(t *testing.T, provider *configbutleraiv1alpha3.KubeProvider, namesp
 	return decision
 }
 
-// TestChartKubeProvider_ADefaultInstallGrantsNothing: the installer chooses who may use the
-// operator's identity; the chart never chooses for them, the release namespace included.
-func TestChartKubeProvider_ADefaultInstallGrantsNothing(t *testing.T) {
+// TestChartKubeProvider_ADefaultInstallGrantsTheReleaseNamespace: unset values leave both grant
+// lists out, so the CRD defaults them to the release namespace's own objects and nobody else.
+func TestChartKubeProvider_ADefaultInstallGrantsTheReleaseNamespace(t *testing.T) {
 	provider := renderLocalKubeProvider(t)
+	assert.Nil(t, provider.Spec.AllowedGitTargets, "omitted, so the API server applies the CRD default")
+	assert.Nil(t, provider.Spec.AllowedApplierClaims, "omitted, so the API server applies the CRD default")
+	assert.True(t, mirrors(t, provider, "gitops-reverser").Allowed)
+	decision := mirrors(t, provider, "team-a")
+	assert.False(t, decision.Allowed)
+	assert.Contains(t, decision.Message, "KubeProvider gitops-reverser/local admits gitops-reverser")
+}
+
+// TestChartKubeProvider_AnEmptyListRendersAsEmpty: [] must reach the API server as [], or the CRD
+// default would turn an explicit deny-all back into a grant.
+func TestChartKubeProvider_AnEmptyListRendersAsEmpty(t *testing.T) {
+	provider := renderLocalKubeProvider(t, "--set-json", "kubeProvider.allowedGitTargets=[]",
+		"--set-json", "kubeProvider.allowedApplierClaims=[]")
+	assert.NotNil(t, provider.Spec.AllowedGitTargets)
 	assert.Empty(t, provider.Spec.AllowedGitTargets)
+	assert.NotNil(t, provider.Spec.AllowedApplierClaims)
 	assert.Empty(t, provider.Spec.AllowedApplierClaims)
 	for _, namespace := range []string{"gitops-reverser", "team-a"} {
 		decision := mirrors(t, provider, namespace)
@@ -104,8 +119,8 @@ func TestChartKubeProvider_TheQuickstartGrantsItsNamespaceOnly(t *testing.T) {
 	assert.False(t, mirrors(t, provider, "team-a").Allowed, "and nothing else")
 }
 
-// TestChartKubeProvider_ThePlaygroundGrantsEveryNamespaceItsOwn: values-playground.yaml is today's
-// open default, chosen visibly: every namespace mirrors its own namespace, no other, and no
+// TestChartKubeProvider_ThePlaygroundGrantsEveryNamespaceItsOwn: values-playground.yaml is the open
+// default, chosen visibly: every namespace mirrors its own namespace, no other, and no
 // cluster-scoped resource.
 func TestChartKubeProvider_ThePlaygroundGrantsEveryNamespaceItsOwn(t *testing.T) {
 	provider := renderLocalKubeProvider(t, "-f", "../charts/gitops-reverser/values-playground.yaml")

@@ -14,6 +14,7 @@ spec:
   branch: main
   # Optional: the branch `main` is created from while the remote does not have it.
   # parentBranch: develop
-  # Which GitTargets may write through this branch. Its own namespace needs a grant too.
+  # Which GitTargets may write through this branch. Omitted, it is this one grant: GitTargets in
+  # this namespace. A list you write is the whole policy, and [] admits nobody.
   allowedGitTargets:
     - consumerNamespaces: {from: Same}

@@ -46,21 +46,28 @@ type KubeProviderSpec struct {
 	// AllowedGitTargets says which GitTargets may mirror through this provider, and what: each grant
 	// admits some control-cluster namespaces and bounds what the WatchRules feeding a GitTarget there
 	// may watch (sourceNamespaces), and what a ClusterWatchRule may mirror through it
-	// (clusterResources). Nothing is admitted automatically, this KubeProvider's own namespace
-	// included; omitted or empty, no GitTarget mirrors through it. Grants combine by union.
+	// (clusterResources). Omitted, it defaults to one grant for this KubeProvider's own namespace,
+	// mirroring the namespace of the same name (consumerNamespaces: {from: Same}, sourceNamespaces:
+	// ["{consumer.namespace}"]); it grants no cluster-scoped resource. A list you write is the whole
+	// policy: nothing is added to it, and [] admits no GitTarget. Grants combine by union.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	AllowedGitTargets []KubeProviderGitTargetGrant `json:"allowedGitTargets,omitempty"`
+	// +kubebuilder:default={{consumerNamespaces: {from: Same}, sourceNamespaces: {"{consumer.namespace}"}}}
+	AllowedGitTargets []KubeProviderGitTargetGrant `json:"allowedGitTargets"`
 
 	// AllowedApplierClaims says which applier claims (FluxClaims and ArgoCDClaims) may hold an applier
 	// through this provider, and in which namespaces that applier may live (applierNamespaces).
-	// Admission to mirror does not admit to apply. Nothing is admitted automatically; omitted or
-	// empty, no applier claim holds an applier through it. Grants combine by union.
+	// Admission to mirror does not admit to apply. Omitted, it defaults to one grant for this
+	// KubeProvider's own namespace, holding appliers in the namespace of the same name
+	// (consumerNamespaces: {from: Same}, applierNamespaces: ["{consumer.namespace}"]). A list you
+	// write is the whole policy: nothing is added to it, and [] admits no applier claim. Grants
+	// combine by union.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	AllowedApplierClaims []KubeProviderApplierClaimGrant `json:"allowedApplierClaims,omitempty"`
+	// +kubebuilder:default={{consumerNamespaces: {from: Same}, applierNamespaces: {"{consumer.namespace}"}}}
+	AllowedApplierClaims []KubeProviderApplierClaimGrant `json:"allowedApplierClaims"`
 
 	// Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
 	// the built-in defaults apply (20 QPS, burst 30). Refused beside inCluster.

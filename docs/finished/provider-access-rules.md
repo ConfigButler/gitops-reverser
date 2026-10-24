@@ -107,6 +107,11 @@ consumers can then carry different RBAC permissions.
 | Who owns a grant list? | One policy owner per object: every grant list is `+listType=atomic`, and `names`, `branches`, `sourceNamespaces`, `clusterResources` and `applierNamespaces` are `+listType=set` |
 | Are there booleans? | No. A grant's source is an enum (`from`), and every scope is a list, so either can grow a value later without a new field ([API conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md): think twice about bool fields) |
 
+> **Since changed:** the first two answers no longer hold for `GitBranch` and `KubeProvider`. An
+> omitted list there is one `from: Same` grant for the object's own namespace, a written list is
+> the whole policy, and `[]` admits nobody; `GitProvider.spec.allowedGitBranches` keeps no default.
+> See [the grants](../configuration.md#the-grants).
+
 The field is `allowed` plus the referring kind, or a family of kinds the API already defines,
 followed by a `from` in each grant. That is Gateway API's `allowedRoutes.namespaces.from`, the
 shape `from` is borrowed from. "Applier claim" is such a family: there is no `ApplierClaim` kind,

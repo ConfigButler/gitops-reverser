@@ -47,12 +47,21 @@ func targetIn(providerName string) *configv1alpha3.GitTarget {
 	return t
 }
 
+// grantList is grants written out, never omitted: no grants is [], which admits nobody, where an
+// omitted list would be the default grant for the provider's own namespace.
+func grantList[G any](grants []G) []G {
+	if grants == nil {
+		return []G{}
+	}
+	return grants
+}
+
 // providerNamed builds a KubeProvider in platformNS with grants as its spec.allowedGitTargets, so
 // the GitTarget in testNS is admitted only through a grant.
 func providerNamed(name string, grants ...configv1alpha3.KubeProviderGitTargetGrant) *configv1alpha3.KubeProvider {
 	return &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: platformNS},
-		Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: grants},
+		Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: grantList(grants)},
 	}
 }
 
@@ -84,7 +93,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 	ownNamespace := func(grants ...configv1alpha3.KubeProviderGitTargetGrant) *configv1alpha3.KubeProvider {
 		return &configv1alpha3.KubeProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS},
-			Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: grants},
+			Spec:       configv1alpha3.KubeProviderSpec{AllowedGitTargets: grantList(grants)},
 		}
 	}
 	ownTarget := &configv1alpha3.GitTarget{
@@ -119,7 +128,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		},
 		{
 			// Nothing is automatic, the provider's own namespace included.
-			name:        "the provider's own namespace is refused when no grant names it",
+			name:        "the provider's own namespace is refused by an empty list",
 			objects:     []client.Object{ownNamespace(), namespaceLabeled(nil)},
 			target:      ownTarget,
 			wantReason:  ReasonNamespaceNotAuthorized,
@@ -146,7 +155,24 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			wantMessage: `KubeProvider platform/prod-eu-1 admits platform in spec.allowedGitTargets; namespace "team-a"`,
 		},
 		{
-			name:        "an omitted list denies every namespace",
+			name: "an omitted list admits the provider's own namespace, mirroring its own",
+			objects: []client.Object{&configv1alpha3.KubeProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS},
+			}, namespaceLabeled(nil)},
+			target:      ownTarget,
+			wantAllowed: true,
+		},
+		{
+			name: "an omitted list admits no other namespace",
+			objects: []client.Object{&configv1alpha3.KubeProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-1", Namespace: platformNS},
+			}, namespaceLabeled(nil)},
+			target:      targetIn("prod-eu-1"),
+			wantReason:  ReasonNamespaceNotAuthorized,
+			wantMessage: "admits platform in spec.allowedGitTargets",
+		},
+		{
+			name:        "an empty list denies every namespace",
 			objects:     []client.Object{providerNamed("prod-eu-1"), namespaceLabeled(nil)},
 			target:      targetIn("prod-eu-1"),
 			wantReason:  ReasonNamespaceNotAuthorized,
@@ -345,7 +371,7 @@ func TestApplierClaimAdmitted(t *testing.T) {
 	own := []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}
 	provider := func(grants ...configv1alpha3.KubeProviderApplierClaimGrant) *configv1alpha3.KubeProvider {
 		p := providerNamed("hub", mirrorFrom(testNS))
-		p.Spec.AllowedApplierClaims = grants
+		p.Spec.AllowedApplierClaims = grantList(grants)
 		return p
 	}
 	tests := []struct {
@@ -395,9 +421,9 @@ func TestApplierClaimAdmitted(t *testing.T) {
 	}
 }
 
-// TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant: a provider admits no applier claim in its own
-// namespace by itself, also one it admits to mirror.
-func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
+// TestApplierClaimAdmitted_OwnNamespace: an omitted allowedApplierClaims admits an applier claim in
+// the provider's own namespace; [] refuses it, also one the provider admits to mirror.
+func TestApplierClaimAdmitted_OwnNamespace(t *testing.T) {
 	provider := &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: testNS},
 		Spec: configv1alpha3.KubeProviderSpec{AllowedGitTargets: []configv1alpha3.KubeProviderGitTargetGrant{
@@ -407,6 +433,7 @@ func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
 			},
 		}},
 	}
+	provider.Spec.AllowedApplierClaims = []configv1alpha3.KubeProviderApplierClaimGrant{}
 	claim := &configv1alpha3.FluxClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "apps"},
 		Spec: configv1alpha3.FluxClaimSpec{
@@ -423,6 +450,15 @@ func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
 	assert.False(t, decision.Allowed)
 	assert.Equal(t, ReasonNamespaceNotAuthorized, decision.Reason)
 	assert.Contains(t, decision.Message, "KubeProvider team-a/local admits no namespace in spec.allowedApplierClaims")
+
+	provider.Spec.AllowedApplierClaims = nil
+	reader = fake.NewClientBuilder().
+		WithScheme(admissionScheme(t)).
+		WithObjects(provider, namespaceLabeled(nil)).
+		Build()
+	decision, err = ApplierClaimAdmitted(context.Background(), reader, claim)
+	require.NoError(t, err)
+	assert.True(t, decision.Allowed, "omitted, the default grant admits the provider's own namespace")
 }
 
 // TestApplierAdmitted: asking an applier to apply needs both admissions, always. Mirroring and
@@ -430,7 +466,7 @@ func TestApplierClaimAdmitted_OwnNamespaceNeedsAGrant(t *testing.T) {
 func TestApplierAdmitted(t *testing.T) {
 	own := []configv1alpha3.ScopeNamespace{"{consumer.namespace}"}
 	withAppliers := func(p *configv1alpha3.KubeProvider, grants ...configv1alpha3.KubeProviderApplierClaimGrant) *configv1alpha3.KubeProvider {
-		p.Spec.AllowedApplierClaims = grants
+		p.Spec.AllowedApplierClaims = grantList(grants)
 		return p
 	}
 	tests := []struct {

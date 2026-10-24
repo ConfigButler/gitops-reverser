@@ -401,13 +401,13 @@
           }
         },
         "allowedGitTargets": {
-          "type": "array",
-          "description": "Rendered as the provider's spec.allowedGitTargets: which namespaces' GitTargets may mirror through it (consumerNamespaces), and what (sourceNamespaces, clusterResources). Empty grants nothing. The CRD validates each grant.",
+          "type": ["array", "null"],
+          "description": "Rendered as the provider's spec.allowedGitTargets: which namespaces' GitTargets may mirror through it (consumerNamespaces), and what (sourceNamespaces, clusterResources). Null leaves the field out, and the CRD defaults it to the release namespace mirroring its own; [] admits nobody. A list is the whole policy. The CRD validates each grant.",
           "items": { "type": "object" }
         },
         "allowedApplierClaims": {
-          "type": "array",
-          "description": "Rendered as the provider's spec.allowedApplierClaims: which namespaces' applier claims may hold an applier through it (consumerNamespaces), and where it may live (applierNamespaces). Empty grants nothing. The CRD validates each grant.",
+          "type": ["array", "null"],
+          "description": "Rendered as the provider's spec.allowedApplierClaims: which namespaces' applier claims may hold an applier through it (consumerNamespaces), and where it may live (applierNamespaces). Null leaves the field out, and the CRD defaults it to the release namespace holding appliers in its own; [] admits nobody. A list is the whole policy. The CRD validates each grant.",
           "items": { "type": "object" }
         }
       }
