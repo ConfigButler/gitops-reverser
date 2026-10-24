@@ -30,8 +30,9 @@ type FluxClaimSpec struct {
 
 	// KubeProviderRef names the KubeProvider whose cluster holds the Kustomization, such as a
 	// management cluster running Flux for the source cluster. Namespace omitted means this
-	// applier claim's own namespace. The provider must admit this applier claim's namespace: its own, or one its
-	// spec.accessFrom admits. Its identity needs get and patch on the Kustomization and its GitRepository. Immutable.
+	// applier claim's own namespace. The provider's spec.allowedApplierClaims must admit this applier
+	// claim's namespace, with the Kustomization's namespace in applierNamespaces. Its identity needs
+	// get and patch on the Kustomization and its GitRepository. Immutable.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the FluxClaim to hold a Kustomization elsewhere"
@@ -59,9 +60,11 @@ type FluxClaimStatus struct {
 
 	// Conditions are Configured (an eligible GitTarget names the applier claim; the Kustomization exists,
 	// applies a GitRepository that follows a branch, may be patched, and no other FluxClaim holds
-	// it), Held (Suspended: suspended under GitOps Reverser with the last suspend handled; Applying:
-	// resumed for an apply GitOps Reverser started; Suspending: a suspend is not handled yet;
-	// Releasing: being handed back; NotReferenced; NotConfigured), and the kstatus
+	// it), InControl (whether GitOps Reverser decides, right now, when the Kustomization applies. True:
+	// Suspended, suspended under GitOps Reverser with the last suspend handled; Applying, resumed for
+	// an apply GitOps Reverser started. False: Suspending, a suspend is not handled yet; Releasing,
+	// being handed back; Revoking, being handed back because a grant no longer admits it;
+	// NotReferenced. Unknown: NotConfigured), and the kstatus
 	// Ready/Reconciling/Stalled trio. An applier claim acts only while an eligible GitTarget references it:
 	// one in its namespace that names it, is admitted by its KubeProviders, and writes the
 	// repository and branch the GitRepository fetches. An applier claim no GitTarget names reads nothing
@@ -117,22 +120,22 @@ type FluxClaimSource struct {
 	Branch string `json:"branch,omitempty"`
 
 	// Why information only (decision 2 of 2026-10-17 in docs/design/apply-trigger.md): one
-	// GitRepository for several Kustomizations is a normal setup, and a consumer no applier claim names
+	// GitRepository for several Kustomizations is a normal setup, and an object no applier claim names
 	// applies a folder that has no promise of protection anyway.
 
-	// OtherConsumers are the other objects in the cluster that apply this GitRepository and that no
+	// AlsoAppliedBy are the other objects in the cluster that apply this GitRepository and that no
 	// FluxClaim holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
 	// new artifact the moment it arrives. Information only: it never affects Ready.
 	// +optional
 	// +listType=atomic
-	OtherConsumers []meta.NamespacedObjectKindReference `json:"otherConsumers,omitempty"`
+	AlsoAppliedBy []meta.NamespacedObjectKindReference `json:"alsoAppliedBy,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="Held",type=string,JSONPath=`.status.conditions[?(@.type=="Held")].reason`
+// +kubebuilder:printcolumn:name="Control",type=string,JSONPath=`.status.conditions[?(@.type=="InControl")].reason`
 // +kubebuilder:printcolumn:name="Kustomization",type=string,JSONPath=`.spec.kustomizationRef.name`
 // +kubebuilder:printcolumn:name="Operation",type=string,JSONPath=`.status.operation.phase`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.operation.commit`,priority=1

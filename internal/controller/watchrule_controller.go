@@ -271,27 +271,8 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
 		// matches what GitProvider and KubeProvider already do.
 		For(&configbutleraiv1alpha3.WatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		// This rule MIRRORS the GitTarget's readiness into its own GitTargetReady, so the watch has
-		// to see the status-only update that carries a heal — GenerationChangedPredicate would drop
-		// exactly that. gitTargetReadyProjectionChanged fires on a spec change or on a move in the
-		// mirrored verdict, and on nothing else.
-		Watches(
-			&configbutleraiv1alpha3.GitTarget{},
-			handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
-			builder.WithPredicates(gitTargetReadyProjectionChanged()),
-		).
-		// React to a KubeProvider's allowCrossNamespace.sources (or accessFrom)
-		// changing. The GitTarget->WatchRules edge above still cannot be relied on to carry this: a
-		// KubeProvider change reaches the GitTarget as a status update that need not move the
-		// GitTarget's readiness at all, and only a readiness move re-enqueues the rules. Without
-		// this mapper, flipping the delegation flag would leave every affected WatchRule
-		// un-reconciled until its periodic requeue — so a REVOCATION would take minutes.
-		Watches(
-			&configbutleraiv1alpha3.KubeProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToWatchRules),
-			builder.WithPredicates(kubeProviderReadyOrSpecChanged()),
-		).
 		Named("watchrule")
+	b = ruleDependencyWatches(b, r.gitTargetToWatchRules, r.kubeProviderToWatchRules, r.namespaceToWatchRules)
 
 	if r.WatchManager != nil {
 		// React to a stream of this rule's GitTarget reaching or leaving Streaming. Without it a
@@ -308,8 +289,19 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return b.Complete(r)
 }
 
+// namespaceToWatchRules maps a Namespace label change to the WatchRules in it. A WatchRule feeds a
+// GitTarget in its own namespace, which is the namespace the grants are evaluated for.
+func (r *WatchRuleReconciler) namespaceToWatchRules(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
+	var rules configbutleraiv1alpha3.WatchRuleList
+	if err := r.List(ctx, &rules, client.InNamespace(obj.GetName())); err != nil {
+		logDependencyListError(ctx, err, "WatchRules", obj)
+		return nil
+	}
+	return requestsFor(rules.Items)
+}
+
 // kubeProviderToWatchRules maps a KubeProvider change to every WatchRule whose GitTarget
-// mirrors through that provider, so a delegation grant or revocation converges on the event rather
+// mirrors through that provider, so a grant or revocation converges on the event rather
 // than on the periodic reconcile.
 func (r *WatchRuleReconciler) kubeProviderToWatchRules(
 	ctx context.Context,

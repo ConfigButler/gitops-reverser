@@ -263,10 +263,10 @@ Canonical reads:
   `GitPathAccepted=False` with reason `AmbiguousLayout` rather than by a second gate
 - WatchRule and ClusterWatchRule carry target dependency health in `GitTargetReady`
 - WatchRule carries source-namespace authorization in `SourceNamespaceAuthorized`, a positive
-  state-style condition set even for legacy own-namespace rules (reason `LegacySourceNamespace`), so
-  the effective authorization is always visible and automation has one condition to inspect. It is an
-  additional prerequisite of `Ready`, and is deliberately kept out of `GitTargetReady`, which stays
-  the referenced target's own health.
+  state-style condition set for every rule, its own namespace included (reason
+  `SourceNamespaceAllowed`), so the effective authorization is always visible and automation has
+  one condition to inspect. It is an additional prerequisite of `Ready`, and is deliberately kept
+  out of `GitTargetReady`, which stays the referenced target's own health.
 
   Its values are `True` and `False`, plus an `Unknown` that means only "not evaluated yet, because
   an earlier gate blocked this reconcile" (reason `Progressing`). `False` is a **refusal**:
@@ -287,9 +287,9 @@ Canonical reads:
   about a mixed rule. First match wins:
 
   1. any item **denied** → `False` / `SourceNamespaceNotAllowed` / `Stalled=True`
-  2. every item admitted, at least one naming a namespace other than the rule's own → `True` /
-     `SourceNamespaceAllowed`
-  3. every item on its own namespace → `True` / `LegacySourceNamespace`
+  2. every item admitted → `True` / `SourceNamespaceAllowed`
+
+  Every item needs a grant, the rule's own namespace included, so there is no ungated case.
 
   A **denied explicit name refuses the whole rule**; the item is never trimmed away so the rest can
   run, because mirroring two of the three namespaces a rule asked for is worse than a loud failure.
@@ -302,7 +302,7 @@ Canonical reads:
 
 ### Applier claims
 
-`FluxClaim` and `ArgoCDClaim` use the trio with `Configured` as their gate, and `Held` as a second
+`FluxClaim` and `ArgoCDClaim` use the trio with `Configured` as their gate, and `InControl` as a second
 one.
 
 Canonical reads:
@@ -311,15 +311,15 @@ Canonical reads:
   reason `NotReferenced`, `Reconciling=False`, `Stalled=False`. As for a `GitTarget` with nothing to
   mirror, doing nothing when nothing is asked is converged, and a Flux health check that waits on
   the applier claim must not wait for the `GitTarget` that will name it
-- holding its applier: `Configured=True`, for a `FluxClaim` `Held=True` (`Suspended` or
-  `Applying`), and `Ready=True`
+- in control of its applier: `Configured=True`, `InControl=True` (`Suspended` or `Applying` for a
+  `FluxClaim`, `AutomatedSyncOff` for an `ArgoCDClaim`), and `Ready=True`
 - applier or `KubeProvider` missing (`ApplierNotFound`, `KubeProviderNotFound`):
   `Ready=False`, `Reconciling=True`, `Stalled=False`, because Flux and Argo CD objects are often
   created after the applier claim. Every other `Configured=False` reason is `Stalled=True`
 - an operation past its time (`status.operation.phase: Unresolved`): `Ready=False`,
   `Reconciling=True`, reason `OperationUnresolved`. It clears when the operation completes
 - a `FluxClaim` whose suspend is not handled yet, or that is handing its `Kustomization` back:
-  `Held=False` (`Suspending`, `Releasing`), `Ready=False`, `Reconciling=True`
+  `InControl=False` (`Suspending`, `Releasing`), `Ready=False`, `Reconciling=True`
 
 A `GitTarget` naming an applier claim gains `ApplierClaimReady`, a gate on its own trio.
 `SourceMismatch`, or an applier claim that is itself `Stalled`, stalls the target; a missing applier

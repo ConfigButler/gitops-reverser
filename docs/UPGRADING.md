@@ -7,6 +7,83 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Grants say who may use a provider or a branch; `allowedBranches` is `allowedGitBranches`
+
+**Breaking.** Who may use a `GitProvider`, a `GitBranch` or a `KubeProvider` is a list of grants on
+that object, and **nothing is admitted automatically, the object's own namespace included**. An
+omitted or empty list admits nobody.
+
+| Grant list | Admits | Replaces |
+|---|---|---|
+| `GitProvider.spec.allowedGitBranches` | `GitBranch`es claiming its `branchPatterns` | `spec.allowedBranches`, and `spec.accessFrom` |
+| `GitBranch.spec.allowedGitTargets` | `GitTarget`s writing through it | the `GitProvider`'s `spec.accessFrom` |
+| `KubeProvider.spec.allowedGitTargets` | `GitTarget`s mirroring its `sourceNamespaces` and `clusterResources` | `spec.accessFrom`, `spec.allowCrossNamespace.sources` |
+| `KubeProvider.spec.allowedApplierClaims` | applier claims holding an applier in its `applierNamespaces` | `spec.accessFrom`, `spec.allowCrossNamespace.appliers` |
+
+Every grant has a required `consumerNamespaces` block with a required `from`: `Same` (the namespace
+of the object holding the grant), `Names` with `names`, `Selector` with a non-empty `selector`, or
+`All`. Beside the block sits the scope the grant gives. `spec.accessFrom`,
+`spec.allowedBranches`, `spec.allowCrossNamespace` and their chart values are gone, and the API
+server prunes them. The equivalents of the old defaults:
+
+```yaml
+kind: GitProvider
+spec:
+  allowedGitBranches:            # was allowedBranches: [main], for this namespace's GitBranches
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [main]
+---
+kind: GitBranch
+spec:
+  allowedGitTargets:             # this namespace's GitTargets, as before; add from: Names to share
+    - consumerNamespaces: {from: Same}
+---
+kind: KubeProvider
+spec:
+  allowedGitTargets:             # was its own namespace, plus accessFrom, without allowCrossNamespace
+    - consumerNamespaces: {from: Same}
+      sourceNamespaces: ["{consumer.namespace}"]
+  allowedApplierClaims:
+    - consumerNamespaces: {from: Same}
+      applierNamespaces: ["{consumer.namespace}"]
+```
+
+- **Every `GitBranch`, `GitTarget` and applier claim needs a grant, also in the provider's own
+  namespace.** Without one it reports `NamespaceNotAuthorized` and recovers once a grant admits it.
+- **`allowedBranches` became `allowedGitBranches`, which also says who may claim.** A
+  `GitBranch.spec.gitProviderRef` may name a `GitProvider` in another namespace. Branch patterns match
+  the whole branch name, `*` crosses `/`, and `teams/{consumer.namespace}/*` gives each namespace its
+  own prefix. A branch outside the patterns is `BranchNotAllowed`. A grant's scope names the object
+  asking for access, the consumer, with `{consumer.namespace}`; a branch pattern may add
+  `{consumer.name}` beside it. See [the consumer variables](configuration.md#the-consumer-variables).
+- **Who writes a branch is the `GitBranch`'s decision.** A `GitTarget` in another namespace writes
+  through it only while its `spec.allowedGitTargets` admit that namespace.
+- **The chart's `local` provider grants nothing** unless `kubeProvider.allowedGitTargets` and
+  `kubeProvider.allowedApplierClaims` do, or `quickstart.enabled=true`, which grants exactly the
+  quickstart namespace. To keep the old open default, every namespace mirroring its own, install with
+  the chart's `values-playground.yaml`.
+- **A `ClusterWatchRule` needs `clusterResources`.** It mirrors only the types the grant admitting
+  its `GitTarget` names (`clusterroles.rbac.authorization.k8s.io`, a bare `nodes`, or `"*"`), and
+  one type outside them refuses the whole rule (`ClusterResourceNotAllowed`). No default grants any,
+  the chart's included, so a `ClusterWatchRule` through `local` stops mirroring until a grant does.
+- **A `WatchRule`'s own namespace needs a grant too:** `sourceNamespaces: ["{consumer.namespace}"]`. An
+  explicit list is the whole scope, the union across the admitting grants, and
+  `sourceNamespace: "*"` needs `"*"` in at least one of them: it is refused, never narrowed.
+- **An applier claim refused by `allowedApplierClaims` hands its applier back**, as one no eligible
+  `GitTarget` references does. A `GitBranch` no grant admits any more gives up its branch after its
+  branch worker pushed or refused what it held, and keeps its finalizer.
+- `SourceNamespaceAuthorized` is `True` with reason `SourceNamespaceAllowed` for every admitted
+  rule; `LegacySourceNamespace` is gone.
+
+Before upgrading, list what each provider admits today, and write the grants that keep it:
+
+```bash
+kubectl get gitproviders,kubeproviders -A -o yaml | grep -E '^  name:|namespace:|accessFrom|allowedBranches|allowCrossNamespace'
+```
+
+See [configuration.md](configuration.md#sharing-connections-across-namespaces) for the full model,
+including a platform and its tenants.
+
 ## `FluxTrigger` and `ArgoCDTrigger` are now `FluxClaim` and `ArgoCDClaim`
 
 **Breaking, with no migration path.** Before upgrading, delete every `FluxTrigger` and
@@ -14,8 +91,9 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 `Application`'s automated sync), then delete their CRDs. After upgrading, recreate them under the
 new kinds with the same `spec`, and on each `GitTarget` replace `spec.applyTriggerRef` with
 `spec.applierClaimRef`. The `GitTarget` condition is `ApplierClaimReady` (reason
-`ApplierClaimNotFound`), the reason `HeldByAnotherTrigger` is `HeldByAnotherClaim`, and the
-finalizers are `configbutler.ai/flux-claim` and `configbutler.ai/argocd-claim`. The entries below
+`ApplierClaimNotFound`), the reason `HeldByAnotherTrigger` is `HeldByAnotherClaim`, the
+finalizers are `configbutler.ai/flux-claim` and `configbutler.ai/argocd-claim`, and a `FluxClaim`'s
+`status.source.otherConsumers` is `status.source.alsoAppliedBy`. The entries below
 use the old names. See [applier claim](definitions.md#applying-back).
 
 ## An `ArgoCDTrigger` holds its `Application`'s automated sync off
@@ -120,8 +198,11 @@ metadata: {name: prod-eu-1, namespace: platform}
 spec:
   secretRef:
     name: prod-eu-1-kubeconfig   # a Secret in this namespace; key defaults to value, then value.yaml
-  accessFrom:
-    names: [team-a]              # other namespaces; platform itself is always admitted
+  allowedGitTargets:             # see "Grants say who may use a provider or a branch"
+    - consumerNamespaces:
+        from: Names
+        names: [team-a]
+      sourceNamespaces: ["{consumer.namespace}"]
 ---
 kind: GitTarget
 metadata: {name: apps, namespace: team-a}
@@ -142,8 +223,8 @@ Migrate in this order:
 
 2. Upgrade. The chart renders a `KubeProvider` named `local` in the release namespace, using the
    operator's own identity (see below). Its values are `kubeProvider.create`, `kubeProvider.name`,
-   `kubeProvider.secretRef`, `kubeProvider.accessFrom` and `kubeProvider.allowCrossNamespace`; the
-   `clusterProvider.*` values are gone.
+   `kubeProvider.secretRef`, `kubeProvider.allowedGitTargets` and `kubeProvider.allowedApplierClaims`;
+   the `clusterProvider.*` values are gone.
 3. Create a `KubeProvider` for each other `ClusterProvider`, in the namespace that should own the
    credential. **The kubeconfig Secret is read from the provider's own namespace**, not from the
    operator's, so move or copy it there. `spec.kubeConfig.secretRef` is `spec.secretRef`.
@@ -162,9 +243,9 @@ and `controllerManager.inClusterKubeProviders` adds others. Any other provider t
 `spec.inCluster` reports `Validated=False` and `Stalled=True` (`InClusterNotAuthorized`) and is never
 used. `spec.client` is refused beside `spec.inCluster`, where it was ignored.
 
-**A provider admits its own namespace.** An empty `accessFrom` admitted nobody on a
-`ClusterProvider`. On a `KubeProvider` it admits only the provider's own namespace, and `accessFrom`
-admits the others. `allowCrossNamespace.sources` and `.appliers` keep their meaning.
+**`accessFrom` and `allowCrossNamespace` are replaced by grants.** A `KubeProvider` admits nobody,
+its own namespace included, until a grant in `spec.allowedGitTargets` or `spec.allowedApplierClaims`
+does; see "Grants say who may use a provider or a branch".
 
 **Audit routes default to `<namespace>.<name>`, so the audit webhook URL changes.** The chart's
 provider posts under `/audit-webhook/<release namespace>.local`, `/audit-webhook/gitops-reverser.local`
@@ -184,7 +265,7 @@ name, so two providers with one name in two namespaces are two series.
 
 ## `GitBranch` holds a repository branch; a `GitTarget` names one with `spec.gitBranchRef`
 
-**Breaking.** A repository branch is its own object, `GitBranch`, in the namespace of the
+**Breaking.** A repository branch is its own object, `GitBranch`, claiming the branch through the
 `GitProvider` whose credential writes it. A `GitTarget` names one with the required, immutable
 `spec.gitBranchRef`, and `spec.gitProviderRef`, `spec.branch` and `spec.parentBranch` are gone from
 `GitTarget`: setting one is refused at admission, with a message naming `spec.gitBranchRef`.
@@ -197,9 +278,11 @@ Replace each GitTarget's three fields with a `GitBranch` and a reference to it:
 kind: GitBranch
 metadata: {name: platform-main, namespace: platform}
 spec:
-  gitProviderRef: {name: platform}    # a GitProvider in this namespace
+  gitProviderRef: {name: platform}    # namespace: omitted means this one
   branch: main
   # parentBranch: develop             # was GitTarget.spec.parentBranch
+  allowedGitTargets:                  # who may write through it; see the entry on grants
+    - consumerNamespaces: {from: Same}
 ---
 kind: GitTarget
 metadata: {name: apps, namespace: platform}
@@ -218,10 +301,11 @@ kubectl get gittargets -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.
 
 Run it before upgrading the CRDs: the new schema no longer serves the old fields.
 
-**One `GitBranch` holds a repository branch.** It holds it once its `GitProvider`'s credential
-opens a push session on the remote; the oldest such `GitBranch` holds it, keeps it through a later
-credential failure, and every other `GitBranch` for the same repository branch (compared as URLs,
-so an `https://` and an SSH spelling of one repository are one) reports `Stalled=True`
+**One `GitBranch` holds a repository branch.** It holds it once a grant on its `GitProvider` admits
+it and the provider's credential opens a push session on the remote; the oldest such `GitBranch`
+holds it, keeps it through a later credential failure, and every other `GitBranch` for the same
+repository branch (compared as URLs, so an `https://` and an SSH spelling of one repository are one)
+reports `Stalled=True`
 (`BranchConflict`) and writes nothing. Create one `GitBranch` per repository branch, and point every
 `GitTarget` on that branch at it.
 
@@ -234,28 +318,15 @@ arrives. On a host that offers push sessions anonymously it proves only that the
 reachable.
 
 **Sharing a repository branch across namespaces.** A `GitTarget` names a `GitBranch` in another
-namespace with `spec.gitBranchRef.namespace`; that `GitBranch`'s `GitProvider` must admit the
-`GitTarget`'s namespace in `spec.accessFrom`, or the target reports `Validated=False`
-(`NamespaceNotAuthorized`). The tenant namespace holds no copy of the credential:
-
-```yaml
-kind: GitProvider
-metadata: {name: monorepo, namespace: platform}
-spec:
-  accessFrom:
-    names: [team-a, team-b]      # or selector:, matched against Namespace labels
----
-kind: GitTarget
-metadata: {name: apps, namespace: team-a}
-spec:
-  gitBranchRef: {name: monorepo-main, namespace: platform}
-```
+namespace with `spec.gitBranchRef.namespace`; that `GitBranch`'s `spec.allowedGitTargets` must admit
+the `GitTarget`'s namespace, or the target reports `Validated=False` (`NamespaceNotAuthorized`). The
+tenant namespace holds no copy of the credential.
 
 New reasons follow from it. A `GitTarget` whose `GitBranch` does not exist reports
 `Validated=False` (`GitBranchNotFound`); one whose `GitBranch` does not hold its branch, or is not
 `Ready`, reports `GitBranchReady=False` (`GitBranchNotReady`) and waits. That condition replaces
-`GitProviderReady`. `BranchNotAllowed`, `ParentBranchNotFound` and `RecoveringParentBranch` are now
-reported by the `GitBranch`, and `GitTarget`s on it show them in the `GitBranchReady` message.
+`GitProviderReady`. `NamespaceNotAuthorized`, `BranchNotAllowed`, `ParentBranchNotFound` and
+`RecoveringParentBranch` are now reported by the `GitBranch`, and `GitTarget`s on it show them in the `GitBranchReady` message.
 `TargetConflict` now means only overlapping paths on one `GitBranch`. A `WatchRule` or
 `ClusterWatchRule` no longer reads the GitProvider and no longer reports `GitProviderNotFound`; it
 follows its `GitTarget`'s readiness. The chart's quick start renders a `GitBranch`

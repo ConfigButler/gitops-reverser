@@ -8,7 +8,6 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -220,7 +219,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 // admission of the referenced GitTarget: a ClusterWatchRule is cluster-scoped and its gitTargetRef
 // carries a REQUIRED namespace, so it may name a GitTarget in ANY namespace and widen that target's
 // mirror scope cluster-wide. Compiling such a rule without re-applying the target's own provider
-// admission would let it mirror through a credential whose accessFrom never admitted that target.
+// admission would let it mirror through a credential whose grants never admitted that target.
 //
 // It lives in internal/watch rather than here because the startup bootstrap must apply exactly the
 // same refusal BEFORE the first reconcile — otherwise every restart reopens the window it closes.
@@ -235,22 +234,16 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 	target configbutleraiv1alpha3.GitTarget,
 	log logr.Logger,
 ) (bool, ctrl.Result, error) {
+	var selected watch.ClusterResourceSelection
+	if r.WatchManager != nil {
+		selected = r.WatchManager.ClusterResourcesSelectedFor(target)
+	}
 	decision, err := watch.CompileClusterWatchRule(
-		ctx, r.Client, r.RuleStore, *clusterRule, target)
+		ctx, r.Client, r.RuleStore, *clusterRule, target, selected)
 	var selectorErr *watch.ObjectSelectorError
 	if errors.As(err, &selectorErr) {
-		// A refusal of the rule's own resources, not of its GitTarget, so it lands on
-		// ResourcesResolved rather than on the condition refuseClusterWatchRule writes.
-		log.Info("Refusing ClusterWatchRule", "name", clusterRule.Name,
-			"reason", watch.ReasonInvalidObjectSelector, "message", selectorErr.Message)
-		if r.WatchManager != nil {
-			r.WatchManager.TriggerRuleChange(clusterWatchRuleGitTarget(clusterRule))
-		}
-		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse,
-			watch.ReasonInvalidObjectSelector, selectorErr.Message)
-		st.set(ConditionTypeStreamsRunning, metav1.ConditionFalse,
-			watch.ReasonInvalidObjectSelector, "No streams: the ClusterWatchRule was refused")
-		result, stallErr := r.stallRule(ctx, st, watch.ReasonInvalidObjectSelector, selectorErr.Message)
+		result, stallErr := r.refuseRuleResources(ctx, st, clusterRule, watch.ReasonInvalidObjectSelector,
+			selectorErr.Message, log)
 		return true, result, stallErr
 	}
 	if err != nil {
@@ -263,9 +256,32 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 	if decision.Admitted {
 		return false, ctrl.Result{}, nil
 	}
+	if decision.ResourcesRefused {
+		result, stallErr := r.refuseRuleResources(ctx, st, clusterRule, decision.Reason, decision.Message, log)
+		return true, result, stallErr
+	}
 
 	result, refuseErr := r.refuseClusterWatchRule(ctx, st, clusterRule, decision, log)
 	return true, result, refuseErr
+}
+
+// refuseRuleResources is the refusal of the rule's own resources rather than of its GitTarget, so it
+// lands on ResourcesResolved rather than on the condition refuseClusterWatchRule writes. The compiled
+// rule is already out of the store; the replan tears down what it kept alive.
+func (r *ClusterWatchRuleReconciler) refuseRuleResources(
+	ctx context.Context,
+	st *reconcileStatus,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
+	reason, message string,
+	log logr.Logger,
+) (ctrl.Result, error) {
+	log.Info("Refusing ClusterWatchRule", "name", clusterRule.Name, "reason", reason, "message", message)
+	if r.WatchManager != nil {
+		r.WatchManager.TriggerRuleChange(clusterWatchRuleGitTarget(clusterRule))
+	}
+	st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, reason, message)
+	st.set(ConditionTypeStreamsRunning, metav1.ConditionFalse, reason, "No streams: the ClusterWatchRule was refused")
+	return r.stallRule(ctx, st, reason, message)
 }
 
 // refuseClusterWatchRule is the denial half of the ClusterWatchRule gate.
@@ -370,35 +386,9 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
 		// matches what GitProvider and KubeProvider already do.
 		For(&configbutleraiv1alpha3.ClusterWatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		// This rule MIRRORS the GitTarget's readiness into its own GitTargetReady, so the watch has
-		// to see the status-only update that carries a heal — GenerationChangedPredicate would drop
-		// exactly that. gitTargetReadyProjectionChanged fires on a spec change or on a move in the
-		// mirrored verdict, and on nothing else.
-		Watches(
-			&configbutleraiv1alpha3.GitTarget{},
-			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
-			builder.WithPredicates(gitTargetReadyProjectionChanged()),
-		).
-		// React to a KubeProvider's accessFrom changing. Without this, REVOKING a
-		// namespace stops the GitTarget (which does watch KubeProvider) but leaves this rule's
-		// compiled entry resident until the next periodic reconcile, so the admission gate would
-		// converge on a ~10m delay instead of on the event. The GitTarget's own status flip cannot
-		// be relied on to carry it: the edge above re-enqueues only on a move in the MIRRORED
-		// readiness, and a revocation need not move it.
-		Watches(
-			&configbutleraiv1alpha3.KubeProvider{},
-			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToClusterWatchRules),
-			builder.WithPredicates(kubeProviderReadyOrSpecChanged()),
-		).
-		// React to a Namespace's LABELS changing: accessFrom may admit by selector, so a
-		// label change on a GitTarget's namespace grants or revokes every ClusterWatchRule pointing
-		// at a target in it. LabelChangedPredicate ignores unrelated namespace churn.
-		Watches(
-			&corev1.Namespace{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterWatchRules),
-			builder.WithPredicates(predicate.LabelChangedPredicate{}),
-		).
 		Named("clusterwatchrule")
+	b = ruleDependencyWatches(b, r.gitTargetToClusterWatchRules, r.kubeProviderToClusterWatchRules,
+		r.namespaceToClusterWatchRules)
 
 	// React to a stream of this rule's GitTarget reaching or leaving Streaming, for the reason the
 	// WatchRule controller wires the same channel: the data plane is the only thing that knows when
@@ -442,7 +432,7 @@ func (r *ClusterWatchRuleReconciler) kubeProviderToClusterWatchRules(
 }
 
 // namespaceToClusterWatchRules maps a Namespace label change to every ClusterWatchRule whose
-// referenced GitTarget lives in that namespace — the selector half of accessFrom.
+// referenced GitTarget lives in that namespace — what a Selector grant reads.
 func (r *ClusterWatchRuleReconciler) namespaceToClusterWatchRules(
 	ctx context.Context,
 	obj client.Object,

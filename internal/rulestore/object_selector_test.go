@@ -68,7 +68,7 @@ func TestAddOrUpdateClusterWatchRule_CompilesTheCanonicalObjectSelector(t *testi
 			}},
 		},
 	}
-	store.AddOrUpdateClusterWatchRule(rule, "target", "ns", "p", "ns", "path")
+	store.AddOrUpdateClusterWatchRule(rule, []string{"*"}, "target", "ns", "p", "ns", "path")
 
 	rules := store.SnapshotClusterWatchRules()
 	if len(rules) != 1 || len(rules[0].Rules) != 1 {

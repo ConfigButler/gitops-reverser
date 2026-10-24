@@ -7,6 +7,8 @@ spec:
   gitProviderRef:
     name: homelab-repository
   branch: main
+  allowedGitTargets:
+    - consumerNamespaces: {from: Same}
 ---
 # The second target. HelmReleases are a different layer from the sources they pull
 # from, so they get their own folder and their own GitTarget rather than sharing one

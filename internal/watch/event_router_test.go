@@ -586,7 +586,7 @@ func testGitBranchObject() *configv1alpha3.GitBranch {
 	return &configv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Name: gitBranchNameForTest("team-a-provider", "main"), Namespace: "team-a"},
 		Spec: configv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			GitProviderRef: meta.NamespacedObjectReference{Name: "team-a-provider"},
 			Branch:         "main",
 		},
 	}

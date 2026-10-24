@@ -38,9 +38,9 @@ func helmReleaseObj(namespace, name, sourceNamespace string) *unstructured.Unstr
 	}}
 }
 
-// TestFluxConsumers_ListsEveryObjectApplyingTheSource: Kustomizations and HelmReleases, their source
+// TestFluxAppliedBy_ListsEveryObjectApplyingTheSource: Kustomizations and HelmReleases, their source
 // namespace defaulted to their own, and nothing that applies another source.
-func TestFluxConsumers_ListsEveryObjectApplyingTheSource(t *testing.T) {
+func TestFluxAppliedBy_ListsEveryObjectApplyingTheSource(t *testing.T) {
 	client := newSourceClient(
 		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
 		kustomizationObj("apps", "elsewhere", gitRepoSourceRef("platform")),
@@ -51,14 +51,14 @@ func TestFluxConsumers_ListsEveryObjectApplyingTheSource(t *testing.T) {
 		helmReleaseObj("apps", "podinfo", fluxSystemNS),
 		helmReleaseObj(fluxSystemNS, "local", ""),
 	)
-	consumers, err := pinnedFlux(client).Consumers(context.Background(), platformKey)
+	appliedBy, err := pinnedFlux(client).AppliedBy(context.Background(), platformKey)
 	require.NoError(t, err)
 	assert.Equal(t, []fluxmeta.NamespacedObjectKindReference{
 		{Kind: kindHelmRelease, Namespace: "apps", Name: "podinfo"},
 		{Kind: kindHelmRelease, Namespace: fluxSystemNS, Name: "local"},
 		{Kind: kindKustomization, Namespace: "apps", Name: "across"},
 		{Kind: kindKustomization, Namespace: fluxSystemNS, Name: "checkout"},
-	}, consumers)
+	}, appliedBy)
 }
 
 // helmChartObj is a HelmChart built from the GitRepository sourceName in its own namespace.
@@ -117,9 +117,9 @@ func everyVersion(gvr schema.GroupVersionResource, older []string) []schema.Grou
 	return gvrs
 }
 
-// TestFluxConsumers_AHelmReleaseThroughAHelmChart is the fourth review's finding J: a HelmRelease
+// TestFluxAppliedBy_AHelmReleaseThroughAHelmChart is the fourth review's finding J: a HelmRelease
 // whose spec.chartRef names a HelmChart built from the source applies it too.
-func TestFluxConsumers_AHelmReleaseThroughAHelmChart(t *testing.T) {
+func TestFluxAppliedBy_AHelmReleaseThroughAHelmChart(t *testing.T) {
 	client := helmClient(nil,
 		helmChartObj(fluxSystemNS, "podinfo", "platform"),
 		helmChartObj(fluxSystemNS, "elsewhere", "another"),
@@ -129,50 +129,50 @@ func TestFluxConsumers_AHelmReleaseThroughAHelmChart(t *testing.T) {
 		chartRefRelease("apps", "missing-chart", kindHelmChart, "podinfo", ""),
 		chartRefRelease("apps", "oci", "OCIRepository", "podinfo", fluxSystemNS),
 	)
-	consumers, err := pinnedFlux(client).Consumers(context.Background(), platformKey)
+	appliedBy, err := pinnedFlux(client).AppliedBy(context.Background(), platformKey)
 	require.NoError(t, err)
 	assert.Equal(t, []fluxmeta.NamespacedObjectKindReference{
 		{Kind: kindHelmRelease, Namespace: "apps", Name: "podinfo"},
 		{Kind: kindHelmRelease, Namespace: fluxSystemNS, Name: "local"},
-	}, consumers)
+	}, appliedBy)
 }
 
-// TestFluxConsumers_AClusterServingOnlyAnOlderHelmRelease: a Flux that serves HelmReleases only at
+// TestFluxAppliedBy_AClusterServingOnlyAnOlderHelmRelease: a Flux that serves HelmReleases only at
 // v2beta2 has them listed there, not read as having none.
-func TestFluxConsumers_AClusterServingOnlyAnOlderHelmRelease(t *testing.T) {
+func TestFluxAppliedBy_AClusterServingOnlyAnOlderHelmRelease(t *testing.T) {
 	release := helmReleaseObj("apps", "podinfo", fluxSystemNS)
 	release.SetAPIVersion("helm.toolkit.fluxcd.io/v2beta2")
 	client := helmClient([]schema.GroupVersionResource{helmReleaseGVR()}, release)
 
-	consumers, err := pinnedFlux(client).Consumers(context.Background(), platformKey)
+	appliedBy, err := pinnedFlux(client).AppliedBy(context.Background(), platformKey)
 	require.NoError(t, err)
 	assert.Equal(t, []fluxmeta.NamespacedObjectKindReference{
 		{Kind: kindHelmRelease, Namespace: "apps", Name: "podinfo"},
-	}, consumers)
+	}, appliedBy)
 }
 
-// TestFluxConsumers_NoHelmReleaseAPIIsNoneOnlyWithoutAChart: a cluster that serves HelmReleases at
+// TestFluxAppliedBy_NoHelmReleaseAPIIsNoneOnlyWithoutAChart: a cluster that serves HelmReleases at
 // no version has none, unless a HelmChart is built from the source: then a release at some other
-// version may apply it, and the consumers are unknown.
-func TestFluxConsumers_NoHelmReleaseAPIIsNoneOnlyWithoutAChart(t *testing.T) {
+// version may apply it, and the appliedBy are unknown.
+func TestFluxAppliedBy_NoHelmReleaseAPIIsNoneOnlyWithoutAChart(t *testing.T) {
 	unserved := everyVersion(helmReleaseGVR(), olderHelmReleaseVersions())
 	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
 
-	consumers, err := pinnedFlux(helmClient(unserved, ks)).Consumers(context.Background(), platformKey)
+	appliedBy, err := pinnedFlux(helmClient(unserved, ks)).AppliedBy(context.Background(), platformKey)
 	require.NoError(t, err, "no Helm at all: none")
 	assert.Equal(t, []fluxmeta.NamespacedObjectKindReference{
 		{Kind: kindKustomization, Namespace: fluxSystemNS, Name: "checkout"},
-	}, consumers)
+	}, appliedBy)
 
 	_, err = pinnedFlux(helmClient(unserved, ks, helmChartObj(fluxSystemNS, "podinfo", "platform"))).
-		Consumers(context.Background(), platformKey)
+		AppliedBy(context.Background(), platformKey)
 	require.Error(t, err, "a chart is built from the source, by a release that cannot be listed")
 }
 
-// TestFluxProbe_ASharedSourceAppliesOnlyTheConsumerAsked is the third review's third finding: A and
+// TestFluxProbe_ASharedSourceAppliesOnlyTheKustomizationAsked is the third review's third finding: A and
 // B share a GitRepository, and A's request fetched it, which woke B too, outside any window. With
 // both suspended, A's fetch and apply leave B alone: an edit to B's objects keeps its value.
-func TestFluxProbe_ASharedSourceAppliesOnlyTheConsumerAsked(t *testing.T) {
+func TestFluxProbe_ASharedSourceAppliesOnlyTheKustomizationAsked(t *testing.T) {
 	a := fluxsim.OwnSuspend(t, kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")), true,
 		SuspendFieldManager, metav1.ManagedFieldsOperationApply)
 	b := fluxsim.OwnSuspend(t, kustomizationObj(fluxSystemNS, "infra", gitRepoSourceRef("platform")), true,

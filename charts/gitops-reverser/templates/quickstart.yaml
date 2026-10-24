@@ -20,8 +20,11 @@ metadata:
     app.kubernetes.io/component: quickstart
 spec:
   url: {{ .Values.quickstart.gitProvider.url | quote }}
-  allowedBranches:
-    {{- toYaml .Values.quickstart.gitProvider.allowedBranches | nindent 4 }}
+  allowedGitBranches:
+    - consumerNamespaces:
+        from: Same
+      branchPatterns:
+        {{- toYaml .Values.quickstart.gitProvider.branchPatterns | nindent 8 }}
   secretRef:
     name: {{ .Values.quickstart.gitProvider.secretRef.name }}
 ---
@@ -37,6 +40,9 @@ spec:
   gitProviderRef:
     name: {{ .Values.quickstart.gitProvider.name }}
   branch: {{ .Values.quickstart.gitBranch.branch | quote }}
+  allowedGitTargets:
+    - consumerNamespaces:
+        from: Same
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget

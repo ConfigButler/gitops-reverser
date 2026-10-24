@@ -44,10 +44,10 @@ spec:
       openAPIV3Schema:
         description: |-
           KubeProvider is a connection to a Kubernetes cluster and the identity used there. A GitTarget
-          mirrors from it; an applier claim reaches its applier through it. It holds the credential that reaches it (a kubeconfig Secret in its own
-          namespace, or the operator's own identity where the installation allows it), which control-cluster
-          namespaces may use it (its own, and those spec.accessFrom admits), and the audit route its
-          attribution facts are partitioned under.
+          mirrors from it; an applier claim reaches its applier through it. It holds the credential that
+          reaches it (a kubeconfig Secret in its own namespace, or the operator's own identity where the
+          installation allows it), who may use it and for what (spec.allowedGitTargets and
+          spec.allowedApplierClaims), and the audit route its attribution facts are partitioned under.
         properties:
           apiVersion:
             description: |-
@@ -69,93 +69,358 @@ spec:
           spec:
             description: spec defines the desired state of KubeProvider.
             properties:
-              accessFrom:
+              allowedApplierClaims:
                 description: |-
-                  AccessFrom admits other control-cluster namespaces to reference this provider. Its own
-                  namespace is always admitted; omitted, no other namespace is. Its selector matches labels on
-                  Namespaces in the control cluster, never on the source cluster this provider names.
-                properties:
-                  names:
-                    description: |-
-                      Names is an explicit allow-list of namespace names. Entries are namespace names (DNS-1123
-                      labels), never patterns — `*` is rejected. To admit every namespace, declare `selector: {}`.
-                    items:
-                      maxLength: 63
-                      minLength: 1
-                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-                      type: string
-                    type: array
-                    x-kubernetes-list-type: set
-                  selector:
-                    description: |-
-                      Selector is a label selector matched against Namespace labels; a namespace whose labels
-                      match is admitted. ORed with Names.
-                    properties:
-                      matchExpressions:
-                        description: matchExpressions is a list of label selector
-                          requirements. The requirements are ANDed.
-                        items:
+                  AllowedApplierClaims says which applier claims (FluxClaims and ArgoCDClaims) may hold an applier
+                  through this provider, and in which namespaces that applier may live (applierNamespaces).
+                  Admission to mirror does not admit to apply. Nothing is admitted automatically; omitted or
+                  empty, no applier claim holds an applier through it. Grants combine by union.
+                items:
+                  description: |-
+                    KubeProviderApplierClaimGrant admits applier claims in some control-cluster namespaces to hold an
+                    applier through a KubeProvider, and bounds where that applier may live.
+                  properties:
+                    applierNamespaces:
+                      description: |-
+                        ApplierNamespaces are namespaces in this provider's cluster in which an admitted applier claim's
+                        Kustomization or Application may live: exact names, '{consumer.namespace}' for the namespace
+                        named like the applier claim's, or '*' for every namespace.
+
+                        The effective scope is the union of applierNamespaces from all grants admitting the applier
+                        claim, after expanding variables. This is a permission, not a selection: it is checked against
+                        one namespace, that of the applier claim's kustomizationRef or applicationRef. The check runs
+                        when the applier claim reconciles, and again when a grant changes, never at admission. An
+                        applier outside the union is refused, in the applier claim's status
+                        (ApplierNamespaceNotAllowed), and an applier claim holding it hands it back.
+                      items:
+                        description: |-
+                          ScopeNamespace is one namespace in a source or applier scope: a namespace name,
+                          "{consumer.namespace}" for the namespace of the same name as the consumer's, or "*" for every
+                          namespace.
+                        maxLength: 63
+                        type: string
+                        x-kubernetes-validations:
+                        - message: '''{consumer.name}'' is refused in a namespace
+                            scope: the consumer picks its own name, so any namespace
+                            could be reached by naming an object after it; use ''{consumer.namespace}'',
+                            namespace names, or ''*'''
+                          rule: self != '{consumer.name}'
+                        - message: a namespace scope holds a namespace name, '{consumer.namespace}'
+                            alone, or '*' alone
+                          rule: self == '*' || self == '{consumer.namespace}' || self
+                            == '{consumer.name}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    consumerNamespaces:
+                      description: |-
+                        ConsumerNamespaces are the control-cluster namespaces whose applier claims this grant admits.
+                        from: Same is this KubeProvider's namespace.
+                      properties:
+                        from:
                           description: |-
-                            A label selector requirement is a selector that contains values, a key, and an operator that
-                            relates the key and values.
+                            From is where this grant admits from: Same (the namespace of the object holding the grant, not
+                            the consumer's), Names (the namespaces in names), Selector (the namespaces whose labels match
+                            selector) or All (every namespace).
+                          enum:
+                          - Same
+                          - Names
+                          - Selector
+                          - All
+                          type: string
+                        names:
+                          description: 'Names are the control-cluster namespaces admitted
+                            with from: Names, by exact name.'
+                          items:
+                            description: GrantNamespace is one control-cluster namespace
+                              a grant admits by name.
+                            maxLength: 63
+                            type: string
+                            x-kubernetes-validations:
+                            - message: 'names: a variable is refused, because names
+                                are matched against the consumer''s namespace and
+                                ''{consumer.namespace}'' would admit every consumer;
+                                use from: All to admit every namespace, or from: Same
+                                for the namespace of the object holding the grant'
+                              rule: self != '{consumer.namespace}' && self != '{consumer.name}'
+                            - message: 'names: ''*'' is refused; use from: All to
+                                admit every namespace'
+                              rule: self != '*'
+                            - message: names holds namespace names (DNS labels)
+                              rule: self == '{consumer.namespace}' || self == '{consumer.name}'
+                                || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                          maxItems: 64
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        selector:
+                          description: |-
+                            Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
+                            something: to admit every namespace, use from: All.
                           properties:
-                            key:
-                              description: key is the label key that the selector
-                                applies to.
-                              type: string
-                            operator:
-                              description: |-
-                                operator represents a key's relationship to a set of values.
-                                Valid operators are In, NotIn, Exists and DoesNotExist.
-                              type: string
-                            values:
-                              description: |-
-                                values is an array of string values. If the operator is In or NotIn,
-                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                the values array must be empty. This array is replaced during a strategic
-                                merge patch.
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
                               items:
-                                type: string
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
                               type: array
                               x-kubernetes-list-type: atomic
-                          required:
-                          - key
-                          - operator
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
                           type: object
-                        type: array
-                        x-kubernetes-list-type: atomic
-                      matchLabels:
-                        additionalProperties:
-                          type: string
-                        description: |-
-                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                          map is equivalent to an element of matchExpressions, whose key field is "key", the
-                          operator is "In", and the values array contains only "value". The requirements are ANDed.
-                        type: object
-                    type: object
-                    x-kubernetes-map-type: atomic
-                type: object
-              allowCrossNamespace:
+                          x-kubernetes-map-type: atomic
+                      required:
+                      - from
+                      type: object
+                      x-kubernetes-validations:
+                      - message: 'from: Names needs names'
+                        rule: self.from != 'Names' || has(self.names)
+                      - message: 'names goes only with from: Names'
+                        rule: '!has(self.names) || self.from == ''Names'''
+                      - message: 'from: Selector needs a selector; to admit every
+                          namespace, use from: All'
+                        rule: self.from != 'Selector' || has(self.selector)
+                      - message: 'selector goes only with from: Selector'
+                        rule: '!has(self.selector) || self.from == ''Selector'''
+                      - message: 'selector: {} is refused; to admit every namespace,
+                          use from: All'
+                        rule: '!has(self.selector) || (has(self.selector.matchLabels)
+                          && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
+                          && size(self.selector.matchExpressions) > 0)'
+                  required:
+                  - applierNamespaces
+                  - consumerNamespaces
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
+              allowedGitTargets:
                 description: |-
-                  AllowCrossNamespace grants what a namespace this provider admits may reach outside itself,
-                  through this provider's credential. Omitted, it may reach nothing outside itself.
-                properties:
-                  appliers:
-                    description: |-
-                      Appliers lets a FluxClaim or ArgoCDClaim reaching its applier through this provider name a
-                      Kustomization or Application in another namespace than its own. False (the default): only
-                      the applier claim's own namespace, which in a remote cluster is the namespace of the same name; an
-                      applier claim naming another is Configured=False (ApplierNamespaceNotAllowed).
-                    type: boolean
-                  sources:
-                    description: |-
-                      Sources lets a WatchRule mirroring through this provider watch namespaces other than its own,
-                      including a rules[].sourceNamespace of "*", which reaches every namespace the credential can
-                      read. False (the default): a WatchRule watches only its own namespace. It grants no access by
-                      itself: the source credential's RBAC remains the hard maximum. It does not apply to
-                      ClusterWatchRule, which selects no namespaces at all.
-                    type: boolean
-                type: object
+                  AllowedGitTargets says which GitTargets may mirror through this provider, and what: each grant
+                  admits some control-cluster namespaces and bounds what the WatchRules feeding a GitTarget there
+                  may watch (sourceNamespaces), and what a ClusterWatchRule may mirror through it
+                  (clusterResources). Nothing is admitted automatically, this KubeProvider's own namespace
+                  included; omitted or empty, no GitTarget mirrors through it. Grants combine by union.
+                items:
+                  description: |-
+                    KubeProviderGitTargetGrant admits GitTargets in some control-cluster namespaces to mirror through a
+                    KubeProvider, and bounds what they may mirror.
+                  properties:
+                    clusterResources:
+                      description: |-
+                        ClusterResources are the cluster-scoped resource types a ClusterWatchRule may mirror through an
+                        admitted GitTarget: resource.group (clusterroles.rbac.authorization.k8s.io), a bare resource for
+                        the core group only (nodes), or '*' for every one, including CRDs installed later. An identity
+                        covers every served version. Omitted, this grant gives none.
+
+                        The effective scope is the union of clusterResources from all grants admitting the GitTarget.
+                        This is a permission, not a selection: listing a type mirrors nothing until a ClusterWatchRule
+                        asks for it. A ClusterWatchRule item with '*' in apiGroups or resources needs '*' in at least
+                        one admitting grant; otherwise it is refused, never narrowed to the types listed. The check runs
+                        when the ClusterWatchRule reconciles, never at admission, and a rule asking for any type outside
+                        the union is refused as a whole, in its status (ClusterResourceNotAllowed).
+                      items:
+                        description: |-
+                          ClusterResourceIdentity names a cluster-scoped resource type: resource.group, a bare resource for
+                          the core group, or "*" for every one.
+                        maxLength: 317
+                        pattern: ^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$
+                        type: string
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    consumerNamespaces:
+                      description: |-
+                        ConsumerNamespaces are the control-cluster namespaces whose GitTargets this grant admits.
+                        from: Same is this KubeProvider's namespace.
+                      properties:
+                        from:
+                          description: |-
+                            From is where this grant admits from: Same (the namespace of the object holding the grant, not
+                            the consumer's), Names (the namespaces in names), Selector (the namespaces whose labels match
+                            selector) or All (every namespace).
+                          enum:
+                          - Same
+                          - Names
+                          - Selector
+                          - All
+                          type: string
+                        names:
+                          description: 'Names are the control-cluster namespaces admitted
+                            with from: Names, by exact name.'
+                          items:
+                            description: GrantNamespace is one control-cluster namespace
+                              a grant admits by name.
+                            maxLength: 63
+                            type: string
+                            x-kubernetes-validations:
+                            - message: 'names: a variable is refused, because names
+                                are matched against the consumer''s namespace and
+                                ''{consumer.namespace}'' would admit every consumer;
+                                use from: All to admit every namespace, or from: Same
+                                for the namespace of the object holding the grant'
+                              rule: self != '{consumer.namespace}' && self != '{consumer.name}'
+                            - message: 'names: ''*'' is refused; use from: All to
+                                admit every namespace'
+                              rule: self != '*'
+                            - message: names holds namespace names (DNS labels)
+                              rule: self == '{consumer.namespace}' || self == '{consumer.name}'
+                                || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                          maxItems: 64
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        selector:
+                          description: |-
+                            Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
+                            something: to admit every namespace, use from: All.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                      required:
+                      - from
+                      type: object
+                      x-kubernetes-validations:
+                      - message: 'from: Names needs names'
+                        rule: self.from != 'Names' || has(self.names)
+                      - message: 'names goes only with from: Names'
+                        rule: '!has(self.names) || self.from == ''Names'''
+                      - message: 'from: Selector needs a selector; to admit every
+                          namespace, use from: All'
+                        rule: self.from != 'Selector' || has(self.selector)
+                      - message: 'selector goes only with from: Selector'
+                        rule: '!has(self.selector) || self.from == ''Selector'''
+                      - message: 'selector: {} is refused; to admit every namespace,
+                          use from: All'
+                        rule: '!has(self.selector) || (has(self.selector.matchLabels)
+                          && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
+                          && size(self.selector.matchExpressions) > 0)'
+                    sourceNamespaces:
+                      description: |-
+                        SourceNamespaces are source-cluster namespaces that a WatchRule feeding an admitted GitTarget may
+                        name in rules[].sourceNamespace. Entries are exact names, '{consumer.namespace}' for the
+                        namespace named like the GitTarget's, or '*'. Omitted, this grant gives no namespace.
+
+                        The effective scope is the union of sourceNamespaces from all grants admitting the GitTarget,
+                        after expanding variables. Every WatchRule item must be allowed by that union, an omitted
+                        sourceNamespace included (it names the WatchRule's own namespace). This is a permission, not a
+                        selection: listing a namespace watches nothing until a WatchRule names it.
+
+                        It is not a filter on "*". A rule item with sourceNamespace "*" needs '*' in at least one
+                        admitting grant; otherwise it is refused, never narrowed to the namespaces listed. With '*'
+                        granted, such an item is one cluster-wide watch, bounded only by this KubeProvider credential's
+                        RBAC.
+
+                        The check runs when the WatchRule reconciles, and again when a grant changes, never at
+                        admission. A WatchRule with any item outside the union is refused as a whole, in its status
+                        (SourceNamespaceNotAllowed), and watches nothing. The scope bounds what is read, never where
+                        objects are written in Git, and the credential's RBAC still applies inside it.
+                      items:
+                        description: |-
+                          ScopeNamespace is one namespace in a source or applier scope: a namespace name,
+                          "{consumer.namespace}" for the namespace of the same name as the consumer's, or "*" for every
+                          namespace.
+                        maxLength: 63
+                        type: string
+                        x-kubernetes-validations:
+                        - message: '''{consumer.name}'' is refused in a namespace
+                            scope: the consumer picks its own name, so any namespace
+                            could be reached by naming an object after it; use ''{consumer.namespace}'',
+                            namespace names, or ''*'''
+                          rule: self != '{consumer.name}'
+                        - message: a namespace scope holds a namespace name, '{consumer.namespace}'
+                            alone, or '*' alone
+                          rule: self == '*' || self == '{consumer.namespace}' || self
+                            == '{consumer.name}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                  required:
+                  - consumerNamespaces
+                  type: object
+                  x-kubernetes-validations:
+                  - message: a grant in allowedGitTargets sets sourceNamespaces, clusterResources,
+                      or both; one that grants neither grants nothing
+                    rule: has(self.sourceNamespaces) || has(self.clusterResources)
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
               attribution:
                 description: |-
                   Attribution groups this cluster's author-attribution settings. The block is spelled

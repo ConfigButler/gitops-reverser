@@ -29,9 +29,11 @@ and watches cold-replay. For a disposable single-pod setup, `attribution.transpo
 no Redis but loses facts whenever the reverser restarts. It also leaves Redis-backed features such
 as `CommitRequest` author capture inactive unless you configure Redis separately.
 
-The chart's `KubeProvider`, `local` in the release namespace, admits targets from every namespace.
-To restrict it, set `kubeProvider.accessFrom.names` and `selector: null`; Helm otherwise retains the
-permissive `selector: {}`. Its own namespace is always admitted. See [RBAC](rbac.md) for the controller's read permissions.
+The chart's `KubeProvider`, `local` in the release namespace, admits no namespace by default, its
+own included. Grant the namespaces whose `GitTarget`s may mirror through it in
+`kubeProvider.allowedGitTargets` (see [the grants](configuration.md#the-grants)), or install with
+the chart's `values-playground.yaml` to let every namespace mirror its own. See [RBAC](rbac.md) for
+the controller's read permissions.
 
 The chart creates the audit Service and cert-manager certificates. Wait for the release to be
 ready, then read its Secret names and kubeconfig generator:

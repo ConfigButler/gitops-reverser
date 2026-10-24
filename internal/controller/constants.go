@@ -43,6 +43,10 @@ type WatchManagerInterface interface {
 	StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) watch.StreamSummary
 	StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) watch.StreamSummary
 
+	// ClusterResourcesSelectedFor is what the watch planner selects for a ClusterWatchRule item in
+	// the cluster a GitTarget mirrors from, so the compile checks those types against the grant.
+	ClusterResourcesSelectedFor(target configv1alpha3.GitTarget) watch.ClusterResourceSelection
+
 	// StreamStateEvents is the channel a rule controller wires via source.Channel so a stream
 	// reaching (or leaving) Streaming re-reconciles the rules that project it, instead of leaving
 	// them to discover it on RequeueStreamSettleInterval. A stream coming up is the last thing
@@ -72,9 +76,9 @@ const (
 	// ConditionTypeGitTargetReady indicates whether the referenced GitTarget is ready for writes.
 	ConditionTypeGitTargetReady = "GitTargetReady"
 	// ConditionTypeSourceNamespaceAuthorized reports whether a rule's EFFECTIVE source namespace
-	// is authorized for the observed generation. It is positive and state-style, and it is set
-	// even for legacy own-namespace rules (reason LegacySourceNamespace) so the effective
-	// authorization is always visible and automation has ONE condition to inspect.
+	// is authorized for the observed generation. It is positive and state-style, and it is set for
+	// every rule, its own namespace included, so the effective authorization is always visible and
+	// automation has ONE condition to inspect.
 	//
 	// It is deliberately distinct from GitTargetReady, which stays the health of the referenced
 	// GitTarget and must never be reused for source authorization. Its three values are not

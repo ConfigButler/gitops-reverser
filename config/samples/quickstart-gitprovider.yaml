@@ -6,7 +6,12 @@ metadata:
 spec:
   # Replace with your own repository URL
   url: "git@github.com:YOUR_USERNAME/my-k8s-audit.git"
-  allowedBranches: ["*"]
+  # Which GitBranches may claim which branches through this provider. Nothing is automatic, this
+  # namespace included. '*' matches any branch; "teams/{consumer.namespace}/*" would give each
+  # namespace its own prefix.
+  allowedGitBranches:
+    - consumerNamespaces: {from: Same}
+      branchPatterns: ["*"]
   secretRef:
     name: git-creds
 

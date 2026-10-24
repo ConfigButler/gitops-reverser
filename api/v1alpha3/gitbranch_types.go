@@ -10,27 +10,28 @@ import (
 
 // GitBranchSpec defines the desired state of GitBranch.
 //
-// Every field is immutable: together they are the repository branch this object claims, and a
-// claim that could be repointed would move a branch worker's checkout, credential and pending
-// writes to another branch under the GitTargets that reference it. Delete and recreate instead.
+// gitProviderRef, branch and parentBranch are immutable: together they are the repository branch
+// this object claims, and a claim that could be repointed would move a branch worker's checkout,
+// credential and pending writes to another branch under the GitTargets that reference it. Delete
+// and recreate instead. allowedGitTargets is the branch owner's policy and stays mutable.
+//
+// CEL cannot read metadata.namespace, so the reference is compared as written: spelling out the
+// GitBranch's own namespace where it was omitted is refused too.
 // +kubebuilder:validation:XValidation:rule="self.gitProviderRef == oldSelf.gitProviderRef",message="spec.gitProviderRef is immutable; delete and recreate the GitBranch to change it"
 // +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitBranch to change it"
 // +kubebuilder:validation:XValidation:rule="has(self.parentBranch) == has(oldSelf.parentBranch) && (!has(self.parentBranch) || self.parentBranch == oldSelf.parentBranch)",message="spec.parentBranch is immutable; delete and recreate the GitBranch to change it"
 type GitBranchSpec struct {
-	// A LocalObjectReference on purpose: creating a GitBranch then needs the right to create objects
-	// in the namespace that holds the credential, which is what makes a branch claim an act of the
-	// credential's owner. Other namespaces reach the branch through the GitProvider's accessFrom.
-
-	// GitProviderRef names the GitProvider, in this GitBranch's namespace, whose repository and
-	// credential this branch is written with. GitTargets in other namespaces may reference this
-	// GitBranch while that GitProvider's spec.accessFrom admits their namespace.
+	// GitProviderRef names the GitProvider whose repository and credential this branch is written
+	// with. Namespace omitted means this GitBranch's own namespace. The GitBranch claims its branch
+	// only while that GitProvider's spec.allowedGitBranches admits this namespace and the branch.
 	// Immutable: delete and recreate the GitBranch to change it.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitProviderRef.name must not be empty"
-	GitProviderRef meta.LocalObjectReference `json:"gitProviderRef"`
+	GitProviderRef meta.NamespacedObjectReference `json:"gitProviderRef"`
 
 	// Branch is the branch on the remote that this GitBranch writes. It must match one of the
-	// GitProvider's allowedBranches. Only one GitBranch writes a repository branch: the oldest one
+	// patterns the GitProvider's spec.allowedGitBranches give this GitBranch's namespace. Only one
+	// GitBranch writes a repository branch: the oldest admitted one
 	// whose credential proves it can open a push session holds it, and any other GitBranch for the
 	// same repository and branch reports Stalled with reason BranchConflict.
 	// Immutable: delete and recreate the GitBranch to change it.
@@ -48,12 +49,21 @@ type GitBranchSpec struct {
 	// default branch), or a branch with no history when the repository is empty. When set, it must
 	// exist on the remote for spec.branch to be created; otherwise this GitBranch reports
 	// ParentBranchNotFound and nothing is written. Once spec.branch exists, it is used as it is and
-	// the parent is not followed. It is only read, so it does not need to be in the GitProvider's
-	// allowedBranches.
+	// the parent is not followed. It is only read, so the GitProvider's spec.allowedGitBranches need
+	// not allow it.
 	// Immutable, including adding or removing it: delete and recreate the GitBranch to change it.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	ParentBranch string `json:"parentBranch,omitempty"`
+
+	// AllowedGitTargets says which GitTargets may write through this GitBranch. Nothing is admitted
+	// automatically, this GitBranch's own namespace included: a GitTarget there needs a grant too,
+	// such as consumerNamespaces: {from: Same}. Omitted or empty, no GitTarget writes through it.
+	// Grants combine by union. Mutable: claiming a branch includes the right to share it.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	AllowedGitTargets []GitBranchGitTargetGrant `json:"allowedGitTargets,omitempty"`
 }
 
 // GitBranchStatus defines the observed state of GitBranch.
@@ -171,6 +181,7 @@ type GitBranchParentStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.gitProviderRef.name`
+// +kubebuilder:printcolumn:name="ProviderNamespace",type=string,JSONPath=`.spec.gitProviderRef.namespace`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.remote.commit`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
@@ -201,9 +212,13 @@ type GitBranch struct {
 }
 
 // GitProviderKey is the GitProvider this GitBranch writes through: spec.gitProviderRef, in this
-// GitBranch's own namespace.
+// GitBranch's own namespace unless the reference names another one.
 func (b *GitBranch) GitProviderKey() types.NamespacedName {
-	return types.NamespacedName{Namespace: b.Namespace, Name: b.Spec.GitProviderRef.Name}
+	namespace := b.Spec.GitProviderRef.Namespace
+	if namespace == "" {
+		namespace = b.Namespace
+	}
+	return types.NamespacedName{Namespace: namespace, Name: b.Spec.GitProviderRef.Name}
 }
 
 // +kubebuilder:object:root=true

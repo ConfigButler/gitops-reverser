@@ -247,15 +247,22 @@ func sameClusterKubeConfig() string {
 }
 
 // applyKubeProviderWithAuditRoute applies a KubeProvider in namespace reaching its cluster through
-// the kubeconfig Secret secretName in that namespace, admitting the namespaces listed, and declaring
-// auditRoute when it is not empty. The route is what lets several providers on one cluster share
-// the single stream that cluster's apiserver posts.
+// the kubeconfig Secret secretName in that namespace, letting its own namespace and the namespaces
+// listed mirror their own namespace (every namespace when wide), and declaring auditRoute when it is
+// not empty. The route is what lets several providers on one cluster share the single stream that
+// cluster's apiserver posts.
 func applyKubeProviderWithAuditRoute(
-	namespace, name, secretName string, admits []string, delegate bool, auditRoute string,
+	namespace, name, secretName string, admits []string, wide bool, auditRoute string,
 ) (string, error) {
-	extra := ""
+	scope := `["{consumer.namespace}"]`
+	if wide {
+		scope = `["{consumer.namespace}", "*"]`
+	}
+	extra := fmt.Sprintf(
+		"\n  allowedGitTargets:\n    - consumerNamespaces: {from: Same}\n      sourceNamespaces: %s", scope)
 	if len(admits) > 0 {
-		extra += fmt.Sprintf("\n  accessFrom:\n    names: [%s]", strings.Join(admits, ", "))
+		extra += fmt.Sprintf("\n    - consumerNamespaces: {from: Names, names: [%s]}\n      sourceNamespaces: %s",
+			strings.Join(admits, ", "), scope)
 	}
 	if auditRoute != "" {
 		extra += fmt.Sprintf("\n  attribution:\n    auditRoute: %s", auditRoute)
@@ -267,16 +274,14 @@ metadata:
   namespace: %s
 spec:
   secretRef:
-    name: %s
-  allowCrossNamespace:
-    sources: %t%s
-`, name, namespace, secretName, delegate, extra)
+    name: %s%s
+`, name, namespace, secretName, extra)
 	return kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 }
 
 // applyGitTargetForKubeProvider applies a GitTarget that mirrors through the KubeProvider
 // providerNS/provider. Which SOURCE namespaces may reach it is bounded by that provider's
-// spec.allowCrossNamespace.sources plus the source credential's own RBAC, not by any field here.
+// allowedGitTargets[].sourceNamespaces plus the source credential's own RBAC, not by any field here.
 func applyGitTargetForKubeProvider(
 	ns, name, gitProvider, targetPath, providerNS, provider string,
 ) (string, error) {

@@ -148,8 +148,9 @@ kubectl describe gitprovider,gittarget,watchrule -n gitops-reverser-quickstart-d
 ```
 
 Two `GitTarget` conditions stop the data plane and are worth recognizing: `KubeProviderNotFound`
-(the `local` `KubeProvider` in `gitops-reverser` is missing) and `NamespaceNotAuthorized` (its
-`accessFrom` selector does not cover the demo namespace).
+(the `local` `KubeProvider` in `gitops-reverser` is missing) and `NamespaceNotAuthorized` (no grant
+in its `spec.allowedGitTargets` admits the demo namespace). `quickstart.enabled=true` adds the grant
+for `quickstart.namespace`; the chart grants nothing else by default.
 
 ## Clean up
 

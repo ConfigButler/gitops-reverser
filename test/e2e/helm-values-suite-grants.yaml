@@ -1,0 +1,13 @@
+# The grants the e2e suite needs on the chart's `local` KubeProvider, which grants nothing by default:
+# every namespace mirrors its own namespace and any cluster-scoped resource, and holds an applier in
+# its own namespace. The Helm install passes them as values, so Helm owns the fields and a later
+# upgrade (the quickstart spec, the image-refresh spec) keeps them. The other install modes patch the
+# same grants in the suite's setup (grantSuiteAccess); config/kubeprovider-local.yaml carries them.
+kubeProvider:
+  allowedGitTargets:
+    - consumerNamespaces: {from: All}
+      sourceNamespaces: ["{consumer.namespace}"]
+      clusterResources: ["*"]
+  allowedApplierClaims:
+    - consumerNamespaces: {from: All}
+      applierNamespaces: ["{consumer.namespace}"]

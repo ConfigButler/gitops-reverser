@@ -177,7 +177,7 @@ flowchart LR
   in flight). A recorded attempt that then asks for nothing withdraws its record, which puts back
   what the status held: the trigger never shows an operation nothing could have applied. The
   writer matches operations by their token, never by time. A `FluxTrigger` that is not
-  `Held=True` (still adopting, releasing, or being deleted) is not resumed (`RequestFailed`). A source
+  `InControl=True` (still adopting, releasing, or being deleted) is not resumed (`RequestFailed`). A source
   on another repository or branch, a `Kustomization` whose `spec.suspend` another manager applies,
   or an `Application` with automated sync on whose switch an `ApplicationSet` or another manager
   owns, is `Rejected`; one whose switch the trigger holds was switched on by somebody, and fails
@@ -398,8 +398,8 @@ would not be pruned when Git later deletes it.
   started is never replaced.
 - **Adoption.** A `Configured` `FluxTrigger`, so one an eligible `GitTarget` references, puts its
   finalizer in place and then suspends its `Kustomization` with a server-side apply under
-  `gitops-reverser`, and a token. A `Normal` `Adopted` Event records it. It is `Held=True`
-  (`Suspended`), and `Ready`, once that token is handled, and `Held=True` (`Applying`) while an
+  `gitops-reverser`, and a token. A `Normal` `Adopted` Event records it. It is `InControl=True`
+  (`Suspended`), and `Ready`, once that token is handled, and `InControl=True` (`Applying`) while an
   operation of a branch worker is in flight and followed. A trigger that never adopted has no
   finalizer, and deletes at once.
 - **The manifest omits `suspend`.** Whatever applies the `Kustomization` object (a parent
@@ -425,11 +425,11 @@ would not be pruned when Git later deletes it.
   nothing watching it.
 - **Hand-back.** The trigger carries the finalizer `configbutler.ai/flux-trigger` from before its
   first adoption write until it has handed the `Kustomization` back or over, also while its
-  configuration is invalid (then `Held=Unknown`, `NotConfigured`, and the message says the
+  configuration is invalid (then `InControl=Unknown`, `NotConfigured`, and the message says the
   `Kustomization` is left suspended under `gitops-reverser`). It hands it back when it is deleted,
   and when no eligible `GitTarget` references it anymore, conclusively: a reference that cannot be
   judged yet keeps the hold, since a release is not undone. Until the hand-back is done the trigger
-  is `Held=False`, `Releasing`, and stays the holder in line. It suspends the `Kustomization` with a
+  is `InControl=False`, `Releasing`, and stays the holder in line. It suspends the `Kustomization` with a
   token if an apply has it resumed, waits until that is handled, then releases `spec.suspend` with
   an empty apply, so Flux owns it again (`Released`). A `Kustomization` that was suspended when the
   trigger first held it (`status.previousSuspendState: Suspended`) stays suspended instead ([decisions of
@@ -449,7 +449,7 @@ would not be pruned when Git later deletes it.
   `Kustomization` that is gone lets the trigger go. A `ClusterProvider` that is gone does not end the
   hand-back: it goes on through whatever client still reaches the cluster, which for a provider
   without `kubeConfig` is the operator's own. A cluster no client reaches anymore, a suspend or
-  release the identity may not make, or a hand-back still unfinished 10 minutes after `Held` turned
+  release the identity may not make, or a hand-back still unfinished 10 minutes after `InControl` turned
   `Releasing` (each a `Warning` `ReleaseFailed` Event, which says where the `Kustomization` was left)
   lets the trigger go.
 
@@ -482,7 +482,7 @@ trigger's `status.operation`, so that converge asks nothing of an applier alread
   `Kustomization`s with that `sourceRef`, and `HelmRelease`s whose chart comes from it, directly or
   through a `HelmChart` their `chartRef` names (at whichever `HelmRelease` version the cluster
   serves; a listing that fails is logged and publishes nothing). Those no `FluxTrigger` on the same
-  `ClusterProvider` holds, that is reports `Held=True`, are `status.source.otherConsumers`,
+  `ClusterProvider` is in control of, that is reports `InControl=True`, are `status.source.otherConsumers`,
   information only: it never affects `Ready`, and no `Warning` is sent, because one `GitRepository`
   for `apps` and `infra` is a normal setup. Each of them applies a new artifact the moment it
   arrives.
@@ -548,7 +548,7 @@ Taken 2026-10-19, after the seventh review:
    applier itself (`ReferenceGrant` style) stays a possible follow-up.
 3. **`allowAnySourceNamespace` is removed, not migrated.** It is never read, and kept in the schema
    only so a rule on `spec` refuses `true` on any spec change.
-4. **The trigger's status speaks from its own side:** `Held` with `Suspended`, `Applying`,
+4. **The trigger's status speaks from its own side:** `InControl` with `Suspended`, `Applying`,
    `Suspending`, `Releasing`, `NotReferenced`, `NotConfigured`; "fence" is retired for "suspend".
    The operation phases keep `Running` and `Settling`.
 5. **A holder keeps its `Kustomization` until it lets go:** a trigger that carries its finalizer
@@ -865,12 +865,12 @@ adopted by one apply.
 | Retries are decided by the worker; recovered refusals, withdrawn consent and recreated targets are not retried; each applier keeps its own clock; one attempt for a shared applier; a stale attempt is decided again without backoff | [`apply_attempt_test.go`](../../internal/git/apply_attempt_test.go) |
 | The operation is recorded before the write that starts it, moves through its phases on the trigger's status, an attempt that asked nothing restores the record before it, and a withheld rollback makes a `Repair` due | [`apply_operation_test.go`](../../internal/git/apply_operation_test.go), [`status_writer_test.go`](../../internal/applier/status_writer_test.go) |
 | Every attempt rechecks targets, asks for nothing weaker than it was told, and resumes no `Kustomization` on another branch; a stop mid-apply suspends the `Kustomization` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`flux_test.go`](../../internal/applier/flux_test.go) |
-| The suspended lifecycle against the source facts: an apply is not finished when attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../../internal/applier/flux_lifecycle_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go), [`fluxsim`](../../internal/applier/fluxsim/fluxsim_test.go) |
+| The suspended lifecycle against the source facts: an apply is not finished when attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../../internal/applier/flux_lifecycle_test.go), [`flux_applied_by_test.go`](../../internal/applier/flux_applied_by_test.go), [`fluxsim`](../../internal/applier/fluxsim/fluxsim_test.go) |
 | Adoption, `SuspendOwnedElsewhere`, an external resume suspended again with an Event every time, the hand-back on deletion (a `ClusterProvider` gone included), and the source's other consumers | [`fluxtrigger_hold_test.go`](../../internal/controller/fluxclaim_hold_test.go) |
 | The rule: a trigger nothing names reads nothing and is `Ready`; the first eligible reference adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; a re-created `GitTarget` releases and re-adopts; the binding over several `GitTarget`s; an older trigger not in line keeps none out, and a retiring holder stays first until its release is done; a holder left unconfigured says the `Kustomization` is suspended; `ApplierNamespaceNotAllowed` for both kinds | [`applytrigger_rule_test.go`](../../internal/controller/applierclaim_rule_test.go) |
 | `allowAnySourceNamespace: true` is refused on create and on any spec change, a stored one included; `false` and its removal are accepted; a `WatchRule` that relied on it is refused naming the new field | `removed_allow_any_source_namespace_test.go` (removed with `ClusterProvider`), [`watchrule_source_namespace_test.go`](../../internal/controller/watchrule_source_namespace_test.go) |
 | A restarted worker follows an operation left in flight with its window open, restores `repairPending`, and follows an apply started elsewhere; one recorded but never resumed ends `Failed` | [`apply_recovery_test.go`](../../internal/git/apply_recovery_test.go), [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go) |
-| Appliers sharing a source have one operation at a time and take turns, across workers too; a shared source applies only the consumer asked | [`apply_groups_test.go`](../../internal/git/apply_groups_test.go), [`flux_consumers_test.go`](../../internal/applier/flux_consumers_test.go) |
+| Appliers sharing a source have one operation at a time and take turns, across workers too; a shared source applies only the consumer asked | [`apply_groups_test.go`](../../internal/git/apply_groups_test.go), [`flux_applied_by_test.go`](../../internal/applier/flux_applied_by_test.go) |
 | An applier in another cluster is reached through its own `ClusterProvider`, behind that provider's `accessFrom` | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`kubeprovider_admission_test.go`](../../internal/authz/kubeprovider_admission_test.go), [`applytrigger_controller_test.go`](../../internal/controller/applierclaim_controller_test.go) |
 | The applier's late write over a newer edit is withheld, and nothing that could be the edit is: a tie, and an undo that leaves an older applier entry, are mirrored; the apply itself is not mirrored, a delayed echo of the attempt before included; an applier entry older than the send is an edit; an applier write with no window open is late | [`apply_window_test.go`](../../internal/git/apply_window_test.go), [`last_field_managers_test.go`](../../internal/watch/last_field_managers_test.go) |
 | A newly named applier is caught up | [`apply_trigger_test.go`](../../internal/git/applier_claim_test.go) |

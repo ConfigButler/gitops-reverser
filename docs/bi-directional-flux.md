@@ -71,10 +71,12 @@ spec:
 The GitOps Reverser side. The `GitProvider` points at the same repository (any URL form of it),
 which is how the `GitReceiver` the Git host's push webhook calls finds it; a `FluxClaim` holds the
 `Kustomization`, in the cluster the chart's `local` `KubeProvider` names (the operator's own,
-through `spec.inCluster`), and the `GitTarget` names the applier claim. The `Kustomization` is in
-`flux-system` and the applier claim in `team-a`, so the provider lets `team-a`'s applier claims reach another
-namespace (`allowCrossNamespace.appliers`); with the Helm chart, set
-`kubeProvider.allowCrossNamespace.appliers: true` instead of declaring it. A `KubeProvider` with
+through `spec.inCluster`), and the `GitTarget` names the applier claim. Nothing may use a provider
+without a grant: the `KubeProvider` lets `team-a`'s `GitTarget`s mirror `team-a`
+(`allowedGitTargets`), and its applier claims hold a `Kustomization` in `flux-system`
+(`allowedApplierClaims`); with the Helm chart, set `kubeProvider.allowedGitTargets` and
+`kubeProvider.allowedApplierClaims` instead of declaring it. The `GitProvider` lets `team-a` claim
+`main`, and the `GitBranch` lets `team-a`'s `GitTarget`s write it. A `KubeProvider` with
 `inCluster` that you declare yourself is honored only once it is listed in
 `--in-cluster-kube-providers`, which the chart does for its own:
 
@@ -86,10 +88,16 @@ metadata:
   namespace: gitops-reverser
 spec:
   inCluster: {}
-  accessFrom:
-    names: [team-a]
-  allowCrossNamespace:
-    appliers: true
+  allowedGitTargets:
+    - consumerNamespaces:
+        from: Names
+        names: [team-a]
+      sourceNamespaces: ["{consumer.namespace}"]
+  allowedApplierClaims:
+    - consumerNamespaces:
+        from: Names
+        names: [team-a]
+      applierNamespaces: [flux-system]
 ---
 apiVersion: v1
 kind: Secret
@@ -116,7 +124,9 @@ metadata:
   namespace: team-a
 spec:
   url: git@github.com:acme/platform.git
-  allowedBranches: ["main"]
+  allowedGitBranches:
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [main]
   secretRef:
     name: platform-git
 ---
@@ -129,6 +139,8 @@ spec:
   gitProviderRef:
     name: platform
   branch: main
+  allowedGitTargets:
+    - consumerNamespaces: {from: Same}
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
@@ -189,7 +201,7 @@ covered by the apply window, but it is avoidable. An apply of an *older* revisio
 checked counts as failed, and GitOps Reverser asks again.
 
 **Shared sources.** Several `Kustomization`s may read one `GitRepository`. The applier claim lists its
-source's other consumers in `status.source.otherConsumers`: the `Kustomization`s no `FluxClaim`
+source's other users in `status.source.alsoAppliedBy`: the `Kustomization`s no `FluxClaim`
 holds and the `HelmRelease`s whose chart comes from it, directly or through a `HelmChart` their
 `chartRef` names. Each of them applies a new artifact the moment it arrives. The list is
 information only and never affects `Ready`: one source for `apps` and `infra` is a normal setup.
@@ -209,14 +221,14 @@ Appliers on one branch that share a source apply one at a time.
   with its apply window open, for as long as it runs.
 - `spec.dependsOn`: a dependency whose apply failed is suspended with its generation unapplied, so
   its dependents wait until GitOps Reverser's retry of it succeeds.
-- It lives in the applier claim's namespace unless the applier claim's `KubeProvider` sets
-  `allowCrossNamespace.appliers: true`; an applier claim naming one elsewhere without it reports
-  `ApplierNamespaceNotAllowed`. A `Kustomization` in `flux-system` therefore needs the grant. It is
-  a delegation, not owner consent: every namespace the provider admits may then
-  suspend and apply any `Kustomization` in reach of the provider's identity whose source fetches the
+- It lives in a namespace the applier claim's `KubeProvider` grants it in `allowedApplierClaims`
+  (`applierNamespaces`); an applier claim naming one elsewhere reports
+  `ApplierNamespaceNotAllowed`. A `Kustomization` in `flux-system` therefore needs
+  `applierNamespaces: [flux-system]`. It is a delegation, not owner consent: every namespace the grant
+  admits may then suspend and apply any `Kustomization` in its scope whose source fetches the
   repository its `GitProvider` names. Nothing proves that the namespace owns the `Kustomization`, or
   may write to that repository: the binding compares URLs. See
-  [what a namespace may reach outside itself](configuration.md#what-a-namespace-may-reach-outside-itself-specallowcrossnamespace).
+  [the grants](configuration.md#the-grants).
 - Several `GitTarget`s may name one `FluxClaim`, for a `Kustomization` whose `path` covers several
   folders. It is applied once for all of them.
 - Two `GitProvider`s may name one repository. Before either branch worker asks, both flush: the
@@ -248,7 +260,8 @@ spec:
 
 `kubeProviderRef` names the cluster that holds the `Kustomization`: the operator's own cluster for
 an `inCluster` provider such as the chart's `local`, or a management cluster where Flux runs. The
-provider must admit the applier claim's namespace: its own, or one its `accessFrom` admits. Both
+provider's `spec.allowedApplierClaims` must admit the applier claim's namespace, its own included only
+by a grant; a denial hands a held `Kustomization` back. Both
 references are immutable: delete and recreate the applier claim to hold another `Kustomization`.
 
 ### How the applier claim holds the `Kustomization`
@@ -277,6 +290,10 @@ stateDiagram-v2
     Releasing --> NotReferenced: released, Flux applies on its own again
     Releasing --> NotConfigured: released, while a refused GitTarget still names it
     Releasing --> [*]: applier claim deleted
+    Suspended --> Revoking: allowedApplierClaims no longer admit the applier claim
+    Applying --> Revoking: the same, suspended first
+    Releasing --> Revoking: the same, during a release
+    Revoking --> NotConfigured: released; a regrant then adopts it anew
 
     note right of NotConfigured
         Configured says why
@@ -304,7 +321,7 @@ stateDiagram-v2
   `HeldByAnotherClaim`, does nothing, and takes over once the holder lets go. An applier claim nothing
   eligible references is not in line, so it keeps no other out.
 - **The applier claim hands the `Kustomization` back** when no eligible `GitTarget` references it any
-  more, and when it is deleted. `Held` reads `Releasing`: it suspends the `Kustomization` once more
+  more, and when it is deleted. `InControl` reads `Releasing`: it suspends the `Kustomization` once more
   if an apply has it resumed, waits until that is handled, and releases `spec.suspend`, so Flux
   applies it on its own again (a `Released` Event). A `Kustomization` that somebody suspended
   before the applier claim held it stays suspended. The applier claim records how it stood in
@@ -316,19 +333,22 @@ stateDiagram-v2
   which inherits `status.previousSuspendState`. A
   `KubeProvider` that is gone does not stop the hand-back: it goes on through whatever still
   reaches the cluster, which for an `inCluster` provider is the operator's own. When nothing
-  does, or the hand-back has not finished 10 minutes after `Held` turned `Releasing`, the applier claim
+  does, or the hand-back has not finished 10 minutes after `InControl` turned `Releasing`, the applier claim
   lets go with a `ReleaseFailed` Event saying where the `Kustomization` was left. A reference that
   returns before the release is done holds the `Kustomization` again; one that returns after adopts
-  it anew.
+  it anew. When the `KubeProvider`'s `allowedApplierClaims` no longer admit the applier claim, the
+  hand-back is the same, but `InControl` reads `Revoking`, and it finishes even if a grant admits the
+  applier claim again meanwhile; the applier claim then adopts the `Kustomization` anew.
 - **Deleting or re-creating a `GitTarget` hands the `Kustomization` back.** Flux then applies the
   Git tip at once, which overwrites live edits not yet in Git, and the applier claim adopts the
   `Kustomization` again once the `GitTarget` is back. That is what Flux does without GitOps
   Reverser, and with no `GitTarget` nobody would carry those edits to Git anyway.
-- **An applier claim whose configuration turns invalid keeps its hold.** It reports `Held=Unknown`
+- **An applier claim whose configuration turns invalid keeps its hold.** It reports `InControl=Unknown`
   (`NotConfigured`), and the message says the `Kustomization` is left suspended under GitOps
   Reverser's field manager; deleting the applier claim, or its `GitTarget`s, hands it back.
 
-The applier claim reports `Configured` and `Held`, and its `Ready` includes both:
+The applier claim reports `Configured` and `InControl` (whether GitOps Reverser decides, right now,
+when the `Kustomization` applies), and its `Ready` includes both:
 
 | Reason | Means | Readiness |
 | --- | --- | --- |
@@ -340,17 +360,18 @@ The applier claim reports `Configured` and `Held`, and its `Ready` includes both
 | `Configured`: `UnsupportedSource` | The source is not a `GitRepository`, or breaks one of the [`GitRepository` rules](#the-gitrepository) | stalled |
 | `Configured`: `SuspendOwnedElsewhere` | Another field manager applies `spec.suspend` | stalled: remove the field from the manifest it applies |
 | `Configured`: `Forbidden` | The applier cluster's identity may not patch the `Kustomization` or its `GitRepository` | stalled |
-| `Configured`: `NamespaceNotAuthorized` | The `kubeProviderRef` names a provider in another namespace whose `accessFrom` does not admit the applier claim's namespace | stalled |
+| `Configured`: `NamespaceNotAuthorized` | No grant in the provider's `spec.allowedApplierClaims` admits the applier claim's namespace | stalled |
 | `Configured`: `KubeProviderNotFound` | The `kubeProviderRef` names a provider that does not exist | progressing |
 | `Configured`: `AuditRouteConflict` | The provider carries an audit route another namespace holds, so it is not used | stalled |
-| `Configured`: `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the applier claim's, and the `KubeProvider` does not set `allowCrossNamespace.appliers` | stalled |
+| `Configured`: `ApplierNamespaceNotAllowed` | The `Kustomization`'s namespace is not in the `applierNamespaces` the provider's grants give the applier claim's namespace | stalled |
 | `Configured`: `HeldByAnotherClaim` | Another `FluxClaim` holds this `Kustomization` | stalled: delete one of the two |
-| `Held`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
-| `Held`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |
-| `Held`: `Suspending` | Just suspended; waiting for the `Kustomization` to handle it | progressing |
-| `Held`: `Releasing` | Handing the `Kustomization` back: suspending it if needed, then releasing `spec.suspend`, within 10 minutes | progressing |
-| `Held`: `NotReferenced` | Nothing to hold: no `GitTarget` names the applier claim | ready |
-| `Held`: `NotConfigured` | The applier claim is not `Configured`, so nothing is held, or the `Kustomization` is left suspended as the applier claim last held it (the message says which) | follows `Configured` |
+| `InControl`: `Suspended` | Suspended under GitOps Reverser, and the last suspend is handled. Nothing applies | ready |
+| `InControl`: `Applying` | An apply GitOps Reverser started is in flight: `status.operation` shows it | ready |
+| `InControl`: `Suspending` | Just suspended; waiting for the `Kustomization` to handle it | progressing |
+| `InControl`: `Releasing` | Handing the `Kustomization` back: suspending it if needed, then releasing `spec.suspend`, within 10 minutes | progressing |
+| `InControl`: `Revoking` | The same hand-back, because the provider's `allowedApplierClaims` no longer admit the applier claim. It finishes even if a grant returns meanwhile | progressing |
+| `InControl`: `NotReferenced` | Nothing to hold: no `GitTarget` names the applier claim | ready |
+| `InControl`: `NotConfigured` | The applier claim is not `Configured`, so nothing is held, or the `Kustomization` is left suspended as the applier claim last held it (the message says which) | follows `Configured` |
 | `Ready`: `OperationUnresolved` | An apply has not completed within 5 minutes, or the `Kustomization` was [resumed by hand](#overriding-by-hand) | progressing; it clears when the apply does |
 
 `Ready=True` for an applier claim no `GitTarget` names is deliberate: it does all it is asked to, which is
@@ -372,7 +393,7 @@ with the identity of that `KubeProvider`. That identity needs:
 | --- | --- | --- |
 | `kustomize.toolkit.fluxcd.io` | `kustomizations` | `get`, `list`, `patch` |
 | `source.toolkit.fluxcd.io` | `gitrepositories` | `get`, `patch` |
-| `helm.toolkit.fluxcd.io` | `helmreleases` | `list`, to find the source's other consumers; without it `status.source.otherConsumers` stays empty |
+| `helm.toolkit.fluxcd.io` | `helmreleases` | `list`, to find what else applies the source; without it `status.source.alsoAppliedBy` stays empty |
 | `source.toolkit.fluxcd.io` | `helmcharts` | `list`, for the same reason |
 | `authorization.k8s.io` | `selfsubjectaccessreviews` | `create`, which every authenticated identity has |
 
@@ -450,8 +471,8 @@ counted as `ambiguous`.
 
 **Reverting refused edits.** With `onRefusal: Reapply`, the target's `Kustomization` is resumed
 for one apply of the tip; no new commit is needed. If its `GitRepository` has to fetch to reach the
-tip, the consumers GitOps Reverser holds ignore the new artifact, and one in
-`status.source.otherConsumers` applies it, as it would for any push.
+tip, the `Kustomization`s GitOps Reverser holds ignore the new artifact, and one in
+`status.source.alsoAppliedBy` applies it, as it would for any push.
 
 ## Overriding by hand
 
@@ -493,7 +514,7 @@ flux get ks checkout -n flux-system
 | `FluxClaim` `Configured=False`, `ApplierNotFound` | No `Kustomization` with that namespace and name in the applier claim's cluster, or Flux is not installed there | Create it, or recreate the applier claim with the right `kustomizationRef`; an omitted namespace is the applier claim's |
 | `FluxClaim` `Configured=False`, `SuspendOwnedElsewhere` | The manifest that applies the `Kustomization` sets `spec.suspend` | Remove the field from that manifest |
 | `ApplierClaimReady=False`, `SourceMismatch`, or applier claim `UnsupportedSource` | The message names the broken [`GitRepository` rule](#the-gitrepository) | Fix the `GitRepository`; the applier claim then adopts the `Kustomization`, and the apply that was waiting is asked for |
-| `FluxClaim` `Configured=False`, `ApplierNamespaceNotAllowed` | The `Kustomization` is in another namespace than the applier claim, such as `flux-system` | Set `allowCrossNamespace.appliers: true` on the applier claim's `KubeProvider` (Helm: `kubeProvider.allowCrossNamespace.appliers`), or move the applier claim and `GitTarget` to the `Kustomization`'s namespace |
+| `FluxClaim` `Configured=False`, `ApplierNamespaceNotAllowed` | The `Kustomization` is in a namespace the grants do not give, such as `flux-system` | Add it to `applierNamespaces` in the `KubeProvider`'s `spec.allowedApplierClaims` (Helm: `kubeProvider.allowedApplierClaims`) |
 | `FluxClaim` `Configured=Unknown`, `NotBound` | A `GitTarget` names the applier claim, but cannot be judged yet: its `GitProvider` or `KubeProvider` does not exist | Create the missing object; the message names it |
 | `FluxClaim` `Ready=True`, `NotReferenced`, and the `Kustomization` is not suspended | No `GitTarget` names the applier claim, so it holds nothing | Name it in the `GitTarget`'s `spec.applierClaimRef` |
 | `FluxClaim` `Configured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.flux: true` |
@@ -534,8 +555,8 @@ applied the tip is asked nothing.
 | --- | --- |
 | The [complete example](#a-complete-example) decodes strictly, reports `Configured=True`, binds the `GitTarget`, and an apply fetches and resumes the `Kustomization`; the manifest omits `spec.suspend` | [`flux_guide_test.go`](../internal/applier/flux_guide_test.go) |
 | Every fact of kustomize-controller v1.9.6 the lifecycle relies on, in a fake that applies them | [`fluxsim`](../internal/applier/fluxsim/fluxsim_test.go) |
-| An operation is not finished when the revision is attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../internal/applier/flux_lifecycle_test.go), [`flux_consumers_test.go`](../internal/applier/flux_consumers_test.go) |
-| Adoption, an external resume suspended again with an Event each time, `SuspendOwnedElsewhere`, the hand-back on deletion (a `KubeProvider` gone included), and the source's other consumers | [`fluxclaim_hold_test.go`](../internal/controller/fluxclaim_hold_test.go) |
+| An operation is not finished when the revision is attempted; a token handled while suspended is no apply; a resume alone reverts a refusal; a suspend does not stop a running apply; the artifact is rechecked before the resume; a failed apply is suspended and Flux's requeue applies nothing; a shared source applies only the consumer asked | [`flux_lifecycle_test.go`](../internal/applier/flux_lifecycle_test.go), [`flux_applied_by_test.go`](../internal/applier/flux_applied_by_test.go) |
+| Adoption, an external resume suspended again with an Event each time, `SuspendOwnedElsewhere`, the hand-back on deletion (a `KubeProvider` gone included), and what else applies the source | [`fluxclaim_hold_test.go`](../internal/controller/fluxclaim_hold_test.go) |
 | An applier claim nothing names reads nothing and is `Ready`; the first eligible `GitTarget` adopts and the last releases, suspending an apply in flight first; a reference returning mid-release holds again; the binding over several `GitTarget`s; an older applier claim not in line keeps none out, and a retiring holder stays first until its release is done; `ApplierNamespaceNotAllowed` | [`applierclaim_rule_test.go`](../internal/controller/applierclaim_rule_test.go) |
 | Every operation checks the target again (incarnation, branch, admission, consent) and the source binding before it resumes, records itself first, and never asks for something weaker; a stop mid-apply suspends the `Kustomization` | [`dispatcher_test.go`](../internal/applier/dispatcher_test.go) |
 | A failed attempt is decided again; each `Kustomization` keeps its own backoff; a shared one is asked once; appliers sharing a source apply one at a time; nothing is sent while no flush can be made; an undo of an edit in the apply window is mirrored, and the applier's own write is not | [`apply_attempt_test.go`](../internal/git/apply_attempt_test.go), [`apply_groups_test.go`](../internal/git/apply_groups_test.go), [`applier_claim_test.go`](../internal/git/applier_claim_test.go), [`apply_window_test.go`](../internal/git/apply_window_test.go) |

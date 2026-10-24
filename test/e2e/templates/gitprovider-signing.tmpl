@@ -5,8 +5,9 @@ metadata:
   namespace: {{.Namespace}}
 spec:
   url: {{.RepoURL}}
-  allowedBranches:
-    - "{{.Branch}}"
+  allowedGitBranches:
+    - consumerNamespaces: {from: Same}
+      branchPatterns: ["{{.Branch}}"]
   secretRef:
     name: {{.SecretName}}
   commit:

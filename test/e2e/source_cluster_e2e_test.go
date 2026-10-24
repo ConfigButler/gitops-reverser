@@ -17,7 +17,7 @@ import (
 // cluster it mirrors FROM by referencing a namespaced KubeProvider (spec.kubeProviderRef). The
 // KubeProvider is the home for that cluster's credential (spec.secretRef, a kubeconfig Secret in
 // the provider's OWN namespace, or spec.inCluster where the installation allows it), for which
-// other namespaces may use it (spec.accessFrom), and for its audit route.
+// other namespaces may use it (spec.allowedGitTargets), and for its audit route.
 //
 // Three kinds of spec live here:
 //   - Input-validation specs (Scenario 1) assert the KubeProvider reconciler's Validated verdict on
@@ -164,17 +164,20 @@ func writeKubeConfigSecret(namespace, name, key, kubeconfig string) {
 }
 
 // applyKubeProvider applies a KubeProvider in namespace whose secretRef names a kubeconfig Secret in
-// that same namespace, admitting the other namespaces listed. It returns the kubectl error so a spec
-// can assert the apply succeeded (the CR is well-formed; the kubeconfig, not the CR, is what a
-// validation case makes bad).
+// that same namespace, letting its own namespace and the other namespaces listed mirror their own
+// namespace. It returns the kubectl error so a spec can assert the apply succeeded (the CR is
+// well-formed; the kubeconfig, not the CR, is what a validation case makes bad).
 func applyKubeProvider(namespace, name, secretName, key string, admits ...string) (string, error) {
 	keyLine := ""
 	if key != "" {
 		keyLine = "\n    key: " + key
 	}
-	accessFrom := ""
+	grants := "\n  allowedGitTargets:\n    - consumerNamespaces: {from: Same}\n      sourceNamespaces: [\"{consumer.namespace}\"]"
 	if len(admits) > 0 {
-		accessFrom = fmt.Sprintf("\n  accessFrom:\n    names: [%s]", strings.Join(admits, ", "))
+		grants += fmt.Sprintf(
+			"\n    - consumerNamespaces: {from: Names, names: [%s]}\n      sourceNamespaces: [\"{consumer.namespace}\"]",
+			strings.Join(admits, ", "),
+		)
 	}
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: KubeProvider
@@ -184,7 +187,7 @@ metadata:
 spec:
   secretRef:
     name: %s%s%s
-`, name, namespace, secretName, keyLine, accessFrom)
+`, name, namespace, secretName, keyLine, grants)
 	return kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 }
 
@@ -203,7 +206,10 @@ func applyGitTargetWithKubeProvider(
 	manifest := ""
 	if branchNS == "" {
 		branchNS = ns
-		manifest = gitBranchManifest(ns, gitProvider)
+		// Applied only when missing: applying it again would drop a writer grant a spec added.
+		if _, err := kubectlRunInNamespace(ns, "get", "gitbranch", gitBranchName(gitProvider, "main")); err != nil {
+			manifest = gitBranchManifest(ns, gitProvider)
+		}
 	}
 	manifest += fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
@@ -315,11 +321,10 @@ var _ = Describe("Manager source cluster / KubeProvider", Label("source-cluster"
 		Expect(err).NotTo(HaveOccurred(), "failed to apply repo secrets")
 
 		createReadyGitProvider(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		// The tenant writes through this namespace's GitBranch, so the GitProvider admits it; which
+		// The tenant writes through this namespace's GitBranch, so the GitBranch admits it; which
 		// KubeProvider it may READ through is what the specs below decide.
-		_, err = kubectlRunInNamespace(testNs, "patch", "gitprovider", providerName, "--type=merge", "-p",
-			fmt.Sprintf(`{"spec":{"accessFrom":{"names":[%q]}}}`, tenantNs))
-		Expect(err).NotTo(HaveOccurred(), "failed to admit the tenant namespace to the GitProvider")
+		_, err = kubectlRunWithStdin(testNs, gitBranchManifest(testNs, providerName, tenantNs), "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred(), "failed to admit the tenant namespace to the GitBranch")
 
 		if kcpAvailable() {
 			kcp = startKcpTunnel()
@@ -433,6 +438,9 @@ kind: KubeProvider
 metadata: {name: %s, namespace: %s}
 spec:
   inCluster: {}
+  allowedGitTargets:
+    - consumerNamespaces: {from: Same}
+      sourceNamespaces: ["{consumer.namespace}"]
 `, name, testNs), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
 		verifyResourceCondition("kubeprovider", name, testNs, "Validated", "False", "InClusterNotAuthorized", "")
@@ -465,8 +473,8 @@ spec:
 	})
 
 	// Scenario 2b — a tenant's KubeProvider is the tenant's. Another namespace may not mirror
-	// through it until its accessFrom admits that namespace.
-	It("refuses a second tenant a KubeProvider whose accessFrom does not admit it", func() {
+	// through it until a grant in its allowedGitTargets admits that namespace.
+	It("refuses a second tenant a KubeProvider whose grants do not admit it", func() {
 		const name = "sc-unreachable"
 		target := "sc-tenant-target"
 		_, err := applyGitTargetWithKubeProvider(
@@ -488,7 +496,7 @@ spec:
 	})
 
 	// Scenario 3 — the install's own provider: "local" in the operator's namespace mirrors the
-	// operator's own cluster, and admits a GitTarget in any namespace through its accessFrom.
+	// operator's own cluster, and admits a GitTarget in any namespace through the suite's grant.
 	It("mirrors the operator's own cluster through the install's KubeProvider", func() {
 		target := "sc-local-target"
 		_, err := applyGitTargetWithKubeProvider(testNs, target, providerName, "", "clusters/local",

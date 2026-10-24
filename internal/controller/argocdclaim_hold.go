@@ -35,9 +35,9 @@ import (
 // The switch of an Application an ApplicationSet generated, or whose switch another field manager
 // applies, is not the applier claim's (applier.AutomatedSync.Owner): the applier claim never writes it and
 // carries no finalizer for it. Configured refuses such an Application while its automated sync is
-// on, and the applier claim is Held while the owner keeps it off.
+// on, and the applier claim is InControl while the owner keeps it off.
 
-// ReasonAutomatedSyncOff is Held=True on an ArgoCDClaim whose Application has automated sync off:
+// ReasonAutomatedSyncOff is InControl=True on an ArgoCDClaim whose Application has automated sync off:
 // held off by GitOps Reverser, or kept off by the switch's owner (the message says which).
 const ReasonAutomatedSyncOff = "AutomatedSyncOff"
 
@@ -58,16 +58,16 @@ func (r *ApplierClaimReconciler) reconcileArgoCD(
 	if check.retiring(claim) {
 		return r.retire(ctx, st, claim, &check)
 	}
-	held, err := r.holdArgoCD(ctx, st, claim, check)
+	inControl, err := r.holdArgoCD(ctx, st, claim, check)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	st.setValue(ApplierClaimConditionHeld, held)
-	return r.commitClaim(ctx, st, r.claimReadiness(claim, check.configured, &held), &held,
+	st.setValue(ApplierClaimConditionInControl, inControl)
+	return r.commitClaim(ctx, st, r.claimReadiness(claim, check.configured, &inControl), &inControl,
 		heldClaimSteadyInterval)
 }
 
-// holdArgoCD returns an ArgoCDClaim's Held condition. A Configured applier claim holds its
+// holdArgoCD returns an ArgoCDClaim's InControl condition. A Configured applier claim holds its
 // Application's automated sync off. One that is not Configured holds nothing, and one in line
 // behind another holder lets go of a finalizer it carries, handing nothing back.
 func (r *ApplierClaimReconciler) holdArgoCD(
@@ -97,8 +97,8 @@ func (r *ApplierClaimReconciler) holdArgoCD(
 }
 
 // holdAutomatedSync holds a Configured ArgoCDClaim's Application's automated sync off, with the
-// applier claim's finalizer put in place before the first write, and returns the Held condition. A switch
-// somebody else owns is left to them: Configured is True only while they keep it off.
+// applier claim's finalizer put in place before the first write, and returns the InControl condition.
+// A switch somebody else owns is left to them: Configured is True only while they keep it off.
 func (r *ApplierClaimReconciler) holdAutomatedSync(
 	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.ArgoCDClaim,
 ) (conditionValue, error) {
@@ -107,12 +107,12 @@ func (r *ApplierClaimReconciler) holdAutomatedSync(
 	ref := claim.Applier()
 	argo, err := r.argoClient(ctx, claim)
 	if err != nil {
-		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld,
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl,
 			fmt.Sprintf("cannot reach the cluster of Application %s: %v", ref, err)), nil
 	}
 	state, err := argo.AutomatedSync(ctx, ref)
 	if err != nil {
-		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld,
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl,
 			fmt.Sprintf("cannot read Application %s: %v", ref, err)), nil
 	}
 	if state.Owner != "" {
@@ -138,20 +138,20 @@ func (r *ApplierClaimReconciler) holdAutomatedSync(
 }
 
 // switchOff switches an ArgoCDClaim's Application's automated sync off, having recorded how it stood
-// when the applier claim adopts it, and reports false with the Held condition when it could not.
+// when the applier claim adopts it, and reports false with the InControl condition when it could not.
 func (r *ApplierClaimReconciler) switchOff(
 	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.ArgoCDClaim, argo *applier.ArgoCD,
 	state applier.AutomatedSync, adopt bool,
 ) (conditionValue, bool) {
 	ref := claim.Applier()
 	if err := r.recordPreviousSuspendState(ctx, st, claim, state.Held && !adopt, !state.On); err != nil {
-		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, fmt.Sprintf(
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, fmt.Sprintf(
 			"cannot record how Application %s stood before it is held: %v", ref, err)), false
 	}
 	written, err := argo.SwitchOff(ctx, ref)
 	switch {
 	case err != nil:
-		return keptCondition(claim.Status.Conditions, ApplierClaimConditionHeld, err.Error()), false
+		return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, err.Error()), false
 	case !written:
 		// Configured checks this first; an Argo CD downgraded since is caught here, before a write.
 		return conditionValue{Status: metav1.ConditionFalse, Reason: applier.ReasonArgoCDVersionNotSupported,
@@ -159,7 +159,7 @@ func (r *ApplierClaimReconciler) switchOff(
 				"before 3.1), so GitOps Reverser writes nothing", ref)}, false
 	}
 	switch {
-	case !heldBefore(claim):
+	case !wasInControl(claim):
 		r.event(claim, corev1.EventTypeNormal, EventReasonAdopted,
 			"switched automated sync of Application %s off: from now on GitOps Reverser starts every sync", ref)
 	case state.On:
@@ -170,9 +170,9 @@ func (r *ApplierClaimReconciler) switchOff(
 	return conditionValue{}, true
 }
 
-// ownedSwitchCondition is the Held condition of an applier claim whose Application's switch somebody else
-// owns. Nothing is written: a share of the switch the applier claim took before the owner did is handed
-// back by the finalizer it carries.
+// ownedSwitchCondition is the InControl condition of an applier claim whose Application's switch
+// somebody else owns. Nothing is written: a share of the switch the applier claim took before the owner
+// did is handed back by the finalizer it carries.
 func ownedSwitchCondition(ref k8stypes.NamespacedName, state applier.AutomatedSync) conditionValue {
 	if state.On {
 		// Switched on since Configured read it: the next reconcile refuses it.

@@ -95,10 +95,10 @@ func TestFluxClaim_AdoptsItsKustomization(t *testing.T) {
 
 	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.FluxClaim)
 
-	held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	assert.Equal(t, metav1.ConditionTrue, held.Status, held.Message)
-	assert.Equal(t, ReasonSuspended, held.Reason)
+	inControl := findCondition(got.Status.Conditions, ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	assert.Equal(t, metav1.ConditionTrue, inControl.Status, inControl.Message)
+	assert.Equal(t, ReasonSuspended, inControl.Reason)
 	assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeReady))
 	ks := f.sim.Kustomization(checkoutKustomization)
 	assert.True(t, suspendedSpec(ks))
@@ -146,7 +146,7 @@ func TestFluxClaim_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 			"complete once the suspend's token is handled")
 		assert.NotNil(t, got.Status.Operation.FinishedAt)
 		assert.Equal(t, recorded.SuspendToken, got.Status.Operation.SuspendToken)
-		assert.True(t, conditionIsTrue(got.Status.Conditions, ApplierClaimConditionHeld))
+		assert.True(t, conditionIsTrue(got.Status.Conditions, ApplierClaimConditionInControl))
 	}
 	assert.Len(t, f.sim.Applied(), 2, "each resume applied once, unchecked; that is what the record says")
 }
@@ -158,7 +158,7 @@ func TestFluxClaim_LeavesABranchWorkersOperationAlone(t *testing.T) {
 	claim := testFluxClaim(claimLocalProvider)
 	claim.Finalizers = []string{configbutleraiv1alpha3.FluxClaimFinalizer}
 	claim.Status.Conditions = []metav1.Condition{{
-		Type: ApplierClaimConditionHeld, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
+		Type: ApplierClaimConditionInControl, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 		LastTransitionTime: metav1.Now(),
 	}}
 	claim.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
@@ -185,7 +185,7 @@ func workerOperationClaim() *configbutleraiv1alpha3.FluxClaim {
 	claim := testFluxClaim(claimLocalProvider)
 	claim.Finalizers = []string{configbutleraiv1alpha3.FluxClaimFinalizer}
 	claim.Status.Conditions = []metav1.Condition{{
-		Type: ApplierClaimConditionHeld, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
+		Type: ApplierClaimConditionInControl, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 		LastTransitionTime: metav1.Now(),
 	}}
 	claim.Status.Operation = &configbutleraiv1alpha3.ApplyOperation{
@@ -210,10 +210,10 @@ func TestFluxClaim_AnOperationNobodyFollowsIsSuspended(t *testing.T) {
 	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "followed: left to the worker")
 	applying := &configbutleraiv1alpha3.FluxClaim{}
 	require.NoError(t, f.r.Get(context.Background(), claimKey, applying))
-	held := findCondition(applying.Status.Conditions, ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	assert.Equal(t, metav1.ConditionTrue, held.Status, "an operation of ours in flight is held")
-	assert.Equal(t, ReasonApplying, held.Reason)
+	inControl := findCondition(applying.Status.Conditions, ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	assert.Equal(t, metav1.ConditionTrue, inControl.Status, "an operation of ours in flight is held")
+	assert.Equal(t, ReasonApplying, inControl.Reason)
 
 	f.r.Follower = followerStub{}
 	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.FluxClaim)
@@ -224,7 +224,7 @@ func TestFluxClaim_AnOperationNobodyFollowsIsSuspended(t *testing.T) {
 	assert.NotEmpty(t, got.Status.Operation.SuspendToken)
 	assert.NotNil(t, got.Status.Operation.FinishedAt)
 	assert.Contains(t, got.Status.Operation.Message, "followed by nobody")
-	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplierClaimConditionHeld))
+	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplierClaimConditionInControl))
 	events := f.events()
 	require.Len(t, events, 1)
 	assert.True(t, strings.HasPrefix(events[0], "Warning OperationUnfollowed the Refusal apply"), events[0])
@@ -420,7 +420,7 @@ func TestFluxClaim_TakesOverASuspendBySomebodyElse(t *testing.T) {
 
 	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.FluxClaim)
 
-	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplierClaimConditionHeld))
+	assert.True(t, conditionIsTrue(got.Status.Conditions, ApplierClaimConditionInControl))
 	assert.Contains(t, kustomizationManagers(f.sim.Kustomization(checkoutKustomization)), applier.SuspendFieldManager)
 	assert.Empty(t, f.events(), "neither an adoption of a running Kustomization nor an external resume")
 }
@@ -456,9 +456,9 @@ func kustomizationManagers(ks *unstructured.Unstructured) []string {
 	return managers
 }
 
-// TestFluxClaim_PublishesTheSourcesOtherConsumers is decision 2: the consumers of the
+// TestFluxClaim_PublishesWhatElseAppliesTheSource is decision 2: the objects applying the
 // GitRepository that no FluxClaim holds are listed, information only.
-func TestFluxClaim_PublishesTheSourcesOtherConsumers(t *testing.T) {
+func TestFluxClaim_PublishesWhatElseAppliesTheSource(t *testing.T) {
 	objs := applierFluxObjects()
 	infra := objs[0].(*unstructured.Unstructured).DeepCopy()
 	infra.SetName("infra")
@@ -478,11 +478,11 @@ func TestFluxClaim_PublishesTheSourcesOtherConsumers(t *testing.T) {
 	assert.Equal(t, []meta.NamespacedObjectKindReference{
 		{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"},
 		{Kind: "Kustomization", Namespace: "flux-system", Name: "infra"},
-	}, source.OtherConsumers, "itself is not another consumer")
+	}, source.AlsoAppliedBy, "it does not list itself")
 	assert.True(t, conditionIsTrue(f.claim(t).Status.Conditions, ConditionTypeReady), "information only")
 
 	// The fourth review's finding C: an applier claim holds its Kustomization only once it says so
-	// (Held=True). One that is not Configured (SuspendOwnedElsewhere), or still suspending, leaves
+	// (InControl=True). One that is not Configured (SuspendOwnedElsewhere), or still suspending, leaves
 	// a Kustomization Flux applies on its own.
 	infraClaim := testFluxClaim(claimLocalProvider)
 	infraClaim.Name, infraClaim.Spec.KustomizationRef.Name = "infra", "infra"
@@ -492,30 +492,30 @@ func TestFluxClaim_PublishesTheSourcesOtherConsumers(t *testing.T) {
 		{Kind: "Kustomization", Namespace: "flux-system", Name: "infra"},
 	}
 	for _, suspended := range []metav1.Condition{
-		{Type: ApplierClaimConditionHeld, Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured},
-		{Type: ApplierClaimConditionHeld, Status: metav1.ConditionFalse, Reason: ReasonSuspending},
+		{Type: ApplierClaimConditionInControl, Status: metav1.ConditionUnknown, Reason: ReasonNotConfigured},
+		{Type: ApplierClaimConditionInControl, Status: metav1.ConditionFalse, Reason: ReasonSuspending},
 	} {
 		setClaimCondition(t, f.r, "infra", suspended)
 		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 		require.NoError(t, err)
-		assert.Equal(t, infraOther, f.claim(t).Status.Source.OtherConsumers,
+		assert.Equal(t, infraOther, f.claim(t).Status.Source.AlsoAppliedBy,
 			"an applier claim that is %s does not hold its Kustomization", suspended.Reason)
 	}
 
 	setClaimCondition(t, f.r, "infra", metav1.Condition{
-		Type: ApplierClaimConditionHeld, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
+		Type: ApplierClaimConditionInControl, Status: metav1.ConditionTrue, Reason: ReasonSuspended,
 	})
 	_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
 	assert.Equal(t, []meta.NamespacedObjectKindReference{{Kind: "HelmRelease", Namespace: "apps", Name: "podinfo"}},
-		f.claim(t).Status.Source.OtherConsumers, "a Kustomization another applier claim holds is not listed")
+		f.claim(t).Status.Source.AlsoAppliedBy, "a Kustomization another applier claim holds is not listed")
 
 	require.NoError(t, f.sim.Client.Resource(k8sschema.GroupVersionResource{
 		Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases",
 	}).Namespace("apps").Delete(context.Background(), "podinfo", metav1.DeleteOptions{}))
 	_, err = f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 	require.NoError(t, err)
-	assert.Empty(t, f.claim(t).Status.Source.OtherConsumers, "every consumer is held")
+	assert.Empty(t, f.claim(t).Status.Source.AlsoAppliedBy, "everything applying the source is held")
 }
 
 // setClaimCondition publishes a condition on the FluxClaim team-a/name.
@@ -602,7 +602,7 @@ func TestFluxClaim_AHandBackThatNeverEndsLetsGoAtTheDeadline(t *testing.T) {
 			claim.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 			// The deadline counts from when Held turned Releasing, not from the deletion.
 			claim.Status.Conditions = []metav1.Condition{{
-				Type: ApplierClaimConditionHeld, Status: metav1.ConditionFalse, Reason: ReasonReleasing,
+				Type: ApplierClaimConditionInControl, Status: metav1.ConditionFalse, Reason: ReasonReleasing,
 				LastTransitionTime: metav1.NewTime(time.Now().Add(-deleted)),
 			}}
 			f := newHoldFixture(t, claim, ks, objs[1])
@@ -737,10 +737,10 @@ func TestFluxClaim_RecordsNothingOfAKustomizationAnotherHolds(t *testing.T) {
 
 	got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.FluxClaim)
 
-	held := findCondition(got.Status.Conditions, ApplierClaimConditionHeld)
-	require.NotNil(t, held)
-	assert.Equal(t, ReasonNotConfigured, held.Reason)
-	assert.Contains(t, held.Message, "team-a/checkout-first")
+	inControl := findCondition(got.Status.Conditions, ApplierClaimConditionInControl)
+	require.NotNil(t, inControl)
+	assert.Equal(t, ReasonNotConfigured, inControl.Reason)
+	assert.Contains(t, inControl.Message, "team-a/checkout-first")
 	assert.Empty(t, got.Status.PreviousSuspendState)
 	assert.False(t, suspendedSpec(f.sim.Kustomization(checkoutKustomization)), "nothing written")
 }
@@ -784,17 +784,17 @@ func TestFluxClaim_ReadoptsAKustomizationItHandedBackSuspended(t *testing.T) {
 	f.events()
 
 	setReferenced(t, f.r.Client, "checkout-flux", configbutleraiv1alpha3.ApplierClaimKindFlux, true)
-	var held *metav1.Condition
+	var inControl *metav1.Condition
 	for range 50 {
 		_, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: claimKey})
 		require.NoError(t, err)
-		held = findCondition(f.claim(t).Status.Conditions, ApplierClaimConditionHeld)
-		if held != nil && held.Reason == ReasonSuspended {
+		inControl = findCondition(f.claim(t).Status.Conditions, ApplierClaimConditionInControl)
+		if inControl != nil && inControl.Reason == ReasonSuspended {
 			break
 		}
 	}
-	require.NotNil(t, held)
-	assert.Equal(t, ReasonSuspended, held.Reason, held.Message)
+	require.NotNil(t, inControl)
+	assert.Equal(t, ReasonSuspended, inControl.Reason, inControl.Message)
 	assert.Equal(t, configbutleraiv1alpha3.SuspendStateSuspended, f.claim(t).Status.PreviousSuspendState,
 		"adopted anew: suspended before the applier claim held it")
 

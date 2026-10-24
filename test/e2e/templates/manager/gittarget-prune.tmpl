@@ -9,6 +9,8 @@ spec:
   gitProviderRef:
     name: {{ .ProviderName }}
   branch: {{ .Branch }}
+  allowedGitTargets:
+    - consumerNamespaces: {from: Same}
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget

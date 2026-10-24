@@ -4,13 +4,13 @@ metadata:
   name: example-target
   namespace: default
 spec:
-  # The GitBranch this folder is written to. Add `namespace:` to share one from another namespace,
-  # which its GitProvider's accessFrom has to admit.
+  # The GitBranch this folder is written to. Add `namespace:` to use one from another namespace,
+  # whose spec.allowedGitTargets has to admit this one.
   gitBranchRef:
     name: example-branch
   # The KubeProvider this folder mirrors from: the chart's `local` provider in its release
-  # namespace, which admits every namespace by default. Omit `namespace:` for one in this
-  # GitTarget's own namespace. Immutable.
+  # namespace, whose spec.allowedGitTargets must admit this namespace (the chart's quickstart values
+  # do). Omit `namespace:` for one in this GitTarget's own namespace. Immutable.
   kubeProviderRef:
     name: local
     namespace: gitops-reverser

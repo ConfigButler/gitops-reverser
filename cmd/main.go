@@ -329,6 +329,11 @@ func main() {
 	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
 
+	// The GitBranch, GitTarget and applier claim controllers find a GitProvider's GitBranches, in any
+	// namespace, through this index.
+	fatalIfErr(controller.IndexGitBranches(context.Background(), mgr.GetFieldIndexer()),
+		"unable to index GitBranches by their GitProvider")
+
 	if err := (&controller.GitProviderReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),

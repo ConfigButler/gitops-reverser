@@ -251,11 +251,11 @@ func TestCompileWatchRule_RefusesAnInvalidObjectSelector(t *testing.T) {
 func TestCompileClusterWatchRule_RefusesAnInvalidObjectSelector(t *testing.T) {
 	store := rulestore.NewStore()
 	rule := clusterRuleForResource("bad", "namespaces")
-	store.AddOrUpdateClusterWatchRule(rule, "t", "ns", "p", "ns", "path")
+	store.AddOrUpdateClusterWatchRule(rule, []string{"*"}, "t", "ns", "p", "ns", "path")
 	rule.Spec.Rules[0].ObjectSelector = labels("bad key", "x")
 
 	_, err := CompileClusterWatchRule(context.Background(), nil, store, rule,
-		configv1alpha3.GitTarget{})
+		configv1alpha3.GitTarget{}, nil)
 
 	var selectorErr *ObjectSelectorError
 	require.ErrorAs(t, err, &selectorErr)

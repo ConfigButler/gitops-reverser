@@ -27,7 +27,7 @@ const (
 	snbRule     = "repo-config-rule"
 	snbProvider = "workspaces"
 	// snbProviderNS is the KubeProvider's namespace: another than the tenant's, so the tenant is
-	// admitted through spec.accessFrom.
+	// admitted through a Names grant.
 	snbProviderNS = "platform"
 )
 
@@ -48,13 +48,23 @@ func snbGitProvider() *configv1alpha3.GitProvider {
 	}
 }
 
-func snbKubeProvider(delegate bool) *configv1alpha3.KubeProvider {
+// snbKubeProvider admits snbTenantNS to watch its own namespace, and every namespace when wide.
+func snbKubeProvider(wide bool) *configv1alpha3.KubeProvider {
+	grant := configv1alpha3.KubeProviderGitTargetGrant{
+		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+			From:  configv1alpha3.GrantFromNames,
+			Names: []configv1alpha3.GrantNamespace{snbTenantNS},
+		},
+		SourceNamespaces: []configv1alpha3.ScopeNamespace{configv1alpha3.ConsumerNamespaceVariable},
+	}
+	if wide {
+		grant.SourceNamespaces = append(grant.SourceNamespaces, "*")
+	}
 	return &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: snbProviderNS, Name: snbProvider},
 		Spec: configv1alpha3.KubeProviderSpec{
-			InCluster:           &configv1alpha3.KubeProviderInCluster{},
-			AccessFrom:          &configv1alpha3.NamespaceMatcher{Names: []string{snbTenantNS}},
-			AllowCrossNamespace: &configv1alpha3.KubeProviderCrossNamespace{Sources: delegate},
+			InCluster:         &configv1alpha3.KubeProviderInCluster{},
+			AllowedGitTargets: []configv1alpha3.KubeProviderGitTargetGrant{grant},
 		},
 	}
 }
@@ -186,8 +196,8 @@ func TestCompileWatchRule_WildcardIsRefusedWithoutDelegation(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.False(t, resolved.Admitted())
-	assert.Contains(t, resolved.Message, "spec.allowCrossNamespace.sources",
-		"the refusal must name the flag a platform admin has to set")
+	assert.Contains(t, resolved.Message, "spec.allowedGitTargets[].sourceNamespaces",
+		"the refusal must name the grant a platform admin has to widen")
 	assert.Empty(t, m.RuleStore.SnapshotWatchRules())
 }
 
@@ -209,11 +219,12 @@ func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing
 	require.True(t, resolved.Admitted())
 	require.Len(t, m.RuleStore.SnapshotWatchRules(), 1, "precondition: the rule is compiled")
 
-	// The platform admin withdraws the delegation.
+	// The platform admin narrows the grant to the tenant's own namespace.
 	var stored configv1alpha3.KubeProvider
 	providerKey := k8stypes.NamespacedName{Namespace: snbProviderNS, Name: snbProvider}
 	require.NoError(t, m.Client.Get(ctx, providerKey, &stored))
-	stored.Spec.AllowCrossNamespace = nil
+	stored.Spec.AllowedGitTargets[0].SourceNamespaces = []configv1alpha3.ScopeNamespace{
+		configv1alpha3.ConsumerNamespaceVariable}
 	require.NoError(t, m.Client.Update(ctx, &stored))
 
 	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target)

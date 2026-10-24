@@ -36,9 +36,9 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(self.onRefusal) || self.onRefusal != 'Reapply' || has(self.applierClaimRef)",message="spec.onRefusal: Reapply needs spec.applierClaimRef, the applier claim asked to reapply"
 type GitTargetSpec struct {
 	// GitBranchRef names the GitBranch this target writes: the repository branch, and the credential
-	// it is written with. Namespace omitted means this GitTarget's own namespace. A GitBranch in
-	// another namespace is used only while its GitProvider's spec.accessFrom admits this GitTarget's
-	// namespace. Many GitTargets may reference one GitBranch; they share its branch worker.
+	// it is written with. Namespace omitted means this GitTarget's own namespace. The GitBranch is
+	// used only while its spec.allowedGitTargets admit this GitTarget's namespace, its own included.
+	// Many GitTargets may reference one GitBranch; they share its branch worker.
 	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitBranchRef.name must not be empty"
@@ -102,8 +102,8 @@ type GitTargetSpec struct {
 	// apply the current tip after publishing the edits pending on the branch, which reverts the
 	// refused edit and nothing that was waiting to be published. Only this
 	// target's applier is asked. If its GitRepository has to fetch to reach the tip, the
-	// Kustomizations a FluxClaim holds stay suspended and ignore the new artifact; only the
-	// consumers no applier claim holds, listed in the applier claim's status.source.otherConsumers, apply it, as
+	// Kustomizations a FluxClaim holds stay suspended and ignore the new artifact; only the objects
+	// no applier claim holds, listed in the applier claim's status.source.alsoAppliedBy, apply it, as
 	// they would for any push.
 	//
 	// It fires only for an edit to a document the folder ALREADY holds, in a write that removes no
@@ -203,9 +203,9 @@ type GitTargetSpec struct {
 	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
 
 	// KubeProviderRef names the KubeProvider this GitTarget mirrors FROM: the source cluster, and the
-	// credential it is read with. Namespace omitted means this GitTarget's own namespace. A
-	// KubeProvider in another namespace is used only while its spec.accessFrom admits this
-	// GitTarget's namespace. Immutable: a folder's source cluster is part of what the folder means;
+	// credential it is read with. Namespace omitted means this GitTarget's own namespace. The
+	// KubeProvider is used only while its spec.allowedGitTargets admit this GitTarget's namespace,
+	// its own included. Immutable: a folder's source cluster is part of what the folder means;
 	// delete and recreate the GitTarget to change it.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"

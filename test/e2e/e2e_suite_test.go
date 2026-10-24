@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -64,6 +63,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	By("preparing e2e cluster prerequisites via Task target")
 	prepareE2EClusterOnce()
 	waitForPreviousRunNamespaces()
+	grantSuiteAccess()
 
 	// After prepare, while this process still holds the exclusive cluster lock, so every spec runs
 	// against a Prometheus with no retained samples and a controller whose counters start at zero.
@@ -553,13 +553,6 @@ func resolveE2EInstallName(namespace string) string {
 		return value
 	}
 	return namespace
-}
-
-func resolveE2EInstallMode() (string, error) {
-	if value := strings.TrimSpace(os.Getenv("INSTALL_MODE")); value != "" {
-		return value, nil
-	}
-	return "", errors.New("INSTALL_MODE environment variable must be set")
 }
 
 func resolveE2EContext() string {

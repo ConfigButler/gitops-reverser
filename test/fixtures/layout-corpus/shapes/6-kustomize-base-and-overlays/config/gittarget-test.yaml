@@ -7,6 +7,8 @@ spec:
   gitProviderRef:
     name: app-repository
   branch: main
+  allowedGitTargets:
+    - consumerNamespaces: {from: Same}
 ---
 # The second and third targets are the same object with the environment swapped.
 # Nothing is shared between them except the byType map, if one were declared.

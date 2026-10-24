@@ -74,11 +74,11 @@ type Ask struct {
 	// Current is asked again after it, since it can wait on the status writer and the API server.
 	// Nil records nothing.
 	Record func(ctx context.Context) error
-	// Held reports, from a fresh read, whether the applier claim holds its Flux Kustomization suspended
-	// (Held=True), and errs when it does not: a resume while the applier claim's reconciler is still
-	// suspending it (an adoption, an external resume) would race that suspend. It is asked just
-	// before Record. Nil always holds; the Argo CD client never asks it.
-	Held func(ctx context.Context) error
+	// InControl reports, from a fresh read, whether the applier claim is in control of its Flux
+	// Kustomization (InControl=True), and errs when it is not: a resume while the applier claim's
+	// reconciler is still suspending it (an adoption, an external resume) would race that suspend. It
+	// is asked just before Record. Nil always is; the Argo CD client never asks it.
+	InControl func(ctx context.Context) error
 }
 
 // recordOnce is Record, called the first time only: a request that writes more than once (an Argo

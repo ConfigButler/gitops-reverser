@@ -4,9 +4,10 @@
 # makes Helm delete it again. Every GitTarget names its KubeProvider explicitly
 # (spec.kubeProviderRef); nothing falls back to this one. With kubeProvider.secretRef.name empty it
 # uses the operator's own identity (spec.inCluster), and the chart lists it in
-# --in-cluster-kube-providers, which is the only way an inCluster provider is honored. accessFrom
-# admits other namespaces; the chart default (an empty selector) admits every namespace — tighten
-# it via kubeProvider.accessFrom.
+# --in-cluster-kube-providers, which is the only way an inCluster provider is honored. Nothing may
+# use it without a grant: by default it admits no namespace. kubeProvider.allowedGitTargets and
+# kubeProvider.allowedApplierClaims grant it; quickstart.enabled adds a grant for exactly the
+# quickstart namespace, and values-playground.yaml grants every namespace its own.
 apiVersion: configbutler.ai/v1alpha3
 kind: KubeProvider
 metadata:
@@ -26,9 +27,19 @@ spec:
   inCluster: {}
   {{- end }}
   {{- end }}
-  accessFrom:
-    {{- toYaml .Values.kubeProvider.accessFrom | nindent 4 }}
-  allowCrossNamespace:
-    sources: {{ .Values.kubeProvider.allowCrossNamespace.sources }}
-    appliers: {{ .Values.kubeProvider.allowCrossNamespace.appliers }}
+  {{- $gitTargets := .Values.kubeProvider.allowedGitTargets }}
+  {{- $applierClaims := .Values.kubeProvider.allowedApplierClaims }}
+  {{- if .Values.quickstart.enabled }}
+  {{- $names := list .Values.quickstart.namespace }}
+  {{- $gitTargets = append $gitTargets (dict "consumerNamespaces" (dict "from" "Names" "names" $names) "sourceNamespaces" (list "{consumer.namespace}")) }}
+  {{- $applierClaims = append $applierClaims (dict "consumerNamespaces" (dict "from" "Names" "names" $names) "applierNamespaces" (list "{consumer.namespace}")) }}
+  {{- end }}
+  {{- with $gitTargets }}
+  allowedGitTargets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $applierClaims }}
+  allowedApplierClaims:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end }}

@@ -56,15 +56,40 @@ spec:
 	Expect(err).NotTo(HaveOccurred(), "failed to create ArgoCDClaim %s/%s", namespace, name)
 }
 
-// allowCrossNamespaceAppliers lets the applier claims that reach their applier through the install's
-// KubeProvider name one in another namespace, as the e2e appliers are: in flux-system and argocd,
-// while each spec's applier claims live in its own namespace. Granting it is idempotent, and no spec
+// grantAppliersInAnyNamespace lets the applier claims that reach their applier through the install's
+// KubeProvider hold one in any namespace, as the e2e appliers are: in flux-system and argocd, while
+// each spec's applier claims live in its own namespace. Granting it is idempotent, and no spec
 // relies on its absence on that provider, so parallel specs may all ask for it.
-func allowCrossNamespaceAppliers() {
+func grantAppliersInAnyNamespace() {
 	GinkgoHelper()
 	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
-		"--type=merge", "-p", `{"spec":{"allowCrossNamespace":{"appliers":true}}}`)
+		"--type=merge", "-p",
+		`{"spec":{"allowedApplierClaims":[{"consumerNamespaces":{"from":"All"},"applierNamespaces":["*"]}]}}`)
 	Expect(err).NotTo(HaveOccurred(), "failed to let the install KubeProvider's applier claims reach other namespaces")
+}
+
+// suiteKubeProviderGrants are the grants the suite needs on the install's KubeProvider: every
+// namespace mirrors its own namespace and any cluster-scoped resource, and holds an applier in its
+// own namespace. config/kubeprovider-local.yaml carries them, and the Helm install passes them as
+// values (test/e2e/helm-values-suite-grants.yaml); the chart grants nothing by default, so the plain
+// manifests need them patched in. On a config-dir install the patch restates what the manifest
+// already carries.
+const suiteKubeProviderGrants = `{"spec":{` +
+	`"allowedGitTargets":[{"consumerNamespaces":{"from":"All"},` +
+	`"sourceNamespaces":["{consumer.namespace}"],"clusterResources":["*"]}],` +
+	`"allowedApplierClaims":[{"consumerNamespaces":{"from":"All"},"applierNamespaces":["{consumer.namespace}"]}]}}`
+
+// grantSuiteAccess gives the install's KubeProvider the grants the suite needs. A Helm install already
+// carries them as values, and a patch there would take the fields from Helm, whose next server-side
+// upgrade then refuses the conflict.
+func grantSuiteAccess() {
+	GinkgoHelper()
+	if mode, err := resolveE2EInstallMode(); err == nil && mode == "helm" {
+		return
+	}
+	_, err := kubectlRunInNamespace(resolveE2ENamespace(), "patch", "kubeprovider", e2eKubeProviderName,
+		"--type=merge", "-p", suiteKubeProviderGrants)
+	Expect(err).NotTo(HaveOccurred(), "failed to grant the suite's access on the install KubeProvider")
 }
 
 // nameApplierClaim points a GitTarget at the applier claim of kind (FluxClaim or ArgoCDClaim) and

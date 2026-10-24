@@ -424,7 +424,7 @@ path would each stamp their own tracking-id on the same objects and raise
 The `Application` lives in the `argocd` namespace, targets
 `spec.destination.namespace = <testNs>`, `spec.source.path = <livePath>`,
 `targetRevision: main`, `directory.recurse: true`. The applier claim lives in the test
-namespace, so each describe first grants `allowCrossNamespace.appliers` on the
+namespace, so each describe first widens `allowedApplierClaims` on the
 install's `local` `KubeProvider` in the operator's namespace, as a user must for an
 `Application` in `argocd`. The
 `GitProvider` has a `gitea` receiver, registered as a Gitea webhook next to Argo
@@ -494,7 +494,7 @@ env var no overlay declaration can express.
    Request an applier claim reconcile, since the applier is read on reconcile rather than
    watched.
 2. Assert the switch is `false` again, with a `ClaimedResourceReconciled` Event on the
-   applier claim, `Held=True` (`AutomatedSyncOff`), and `gitops-reverser` among the
+   applier claim, `InControl=True` (`AutomatedSyncOff`), and `gitops-reverser` among the
    `Application`'s field managers.
 3. Push a Git-side change. Assert GitOps Reverser syncs it as a `ForeignCommit`
    pinned to the pushed commit, and the order is live.
@@ -509,7 +509,7 @@ env var no overlay declaration can express.
    `GitTarget`'s `ApplierClaimReady=False` with the same reason, and no
    `gitops-reverser` field manager on the `Application`.
 3. Re-apply the `ApplicationSet` with `automated: {enabled: false}` in its template.
-   Assert `Held=True` (`AutomatedSyncOff`, kept off by the `ApplicationSet`),
+   Assert `InControl=True` (`AutomatedSyncOff`, kept off by the `ApplicationSet`),
    `ApplierClaimReady=True`, still no `gitops-reverser` field manager, and no
    finalizer on the applier claim.
 

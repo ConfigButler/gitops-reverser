@@ -364,22 +364,19 @@ func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool)
 }
 
 // WorkerRequest names the branch worker a GitTarget needs: the GitBranch holding the branch, the
-// GitProvider (in the GitBranch's namespace) it writes with, and the repository that provider names.
+// GitProvider it writes with, and the repository that provider names.
 type WorkerRequest struct {
 	// GitBranch is the claim holder the worker writes for.
 	GitBranch k8stypes.NamespacedName
-	// Provider is the GitBranch's GitProvider, by name, in the GitBranch's namespace.
-	Provider string
+	// Provider is the GitBranch's GitProvider, its namespace resolved: a GitBranch may name one in
+	// another namespace, whose credential the worker then pushes with.
+	Provider k8stypes.NamespacedName
 	// Branch is the GitBranch's spec.branch.
 	Branch string
 	// Repo is the repository the GitProvider names now.
 	Repo RepoIdentity
 	// ParentBranch is the GitBranch's spec.parentBranch.
 	ParentBranch string
-}
-
-func (r WorkerRequest) provider() k8stypes.NamespacedName {
-	return k8stypes.NamespacedName{Namespace: r.GitBranch.Namespace, Name: r.Provider}
 }
 
 // EnsureWorker ensures a worker exists for the repository branch req names, keyed by that branch
@@ -415,7 +412,7 @@ func (m *WorkerManager) EnsureWorker(_ context.Context, req WorkerRequest) error
 	repo := req.Repo
 	key := BranchKeyFor(repo.URL, req.Branch)
 	if key == (BranchKey{}) {
-		return fmt.Errorf("GitProvider %s names no repository", req.provider())
+		return fmt.Errorf("GitProvider %s names no repository", req.Provider)
 	}
 	if err := m.refuseUnclaimed(key, req.GitBranch); err != nil {
 		return err
@@ -483,7 +480,7 @@ func (m *WorkerManager) refuseUnclaimed(key BranchKey, gitBranch k8stypes.Namesp
 // startWorkerLocked creates and starts the worker for key, writing through provider, and records
 // it. Called with lifecycleMu and mu held.
 func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest) error {
-	provider, repo, parentBranch := req.provider(), req.Repo, req.ParentBranch
+	provider, repo, parentBranch := req.Provider, req.Repo, req.ParentBranch
 	providerName, providerNamespace, branch := provider.Name, provider.Namespace, key.Branch
 	m.Log.Info("Creating new branch worker", "key", key.String(), "repository", repo.String())
 	worker := NewBranchWorker(

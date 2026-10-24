@@ -1,19 +1,23 @@
-# The KubeProvider for the SUT / config-dir install, mirroring what the Helm chart renders when
-# kubeProvider.create is true: "local" in the operator's namespace, using the operator's own
-# identity. Every GitTarget names its KubeProvider (spec.kubeProviderRef), and the reconcile-time
-# hard gate REQUIRES it to exist, so local mirroring needs this object — the operator never creates
-# it. spec.inCluster is honored only because deployment.yaml lists gitops-reverser/local in
-# --in-cluster-kube-providers. The empty selector admits every other namespace (matching the chart
-# default); tighten in a real install.
+# The KubeProvider for the SUT / config-dir install: "local" in the operator's namespace, using the
+# operator's own identity, as the Helm chart renders it when kubeProvider.create is true. Every
+# GitTarget names its KubeProvider (spec.kubeProviderRef), and the reconcile-time hard gate REQUIRES
+# it to exist, so local mirroring needs this object — the operator never creates it.
+# spec.inCluster is honored only because deployment.yaml lists gitops-reverser/local in
+# --in-cluster-kube-providers.
+#
+# Unlike the chart, whose provider grants nothing by default, this one grants what the e2e suite
+# needs: every namespace mirrors its own namespace and any cluster-scoped resource, and holds an
+# applier in its own namespace. Do not copy it into a shared cluster.
 apiVersion: configbutler.ai/v1alpha3
 kind: KubeProvider
 metadata:
   name: local
 spec:
   inCluster: {}
-  accessFrom:
-    selector: {}
-  # Nothing outside the admitted namespaces, as the chart renders it.
-  allowCrossNamespace:
-    sources: false
-    appliers: false
+  allowedGitTargets:
+    - consumerNamespaces: {from: All}
+      sourceNamespaces: ["{consumer.namespace}"]
+      clusterResources: ["*"]
+  allowedApplierClaims:
+    - consumerNamespaces: {from: All}
+      applierNamespaces: ["{consumer.namespace}"]

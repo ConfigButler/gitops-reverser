@@ -101,7 +101,7 @@ func applierSim(t *testing.T, objs ...runtime.Object) *fluxsim.Sim {
 }
 
 // The applier claim tests reach their appliers through KubeProviders in claimProviderNamespace, a
-// namespace of their own, so a provider admits team-a only through spec.accessFrom: the namespace
+// namespace of their own, so a provider admits team-a only through a grant: the namespace
 // policy is what those tests exercise. claimLocalProvider is the operator's own cluster there.
 const (
 	claimProviderNamespace = "clusters"
@@ -119,16 +119,16 @@ func claimProviderKey(name string) string {
 	return claimProviderNamespace + "/" + name
 }
 
-// admitting is a KubeProvider in claimProviderNamespace whose accessFrom admits namespaces, and
-// which lets an applier claim name an applier in another namespace (the test appliers live in flux-system
-// and argocd).
+// admitting is a KubeProvider in claimProviderNamespace that admits namespaces to mirror their own
+// namespace, and to hold appliers in any namespace (the test appliers live in flux-system and
+// argocd).
 func admitting(name string, namespaces ...string) *configbutleraiv1alpha3.KubeProvider {
 	return &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: claimProviderNamespace},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
-			InCluster:           &configbutleraiv1alpha3.KubeProviderInCluster{},
-			AccessFrom:          &configbutleraiv1alpha3.NamespaceMatcher{Names: namespaces},
-			AllowCrossNamespace: &configbutleraiv1alpha3.KubeProviderCrossNamespace{Appliers: true},
+			InCluster:            &configbutleraiv1alpha3.KubeProviderInCluster{},
+			AllowedGitTargets:    mirrorGrants(namespaces...),
+			AllowedApplierClaims: applierGrants([]configbutleraiv1alpha3.ScopeNamespace{"*"}, namespaces...),
 		},
 	}
 }
@@ -235,6 +235,7 @@ func claimTestClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Clie
 			referencingTarget("checkout-argo", configbutleraiv1alpha3.ApplierClaimKindArgoCD))
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
+		WithIndex(&configbutleraiv1alpha3.GitBranch{}, GitBranchProviderIndex, IndexGitBranchProvider).
 		WithStatusSubresource(&configbutleraiv1alpha3.FluxClaim{}, &configbutleraiv1alpha3.ArgoCDClaim{}).
 		Build()
 }
@@ -280,13 +281,13 @@ func reconcileClaim(t *testing.T, r *ApplierClaimReconciler) configbutleraiv1alp
 		require.NoError(t, r.Get(context.Background(), claimKey, claim))
 		require.NotNil(t, findCondition(*claim.StatusConditions(), ConditionTypeReady),
 			"every pass publishes Ready")
-		held := findCondition(*claim.StatusConditions(), ApplierClaimConditionHeld)
-		if conditionIsTrue(*claim.StatusConditions(), ApplierClaimConditionConfigured) && held != nil &&
-			!strings.Contains(held.Message, "which owns the switch") {
+		inControl := findCondition(*claim.StatusConditions(), ApplierClaimConditionInControl)
+		if conditionIsTrue(*claim.StatusConditions(), ApplierClaimConditionConfigured) && inControl != nil &&
+			!strings.Contains(inControl.Message, "which owns the switch") {
 			require.True(t, controllerutil.ContainsFinalizer(claim, claimFinalizer(claim)),
 				"an applier claim that holds its applier carries the finalizer")
 		}
-		if held != nil && held.Reason == ReasonSuspending {
+		if inControl != nil && inControl.Reason == ReasonSuspending {
 			assert.Equal(t, applierClaimSuspendingInterval, result.RequeueAfter, "a suspend is waited for closely")
 			return false
 		}
@@ -463,7 +464,7 @@ func TestApplierClaimReconcile_AHangingClusterIsBounded(t *testing.T) {
 }
 
 // TestApplierClaimReconcile_TheClaimsKubeProviderAdmitsIt: the applier is reached with the
-// applier claim's KubeProvider's credential, so that provider's accessFrom gates the check before the
+// applier claim's KubeProvider's credential, so that provider's allowedApplierClaims gate the check before the
 // cluster is ever asked.
 func TestApplierClaimReconcile_TheClaimsKubeProviderAdmitsIt(t *testing.T) {
 	cases := []struct {

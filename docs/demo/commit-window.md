@@ -7,7 +7,8 @@ resource types, so saving never commits the save button.
 
 **Run the [quickstart](../quickstart.md) first.** It leaves behind everything this example builds
 on: the `gitops-reverser-quickstart-demo` namespace, the `git-creds` Secret, a `GitProvider` named
-`example-provider` whose `allowedBranches` is `"*"`, and the chart's `local` `KubeProvider` in
+`example-provider` that lets its own namespace claim any branch (`allowedGitBranches` with
+`branchPatterns: ["*"]`), and the chart's `local` `KubeProvider` in
 `gitops-reverser`. If you configured those yourself instead, substitute your own names below.
 
 The example writes to its own branch, `commit-window-demo`, which no reconciler deploys. The

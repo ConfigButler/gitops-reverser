@@ -315,8 +315,8 @@ var _ = Describe("GitProvider Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "git@github.com:test/repo.git",
-					AllowedBranches: []string{"main"},
+					URL:                "git@github.com:test/repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "nonexistent-secret",
 					},
@@ -376,8 +376,8 @@ var _ = Describe("GitProvider Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "git@github.com:test/repo.git",
-					AllowedBranches: []string{"main"},
+					URL:                "git@github.com:test/repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "malformed-secret",
 					},
@@ -436,8 +436,8 @@ var _ = Describe("GitProvider Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "git@github.com:test/repo.git",
-					AllowedBranches: []string{"main"},
+					URL:                "git@github.com:test/repo.git",
+					AllowedGitBranches: branchesFromSame("main"),
 					Commit: &configbutleraiv1alpha3.CommitSpec{
 						Signing: &configbutleraiv1alpha3.CommitSigningSpec{
 							SecretRef: meta.LocalObjectReference{

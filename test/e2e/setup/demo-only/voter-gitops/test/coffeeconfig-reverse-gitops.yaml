@@ -4,9 +4,9 @@ metadata:
   name: demo-coffeeconfig
 spec:
   url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/demo.git
-  allowedBranches:
-    - main
-    - demo-test
+  allowedGitBranches:
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [main, demo-test]
   secretRef:
     name: git-creds-demo
 ---
@@ -18,6 +18,8 @@ spec:
   gitProviderRef:
     name: demo-coffeeconfig
   branch: demo-test
+  allowedGitTargets:
+    - consumerNamespaces: {from: Same}
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget

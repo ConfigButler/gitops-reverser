@@ -93,7 +93,7 @@ var _ = Describe("Bi Directional restart with work made while down (Flux)",
 
 		BeforeAll(func() {
 			skipUnlessBiDirectionalEnabled()
-			allowCrossNamespaceAppliers()
+			grantAppliersInAnyNamespace()
 			testNs = testNamespaceFor("echoes-restart-flux")
 			_, _ = kubectlRun("create", "namespace", testNs)
 			fluxName = "echoes-restart-" + testNs
@@ -138,7 +138,7 @@ var _ = Describe("Bi Directional restart with work made while down (Argo CD)",
 		BeforeAll(func() {
 			skipUnlessBiDirectionalEnabled()
 			requireArgoCDInstalled()
-			allowCrossNamespaceAppliers()
+			grantAppliersInAnyNamespace()
 			testNs = testNamespaceFor("echoes-restart-argo")
 			_, _ = kubectlRun("create", "namespace", testNs)
 

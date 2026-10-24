@@ -48,7 +48,10 @@ func sharedProviderReconciler(t *testing.T, objects ...ctrlclient.Object) *GitTa
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 	// The KubeProvider every GitTarget here mirrors through admits every namespace.
 	local := admitting(claimLocalProvider)
-	local.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}}
+	local.Spec.AllowedGitTargets = []configbutleraiv1alpha3.KubeProviderGitTargetGrant{{
+		ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{From: configbutleraiv1alpha3.GrantFromAll},
+		SourceNamespaces:   []configbutleraiv1alpha3.ScopeNamespace{configbutleraiv1alpha3.ConsumerNamespaceVariable},
+	}}
 	objects = append(objects, local)
 	for _, ns := range []string{"platform", "team-b"} {
 		objects = append(objects, &configbutleraiv1alpha3.GitProvider{
@@ -80,15 +83,16 @@ func TestCheckForConflicts_ASharedGitBranchIsOneBranchAcrossNamespaces(t *testin
 }
 
 // TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder: a GitTarget whose namespace the
-// GitBranch's GitProvider does not admit writes nothing, so it cannot hold a folder against the
-// targets that may. Without this, any namespace that knows a GitBranch's name could create a target
-// at "." first and block every folder on that branch. Once the provider admits it, the older target
-// owns its path as any other does.
+// GitBranch does not admit writes nothing, so it cannot hold a folder against the targets that may.
+// Without this, any namespace that knows a GitBranch's name could create a target at "." first and
+// block every folder on that branch. Once the GitBranch admits it, the older target owns its path as
+// any other does.
 func TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder(t *testing.T) {
 	branch := &configbutleraiv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: gitBranchNameForTest("monorepo", "main")},
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: "monorepo"}, Branch: "main",
+			GitProviderRef: meta.NamespacedObjectReference{Name: "monorepo"}, Branch: "main",
+			AllowedGitTargets: writersFromSame(),
 		},
 	}
 	squatter := sharedProviderTarget("intruder", "everything", "platform", ".", 2*time.Hour)
@@ -97,15 +101,19 @@ func TestCheckForConflicts_AnUnadmittedTargetReservesNoFolder(t *testing.T) {
 	r := sharedProviderReconciler(t, branch, squatter, owner)
 	conflict, msg, _, err := r.checkForConflicts(context.Background(), owner)
 	require.NoError(t, err)
-	assert.False(t, conflict, "a target its GitProvider does not admit must not hold a folder: %s", msg)
+	assert.False(t, conflict, "a target its GitBranch does not admit must not hold a folder: %s", msg)
 
-	var provider configbutleraiv1alpha3.GitProvider
-	require.NoError(
-		t,
-		r.Get(context.Background(), ctrlclient.ObjectKey{Namespace: "platform", Name: "monorepo"}, &provider),
+	var stored configbutleraiv1alpha3.GitBranch
+	require.NoError(t, r.Get(context.Background(), ctrlclient.ObjectKeyFromObject(branch), &stored))
+	stored.Spec.AllowedGitTargets = append(
+		stored.Spec.AllowedGitTargets,
+		configbutleraiv1alpha3.GitBranchGitTargetGrant{
+			ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+				From: configbutleraiv1alpha3.GrantFromNames, Names: grantNames("intruder"),
+			},
+		},
 	)
-	provider.Spec.AccessFrom = &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"intruder"}}
-	require.NoError(t, r.Update(context.Background(), &provider))
+	require.NoError(t, r.Update(context.Background(), &stored))
 
 	conflict, msg, reason, err := r.checkForConflicts(context.Background(), owner)
 	require.NoError(t, err)

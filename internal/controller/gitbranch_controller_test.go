@@ -29,16 +29,28 @@ const gitBranchTestURL = "https://github.com/acme/platform.git"
 
 var gitBranchEpoch = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 
-// branchProvider is a GitProvider in namespace for the test repository, allowing branches, Ready
-// unless told otherwise. It has no secretRef, so its credential resolves to anonymous and the
-// fixture's prover decides what that credential may do.
-func branchProvider(namespace, name string, allowed ...string) *configbutleraiv1alpha3.GitProvider {
+// branchProvider is a GitProvider in namespace for the test repository, letting GitBranches in its
+// own namespace claim the allowed branch patterns (every branch when none are given), Ready unless
+// told otherwise. It has no secretRef, so its credential resolves to anonymous and the fixture's
+// prover decides what that credential may do.
+func branchProvider(
+	namespace, name string,
+	allowed ...configbutleraiv1alpha3.BranchPattern,
+) *configbutleraiv1alpha3.GitProvider {
 	if len(allowed) == 0 {
-		allowed = []string{"*"}
+		allowed = []configbutleraiv1alpha3.BranchPattern{"*"}
 	}
 	return &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, UID: k8stypes.UID("uid-" + name)},
-		Spec:       configbutleraiv1alpha3.GitProviderSpec{URL: gitBranchTestURL, AllowedBranches: allowed},
+		Spec: configbutleraiv1alpha3.GitProviderSpec{URL: gitBranchTestURL,
+			AllowedGitBranches: []configbutleraiv1alpha3.GitProviderGitBranchGrant{
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From: configbutleraiv1alpha3.GrantFromSame,
+					},
+					BranchPatterns: allowed,
+				},
+			}},
 		Status: configbutleraiv1alpha3.GitProviderStatus{Conditions: []metav1.Condition{{
 			Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
 			LastTransitionTime: metav1.Now(),
@@ -54,7 +66,8 @@ func branchObject(namespace, name, provider, branch string, age time.Duration) *
 			CreationTimestamp: metav1.NewTime(gitBranchEpoch.Add(-age)),
 		},
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: provider}, Branch: branch,
+			GitProviderRef: meta.NamespacedObjectReference{Name: provider}, Branch: branch,
+			AllowedGitTargets: writersFromSame(),
 		},
 	}
 }
@@ -210,7 +223,8 @@ func TestGitBranch_TheHolderKeepsItsBranchWhenItsCredentialFails(t *testing.T) {
 	assert.Equal(t, GitBranchReasonBranchConflict, readyOf(younger).Reason)
 }
 
-// TestGitBranch_TheBranchMustBeAllowed: allowedBranches globs moved here from the GitTarget.
+// TestGitBranch_TheBranchMustBeAllowed: a branch matching no pattern the grants give the
+// GitBranch's namespace is refused, and never claimed.
 func TestGitBranch_TheBranchMustBeAllowed(t *testing.T) {
 	for branch, allowed := range map[string]bool{
 		"main": true, "develop": true, "feature/login": true, "release/v1.0": true,
@@ -230,7 +244,7 @@ func TestGitBranch_TheBranchMustBeAllowed(t *testing.T) {
 			assert.Equal(t, GitBranchReasonBranchNotAllowed, readyOf(got).Reason)
 			assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeStalled))
 			_, _, held := f.workers.Claims().HeldBy(ctrlclient.ObjectKeyFromObject(got))
-			assert.False(t, held, "a branch outside allowedBranches is never claimed")
+			assert.False(t, held, "a branch outside the granted patterns is never claimed")
 		})
 	}
 }
@@ -262,7 +276,7 @@ func TestGitBranch_DeletionStopsTheWorkerAndReleasesTheBranch(t *testing.T) {
 	f.reconcile(t, "team-b", "main")
 	holder := k8stypes.NamespacedName{Namespace: "platform", Name: "main"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: holder, Provider: "acme", Branch: "main",
+		GitBranch: holder, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"}, Branch: "main",
 		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 
@@ -295,8 +309,11 @@ func TestGitBranch_AMissingParentStallsTheBranch(t *testing.T) {
 
 	key := ctrlclient.ObjectKeyFromObject(branch)
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: key, Provider: "acme", Branch: "edits", ParentBranch: "release",
-		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
+		GitBranch:    key,
+		Provider:     k8stypes.NamespacedName{Namespace: "platform", Name: "acme"},
+		Branch:       "edits",
+		ParentBranch: "release",
+		Repo:         git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 	worker, _ := f.workers.WorkerForGitBranch(key)
 	worker.RecordMissingParentForTest("release")
@@ -323,7 +340,7 @@ func TestGitBranch_AnUnresolvedDefaultBranchStallsToo(t *testing.T) {
 	f.reconcile(t, "platform", "edits")
 	key := k8stypes.NamespacedName{Namespace: "platform", Name: "edits"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: key, Provider: "acme", Branch: "edits",
+		GitBranch: key, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"}, Branch: "edits",
 		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 	worker, _ := f.workers.WorkerForGitBranch(key)
@@ -369,7 +386,7 @@ func TestGitBranch_ANoticeIsPublishedWithoutAnyLook(t *testing.T) {
 	f.reconcile(t, "platform", "edits")
 	key := k8stypes.NamespacedName{Namespace: "platform", Name: "edits"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: key, Provider: "acme", Branch: "edits",
+		GitBranch: key, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"}, Branch: "edits",
 		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 	assert.Nil(t, f.reconcile(t, "platform", "edits").Status.LastPushNoticeAt, "no delivery yet")
@@ -394,7 +411,7 @@ func TestGitBranch_ARepointClearsTheNotice(t *testing.T) {
 		"the same repository keeps it")
 	key := k8stypes.NamespacedName{Namespace: "platform", Name: "main"}
 	require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
-		GitBranch: key, Provider: "acme", Branch: "main",
+		GitBranch: key, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"}, Branch: "main",
 		Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
 	}))
 	require.True(t, f.workers.NotifyPush("platform", "acme", "main", "abc"), "the old repository's worker")

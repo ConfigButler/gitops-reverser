@@ -69,11 +69,9 @@ var _ = Describe("Superseded source-scope fields", func() {
 		provider := &configbutleraiv1alpha3.KubeProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-source-scope", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.KubeProviderSpec{
-				SecretRef:  &meta.SecretKeyReference{Name: "kc"},
-				AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}},
-				AllowCrossNamespace: &configbutleraiv1alpha3.KubeProviderCrossNamespace{
-					Sources: true, Appliers: true,
-				},
+				SecretRef:            &meta.SecretKeyReference{Name: "kc"},
+				AllowedGitTargets:    mirrorGrants("team-a"),
+				AllowedApplierClaims: applierGrants([]configbutleraiv1alpha3.ScopeNamespace{"*"}, "team-a"),
 			},
 		}
 		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
@@ -81,9 +79,9 @@ var _ = Describe("Superseded source-scope fields", func() {
 
 		var storedProvider configbutleraiv1alpha3.KubeProvider
 		Expect(k8sClient.Get(ctx, provider.Key(), &storedProvider)).To(Succeed())
-		Expect(storedProvider.Spec.AccessFrom).NotTo(BeNil(), "accessFrom must round-trip, not be pruned")
-		Expect(storedProvider.AllowsCrossNamespaceSources()).To(BeTrue(), "allowCrossNamespace must round-trip")
-		Expect(storedProvider.AllowsCrossNamespaceAppliers()).To(BeTrue())
+		Expect(storedProvider.Spec.AllowedGitTargets).To(Equal(provider.Spec.AllowedGitTargets),
+			"allowedGitTargets must round-trip, not be pruned")
+		Expect(storedProvider.Spec.AllowedApplierClaims).To(Equal(provider.Spec.AllowedApplierClaims))
 
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-commit", Namespace: "default"},
@@ -185,9 +183,9 @@ var _ = Describe("Reference names must not be empty", func() {
 		provider := &configbutleraiv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "empty-secret-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitProviderSpec{
-				URL:             "https://example.com/repo.git",
-				AllowedBranches: []string{"main"},
-				SecretRef:       &meta.LocalObjectReference{Name: ""},
+				URL:                "https://example.com/repo.git",
+				AllowedGitBranches: branchesFromSame("main"),
+				SecretRef:          &meta.LocalObjectReference{Name: ""},
 			},
 		}
 
@@ -215,7 +213,7 @@ var _ = Describe("Reference names must not be empty", func() {
 		branch := &configbutleraiv1alpha3.GitBranch{
 			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitBranchSpec{
-				GitProviderRef: meta.LocalObjectReference{Name: ""}, Branch: "main",
+				GitProviderRef: meta.NamespacedObjectReference{Name: ""}, Branch: "main",
 			},
 		}
 		Expect(k8sClient.Create(ctx, branch)).NotTo(Succeed(),

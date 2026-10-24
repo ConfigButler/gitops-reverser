@@ -115,7 +115,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 	BeforeAll(func() {
 		skipUnlessBiDirectionalEnabled()
 		requireArgoCDInstalled()
-		allowCrossNamespaceAppliers()
+		grantAppliersInAnyNamespace()
 
 		By("creating test namespace")
 		testNs = testNamespaceFor("argo-bi-directional")
@@ -307,7 +307,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 			g.Expect(claimEventMessages(g, testNs, "ArgoCDClaim", run.appName, "ClaimedResourceReconciled")).
 				To(ContainSubstring("was switched on outside GitOps Reverser, which switched it off again"))
 		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
-		verifyResourceCondition(argoCDClaimResource, run.appName, testNs, "Held", "True", "AutomatedSyncOff",
+		verifyResourceCondition(argoCDClaimResource, run.appName, testNs, "InControl", "True", "AutomatedSyncOff",
 			"held off by GitOps Reverser")
 		Expect(run.applicationManagers()).To(ContainElement(argoReverserInitiator),
 			"the switch is held under GitOps Reverser's field manager")
@@ -376,7 +376,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 			g.Expect(strings.TrimSpace(enabled)).To(Equal("false"))
 		}, argoSyncTimeout, biPollInterval).Should(Succeed())
 		requestClaimReconcile(testNs, argoCDClaimResource, run.appSetClaimName)
-		verifyResourceCondition(argoCDClaimResource, run.appSetClaimName, testNs, "Held", "True",
+		verifyResourceCondition(argoCDClaimResource, run.appSetClaimName, testNs, "InControl", "True",
 			"AutomatedSyncOff", "kept off by ApplicationSet "+run.argoNs+"/"+run.appSetName)
 		verifyResourceCondition("gittarget", run.appSetTargetName, testNs, "ApplierClaimReady", "True",
 			"Succeeded", "")
@@ -405,7 +405,7 @@ var _ = Describe("Bi Directional (Argo CD) refusal", Label("bi-directional", "ar
 	BeforeAll(func() {
 		skipUnlessBiDirectionalEnabled()
 		requireArgoCDInstalled()
-		allowCrossNamespaceAppliers()
+		grantAppliersInAnyNamespace()
 
 		testNs = testNamespaceFor("argo-refusal")
 		_, _ = kubectlRun("create", "namespace", testNs)

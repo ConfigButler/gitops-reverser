@@ -271,7 +271,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		By("asserting the terminal refusal is published with a fix-naming message")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
 			"SourceNamespaceAuthorized", "False", "SourceNamespaceNotAllowed",
-			"spec.allowCrossNamespace.sources")
+			"spec.allowedGitTargets[].sourceNamespaces")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
 			"Stalled", "True", "SourceNamespaceNotAllowed", "")
 		verifyResourceCondition("watchrule", refusedRule, configNS,

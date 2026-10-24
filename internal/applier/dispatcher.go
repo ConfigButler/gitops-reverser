@@ -126,7 +126,7 @@ type Dispatcher struct {
 	// Now is the clock request tokens are taken from.
 	Now func() time.Time
 	// APIReader reads a FluxClaim uncached just before its Kustomization is resumed, so a suspend
-	// its reconciler is making is seen (Ask.Held). NewDispatcher sets it to the reader it was given.
+	// its reconciler is making is seen (Ask.InControl). NewDispatcher sets it to the reader it was given.
 	APIReader client.Reader
 
 	runMu    sync.RWMutex
@@ -374,7 +374,7 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) (git.App
 	applier := d.client(req.Applier.Kind, applierClient)
 	started, err := applier.Request(ctx, applierName(req.Applier), Ask{
 		Want: want, Commit: req.Commit, Reason: req.Reason, Token: req.Token, Current: req.Current, Record: req.Record,
-		Held: func(ctx context.Context) error { return d.claimHolds(ctx, req.Applier.ApplierClaim) },
+		InControl: func(ctx context.Context) error { return d.claimInControl(ctx, req.Applier.ApplierClaim) },
 	})
 	switch {
 	case errors.Is(err, errStale):
@@ -565,20 +565,20 @@ func (d *Dispatcher) progress(ctx context.Context, req git.ApplyRequest, op *ope
 	return progress, err
 }
 
-// ApplierClaimConditionHeld is a FluxClaim's Held condition: True (reason Suspended) once its
-// Kustomization is suspended under GitOps Reverser's field manager and that suspend's token is
-// handled, and True (reason Applying) while an operation of a branch worker has it resumed. The
-// applier claim's reconciler sets it.
-const ApplierClaimConditionHeld = "Held"
+// ApplierClaimConditionInControl is an applier claim's InControl condition. For a FluxClaim: True
+// (reason Suspended) once its Kustomization is suspended under GitOps Reverser's field manager and
+// that suspend's token is handled, and True (reason Applying) while an operation of a branch worker
+// has it resumed. The applier claim's reconciler sets it.
+const ApplierClaimConditionInControl = "InControl"
 
-// claimHolds is Ask.Held: it reads the FluxClaim uncached, and errs unless it is
-// Held=True and not being deleted. Its reconciler is otherwise suspending the Kustomization,
+// claimInControl is Ask.InControl: it reads the FluxClaim uncached, and errs unless it is
+// InControl=True and not being deleted. Its reconciler is otherwise suspending the Kustomization,
 // or about to (an adoption, an external resume it suspends again, a hand-back), and that suspend would land
 // on the resume: Flux would then handle the resume's token on a suspended return, and apply
 // nothing. It also errs when another applier claim comes first in line for the Kustomization, read
 // uncached as well: the recheck's cached read can still miss one. The attempt fails, and the worker
 // asks again after its backoff.
-func (d *Dispatcher) claimHolds(ctx context.Context, ref git.ApplierClaimRef) error {
+func (d *Dispatcher) claimInControl(ctx context.Context, ref git.ApplierClaimRef) error {
 	if ref.Kind != v1alpha3.ApplierClaimKindFlux {
 		return nil
 	}
@@ -586,7 +586,7 @@ func (d *Dispatcher) claimHolds(ctx context.Context, ref git.ApplierClaimRef) er
 	if err := d.APIReader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, claim); err != nil {
 		return fmt.Errorf("read %s: %w", ref, err)
 	}
-	held := apimeta.FindStatusCondition(claim.Status.Conditions, ApplierClaimConditionHeld)
+	inControl := apimeta.FindStatusCondition(claim.Status.Conditions, ApplierClaimConditionInControl)
 	holder, err := HeldByAnother(ctx, d.APIReader, claim)
 	switch {
 	case err != nil:
@@ -597,12 +597,12 @@ func (d *Dispatcher) claimHolds(ctx context.Context, ref git.ApplierClaimRef) er
 	case !claim.DeletionTimestamp.IsZero():
 		return fmt.Errorf("FluxClaim %s/%s is being deleted, and hands its Kustomization back",
 			ref.Namespace, ref.Name)
-	case held == nil || held.Status != metav1.ConditionTrue:
-		message := "it reports no Held condition yet"
-		if held != nil {
-			message = fmt.Sprintf("it is Held=%s, %s: %s", held.Status, held.Reason, held.Message)
+	case inControl == nil || inControl.Status != metav1.ConditionTrue:
+		message := "it reports no InControl condition yet"
+		if inControl != nil {
+			message = fmt.Sprintf("it is InControl=%s, %s: %s", inControl.Status, inControl.Reason, inControl.Message)
 		}
-		return fmt.Errorf("FluxClaim %s/%s does not hold its Kustomization suspended: %s",
+		return fmt.Errorf("FluxClaim %s/%s is not in control of its Kustomization: %s",
 			ref.Namespace, ref.Name, message)
 	}
 	return nil

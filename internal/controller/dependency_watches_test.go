@@ -38,6 +38,7 @@ func newDependencyWatchesTestClient(t *testing.T, objects ...ctrlclient.Object) 
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).
+		WithIndex(&configbutleraiv1alpha3.GitBranch{}, GitBranchProviderIndex, IndexGitBranchProvider).
 		Build()
 }
 
@@ -98,7 +99,8 @@ func gitBranch(providerName, namespace string) *configbutleraiv1alpha3.GitBranch
 	return &configbutleraiv1alpha3.GitBranch{
 		ObjectMeta: metav1.ObjectMeta{Name: gitBranchNameForTest(providerName, "main"), Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitBranchSpec{
-			GitProviderRef: meta.LocalObjectReference{Name: providerName}, Branch: "main",
+			GitProviderRef: meta.NamespacedObjectReference{Name: providerName}, Branch: "main",
+			AllowedGitTargets: writersFromSame(),
 		},
 	}
 }

@@ -10,7 +10,7 @@ These samples are quick starting points for common GitOps Reverser setups.
 - `gitreceiver.yaml`: A `GitReceiver` a Git host's push webhook points at, with its token Secret in
   its own namespace. It wakes every `GitProvider` whose `spec.url` a delivery names.
 - `kubeprovider.yaml`: A `KubeProvider` for a remote cluster, with its kubeconfig Secret in its own
-  namespace, showing `accessFrom` and `allowCrossNamespace`.
+  namespace, showing `allowedGitTargets` and `allowedApplierClaims`.
 - `clusterwatchrule.yaml`: Minimal `ClusterWatchRule` for cluster-scoped resources.
 - `fluxclaim.yaml`, `argocdclaim.yaml`: An applier claim holding the Flux `Kustomization` or
   the Argo CD `Application` that applies `example-target`'s folder, for its `spec.applierClaimRef`.

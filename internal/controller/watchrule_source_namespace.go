@@ -16,19 +16,11 @@ import (
 )
 
 // SourceNamespaceAuthorized condition reasons, re-exported from internal/authz so the decision and
-// the status surface can never drift apart.
-//
-// Three of the six went with the source-side selector: the condition can no longer be Unknown,
-// because the gate reads only control-plane objects this reconcile already has, and it can no
-// longer report an empty resolved scope, because "*" is one cluster-wide stream rather than a set
-// that could come back empty.
+// the status surface can never drift apart. The condition can never be Unknown: the gate reads only
+// control-plane objects this reconcile already has.
 const (
-	// WatchRuleReasonLegacySourceNamespace is the True reason when every item watches the rule's
-	// own namespace.
-	WatchRuleReasonLegacySourceNamespace = authz.ReasonLegacySourceNamespace
-	// WatchRuleReasonSourceNamespaceAllowed is the True reason when every item is admitted and at
-	// least one names a namespace other than the rule's own — an authorized override or the
-	// cluster-wide wildcard.
+	// WatchRuleReasonSourceNamespaceAllowed is the True reason when every item watches a namespace the
+	// KubeProvider's grants give the GitTarget.
 	WatchRuleReasonSourceNamespaceAllowed = authz.ReasonSourceNamespaceAllowed
 	// WatchRuleReasonSourceNamespaceNotAllowed is the TERMINAL False reason for a refusal.
 	WatchRuleReasonSourceNamespaceNotAllowed = authz.ReasonSourceNamespaceNotAllowed
@@ -41,7 +33,7 @@ const (
 // The gate is cross-object (WatchRule → GitTarget → KubeProvider), so it is not expressible in
 // CEL and is a reconciler check rather than a webhook, per docs/spec/where-validation-lives.md —
 // the same shape and ordering as checkSourceAuthorization. Running it on every reconcile is what
-// makes a delegation WITHDRAWN after a rule was accepted revoke that rule.
+// makes a grant WITHDRAWN after a rule was accepted revoke that rule.
 //
 // Every item is resolved, and the aggregate is published as one condition. A DENIED item refuses
 // the whole rule rather than being trimmed away: mirroring two of the three namespaces a rule asked
@@ -94,8 +86,8 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 // asserts the terminal condition must also be able to assert the rule is already gone.
 //
 // The refusal is terminal (Stalled=True, Reconciling=False) rather than a retry: nothing this
-// controller does will change the verdict. Recovery arrives as an EVENT — a KubeProvider flag or
-// accessFrom change — through the mappers registered in SetupWithManager.
+// controller does will change the verdict. Recovery arrives as an EVENT — a KubeProvider grant change
+// or a Namespace label change — through the mappers registered in SetupWithManager.
 func (r *WatchRuleReconciler) refuseSourceNamespace(
 	ctx context.Context,
 	st *reconcileStatus,

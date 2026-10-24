@@ -2,7 +2,7 @@
 # Kustomization and the GitRepository it applies from, suspend and resume the Kustomization and
 # stamp reconcile.fluxcd.io/requestedAt on either, list the consumers of the GitRepository
 # (Kustomizations, and HelmReleases with the HelmCharts built from it; without it the applier claim lists
-# none in status.source.otherConsumers), and check that it may.
+# none in status.source.alsoAppliedBy), and check that it may.
 #
 # It is kept OUT of role.yaml because no GitTarget needs it until one names an applier, and an
 # install that does not use Flux should not hold patch rights on Flux objects. Drop this pair when

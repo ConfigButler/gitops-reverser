@@ -1268,6 +1268,7 @@ tasks:
       - charts/gitops-reverser/templates/**
       - charts/gitops-reverser/crds/*.yaml
       - charts/gitops-reverser/config/role.yaml
+      - test/e2e/helm-values-suite-grants.yaml
     generates:
       - '{{.CS}}/{{.NAMESPACE}}/helm/install.yaml'
     cmds:
@@ -1292,6 +1293,7 @@ tasks:
           --set queue.redis.auth.existingSecret=valkey-auth \
           --set queue.redis.auth.existingSecretKey=password \
           --set service.clusterIP="{{.E2E_CONTROLLER_SERVICE_CLUSTER_IP}}" \
+          --values test/e2e/helm-values-suite-grants.yaml \
           ${skip_crds_arg}
         tmp_manifest="{{.CS}}/{{.NAMESPACE}}/helm/.install.yaml.tmp"
         {{.HELM}} --kube-context "{{.CTX}}" get manifest "{{.INSTALL_NAME}}" \

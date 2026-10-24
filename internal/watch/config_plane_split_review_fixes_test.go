@@ -272,7 +272,7 @@ func TestRefreshWatchedTypeTables_RetargetReResolvesAtEqualRevisions(t *testing.
 		"both remotes are one scan in, so their registry revisions are equal on purpose")
 
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "namespaces"),
+		clusterRuleForResource("rule-1", "namespaces"), []string{"*"},
 		"t", "test-ns", "test-provider", "test-ns", "test-path",
 	)
 	m.rememberGitTargetCluster(gitDestRef("t"), clusterA)

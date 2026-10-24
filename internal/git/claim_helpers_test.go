@@ -9,7 +9,7 @@ import (
 )
 
 // testGitBranch is the GitBranch a test worker writes for: one per provider and branch, in the
-// provider's namespace, as a GitBranch's gitProviderRef is always local.
+// provider's namespace.
 func testGitBranch(provider, namespace, branch string) k8stypes.NamespacedName {
 	return k8stypes.NamespacedName{Namespace: namespace, Name: testGitBranchName(provider, branch)}
 }
@@ -26,7 +26,7 @@ func claimForTest(m *WorkerManager, provider, namespace, branch string, repo Rep
 	}, true)
 	return WorkerRequest{
 		GitBranch: gitBranch,
-		Provider:  provider,
+		Provider:  k8stypes.NamespacedName{Namespace: namespace, Name: provider},
 		Branch:    branch,
 		Repo:      repo,
 	}

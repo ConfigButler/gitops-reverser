@@ -63,8 +63,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "https://github.com/test/repo.git",
-					AllowedBranches: []string{"*"},
+					URL:                "https://github.com/test/repo.git",
+					AllowedGitBranches: branchesFromSame("*"),
 					SecretRef: &meta.LocalObjectReference{
 						Name: "git-credentials",
 					},
@@ -179,8 +179,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "https://github.com/octocat/Hello-World",
-					AllowedBranches: []string{"main"},
+					URL:                "https://github.com/octocat/Hello-World",
+					AllowedGitBranches: branchesFromSame("main"),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
@@ -280,7 +280,7 @@ var _ = Describe("WatchRule Controller", func() {
 
 			By("Verifying the legacy own-namespace rule is authorized without any policy or flag")
 			Expect(sourceAuthorized.Status).To(Equal(metav1.ConditionTrue))
-			Expect(sourceAuthorized.Reason).To(Equal(WatchRuleReasonLegacySourceNamespace))
+			Expect(sourceAuthorized.Reason).To(Equal(WatchRuleReasonSourceNamespaceAllowed))
 
 			for _, c := range updatedRule.Status.Conditions {
 				if c.Type == ConditionTypeReady {

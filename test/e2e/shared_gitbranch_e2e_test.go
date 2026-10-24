@@ -17,8 +17,8 @@ import (
 // One GitBranch per repository branch, shared across namespaces (docs/architecture.md,
 // "GitBranch"). A GitBranch claims its branch once its GitProvider's credential opens a push
 // session, and holds it for every GitTarget that references it: those in other namespaces are
-// admitted by the GitProvider's spec.accessFrom and write with its credential, so the tenant
-// namespace holds no copy of it. A second GitBranch for the same repository branch, however it
+// admitted by the GitBranch's spec.allowedGitTargets and write with its GitProvider's credential, so
+// the tenant namespace holds no copy of it. A second GitBranch for the same repository branch, however it
 // spells the repository, holds nothing and reports BranchConflict; one with a bad credential
 // claims nothing at all, so creating it first blocks nobody.
 var _ = Describe("Manager shared GitBranch", Label("manager"), Ordered, func() {
@@ -45,11 +45,11 @@ var _ = Describe("Manager shared GitBranch", Label("manager"), Ordered, func() {
 		_, err := kubectlRunInNamespace(platformNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to the platform namespace")
 
-		By("creating the GitProvider, admitting the tenant namespace, and its GitBranch")
-		applySharedGitProvider(providerName, platformNs, repo.RepoURLHTTP, repo.GitSecretHTTP, tenantNs)
+		By("creating the GitProvider, and its GitBranch admitting the tenant namespace")
+		applySharedGitProvider(providerName, platformNs, repo.RepoURLHTTP, repo.GitSecretHTTP)
 		verifyResourceStatus("gitprovider", providerName, platformNs,
 			"True", "Succeeded", "Repository connectivity validated")
-		applySharedGitBranch(branchName, platformNs, providerName, "main")
+		applySharedGitBranch(branchName, platformNs, providerName, "main", tenantNs)
 		verifyResourceStatus("gitbranch", branchName, platformNs, "True", "Succeeded", "holds")
 	})
 
@@ -101,18 +101,18 @@ var _ = Describe("Manager shared GitBranch", Label("manager"), Ordered, func() {
 		}).Should(Succeed())
 	})
 
-	It("refuses a namespace the GitBranch's GitProvider does not admit", func() {
+	It("refuses a namespace the GitBranch does not admit", func() {
 		applySharedGitTarget("intruder", outsiderNs, branchName, platformNs, "outsider")
 		verifyResourceCondition("gittarget", "intruder", outsiderNs,
-			"Validated", "False", "NamespaceNotAuthorized", "spec.accessFrom")
+			"Validated", "False", "NamespaceNotAuthorized", "spec.allowedGitTargets")
 	})
 
 	It("holds the branch against a second GitBranch, even through another GitProvider", func() {
 		By("giving the tenant a GitProvider of its own, with a valid credential, for the same repository")
 		_, err := kubectlRunInNamespace(tenantNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred())
-		applySharedGitProvider("own-monorepo", tenantNs, repo.RepoURLHTTP, repo.GitSecretHTTP, "")
-		applySharedGitBranch("own-main", tenantNs, "own-monorepo", "main")
+		applySharedGitProvider("own-monorepo", tenantNs, repo.RepoURLHTTP, repo.GitSecretHTTP)
+		applySharedGitBranch("own-main", tenantNs, "own-monorepo", "main", "")
 
 		verifyResourceCondition("gitbranch", "own-main", tenantNs,
 			"Stalled", "True", "BranchConflict", fmt.Sprintf("%s/%s", platformNs, branchName))
@@ -127,12 +127,12 @@ var _ = Describe("Manager shared GitBranch", Label("manager"), Ordered, func() {
 		By("creating a GitBranch for the release branch whose GitProvider's credential is wrong")
 		_, err := kubectlRunInNamespace(outsiderNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred())
-		applySharedGitProvider("squat", outsiderNs, repo.RepoURLHTTP, repo.GitSecretInvalid, "")
-		applySharedGitBranch("squat-release", outsiderNs, "squat", "release")
+		applySharedGitProvider("squat", outsiderNs, repo.RepoURLHTTP, repo.GitSecretInvalid)
+		applySharedGitBranch("squat-release", outsiderNs, "squat", "release", "")
 		verifyResourceStatus("gitbranch", "squat-release", outsiderNs, "False", "PushSessionFailed", "")
 
 		By("creating a valid GitBranch for the same branch afterwards")
-		applySharedGitBranch("monorepo-release", platformNs, providerName, "release")
+		applySharedGitBranch("monorepo-release", platformNs, providerName, "release", "")
 		verifyResourceStatus("gitbranch", "monorepo-release", platformNs, "True", "Succeeded", "holds")
 	})
 
@@ -155,13 +155,10 @@ var _ = Describe("Manager shared GitBranch", Label("manager"), Ordered, func() {
 	})
 })
 
-// applySharedGitProvider applies a GitProvider for url with secret, admitting accessFrom when set.
-func applySharedGitProvider(name, namespace, url, secret, accessFrom string) {
+// applySharedGitProvider applies a GitProvider for url with secret, letting GitBranches in its own
+// namespace claim main and release.
+func applySharedGitProvider(name, namespace, url, secret string) {
 	By(fmt.Sprintf("creating GitProvider '%s/%s'", namespace, name))
-	access := ""
-	if accessFrom != "" {
-		access = fmt.Sprintf("\n  accessFrom:\n    names: [%s]", accessFrom)
-	}
 	_, err := kubectlRunWithStdin("", fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider
 metadata:
@@ -169,17 +166,24 @@ metadata:
   namespace: %s
 spec:
   url: %s
-  allowedBranches: ["main", "release"]
+  allowedGitBranches:
+    - consumerNamespaces: {from: Same}
+      branchPatterns: ["main", "release"]
   secretRef:
-    name: %s%s
-`, name, namespace, url, secret, access), "apply", "-f", "-")
+    name: %s
+`, name, namespace, url, secret), "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply GitProvider %s/%s", namespace, name)
 }
 
-// applySharedGitBranch applies a GitBranch writing branch through the GitProvider provider.
-func applySharedGitBranch(name, namespace, provider, branch string) {
+// applySharedGitBranch applies a GitBranch writing branch through the GitProvider provider, in its
+// own namespace. GitTargets in its own namespace may write through it, and in sharedWith when set.
+func applySharedGitBranch(name, namespace, provider, branch, sharedWith string) {
 	By(fmt.Sprintf("creating GitBranch '%s/%s' for branch '%s' through GitProvider '%s'",
 		namespace, name, branch, provider))
+	var shared []string
+	if sharedWith != "" {
+		shared = []string{sharedWith}
+	}
 	_, err := kubectlRunWithStdin("", fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitBranch
 metadata:
@@ -189,7 +193,8 @@ spec:
   gitProviderRef:
     name: %s
   branch: %s
-`, name, namespace, provider, branch), "apply", "-f", "-")
+  allowedGitTargets:%s
+`, name, namespace, provider, branch, gitBranchWritersYAML(shared...)), "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply GitBranch %s/%s", namespace, name)
 }
 

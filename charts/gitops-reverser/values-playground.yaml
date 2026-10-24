@@ -1,0 +1,18 @@
+# A playground install: every namespace may mirror its own namespace, and hold an applier in its own
+# namespace, through the chart's `local` KubeProvider, which uses the operator's own identity. That
+# is the reach of a single-cluster demo, chosen visibly:
+#
+#   helm install gitops-reverser oci://ghcr.io/configbutler/charts/gitops-reverser \
+#     -n gitops-reverser --create-namespace -f values-playground.yaml
+#
+# Every namespace then gains use of the operator's identity for its own namespace, bypassing live
+# namespace RBAC. No grant here reaches another namespace or a cluster-scoped resource: a
+# ClusterWatchRule through `local` needs a grant with clusterResources. Do not use it where tenants
+# share a cluster.
+kubeProvider:
+  allowedGitTargets:
+    - consumerNamespaces: {from: All}
+      sourceNamespaces: ["{consumer.namespace}"]
+  allowedApplierClaims:
+    - consumerNamespaces: {from: All}
+      applierNamespaces: ["{consumer.namespace}"]

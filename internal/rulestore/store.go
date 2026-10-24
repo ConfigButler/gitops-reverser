@@ -7,6 +7,7 @@ It provides efficient lookup and matching of Kubernetes resources against active
 package rulestore
 
 import (
+	"slices"
 	"strings"
 	"sync"
 
@@ -141,8 +142,19 @@ type CompiledClusterRule struct {
 	// CreatedAt is the ClusterWatchRule's creation timestamp; see CompiledRule.CreatedAt.
 	CreatedAt metav1.Time
 
+	// ClusterResources are the cluster-scoped resource identities the KubeProvider's grants gave the
+	// GitTarget when the rule compiled ("*" for every one). The planner watches no other type, so
+	// discovery serving a new type later never widens what the rule mirrors.
+	ClusterResources []string
+
 	// Rules contains the compiled cluster resource rules with per-rule scope.
 	Rules []CompiledClusterResourceRule
+}
+
+// AllowsType reports whether the grant the rule compiled under covers resource in group.
+func (c CompiledClusterRule) AllowsType(group, resource string) bool {
+	scope := configv1alpha3.KubeProviderGitTargetScope{ClusterResources: c.ClusterResources}
+	return scope.AllowsClusterResource(group, resource)
 }
 
 // CompiledClusterResourceRule represents a single cluster resource rule.
@@ -265,6 +277,7 @@ func (s *RuleStore) GetWatchRule(key types.NamespacedName) (CompiledRule, bool) 
 //   - path: POSIX-like relative path prefix for writes (from GitTarget.Spec.Path, sanitized upstream)
 func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	rule configv1alpha3.ClusterWatchRule,
+	clusterResources []string,
 	gitTargetName string,
 	gitTargetNamespace string,
 	gitBranchName string,
@@ -287,6 +300,7 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 		GitBranchNamespace: gitBranchNamespace,
 		Path:               path,
 		CreatedAt:          rule.CreationTimestamp,
+		ClusterResources:   slices.Clone(clusterResources),
 		Rules:              make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
 	}
 

@@ -26,7 +26,9 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -90,6 +92,8 @@ func startManager(t *testing.T, register func(manager.Manager) error) {
 		Scheme:         scheme.Scheme,
 		Metrics:        metricsserver.Options{BindAddress: "0"},
 		LeaderElection: false,
+		// Each test starts its own manager in this one process, some with the same controllers.
+		Controller: config.Controller{SkipNameValidation: ptr.To(true)},
 	})
 	require.NoError(t, err)
 	require.NoError(t, register(mgr))
@@ -109,9 +113,9 @@ func startManager(t *testing.T, register func(manager.Manager) error) {
 }
 
 // seedTarget creates a namespace, a GitProvider, a KubeProvider and a GitTarget mirroring through
-// it, and returns the namespace. The KubeProvider is in the target's own namespace, which it always
-// admits: a ClusterWatchRule is refused (and its GitTargetReady overwritten with the refusal) unless
-// the source cluster admits the target's namespace.
+// it, and returns the namespace. The KubeProvider is in the target's own namespace and grants it
+// every cluster-scoped resource: a ClusterWatchRule is refused (and its GitTargetReady overwritten
+// with the refusal) unless the source cluster admits the target's namespace.
 func seedTarget(ctx context.Context, t *testing.T, name string) string {
 	t.Helper()
 
@@ -122,15 +126,33 @@ func seedTarget(ctx context.Context, t *testing.T, name string) string {
 	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "provider", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
-			URL:             "https://github.com/test/repo.git",
-			AllowedBranches: []string{"*"},
-			SecretRef:       &meta.LocalObjectReference{Name: "git-credentials"},
+			URL: "https://github.com/test/repo.git",
+			AllowedGitBranches: []configbutleraiv1alpha3.GitProviderGitBranchGrant{
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From: configbutleraiv1alpha3.GrantFromSame,
+					},
+					BranchPatterns: []configbutleraiv1alpha3.BranchPattern{"*"},
+				},
+			},
+			SecretRef: &meta.LocalObjectReference{Name: "git-credentials"},
 		},
 	}))
 	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: namespace},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
 			InCluster: &configbutleraiv1alpha3.KubeProviderInCluster{},
+			AllowedGitTargets: []configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+				{
+					ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+						From: configbutleraiv1alpha3.GrantFromSame,
+					},
+					SourceNamespaces: []configbutleraiv1alpha3.ScopeNamespace{
+						configbutleraiv1alpha3.ConsumerNamespaceVariable,
+					},
+					ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
+				},
+			},
 		},
 	}))
 	require.NoError(t, k8sClient.Create(ctx, &configbutleraiv1alpha3.GitTarget{
@@ -187,29 +209,8 @@ func awaitMirroredReady(
 	budget time.Duration,
 ) {
 	t.Helper()
-
-	deadline := time.Now().Add(budget)
-	last := "absent"
-	for time.Now().Before(deadline) {
-		obj := fresh()
-		if err := k8sClient.Get(ctx, key, obj); err == nil {
-			var conditions []metav1.Condition
-			switch typed := obj.(type) {
-			case *configbutleraiv1alpha3.WatchRule:
-				conditions = typed.Status.Conditions
-			case *configbutleraiv1alpha3.ClusterWatchRule:
-				conditions = typed.Status.Conditions
-			}
-			if c := apimeta.FindStatusCondition(conditions, controller.ConditionTypeGitTargetReady); c != nil {
-				if c.Status == want {
-					return
-				}
-				last = string(c.Status)
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("GitTargetReady never reached %q within %s (last seen %q)", want, budget, last)
+	pollCondition(ctx, t, key, fresh, controller.ConditionTypeGitTargetReady, "status "+string(want),
+		func(c *metav1.Condition) bool { return c.Status == want }, budget)
 }
 
 // TestWatchRule_FollowsGitTargetStatusOnlyRecovery is the regression test for a rule whose mirrored

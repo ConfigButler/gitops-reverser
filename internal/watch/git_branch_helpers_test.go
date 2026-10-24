@@ -30,6 +30,10 @@ func claimWorkerForTest(
 		Created:   time.Unix(0, 0),
 	}, true)
 	return git.WorkerRequest{
-		GitBranch: gitBranch, Provider: provider, Branch: branch, Repo: repo, ParentBranch: parentBranch,
+		GitBranch:    gitBranch,
+		Provider:     k8stypes.NamespacedName{Namespace: namespace, Name: provider},
+		Branch:       branch,
+		Repo:         repo,
+		ParentBranch: parentBranch,
 	}
 }

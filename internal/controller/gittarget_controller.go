@@ -308,8 +308,14 @@ func (r *GitTargetReconciler) publishAheadOfGates(
 ) {
 	layout, scanned := r.observeLayout(target)
 	publishLayout(st, target, layout, scanned)
+	// The provider labels join git_pushes_total, which the worker labels with the provider it
+	// pushes through: the GitBranch's, which may live in another namespace than the GitBranch.
+	provider := dest.providerKey()
+	if provider.Name == "" {
+		provider.Namespace = dest.key.Namespace
+	}
 	telemetry.RecordBranchTarget(
-		target.Namespace, target.Name, dest.key.Namespace, dest.providerName(), dest.branchName(),
+		target.Namespace, target.Name, provider.Namespace, provider.Name, dest.branchName(),
 		target.SourceCluster())
 }
 
@@ -473,10 +479,10 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 	// KubeProvider now, not here — the GitTarget only NAMES its source cluster. The
 	// KubeProvider's readiness is projected onto the GitTarget as a separate condition.
 
-	// Namespace authorization: a GitTarget may reference a KubeProvider only from the provider's
-	// own namespace or one its spec.accessFrom admits, and only while the provider holds its audit
-	// route. Enforced HERE and only here, on every reconcile — which
-	// also covers a policy tightened after the GitTarget was created. Failing this gate returns
+	// Namespace authorization: a GitTarget may reference a KubeProvider only while a grant in its
+	// spec.allowedGitTargets admits the GitTarget's namespace, and only while the provider holds its
+	// audit route. Enforced HERE and only here, on every reconcile — which also covers a policy
+	// tightened after the GitTarget was created. Failing this gate returns
 	// before DeclareForGitTarget below, so an unauthorized target starts no watch and writes no Git.
 	authorized, authReason, authMsg, authErr := r.checkSourceAuthorization(ctx, target)
 	if authErr != nil {
@@ -1013,11 +1019,13 @@ func (r *GitTargetReconciler) resolveDestination(
 	return gitDestination{key: target.GitBranchKey(), branch: branch, provider: provider}, nil
 }
 
-func (d gitDestination) providerName() string {
+// providerKey is the GitBranch's GitProvider, its namespace resolved: a GitBranch may name a
+// GitProvider in another namespace, and the worker pushes with that one's credential.
+func (d gitDestination) providerKey() k8stypes.NamespacedName {
 	if d.branch == nil {
-		return ""
+		return k8stypes.NamespacedName{}
 	}
-	return d.branch.Spec.GitProviderRef.Name
+	return d.branch.GitProviderKey()
 }
 
 func (d gitDestination) branchName() string {
@@ -1031,7 +1039,7 @@ func (d gitDestination) branchName() string {
 func (d gitDestination) workerRequest() git.WorkerRequest {
 	return git.WorkerRequest{
 		GitBranch:    d.key,
-		Provider:     d.providerName(),
+		Provider:     d.providerKey(),
 		Branch:       d.branchName(),
 		Repo:         repoIdentityOf(d.provider),
 		ParentBranch: d.branch.Spec.ParentBranch,
@@ -1439,8 +1447,8 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitDestinationToGitTargets),
 			builder.WithPredicates(gitBranchReadyOrSpecChanged()),
 		).
-		// A GitProvider's accessFrom decides which namespaces may reference its GitBranches, so a
-		// changed or freshly applied provider re-runs the GitTargets on those GitBranches.
+		// A GitProvider's grants decide which GitBranches may claim through it, so a changed or
+		// freshly applied provider re-runs the GitTargets on those GitBranches.
 		// GenerationChangedPredicate ignores the status-only updates its controller writes itself.
 		Watches(
 			&configbutleraiv1alpha3.GitProvider{},
@@ -1457,8 +1465,8 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.kubeProviderToGitTargets),
 			builder.WithPredicates(kubeProviderReadyOrSpecChanged()),
 		).
-		// React to a Namespace's LABELS changing: a KubeProvider's accessFrom selector is
-		// evaluated against namespace labels, so a label change can grant or revoke a GitTarget's
+		// React to a Namespace's LABELS changing: a Selector grant is evaluated against namespace
+		// labels, so a label change can grant or revoke a GitTarget's
 		// authorization. Re-enqueue the GitTargets in that namespace so the reconcile-time refusal
 		// converges instead of waiting for the periodic reconcile. LabelChangedPredicate ignores the
 		// unrelated namespace churn (annotations, status).
@@ -1569,14 +1577,12 @@ func gitTargetsOn(
 	case *configbutleraiv1alpha3.GitBranch:
 		branches[client.ObjectKeyFromObject(obj)] = true
 	case *configbutleraiv1alpha3.GitProvider:
-		var list configbutleraiv1alpha3.GitBranchList
-		if err := reader.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
+		list, err := gitBranchesOf(ctx, reader, obj)
+		if err != nil {
 			return nil, err
 		}
-		for i := range list.Items {
-			if list.Items[i].Spec.GitProviderRef.Name == obj.GetName() {
-				branches[client.ObjectKeyFromObject(&list.Items[i])] = true
-			}
+		for i := range list {
+			branches[client.ObjectKeyFromObject(&list[i])] = true
 		}
 	}
 	if len(branches) == 0 {
@@ -1597,7 +1603,7 @@ func gitTargetsOn(
 
 // gitDestinationToGitTargets maps a GitBranch or GitProvider event to every GitTarget writing
 // through it (gitTargetsOn): a GitBranch taking or losing its branch changes whether they can be
-// wired, and a GitProvider's accessFrom decides which of their namespaces may reference it.
+// wired, and a GitBranch's allowedGitTargets decide which of their namespaces may reference it.
 func (r *GitTargetReconciler) gitDestinationToGitTargets(
 	ctx context.Context,
 	obj client.Object,
@@ -1607,16 +1613,12 @@ func (r *GitTargetReconciler) gitDestinationToGitTargets(
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
-	requests := make([]ctrlreconcile.Request, 0, len(targets))
-	for i := range targets {
-		requests = append(requests, ctrlreconcile.Request{NamespacedName: client.ObjectKeyFromObject(&targets[i])})
-	}
-	return requests
+	return requestsFor(targets)
 }
 
 // kubeProviderToGitTargets maps a KubeProvider event to every GitTarget that references it as
-// its source, across ALL namespaces (accessFrom may admit any of them). It re-enqueues dependents
-// when the provider's Ready flips or its accessFrom policy changes, so the projected
+// its source, across ALL namespaces (a grant may admit any of them). It re-enqueues dependents
+// when the provider's Ready flips or its grants change, so the projected
 // KubeProviderReady and the namespace-authorization refusal converge without waiting for the
 // periodic reconcile.
 func (r *GitTargetReconciler) kubeProviderToGitTargets(

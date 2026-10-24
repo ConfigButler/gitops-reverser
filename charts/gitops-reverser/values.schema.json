@@ -400,25 +400,15 @@
             }
           }
         },
-        "accessFrom": {
-          "type": "object",
-          "description": "Control-cluster namespace policy (names and/or selector) for which OTHER namespaces may reference this provider; the release namespace always may.",
-          "additionalProperties": true
+        "allowedGitTargets": {
+          "type": "array",
+          "description": "Rendered as the provider's spec.allowedGitTargets: which namespaces' GitTargets may mirror through it (consumerNamespaces), and what (sourceNamespaces, clusterResources). Empty grants nothing. The CRD validates each grant.",
+          "items": { "type": "object" }
         },
-        "allowCrossNamespace": {
-          "type": "object",
-          "additionalProperties": false,
-          "description": "What an admitted namespace may reach outside itself through this provider.",
-          "properties": {
-            "sources": {
-              "type": "boolean",
-              "description": "A WatchRule may watch other namespaces, \"*\" included."
-            },
-            "appliers": {
-              "type": "boolean",
-              "description": "A FluxClaim or ArgoCDClaim may name a Kustomization or Application in another namespace."
-            }
-          }
+        "allowedApplierClaims": {
+          "type": "array",
+          "description": "Rendered as the provider's spec.allowedApplierClaims: which namespaces' applier claims may hold an applier through it (consumerNamespaces), and where it may live (applierNamespaces). Empty grants nothing. The CRD validates each grant.",
+          "items": { "type": "object" }
         }
       }
     },
@@ -565,7 +555,7 @@
           "properties": {
             "name": { "type": "string" },
             "url": { "type": "string" },
-            "allowedBranches": { "type": "array", "items": { "type": "string" } },
+            "branchPatterns": { "type": "array", "items": { "type": "string" } },
             "secretRef": {
               "type": "object",
               "additionalProperties": false,

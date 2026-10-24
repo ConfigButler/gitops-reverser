@@ -11,8 +11,8 @@ spec:
   kubeProviderRef:
     name: local
     namespace: gitops-reverser
-  # In another namespace than the applier claim's, so the KubeProvider must set
-  # allowCrossNamespace.appliers: true, or the applier claim reports ApplierNamespaceNotAllowed.
+  # The KubeProvider's spec.allowedApplierClaims must admit this namespace with this applier's
+  # namespace in applierNamespaces, or the applier claim reports ApplierNamespaceNotAllowed.
   kustomizationRef:
     namespace: flux-system
     name: example-apps

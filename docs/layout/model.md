@@ -530,5 +530,5 @@ one asserts a rule PR 1 ships; the second-namespace one is written and skipped n
 - Namespace-local `GitProvider` (answered): the homelab examples put a `GitTarget` in `argocd`,
   `flux-system` and `homelab-config`, each with its own `GitProvider`, three copies of one
   credential in a single-owner cluster. One `GitBranch` now serves all three:
-  `spec.gitBranchRef.namespace` names it, and its `GitProvider`'s `spec.accessFrom` admits the other
+  `spec.gitBranchRef.namespace` names it, and its `spec.allowedGitTargets` admit the other
   namespaces. A second `GitBranch` for the same repository branch holds nothing (`BranchConflict`).

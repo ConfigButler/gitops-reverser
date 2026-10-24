@@ -137,7 +137,7 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 
 	// Add rule
 	store.AddOrUpdateClusterWatchRule(
-		rule,
+		rule, []string{"*"},
 		"test-cluster-target",
 		"gitops-system",
 		"cluster-provider",
@@ -222,7 +222,15 @@ func TestDeleteClusterWatchRule(t *testing.T) {
 	key := types.NamespacedName{Name: "delete-cluster-test", Namespace: ""}
 
 	// Add rule
-	store.AddOrUpdateClusterWatchRule(rule, "test-dest", "gitops-system", "test-repo", "gitops-system", "test")
+	store.AddOrUpdateClusterWatchRule(
+		rule,
+		[]string{"*"},
+		"test-dest",
+		"gitops-system",
+		"test-repo",
+		"gitops-system",
+		"test",
+	)
 
 	// Verify it exists
 	if _, exists := store.clusterRules[key]; !exists {
@@ -431,7 +439,7 @@ func TestGetMatchingClusterRules(t *testing.T) {
 	podRule.Name = "pod-cluster-rule"
 
 	store.AddOrUpdateClusterWatchRule(
-		clusterRule,
+		clusterRule, []string{"*"},
 		"dest1",
 		"gitops-system",
 		"repo1",
@@ -439,7 +447,7 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		"cluster",
 	)
 	store.AddOrUpdateClusterWatchRule(
-		podRule,
+		podRule, []string{"*"},
 		"dest2",
 		"gitops-system",
 		"repo2",
@@ -664,7 +672,15 @@ func TestSnapshotClusterWatchRules(t *testing.T) {
 	}
 	rule1.Name = "cluster-rule1"
 
-	store.AddOrUpdateClusterWatchRule(rule1, "dest1", "gitops-system", "repo1", "gitops-system", "cluster")
+	store.AddOrUpdateClusterWatchRule(
+		rule1,
+		[]string{"*"},
+		"dest1",
+		"gitops-system",
+		"repo1",
+		"gitops-system",
+		"cluster",
+	)
 
 	snapshot := store.SnapshotClusterWatchRules()
 
@@ -838,6 +854,7 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 				}},
 			},
 		},
+		[]string{"*"},
 		"cluster-target", "ops", "cluster-provider", "ops", "cluster",
 	)
 
@@ -1009,7 +1026,15 @@ func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 		},
 	}
 	clusterRule.Name = "cluster-rule"
-	store.AddOrUpdateClusterWatchRule(clusterRule, "target", "tenant-acme", "provider", "tenant-acme", "clusters")
+	store.AddOrUpdateClusterWatchRule(
+		clusterRule,
+		[]string{"*"},
+		"target",
+		"tenant-acme",
+		"provider",
+		"tenant-acme",
+		"clusters",
+	)
 
 	inScope := &unstructured.Unstructured{}
 	inScope.SetNamespace("tenant-acme")
@@ -1168,7 +1193,7 @@ func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 					},
 				}
 				rule.Name = "cluster-rule"
-				store.AddOrUpdateClusterWatchRule(rule, "target", "tenant-acme", "provider",
+				store.AddOrUpdateClusterWatchRule(rule, []string{"*"}, "target", "tenant-acme", "provider",
 					"tenant-acme", "clusters")
 
 				return func() {

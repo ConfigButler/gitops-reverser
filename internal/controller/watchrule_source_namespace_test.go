@@ -29,7 +29,7 @@ const (
 	wrsnTarget   = "acme"
 	wrsnRule     = "repo-config-rule"
 	wrsnProvider = "workspaces"
-	// wrsnProviderNS holds the KubeProvider, so wrsnTenantNS reaches it only through accessFrom.
+	// wrsnProviderNS holds the KubeProvider, so wrsnTenantNS reaches it only through a grant.
 	wrsnProviderNS = "platform"
 )
 
@@ -50,15 +50,17 @@ func wrsnGitProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-func wrsnKubeProvider(delegate bool) *configbutleraiv1alpha3.KubeProvider {
+// wrsnKubeProvider admits wrsnTenantNS to watch its own namespace, and every namespace when wide.
+func wrsnKubeProvider(wide bool) *configbutleraiv1alpha3.KubeProvider {
+	grants := mirrorGrants(wrsnTenantNS)
+	if wide {
+		grants[0].SourceNamespaces = append(grants[0].SourceNamespaces, "*")
+	}
 	return &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnProvider, Namespace: wrsnProviderNS},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
-			SecretRef: &meta.SecretKeyReference{Name: "kc"},
-			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{
-				Names: []string{wrsnTenantNS},
-			},
-			AllowCrossNamespace: &configbutleraiv1alpha3.KubeProviderCrossNamespace{Sources: delegate},
+			SecretRef:         &meta.SecretKeyReference{Name: "kc"},
+			AllowedGitTargets: grants,
 		},
 	}
 }
@@ -142,23 +144,22 @@ func wrsnCondition(t *testing.T, rule *configbutleraiv1alpha3.WatchRule, conditi
 }
 
 func wrsnBaseObjects(
-	delegate bool,
+	wide bool,
 	sourceNamespaces ...string,
 ) []client.Object {
 	return []client.Object{
 		wrsnGitTarget(),
 		wrsnGitProvider(),
-		wrsnKubeProvider(delegate),
+		wrsnKubeProvider(wide),
 		wrsnWatchRule(sourceNamespaces...),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: wrsnTenantNS}},
 	}
 }
 
-// TestReconcile_LegacyWatchRuleNeedsNoPolicyOrFlag is THE test, and it is first on purpose.
-//
-// A WatchRule that omits sourceNamespace must compile with no GitTarget policy and no delegation
-// flag. If this fails, deny-by-default has broken every existing WatchRule on upgrade.
-func TestReconcile_LegacyWatchRuleNeedsNoPolicyOrFlag(t *testing.T) {
+// TestReconcile_OwnNamespaceRuleNeedsOnlyANamespaceGrant: a WatchRule that omits sourceNamespace
+// watches its own namespace, which a grant giving sourceNamespaces '{consumer.namespace}' covers. It needs no
+// wider grant.
+func TestReconcile_OwnNamespaceRuleNeedsOnlyANamespaceGrant(t *testing.T) {
 	ctx := context.Background()
 	f := newWRSNFixture(t, wrsnBaseObjects(false, ""))
 
@@ -166,11 +167,11 @@ func TestReconcile_LegacyWatchRuleNeedsNoPolicyOrFlag(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{wrsnRule}, f.compiledNames(),
-		"an existing own-namespace WatchRule must keep working with no new configuration")
+		"an own-namespace WatchRule needs only a '{consumer.namespace}' grant")
 
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
-	assert.Equal(t, WatchRuleReasonLegacySourceNamespace, cond.Reason)
+	assert.Equal(t, WatchRuleReasonSourceNamespaceAllowed, cond.Reason)
 }
 
 // TestReconcile_DeniedSourceNamespaceStartsNoWatch mirrors
@@ -178,7 +179,7 @@ func TestReconcile_LegacyWatchRuleNeedsNoPolicyOrFlag(t *testing.T) {
 // The gate has to stop the data plane, not just describe it.
 func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	ctx := context.Background()
-	// The target names the namespace, but the provider does not delegate.
+	// The rule asks for another namespace, but the grant gives only '{consumer.namespace}'.
 	f := newWRSNFixture(t, wrsnBaseObjects(
 		false, wrsnSourceNS))
 
@@ -191,7 +192,7 @@ func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "spec.allowCrossNamespace.sources",
+	assert.Contains(t, cond.Message, "spec.allowedGitTargets[].sourceNamespaces",
 		"the message must name the fix")
 }
 
@@ -246,7 +247,7 @@ func TestReconcile_AuthorizedOverrideCompilesWithItsSourceNamespace(t *testing.T
 }
 
 // TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans is the REVOCATION contract.
-// A rule accepted and then denied by a withdrawn delegation must have its compiled rule REMOVED and
+// A rule accepted and then denied by a withdrawn grant must have its compiled rule REMOVED and
 // the watch manager replanned — and the removal must already have happened by the time the replan
 // runs, because status is published only after that. A gate that reports without stopping is not a
 // gate.
@@ -259,11 +260,12 @@ func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *tes
 	require.NoError(t, err)
 	require.Equal(t, []string{wrsnRule}, f.compiledNames(), "precondition: the rule is compiled")
 
-	// The platform admin withdraws the delegation.
+	// The platform admin narrows the grant to the tenant's own namespace.
 	var provider configbutleraiv1alpha3.KubeProvider
 	require.NoError(t, f.client.Get(ctx,
 		k8stypes.NamespacedName{Namespace: wrsnProviderNS, Name: wrsnProvider}, &provider))
-	provider.Spec.AllowCrossNamespace = nil
+	provider.Spec.AllowedGitTargets[0].SourceNamespaces = []configbutleraiv1alpha3.ScopeNamespace{
+		configbutleraiv1alpha3.ConsumerNamespaceVariable}
 	require.NoError(t, f.client.Update(ctx, &provider))
 
 	// Observe the world at the exact moment the data plane is replanned.
@@ -281,11 +283,9 @@ func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *tes
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 }
 
-// A KubeProvider that delegates puts NO further namespace policy in the way: the source
-// credential's own RBAC is the bound, and this gate does not try to predict it. That is the whole
-// simplification, so it is asserted rather than left implied — the previous release refused this
-// exact rule unless a GitTarget policy also listed the namespace.
-func TestReconcile_DelegationIsTheOnlyPolicyLeft(t *testing.T) {
+// A grant giving sourceNamespaces "*" puts NO further namespace policy in the way: the source
+// credential's own RBAC is the bound, and this gate does not try to predict it.
+func TestReconcile_WildcardGrantIsTheOnlyPolicy(t *testing.T) {
 	ctx := context.Background()
 	f := newWRSNFixture(t, wrsnBaseObjects(true, "some-namespace-nobody-declared"))
 
@@ -293,7 +293,7 @@ func TestReconcile_DelegationIsTheOnlyPolicyLeft(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{wrsnRule}, f.compiledNames(),
-		"with the delegation granted, no second allow-list stands between the rule and the watch")
+		"with \"*\" granted, no second allow-list stands between the rule and the watch")
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceAllowed, cond.Reason)
@@ -370,7 +370,7 @@ func TestReconcile_MixedItemsCompileTheirOwnScopes(t *testing.T) {
 // rule asked for is worse than a loud failure — and the message must name the offending item.
 func TestReconcile_DeniedItemRefusesTheWholeRule(t *testing.T) {
 	ctx := context.Background()
-	// Item 0 is the free legacy case; item 1 asks for a namespace the provider does not delegate.
+	// Item 0 watches the rule's own namespace, which the grant gives; item 1 asks for one it does not.
 	f := newWRSNFixture(t, wrsnBaseObjects(false, "", "tenant-zen"))
 
 	_, err := f.reconcile(ctx)
@@ -386,10 +386,10 @@ func TestReconcile_DeniedItemRefusesTheWholeRule(t *testing.T) {
 	assert.Contains(t, cond.Message, "tenant-zen", "...and by what it asked for")
 }
 
-// "*" is refused outright while the provider does not delegate, and the refusal names the flag. It
+// "*" is refused outright while no grant gives sourceNamespaces "*", and the refusal names the field. It
 // is the widest request in the API — every namespace the credential can read — so it must not be
 // the one that slips past a provider granting nothing.
-func TestReconcile_WildcardWithoutDelegationIsRefused(t *testing.T) {
+func TestReconcile_WildcardWithoutAWildcardGrantIsRefused(t *testing.T) {
 	ctx := context.Background()
 	f := newWRSNFixture(t, wrsnBaseObjects(false, configbutleraiv1alpha3.SourceNamespaceWildcard))
 
@@ -401,7 +401,7 @@ func TestReconcile_WildcardWithoutDelegationIsRefused(t *testing.T) {
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "spec.allowCrossNamespace.sources")
+	assert.Contains(t, cond.Message, "spec.allowedGitTargets[].sourceNamespaces")
 	assert.Equal(t, metav1.ConditionTrue, wrsnCondition(t, rule, ConditionTypeStalled).Status,
 		"a refusal is terminal: nothing this controller does will change the verdict")
 }

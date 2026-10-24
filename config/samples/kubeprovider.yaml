@@ -17,17 +17,24 @@ metadata:
 spec:
   secretRef:
     name: prod-eu-1-kubeconfig
-  # Consumers in this namespace are always admitted. accessFrom admits the others: here, every
-  # namespace labeled tier=trusted in the control cluster.
-  accessFrom:
-    selector:
-      matchLabels:
-        tier: trusted
-  # What those namespaces may reach outside themselves, each granted on purpose. sources: a
-  # WatchRule may choose which SOURCE namespaces to mirror; while false (the default) it watches
-  # only its own namespace, and `sourceNamespace: "*"` is refused outright. appliers: an applier claim may
-  # suspend and apply a Kustomization or Application in another namespace. Both delegate to every
-  # admitted namespace; neither proves that a namespace owns what it reaches.
-  allowCrossNamespace:
-    sources: true
-    appliers: false
+  # Nothing uses this provider without a grant, its own namespace included. Each grant says where it
+  # admits from (Same, Names, Selector or All) and what: the source namespaces a GitTarget's
+  # WatchRules may watch ("{consumer.namespace}" is the GitTarget's own; "*" is every namespace,
+  # which `sourceNamespace: "*"` needs), and the cluster-scoped resources a ClusterWatchRule may mirror.
+  # Here: every namespace labelled tier=trusted in the control cluster mirrors its own namespace,
+  # and this namespace mirrors every namespace and the CRDs.
+  allowedGitTargets:
+    - consumerNamespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            tier: trusted
+      sourceNamespaces: ["{consumer.namespace}"]
+    - consumerNamespaces: {from: Same}
+      sourceNamespaces: ["*"]
+      clusterResources: [customresourcedefinitions.apiextensions.k8s.io]
+  # Which applier claims may hold a Flux Kustomization or an Argo CD Application through this
+  # provider, and where it may live. Admission to mirror is no admission to apply.
+  allowedApplierClaims:
+    - consumerNamespaces: {from: Same}
+      applierNamespaces: ["{consumer.namespace}"]

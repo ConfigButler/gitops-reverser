@@ -5,10 +5,10 @@ package controller
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/repourl"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -36,13 +37,16 @@ const GitBranchFinalizer = "configbutler.ai/git-branch"
 
 const (
 	// GitBranchReasonGitProviderNotFound is the stall for a GitBranch whose GitProvider does not
-	// exist in its namespace.
+	// exist.
 	GitBranchReasonGitProviderNotFound = "GitProviderNotFound"
 	// GitBranchReasonGitProviderNotReady is the progress reason while the GitProvider is not Ready.
 	GitBranchReasonGitProviderNotReady = "GitProviderNotReady"
-	// GitBranchReasonBranchNotAllowed is the stall for a branch outside the GitProvider's
-	// allowedBranches.
-	GitBranchReasonBranchNotAllowed = "BranchNotAllowed"
+	// GitBranchReasonBranchNotAllowed is the stall for a branch outside the patterns the
+	// GitProvider's spec.allowedGitBranches give this GitBranch's namespace.
+	GitBranchReasonBranchNotAllowed = authz.ReasonBranchNotAllowed
+	// GitBranchReasonNamespaceNotAuthorized is the stall for a GitBranch whose namespace no grant in
+	// the GitProvider's spec.allowedGitBranches admits.
+	GitBranchReasonNamespaceNotAuthorized = authz.ReasonNamespaceNotAuthorized
 	// GitBranchReasonPushSessionFailed is the progress reason while the credential cannot open a
 	// push (receive-pack) session on the remote. A GitBranch that holds its branch keeps it.
 	GitBranchReasonPushSessionFailed = "PushSessionFailed"
@@ -189,11 +193,19 @@ func (r *GitBranchReconciler) evaluate(
 		Created:   branch.CreationTimestamp.Time,
 	}
 
-	if !branchAllowed(provider.Spec.AllowedBranches, branch.Spec.Branch) {
-		r.observeClaim(key, claimant, false)
-		rd.stalled(GitBranchReasonBranchNotAllowed, fmt.Sprintf(
-			"Branch '%s' does not match any pattern in allowedBranches list %v of GitProvider '%s'",
-			branch.Spec.Branch, provider.Spec.AllowedBranches, branch.GitProviderKey()))
+	// Admission comes before the proof, so a GitBranch no grant admits never opens a push session
+	// with the provider's credential.
+	admitted, err := authz.GitBranchClaimAdmitted(ctx, r.Client, branch, &provider)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !admitted.Allowed {
+		message := admitted.Message
+		if r.relinquish(branch) {
+			message += "; this GitBranch gave up the branch, and its branch worker pushed or refused the writes " +
+				"it held"
+		}
+		rd.stalled(admitted.Reason, message)
 		return rd, 0, nil
 	}
 
@@ -360,25 +372,13 @@ func (r *GitBranchReconciler) ensureFinalizer(
 	return nil
 }
 
-// finalize gives up the branch. The claim goes first, so no GitTarget reconcile can start this
-// GitBranch's worker again; then the worker is stopped, which closes its intake, pushes or refuses
-// every pending write and settles every CommitRequest it holds (BranchWorker.Stop). Only then is
-// the finalizer removed. Nothing deletes the branch on the remote.
+// finalize gives up the branch (relinquish), and only then removes the finalizer. Nothing deletes
+// the branch on the remote.
 func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutleraiv1alpha3.GitBranch) error {
 	if !controllerutil.ContainsFinalizer(branch, GitBranchFinalizer) {
 		return nil
 	}
-	if r.WorkerManager != nil {
-		claims := r.WorkerManager.Claims()
-		key, _, held := claims.HeldBy(client.ObjectKeyFromObject(branch))
-		claims.Release(branch.UID)
-		r.WorkerManager.RetireGitBranch(client.ObjectKeyFromObject(branch))
-		// The next candidate holds the branch now. It may be a GitBranch stalled on BranchConflict,
-		// which nothing else would reconcile before its steady requeue.
-		if next, taken := claims.Holder(key); held && taken {
-			r.WorkerManager.WakeGitBranch(next.GitBranch)
-		}
-	}
+	r.relinquish(branch)
 	r.proofsMu.Lock()
 	delete(r.proofs, branch.UID)
 	r.proofsMu.Unlock()
@@ -390,14 +390,27 @@ func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutler
 	return client.IgnoreNotFound(r.Update(ctx, update))
 }
 
-// branchAllowed reports whether branch matches one of the GitProvider's allowedBranches patterns.
-func branchAllowed(patterns []string, branch string) bool {
-	for _, pattern := range patterns {
-		if match, err := filepath.Match(pattern, branch); err == nil && match {
-			return true
-		}
+// relinquish gives up whatever branch claim the GitBranch has, and reports whether it held its branch.
+// It is the one path for a GitBranch being deleted and for one that no grant admits any more, which
+// keeps its finalizer. The claim goes first, so no GitTarget reconcile can start this GitBranch's
+// worker again; then the worker is stopped, which closes its intake, pushes or refuses every pending
+// write and settles every CommitRequest it holds (BranchWorker.Stop). Release, not a failed proof:
+// Observe keeps a holder's candidacy through a failed proof, and a revoked GitBranch must stop being
+// a candidate at all. Last, once the old worker has retired so pending work never moves on, the
+// GitBranches waiting for the branch are woken. Release handed it to none of them: each takes it only
+// through its own reconcile, whose grant check is the one in evaluate.
+func (r *GitBranchReconciler) relinquish(branch *configbutleraiv1alpha3.GitBranch) bool {
+	if r.WorkerManager == nil {
+		return false
 	}
-	return false
+	claims := r.WorkerManager.Claims()
+	_, _, held := claims.HeldBy(client.ObjectKeyFromObject(branch))
+	waiting := claims.Release(branch.UID)
+	r.WorkerManager.RetireGitBranch(client.ObjectKeyFromObject(branch))
+	for _, next := range waiting {
+		r.WorkerManager.WakeGitBranch(next.GitBranch)
+	}
+	return held
 }
 
 // parentBranchNotFoundMessage says which parent is missing and what fixes it.
@@ -426,8 +439,10 @@ func (r *GitBranchReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha3.GitBranch{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// Every GitProvider event, status included: its Ready flipping is what un-blocks a GitBranch,
-		// and providers are few.
+		// its grants decide which GitBranches may claim through it, and providers are few.
 		Watches(&configbutleraiv1alpha3.GitProvider{}, handler.EnqueueRequestsFromMapFunc(r.gitProviderToGitBranches)).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.namespaceToGitBranches),
+			builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		// gitBranchRef is immutable, so only a GitTarget appearing or going changes the count.
 		Watches(&configbutleraiv1alpha3.GitTarget{}, handler.EnqueueRequestsFromMapFunc(gitTargetToGitBranch),
 			builder.WithPredicates(predicate.Funcs{
@@ -442,21 +457,27 @@ func (r *GitBranchReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return b.Complete(r)
 }
 
-// gitProviderToGitBranches enqueues the GitBranches in the provider's namespace that name it.
+// gitProviderToGitBranches enqueues the GitBranches, from any namespace, that claim through the
+// provider: its grants decide whether each may.
 func (r *GitBranchReconciler) gitProviderToGitBranches(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
-	var branches configbutleraiv1alpha3.GitBranchList
-	if err := r.List(ctx, &branches, client.InNamespace(obj.GetNamespace())); err != nil {
+	branches, err := gitBranchesOf(ctx, r.Client, obj)
+	if err != nil {
+		logDependencyListError(ctx, err, "GitBranches", obj)
 		return nil
 	}
-	var requests []ctrlreconcile.Request
-	for i := range branches.Items {
-		if branches.Items[i].Spec.GitProviderRef.Name == obj.GetName() {
-			requests = append(requests, ctrlreconcile.Request{
-				NamespacedName: client.ObjectKeyFromObject(&branches.Items[i]),
-			})
-		}
+	return requestsFor(branches)
+}
+
+// namespaceToGitBranches enqueues the GitBranches in a Namespace whose labels changed: a Selector
+// grant on their GitProvider reads those labels, so the change can admit or revoke them. Their
+// GitTargets follow through the GitBranch watch on the GitTarget controller.
+func (r *GitBranchReconciler) namespaceToGitBranches(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
+	var branches configbutleraiv1alpha3.GitBranchList
+	if err := r.List(ctx, &branches, client.InNamespace(obj.GetName())); err != nil {
+		logDependencyListError(ctx, err, "GitBranches", obj)
+		return nil
 	}
-	return requests
+	return requestsFor(branches.Items)
 }
 
 // gitTargetToGitBranch enqueues the GitBranch a GitTarget references.

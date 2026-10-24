@@ -9,8 +9,9 @@ spec:
     name: app-repository-credentials
   knownHostsRef:
     name: example-com-known-hosts
-  allowedBranches:
-    - main
+  allowedGitBranches:
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [main]
   commit:
     committer:
       name: GitOps Reverser

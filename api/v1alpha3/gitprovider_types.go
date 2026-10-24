@@ -14,8 +14,8 @@ import (
 // targets at a different repository and orphan their existing materialization (the same
 // reason a GitTarget's destination is immutable). To repoint, delete and recreate the
 // GitProvider. Everything else here is operational and deliberately stays mutable —
-// notably allowedBranches (widening or narrowing the writable set is a normal change
-// that must not require tearing down every GitTarget), plus auth, push tuning, and
+// notably allowedGitBranches (widening or narrowing who may claim which branches is a
+// normal change that must not require tearing down every GitBranch), plus auth and
 // commit identity/signing.
 //
 // +kubebuilder:validation:XValidation:rule="self.url == oldSelf.url",message="spec.url is immutable; delete and recreate the GitProvider to point at a different repository"
@@ -51,18 +51,16 @@ type GitProviderSpec struct {
 	// +optional
 	KnownHostsRef *KnownHostsReference `json:"knownHostsRef,omitempty"`
 
-	// AccessFrom is the policy for which OTHER namespaces may reference this GitProvider from a
-	// GitTarget. This GitProvider's own namespace is always admitted. Empty (or omitted) admits no
-	// other namespace. A GitTarget admitted from another namespace writes with this provider's
-	// credential, commit identity and allowedBranches, as one in its own namespace does.
+	// AllowedGitBranches says which GitBranches may claim a branch of this repository through this
+	// GitProvider, and which branches: a GitBranch claims only while a grant admits its namespace and
+	// one of that grant's branchPatterns matches its spec.branch. Nothing is admitted automatically, this
+	// GitProvider's own namespace included; omitted or empty, no GitBranch claims through it. Grants
+	// combine by union. Who may write through a claimed branch is that GitBranch's
+	// spec.allowedGitTargets.
 	// +optional
-	AccessFrom *NamespaceMatcher `json:"accessFrom,omitempty"`
-
-	// AllowedBranches restricts which branches can be written to.
-	// +required
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:items:MinLength=1
-	AllowedBranches []string `json:"allowedBranches"`
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	AllowedGitBranches []GitProviderGitBranchGrant `json:"allowedGitBranches,omitempty"`
 
 	// Commit configures the commit identity and signing behavior this connection uses. Message
 	// formatting moved to GitTarget.spec.commit.message.
@@ -309,16 +307,6 @@ type GitProviderList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []GitProvider `json:"items"`
-}
-
-// AdmitsNamespace reports whether a GitTarget in namespace (by name and labels) may write through
-// this GitProvider: its own namespace always, another one only as spec.accessFrom admits it. A
-// malformed selector is an error, never a silent allow.
-func (p *GitProvider) AdmitsNamespace(nsName string, nsLabels map[string]string) (bool, error) {
-	if nsName == p.Namespace {
-		return true, nil
-	}
-	return p.Spec.AccessFrom.Matches(nsName, nsLabels)
 }
 
 func init() {

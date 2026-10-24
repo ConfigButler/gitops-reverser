@@ -35,6 +35,8 @@ type cwaWatchManager struct {
 	onReconcile func()
 	// collectionOverlap, when set, is the refusal message both CollectionOverlap methods report.
 	collectionOverlap string
+	// selected is what ClusterResourcesSelectedFor selects for an item.
+	selected watch.ClusterResourceSelection
 }
 
 func (m *cwaWatchManager) TriggerRuleChange(internaltypes.ResourceReference) {
@@ -93,6 +95,10 @@ func (m *cwaWatchManager) StreamSummaryForClusterWatchRule(
 
 func (m *cwaWatchManager) StreamStateEvents() <-chan event.GenericEvent { return nil }
 
+func (m *cwaWatchManager) ClusterResourcesSelectedFor(configbutleraiv1alpha3.GitTarget) watch.ClusterResourceSelection {
+	return m.selected
+}
+
 func cwaRunningSummary() watch.StreamSummary {
 	return watch.StreamSummary{
 		Total: 1, Ready: 1, Reason: "Streaming", Message: "1/1 streams running",
@@ -106,7 +112,7 @@ const (
 	cwaTargetName   = "prod-mirror"
 	cwaTargetNS     = "team-a"
 	cwaProviderName = "prod-eu-1"
-	// cwaProviderNS holds the KubeProvider, so cwaTargetNS reaches it only through accessFrom.
+	// cwaProviderNS holds the KubeProvider, so cwaTargetNS reaches it only through a grant.
 	cwaProviderNS = "platform"
 )
 
@@ -127,12 +133,12 @@ func cwaGitProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-func cwaKubeProvider(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.KubeProvider {
+func cwaKubeProvider(policy []configbutleraiv1alpha3.KubeProviderGitTargetGrant) *configbutleraiv1alpha3.KubeProvider {
 	return &configbutleraiv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaProviderName, Namespace: cwaProviderNS},
 		Spec: configbutleraiv1alpha3.KubeProviderSpec{
-			SecretRef:  &meta.SecretKeyReference{Name: "kc"},
-			AccessFrom: policy,
+			SecretRef:         &meta.SecretKeyReference{Name: "kc"},
+			AllowedGitTargets: policy,
 		},
 	}
 }
@@ -151,12 +157,12 @@ func cwaClusterWatchRule() *configbutleraiv1alpha3.ClusterWatchRule {
 }
 
 // cwaAdmitting is the policy that admits cwaTargetNS; cwaDenying admits some other namespace.
-func cwaAdmitting() *configbutleraiv1alpha3.NamespaceMatcher {
-	return &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{cwaTargetNS}}
+func cwaAdmitting() []configbutleraiv1alpha3.KubeProviderGitTargetGrant {
+	return mirrorGrants(cwaTargetNS)
 }
 
-func cwaDenying() *configbutleraiv1alpha3.NamespaceMatcher {
-	return &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"some-other-namespace"}}
+func cwaDenying() []configbutleraiv1alpha3.KubeProviderGitTargetGrant {
+	return mirrorGrants("some-other-namespace")
 }
 
 type cwaFixture struct {
@@ -263,7 +269,7 @@ func TestReconcile_ClusterWatchRuleRefusedWhenTargetNamespaceUnauthorized(t *tes
 
 // TestReconcile_ClusterWatchRuleRefusedWhenKubeProviderMissing covers the other half of the
 // shared gate: an undeclared provider is a hard denial, so an operator cannot sidestep
-// accessFrom by simply never creating the provider.
+// a grant by simply never creating the provider.
 func TestReconcile_ClusterWatchRuleRefusedWhenKubeProviderMissing(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
@@ -315,7 +321,7 @@ func TestReconcile_RefusalStopsDataPlaneBeforePublishingStatus(t *testing.T) {
 	// Pre-seed the store as an earlier, admitted reconcile would have left it, so "no compiled
 	// rule at the end" cannot pass vacuously.
 	f.store.AddOrUpdateClusterWatchRule(
-		*cwaClusterWatchRule(), cwaTargetName, cwaTargetNS, "git", cwaTargetNS, "clusters/prod")
+		*cwaClusterWatchRule(), []string{"*"}, cwaTargetName, cwaTargetNS, "git", cwaTargetNS, "clusters/prod")
 	require.Len(t, f.compiledNames(), 1, "precondition: the rule starts out compiled")
 
 	f.wm.onReconcile = func() {
@@ -362,8 +368,14 @@ func TestReconcile_AdmittedBySelectorOnNamespaceLabels(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaKubeProvider(&configbutleraiv1alpha3.NamespaceMatcher{
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
+		cwaKubeProvider([]configbutleraiv1alpha3.KubeProviderGitTargetGrant{
+			{
+				ConsumerNamespaces: configbutleraiv1alpha3.ConsumerNamespaces{
+					From:     configbutleraiv1alpha3.GrantFromSelector,
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
+				},
+				ClusterResources: []configbutleraiv1alpha3.ClusterResourceIdentity{"*"},
+			},
 		}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 			Name: cwaTargetNS, Labels: map[string]string{"mirror": "yes"},
@@ -376,7 +388,7 @@ func TestReconcile_AdmittedBySelectorOnNamespaceLabels(t *testing.T) {
 }
 
 // TestReconcile_RevocationRemovesCompiledRule is the revocation case: a rule that was admitted and
-// running must be torn down when the provider's accessFrom stops admitting its target's
+// running must be torn down when the provider's grants stop admitting its target's
 // namespace. Same terminal status as an initial denial.
 func TestReconcile_RevocationRemovesCompiledRule(t *testing.T) {
 	ctx := context.Background()
@@ -392,11 +404,11 @@ func TestReconcile_RevocationRemovesCompiledRule(t *testing.T) {
 	require.Equal(t, []string{cwaRuleName}, f.compiledNames(), "precondition: the rule is running")
 	replansAfterAdmission := f.wm.replans
 
-	// Revoke: the namespace leaves accessFrom.
+	// Revoke: the namespace leaves the grant.
 	var provider configbutleraiv1alpha3.KubeProvider
 	require.NoError(t, f.client.Get(ctx,
 		k8stypes.NamespacedName{Namespace: cwaProviderNS, Name: cwaProviderName}, &provider))
-	provider.Spec.AccessFrom = cwaDenying()
+	provider.Spec.AllowedGitTargets = cwaDenying()
 	require.NoError(t, f.client.Update(ctx, &provider))
 
 	// Round 2: the same reconcile now refuses.
@@ -433,7 +445,7 @@ func TestReconcile_AdmissionReadErrorRequeuesAndKeepsCompiledRule(t *testing.T) 
 	})
 
 	f.store.AddOrUpdateClusterWatchRule(
-		*cwaClusterWatchRule(), cwaTargetName, cwaTargetNS, "git", cwaTargetNS, "clusters/prod")
+		*cwaClusterWatchRule(), []string{"*"}, cwaTargetName, cwaTargetNS, "git", cwaTargetNS, "clusters/prod")
 
 	_, err := f.reconcile(ctx)
 

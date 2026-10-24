@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,6 +18,13 @@ func resolveE2ENamespace() string {
 		return value
 	}
 	return defaultE2ENamespace
+}
+
+func resolveE2EInstallMode() (string, error) {
+	if value := strings.TrimSpace(os.Getenv("INSTALL_MODE")); value != "" {
+		return value, nil
+	}
+	return "", errors.New("INSTALL_MODE environment variable must be set")
 }
 
 // testNamespaceFor returns the test namespace for a given suite label.

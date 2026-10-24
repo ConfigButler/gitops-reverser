@@ -223,9 +223,14 @@ spec:
                         "*" for every namespace the source credential can read.
 
                         "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
-                        is the credential's own RBAC and nothing else. Naming any namespace other than this rule's
-                        own, "*" included, requires the GitTarget's KubeProvider to admit the target's namespace
-                        AND to set spec.allowCrossNamespace.sources; while that is false, "*" is refused outright.
+                        is the credential's own RBAC and nothing else.
+
+                        Every value, this rule's own namespace included, must be in the union of sourceNamespaces from
+                        all grants in the GitTarget's KubeProvider spec.allowedGitTargets that admit the GitTarget
+                        ("{consumer.namespace}" there is the target's own namespace). "*" needs "*" in at least one of
+                        them; a union without it refuses the rule, it does not narrow the watch. One item outside the
+                        union refuses the whole WatchRule (SourceNamespaceNotAllowed). The check runs when the rule
+                        reconciles, never at admission.
 
                         This changes only which namespace is WATCHED, never where objects are written: Git placement
                         follows each mirrored object's own namespace.

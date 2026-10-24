@@ -96,7 +96,7 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 
 	BeforeAll(func() {
 		skipUnlessBiDirectionalEnabled()
-		allowCrossNamespaceAppliers()
+		grantAppliersInAnyNamespace()
 
 		By("creating test namespace")
 		testNs = testNamespaceFor("bi-directional")

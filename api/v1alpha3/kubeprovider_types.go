@@ -43,20 +43,24 @@ type KubeProviderSpec struct {
 	// +optional
 	InCluster *KubeProviderInCluster `json:"inCluster,omitempty"`
 
-	// The policy that decides who may WIELD the credential: source-cluster RBAC bounds what it may
-	// read, and cannot say which control-cluster tenant may use it. The selector reads control-cluster
-	// labels locally, so it has no degradation path.
-
-	// AccessFrom admits other control-cluster namespaces to reference this provider. Its own
-	// namespace is always admitted; omitted, no other namespace is. Its selector matches labels on
-	// Namespaces in the control cluster, never on the source cluster this provider names.
+	// AllowedGitTargets says which GitTargets may mirror through this provider, and what: each grant
+	// admits some control-cluster namespaces and bounds what the WatchRules feeding a GitTarget there
+	// may watch (sourceNamespaces), and what a ClusterWatchRule may mirror through it
+	// (clusterResources). Nothing is admitted automatically, this KubeProvider's own namespace
+	// included; omitted or empty, no GitTarget mirrors through it. Grants combine by union.
 	// +optional
-	AccessFrom *NamespaceMatcher `json:"accessFrom,omitempty"`
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	AllowedGitTargets []KubeProviderGitTargetGrant `json:"allowedGitTargets,omitempty"`
 
-	// AllowCrossNamespace grants what a namespace this provider admits may reach outside itself,
-	// through this provider's credential. Omitted, it may reach nothing outside itself.
+	// AllowedApplierClaims says which applier claims (FluxClaims and ArgoCDClaims) may hold an applier
+	// through this provider, and in which namespaces that applier may live (applierNamespaces).
+	// Admission to mirror does not admit to apply. Nothing is admitted automatically; omitted or
+	// empty, no applier claim holds an applier through it. Grants combine by union.
 	// +optional
-	AllowCrossNamespace *KubeProviderCrossNamespace `json:"allowCrossNamespace,omitempty"`
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	AllowedApplierClaims []KubeProviderApplierClaimGrant `json:"allowedApplierClaims,omitempty"`
 
 	// Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
 	// the built-in defaults apply (20 QPS, burst 30). Refused beside inCluster.
@@ -74,33 +78,6 @@ type KubeProviderSpec struct {
 // KubeProviderInCluster selects the operator's own identity. It has no fields: the arm being set
 // is the whole statement.
 type KubeProviderInCluster struct{}
-
-// Each field is a power of its own, granted on purpose: sources lets a namespace READ other
-// namespaces' objects into its own Git, appliers lets it suspend and apply other namespaces'
-// deployments. On an inCluster provider same-name coupling WAS the boundary, so either one
-// bypasses live namespace RBAC: the owner of an admitted object acts on another namespace through
-// the operator's own credential. It is a delegation, not owner consent: it does not prove that the
-// namespace owns the objects it reaches, or the repository it writes.
-
-// KubeProviderCrossNamespace is what a namespace a KubeProvider admits may reach outside itself.
-// The trust is in every admitted namespace, for everything in reach of the provider's identity; it
-// does not prove that the namespace owns what it reaches.
-type KubeProviderCrossNamespace struct {
-	// Sources lets a WatchRule mirroring through this provider watch namespaces other than its own,
-	// including a rules[].sourceNamespace of "*", which reaches every namespace the credential can
-	// read. False (the default): a WatchRule watches only its own namespace. It grants no access by
-	// itself: the source credential's RBAC remains the hard maximum. It does not apply to
-	// ClusterWatchRule, which selects no namespaces at all.
-	// +optional
-	Sources bool `json:"sources,omitempty"`
-
-	// Appliers lets a FluxClaim or ArgoCDClaim reaching its applier through this provider name a
-	// Kustomization or Application in another namespace than its own. False (the default): only
-	// the applier claim's own namespace, which in a remote cluster is the namespace of the same name; an
-	// applier claim naming another is Configured=False (ApplierNamespaceNotAllowed).
-	// +optional
-	Appliers bool `json:"appliers,omitempty"`
-}
 
 // KubeProviderClient holds the per-cluster kube-client throttles.
 type KubeProviderClient struct {
@@ -194,10 +171,10 @@ type KubeProviderStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // KubeProvider is a connection to a Kubernetes cluster and the identity used there. A GitTarget
-// mirrors from it; an applier claim reaches its applier through it. It holds the credential that reaches it (a kubeconfig Secret in its own
-// namespace, or the operator's own identity where the installation allows it), which control-cluster
-// namespaces may use it (its own, and those spec.accessFrom admits), and the audit route its
-// attribution facts are partitioned under.
+// mirrors from it; an applier claim reaches its applier through it. It holds the credential that
+// reaches it (a kubeconfig Secret in its own namespace, or the operator's own identity where the
+// installation allows it), who may use it and for what (spec.allowedGitTargets and
+// spec.allowedApplierClaims), and the audit route its attribution facts are partitioned under.
 type KubeProvider struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -251,29 +228,6 @@ func (p *KubeProvider) AuditRoute() string {
 // in another namespace can resolve to it by default.
 func DefaultAuditRoute(provider types.NamespacedName) string {
 	return provider.Namespace + "." + provider.Name
-}
-
-// AdmitsNamespace reports whether a consumer in namespace (by name and labels) may use this
-// provider: its own namespace always, another one only as spec.accessFrom admits it. A malformed
-// selector is an error, never a silent allow. The labels are always CONTROL-cluster Namespace
-// labels.
-func (p *KubeProvider) AdmitsNamespace(nsName string, nsLabels map[string]string) (bool, error) {
-	if nsName == p.Namespace {
-		return true, nil
-	}
-	return p.Spec.AccessFrom.Matches(nsName, nsLabels)
-}
-
-// AllowsCrossNamespaceSources reports whether a WatchRule mirroring through this provider may
-// watch namespaces other than its own (spec.allowCrossNamespace.sources).
-func (p *KubeProvider) AllowsCrossNamespaceSources() bool {
-	return p.Spec.AllowCrossNamespace != nil && p.Spec.AllowCrossNamespace.Sources
-}
-
-// AllowsCrossNamespaceAppliers reports whether an applier claim reaching its applier through this provider
-// may name one in another namespace than its own (spec.allowCrossNamespace.appliers).
-func (p *KubeProvider) AllowsCrossNamespaceAppliers() bool {
-	return p.Spec.AllowCrossNamespace != nil && p.Spec.AllowCrossNamespace.Appliers
 }
 
 // AuditRouteHolder returns the namespace that holds route among providers, and false when none of
