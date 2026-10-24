@@ -3,16 +3,13 @@
 The open work, in one list. Each item is one or two lines with a code pointer or the design page
 that argues it. Ranked within each group, most urgent first. **Before the next release** marks what
 should land before the next tag is cut (the last release is v0.53.0). Checked against `main` at
-`05799999` plus #443 on 2026-10-24.
+`1bc97904` on 2026-10-24.
 
 ## Before the next release
 
-- [ ] **Override the changelog entries of #441 and #419.** Like #428's (overridden), #441's squash
-  footer narrates moves between shapes that never shipped (`from`/`names`/`selector` into
-  `consumerNamespaces`, `branches` renamed `branchPatterns`), and #419's override still names
-  `FluxTrigger`, `ArgoCDTrigger` and `spec.applyTriggerRef`, which #438 renamed. Give each a
-  `BEGIN_COMMIT_OVERRIDE` block that describes what ships, consistent with
-  [UPGRADING.md](UPGRADING.md), before the release PR is cut.
+- [ ] **Check the release PR's changelog once it is regenerated.** #428, #441 and #443 carry a
+  `BEGIN_COMMIT_OVERRIDE` describing what ships; confirm release-please used each one, and that #442
+  and #443 are listed. (#419 shipped in 0.53.0 under its own names, so its entry stays as released.)
 
 ## Applier claims and bi-directional editing
 
