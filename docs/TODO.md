@@ -3,65 +3,41 @@
 The open work, in one list. Each item is one or two lines with a code pointer or the design page
 that argues it. Ranked within each group, most urgent first. **Before the next release** marks what
 should land before the next tag is cut (the last release is v0.53.0). Checked against `main` at
-`1c4fade4` on 2026-10-24.
+`05799999` plus #443 on 2026-10-24.
 
 ## Before the next release
 
-- [ ] **R1: an applier that comes due during a flush records nothing between the mark and its
-  joining.** Its `flushEdits` starts when it joins, not at the mark, so an edit decided in between
-  is neither published before the apply nor recorded; if the apply overwrites it, Git keeps the edit
-  and the cluster runs the old value with no `Repair` pending. Start `flushEdits` for every applier
-  when the flush begins, or take a new mark when the due set grows. `flushed()` in
-  `internal/git/applier_claim.go`.
-- [ ] **R4: a replaced branch worker reads the old worker's settled-snapshot record.**
-  `forgetSettledSnapshots` runs only on `GitTarget` teardown (`internal/watch/materialization.go`),
-  so after "Branch worker replaced" (`gittarget_controller.go`, the `RequestRecheckForGitTarget`
-  path) the new worker's startup converge passes the barrier at once and can apply before the folder
-  is rebuilt. Argo CD can then be asked for a path that does not exist.
-- [ ] **Override #428's changelog entry.** Its `BREAKING CHANGE` footer describes
-  `GitProvider.spec.accessFrom` and "every GitTarget writing one repository branch must name the same
-  GitProvider", both replaced before release by `GitBranch` and grants (#429, #441). Add a
-  `BEGIN_COMMIT_OVERRIDE` block to #428's PR body, as #419 did, before the release PR is cut.
+- [ ] **Override the changelog entries of #441 and #419.** Like #428's (overridden), #441's squash
+  footer narrates moves between shapes that never shipped (`from`/`names`/`selector` into
+  `consumerNamespaces`, `branches` renamed `branchPatterns`), and #419's override still names
+  `FluxTrigger`, `ArgoCDTrigger` and `spec.applyTriggerRef`, which #438 renamed. Give each a
+  `BEGIN_COMMIT_OVERRIDE` block that describes what ships, consistent with
+  [UPGRADING.md](UPGRADING.md), before the release PR is cut.
 
 ## Applier claims and bi-directional editing
 
-- [ ] **Decide Fix 2 for live edits dropped while render fidelity is pending**: hold the events
-  (2a, the user stays the author) or re-derive them with a resync (2b, the operator becomes the
-  author), or keep the drop and alert on `git_writes_dropped_total`. It is also the cause behind the
-  flaky audit-route override e2e spec.
-  [live-edit-dropped-while-render-fidelity-pending.md](design/live-edit-dropped-while-render-fidelity-pending.md).
 - [ ] **Reopen the render-fidelity gate after a Git repair, automatically.** Today a target on
   `RenderMatchesLive=False` clears only on an explicit recheck (the
-  `reconcile.configbutler.ai/requestedAt` annotation, which restarts every scope), a
-  re-declaration or a restart. Doing it on an incoming Git revision is more than calling
-  `Invalidate` and `RequestRecheckForGitTarget` from a new place: it first needs the retained-intent
-  ordering barrier, so the source refresh cannot discard or race an open commit window or pending
-  live edits ([render-fidelity.md](design/support-boundary/render-fidelity.md) §6b).
+  `reconcile.configbutler.ai/requestedAt` annotation, which restarts every scope; the render
+  fidelity e2e spec proves it recovers a repaired folder), a re-declaration or a restart. Doing it on
+  an incoming Git revision is more than calling `Invalidate` and `RequestRecheckForGitTarget` from a
+  new place: it first needs the retained-intent ordering barrier, so the source refresh cannot
+  discard or race an open commit window or pending live edits
+  ([render-fidelity.md](design/support-boundary/render-fidelity.md) §6b).
 - [ ] **Watch the held applier**, so a switch-on or a `flux resume` is undone at once instead of
   within the one-minute `heldClaimSteadyInterval`. Also makes ask #31 below exact.
   [applier-claim-held-applier-watch.md](design/applier-claim-held-applier-watch.md).
-- [ ] **F-a: a held barrier is invisible.** A `GitTarget` with no planned collection holds its
-  applier, and with it every reason of every `GitTarget` on that claim, `ForeignCommit` included,
-  with no log, condition or metric. The hold is approved; the silence is the defect.
-  (`internal/git/applier_claim.go`, `internal/watch/apply_state.go`)
-- [ ] **F-e: the apply window compares two clocks.** `sentAt` is the operator's clock,
-  `LastFieldManagedAt` the source API server's, at second granularity; a skew of 1s flips the echo
-  decision. Add a skewed-clock test, and probably a one-second grace. (`internal/git/apply_window.go`)
-- [ ] **F-b, F-c, F-d: edge cases of the snapshot hold.** Live events dropped at the gate while a
-  discarded snapshot is held (F-b); an adopt lost while render fidelity is closed, because
-  `mirrors()` returns before `noteCreated` (F-c); a `GitTarget` that names a claim after its
-  snapshots settled empty never gets its folder (F-d, `resync_flush.go`).
+- [ ] **F3: a Flux fetch is made before the hold is checked**, so a `Kustomization` resumed by hand
+  applies the fetched artifact at once (`internal/applier/flux.go`, `Request`).
+- [ ] **The apply window's remaining clock limits** (`internal/git/apply_window.go`, file comment).
+  A server clock ahead by more than the time between an earlier apply and the send dates an undo of
+  an edit published before the send after it, so the undo is not mirrored and the next apply reverts
+  it. With an edit carried from the window before, the check against the send still mixes the two
+  clocks, and a server clock behind can withhold this attempt's own apply and ask for an unneeded
+  `Repair`. Only comparing the event's content with Git separates them.
 - [ ] **F-h: small leaks and races.** The 5-minute hold can restart; the `Initial` flag races
   settlement; `snapshotHeldSince`, `applierState.named` and dropped collections in
   `settledSnapshots` leak.
-- [ ] **F2: accept a Flux fetch whose token was stamped over** when the artifact holds the commit.
-  Today `Flux.fetch` waits only for its own token, so a commit another stamp fetched fails after 30s
-  (`internal/applier/flux.go`). Also check F3: the hold is checked after the fetch, so a
-  `Kustomization` resumed by hand applies the fetch at once.
-- [ ] **A2: judge a gone Argo CD token by `status.history`** (our commit,
-  `initiatedBy: gitops-reverser`, `deployStartedAt` at or after our request means `Succeeded`).
-  Today a manual sync that wipes our token after a success reads as failed and syncs again, so hooks
-  run twice (`internal/applier/argocd.go`).
 - [ ] **Check Argo CD sync windows in `Configured`.** The guide says a sync window must not block
   GitOps Reverser's syncs; nothing checks it.
 - [ ] **Refuse or flag overrides that are not in Git** (Argo `spec.source.kustomize`; Flux

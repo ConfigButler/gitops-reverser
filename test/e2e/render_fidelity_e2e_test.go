@@ -104,7 +104,34 @@ var _ = Describe("Manager Render Fidelity", Label("manager", "render-fidelity", 
 			"RenderMatchesLive", "False", "RenderDoesNotMatchLive", "${REGION}",
 		)
 
-		By("Flux postBuild divergence stalled the target without changing its source tree")
+		By("recovering once the folder is repaired in Git and a recheck is requested")
+		// The documented way out (docs/configuration.md): fix the folder, then annotate the
+		// GitTarget. The recheck re-anchors every stream, so every scope is measured afresh against
+		// the repaired folder, which is the only thing that clears a divergence.
+		run.repairSourceForm()
+		_, err = kubectlRunInNamespace(run.testNs, "annotate", "gittarget", run.targetName,
+			"reconcile.configbutler.ai/requestedAt="+time.Now().UTC().Format(time.RFC3339Nano), "--overwrite")
+		Expect(err).NotTo(HaveOccurred(), "failed to request a recheck of the GitTarget")
+		verifyResourceCondition(
+			"gittarget", run.targetName, run.testNs,
+			"RenderMatchesLive", "True", "Succeeded", "", "150s",
+		)
+
+		By("mirroring the live state the closed gate kept out, and a later edit")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, run.repo.CheckoutDir)
+			content := readRepoFile(g, filepath.Join(run.repo.CheckoutDir, renderFidelityGitPath, "deployment.yaml"))
+			g.Expect(content).To(ContainSubstring("value: us-east"))
+			g.Expect(content).To(ContainSubstring("replicas: 2"))
+		}, renderFidelityTimeout, resourceConditionPollInterval).Should(Succeed())
+		_, err = kubectlRunInNamespace(run.testNs, "patch", "deployment", run.deploymentName,
+			"--type=merge", "--patch={\"spec\":{\"replicas\":3}}")
+		Expect(err).NotTo(HaveOccurred(), "failed to patch the live Deployment")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, run.repo.CheckoutDir)
+			content := readRepoFile(g, filepath.Join(run.repo.CheckoutDir, renderFidelityGitPath, "deployment.yaml"))
+			g.Expect(content).To(ContainSubstring("replicas: 3"))
+		}, renderFidelityTimeout, resourceConditionPollInterval).Should(Succeed())
 	})
 })
 
@@ -241,6 +268,19 @@ func (r renderFidelityRun) consistentlyExpectSourceForm(seedHead string) {
 		g.Expect(content).To(ContainSubstring("replicas: 1"))
 		g.Expect(content).NotTo(ContainSubstring("replicas: 2"))
 	}, 20*time.Second, 2*time.Second).Should(Succeed())
+}
+
+// repairSourceForm resolves the postBuild token in Git, as a person repairing the folder would: the
+// render then matches the live value Flux substituted.
+func (r renderFidelityRun) repairSourceForm() {
+	Eventually(func(g Gomega) { pullLatestRepoState(g, r.repo.CheckoutDir) }).Should(Succeed())
+	path := filepath.Join(r.repo.CheckoutDir, renderFidelityGitPath, "deployment.yaml")
+	content, err := os.ReadFile(path)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(string(content)).To(ContainSubstring("${REGION}"))
+	repaired := strings.ReplaceAll(string(content), "${REGION}", "us-east")
+	Expect(os.WriteFile(path, []byte(repaired), 0o600)).To(Succeed())
+	Expect(r.checkout.commitAllAndPush("e2e: resolve the postBuild token in Git")).To(Succeed())
 }
 
 func (r renderFidelityRun) cleanup() {
