@@ -20,7 +20,8 @@ Nothing open. The 0.54.0 release PR's changelog was checked against what ships o
   discard or race an open commit window or pending live edits
   ([render-fidelity.md](design/support-boundary/render-fidelity.md) §6b).
 - [ ] **Watch the held applier**, so a switch-on or a `flux resume` is undone at once instead of
-  within the one-minute `heldClaimSteadyInterval`. Also makes ask #31 below exact.
+  within the one-minute `heldClaimSteadyInterval`. Also makes `claimed_resource_reconciled_total`
+  (ask #31) count at the moment of the resume.
   [applier-claim-held-applier-watch.md](design/applier-claim-held-applier-watch.md).
 - [ ] **F3: a Flux fetch is made before the hold is checked**, so a `Kustomization` resumed by hand
   applies the fetched artifact at once (`internal/applier/flux.go`, `Request`).
@@ -51,17 +52,10 @@ Nothing open. The 0.54.0 release PR's changelog was checked against what ships o
 
 Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-asks.md).
 
-- [ ] **#32**: a troubleshooting row in [bi-directional-flux.md](bi-directional-flux.md) for a
-  controller that replaces the `Kustomization`'s whole spec with an Update. Docs only.
-- [ ] **#31**: a metric for an apply the claim did not start; today it is only the
-  `ClaimedResourceReconciled` Event, which the API server aggregates and expires.
 - [ ] **#34**: an e2e with an in-cluster applier and a remote source cluster, provoking one apply
   window collision.
-- [ ] **#23**: verify with their reproduction that #431 fixed deletion-as-intent naming the
-  finalizing controller instead of the deleter.
-- [ ] **#11**: one YAML encoder for `[CREATE]` and `[UPDATE]` bodies (indent churn).
-- [ ] **#28**: `--watch-namespaces`, then an owner selector, so two instances can share one
-  config-plane cluster. It is the same mechanism HA needs.
+- [ ] **#28, step 2**: an owner selector, for two instances sharing a namespace. Step 1,
+  `--watch-namespaces`, shipped; a chart-rendered namespaced Role would let its ClusterRole shrink.
 - [ ] **#10**: consider the namespace when placement follows siblings. Cosmetic.
 
 ## Attribution
