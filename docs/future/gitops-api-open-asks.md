@@ -12,7 +12,7 @@ for `ResumedElsewhere`).
 Their suggested order, as of revision 15: #32, then #31, then #34 when the e2e budget allows;
 then #23, #11 and #10; #28 when two owners share a cluster.
 
-## 32. A troubleshooting row: something replaces the Kustomization's whole spec
+## 32. A troubleshooting row: something replaces the `Kustomization`'s whole spec
 
 **Ask.** One row in [the Flux guide](../bi-directional-flux.md)'s troubleshooting table: repeated
 `ClaimedResourceReconciled` Events mean a controller writes the `Kustomization` with a full-spec
@@ -26,7 +26,7 @@ symptom is a resume Event plus an `OperationUnresolved` on every reconcile of th
 Flux applying unchecked until the claim suspends it again. They reproduced it on purpose. The fix on
 their side was three lines; finding it from the guide alone would not have been obvious.
 
-## 31. Count "resumed elsewhere" in a metric, not only in an Event
+## 31. Count "resumed elsewhere" in a metric, not only in an `Event`
 
 **Ask.** A counter for an apply the claim did not start (the resume, and the `OperationUnresolved`
 that follows it), labeled like `apply_requests_total`. Possibly also a timestamp in the claim's
@@ -120,5 +120,5 @@ different namespaces, and one lands in the other's directory. Nothing is corrupt
 
 From their 0.43 upgrade: a deleted field is pruned by the API server, so the object stays
 `Ready=True` and quietly uses a default or a wider scope. They had to write a test asserting the
-*absence* of the old spellings. A condition or Event on an object applied carrying a field the CRD
-no longer serves would make a migration self-diagnosing. Not filed as an ask.
+*absence* of the old spellings. When an applied object still carries a field the CRD no longer
+serves, a condition or `Event` on that object would make a migration self-diagnosing. Not filed as an ask.

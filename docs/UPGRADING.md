@@ -25,10 +25,12 @@ the new object takes it over on its first snapshot.
    kubectl get gitproviders,gittargets,fluxtriggers,argocdtriggers -A -o yaml > before-upgrade.yaml
    ```
 
-2. Delete every `FluxTrigger` and `ArgoCDTrigger` while 0.53.0 still runs, so it removes the
-   finalizer and hands each `Kustomization` back to Flux. Then delete their CRDs:
-   `kubectl delete crd fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai`. Until a claim
-   takes over in step 6, Flux and Argo CD apply on their own.
+2. Delete every `FluxTrigger` and `ArgoCDTrigger` while 0.53.0 still runs. A `FluxTrigger` removes
+   its finalizer and hands its `Kustomization` back to Flux, resumed, so Flux applies it on its own
+   until step 6. An `ArgoCDTrigger` holds no finalizer and changes nothing on delete: its
+   `Application` keeps automated sync off, as you set it for 0.53.0, so Argo CD syncs it only when
+   someone starts a sync until step 6. Then delete their CRDs:
+   `kubectl delete crd fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai`.
 3. Upgrade the CRDs, the operator and its permissions. The chart's `clusterProvider.*` values are
    `kubeProvider.*`, and the provider it renders is a `KubeProvider` named `local` in the release
    namespace, which admits only the release namespace's own objects until you set its grants (see
@@ -95,9 +97,9 @@ and `controllerManager.inClusterKubeProviders` adds others. Any other provider t
 `spec.inCluster` reports `Validated=False` and `Stalled=True` (`InClusterNotAuthorized`) and is never
 used. `spec.client` is refused beside `spec.inCluster`, where it was ignored.
 
-**`accessFrom` and `allowCrossNamespace` are replaced by grants.** A `KubeProvider` admits nobody
-until a grant in `spec.allowedGitTargets` or `spec.allowedApplierClaims` does; see "Grants say who
-may use a provider or a branch".
+**`accessFrom` and `allowCrossNamespace` are replaced by grants.** Omitted, a `KubeProvider`'s
+`spec.allowedGitTargets` and `spec.allowedApplierClaims` admit only its own namespace; a written list
+is the whole policy, and `[]` admits nobody. See "Grants say who may use a provider or a branch".
 
 **Audit routes default to `<namespace>.<name>`, so the audit webhook URL changes.** The chart's
 provider posts under `/audit-webhook/<release namespace>.local`, `/audit-webhook/gitops-reverser.local`
@@ -138,8 +140,8 @@ kind: GitTarget
 metadata: {name: apps, namespace: platform}
 spec:
   gitBranchRef: {name: platform-main}
-  kubeProviderRef: {name: local, namespace: gitops-reverser}
-  path: apps
+  kubeProviderRef: {name: platform-cluster}   # a KubeProvider in this namespace, which its omitted
+  path: apps                                  # grants admit
 ```
 
 **One `GitBranch` holds a repository branch.** It holds it once a grant on its `GitProvider` admits
@@ -218,8 +220,8 @@ spec: {}                         # allowedGitTargets omitted: this namespace's G
 ---
 kind: KubeProvider
 spec:
-  allowedGitTargets:             # was accessFrom: {selector: {}} without allowCrossNamespace;
-    - consumerNamespaces: {from: All}          # omitted, only this namespace's GitTargets
+  allowedGitTargets:             # was accessFrom: {selector: {}} without allowCrossNamespace:
+    - consumerNamespaces: {from: All}   # every namespace's GitTargets, each mirroring its own
       sourceNamespaces: ["{consumer.namespace}"]
   allowedApplierClaims:
     - consumerNamespaces: {from: All}
@@ -417,6 +419,11 @@ allowCrossNamespace.sources") until the line is removed or set to `false`. `fals
 default stored on every provider, is accepted.
 
 ## `onRefusal: PushEmptyCommit` is now `onRefusal: Reapply`, and needs an apply trigger
+
+This entry is as 0.53.0 shipped it, with 0.53.0's names. Upgrading past 0.53.0, read
+`FluxTrigger`, `ArgoCDTrigger` and `spec.applyTriggerRef` as the claims of
+[the rename above](#fluxtrigger-and-argocdtrigger-are-fluxclaim-and-argocdclaim), and step 3's
+`allowCrossNamespace.appliers` as a grant in `allowedApplierClaims`.
 
 **Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
 GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
@@ -2206,7 +2213,7 @@ different one the namespace is now written explicitly — omitting it would have
 kustomize and rendered a different object than the one being mirrored. This also now applies to a path
 you declared, which previously wrote a `namespace:` line the rest of that folder omits.
 
-## 0.41.1 — the Go floor rises for module consumers (patch release; breaking for module consumers)
+## 0.41.1: the Go floor rises for module consumers (patch release; breaking for module consumers)
 
 `v0.41.1` raises the `go` directive in `go.mod` from `1.26.5` to `1.27.0`, in a release whose
 changelog entry reads only *"let's release some security updates"*. The floor rises again after it.
@@ -2245,7 +2252,7 @@ A `go` directive move is treated as consumer-breaking for module users. It gets 
 line in the release notes even when it ships in a patch release, so it is never again something you
 discover from a failing build.
 
-## 0.41.0 — attribution facts travel on a selectable transport, and Redis is no longer implied
+## 0.41.0: attribution facts travel on a selectable transport, and Redis is no longer implied
 
 Attribution stopped meaning Redis. The audit receiver appends its facts to a per-type **stream**,
 the watch side follows the streams for the types it watches into a bounded in-process index, and
@@ -2277,7 +2284,7 @@ New tuning knobs, all with behaviour-preserving defaults: `attribution.maxFactsP
 (10000). They bound the in-process index and the collection join; see
 [configuration.md](configuration.md).
 
-## 0.41.0 — the attribution metrics are relabeled and partly renamed (breaking for queries)
+## 0.41.0: the attribution metrics are relabeled and partly renamed (breaking for queries)
 
 The `result` label is **gone** from `gitopsreverser_attribution_resolutions_total` and
 `gitopsreverser_attribution_resolution_wait_seconds`. It crammed two orthogonal questions into one
@@ -2450,7 +2457,7 @@ is the acceptance gate's own issue" compile-checked rather than merely stated.
 - Record the `status.generator.version` you consumed a report with, if you pin our release
   elsewhere. That is the whole point of the field.
 
-## 0.39.2 — status vocabulary and two removed status fields (status-only change)
+## 0.39.2: status vocabulary and two removed status fields (status-only change)
 
 Nothing in `spec` changed and no manifest you wrote needs editing. Three things a **reader of
 status** may notice:
@@ -2495,7 +2502,7 @@ columns (`Ready`, `Reason`, `Streams`, `Age`); `Provider`, `Branch` and `Path` m
 visible in `kubectl describe` and routable by anything that consumes Events. The operator's
 ServiceAccount gained `create`/`patch` on `events` for it, which `helm upgrade` applies.
 
-## 0.39.0 — a resync no longer deletes Git documents by default (behavior change)
+## 0.39.0: a resync no longer deletes Git documents by default (behavior change)
 
 **`GitTarget` gained `spec.prune.mode`, and its effective default changes what a resync does.**
 Previously every resync mark-and-swept: a managed document whose resource was absent from the
@@ -2551,7 +2558,7 @@ This ships in the **same release** as the rule-kind scope change below, and is w
 migration non-destructive: a converted `WatchRule` that resolves to a narrower set of namespaces than
 you intended leaves the affected documents in Git instead of deleting them.
 
-## 0.39.0 — scope is now carried by the rule kind (breaking)
+## 0.39.0: scope is now carried by the rule kind (breaking)
 
 **Scope moved from a per-rule field onto the rule KIND.** `WatchRule` is the namespaced surface and
 gained `spec.rules[].sourceNamespace`; `ClusterWatchRule` is cluster-scoped only and lost its scope
@@ -2651,7 +2658,7 @@ The same skew exists inside a rolling upgrade: CRDs are cluster-wide, so an old 
 new `WatchRule`, ignore `rules[].sourceNamespace`, and mirror the wrong namespace's content into Git.
 **Complete the controller rollout before applying migrated manifests.**
 
-## 0.39.0 — unresolved attribution is visible in Git (author identity changes)
+## 0.39.0: unresolved attribution is visible in Git (author identity changes)
 
 When `attribution.enabled=true` and the operator cannot match a live watch event to an audit fact within
 `attribution.grace`, the Git author is now:
@@ -2674,7 +2681,7 @@ be attributable, this author normally means the audit policy, webhook route, sou
 connectivity, or grace window is not configured correctly. It can also represent a change with no usable
 audit actor, so use the audit metrics before assigning a cause.
 
-## 0.37.0 — a `patches:` block no longer refuses the folder (more folders accepted)
+## 0.37.0: a `patches:` block no longer refuses the folder (more folders accepted)
 
 A kustomization declaring `patches:` used to refuse the whole `GitTarget`. Not the edit — the
 **target**. A folder whose patch touched a replica count also lost `images:`/`replicas:`
@@ -2702,7 +2709,7 @@ Exactly one shape is tolerated. The rest are refused **by name**, so the message
 | a `path:` naming no file in the tree, or escaping it | refused: `patches-outside-tree` |
 | `patchesStrategicMerge:`, `patchesJson6902:` (deprecated spellings) | refused under their own names |
 
-## 0.37.0 — the build's output stops leaking into the build's input (bug fix + behavior change)
+## 0.37.0: the build's output stops leaking into the build's input (bug fix + behavior change)
 
 **If your kustomization declares `labels:`, `commonLabels:`, `commonAnnotations:` or `namespace:`,
 the operator has been writing those injected values into your source manifests.** Measured, on a
@@ -2748,7 +2755,7 @@ to say which of the source's bytes you meant to keep, and pairing the lists by p
 measurably wrong (kustomize *prepends* a container a patch adds), so the operator refuses rather
 than guesses.
 
-## 0.36.0 — kustomize decides what it renders, and what it touched (bug fixes + behavior change)
+## 0.36.0: kustomize decides what it renders, and what it touched (bug fixes + behavior change)
 
 The write path no longer contains a re-implementation of kustomize's image and replica
 transformers. It asks kustomize what a folder renders to, and — by rendering a second time
@@ -2792,7 +2799,7 @@ worked. If you see this refusal, the live state cannot be expressed in the repos
 stands — most often because something we do not model (a `patches:` block, a
 `replacements:` entry) owns the field. The refusal names it.
 
-## 0.36.0 — a folder kustomize cannot build is now refused (behavior change)
+## 0.36.0: a folder kustomize cannot build is now refused (behavior change)
 
 The analyzer now **builds** every render root with kustomize, instead of only parsing the
 kustomization structurally. A root that fails to build refuses the `GitTarget`, quoting
@@ -2829,7 +2836,7 @@ protecting it.
   now fails the target with `GitPathAccepted=False` / `UnsupportedContent` instead of writing
   into a folder whose render it cannot know. Fix the build.
 
-## 0.36.0 — a `digest:` override no longer strips the tag out of your source file (bug fix)
+## 0.36.0: a `digest:` override no longer strips the tag out of your source file (bug fix)
 
 **If any of your kustomizations use `images:` with `digest:`, or `newTag:` on an image
 that carries a digest, the operator has been rewriting your source manifests. This stops.**
@@ -2855,7 +2862,7 @@ concluded the user had *removed* the tag, and wrote the tag out of the source do
 - Nothing to configure. The behaviour is simply correct now, and pinned against a real
   `kustomize build` so it cannot regress.
 
-## 0.36.0 — `kustomization.yaml` is now read by kustomize itself (behavior change)
+## 0.36.0: `kustomization.yaml` is now read by kustomize itself (behavior change)
 
 The analyzer used to decode `kustomization.yaml` with a hand-written walk over a generic
 YAML map, checked against a hand-maintained list of 17 unsupported keys. It now decodes with
@@ -2886,7 +2893,7 @@ every case the new behaviour is the one that agrees with the renderer:
   in Git; edit the source field instead.
 - Nothing to do for the last two rows: they only ever accept more.
 
-## 0.35.0 — `pkg/manifestanalyzer`: the overlay fan-out refusal code was renamed (breaking for consumers)
+## 0.35.0: `pkg/manifestanalyzer`: the overlay fan-out refusal code was renamed (breaking for consumers)
 
 One refusal reason changed its name, in both the Go constant and the machine-readable
 value it carries:
@@ -2909,7 +2916,7 @@ our planning docs; the new one says what it means.
   a `switch` or `if` on `"overlay-fan-out-needs-f2"` simply stops matching, and the refusal
   falls through to whatever your default branch does. Grep for the old string.
 
-## 0.34.0 — the wildcard cluster read moved to its own, droppable ClusterRole (behavior change)
+## 0.34.0: the wildcard cluster read moved to its own, droppable ClusterRole (behavior change)
 
 The shipped RBAC now says what the binary actually does. Nothing is taken away from a default
 install; what changes is that the parts can be separated.
@@ -2959,7 +2966,7 @@ reflector retried the denial forever. Discovery reports what the server serves, 
 may read, so a narrowed role reached this path — which is exactly the path this release makes easy
 to enter.
 
-## 0.34.0 — `manifest-analyzer` scan modes renamed, and `--format json` now emits a versioned contract (breaking)
+## 0.34.0: `manifest-analyzer` scan modes renamed, and `--format json` now emits a versioned contract (breaking)
 
 The analyzer's machine-readable output moved to the new public
 [`pkg/manifestanalyzer`](../pkg/manifestanalyzer), which is a supported Go API and the single
@@ -3006,7 +3013,7 @@ release you are upgrading *across*, not as current advice.)
   adopt (or refuse) the folder.
 - If you parsed `plan` from folder-scan mode, you were reading an empty object; drop the field.
 
-## 0.32.0 — chart defaults now run Redis-free (behavior change)
+## 0.32.0: chart defaults now run Redis-free (behavior change)
 
 The Helm chart now defaults to the simple, Redis-free `configured-author` path, so a bare
 `helm install` comes up healthy without external infrastructure:
@@ -3032,7 +3039,7 @@ The Helm chart now defaults to the simple, Redis-free `configured-author` path, 
 - `helm upgrade --reuse-values` preserves your existing settings, so reused-value upgrades are
   unaffected; only fresh installs (or upgrades that re-specify values) pick up the new defaults.
 
-## 0.29.0 — API group version bumped `v1alpha2` → `v1alpha3` (breaking)
+## 0.29.0: API group version bumped `v1alpha2` → `v1alpha3` (breaking)
 
 The served API version moved from `configbutler.ai/v1alpha2` to `configbutler.ai/v1alpha3` to
 reflect the accumulated schema and status changes on this branch. `v1alpha2` is **removed**, not
@@ -3051,7 +3058,7 @@ CRDs are applied.
 - `kubectl` commands that pin the version (`kubectl get gittargets.v1alpha2.configbutler.ai`) must
   switch to `v1alpha3`. Unqualified short names (`kubectl get gittargets`) need no change.
 
-## 0.29.0 — first-run and status surface cleanup (breaking)
+## 0.29.0: first-run and status surface cleanup (breaking)
 
 This branch changes the default install to be easier to try, and it tightens the v1alpha3 status
 surface around conditions. Existing installs should check the items below before upgrading.
@@ -3157,7 +3164,7 @@ kubectl wait --for=condition=StreamsRunning=true gittarget/<name> -n <namespace>
 `WatchRule` and `ClusterWatchRule` use the same condition vocabulary for source readiness
 (`StreamsRunning`) and referenced target readiness (`GitTargetReady`).
 
-## 0.29.0 — Config flag naming pass (breaking)
+## 0.29.0: Config flag naming pass (breaking)
 
 Controller command-line flags were renamed to follow
 [`config-flag-conventions.md`](config-flag-conventions.md). The Helm chart and the
@@ -3181,7 +3188,7 @@ Redis/Valkey over TLS unless told otherwise. The Helm chart
 in-cluster Valkey. **If you run the controller directly against a plaintext Redis,
 add `--redis-insecure`** — otherwise startup fails on a TLS handshake.
 
-## 0.28.0 — Git credentials interop (breaking)
+## 0.28.0: Git credentials interop (breaking)
 
 Two user-visible breaking changes land together. Both come from
 [`design/git-credentials-interop.md`](finished/git-credentials-interop.md).

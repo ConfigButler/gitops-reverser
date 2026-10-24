@@ -23,8 +23,9 @@ explains the race, shows it in a CI log, and lays out the two proposed fixes.
    receives the answer and records the scope clean.
 3. In the gap between those two steps the gate is still closed. The worker takes the next item off
    its queue, a live event, finds the gate closed, and **drops** the event.
-4. Nothing brings it back. The watch has already moved past the event, no replay follows, and the
-   drop is logged only at debug level (`V(1)`).
+4. Nothing brings it back. The watch has already moved past the event, and no replay follows. Fix 1
+   made the drop visible: it is counted in `git_writes_dropped_total`, and the first drop under
+   each gate status is logged at Info ([`render_fidelity_drops.go`](../../internal/git/render_fidelity_drops.go)).
 
 **Fix 1** removes the gap: the worker records the scope clean itself, before it answers. That is
 small, changes no documented behavior, and closes the race this spec hits.
@@ -149,8 +150,8 @@ A dropped event is not retried anywhere:
   *after* the event.
 - A replay happens only when a stream (re)starts: operator restart, an expired cursor, or a plan
   change for that collection. The 30-second periodic plan pass keeps running streams as they are.
-- The drop is logged at `V(1)` ([`branch_worker.go:1371`](../../internal/git/branch_worker.go#L1371))
-  and counted nowhere.
+- Before Fix 1 the drop was logged only at `V(1)` and counted nowhere. It is now counted in
+  `git_writes_dropped_total`, with the first drop under each gate status logged at Info.
 
 So the edit stays missing from Git until the object changes again or the collection replays.
 Raising the spec's timeout would not help, because the event no longer exists anywhere to wait

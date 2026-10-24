@@ -15,7 +15,8 @@ is longer than nearly every bound, so an event-wiring regression fails loudly.
 The leg tests the developer Taskfile's stamp chain (rebuild, k3d import, rollout), not the product,
 and 266s of its 369s suite is the BeforeSuite rebuild. Gate it on a path filter in
 [`ci.yml`](../../.github/workflows/ci.yml): `Taskfile*.yml`, `test/e2e/Taskfile-e2e.yml`,
-`Dockerfile*`, `hack/**`, `.dockerignore`, `go.mod`. Run it on every push to main as a backstop. S3
+`Dockerfile*`, `hack/**`, `.dockerignore`, `go.mod`, and `charts/**`, since the leg installs the
+packaged chart (`HELM_CHART_SOURCE=./gitops-reverser.tgz`). Run it on every push to main as a backstop. S3
 ("second Go change also restarts") and S6 ("pod uses the imported image", already asserted in S2)
 can go; each costs a full rebuild. This removes a 14–18 minute leg from most PRs.
 
