@@ -7,9 +7,7 @@ should land before the next tag is cut (the last release is v0.53.0). Checked ag
 
 ## Before the next release
 
-- [ ] **Check the release PR's changelog once it is regenerated.** #428, #441 and #443 carry a
-  `BEGIN_COMMIT_OVERRIDE` describing what ships; confirm release-please used each one, and that #442
-  and #443 are listed. (#419 shipped in 0.53.0 under its own names, so its entry stays as released.)
+Nothing open. The 0.54.0 release PR's changelog was checked against what ships on 2026-10-24.
 
 ## Applier claims and bi-directional editing
 
