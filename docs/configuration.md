@@ -298,7 +298,7 @@ object that lends something, and is named `allowed` plus the kind that refers to
   | You write | The list is |
   |---|---|
   | nothing | `GitBranch`: `[{consumerNamespaces: {from: Same}}]`. `KubeProvider`: `allowedGitTargets: [{consumerNamespaces: {from: Same}, sourceNamespaces: ["{consumer.namespace}"]}]` and `allowedApplierClaims: [{consumerNamespaces: {from: Same}, applierNamespaces: ["{consumer.namespace}"]}]` |
-  | a list | exactly that list; the default is not added, so a list without a `from: Same` grant shuts the own namespace out |
+  | a list | exactly that list; the default is not added, so the local namespace is admitted only if the list grants it access |
   | `[]` | nobody, the own namespace included |
 
   The default grants no cluster-scoped resource, and it reaches only the namespace of the same

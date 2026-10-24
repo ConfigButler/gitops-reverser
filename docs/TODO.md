@@ -22,14 +22,6 @@ should land before the next tag is cut (the last release is v0.53.0). Checked ag
   `GitProvider.spec.accessFrom` and "every GitTarget writing one repository branch must name the same
   GitProvider", both replaced before release by `GitBranch` and grants (#429, #441). Add a
   `BEGIN_COMMIT_OVERRIDE` block to #428's PR body, as #419 did, before the release PR is cut.
-- [ ] **Remove the "loud rejection" fields.** `RemovedReceiver` (`gitprovider_types.go`),
-  `RemovedClusterProviderRef` (`gittarget_types.go`, `fluxclaim_types.go`, `argocdclaim_types.go`),
-  `RemovedGitProviderRef`, `RemovedBranch` and `RemovedParentBranch` (`gittarget_types.go`) exist
-  only to refuse an old spelling at admission. With no users yet, an API break is a hard cut; drop
-  them and their CEL rules, and the matching sentences in [UPGRADING.md](UPGRADING.md).
-- [ ] **F-i: CRD text beyond the contract.** `RepairPending` says "an API edit made after its
-  flush", and `kubectl explain` never defines "flush" (`fluxclaim_types.go`, `argocdclaim_types.go`).
-  Check `applierClaimRef`'s description for rationale too (AGENTS.md, API changes).
 
 ## Applier claims and bi-directional editing
 
@@ -38,11 +30,13 @@ should land before the next tag is cut (the last release is v0.53.0). Checked ag
   author), or keep the drop and alert on `git_writes_dropped_total`. It is also the cause behind the
   flaky audit-route override e2e spec.
   [live-edit-dropped-while-render-fidelity-pending.md](design/live-edit-dropped-while-render-fidelity-pending.md).
-- [ ] **Reopen the render-fidelity gate after a Git repair.** A target stuck on
-  `RenderMatchesLive=False` clears only on a re-declaration or a restart. `Invalidate` and
-  `RequestRecheckForGitTarget` exist; their only caller is branch-worker replacement
-  (`gittarget_controller.go`). Specified in
-  [render-fidelity.md](design/support-boundary/render-fidelity.md) §6b; no decision needed.
+- [ ] **Reopen the render-fidelity gate after a Git repair, automatically.** Today a target on
+  `RenderMatchesLive=False` clears only on an explicit recheck (the
+  `reconcile.configbutler.ai/requestedAt` annotation, which restarts every scope), a
+  re-declaration or a restart. Doing it on an incoming Git revision is more than calling
+  `Invalidate` and `RequestRecheckForGitTarget` from a new place: it first needs the retained-intent
+  ordering barrier, so the source refresh cannot discard or race an open commit window or pending
+  live edits ([render-fidelity.md](design/support-boundary/render-fidelity.md) §6b).
 - [ ] **Watch the held applier**, so a switch-on or a `flux resume` is undone at once instead of
   within the one-minute `heldClaimSteadyInterval`. Also makes ask #31 below exact.
   [applier-claim-held-applier-watch.md](design/applier-claim-held-applier-watch.md).
@@ -220,6 +214,16 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
 
 ## Docs and vocabulary
 
+- [ ] **Cleanup: drop the "loud rejection" fields.** `RemovedReceiver` (`gitprovider_types.go`),
+  `RemovedClusterProviderRef` (`gittarget_types.go`, `fluxclaim_types.go`, `argocdclaim_types.go`),
+  `RemovedGitProviderRef`, `RemovedBranch` and `RemovedParentBranch` (`gittarget_types.go`) refuse an
+  old spelling at admission with a message naming its replacement. Keeping that message is not a
+  release defect; with no users yet they can go, with their CEL rules and the matching sentences in
+  [UPGRADING.md](UPGRADING.md), whenever convenient.
+- [ ] **Cleanup, F-i: CRD text beyond the contract.** `RepairPending` says "an API edit made after
+  its flush", and `kubectl explain` never defines "flush" (`fluxclaim_types.go`,
+  `argocdclaim_types.go`). Check `applierClaimRef`'s description for rationale too (AGENTS.md, API
+  changes).
 - [ ] **Stale design-doc headers**, one docs PR: [open-asks-priority.md](design/open-asks-priority.md)
   (#339 closed, #23 fixed), [gittarget-api-wave.md](design/gittarget-api-wave.md) (riders shipped),
   [git-write-preflight.md](design/git-write-preflight.md) (superseded by the red-status plan),

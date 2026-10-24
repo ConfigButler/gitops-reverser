@@ -10,7 +10,7 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 ## Upgrading from 0.53.0: recreate the connection objects in one pass
 
 **Breaking, with no in-place conversion.** The objects that connect a folder to a cluster, a
-repository and an applier are reshaped, and the next five entries say how. `ClusterProvider` is a
+repository and an applier are reshaped, and the entries below say how. `ClusterProvider` is a
 namespaced `KubeProvider`, a repository branch is a `GitBranch`, the push receiver is a
 `GitReceiver`, `FluxTrigger` and `ArgoCDTrigger` are `FluxClaim` and `ArgoCDClaim`, and grants say
 who may use each provider and branch. Every `GitTarget` and applier claim is recreated, because
@@ -31,10 +31,13 @@ the new object takes it over on its first snapshot.
    `Application` keeps automated sync off, as you set it for 0.53.0, so Argo CD syncs it only when
    someone starts a sync until step 6. Then delete their CRDs:
    `kubectl delete crd fluxtriggers.configbutler.ai argocdtriggers.configbutler.ai`.
-3. Upgrade the CRDs, the operator and its permissions. The chart's `clusterProvider.*` values are
-   `kubeProvider.*`, and the provider it renders is a `KubeProvider` named `local` in the release
-   namespace, which admits only the release namespace's own objects until you set its grants (see
-   the grants entry).
+3. Upgrade the CRDs, the operator and its permissions. Remove `clusterProvider` from your Helm
+   values first: the chart's schema rejects it. `clusterProvider.createDefault` is
+   `kubeProvider.create`, `clusterProvider.default.kubeConfig.secretRef` is `kubeProvider.secretRef`,
+   and `accessFrom` and `allowCrossNamespace` are `kubeProvider.allowedGitTargets` and
+   `kubeProvider.allowedApplierClaims` (see the grants entry). The provider the chart renders is a
+   `KubeProvider` named `local` in the release namespace, where 0.53.0's was the `ClusterProvider`
+   `default`, and it admits only the release namespace's own objects until you set its grants.
 4. Create the new connection objects:
    - a `KubeProvider` for each other `ClusterProvider`, in the namespace that should own the
      credential, with its kubeconfig Secret copied into that namespace;
@@ -44,10 +47,14 @@ the new object takes it over on its first snapshot.
    - a `GitBranch` for each repository branch your `GitTarget`s wrote, from their `gitProviderRef`,
      `branch` and `parentBranch`.
 5. Delete each `GitTarget` and create it again with `spec.gitBranchRef` and `spec.kubeProviderRef`,
-   and `spec.applierClaimRef` where it had `spec.applyTriggerRef`.
-6. Create a `FluxClaim` or `ArgoCDClaim` for each trigger you deleted: the same `spec`, with
-   `spec.kubeProviderRef` for `spec.clusterProviderRef` and without `spec.quietPeriod`. It takes
-   hold of its applier again once a `GitTarget` names it.
+   and `spec.applierClaimRef` where it had `spec.applyTriggerRef`. `spec.kubeProviderRef` is
+   required: a `GitTarget` whose `spec.clusterProviderRef` named `default`, which 0.53.0 filled in
+   when it was omitted, now names the chart's provider,
+   `{name: local, namespace: <release namespace>}`, which admits a `GitTarget` in another
+   namespace only through a grant.
+6. Create a `FluxClaim` or `ArgoCDClaim` for each trigger you deleted: the same `spec`, with the
+   required `spec.kubeProviderRef` in place of `spec.clusterProviderRef`, named as in step 5, and
+   without `spec.quietPeriod`. It takes hold of its applier again once a `GitTarget` names it.
 7. Point each API server's audit webhook at its provider's new route, or set
    `spec.attribution.auditRoute` to the route it posts under today.
 8. Delete the old CRD, which Helm leaves installed: `kubectl delete crd clusterproviders.configbutler.ai`.
@@ -211,7 +218,7 @@ What 0.53.0 allowed, written as grants: a `GitTarget` wrote any `allowedBranches
 ```yaml
 kind: GitProvider
 spec:
-  allowedGitBranches:            # was allowedBranches: [main]; required, no default
+  allowedGitBranches:            # was allowedBranches: [main]; no default: omitted admits nobody
     - consumerNamespaces: {from: Same}
       branchPatterns: [main]
 ---
@@ -254,8 +261,9 @@ spec:
   reports `Validated=False` (`NamespaceNotAuthorized`).
 - **The chart's `local` provider admits only the release namespace** unless
   `kubeProvider.allowedGitTargets` and `kubeProvider.allowedApplierClaims` say otherwise; `[]` there
-  admits nobody. `quickstart.enabled=true` replaces the default with a grant for exactly the
-  quickstart namespace. To keep 0.53.0's open default, every namespace mirroring its own, install
+  admits nobody. `quickstart.enabled=true` adds a grant for exactly the quickstart namespace; with
+  the lists unset, that grant replaces the default rather than joining it. To keep 0.53.0's open
+  default, every namespace mirroring its own, install
   with the chart's `values-playground.yaml`, which sets the `KubeProvider` grants above.
 - **The default trusts the object's own namespace.** Whoever may create a `GitTarget` or an applier
   claim beside a `KubeProvider` may use its credential within the default scope. Keep a provider in
