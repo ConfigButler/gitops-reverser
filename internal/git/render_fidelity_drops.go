@@ -91,6 +91,11 @@ func (l *branchWorkerEventLoop) dropAtRenderFidelity(
 	} else {
 		log.V(1).Info("Dropped a write because the GitTarget's render fidelity is not established")
 	}
+	l.recordWriteDropped(kind, reason)
+}
+
+// recordWriteDropped counts one write dropped at the render-fidelity gate.
+func (l *branchWorkerEventLoop) recordWriteDropped(kind, reason string) {
 	if telemetry.GitWritesDroppedTotal == nil {
 		return
 	}

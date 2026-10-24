@@ -369,6 +369,8 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 	// caller once it has the answer: the next item off the queue may be a live event, and it must
 	// meet the gate this resync produced. See recordReplayClean.
 	l.recordReplayClean(req)
+	// Its snapshot holds what the live events of its collection held before it did.
+	l.supersedeHeld(req)
 	l.w.Log.Info("Resync request applied",
 		"committed", committed,
 		"created", stats.Created,

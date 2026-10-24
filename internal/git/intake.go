@@ -169,10 +169,11 @@ func (r *ResyncRequest) payloadSize() int64 {
 func (r *ResyncRequest) charge() int64 { return r.payloadSize() + pendingWriteOverheadBytes }
 
 // heldBytes is what the loop holds that is not published yet: the open window, the pending writes,
-// and the saves waiting for a window. An attached save is in the charge of the window it is attached
-// to, and then of the write that window became.
+// the live events held at a pending render-fidelity gate, and the saves waiting for a window. An
+// attached save is in the charge of the window it is attached to, and then of the write that window
+// became.
 func (l *branchWorkerEventLoop) heldBytes() int64 {
-	held := l.windowBytes + l.pendingWritesBytes
+	held := l.windowBytes + l.pendingWritesBytes + l.heldEventBytes
 	for _, pcr := range l.pendingCRs {
 		if !pcr.attached {
 			held += attachCharge(pcr.message)
