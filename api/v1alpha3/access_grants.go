@@ -180,10 +180,24 @@ type SourceGrant struct {
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
-	// SourceNamespaces are the source-cluster namespaces the WatchRules feeding an admitted GitTarget
-	// may watch: exact names, '{consumer.namespace}' for the namespace named like the GitTarget's, or
-	// '*' for every namespace, which also allows rules[].sourceNamespace: "*". The list is the whole scope; the GitTarget's own namespace is in it
-	// only when listed. Omitted, no namespace.
+	// SourceNamespaces are source-cluster namespaces that a WatchRule feeding an admitted GitTarget may
+	// name in rules[].sourceNamespace. Entries are exact names, '{consumer.namespace}' for the
+	// namespace named like the GitTarget's, or '*'. Omitted, this grant gives no namespace.
+	//
+	// The effective scope is the union of sourceNamespaces from all grants admitting the GitTarget,
+	// after expanding variables. Every WatchRule item must be allowed by that union, an omitted
+	// sourceNamespace included (it names the WatchRule's own namespace). This is a permission, not a
+	// selection: listing a namespace watches nothing until a WatchRule names it.
+	//
+	// It is not a filter on "*". A rule item with sourceNamespace "*" needs '*' in at least one
+	// admitting grant; otherwise it is refused, never narrowed to the namespaces listed. With '*'
+	// granted, such an item is one cluster-wide watch, bounded only by this KubeProvider credential's
+	// RBAC.
+	//
+	// The check runs when the WatchRule reconciles, and again when a grant changes, never at
+	// admission. A WatchRule with any item outside the union is refused as a whole, in its status
+	// (SourceNamespaceNotAllowed), and watches nothing. The scope bounds what is read, never where
+	// objects are written in Git, and the credential's RBAC still applies inside it.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -193,8 +207,14 @@ type SourceGrant struct {
 	// ClusterResources are the cluster-scoped resource types a ClusterWatchRule may mirror through an
 	// admitted GitTarget: resource.group (clusterroles.rbac.authorization.k8s.io), a bare resource for
 	// the core group only (nodes), or '*' for every one, including CRDs installed later. An identity
-	// covers every served version. A ClusterWatchRule item with '*' in apiGroups or resources needs
-	// '*' here. Omitted, none.
+	// covers every served version. Omitted, this grant gives none.
+	//
+	// The effective scope is the union of clusterResources from all grants admitting the GitTarget.
+	// This is a permission, not a selection: listing a type mirrors nothing until a ClusterWatchRule
+	// asks for it. A ClusterWatchRule item with '*' in apiGroups or resources needs '*' in at least
+	// one admitting grant; otherwise it is refused, never narrowed to the types listed. The check runs
+	// when the ClusterWatchRule reconciles, never at admission, and a rule asking for any type outside
+	// the union is refused as a whole, in its status (ClusterResourceNotAllowed).
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -228,9 +248,16 @@ type ApplierGrant struct {
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 
-	// ApplierNamespaces are the source-cluster namespaces in which an admitted applier claim's
+	// ApplierNamespaces are namespaces in this provider's cluster in which an admitted applier claim's
 	// Kustomization or Application may live: exact names, '{consumer.namespace}' for the namespace
-	// named like the applier claim's, or '*' for every namespace. The list is the whole scope.
+	// named like the applier claim's, or '*' for every namespace.
+	//
+	// The effective scope is the union of applierNamespaces from all grants admitting the applier
+	// claim, after expanding variables. This is a permission, not a selection: it is checked against
+	// one namespace, that of the applier claim's kustomizationRef or applicationRef. The check runs
+	// when the applier claim reconciles, and again when a grant changes, never at admission. An
+	// applier outside the union is refused, in the applier claim's status
+	// (ApplierNamespaceNotAllowed), and an applier claim holding it hands it back.
 	// +required
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
