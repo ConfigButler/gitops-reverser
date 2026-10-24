@@ -178,10 +178,17 @@ import_image() {
 	#
 	# Trust nothing either way: the pin step below verifies the image really
 	# landed in every node, and any failed attempt (loud or silent) is retried.
+	#
+	# Direct mode can also hang: when the docker socket closes mid-stream ("Failed
+	# to copy read stream ... use of closed network connection"), the node's
+	# `ctr image import` waits on stdin forever and k3d never returns, so a run
+	# sat until the suite timeout without reaching attempt 2. A healthy import
+	# takes seconds; the timeout turns a hang into a failed attempt.
 	for attempt in 1 2 3; do
 		echo "Importing ${PROJECT_IMAGE} into k3d cluster ${CLUSTER_NAME} (attempt ${attempt}/3)"
 		pinned=1
-		if "${K3D}" image import -m direct -c "${CLUSTER_NAME}" "${PROJECT_IMAGE}"; then
+		if timeout --kill-after=10s "${IMAGE_IMPORT_TIMEOUT:-300s}" \
+			"${K3D}" image import -m direct -c "${CLUSTER_NAME}" "${PROJECT_IMAGE}"; then
 			while IFS= read -r node_name; do
 				if ! pin_imported_image "${node_name}" "${ref}" "${PROJECT_IMAGE}" "${IMAGE_REPO}" "${IMAGE_TAG}"; then
 					pinned=0
