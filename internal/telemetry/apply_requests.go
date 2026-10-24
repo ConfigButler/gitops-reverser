@@ -36,6 +36,17 @@ import "go.opentelemetry.io/otel/metric"
 // each GitTarget carry that identity instead.
 var ApplyRequestsTotal metric.Int64Counter
 
+// ClaimedResourceReconciledTotal counts the applies an applier claim did not start, labelled by
+// {applier_kind, claim_namespace, claim_name}: a held Kustomization resumed, or a held Application's
+// automated sync switched on, by somebody else. The applier may apply unchecked from then until the
+// claim takes it back, which it does on its next look, within a minute. The ClaimedResourceReconciled
+// Event on the claim says the same, but the API server aggregates identical Events and expires them,
+// so alert on this instead. A Kustomization resumed so also shows its apply as an Unresolved operation.
+//
+// The claim is named: it holds exactly one applier, so the label is its identity and stays bounded
+// by the claims that exist.
+var ClaimedResourceReconciledTotal metric.Int64Counter
+
 // ApplyRevisionMismatchesTotal counts apply operations that succeeded on another revision than the
 // commit GitOps Reverser checked, labelled by {applier_kind}. A Flux Kustomization applies whatever
 // its GitRepository's artifact holds when it reconciles; the artifact is read again just before the

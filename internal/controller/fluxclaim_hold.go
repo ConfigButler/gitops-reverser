@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -22,6 +24,7 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // A FluxClaim holds its Kustomization suspended while idle; the branch workers resume it for each
@@ -274,7 +277,7 @@ func (r *ApplierClaimReconciler) hold(
 		if err != nil {
 			return keptCondition(claim.Status.Conditions, ApplierClaimConditionInControl, err.Error())
 		}
-		r.suspended(claim, token, wasInControl(claim) || held.inFlight())
+		r.suspended(ctx, claim, token, wasInControl(claim) || held.inFlight())
 		return suspending(fmt.Sprintf("Kustomization %s is being suspended", ref))
 	case !held.suspension.Held || adopt:
 		return r.takeOverSuspend(ctx, st, claim, held)
@@ -415,13 +418,16 @@ func suspendState(suspended bool) configbutleraiv1alpha3.SuspendState {
 
 // suspended records a Kustomization just suspended: an adoption, or, for one held before, an
 // external resume, recorded as an Unresolved operation that completes once token is handled.
-func (r *ApplierClaimReconciler) suspended(claim *configbutleraiv1alpha3.FluxClaim, token string, resumed bool) {
+func (r *ApplierClaimReconciler) suspended(
+	ctx context.Context, claim *configbutleraiv1alpha3.FluxClaim, token string, resumed bool,
+) {
 	ref := claim.Applier()
 	if !resumed {
 		r.event(claim, corev1.EventTypeNormal, EventReasonAdopted,
 			"suspended Kustomization %s: from now on GitOps Reverser starts every apply it makes", ref)
 		return
 	}
+	recordClaimedResourceReconciled(ctx, applierKindKustomization, claim)
 	r.event(claim, corev1.EventTypeNormal, EventReasonClaimedResourceReconciled,
 		"Kustomization %s was resumed outside GitOps Reverser, which suspended it again; the apply "+
 			"that resume started was not checked against the branch", ref)
@@ -903,6 +909,25 @@ func (r *ApplierClaimReconciler) event(object client.Object, eventType, reason, 
 	if r.Recorder != nil {
 		r.Recorder.Eventf(object, eventType, reason, messageFmt, args...)
 	}
+}
+
+// applier_kind label values of claimed_resource_reconciled_total, as apply_requests_total spells them.
+const (
+	applierKindKustomization = "kustomization"
+	applierKindApplication   = "application"
+)
+
+// recordClaimedResourceReconciled counts an apply the applier claim did not start, beside its
+// ClaimedResourceReconciled Event, which the API server aggregates and expires.
+func recordClaimedResourceReconciled(ctx context.Context, applierKind string, claim client.Object) {
+	if telemetry.ClaimedResourceReconciledTotal == nil {
+		return
+	}
+	telemetry.ClaimedResourceReconciledTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("applier_kind", applierKind),
+		attribute.String("claim_namespace", claim.GetNamespace()),
+		attribute.String("claim_name", claim.GetName()),
+	))
 }
 
 // publishAlsoAppliedBy sets the applier claim's status.source.alsoAppliedBy: the objects applying its

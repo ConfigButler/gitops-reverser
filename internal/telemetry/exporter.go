@@ -608,6 +608,7 @@ func registerCounters() error {
 		{"gitopsreverser_watch_plan_triggers_total", &WatchPlanTriggersTotal},
 		{"gitopsreverser_apply_requests_total", &ApplyRequestsTotal},
 		{"gitopsreverser_apply_revision_mismatches_total", &ApplyRevisionMismatchesTotal},
+		{"gitopsreverser_claimed_resource_reconciled_total", &ClaimedResourceReconciledTotal},
 		{"gitopsreverser_apply_window_collisions_total", &ApplyWindowCollisionsTotal},
 		{"gitopsreverser_apply_echoes_total", &ApplyEchoesTotal},
 		{"gitopsreverser_stale_snapshots_total", &StaleSnapshotsTotal},
