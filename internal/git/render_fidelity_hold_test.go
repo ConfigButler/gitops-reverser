@@ -180,6 +180,118 @@ func TestRenderFidelityHold_ACreateHeldIsAdoptedOnceItIsInAWrite(t *testing.T) {
 	})
 }
 
+// TestRenderFidelityHold_AnApplyOverAHeldEditRepairsItOnceItIsInGit: an apply sent while an edit is
+// held applies a commit without it. Its window recorded only the flush's edits, so the applier's
+// write over the held edit was taken for the apply landing: the edit then reached Git with the
+// cluster still running the overwritten value, and no Repair. The window now holds the held events
+// from the send, and the Repair waits for the edit to reach Git: sent before, it applies a commit
+// without the edit and is spent, and pending, it reads as Git ahead, so F3 discards the snapshot the
+// gate waits for.
+func TestRenderFidelityHold_AnApplyOverAHeldEditRepairsItOnceItIsInGit(t *testing.T) {
+	target := itypes.NewResourceReference(echoTarget, "default")
+	configMaps := echoScope().Collection
+	secrets := itypes.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "default")
+	setup := func(t *testing.T, slug string) (*echoFixture, *recordingRequester, map[itypes.CollectionKey]uint64) {
+		t.Helper()
+		f := newEchoFixture(t, slug, configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
+		requester := f.withClaim()
+		f.worker.initialSnapshots = func(itypes.ResourceReference) bool { return true }
+		gate := NewRenderFidelityGate()
+		f.worker.renderFidelityGate = gate
+		// ConfigMaps replayed clean; Secrets is replaying again, so the GitTarget's events are held.
+		_, revisions := gate.Reconcile(target, []itypes.CollectionKey{configMaps, secrets},
+			[]itypes.CollectionKey{configMaps, secrets})
+		gate.RecordScopeClean(target, revisions[configMaps], configMaps)
+		edit := echoEvent("x", "x2")
+		edit.SourceCollection = configMaps
+		edit.LastFieldManagers = []string{"kubectl-edit"}
+		edit.LastFieldManagedAt = time.Now()
+		f.writeWindow(edit)
+		require.Len(t, f.loop.held[target].events, 1)
+
+		// A push from outside is applied while the edit is held.
+		f.echoApplier().foreign = true
+		f.loop.endWake(0)
+		sent := requester.taken()
+		require.Len(t, sent, 1)
+		require.Equal(t, echoDocument("x", "x1"), f.onMain(echoFile("x")), "the commit sent does not hold the edit")
+
+		over := echoEvent("x", "x1")
+		over.SourceCollection = configMaps
+		over.LastFieldManagers = []string{FluxFieldManager}
+		over.LastFieldManagedAt = time.Now().Add(time.Second)
+		assert.True(t, f.loop.withholdLateApply(over), "the apply over the held edit is withheld")
+		report(sent[0], ApplySucceeded)
+		f.loop.endWake(0)
+		assert.Empty(t, requester.taken(), "no Repair goes before the edit is in Git")
+		assert.False(t, f.loop.appliersAhead(), "nor is one pending, which would hold back the Secrets snapshot")
+		return f, requester, revisions
+	}
+	repaired := func(t *testing.T, f *echoFixture, requester *recordingRequester) {
+		t.Helper()
+		f.loop.finalizeOpenWindowWithReason(windowFinalizeReasonIdleTimeout)
+		f.loop.pushPending()
+		f.loop.endWake(0)
+		assert.Equal(t, echoDocument("x", "x2"), f.onMain(echoFile("x")))
+		sent := requester.taken()
+		require.Len(t, sent, 1, "the cluster runs x1, so the commit that holds the edit is applied")
+		assert.Equal(t, configv1alpha3.ApplyReasonRepair, sent[0].Reason)
+		assert.Equal(t, gitIn(t, f.repoDir, "rev-parse", "main"), sent[0].Commit)
+	}
+
+	// The Secrets replay is not the collection's first, so F3 would discard its snapshot with a Repair
+	// pending, and ask again only once that Repair went.
+	replaySecrets := func(t *testing.T, f *echoFixture, revisions map[itypes.CollectionKey]uint64) {
+		t.Helper()
+		scope := ResyncScope{Collection: secrets}
+		req := &ResyncRequest{GitTargetName: echoTarget, GitTargetNamespace: "default", Scope: &scope,
+			RenderFidelityRevision: revisions[secrets], Result: make(chan ResyncResult, 1)}
+		f.loop.handleQueueItem(WorkItem{Resync: &resyncMarker{request: req}})
+		require.NoError(t, (<-req.Result).Err, "the snapshot is used, not discarded")
+	}
+
+	t.Run("released", func(t *testing.T) {
+		f, requester, revisions := setup(t, "render-fidelity-hold-overwritten-released")
+		replaySecrets(t, f, revisions)
+		f.loop.endWake(0)
+		repaired(t, f, requester)
+	})
+
+	t.Run("across a second apply", func(t *testing.T) {
+		f, requester, revisions := setup(t, "render-fidelity-hold-overwritten-twice")
+		f.echoApplier().foreign = true
+		f.loop.endWake(0)
+		sent := requester.taken()
+		require.Len(t, sent, 1, "another apply goes while the edit is held")
+		over := echoEvent("x", "x1")
+		over.SourceCollection = configMaps
+		over.LastFieldManagers = []string{FluxFieldManager}
+		over.LastFieldManagedAt = time.Now().Add(2 * time.Second)
+		assert.True(t, f.loop.withholdLateApply(over), "its window holds the edit from the send")
+		report(sent[0], ApplySucceeded)
+		f.loop.endWake(0)
+		require.Empty(t, requester.taken())
+		require.Len(t, f.loop.held[target].events, 1, "the edit is still held")
+
+		replaySecrets(t, f, revisions)
+		f.loop.endWake(0)
+		repaired(t, f, requester)
+	})
+
+	t.Run("superseded", func(t *testing.T) {
+		f, requester, revisions := setup(t, "render-fidelity-hold-overwritten-superseded")
+		// A snapshot of ConfigMaps listed before the apply wrote over the edit holds it.
+		scope := echoScope()
+		req := &ResyncRequest{GitTargetName: echoTarget, GitTargetNamespace: "default", Scope: &scope,
+			RenderFidelityRevision: revisions[configMaps], Initial: true, Result: make(chan ResyncResult, 1),
+			Desired: []manifestanalyzer.DesiredResource{echoDesired("x", "x2")}}
+		f.loop.handleQueueItem(WorkItem{Resync: &resyncMarker{request: req}})
+		require.NoError(t, (<-req.Result).Err)
+		require.Empty(t, f.loop.held, "the snapshot superseded the edit")
+		repaired(t, f, requester)
+	})
+}
+
 // echoScope is the echo fixture's ConfigMaps collection.
 func echoScope() ResyncScope {
 	return ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "default")

@@ -300,8 +300,11 @@ func (l *branchWorkerEventLoop) judgeInWindow(applier *applierState, event Event
 		// apply over the edit: events arrive in resourceVersion order, so the edit, recorded
 		// already, was written first, and mirroring this would revert it in Git and on the
 		// cluster. Only an undo in that same second is lost (C4 in docs/design/applier-echoes.md).
+		// An edit still held for render fidelity is repaired once it reaches Git.
 		l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
-		applier.repair = true
+		if !l.repairOnRelease(applier.ref, event) {
+			applier.repair = true
+		}
 		return true
 	}
 	return false

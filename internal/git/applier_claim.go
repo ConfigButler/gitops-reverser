@@ -546,6 +546,22 @@ func (l *branchWorkerEventLoop) endFlush() {
 	l.flushing, l.flushEdits = false, nil
 }
 
+// recordUnpublishedEdits records in the window of an attempt being sent the edits its commit does
+// not hold, which the apply may overwrite: those decided after the flush mark, and the live events
+// held for a GitTarget's render fidelity.
+func (l *branchWorkerEventLoop) recordUnpublishedEdits(state *applierState) {
+	for _, target := range state.targets {
+		for key, at := range l.flushEdits[target.ref] {
+			state.window.recordEdit(key, at)
+		}
+		if held := l.held[target.ref]; held != nil {
+			for _, h := range held.events {
+				state.window.recordEdit(objectKey(h.event.Identifier), h.event.LastFieldManagedAt)
+			}
+		}
+	}
+}
+
 // recordFlushEdit records a live edit decided after the flush mark for its GitTarget, while a flush
 // is waiting for its publication: it is not in the commit the flush's attempts apply.
 func (l *branchWorkerEventLoop) recordFlushEdit(event Event) {
@@ -720,12 +736,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	state.lastTurn = attempt.id
 	l.reportApplyWindow(state)
 	state.openApplyWindow(attempt.id, tip, sentAt)
-	// The edits decided after the flush mark are not in the commit, and the apply may overwrite them.
-	for _, target := range state.targets {
-		for key, at := range l.flushEdits[target.ref] {
-			state.window.recordEdit(key, at)
-		}
-	}
+	l.recordUnpublishedEdits(state)
 	for key := range refusals {
 		delete(l.unsentRefusals, key)
 	}

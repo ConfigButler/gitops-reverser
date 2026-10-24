@@ -3,6 +3,7 @@
 package git
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -29,6 +30,12 @@ import (
 //     supersedes is noted for adoption, since the snapshot's commit holds the object. A DELETE of an
 //     object the snapshot does not hold stays held, because a snapshot removes a document only under
 //     prune mode Always.
+//   - An apply sent while events are held applies a commit without them, and may overwrite them on
+//     the cluster. Its window holds them as edits from the send (recordUnpublishedEdits), so the
+//     applier's write over one is withheld. Its Repair waits for the event to reach Git, by release
+//     or a snapshot superseding it (repairOnRelease): sent before, it applies a commit without the
+//     edit and is spent, and a Repair pending reads as Git ahead, so F3 discards the very snapshot
+//     the gate waits for.
 //   - The hold is bounded, per GitTarget by renderFidelityHoldLimit, and per branch by the
 //     retained-byte budget. Past either, the GitTarget's held events are dropped and counted, and a
 //     fresh snapshot of it is asked for, which brings the state back as the operator's commit. A
@@ -55,11 +62,13 @@ type heldWrites struct {
 	deletes int
 }
 
-// heldEvent is one live event held, numbered in the order the loop took it.
+// heldEvent is one live event held, numbered in the order the loop took it. overwrittenBy is the
+// appliers whose apply wrote over it while it was held: each has a Repair due once it reaches Git.
 type heldEvent struct {
-	seq    uint64
-	event  Event
-	charge int64
+	seq           uint64
+	event         Event
+	charge        int64
+	overwrittenBy []ApplierRef
 }
 
 // holdAtRenderFidelity holds a live event of a GitTarget whose render fidelity is pending.
@@ -137,6 +146,7 @@ func (l *branchWorkerEventLoop) releaseHeld(target itypes.ResourceReference, hel
 			l.noteCreated(h.event)
 		}
 		l.appendLiveEvent(h.event)
+		l.repairOverwritten(h)
 	}
 }
 
@@ -187,6 +197,8 @@ func (l *branchWorkerEventLoop) supersedeHeld(req *ResyncRequest) {
 			l.noteCreated(h.event)
 		case itypes.OperationUpdate:
 		}
+		// The snapshot may have been listed before the apply wrote over the event, and so hold it.
+		l.repairOverwritten(h)
 		l.heldEventBytes -= h.charge
 		superseded++
 	}
@@ -222,6 +234,38 @@ func snapshotCovers(req *ResyncRequest, event Event) bool {
 		return event.SourceCollection == req.Scope.Collection
 	}
 	return req.Scope.Matches(event.Identifier)
+}
+
+// repairOnRelease reports whether a live event the applier wrote over is held, and if so leaves a
+// Repair due for the applier once the latest held event of that object reaches Git
+// (repairOverwritten). The commit an apply sent now applies does not hold the edit yet.
+func (l *branchWorkerEventLoop) repairOnRelease(ref ApplierRef, event Event) bool {
+	held := l.held[itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace)]
+	if held == nil {
+		return false
+	}
+	key := objectKey(event.Identifier)
+	for i := len(held.events) - 1; i >= 0; i-- {
+		h := &held.events[i]
+		if objectKey(h.event.Identifier) != key {
+			continue
+		}
+		if !slices.Contains(h.overwrittenBy, ref) {
+			h.overwrittenBy = append(h.overwrittenBy, ref)
+		}
+		return true
+	}
+	return false
+}
+
+// repairOverwritten leaves a Repair pending for each applier that wrote over a held event, now that
+// the event reaches Git. An applier no longer listed has nothing to repair.
+func (l *branchWorkerEventLoop) repairOverwritten(h heldEvent) {
+	for _, ref := range h.overwrittenBy {
+		if state := l.appliers[ref]; state != nil {
+			state.repair = true
+		}
+	}
 }
 
 // takeHeld removes a GitTarget's held events from the hold, and returns them.
