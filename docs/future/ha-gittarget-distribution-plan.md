@@ -147,8 +147,9 @@ target incarnations alongside the shard key; sharing a destination must not sile
 incompatible policy or reroute old work to a replacement object with the same name.
 
 Providers are not combined: the branch's one `GitProvider` decides credential, branch
-permissions and signing policy, and `GitTarget`s in other namespaces share it through its
-`spec.accessFrom`. A shared destination does not authorize one provider's work to use another
+permissions and signing policy. `GitBranch`es in other namespaces claim through it by its
+`spec.allowedGitBranches`, and `GitTarget`s write through a `GitBranch` by that branch's
+`spec.allowedGitTargets`. A shared destination does not authorize one provider's work to use another
 provider's permissions.
 
 ### Journal record

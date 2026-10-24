@@ -57,20 +57,23 @@ explicit object:
 - A younger `GitBranch` for a held branch reports `Stalled=True`, reason `BranchConflict`, naming
   the holder. Status carries this; the plan's admission refusal was dropped
   so that a folder of manifests can be applied in any order.
-- `GitBranch.spec.gitProviderRef` is a `LocalObjectReference`, so creating a claim takes the right
-  to create objects where the credential lives.
+- `GitBranch.spec.gitProviderRef` was a `LocalObjectReference`, so creating a claim took the right
+  to create objects where the credential lives. Since #441 it may name a `GitProvider` in another
+  namespace, and the right to claim comes from that provider's `spec.allowedGitBranches` instead.
 
 So option B's per-write credential selection never had to exist, which was the purpose of rule 2.
 
 ### The shared credential (rule 3, option F): done, with a different reference, #428 + #429
 
-- `GitProvider.spec.accessFrom` admits other namespaces by name or label selector. A provider
-  always admits its own namespace.
-- The cross-namespace reference is **`GitTarget.spec.gitBranchRef`** (namespaced), not
-  `gitProviderRef` as the plan drew it. One policy governs both hops: a `GitTarget` in another
-  namespace may use a `GitBranch` while that branch's `GitProvider` admits the target's namespace
-  ([`gitBranchAdmitted`](../../internal/authz/kubeprovider_admission.go)). This is checked on every
-  reconcile, so a policy that is tightened later revokes access.
+- #428 shipped `GitProvider.spec.accessFrom`; #441 replaced it with explicit grants, and nothing is
+  admitted automatically, the object's own namespace included. A `GitProvider`'s
+  `spec.allowedGitBranches` decide which namespaces may claim which branches through it, and a
+  `GitBranch`'s `spec.allowedGitTargets` decide which namespaces may write through it.
+- The cross-namespace reference is **`GitTarget.spec.gitBranchRef`** (namespaced), as well as
+  `gitProviderRef` since #441. Each hop is checked against the grants of the object it reaches
+  ([`gitBranchAdmitted`](../../internal/authz/kubeprovider_admission.go),
+  [`GitBranchClaimAdmitted`](../../internal/authz/kubeprovider_admission.go)). This is checked on
+  every reconcile, so a grant that is narrowed later revokes access.
 - One Secret in the platform namespace serves every team. Self-service stays: a team can still own
   a `GitProvider`, a `GitBranch` and a Secret in its own namespace.
 - Committer and signing come with the credential, so a branch is signed by one key.
