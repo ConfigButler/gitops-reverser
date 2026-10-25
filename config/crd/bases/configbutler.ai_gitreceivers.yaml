@@ -39,12 +39,14 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          GitReceiver is the endpoint a Git host notifies when it receives a push. A delivery wakes every
-          GitBranch of every GitProvider, in any namespace, whose spec.url names the delivery's
-          repository, so pushes are picked up at once instead of at the next refresh. A GitProvider that
-          reaches the host through another host name or port is not matched. A delivery is only a hint:
-          the branch is then read with its own GitProvider's credential, so a delivery cannot choose a
-          URL, a credential or a commit. GitBranch.status.lastPushNoticeAt shows deliveries arriving.
+          GitReceiver is the endpoint a Git host notifies when it receives a push. A
+          delivery wakes every GitBranch of every GitProvider, in any namespace, whose
+          spec.url names the delivery's repository, so pushes are picked up at once
+          instead of at the next refresh. A GitProvider that reaches the host through
+          another host name or port is not matched. A delivery is only a hint: the
+          branch is then read with its own GitProvider's credential, so a delivery
+          cannot choose a URL, a credential or a commit.
+          GitBranch.status.lastPushNoticeAt shows deliveries arriving.
         properties:
           apiVersion:
             description: |-
@@ -68,9 +70,9 @@ spec:
             properties:
               secretRef:
                 description: |-
-                  SecretRef names the Secret, in this namespace, whose "token" key is the webhook secret. The
-                  token also determines status.webhookPath, so rotating it moves the path: register the new
-                  path with the new secret.
+                  SecretRef names the Secret, in this namespace, whose "token" key is the
+                  webhook secret. The token also determines status.webhookPath, so rotating it
+                  moves the path: register the new path with the new secret.
                 properties:
                   name:
                     description: Name of the referent.
@@ -83,10 +85,11 @@ spec:
                   rule: self.name != ''
               type:
                 description: |-
-                  Type is the payload and signature the Git host sends: "github" (X-Hub-Signature-256),
-                  "gitlab" (X-Gitlab-Token), "gitea" (X-Gitea-Signature), or "generic-hmac" for a relay of
-                  your own (X-Signature: sha256=<hex HMAC of the body>, over a {"repository", "branch",
-                  "after"} body).
+                  Type is the payload and signature the Git host sends: "github"
+                  (X-Hub-Signature-256), "gitlab" (X-Gitlab-Token), "gitea"
+                  (X-Gitea-Signature), or "generic-hmac" for a relay of your own (X-Signature:
+                  sha256=<hex HMAC of the body>, over a {"repository", "branch", "after"}
+                  body).
                 enum:
                 - github
                 - gitlab
@@ -102,9 +105,9 @@ spec:
             properties:
               conditions:
                 description: |-
-                  Conditions are the latest observations of this GitReceiver's state. Ready, Reconciling and
-                  Stalled follow kstatus; Ready is True once the token is readable and the receiver listener
-                  is on.
+                  Conditions are the latest observations of this GitReceiver's state. Ready,
+                  Reconciling and Stalled follow kstatus; Ready is True once the token is
+                  readable and the receiver listener is on.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -170,9 +173,10 @@ spec:
                 type: integer
               webhookPath:
                 description: |-
-                  WebhookPath is the path this GitReceiver is served on, under the receiver listener: /git-push/
-                  and an HMAC of its namespace and name, keyed by the token. Point the Git host's push webhook
-                  at the listener's address plus this path. Empty while the token is missing.
+                  WebhookPath is the path this GitReceiver is served on, under the receiver
+                  listener: /git-push/ and an HMAC of its namespace and name, keyed by the
+                  token. Point the Git host's push webhook at the listener's address plus this
+                  path. Empty while the token is missing.
                 type: string
             type: object
         required:

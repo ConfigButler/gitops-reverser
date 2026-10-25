@@ -2,8 +2,8 @@
 
 package v1alpha3
 
-// PruneMode enumerates which of the two deletion paths may remove a managed document from a
-// GitTarget's folder.
+// PruneMode enumerates which of the two deletion paths may remove a managed
+// document from a GitTarget's folder.
 //
 //	              | source DELETE event | resync mark-and-sweep
 //	Never         | suppressed          | suppressed
@@ -26,15 +26,17 @@ const (
 // An object rather than a bare enum so a later volume guard (maxDeletesPerCommit) can be a sibling
 // field; scalar-to-object would be breaking later, the nesting level costs nothing now.
 
-// PrunePolicy declares which deletion paths may remove documents from a GitTarget's folder.
+// PrunePolicy declares which deletion paths may remove documents from a
+// GitTarget's folder.
 type PrunePolicy struct {
 	// The kubebuilder default only applies to NEWLY created objects; Kubernetes does not
 	// retro-default stored ones. Every reader must go through EffectivePruneMode, which maps an
 	// absent policy and an empty mode to OnEvent.
 
-	// Mode decides which deletions are mirrored. "Never" removes nothing. "OnEvent" mirrors a
-	// delete observed on the source cluster, but a resync removes nothing. "Always" also lets a
-	// resync remove a document that has no resource on the cluster. Defaults to "OnEvent".
+	// Mode decides which deletions are mirrored. "Never" removes nothing.
+	// "OnEvent" mirrors a delete observed on the source cluster, but a resync
+	// removes nothing. "Always" also lets a resync remove a document that has no
+	// resource on the cluster. Defaults to "OnEvent".
 	// +optional
 	// +kubebuilder:validation:Enum=Never;OnEvent;Always
 	// +kubebuilder:default=OnEvent

@@ -46,9 +46,10 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ClusterWatchRule selects cluster-scoped resources, such as Nodes, ClusterRoles and CRDs, for a
-          GitTarget to mirror. The KubeProvider's grant admitting that GitTarget must list each type in
-          clusterResources. Use a WatchRule for namespaced resources.
+          ClusterWatchRule selects cluster-scoped resources, such as Nodes,
+          ClusterRoles and CRDs, for a GitTarget to mirror. The KubeProvider's grant
+          admitting that GitTarget must list each type in clusterResources. Use a
+          WatchRule for namespaced resources.
         properties:
           apiVersion:
             description: |-
@@ -72,8 +73,9 @@ spec:
             properties:
               gitTargetRef:
                 description: |-
-                  GitTargetRef names the GitTarget that mirrors what this ClusterWatchRule selects. The
-                  namespace is required, because a ClusterWatchRule has none to default to.
+                  GitTargetRef names the GitTarget that mirrors what this ClusterWatchRule
+                  selects. The namespace is required, because a ClusterWatchRule has none to
+                  default to.
                 properties:
                   name:
                     description: Name of the referent.
@@ -93,26 +95,27 @@ spec:
                   rule: has(self.namespace) && self.namespace != ''
               rules:
                 description: |-
-                  Rules select the cluster-scoped resources to mirror. A resource matching any rule is
-                  mirrored. A rule that resolves to no cluster-scoped type mirrors nothing; use a WatchRule for
-                  namespaced resources.
+                  Rules select the cluster-scoped resources to mirror. A resource matching any
+                  rule is mirrored. A rule that resolves to no cluster-scoped type mirrors
+                  nothing; use a WatchRule for namespaced resources.
                 items:
                   description: |-
-                    ClusterResourceRule selects cluster-scoped resources by type, and optionally by API group,
-                    version and label.
+                    ClusterResourceRule selects cluster-scoped resources by type, and optionally
+                    by API group, version and label.
                   properties:
                     apiGroups:
                       description: |-
-                        APIGroups are the API groups to match: "" is the core group, and "*" is every group, as in
-                        ["rbac.authorization.k8s.io"] or ["*"]. Omitted, each resource name is looked up across the
-                        served groups and must be served by exactly one.
+                        APIGroups are the API groups to match: "" is the core group, and "*" is
+                        every group, as in ["rbac.authorization.k8s.io"] or ["*"]. Omitted, each
+                        resource name is looked up across the served groups and must be served by
+                        exactly one.
                       items:
                         type: string
                       type: array
                     apiVersions:
                       description: |-
-                        APIVersions are the versions to match, or "*" for every served version. Omitted, each
-                        resource's preferred version is used.
+                        APIVersions are the versions to match, or "*" for every served version.
+                        Omitted, each resource's preferred version is used.
                       items:
                         type: string
                       type: array
@@ -177,9 +180,10 @@ spec:
                       x-kubernetes-map-type: atomic
                     resources:
                       description: |-
-                        Resources are the resource types to match, by plural name ("nodes", "clusterroles"), or "*"
-                        for every type. Matching is exact and case-insensitive; partial wildcards such as "cluster*"
-                        match nothing, and subresources ("nodes/status") are rejected.
+                        Resources are the resource types to match, by plural name ("nodes",
+                        "clusterroles"), or "*" for every type. Matching is exact and
+                        case-insensitive; partial wildcards such as "cluster*" match nothing, and
+                        subresources ("nodes/status") are rejected.
                       items:
                         minLength: 1
                         pattern: ^[^/]*$
@@ -200,9 +204,9 @@ spec:
             properties:
               conditions:
                 description: |-
-                  Conditions are the latest observations of this ClusterWatchRule's state. Ready, Reconciling
-                  and Stalled follow kstatus; ResourcesResolved and StreamsRunning say which check holds the
-                  rule back.
+                  Conditions are the latest observations of this ClusterWatchRule's state.
+                  Ready, Reconciling and Stalled follow kstatus; ResourcesResolved and
+                  StreamsRunning say which check holds the rule back.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -293,8 +297,8 @@ spec:
                     type: integer
                   summary:
                     description: |-
-                      Summary is ready/total for display, such as "3/4". Read ready and total instead of parsing
-                      it.
+                      Summary is ready/total for display, such as "3/4". Read ready and total
+                      instead of parsing it.
                     type: string
                   total:
                     description: Total is how many types are watched.

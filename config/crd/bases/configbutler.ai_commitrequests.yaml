@@ -50,9 +50,10 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          CommitRequest asks for a save: it attaches to its author's current or next commit window on a
-          GitTarget, closes that window on its own timers, and gives the commit its message. Its spec is
-          immutable, and status.commit reports the commit once it is on the remote.
+          CommitRequest asks for a save: it attaches to its author's current or next
+          commit window on a GitTarget, closes that window on its own timers, and
+          gives the commit its message. Its spec is immutable, and status.commit
+          reports the commit once it is on the remote.
         properties:
           apiVersion:
             description: |-
@@ -72,13 +73,14 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of CommitRequest. It is immutable
-              after creation.
+            description: |-
+              spec defines the desired state of CommitRequest. It is immutable after
+              creation.
             properties:
               gitTargetRef:
                 description: |-
-                  GitTargetRef names the GitTarget, in this namespace, whose commit window this request
-                  attaches to.
+                  GitTargetRef names the GitTarget, in this namespace, whose commit window
+                  this request attaches to.
                 properties:
                   name:
                     description: Name of the referent.
@@ -111,12 +113,13 @@ spec:
               whenNothingToCommit:
                 default: Resolve
                 description: |-
-                  WhenNothingToCommit decides what happens when the request ends with nothing to commit:
-                  attachTimeout ran out with no window, or the window closed without changing Git. "Resolve"
-                  finishes without a commit; "CommitEmpty" records spec.message in an empty commit. The Ready
-                  reason says which case happened. A window that belonged to another author never gets an
-                  empty commit, and a request on a GitTarget that may not be written (suspended, or render
-                  fidelity not established) fails either way. Defaults to "Resolve".
+                  WhenNothingToCommit decides what happens when the request ends with nothing
+                  to commit: attachTimeout ran out with no window, or the window closed
+                  without changing Git. "Resolve" finishes without a commit; "CommitEmpty"
+                  records spec.message in an empty commit. The Ready reason says which case
+                  happened. A window that belonged to another author never gets an empty
+                  commit, and a request on a GitTarget that may not be written (suspended, or
+                  render fidelity not established) fails either way. Defaults to "Resolve".
                 enum:
                 - Resolve
                 - CommitEmpty
@@ -127,18 +130,20 @@ spec:
                   attachTimeout: 2s
                   maxDuration: 2s
                 description: |-
-                  Window says which commit window this request attaches to, how long it waits for one, and
-                  the timers that close the window once it has. They replace the GitTarget's timers for that
-                  window. A request never opens a window: only a write does. Omitted, the request attaches to
-                  the author's current or next window within 2s and closes it 2s later.
+                  Window says which commit window this request attaches to, how long it waits
+                  for one, and the timers that close the window once it has. They replace the
+                  GitTarget's timers for that window. A request never opens a window: only a
+                  write does. Omitted, the request attaches to the author's current or next
+                  window within 2s and closes it 2s later.
                 properties:
                   attach:
                     default: CurrentOrNext
                     description: |-
-                      Attach selects the window. "CurrentOrNext" attaches to the author's open window, or to the
-                      next one a write opens. "Next" closes the author's open window under its own message first,
-                      and attaches to the next one; it separates earlier writes from later ones, but cannot prove
-                      a write was made after the request. Defaults to "CurrentOrNext".
+                      Attach selects the window. "CurrentOrNext" attaches to the author's open
+                      window, or to the next one a write opens. "Next" closes the author's open
+                      window under its own message first, and attaches to the next one; it
+                      separates earlier writes from later ones, but cannot prove a write was made
+                      after the request. Defaults to "CurrentOrNext".
                     enum:
                     - CurrentOrNext
                     - Next
@@ -146,10 +151,11 @@ spec:
                   attachTimeout:
                     default: 2s
                     description: |-
-                      AttachTimeout is how long the request waits for a window, as a Go duration, from when GitOps
-                      Reverser picks the request up. "0s" attaches only to a window already open. A request whose
-                      wait ran out never takes a later window. At most "5m". Defaults to "2s", which covers a
-                      write's wait for its audit event.
+                      AttachTimeout is how long the request waits for a window, as a Go duration,
+                      from when GitOps Reverser picks the request up. "0s" attaches only to a
+                      window already open. A request whose wait ran out never takes a later
+                      window. At most "5m". Defaults to "2s", which covers a write's wait for its
+                      audit event.
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                     type: string
                     x-kubernetes-validations:
@@ -157,8 +163,9 @@ spec:
                       rule: duration(self) <= duration('5m')
                   idleTimeout:
                     description: |-
-                      IdleTimeout closes the attached window this long after its last write, as a Go duration.
-                      Omitted, only maxDuration closes it. At most "5m", and not more than maxDuration.
+                      IdleTimeout closes the attached window this long after its last write, as a
+                      Go duration. Omitted, only maxDuration closes it. At most "5m", and not more
+                      than maxDuration.
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                     type: string
                     x-kubernetes-validations:
@@ -167,9 +174,9 @@ spec:
                   maxDuration:
                     default: 2s
                     description: |-
-                      MaxDuration closes the attached window this long after the request attached, however many
-                      writes keep arriving, as a Go duration. "0s" commits right after attaching. At most "5m".
-                      Defaults to "2s".
+                      MaxDuration closes the attached window this long after the request attached,
+                      however many writes keep arriving, as a Go duration. "0s" commits right
+                      after attaching. At most "5m". Defaults to "2s".
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                     type: string
                     x-kubernetes-validations:
@@ -214,11 +221,12 @@ spec:
                 type: string
               conditions:
                 description: |-
-                  Conditions are the latest observations of this CommitRequest's state. Ready, Reconciling
-                  and Stalled follow kstatus: Ready is True once the request ended without error, with a
-                  pushed commit or with nothing to save. Pushed is True once the commit is on the remote.
-                  AuthorAttributed says whether the request's creator, recorded at admission, names the
-                  commit author; False is not a failure and does not affect Ready.
+                  Conditions are the latest observations of this CommitRequest's state. Ready,
+                  Reconciling and Stalled follow kstatus: Ready is True once the request ended
+                  without error, with a pushed commit or with nothing to save. Pushed is True
+                  once the commit is on the remote. AuthorAttributed says whether the
+                  request's creator, recorded at admission, names the commit author; False is
+                  not a failure and does not affect Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

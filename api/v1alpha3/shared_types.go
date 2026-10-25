@@ -2,14 +2,14 @@
 
 package v1alpha3
 
-// StreamsStatus is a bounded roll-up of the stream-readiness state for the types a GitTarget
-// tracks, or a WatchRule or ClusterWatchRule resolves.
+// StreamsStatus is a bounded roll-up of the stream-readiness state for the
+// types a GitTarget tracks, or a WatchRule or ClusterWatchRule resolves.
 type StreamsStatus struct {
 	// It restates Ready and Total, which the API conventions would normally rule out. It exists
 	// solely to feed the Streams printer column: a column can read one JSONPath, not format two.
 
-	// Summary is ready/total for display, such as "3/4". Read ready and total instead of parsing
-	// it.
+	// Summary is ready/total for display, such as "3/4". Read ready and total
+	// instead of parsing it.
 	// +optional
 	Summary string `json:"summary,omitempty"`
 
