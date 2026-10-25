@@ -79,10 +79,10 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     HADOLINT_VERSION=2.15.1 \
     VALKEY_VERSION=9.1.2 \
     COSIGN_VERSION=v3.1.4 \
-    ORAS_VERSION=1.3.5 \
+    ORAS_VERSION=1.3.6 \
     NODE_MAJOR=24 \
     MARKDOWNLINT_CLI2_VERSION=0.24.0 \
-    VALE_VERSION=3.24.0 \
+    VALE_VERSION=3.25.1 \
     TRIVY_VERSION=0.76.1
 
 # Fail early on unsupported architectures instead of producing a partial image.
