@@ -6,7 +6,7 @@ require (
 	filippo.io/age v1.3.2
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/fluxcd/pkg/apis/meta v1.37.0
+	github.com/fluxcd/pkg/apis/meta v1.38.0
 	github.com/go-git/go-billy/v6 v6.0.0-beta.1
 	github.com/go-git/go-git/v6 v6.0.0-beta.1
 	github.com/go-logr/logr v1.4.4
@@ -29,7 +29,7 @@ require (
 	k8s.io/apimachinery v0.37.1
 	k8s.io/apiserver v0.37.1
 	k8s.io/client-go v0.37.1
-	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3
+	k8s.io/utils v0.0.0-20261023123148-ca04ba58ecab
 	sigs.k8s.io/cli-utils v0.37.2
 	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/kustomize/api v0.21.2
