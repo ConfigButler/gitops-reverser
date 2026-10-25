@@ -233,11 +233,9 @@ var _ = Describe("Reference names must not be empty", func() {
 	})
 })
 
-// spec.clusterProviderRef was replaced by spec.kubeProviderRef on every kind that named a source
-// cluster. A pruned field would apply cleanly and leave a manifest written for the old API looking
-// accepted, so the old spelling stays in each schema and a CEL rule refuses it, naming
-// kubeProviderRef.
-var _ = Describe("Retained and refused clusterProviderRef", func() {
+// spec.kubeProviderRef has no default on any kind that names a source cluster: an omitted reference
+// must be refused, not resolved to some provider.
+var _ = Describe("Required kubeProviderRef", func() {
 	referrer := func(kind, name string, spec map[string]any) *unstructured.Unstructured {
 		switch kind {
 		case "GitTarget":
@@ -257,17 +255,6 @@ var _ = Describe("Retained and refused clusterProviderRef", func() {
 	}
 
 	for _, kind := range []string{"GitTarget", "FluxClaim", "ArgoCDClaim"} {
-		It("refuses spec.clusterProviderRef on a "+kind+", naming spec.kubeProviderRef", func() {
-			ctx := context.Background()
-			obj := referrer(kind, "legacy-cluster-provider", map[string]any{
-				"kubeProviderRef":    map[string]any{"name": "local"},
-				"clusterProviderRef": map[string]any{"name": "default"},
-			})
-			err := k8sClient.Create(ctx, obj)
-			Expect(err).To(HaveOccurred(), "the old field must not apply cleanly")
-			Expect(err.Error()).To(ContainSubstring("spec.clusterProviderRef was replaced by spec.kubeProviderRef"))
-		})
-
 		It("requires spec.kubeProviderRef on a "+kind+", with no default", func() {
 			ctx := context.Background()
 			err := k8sClient.Create(ctx, referrer(kind, "no-kube-provider-ref", map[string]any{}))
@@ -277,11 +264,9 @@ var _ = Describe("Retained and refused clusterProviderRef", func() {
 	}
 })
 
-// GitTarget.spec.gitProviderRef, spec.branch and spec.parentBranch moved to a GitBranch. A pruned
-// field would apply cleanly and leave the GitTarget naming no branch, so the old spellings stay in
-// the schema and a CEL rule refuses them, naming gitBranchRef.
-var _ = Describe("Retained and refused GitTarget branch fields", func() {
-	legacyTarget := func(name string, spec map[string]any) *unstructured.Unstructured {
+// GitTarget.spec.gitBranchRef is the only way a GitTarget names its branch, so it is required.
+var _ = Describe("Required GitTarget gitBranchRef", func() {
+	unstructuredTarget := func(name string, spec map[string]any) *unstructured.Unstructured {
 		spec["gitBranchRef"] = map[string]any{"name": "main"}
 		spec["kubeProviderRef"] = map[string]any{"name": "local"}
 		spec["path"] = "apps"
@@ -293,24 +278,10 @@ var _ = Describe("Retained and refused GitTarget branch fields", func() {
 		}}
 	}
 
-	It("refuses spec.gitProviderRef, spec.branch and spec.parentBranch, naming spec.gitBranchRef", func() {
-		ctx := context.Background()
-
-		for name, spec := range map[string]map[string]any{
-			"legacy-provider": {"gitProviderRef": map[string]any{"name": "platform"}},
-			"legacy-branch":   {"branch": "main"},
-			"legacy-parent":   {"parentBranch": "develop"},
-		} {
-			err := k8sClient.Create(ctx, legacyTarget(name, spec))
-			Expect(err).To(HaveOccurred(), "%s: the old field must not apply cleanly", name)
-			Expect(err.Error()).To(ContainSubstring("moved to a GitBranch; set spec.gitBranchRef"), name)
-		}
-	})
-
 	It("requires spec.gitBranchRef", func() {
 		ctx := context.Background()
 
-		target := legacyTarget("no-branch-ref", map[string]any{})
+		target := unstructuredTarget("no-branch-ref", map[string]any{})
 		Expect(unstructured.SetNestedField(target.Object, nil, "spec", "gitBranchRef")).To(Succeed())
 		delete(target.Object["spec"].(map[string]any), "gitBranchRef")
 		err := k8sClient.Create(ctx, target)
@@ -319,35 +290,8 @@ var _ = Describe("Retained and refused GitTarget branch fields", func() {
 	})
 })
 
-// GitProvider.spec.receiver became the GitReceiver kind. A pruned field would apply cleanly and leave
-// a provider that used to be notified silently unnotified, so the old spelling stays in the schema
-// and a CEL rule refuses it, naming the replacement.
-var _ = Describe("Retained and refused GitProvider receiver field", func() {
-	legacyProvider := func(name string, spec map[string]any) *unstructured.Unstructured {
-		spec["url"] = "https://github.com/acme/platform.git"
-		spec["allowedBranches"] = []any{"main"}
-		return &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "configbutler.ai/v1alpha3",
-			"kind":       "GitProvider",
-			"metadata":   map[string]any{"name": name, "namespace": "default"},
-			"spec":       spec,
-		}}
-	}
-
-	It("refuses spec.receiver in its old shape, or any other, naming the GitReceiver that replaces it", func() {
-		ctx := context.Background()
-
-		for name, receiver := range map[string]any{
-			"legacy-receiver": map[string]any{"type": "github", "secretRef": map[string]any{"name": "token"}},
-			"empty-receiver":  map[string]any{},
-		} {
-			err := k8sClient.Create(ctx, legacyProvider(name, map[string]any{"receiver": receiver}))
-			Expect(err).To(HaveOccurred(), "%s: the old field must not apply cleanly", name)
-			Expect(err.Error()).To(ContainSubstring("spec.receiver was replaced by a GitReceiver"), name)
-			Expect(err.Error()).To(ContainSubstring("whose spec.url they name"), name)
-		}
-	})
-
+// A GitReceiver's type and secretRef are both required, and type is a closed set.
+var _ = Describe("GitReceiver admission", func() {
 	It("requires a GitReceiver's type and secretRef, and refuses an unknown type", func() {
 		ctx := context.Background()
 

@@ -112,10 +112,6 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   has no production observer, so nothing sweeps the manifests of an uninstalled CRD, and since #419
   the operator asks Flux or Argo CD to apply that folder. Its consumer is the `stop` classification
   in [target-watch-plan.md](design/target-watch-plan.md), "What a collection leaving means".
-- [ ] **Drop the "TEMPORARY at Info" logs to V(1)** (`gittarget_controller.go`,
-  `watch/render_fidelity_gate.go`, `watch/event_router.go`), now that Failure A of
-  [watch-plane-status-convergence-failures.md](design/watch-plane-status-convergence-failures.md)
-  is fixed.
 - [ ] Pin with a test that an unforced retention pass keeps a scope's revision, so only
   `Invalidate` re-issues one (`internal/git/render_fidelity_gate.go`), and close the retention
   revision-mismatch question in
@@ -179,16 +175,6 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
 
 ## Docs and vocabulary
 
-- [ ] **Cleanup: drop the "loud rejection" fields.** `RemovedReceiver` (`gitprovider_types.go`),
-  `RemovedClusterProviderRef` (`gittarget_types.go`, `fluxclaim_types.go`, `argocdclaim_types.go`),
-  `RemovedGitProviderRef`, `RemovedBranch` and `RemovedParentBranch` (`gittarget_types.go`) refuse an
-  old spelling at admission with a message naming its replacement. Keeping that message is not a
-  release defect; with no users yet they can go, with their CEL rules and the matching sentences in
-  [UPGRADING.md](UPGRADING.md), whenever convenient.
-- [ ] **Cleanup, F-i: CRD text beyond the contract.** `RepairPending` says "an API edit made after
-  its flush", and `kubectl explain` never defines "flush" (`fluxclaim_types.go`,
-  `argocdclaim_types.go`). Check `applierClaimRef`'s description for rationale too (AGENTS.md, API
-  changes).
 - [ ] **Stale design-doc headers**, one docs PR: [open-asks-priority.md](design/open-asks-priority.md)
   (#339 closed, #23 fixed), [gittarget-api-wave.md](design/gittarget-api-wave.md) (riders shipped),
   [git-write-preflight.md](design/git-write-preflight.md) (superseded by the red-status plan),

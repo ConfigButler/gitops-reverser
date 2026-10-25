@@ -44,23 +44,22 @@ const ConsumerNamespaceVariable = "{consumer.namespace}"
 // name bounds nothing on its own; beside the namespace it is a naming convention.
 const ConsumerNameVariable = "{consumer.name}"
 
-// GrantNamespace is one control-cluster namespace a grant admits by name.
+// GrantNamespace is a namespace a grant admits, by exact name. A variable and "*" are refused.
 // +kubebuilder:validation:MaxLength=63
 // +kubebuilder:validation:XValidation:rule="self != '{consumer.namespace}' && self != '{consumer.name}'",message="names: a variable is refused, because names are matched against the consumer's namespace and '{consumer.namespace}' would admit every consumer; use from: All to admit every namespace, or from: Same for the namespace of the object holding the grant"
 // +kubebuilder:validation:XValidation:rule="self != '*'",message="names: '*' is refused; use from: All to admit every namespace"
 // +kubebuilder:validation:XValidation:rule="self == '{consumer.namespace}' || self == '{consumer.name}' || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="names holds namespace names (DNS labels)"
 type GrantNamespace string
 
-// ScopeNamespace is one namespace in a source or applier scope: a namespace name,
-// "{consumer.namespace}" for the namespace of the same name as the consumer's, or "*" for every
-// namespace.
+// ScopeNamespace is a namespace in a grant's scope: a name, "{consumer.namespace}" for the
+// namespace named like the consumer's, or "*" for every namespace.
 // +kubebuilder:validation:MaxLength=63
 // +kubebuilder:validation:XValidation:rule="self != '{consumer.name}'",message="'{consumer.name}' is refused in a namespace scope: the consumer picks its own name, so any namespace could be reached by naming an object after it; use '{consumer.namespace}', namespace names, or '*'"
 // +kubebuilder:validation:XValidation:rule="self == '*' || self == '{consumer.namespace}' || self == '{consumer.name}' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="a namespace scope holds a namespace name, '{consumer.namespace}' alone, or '*' alone"
 type ScopeNamespace string
 
-// ClusterResourceIdentity names a cluster-scoped resource type: resource.group, a bare resource for
-// the core group, or "*" for every one.
+// ClusterResourceIdentity is a cluster-scoped resource type: resource.group, a bare resource for
+// the core group, or "*" for every type.
 // +kubebuilder:validation:MaxLength=317
 // +kubebuilder:validation:Pattern=`^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$`
 type ClusterResourceIdentity string
@@ -69,9 +68,9 @@ type ClusterResourceIdentity string
 // OpenAPI pattern: git check-ref-format refuses all of these in a branch name, so a pattern holding
 // one could never match, and with no '?' or '[' nothing in a pattern ever needs escaping.
 
-// BranchPattern is a pattern matched against a whole branch name: literal text, '*' for any
-// sequence of characters ('/' included), and '{consumer.namespace}' and '{consumer.name}' as whole
-// path segments. '{consumer.name}' needs '{consumer.namespace}' in the same pattern.
+// BranchPattern matches a whole branch name: literal text, "*" for any characters including "/",
+// and "{consumer.namespace}" and "{consumer.name}" as whole path segments. "{consumer.name}"
+// needs "{consumer.namespace}" in the same pattern.
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=255
 // +kubebuilder:validation:Pattern=`^[^\s~^:?\[\\]*$`
@@ -94,41 +93,39 @@ type BranchPattern string
 // +kubebuilder:validation:XValidation:rule="!has(self.selector) || self.from == 'Selector'",message="selector goes only with from: Selector"
 // +kubebuilder:validation:XValidation:rule="!has(self.selector) || (has(self.selector.matchLabels) && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions) && size(self.selector.matchExpressions) > 0)",message="selector: {} is refused; to admit every namespace, use from: All"
 type ConsumerNamespaces struct {
-	// From is where this grant admits from: Same (the namespace of the object holding the grant, not
-	// the consumer's), Names (the namespaces in names), Selector (the namespaces whose labels match
-	// selector) or All (every namespace).
+	// From is where this grant admits consumers from: "Same" (the namespace of the object that
+	// holds the grant), "Names" (the namespaces in names), "Selector" (the namespaces whose labels
+	// match selector) or "All" (every namespace).
 	// +required
 	From GrantFrom `json:"from"`
 
-	// Names are the control-cluster namespaces admitted with from: Names, by exact name.
+	// Names are the namespaces admitted with from: "Names", by exact name.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=64
 	Names []GrantNamespace `json:"names,omitempty"`
 
-	// Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
-	// something: to admit every namespace, use from: All.
+	// Selector matches the labels of the namespaces admitted with from: "Selector". It must not be
+	// empty: to admit every namespace, use from: "All".
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 }
 
-// GitProviderGitBranchGrant admits GitBranches in some control-cluster namespaces to claim the
-// branches its patterns match through a GitProvider.
+// GitProviderGitBranchGrant admits the GitBranches of some namespaces to claim, through a
+// GitProvider, the branches its patterns match.
 type GitProviderGitBranchGrant struct {
-	// ConsumerNamespaces are the control-cluster namespaces whose GitBranches this grant admits.
-	// from: Same is this GitProvider's namespace.
+	// ConsumerNamespaces are the namespaces whose GitBranches this grant admits. from: "Same" is
+	// this GitProvider's namespace.
 	// +required
 	ConsumerNamespaces ConsumerNamespaces `json:"consumerNamespaces"`
 
-	// BranchPatterns are the branches an admitted GitBranch may claim, as patterns matched against
-	// the whole branch name. '*' matches any sequence of characters, '/' included, so "*" alone is
-	// every branch, and a name with no '*', such as "main", matches only itself.
-	// '{consumer.namespace}' and '{consumer.name}' are the claiming GitBranch's namespace and name,
-	// each a whole path segment: "teams/{consumer.namespace}/*". '{consumer.name}' needs
-	// '{consumer.namespace}' in the same pattern, "teams/{consumer.namespace}/{consumer.name}": it is
-	// a naming convention, not a bound, since a GitBranch picks its own name. There is no escaping,
-	// '?' or character class.
+	// BranchPatterns are the branches an admitted GitBranch may claim, each matched against the
+	// whole branch name. "*" matches any characters, "/" included, so "*" alone is every branch and
+	// "main" is only main. "{consumer.namespace}" and "{consumer.name}" are the GitBranch's
+	// namespace and name, each a whole path segment: "teams/{consumer.namespace}/*".
+	// "{consumer.name}" needs "{consumer.namespace}" in the same pattern, because a GitBranch picks
+	// its own name. There is no escaping, "?" or character class.
 	// +required
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -136,59 +133,47 @@ type GitProviderGitBranchGrant struct {
 	BranchPatterns []BranchPattern `json:"branchPatterns"`
 }
 
-// GitBranchGitTargetGrant admits GitTargets in some control-cluster namespaces to write through a
-// GitBranch.
+// GitBranchGitTargetGrant admits the GitTargets of some namespaces to write through a GitBranch.
 type GitBranchGitTargetGrant struct {
-	// ConsumerNamespaces are the control-cluster namespaces whose GitTargets this grant admits.
-	// from: Same is this GitBranch's namespace.
+	// ConsumerNamespaces are the namespaces whose GitTargets this grant admits. from: "Same" is
+	// this GitBranch's namespace.
 	// +required
 	ConsumerNamespaces ConsumerNamespaces `json:"consumerNamespaces"`
 }
 
-// KubeProviderGitTargetGrant admits GitTargets in some control-cluster namespaces to mirror through a
-// KubeProvider, and bounds what they may mirror.
+// KubeProviderGitTargetGrant admits the GitTargets of some namespaces to mirror through a
+// KubeProvider, and bounds what they may read. It sets sourceNamespaces, clusterResources, or both.
 // +kubebuilder:validation:XValidation:rule="has(self.sourceNamespaces) || has(self.clusterResources)",message="a grant in allowedGitTargets sets sourceNamespaces, clusterResources, or both; one that grants neither grants nothing"
 type KubeProviderGitTargetGrant struct {
-	// ConsumerNamespaces are the control-cluster namespaces whose GitTargets this grant admits.
-	// from: Same is this KubeProvider's namespace.
+	// ConsumerNamespaces are the namespaces whose GitTargets this grant admits. from: "Same" is
+	// this KubeProvider's namespace.
 	// +required
 	ConsumerNamespaces ConsumerNamespaces `json:"consumerNamespaces"`
 
-	// SourceNamespaces are source-cluster namespaces that a WatchRule feeding an admitted GitTarget may
-	// name in rules[].sourceNamespace. Entries are exact names, '{consumer.namespace}' for the
-	// namespace named like the GitTarget's, or '*'. Omitted, this grant gives no namespace.
+	// SourceNamespaces are the source-cluster namespaces that the WatchRules of an admitted
+	// GitTarget may read, in rules[].sourceNamespace: exact names, "{consumer.namespace}" for the
+	// namespace named like the GitTarget's, or "*". Omitted, this grant gives none.
 	//
-	// The effective scope is the union of sourceNamespaces from all grants admitting the GitTarget,
-	// after expanding variables. Every WatchRule item must be allowed by that union, an omitted
-	// sourceNamespace included (it names the WatchRule's own namespace). This is a permission, not a
-	// selection: listing a namespace watches nothing until a WatchRule names it.
-	//
-	// It is not a filter on "*". A rule item with sourceNamespace "*" needs '*' in at least one
-	// admitting grant; otherwise it is refused, never narrowed to the namespaces listed. With '*'
-	// granted, such an item is one cluster-wide watch, bounded only by this KubeProvider credential's
-	// RBAC.
-	//
-	// The check runs when the WatchRule reconciles, and again when a grant changes, never at
-	// admission. A WatchRule with any item outside the union is refused as a whole, in its status
-	// (SourceNamespaceNotAllowed), and watches nothing. The scope bounds what is read, never where
-	// objects are written in Git, and the credential's RBAC still applies inside it.
+	// The scope is the union over every grant admitting the GitTarget. It permits and selects
+	// nothing: a namespace is read only when a WatchRule names it. A rule with sourceNamespace "*"
+	// needs "*" in a grant, and is refused, not narrowed, without it. A WatchRule with any rule
+	// outside the scope is refused as a whole (SourceNamespaceNotAllowed) when it reconciles or a
+	// grant changes. The credential's RBAC still applies inside the scope.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=64
 	SourceNamespaces []ScopeNamespace `json:"sourceNamespaces,omitempty"`
 
-	// ClusterResources are the cluster-scoped resource types a ClusterWatchRule may mirror through an
-	// admitted GitTarget: resource.group (clusterroles.rbac.authorization.k8s.io), a bare resource for
-	// the core group only (nodes), or '*' for every one, including CRDs installed later. An identity
-	// covers every served version. Omitted, this grant gives none.
+	// ClusterResources are the cluster-scoped types that the ClusterWatchRules of an admitted
+	// GitTarget may mirror: resource.group ("clusterroles.rbac.authorization.k8s.io"), a bare
+	// resource for the core group ("nodes"), or "*" for every type, including CRDs installed
+	// later. Each covers every served version. Omitted, this grant gives none.
 	//
-	// The effective scope is the union of clusterResources from all grants admitting the GitTarget.
-	// This is a permission, not a selection: listing a type mirrors nothing until a ClusterWatchRule
-	// asks for it. A ClusterWatchRule item with '*' in apiGroups or resources needs '*' in at least
-	// one admitting grant; otherwise it is refused, never narrowed to the types listed. The check runs
-	// when the ClusterWatchRule reconciles, never at admission, and a rule asking for any type outside
-	// the union is refused as a whole, in its status (ClusterResourceNotAllowed).
+	// The scope is the union over every grant admitting the GitTarget, and mirrors nothing until a
+	// ClusterWatchRule asks for a type. A rule with "*" in apiGroups or resources needs "*" in a
+	// grant, and is refused, not narrowed, without it. A ClusterWatchRule asking for any type
+	// outside the scope is refused as a whole (ClusterResourceNotAllowed) when it reconciles.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -196,24 +181,20 @@ type KubeProviderGitTargetGrant struct {
 	ClusterResources []ClusterResourceIdentity `json:"clusterResources,omitempty"`
 }
 
-// KubeProviderApplierClaimGrant admits applier claims in some control-cluster namespaces to hold an
-// applier through a KubeProvider, and bounds where that applier may live.
+// KubeProviderApplierClaimGrant admits the FluxClaims and ArgoCDClaims of some namespaces to hold
+// an applier through a KubeProvider, and bounds the namespaces that applier may be in.
 type KubeProviderApplierClaimGrant struct {
-	// ConsumerNamespaces are the control-cluster namespaces whose applier claims this grant admits.
-	// from: Same is this KubeProvider's namespace.
+	// ConsumerNamespaces are the namespaces whose FluxClaims and ArgoCDClaims this grant admits.
+	// from: "Same" is this KubeProvider's namespace.
 	// +required
 	ConsumerNamespaces ConsumerNamespaces `json:"consumerNamespaces"`
 
-	// ApplierNamespaces are namespaces in this provider's cluster in which an admitted applier claim's
-	// Kustomization or Application may live: exact names, '{consumer.namespace}' for the namespace
-	// named like the applier claim's, or '*' for every namespace.
-	//
-	// The effective scope is the union of applierNamespaces from all grants admitting the applier
-	// claim, after expanding variables. This is a permission, not a selection: it is checked against
-	// one namespace, that of the applier claim's kustomizationRef or applicationRef. The check runs
-	// when the applier claim reconciles, and again when a grant changes, never at admission. An
-	// applier outside the union is refused, in the applier claim's status
-	// (ApplierNamespaceNotAllowed), and an applier claim holding it hands it back.
+	// ApplierNamespaces are the namespaces, in this KubeProvider's cluster, where the Kustomization
+	// or Application of an admitted applier claim may be: exact names, "{consumer.namespace}" for
+	// the namespace named like the claim's, or "*" for every namespace. The scope is the union over
+	// every grant admitting the claim, checked when the claim reconciles and when a grant changes.
+	// An applier outside it is refused (ApplierNamespaceNotAllowed), and a claim holding it hands
+	// it back.
 	// +required
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1

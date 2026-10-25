@@ -23,75 +23,54 @@ const (
 
 // ClusterWatchRuleSpec defines the desired state of ClusterWatchRule.
 type ClusterWatchRuleSpec struct {
-	// GitTargetRef names the GitTarget this rule feeds. A ClusterWatchRule has no namespace of its
-	// own, so the namespace is required here rather than defaulted.
+	// GitTargetRef names the GitTarget that mirrors what this ClusterWatchRule selects. The
+	// namespace is required, because a ClusterWatchRule has none to default to.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="has(self.namespace) && self.namespace != ''",message="spec.gitTargetRef.namespace is required: a ClusterWatchRule has no namespace to default to"
 	GitTargetRef meta.NamespacedObjectReference `json:"gitTargetRef"`
 
-	// Rules define which CLUSTER-SCOPED resources to watch.
-	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
-	// A rule that resolves to no cluster-scoped type simply watches nothing; use a WatchRule with
-	// spec.rules[].sourceNamespace for namespaced resources.
+	// Rules select the cluster-scoped resources to mirror. A resource matching any rule is
+	// mirrored. A rule that resolves to no cluster-scoped type mirrors nothing; use a WatchRule for
+	// namespaced resources.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	Rules []ClusterResourceRule `json:"rules"`
 }
 
-// ClusterResourceRule defines which CLUSTER-SCOPED resources to watch. It deliberately has no
-// sourceNamespace: cluster-scoped objects have no namespace, so there is nothing to select.
+// There is no sourceNamespace: cluster-scoped objects have no namespace, so there is nothing to
+// select.
+
+// ClusterResourceRule selects cluster-scoped resources by type, and optionally by API group,
+// version and label.
 type ClusterResourceRule struct {
-	// APIGroups to match. Empty string ("") matches the core API group.
-	// If omitted, GitOps Reverser resolves the resource name across all served API groups.
-	// Wildcards supported: "*" matches all groups.
-	// Examples:
-	//   - [""] matches core API (nodes, namespaces)
-	//   - ["rbac.authorization.k8s.io"] matches RBAC resources
-	//   - ["*"] matches all groups
-	//   - [] resolves a named resource only when it is served by one API group
+	// APIGroups are the API groups to match: "" is the core group, and "*" is every group, as in
+	// ["rbac.authorization.k8s.io"] or ["*"]. Omitted, each resource name is looked up across the
+	// served groups and must be served by exactly one.
 	// +optional
 	APIGroups []string `json:"apiGroups,omitempty"`
 
-	// APIVersions to match. If empty, uses the preferred served version for each group/resource.
-	// Wildcards supported: "*" matches all versions.
-	// Examples:
-	//   - ["v1"] matches only v1 version
-	//   - ["*"] matches all served versions
-	//   - [] matches the preferred served version
+	// APIVersions are the versions to match, or "*" for every served version. Omitted, each
+	// resource's preferred version is used.
 	// +optional
 	APIVersions []string `json:"apiVersions,omitempty"`
 
-	// Resources to match (plural names like "nodes", "clusterroles").
-	// This field is required and determines which resource types trigger this rule.
-	// Wildcard semantics follow Kubernetes admission webhook patterns:
-	//   - "*" matches all resources
-	//   - "nodes" matches exactly nodes
-	//   - "pods" matches exactly pods (for namespaced scope)
-	//
-	// Note: Subresources cannot be added here. Values containing "/" (for example
-	// "pods/log" or "pods/*") are rejected by the API because subresources are
-	// not supported for list/watch snapshot planning. Prefix/suffix wildcards
-	// like "pod*" or "*.example.com" are NOT supported. Use exact matches or the
-	// "*" wildcard for broad matching.
+	// Resources are the resource types to match, by plural name ("nodes", "clusterroles"), or "*"
+	// for every type. Matching is exact and case-insensitive; partial wildcards such as "cluster*"
+	// match nothing, and subresources ("nodes/status") are rejected.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
-	// ObjectSelector selects which objects of the matched types are mirrored, by label. The API
-	// server applies it to every LIST and WATCH this item opens, with list/watch semantics: an
-	// object that stops matching leaves the collection exactly as a deleted one does, and the
-	// GitTarget's spec.prune.mode decides what that does to its Git document.
-	// It is a standard Kubernetes label selector: matchLabels and matchExpressions, ANDed.
-	// Omitted or {} selects every object. A selector that does not parse refuses the whole rule
-	// (ResourcesResolved=False, reason InvalidObjectSelector).
-	//
-	// A selected mirror owns every document of its type, including documents the selector never
-	// matched: under prune.mode Always, a complete snapshot removes them.
-	// Two rules feeding one GitTarget that match the same type must use the same selector; the
-	// newer rule is refused.
+	// ObjectSelector mirrors only the objects whose labels match, as a standard label selector.
+	// Omitted or {} selects every object. An object that stops matching leaves the mirror as a
+	// deleted one does, and spec.prune.mode decides what happens to its document. Under prune mode
+	// "Always", a resync also removes documents of the type that the selector never matched. Two
+	// rules on one GitTarget that select the same type must use the same selector; the newer rule
+	// is refused. A selector that does not parse refuses the whole rule (ResourcesResolved=False,
+	// reason InvalidObjectSelector).
 	// +optional
 	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
 }
@@ -102,7 +81,9 @@ type ClusterWatchRuleStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions represent the latest available observations of the ClusterWatchRule's state.
+	// Conditions are the latest observations of this ClusterWatchRule's state. Ready, Reconciling
+	// and Stalled follow kstatus; ResourcesResolved and StreamsRunning say which check holds the
+	// rule back.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -110,7 +91,7 @@ type ClusterWatchRuleStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Streams is the bounded stream-readiness roll-up for the types this rule resolves.
+	// Streams counts the types this ClusterWatchRule resolves, by watch state.
 	// +optional
 	Streams *StreamsStatus `json:"streams,omitempty"`
 }
@@ -131,14 +112,9 @@ type ClusterWatchRuleStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ClusterWatchRule selects CLUSTER-SCOPED resources on the source cluster its GitTarget mirrors
-// from — Nodes, PersistentVolumes, StorageClasses, ClusterRoles, CRDs, and the like. Scope is
-// carried by the rule KIND, so it has no per-rule scope choice and no source-namespace selection.
-//
-// It is cluster-scoped and requires cluster-admin permissions. Its gitTargetRef names a GitTarget
-// (namespace required), whose namespace must be admitted by that target's KubeProvider. To
-// mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
-// spec.rules[].sourceNamespace, whose "*" reaches every namespace the source credential can read.
+// ClusterWatchRule selects cluster-scoped resources, such as Nodes, ClusterRoles and CRDs, for a
+// GitTarget to mirror. The KubeProvider's grant admitting that GitTarget must list each type in
+// clusterResources. Use a WatchRule for namespaced resources.
 type ClusterWatchRule struct {
 	metav1.TypeMeta `json:",inline"`
 

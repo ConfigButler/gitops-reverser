@@ -17,35 +17,26 @@ import (
 // Kustomization has none.
 const FluxClaimFinalizer = "configbutler.ai/flux-claim"
 
-// spec.clusterProviderRef was replaced by spec.kubeProviderRef, with the cluster-scoped kind it
-// named. It stays in the schema only to be refused by name; the rule sits on spec so CRD validation
-// ratcheting cannot wave a stored value through on the next edit.
-
 // FluxClaimSpec names the Flux Kustomization the applier claim holds, and the cluster it is in.
-// +kubebuilder:validation:XValidation:rule="!has(self.clusterProviderRef)",message="spec.clusterProviderRef was replaced by spec.kubeProviderRef, which names a namespaced KubeProvider"
 type FluxClaimSpec struct {
 	// Why immutable: the applier claim holds the Kustomization it names (it suspends it while idle and
 	// hands it back when deleted), so pointing it elsewhere would leave the first one held by
 	// nothing. Delete and recreate the applier claim instead; its finalizer hands the old one back.
 
-	// KubeProviderRef names the KubeProvider whose cluster holds the Kustomization, such as a
-	// management cluster running Flux for the source cluster. Namespace omitted means this
-	// applier claim's own namespace. The provider's spec.allowedApplierClaims must admit this applier
-	// claim's namespace, with the Kustomization's namespace in applierNamespaces. Its identity needs
-	// get and patch on the Kustomization and its GitRepository. Immutable.
+	// KubeProviderRef names the KubeProvider of the cluster that runs the Kustomization, such as a
+	// management cluster running Flux. An omitted namespace means this FluxClaim's namespace. The
+	// KubeProvider's spec.allowedApplierClaims must admit this namespace, with the Kustomization's
+	// namespace in applierNamespaces, and its identity needs get and patch on the Kustomization and
+	// its GitRepository. Immutable: delete and recreate the FluxClaim to change it.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the FluxClaim to hold a Kustomization elsewhere"
 	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef"`
 
-	// RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
-	// setting it is refused.
-	// +optional
-	RemovedClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
-
-	// KustomizationRef is the Flux Kustomization that applies the folders of the GitTargets naming
-	// this applier claim. Its spec.sourceRef must be a GitRepository that follows a branch. Its namespace
-	// defaults to the applier claim's namespace. Immutable.
+	// KustomizationRef names the Flux Kustomization that applies the folders of the GitTargets
+	// naming this FluxClaim. Its spec.sourceRef must be a GitRepository that follows a branch. An
+	// omitted namespace means this FluxClaim's namespace. Immutable: delete and recreate the
+	// FluxClaim to change it.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kustomizationRef is immutable; delete and recreate the FluxClaim to hold another Kustomization"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kustomizationRef.name must not be empty"
@@ -58,21 +49,20 @@ type FluxClaimStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are Configured (an eligible GitTarget names the applier claim; the Kustomization exists,
-	// applies a GitRepository that follows a branch, may be patched, and no other FluxClaim holds
-	// it), InControl (whether GitOps Reverser decides, right now, when the Kustomization applies. True:
-	// Suspended, suspended under GitOps Reverser with the last suspend handled; Applying, resumed for
-	// an apply GitOps Reverser started. False: Suspending, a suspend is not handled yet; Releasing,
-	// being handed back; Revoking, being handed back because a grant no longer admits it;
-	// NotReferenced. Unknown: NotConfigured), and the kstatus
-	// Ready/Reconciling/Stalled trio. An applier claim acts only while an eligible GitTarget references it:
-	// one in its namespace that names it, is admitted by its KubeProviders, and writes the
-	// repository and branch the GitRepository fetches. An applier claim no GitTarget names reads nothing
-	// in the Kustomization's cluster and is Configured=Unknown, Ready=True, both NotReferenced; one
-	// named only by GitTargets that are not eligible is Configured NotBound or a refusal. Of the
-	// FluxClaims in line for one Kustomization in one cluster, one holds it: the one with an apply
-	// in flight, then the one holding it already, then the one created first. The others are
-	// Configured=False (HeldByAnotherClaim) until it lets go, and the next in line takes it over.
+	// Conditions are the latest observations of this FluxClaim's state. Ready, Reconciling and
+	// Stalled follow kstatus.
+	//
+	// Configured is True when an eligible GitTarget names this FluxClaim, and the Kustomization
+	// exists, applies a GitRepository that follows a branch, may be patched, and no other FluxClaim
+	// holds it. An eligible GitTarget is in this namespace, is admitted by its KubeProviders, and
+	// writes the branch the GitRepository fetches. Of several FluxClaims for one Kustomization, the
+	// one with an apply in flight holds it, then the one holding it already, then the oldest; the
+	// others are Configured=False, reason HeldByAnotherClaim.
+	//
+	// InControl is True while GitOps Reverser decides when the Kustomization applies (Suspended,
+	// Applying), False while it does not (Suspending, Releasing, Revoking, NotReferenced), and
+	// Unknown (NotConfigured) while Configured is not True. A FluxClaim no GitTarget names reads
+	// nothing and is Ready=True, reason NotReferenced.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -80,9 +70,9 @@ type FluxClaimStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Source is the GitRepository the Kustomization applies, as last read, published while an
-	// eligible GitTarget references the applier claim. A GitTarget naming this applier claim must write the
-	// repository and branch it fetches.
+	// Source is the GitRepository the Kustomization applies, as last read. It is published while an
+	// eligible GitTarget names this FluxClaim, and that GitTarget must write the repository and
+	// branch it fetches.
 	// +optional
 	Source *FluxClaimSource `json:"source,omitempty"`
 
@@ -91,23 +81,23 @@ type FluxClaimStatus struct {
 	// +optional
 	Operation *ApplyOperation `json:"operation,omitempty"`
 
-	// RepairPending is true while a Repair apply is pending for the Kustomization: an apply reverted
-	// an API edit made after its flush, so the cluster runs an older value than Git until the
-	// next apply.
+	// RepairPending is true while a Repair apply is pending: an apply ran a commit older than an
+	// edit made through the API and reverted it on the cluster. Git holds the edit, and the cluster
+	// runs the older value until the next apply.
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
 
-	// PreviousSuspendState is how the Kustomization stood before the applier claim first suspended it,
-	// which handing it back restores: one that was Suspended stays suspended, one that was
-	// NotSuspended is resumed. Recorded with the first suspend, and cleared once the Kustomization is
-	// handed back. Absent, a hand-back resumes the Kustomization.
+	// PreviousSuspendState is how the Kustomization stood before this FluxClaim first suspended
+	// it, and what handing it back restores: one that was Suspended stays suspended, one that was
+	// NotSuspended is resumed. It is cleared once the Kustomization is handed back. Absent,
+	// handing it back resumes the Kustomization.
 	// +optional
 	PreviousSuspendState SuspendState `json:"previousSuspendState,omitempty"`
 }
 
 // FluxClaimSource is the GitRepository a Kustomization applies.
 type FluxClaimSource struct {
-	// GitRepository is the Kustomization's spec.sourceRef, its namespace defaulted.
+	// GitRepository is the Kustomization's spec.sourceRef, with its namespace filled in.
 	// +required
 	GitRepository meta.NamespacedObjectReference `json:"gitRepository"`
 
@@ -123,9 +113,9 @@ type FluxClaimSource struct {
 	// GitRepository for several Kustomizations is a normal setup, and an object no applier claim names
 	// applies a folder that has no promise of protection anyway.
 
-	// AlsoAppliedBy are the other objects in the cluster that apply this GitRepository and that no
-	// FluxClaim holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
-	// new artifact the moment it arrives. Information only: it never affects Ready.
+	// AlsoAppliedBy lists the other objects that apply this GitRepository and that no FluxClaim
+	// holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a new commit
+	// as soon as Flux fetches it. Information only; it never affects Ready.
 	// +optional
 	// +listType=atomic
 	AlsoAppliedBy []meta.NamespacedObjectKindReference `json:"alsoAppliedBy,omitempty"`
@@ -145,10 +135,11 @@ type FluxClaimSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// FluxClaim holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes,
-// each after publishing the edits pending on the branch: after a commit GitOps Reverser did not
-// push, after a refused edit, after a reverted edit, and to adopt what the API created or converge
-// the Kustomization (CatchUp). GitTargets name it with spec.applierClaimRef.
+// FluxClaim hands control of a Flux Kustomization to GitOps Reverser. The Kustomization stays
+// suspended, and GitOps Reverser resumes it for each apply it starts, always after the edits
+// pending on the branch are published: after a commit it did not push, a refused or reverted
+// edit, or an object the API created, and once at startup or when a GitTarget first names it.
+// GitTargets name it with spec.applierClaimRef.
 type FluxClaim struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -156,11 +147,11 @@ type FluxClaim struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the Kustomization the applier claim holds
+	// spec defines the desired state of FluxClaim.
 	// +required
 	Spec FluxClaimSpec `json:"spec"`
 
-	// status defines the observed state of FluxClaim
+	// status defines the observed state of FluxClaim.
 	// +optional
 	Status FluxClaimStatus `json:"status,omitempty,omitzero"`
 }

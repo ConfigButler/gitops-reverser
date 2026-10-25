@@ -54,8 +54,6 @@ kinds:
       - path: commit.signing
         default: "off"
         doc: SSH commit signing. See [commit signing](#commit-signing)
-      - path: receiver
-        skip: replaced by `GitReceiver`, kept in the schema only so admission refuses it, naming the replacement
 
   - kind: GitBranch
     title: "`GitBranch` (namespaced): one branch of the repository"
@@ -139,20 +137,12 @@ kinds:
         doc: >-
           The `GitBranch` this target writes: its own namespace, or `namespace` names another. Its
           `allowedGitTargets` must admit this namespace
-      - path: gitProviderRef
-        skip: moved to `GitBranch`, kept in the schema only so admission refuses it, naming `gitBranchRef`
-      - path: branch
-        skip: moved to `GitBranch`, kept in the schema only so admission refuses it, naming `gitBranchRef`
-      - path: parentBranch
-        skip: moved to `GitBranch`, kept in the schema only so admission refuses it, naming `gitBranchRef`
       - path: path
         doc: Folder within the repository. `.` targets the root; empty is rejected
       - path: kubeProviderRef
         doc: >-
           The `KubeProvider` to mirror from: its own namespace, or `namespace` names another. Its
           `allowedGitTargets` must admit this namespace
-      - path: clusterProviderRef
-        skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: commit.window
         skip: a block; its two timers are listed below
       - path: commit.window.idleTimeout
@@ -264,8 +254,6 @@ kinds:
         doc: >-
           The `KubeProvider` whose cluster holds the `Kustomization`: the applier claim's own namespace, or
           `namespace` names another. Its `allowedApplierClaims` must admit this namespace
-      - path: clusterProviderRef
-        skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: kustomizationRef
         doc: >-
           The `Kustomization` that applies the folders of the `GitTarget`s naming this applier claim. See
@@ -279,8 +267,6 @@ kinds:
         doc: >-
           The `KubeProvider` whose cluster holds the `Application`: the applier claim's own namespace, or
           `namespace` names another. Its `allowedApplierClaims` must admit this namespace
-      - path: clusterProviderRef
-        skip: replaced by `kubeProviderRef`, kept in the schema only so admission refuses it, naming `kubeProviderRef`
       - path: applicationRef
         doc: >-
           The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s

@@ -82,7 +82,10 @@ spec:
     name: v1alpha3
     schema:
       openAPIV3Schema:
-        description: GitTarget is the Schema for the gittargets API.
+        description: |-
+          GitTarget mirrors objects from a source cluster into one folder of a Git branch. Its WatchRules
+          and ClusterWatchRules select the objects, its KubeProvider reads them, and its GitBranch writes
+          them.
         properties:
           apiVersion:
             description: |-
@@ -102,24 +105,20 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of GitTarget
+            description: spec defines the desired state of GitTarget.
             properties:
               applierClaimRef:
                 description: |-
-                  ApplierClaimRef names the applier claim, in this GitTarget's namespace, that holds the applier
-                  of this folder: a FluxClaim (a Flux Kustomization) or an ArgoCDClaim (an Argo CD
-                  Application). With it set, GitOps Reverser decides when that applier applies, always after
-                  publishing the edits it holds: after a commit it did not push, after a refused edit
-                  (spec.onRefusal: Reapply), after an apply reverted a newer API edit, after the API created an
-                  object in the folder (so the applier owns it and prunes it later), and once when the operator
-                  starts or the applier claim is first named, after the folder's initial snapshots are in Git. Objects
-                  another applier owns are not mirrored into the folder. The applier claim's applier must apply this target's repository and
-                  branch; the ApplierClaimReady condition says whether it does. Several GitTargets may name one
-                  applier claim, and it is asked once for all of them.
+                  ApplierClaimRef names the FluxClaim or ArgoCDClaim, in this namespace, that holds the applier
+                  of this folder: the Flux Kustomization or Argo CD Application that applies it. With it set,
+                  GitOps Reverser decides when that applier runs, and runs it only after the edits it holds are
+                  published. Objects another applier owns are not mirrored into the folder. The applier must
+                  apply this GitTarget's repository and branch; the ApplierClaimReady condition reports whether
+                  it does. Several GitTargets may name one applier claim.
                 properties:
                   kind:
-                    description: 'Kind is the applier claim''s kind: FluxClaim or
-                      ArgoCDClaim.'
+                    description: 'Kind is the applier claim''s kind: "FluxClaim" or
+                      "ArgoCDClaim".'
                     enum:
                     - FluxClaim
                     - ArgoCDClaim
@@ -132,74 +131,50 @@ spec:
                 - kind
                 - name
                 type: object
-              branch:
-                description: |-
-                  RemovedBranch is the old place of GitBranch.spec.branch. It is never read; setting it is
-                  refused.
-                type: string
-              clusterProviderRef:
-                description: |-
-                  RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
-                  setting it is refused.
-                properties:
-                  name:
-                    description: Name of the referent.
-                    type: string
-                required:
-                - name
-                type: object
               commit:
                 description: |-
-                  Commit configures how this target's writes are batched into commits, and how those commits
-                  are phrased. Omitted, writes coalesce over a 5s rolling silence window, a window closes at
-                  most 1m after it opened, and commits use the built-in message templates.
+                  Commit configures how this GitTarget's writes are batched into commits and how the commits
+                  are worded. Omitted, a commit window closes 5s after its last write or 1m after it opened,
+                  and the built-in message templates are used.
                 properties:
                   message:
-                    description: |-
-                      Message configures how this target's commit messages are formatted. Omitted, or with any
-                      individual template left empty, the built-in templates are used.
+                    description: Message sets the commit message templates. A template
+                      left empty uses the built-in one.
                     properties:
                       eventTemplate:
-                        description: EventTemplate is retired. Remove it and migrate
-                          resource fields into liveTemplate's Resources.
+                        description: |-
+                          EventTemplate is retired and rejected. Move it to liveTemplate, reading resource fields from
+                          Resources.
                         type: string
                       groupTemplate:
-                        description: GroupTemplate is retired. Remove it and copy
-                          its value to liveTemplate.
+                        description: GroupTemplate is retired and rejected. Move its
+                          value to liveTemplate.
                         type: string
                       liveTemplate:
                         description: |-
-                          LiveTemplate formats every live window, including one resource and a 0s window.
-                          Fields: Author (raw username, possibly empty), GitTarget, Count, Operations, Resources.
-                          Count is retained input entries after coalescing, before comparison with Git.
-                          Resources exposes Operation, Group, Version, Resource, Namespace, Name, APIVersion,
-                          ResourceVersion — the version of the state this commit wrote, which lags the object's
-                          current one and is empty for a producer that observed none — and Generation, the desired
-                          state's counter, which is 0 for a kind without a spec. Guard both with {{with}}.
-                          A literal CommitRequest message overrides this template without changing authorship.
+                          LiveTemplate is the Go template for the message of a commit made from live edits, whatever
+                          its size. Fields: Author (the username, possibly empty), GitTarget, Count (edits after
+                          coalescing, before comparing with Git), Operations and Resources. Each resource has
+                          Operation, Group, Version, Resource, Namespace, Name, APIVersion, ResourceVersion and
+                          Generation; ResourceVersion is the state this commit wrote and can be empty, and Generation
+                          is 0 for a kind without a spec, so guard both with {{with}}. A CommitRequest's message
+                          replaces this template without changing the author.
                         type: string
                       reconcileTemplate:
                         description: |-
-                          ReconcileTemplate formats atomic snapshots and resyncs.
-                          Fields: Count, GitTarget, Group, Version, Resource, APIVersion, Namespace, ResourceVersion.
-                          ResourceVersion is the snapshot LIST's version, not any one object's. Type and Namespace
-                          fields are empty for whole-target snapshots, and ResourceVersion can be empty.
-                          Guard optional fields so the message remains meaningful for every snapshot scope.
-                          Revision was renamed to ResourceVersion in v0.48.0; a template still naming it is rejected.
+                          ReconcileTemplate is the Go template for the message of a snapshot or resync commit. Fields:
+                          Count, GitTarget, Group, Version, Resource, APIVersion, Namespace and ResourceVersion (the
+                          list's, not one object's). The type and namespace fields are empty for a snapshot of the
+                          whole folder, and ResourceVersion can be empty, so guard them. A template naming Revision,
+                          renamed to ResourceVersion, is rejected.
                         type: string
                       requestTemplate:
                         description: |-
-                          RequestTemplate frames a CommitRequest's message instead of committing it verbatim. It
-                          renders only for a commit window whose attached request supplied a message; every other
-                          window uses liveTemplate or reconcileTemplate.
-
-                          It receives the same fields as liveTemplate, plus RequestMessage carrying the request's
-                          message unaltered. That message is never parsed as a template, so template syntax inside it
-                          stays literal.
-
-                          Omitted, a request's message is committed exactly as supplied. A template that never renders
-                          RequestMessage is rejected. One that fails to render at commit time commits the message
-                          verbatim instead, counted as message_source="commit_request_fallback".
+                          RequestTemplate is the Go template that frames a CommitRequest's message. It is used only for
+                          a commit whose CommitRequest supplied a message, and gets liveTemplate's fields plus
+                          RequestMessage, the message as written; template syntax inside the message stays literal.
+                          Omitted, the message is committed as written. A template that never renders RequestMessage
+                          is rejected, and one that fails at commit time commits the message as written.
                         type: string
                     type: object
                     x-kubernetes-validations:
@@ -209,18 +184,16 @@ spec:
                       rule: '!has(self.groupTemplate)'
                   window:
                     description: |-
-                      Window configures when this target's commit windows close. A commit window opens on an
-                      author's first write to this target and collects that author's writes until it closes: after
-                      idleTimeout of silence, or maxDuration after it opened, whichever comes first. Omitted, it is
-                      {idleTimeout: 5s, maxDuration: 1m}. A CommitRequest attached to a window replaces both timers
-                      for that window.
+                      Window sets when this GitTarget's commit windows close. A window opens on an author's first
+                      write and collects that author's writes until idleTimeout passes without one, or maxDuration
+                      after it opened, whichever comes first. A change applies to windows opened afterward. A
+                      CommitRequest attached to a window replaces both timers for that window.
                     properties:
                       idleTimeout:
                         default: 5s
                         description: |-
-                          IdleTimeout closes the window after this much silence, as a Go duration string ("5s",
-                          "750ms"). Every write the window collects restarts it. "0s" closes the window right after
-                          each write, a commit per write. At most "24h". Defaults to "5s".
+                          IdleTimeout closes the window this long after its last write, as a Go duration ("5s",
+                          "750ms"). "0s" makes one commit per write. At most "24h". Defaults to "5s".
                         pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                         type: string
                         x-kubernetes-validations:
@@ -230,10 +203,9 @@ spec:
                       maxDuration:
                         default: 1m
                         description: |-
-                          MaxDuration closes the window this long after it opened, however much keeps arriving, as a
-                          Go duration string ("1m", "90s"). It keeps continuous activity from postponing a commit
-                          indefinitely. "0s" closes the window right after the write that opened it. At most "24h".
-                          Defaults to "1m".
+                          MaxDuration closes the window this long after it opened, however many writes keep arriving,
+                          as a Go duration ("1m", "90s"). "0s" closes it right after the write that opened it. At most
+                          "24h". Defaults to "1m".
                         pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                         type: string
                         x-kubernetes-validations:
@@ -247,35 +219,37 @@ spec:
                         <= duration(self.maxDuration)'
                 type: object
               encryption:
-                description: Encryption defines encryption settings for Secret resource
-                  writes.
+                description: Encryption configures how Secrets are encrypted before
+                  they are written to Git.
                 properties:
                   age:
-                    description: Age configures age-specific encryption behavior for
-                      SOPS.
+                    description: Age configures age recipients for SOPS.
                     properties:
                       enabled:
                         default: false
-                        description: Enabled toggles age-based recipient resolution
-                          and bootstrap behavior.
+                        description: |-
+                          Enabled turns on age encryption: resolving recipients, and creating a key when asked.
+                          Defaults to false.
                         type: boolean
                       recipients:
-                        description: Recipients defines how recipients are resolved.
+                        description: Recipients says where the age recipients come
+                          from.
                         properties:
                           extractFromSecret:
                             default: false
-                            description: ExtractFromSecret derives recipients from
-                              all *.agekey entries in encryption.secretRef.
+                            description: |-
+                              ExtractFromSecret adds the recipient of every *.agekey entry in encryption.secretRef.
+                              Defaults to false.
                             type: boolean
                           generateWhenMissing:
                             default: false
-                            description: GenerateWhenMissing creates a date-named
-                              *.agekey entry in encryption.secretRef when no *.agekey
-                              exists.
+                            description: |-
+                              GenerateWhenMissing creates a date-named *.agekey entry in encryption.secretRef when it has
+                              none. Defaults to false.
                             type: boolean
                           publicKeys:
-                            description: PublicKeys is a static list of age recipients
-                              (age1...).
+                            description: PublicKeys is a fixed list of age recipients
+                              ("age1...").
                             items:
                               minLength: 1
                               type: string
@@ -284,13 +258,14 @@ spec:
                     type: object
                   provider:
                     default: sops
-                    description: Provider selects the encryption provider.
+                    description: Provider is the encryption tool. Only "sops" is supported.
+                      Defaults to "sops".
                     enum:
                     - sops
                     type: string
                   secretRef:
-                    description: SecretRef references namespace-local Secret data
-                      used by the encryption provider.
+                    description: SecretRef names the Secret, in this namespace, that
+                      holds the provider's keys.
                     properties:
                       name:
                         description: Name of the referent.
@@ -306,11 +281,10 @@ spec:
                 type: object
               gitBranchRef:
                 description: |-
-                  GitBranchRef names the GitBranch this target writes: the repository branch, and the credential
-                  it is written with. Namespace omitted means this GitTarget's own namespace. The GitBranch is
-                  used only while its spec.allowedGitTargets admit this GitTarget's namespace, its own included.
-                  Many GitTargets may reference one GitBranch; they share its branch worker.
-                  Immutable: delete and recreate the GitTarget to change its destination.
+                  GitBranchRef names the GitBranch this GitTarget writes to: the repository branch and the
+                  credential that writes it. An omitted namespace means this GitTarget's namespace. The
+                  GitBranch's spec.allowedGitTargets must admit this namespace. Several GitTargets may share
+                  one GitBranch. Immutable: delete and recreate the GitTarget to change it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -325,28 +299,12 @@ spec:
                 x-kubernetes-validations:
                 - message: spec.gitBranchRef.name must not be empty
                   rule: self.name != ''
-              gitProviderRef:
-                description: |-
-                  RemovedGitProviderRef is the old place of GitBranch.spec.gitProviderRef. It is never read;
-                  setting it is refused.
-                properties:
-                  name:
-                    description: Name of the referent.
-                    type: string
-                  namespace:
-                    description: Namespace of the referent, when not specified it
-                      acts as LocalObjectReference.
-                    type: string
-                required:
-                - name
-                type: object
               kubeProviderRef:
                 description: |-
-                  KubeProviderRef names the KubeProvider this GitTarget mirrors FROM: the source cluster, and the
-                  credential it is read with. Namespace omitted means this GitTarget's own namespace. The
-                  KubeProvider is used only while its spec.allowedGitTargets admit this GitTarget's namespace,
-                  its own included. Immutable: a folder's source cluster is part of what the folder means;
-                  delete and recreate the GitTarget to change it.
+                  KubeProviderRef names the KubeProvider this GitTarget mirrors from: the source cluster and the
+                  credential that reads it. An omitted namespace means this GitTarget's namespace. The
+                  KubeProvider's spec.allowedGitTargets must admit this namespace. Immutable: delete and
+                  recreate the GitTarget to change it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -367,141 +325,83 @@ spec:
               onRefusal:
                 default: Ignore
                 description: |-
-                  OnRefusal decides what happens when a live edit is refused because it has no legal
-                  destination in the Git folder. A refusal produces no commit, so nothing reverts the edit
-                  until something applies Git over it.
+                  OnRefusal decides what happens when a live edit is refused because it has no valid place in
+                  the folder. A refusal makes no commit, so the edit stays on the cluster until something
+                  applies Git over it.
 
-                  "Ignore", the default, records the refusal in conditions and events and does nothing else.
+                  "Ignore" (the default) reports the refusal in conditions and events and does nothing else.
 
-                  "Reapply" asks this target's applier (through spec.applierClaimRef, which it requires) to
-                  apply the current tip after publishing the edits pending on the branch, which reverts the
-                  refused edit and nothing that was waiting to be published. Only this
-                  target's applier is asked. If its GitRepository has to fetch to reach the tip, the
-                  Kustomizations a FluxClaim holds stay suspended and ignore the new artifact; only the objects
-                  no applier claim holds, listed in the applier claim's status.source.alsoAppliedBy, apply it, as
-                  they would for any push.
-
-                  It fires only for an edit to a document the folder ALREADY holds, in a write that removes no
-                  document anywhere: re-applying would otherwise prune, or put back, an object somebody else is
-                  deleting. A folder-level refusal (unparseable YAML, a foreign file) never fires it, because
-                  re-applying Git cannot repair a folder. A standing refusal is requested once, not once per
-                  recheck; a different refused edit, or the same edit re-made after a write of that type was
-                  accepted, is a new request.
+                  "Reapply" asks the applier in spec.applierClaimRef, which it requires, to apply the branch
+                  once the pending edits are published, which reverts the refused edit. It fires only for an
+                  edit to a document the folder already holds, in a write that removes no document, and never
+                  for a refusal of the whole folder, such as unparseable YAML. A refusal that stands is
+                  reapplied once, not on every recheck.
                 enum:
                 - Ignore
                 - Reapply
                 type: string
-              parentBranch:
-                description: |-
-                  RemovedParentBranch is the old place of GitBranch.spec.parentBranch. It is never read;
-                  setting it is refused.
-                type: string
               path:
                 description: |-
-                  Path within the repository to write resources to, relative to the repository
-                  root. Required and must be non-empty — there is no default, so a GitTarget can
-                  never silently write to the repository root. To deliberately target the
-                  repository root, set it to "." (the ArgoCD/Flux convention); an empty string is
-                  rejected because it is too easy to leave blank by accident to be a deliberate
-                  root choice. Any leading slash (absolute path) and ".." are rejected, and a
-                  trailing slash is normalized away.
-                  Immutable: delete and recreate the GitTarget to change its destination.
+                  Path is the folder this GitTarget writes, relative to the repository root. Use "." for the
+                  root itself. A leading "/" and ".." are rejected, and a trailing "/" is dropped. Immutable:
+                  delete and recreate the GitTarget to change it.
                 minLength: 1
                 type: string
               placement:
                 description: |-
-                  Placement declares where NEW resources are written. It has no effect on a
-                  resource that already has a document in Git — that document is always
-                  updated in place at its existing location, wherever that is. Mutable: a
-                  change only affects resources created after the change.
+                  Placement decides where a new resource is written: one with no document in the folder yet.
+                  A resource that already has a document is updated where that document is, so a change here
+                  affects only resources created afterward, and labeling a resource later never moves its file.
 
-                  Its byType and default templates share one variable language (docs/configuration.md).
-                  Besides the resource's identity, a template may read one of its labels:
-                  "{label:app.kubernetes.io/instance}/configmaps.yaml".
-
-                  Two variables can be absent for a resource that is otherwise placeable, and both are
-                  still placed rather than skipped: "{label:key}" on a resource that does not set the
-                  label (or sets it empty) renders the built-in "_unlabeled" bucket, and "{namespace}" on
-                  a cluster-scoped resource renders "_cluster". Neither is a value its kind of source can
-                  hold, so neither is ever confused with a real one.
-
-                  Append "|fallback" to either to name that bucket yourself — "{label:team|unassigned}",
-                  "{namespace|_global}". A fallback is at most 63 characters of [A-Za-z0-9._-] and is
-                  neither "." nor "..", so it can add no directory and escape no path; it may start with
-                  "_" to stay collision-proof, or be empty ("{label:team|}", "{namespace|}") to render
-                  nothing, collapsing the segment. A {namespace} fallback may name a real namespace
-                  ("{namespace|team-a}"), which files cluster-scoped resources in that folder; begin it with
-                  "_" instead when you want a bucket no namespace can reach. Only these two variables take a
-                  fallback, and one written on any other is rejected rather than silently ignored — not
-                  because the others always have a value ({groupPath} renders empty for a core resource) but
-                  because an empty group segment collapses by design, which is the built-in path's intent.
-
-                  A label is never identity, so it does not contribute to the identity-completeness a
-                  sensitive route requires (a {namespace} fallback does not cost it either). Because
-                  placement runs only for a resource with no document yet, labeling one afterwards never
-                  moves the file already written.
+                  byType and default are path templates over the resource's identity ({namespace}, {name},
+                  {group}, {version}, {resource}, {kind} and more), and may read a label:
+                  "{label:app.kubernetes.io/instance}/configmaps.yaml". "{label:key}" renders "_unlabeled" for a
+                  resource without the label, and "{namespace}" renders "_cluster" for a cluster-scoped one.
+                  Append "|fallback" to either to choose that value: "{label:team|unassigned}",
+                  "{namespace|_global}". A fallback is up to 63 characters of [A-Za-z0-9._-], is not "." or
+                  "..", and may be empty to drop the path segment. A {namespace} fallback that names a real
+                  namespace files cluster-scoped resources in that namespace's folder. A fallback on any other
+                  variable is rejected.
                 properties:
                   byType:
                     additionalProperties:
                       type: string
                     description: |-
-                      ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
-                      "v1/configmaps", "apps/v1/deployments", or "v1/secrets"; core resources omit
-                      the group) to the path template used for a new resource of that type. A path
-                      selected for a sensitive resource (Secrets, plus any operator-configured
-                      sensitive type) must be identity-complete so it cannot collide two distinct
-                      sensitive resources onto one file.
+                      ByType maps a resource type, written "{group}/{version}/{resource}" ("apps/v1/deployments",
+                      or "v1/configmaps" for the core group), to the path template for new resources of that
+                      type. The template of a sensitive type, such as Secrets, must contain the resource's whole
+                      identity, so two of them never share a file.
                     type: object
                   default:
                     description: |-
-                      Default is the path template used for a new resource whose type has no ByType
-                      entry. Omitted, it falls through to the folder's one supported kustomization
-                      root, if it has exactly one, and then to the built-in path.
-                      A bundling default (one that is not identity-complete,
-                      such as "all.yaml") is only valid when a sensitive resource can never reach it
-                      — give every sensitive type an explicit identity-complete ByType entry.
+                      Default is the path template for a new resource whose type has no byType entry. Omitted, a
+                      new document goes next to the folder's kustomization when exactly one governs the folder,
+                      and otherwise to {namespace}/{group}/{resource}/{name}.yaml. That path has no version, so
+                      add {version} to a template to keep two versions of one resource apart. A bundling template
+                      such as "all.yaml" is valid only when every sensitive type has its own byType entry.
                     type: string
                   useKustomize:
                     description: |-
-                      UseKustomize declares that this folder is a kustomize folder whose root the operator
-                      maintains. It controls one thing: what happens when NO kustomization governs the path a new
-                      document lands at.
-
-                      Omitted or false, the document is written and nothing else is touched. True, a
-                      kustomization.yaml is created at spec.path and the new document is registered in it as part
-                      of the same commit.
-
-                      A created root ADOPTS the folder: its resources: lists every managed document already there
-                      as well as the new one. Turning a folder into a kustomize folder means the folder, and a
-                      root naming one file would leave every other file in Git but out of every render.
-
-                      A created root carries NO namespace:. It holds an apiVersion, a kind and the resources: list
-                      and nothing else, so the namespace still comes from the documents (serializeNamespace unset
-                      or true) or from whatever installs the folder (serializeNamespace false).
-
-                      A folder that already has a kustomize render root never gains a second one, because two
-                      render roots is an ambiguous folder that stops accepting new documents altogether. If a
-                      byType or default template places a document outside the existing root, that placement is
-                      REFUSED rather than committed as a file no kustomization would render.
-
-                      It has NO bearing on a folder that already has a root. A new file is always registered with
-                      the nearest kustomization governing it, whatever chose its path, because a file no
-                      kustomization lists is a file kustomize never builds.
+                      UseKustomize makes GitOps Reverser create a kustomization.yaml at spec.path when no
+                      kustomization governs the folder yet. The first new document creates it, listing every
+                      managed document already in the folder and the new one, and nothing else: no namespace:.
+                      It has no effect on a folder that already has a kustomization. A new file is always added
+                      to the kustomization governing it, and a template that places a document outside that
+                      kustomization is refused. Defaults to false.
                     type: boolean
                 type: object
               prune:
                 description: |-
-                  Prune controls which deletion paths may remove documents from this target's folder: an
-                  explicit source DELETE event, and the resync mark-and-sweep that infers a deletion from a
-                  desired snapshot. Omitted, it is `mode: OnEvent` — observed deletes are mirrored, inferred
-                  ones are not — for a stored GitTarget as well as a new one.
+                  Prune decides which deletions remove documents from this folder: a delete observed on the
+                  source cluster, and a document a resync finds no resource for. Omitted, mode is "OnEvent":
+                  observed deletes are mirrored, and a resync removes nothing.
                 properties:
                   mode:
                     default: OnEvent
                     description: |-
-                      Mode selects which deletion paths are enabled. `Never` removes nothing; `OnEvent` mirrors an
-                      observed source DELETE but never infers a deletion from a resync snapshot; `Always` enables
-                      both, restoring full desired-state convergence. Omitted, it is `OnEvent`.
+                      Mode decides which deletions are mirrored. "Never" removes nothing. "OnEvent" mirrors a
+                      delete observed on the source cluster, but a resync removes nothing. "Always" also lets a
+                      resync remove a document that has no resource on the cluster. Defaults to "OnEvent".
                     enum:
                     - Never
                     - OnEvent
@@ -510,49 +410,29 @@ spec:
                 type: object
               serializeNamespace:
                 description: |-
-                  SerializeNamespace declares whether a committed document carries its own
-                  metadata.namespace. It governs every write this target makes, not just the first one, and it
-                  applies to NAMESPACED resources only — a cluster-scoped document has no namespace, so the
-                  field is ignored for it rather than being an error.
+                  SerializeNamespace decides whether a namespaced resource's document carries
+                  metadata.namespace. It applies to every write, not just the first, and is ignored for
+                  cluster-scoped resources.
 
-                  Omitted, the namespace is INFERRED per document, which is the behavior a target that says
-                  nothing has always had: metadata.namespace is omitted only when the kustomization governing
-                  the document's path sets namespace: to that resource's own namespace, and written explicitly
-                  in every other case. Leave it unset for a folder that is legitimately non-uniform — a tree of
-                  nested kustomize roots, each supplying its own namespace — because inference resolves each
-                  document against the root governing its own path.
+                  Omitted, it is decided per document: the namespace is left out only when the kustomization
+                  governing the document's path sets namespace: to that same namespace. This suits a folder of
+                  nested kustomize roots that each set their own namespace.
 
-                  true always writes it: the setting for a flat folder applied directly, where nothing
-                  downstream supplies a namespace and a document without one is ambiguous.
+                  true always writes it. Use it for a flat folder applied as is.
 
-                  false never writes it, and is a claim about the whole folder: something outside this
-                  repository — a Flux Kustomization's targetNamespace, an Argo Application's
-                  destination.namespace, or a kustomization this target maintains itself — supplies the
-                  namespace instead. Because a namespace-less document takes its namespace from a single
-                  supplier, an explicit false admits exactly ONE source namespace: a second WatchRule bringing
-                  another namespace to this target is refused, with GitPathAccepted=False and reason
-                  MultipleSourceNamespaces.
+                  false never writes it, for a folder whose namespace something else supplies: a Flux
+                  Kustomization's targetNamespace, an Argo CD Application's destination.namespace, or a
+                  kustomization. Such a folder holds one source namespace; a WatchRule bringing a second one is
+                  refused with GitPathAccepted=False, reason MultipleSourceNamespaces.
                 type: boolean
               suspend:
                 description: |-
-                  Suspend stops this target from writing to Git, without deleting it. It is the knob to turn
-                  when something is wrong and the writes have to stop now: watches keep running, events keep
-                  arriving, the folder keeps being scanned and status.placement keeps being maintained, and no
-                  new commit is planned while it is set.
-
-                  It takes effect at the next planning boundary, not instantly. Work already committed
-                  locally when suspend is set is still pushed, so a target suspended during a push cooldown
-                  can publish one more commit seconds later. That is deliberate: a local commit that is never
-                  pushed would sit in the worker's checkout indefinitely and surface later, out of order, on
-                  resume. Suspend is a valve on new work, not an undo — it stops the next write, it does not
-                  revert the last one.
-
-                  While it is set, status.retention is not published at all: nothing is swept, so nothing is
-                  measured, and reporting zero retained documents would read as "converged" when nothing was
-                  counted.
-
-                  Omitted, it is false. Clearing it resumes writing from the current cluster state on the next
-                  resync; the writes suppressed while suspended are not replayed.
+                  Suspend stops this GitTarget from making new commits, without deleting it. Watches keep
+                  running and status.placement stays current; status.retention is not published while it is
+                  set. A commit already made locally is still pushed, so one more commit can appear seconds
+                  after it is set: suspend stops the next write and does not undo the last one. Clearing it
+                  resumes from the current cluster state at the next resync; writes skipped while suspended
+                  are not replayed. Defaults to false.
                 type: boolean
             required:
             - gitBranchRef
@@ -566,21 +446,16 @@ spec:
             - message: spec.path is immutable; delete and recreate the GitTarget to
                 change its destination
               rule: self.path == oldSelf.path
-            - message: spec.gitProviderRef, spec.branch and spec.parentBranch moved
-                to a GitBranch; set spec.gitBranchRef to it
-              rule: '!has(self.gitProviderRef) && !has(self.branch) && !has(self.parentBranch)'
-            - message: spec.clusterProviderRef was replaced by spec.kubeProviderRef,
-                which names a namespaced KubeProvider
-              rule: '!has(self.clusterProviderRef)'
             - message: 'spec.onRefusal: Reapply needs spec.applierClaimRef, the applier
                 claim asked to reapply'
               rule: '!has(self.onRefusal) || self.onRefusal != ''Reapply'' || has(self.applierClaimRef)'
           status:
-            description: status defines the observed state of GitTarget
+            description: status defines the observed state of GitTarget.
             properties:
               conditions:
-                description: Conditions represent the latest available observations
-                  of an object's state
+                description: |-
+                  Conditions are the latest observations of this GitTarget's state. Ready, Reconciling and
+                  Stalled follow kstatus; the others say which check holds the GitTarget back.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -646,32 +521,28 @@ spec:
                 type: integer
               placement:
                 description: |-
-                  Placement is what the last scan resolved about this folder's layout: whether a kustomize
-                  render root governs new documents, which one, and whether the folder renders a base it may
-                  not write to. It is an observation, like streams and retention, and the LayoutResolved
-                  condition carries the verdict.
+                  Placement is this folder's layout as the last scan resolved it: whether a kustomization
+                  governs new documents, which one, and which bases the folder renders but may not write. The
+                  LayoutResolved condition gives the verdict.
                 properties:
                   mode:
                     description: |-
-                      Mode is how this folder is written, and it is the field that predicts the surprises.
+                      Mode is how this folder is written.
 
-                      `Plain` — no kustomization governs the folder. A new document is written and nothing else
-                      is touched; a delete removes it and nothing else is touched.
+                      "Plain": no kustomization governs the folder. Documents are written and removed, and
+                      nothing else is touched.
 
-                      `KustomizeRoot` — exactly one kustomization governs the folder and the folder is
-                      self-contained. A new document is also registered in that root's `resources:`; a delete
-                      also drops its entry; and every write is proved by re-rendering, so kustomize itself can
-                      refuse one.
+                      "KustomizeRoot": one kustomization governs the folder and renders nothing outside it. A new
+                      document is also added to its resources:, a removed one is dropped from it, and every write
+                      is checked by rendering, so kustomize can refuse one.
 
-                      `KustomizeOverlay` — as KustomizeRoot, and the folder additionally renders a base outside
-                      it (ReadOnlyBases). The base is read-only input: an edit to a field the base owns is
-                      authored into the overlay when it is expressible there (`images:`, `replicas:`) and refused
-                      with WriteBoundaryRefused otherwise, and DELETING an object the overlay inherits authors a
-                      `$patch: delete` into the overlay rather than removing anything.
+                      "KustomizeOverlay": as KustomizeRoot, and the folder also renders a base outside it
+                      (readOnlyBases). An edit to a field the base sets is written into the overlay where it can
+                      be (images:, replicas:) and refused with WriteBoundaryRefused otherwise. Deleting an object
+                      the base supplies writes a $patch: delete into the overlay.
 
-                      Empty when the folder covers more than one render root, which is LayoutResolved=Ambiguous:
-                      there is no single answer, and no new document is placed until the target is pointed at one
-                      of them.
+                      Empty when the folder holds more than one kustomize root (LayoutResolved=Ambiguous): no new
+                      document is placed until spec.path points at one of them.
                     enum:
                     - Plain
                     - KustomizeRoot
@@ -679,60 +550,46 @@ spec:
                     type: string
                   readOnlyBases:
                     description: |-
-                      ReadOnlyBases are the kustomization directories this folder renders but may never write to,
-                      relative to spec.path — so they lead with "../". Non-empty exactly when Mode is
-                      KustomizeOverlay, and it is what makes a WriteBoundaryRefused message predictable instead of
-                      surprising: an edit that lands on a document under one of these paths cannot be written
-                      where it lives.
+                      ReadOnlyBases are the kustomization directories this folder renders but may not write,
+                      relative to spec.path, so they start with "../". Set only for KustomizeOverlay. An edit to a
+                      document under one of them is refused with WriteBoundaryRefused unless the overlay can
+                      express it.
                     items:
                       type: string
                     type: array
                   renderRoot:
                     description: |-
-                      RenderRoot is the kustomization directory that governs new documents in this folder,
-                      relative to spec.path; "." is the folder itself. Empty for Plain (there is no root) and
-                      under LayoutResolved=Ambiguous (there is no single one).
+                      RenderRoot is the kustomization directory that governs new documents, relative to
+                      spec.path ("." is the folder itself). Empty for Plain, and when the layout is Ambiguous.
                     type: string
                   resolvedAt:
                     description: |-
-                      ResolvedAt is when this resolution was computed. Like ResolvedAtCommit it dates the
-                      resolution rather than the last scan, so a timestamp well in the past means the folder's
-                      shape has been stable, not that scanning stopped.
+                      ResolvedAt is when this layout was first seen. Like resolvedAtCommit, it does not move while
+                      the layout stays the same.
                     format: date-time
                     type: string
                   resolvedAtCommit:
                     description: |-
-                      ResolvedAtCommit is the commit hash this resolution was first observed at. It is not
-                      re-stamped on every scan: a resolution that has not changed is not republished, because
-                      doing so would write status once per commit to the branch, whichever target caused the
-                      commit. So it dates the RESOLUTION, not the last scan — a commit older than the branch
-                      head means the folder's layout has not changed since, not that nothing has looked.
-
-                      It is empty when the branch had no commit at the time (a folder nothing has written to yet)
-                      and is filled in by the first scan that finds one.
+                      ResolvedAtCommit is the commit at which this layout was first seen. It does not move while
+                      the layout stays the same, so a commit older than the branch head means the layout has not
+                      changed since. Empty until the branch has a commit.
                     type: string
                 type: object
               retention:
                 description: |-
-                  Retention reports documents a resync kept because this target's spec.prune.mode suppressed
-                  the mark-and-sweep. It covers the INFERRED deletion path only: under `never`, a suppressed
-                  source DELETE is not counted here, so a `never` target can report zero while still declining
-                  to mirror deletes. It is informational either way — retention is the configured behavior,
-                  never a fault, and no condition changes state because of it.
+                  Retention counts the documents a resync kept because spec.prune.mode did not allow removing
+                  them. A delete observed on the cluster and not mirrored under "Never" is not counted, so a
+                  "Never" folder can report zero. It is information only and changes no condition.
                 properties:
                   lastChangedAt:
                     description: |-
-                      LastChangedAt records when the reported retention count or effective prune mode last
-                      changed. It does NOT indicate when retention was last evaluated: a resync that re-reports the
-                      same count leaves it untouched, so an old timestamp is equally consistent with stable
-                      retention and with nothing having measured it since.
+                      LastChangedAt is when the count or the mode last changed. A resync that reports the same
+                      count leaves it alone, so it does not say when retention was last measured.
                     format: date-time
                     type: string
                   mode:
-                    description: |-
-                      Mode is the EFFECTIVE spec.prune.mode this roll-up was produced under. It is reported here
-                      rather than left to be read from the spec because a GitTarget that predates spec.prune has
-                      no stored value at all, so the spec alone cannot explain why documents are being kept.
+                    description: Mode is the spec.prune.mode these counts were taken
+                      under, with the default applied.
                     enum:
                     - Never
                     - OnEvent
@@ -740,50 +597,46 @@ spec:
                     type: string
                   retainedDocuments:
                     description: |-
-                      RetainedDocuments is how many managed documents the policy kept that a converged mirror
-                      would not hold. Zero means a resync ran and found nothing to retain — the mirror is
-                      converged. An ABSENT retention block means something different: no resync has reported yet.
+                      RetainedDocuments is how many documents the prune policy kept that have no resource on the
+                      cluster. Zero means a resync found nothing to keep. An absent retention block means no
+                      resync has reported yet.
                     format: int32
                     type: integer
                 required:
                 - retainedDocuments
                 type: object
               streams:
-                description: |-
-                  Streams is the bounded data-plane roll-up over this GitTarget's tracked types.
-                  Counts, never a per-type list, so it stays bounded however many types are watched.
+                description: Streams counts the types this GitTarget watches, by watch
+                  state.
                 properties:
                   blocked:
-                    description: Blocked is how many tracked types cannot currently
-                      be watched.
+                    description: Blocked is how many of them cannot be watched right
+                      now.
                     format: int32
                     type: integer
                   pendingSample:
-                    description: PendingSample is a bounded sample of types not yet
-                      ready.
+                    description: PendingSample names up to five types that are not
+                      ready yet.
                     items:
                       type: string
                     maxItems: 5
                     type: array
                   ready:
-                    description: Ready is how many tracked types are Streaming.
+                    description: Ready is how many of them are streaming events.
                     format: int32
                     type: integer
                   replaying:
-                    description: Replaying is how many tracked types are still replaying
-                      their initial events.
+                    description: Replaying is how many of them are still receiving
+                      their initial list.
                     format: int32
                     type: integer
                   summary:
                     description: |-
-                      Summary is the display-only ready/total ratio, e.g. "3/4".
-
-                      It restates Ready and Total, which the API conventions would normally rule out. It exists
-                      solely to feed the Streams printer column: a column can read one JSONPath, not format two.
-                      Do not compute anything from it — read ready and total.
+                      Summary is ready/total for display, such as "3/4". Read ready and total instead of parsing
+                      it.
                     type: string
                   total:
-                    description: Total is how many types are tracked.
+                    description: Total is how many types are watched.
                     format: int32
                     type: integer
                 required:

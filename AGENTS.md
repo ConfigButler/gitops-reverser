@@ -111,6 +111,16 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
   gotchas — not why it was designed that way. Put design rationale in a comment block separated
   from the doc comment **by a blank line**: Go does not treat it as the doc comment, so
   controller-gen leaves it out of the schema while it stays in the source.
+- **Write CRD descriptions in one house style**, for an operator reading `kubectl explain`:
+  the first sentence says what the field is or does (`GitBranchRef names the GitBranch ...`);
+  then what omitting it does (`Omitted, ...`, or `Defaults to "5s".` for a schema default);
+  then the gotchas; immutability last (`Immutable: delete and recreate the X to change it.`).
+  Field paths bare (`spec.prune.mode`), literal values in double quotes (`"Reapply"`), no
+  backticks, no capitals for emphasis, no em dashes, no `docs/` paths and no implementation
+  vocabulary the reader cannot see (branch worker, fact index). Aim for under 80 words; the few
+  fields that need more get short paragraphs. Conditions open with `Conditions are the latest
+  observations of this <Kind>'s state.` and `spec`/`status` with `defines the desired/observed
+  state of <Kind>.` An array item's Go type doc is also user-visible: it becomes `items`.
 - **Where that block goes matters, and getting it wrong fails silently.** On a FIELD, put it above
   the doc comment. On a TYPE, put it above the `+kubebuilder:` marker block, never between the
   markers and the doc — that displaces the markers and they are dropped without any error

@@ -57,9 +57,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          GitBranch is one branch of a Git repository, written through a GitProvider's credential. It holds
-          the branch for every GitTarget that references it: one branch worker, one credential, one
-          checkout. Only one GitBranch may hold a repository branch at a time.
+          GitBranch is one branch of a Git repository, written with a GitProvider's credential. Every
+          GitTarget that references it writes through it, and only one GitBranch may hold a repository
+          branch at a time.
         properties:
           apiVersion:
             description: |-
@@ -79,33 +79,31 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of GitBranch
+            description: spec defines the desired state of GitBranch.
             properties:
               allowedGitTargets:
                 default:
                 - consumerNamespaces:
                     from: Same
                 description: |-
-                  AllowedGitTargets says which GitTargets may write through this GitBranch. Omitted, it defaults
-                  to one grant for this GitBranch's own namespace (consumerNamespaces: {from: Same}). A list you
-                  write is the whole policy: nothing is added to it, so this namespace is admitted only if the
-                  list grants it access, and [] admits no GitTarget. Grants combine by union. Mutable: claiming
-                  a branch includes the right to share it.
+                  AllowedGitTargets says which GitTargets may write through this GitBranch. Omitted, it is one
+                  grant for this namespace (consumerNamespaces: {from: Same}). A written list is the whole
+                  policy, so it admits this namespace only if a grant says so, and [] admits nobody. Grants
+                  combine by union.
                 items:
-                  description: |-
-                    GitBranchGitTargetGrant admits GitTargets in some control-cluster namespaces to write through a
-                    GitBranch.
+                  description: GitBranchGitTargetGrant admits the GitTargets of some
+                    namespaces to write through a GitBranch.
                   properties:
                     consumerNamespaces:
                       description: |-
-                        ConsumerNamespaces are the control-cluster namespaces whose GitTargets this grant admits.
-                        from: Same is this GitBranch's namespace.
+                        ConsumerNamespaces are the namespaces whose GitTargets this grant admits. from: "Same" is
+                        this GitBranch's namespace.
                       properties:
                         from:
                           description: |-
-                            From is where this grant admits from: Same (the namespace of the object holding the grant, not
-                            the consumer's), Names (the namespaces in names), Selector (the namespaces whose labels match
-                            selector) or All (every namespace).
+                            From is where this grant admits consumers from: "Same" (the namespace of the object that
+                            holds the grant), "Names" (the namespaces in names), "Selector" (the namespaces whose labels
+                            match selector) or "All" (every namespace).
                           enum:
                           - Same
                           - Names
@@ -113,11 +111,11 @@ spec:
                           - All
                           type: string
                         names:
-                          description: 'Names are the control-cluster namespaces admitted
-                            with from: Names, by exact name.'
+                          description: 'Names are the namespaces admitted with from:
+                            "Names", by exact name.'
                           items:
-                            description: GrantNamespace is one control-cluster namespace
-                              a grant admits by name.
+                            description: GrantNamespace is a namespace a grant admits,
+                              by exact name. A variable and "*" are refused.
                             maxLength: 63
                             type: string
                             x-kubernetes-validations:
@@ -139,8 +137,8 @@ spec:
                           x-kubernetes-list-type: set
                         selector:
                           description: |-
-                            Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
-                            something: to admit every namespace, use from: All.
+                            Selector matches the labels of the namespaces admitted with from: "Selector". It must not be
+                            empty: to admit every namespace, use from: "All".
                           properties:
                             matchExpressions:
                               description: matchExpressions is a list of label selector
@@ -211,20 +209,19 @@ spec:
                 x-kubernetes-list-type: atomic
               branch:
                 description: |-
-                  Branch is the branch on the remote that this GitBranch writes. It must match one of the
-                  patterns the GitProvider's spec.allowedGitBranches give this GitBranch's namespace. Only one
-                  GitBranch writes a repository branch: the oldest admitted one
-                  whose credential proves it can open a push session holds it, and any other GitBranch for the
-                  same repository and branch reports Stalled with reason BranchConflict.
-                  Immutable: delete and recreate the GitBranch to change it.
+                  Branch is the branch on the remote that this GitBranch writes. It must match a branch pattern
+                  that the GitProvider's spec.allowedGitBranches give this namespace. Only one GitBranch holds
+                  a repository branch: the oldest admitted one whose credential can open a push session. Any
+                  other reports Stalled, reason BranchConflict. Immutable: delete and recreate the GitBranch to
+                  change it.
                 minLength: 1
                 type: string
               gitProviderRef:
                 description: |-
-                  GitProviderRef names the GitProvider whose repository and credential this branch is written
-                  with. Namespace omitted means this GitBranch's own namespace. The GitBranch claims its branch
-                  only while that GitProvider's spec.allowedGitBranches admits this namespace and the branch.
-                  Immutable: delete and recreate the GitBranch to change it.
+                  GitProviderRef names the GitProvider whose repository and credential write this branch. An
+                  omitted namespace means this GitBranch's namespace. The GitProvider's spec.allowedGitBranches
+                  must admit this namespace and spec.branch. Immutable: delete and recreate the GitBranch to
+                  change it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -241,14 +238,13 @@ spec:
                   rule: self.name != ''
               parentBranch:
                 description: |-
-                  ParentBranch is the branch spec.branch is created from, and the branch compared against while
-                  spec.branch does not exist on the remote. Omitted: the branch the remote's HEAD points at (its
-                  default branch), or a branch with no history when the repository is empty. When set, it must
-                  exist on the remote for spec.branch to be created; otherwise this GitBranch reports
-                  ParentBranchNotFound and nothing is written. Once spec.branch exists, it is used as it is and
-                  the parent is not followed. It is only read, so the GitProvider's spec.allowedGitBranches need
-                  not allow it.
-                  Immutable, including adding or removing it: delete and recreate the GitBranch to change it.
+                  ParentBranch is the branch spec.branch is created from, and compared against while
+                  spec.branch does not exist on the remote. Omitted, it is the remote's default branch, or no
+                  history at all in an empty repository. When set, it must exist on the remote for spec.branch
+                  to be created; otherwise this GitBranch reports ParentBranchNotFound and writes nothing. Once
+                  spec.branch exists, the parent branch is no longer followed. It is only read, so
+                  spec.allowedGitBranches need not allow it. Immutable, including adding or removing it:
+                  delete and recreate the GitBranch to change it.
                 minLength: 1
                 type: string
             required:
@@ -267,12 +263,12 @@ spec:
               rule: has(self.parentBranch) == has(oldSelf.parentBranch) && (!has(self.parentBranch)
                 || self.parentBranch == oldSelf.parentBranch)
           status:
-            description: status defines the observed state of GitBranch
+            description: status defines the observed state of GitBranch.
             properties:
               conditions:
                 description: |-
-                  Conditions report whether this GitBranch holds its repository branch and can write it: the
-                  Ready summary plus the kstatus Reconciling/Stalled pair.
+                  Conditions are the latest observations of this GitBranch's state: whether it holds its
+                  repository branch and can write it. Ready, Reconciling and Stalled follow kstatus.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -333,20 +329,17 @@ spec:
                 x-kubernetes-list-type: map
               gitTargetCount:
                 description: |-
-                  GitTargetCount is how many GitTargets reference this GitBranch, from any namespace. More than
-                  one means they share its branch worker; each reports its own folder's health on its own
-                  conditions.
+                  GitTargetCount is how many GitTargets, in any namespace, reference this GitBranch. Each one
+                  reports its own folder's health in its own conditions.
                 format: int32
                 type: integer
               lastPushNoticeAt:
                 description: |-
-                  LastPushNoticeAt is when a GitReceiver last delivered a push to this branch, which made the
-                  branch worker look at once instead of at its next refresh. It records receipt only: whether
-                  that look reached the remote is status.remote's to say. Absent means no delivery has reached
-                  this branch: no GitReceiver is set up, the Git host's webhook does not reach one, the delivery
-                  names the repository by a URL other than the GitProvider's spec.url, or no branch worker writes
-                  the branch because no GitTarget references this GitBranch. It advances at most once a minute,
-                  and is cleared when the GitProvider is recreated for another repository.
+                  LastPushNoticeAt is when a GitReceiver last delivered a push for this branch. It records that
+                  the delivery arrived; status.remote says what the remote holds. Absent means no delivery has
+                  reached this branch: no GitReceiver is set up or reachable, the delivery names the repository
+                  by a URL other than the GitProvider's spec.url, or no GitTarget references this GitBranch. It
+                  advances at most once a minute.
                 format: date-time
                 type: string
               observedGeneration:
@@ -356,16 +349,14 @@ spec:
                 type: integer
               remote:
                 description: |-
-                  Remote is where this branch is on the Git remote, and when that was last proved. It is
-                  renewed by every confirmed look: a successful push as well as a fetch. Absent means nothing
-                  has proved anything yet: nothing has looked, or the GitProvider was recreated against a
-                  different repository and what was published no longer describes the one it names.
+                  Remote is where this branch is on the Git remote, and when that was last checked by a push or
+                  a fetch. It is updated at most once a minute. Absent until the first check, and again after
+                  the GitProvider is recreated for another repository.
                 properties:
                   commit:
                     description: |-
-                      Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
-                      the remote at all, which is not an error: a branch does not exist without a commit, and a
-                      branch nothing has written to has nothing there yet.
+                      Commit is the commit hash the branch is at on the remote. Empty means the branch is not on
+                      the remote yet, which is not an error: a branch nothing has written to does not exist.
                     type: string
                   lastVerifiedAt:
                     description: LastVerifiedAt is when the remote was last observed.
@@ -373,25 +364,24 @@ spec:
                     type: string
                   parent:
                     description: |-
-                      Parent is what the branch would be created from, observed with it: present only while the
-                      remote does not carry the branch. Once the branch exists its parent is not followed, so this
-                      is omitted.
+                      Parent is what the branch would be created from. Set only while the branch is not on the
+                      remote.
                     properties:
                       branch:
                         description: |-
-                          Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
-                          that is omitted. Empty when State is Unborn, and when the remote names no default branch.
+                          Branch is the parent branch: spec.parentBranch, or the remote's default branch when that is
+                          omitted. Empty when state is "Unborn", and when the remote names no default branch.
                         type: string
                       commit:
                         description: |-
-                          Commit is the commit hash the parent branch is at on the remote: the commit the branch's
-                          first commit would build on. Set only when State is Found.
+                          Commit is the commit hash the parent branch is at on the remote, which the branch's first
+                          commit would build on. Set only when state is "Found".
                         type: string
                       state:
                         description: |-
-                          State is what the branch would be created from: Found (the parent's tip), Missing (the parent
-                          is not on the remote; nothing is written) or Unborn (an empty repository, with no refs at
-                          all, and no parent configured; the first commit has no history).
+                          State is what the branch would be created from: "Found" (the parent branch's tip), "Missing"
+                          (the parent branch is not on the remote, so nothing is written) or "Unborn" (an empty
+                          repository and no spec.parentBranch, so the first commit has no history).
                         enum:
                         - Found
                         - Missing
@@ -402,10 +392,9 @@ spec:
                     type: object
                   verifiedBy:
                     description: |-
-                      VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
-                      this commit is our own work; `Fetch` means we went and looked, and this is what was
-                      there. A `Fetch` next to a commit no publication of yours produced is how a foreign push
-                      to the branch is read off kubectl.
+                      VerifiedBy is how commit was learned: "Push" means the remote accepted a push from GitOps
+                      Reverser, and "Fetch" means a fetch found it. "Fetch" next to a commit GitOps Reverser did not
+                      make means somebody else pushed to the branch.
                     enum:
                     - Push
                     - Fetch
@@ -413,9 +402,9 @@ spec:
                 type: object
               repository:
                 description: |-
-                  Repository is the GitProvider's repository URL, normalized: host and path, with no scheme,
-                  user or ".git" suffix. Together with spec.branch it is the key only one GitBranch may hold, so
-                  two GitProviders spelling one repository differently still conflict.
+                  Repository is the GitProvider's repository URL, normalized to host and path with no scheme,
+                  user or ".git" suffix. With spec.branch it is what only one GitBranch may hold, so two
+                  GitProviders that spell one repository differently still conflict.
                 type: string
             type: object
         required:

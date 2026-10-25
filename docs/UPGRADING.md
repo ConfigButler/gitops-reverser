@@ -70,8 +70,8 @@ The source cluster is a namespaced `KubeProvider`. The cluster-scoped `ClusterPr
 gone, and nothing converts one: a CRD cannot change its scope. `GitTarget`, `FluxClaim` and
 `ArgoCDClaim` name their provider with the required, immutable `spec.kubeProviderRef`, whose
 omitted namespace means the referrer's own. There is no provider named `default` that an omitted
-reference falls back to. `spec.clusterProviderRef` stays in the schema only so that setting it is
-refused at admission, with a message naming `spec.kubeProviderRef`.
+reference falls back to. `spec.clusterProviderRef` is gone from the schema: `kubectl apply` refuses
+it as an unknown field, and a client that does not validate fields strictly has it pruned.
 
 ```yaml
 kind: KubeProvider
@@ -131,7 +131,7 @@ name, so two providers with one name in two namespaces are two series.
 A repository branch is its own object, `GitBranch`, claiming the branch through the `GitProvider`
 whose credential writes it. A `GitTarget` names one with the required, immutable
 `spec.gitBranchRef`, and `spec.gitProviderRef`, `spec.branch` and `spec.parentBranch` are gone from
-`GitTarget`: setting one is refused at admission, with a message naming `spec.gitBranchRef`.
+`GitTarget`'s schema: `kubectl apply` refuses them as unknown fields.
 `GitTarget.status.remote` is now `GitBranch.status.remote`, and `GitProvider.status.branches` is
 gone; `kubectl get gitbranch -A` answers what it did.
 
@@ -372,10 +372,9 @@ no change. A receiver under another name publishes a new `status.webhookPath`; r
 `kubectl get gitreceiver` shows `Ready=True` once its token is readable and the listener is on, and
 after the next push the `GitBranch`'s `status.lastPushNoticeAt` shows the delivery reached it.
 
-`GitProvider.spec.receiver` stays in the schema only so that setting it is refused at admission,
-with a message naming the replacement. A `GitProvider` that still carries it keeps working as a
-provider, and its status keeps updating, but any write that changes its `spec` is refused until that
-same write removes the field. Nothing is served on its old path.
+`GitProvider.spec.receiver` is gone from the schema: `kubectl apply` refuses it as an unknown field,
+and a client that does not validate fields strictly has it pruned. Nothing is served on its old
+path.
 
 **A delivery is routed by the repository it names.** The repository URLs in the payload
 (`repository.clone_url`, `ssh_url` and `html_url` from GitHub and Gitea, `project.git_http_url` and

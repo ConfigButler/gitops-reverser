@@ -10,92 +10,60 @@ import (
 )
 
 // WatchRuleSpec defines the desired state of WatchRule.
-// WatchRule selects NAMESPACED resources on its GitTarget's source cluster. Each rules[] item
-// carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
-// or "*" for every namespace the source credential can read. Each is watched only while the
-// KubeProvider's spec.allowedGitTargets give the GitTarget's namespace that source namespace.
 type WatchRuleSpec struct {
-	// GitTargetRef names the GitTarget this rule feeds, in this WatchRule's own namespace.
+	// GitTargetRef names the GitTarget, in this namespace, that mirrors what this WatchRule
+	// selects.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
 	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
 
-	// Rules define which resources to watch, and in which source namespaces.
-	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
-	// Each rule can specify API groups, versions, resource types, and a source namespace.
-	// A selected resource collection is observed through its whole lifecycle; the GitTarget's
-	// spec.prune.mode decides whether an observed removal deletes the Git document.
+	// Rules select the resources to mirror. A resource matching any rule is mirrored. Each rule
+	// names resource types, optionally narrowed by API group, version, source namespace and
+	// labels. The GitTarget's spec.prune.mode decides whether a removal on the cluster deletes the
+	// Git document.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	Rules []ResourceRule `json:"rules"`
 }
 
-// ResourceRule defines a set of namespaced resources to watch.
-// Omitted API groups and versions are resolved from the served Kubernetes API surface.
-// All fields except Resources are optional.
+// ResourceRule selects namespaced resources by type, and optionally by API group, version, source
+// namespace and label.
 type ResourceRule struct {
-	// APIGroups to match. Empty string ("") matches the core API group.
-	// If omitted, GitOps Reverser resolves the resource name across all served API groups.
-	// Wildcards supported: "*" matches all groups.
-	// Examples:
-	//   - [""] matches core API (pods, services, configmaps)
-	//   - ["apps"] matches apps API group (deployments, statefulsets)
-	//   - ["", "apps"] matches both core and apps groups
-	//   - ["*"] matches all groups
-	//   - [] resolves a named resource only when it is served by one API group
+	// APIGroups are the API groups to match: "" is the core group, and "*" is every group, as in
+	// ["", "apps"] or ["*"]. Omitted, each resource name is looked up across the served groups and
+	// must be served by exactly one.
 	// +optional
 	APIGroups []string `json:"apiGroups,omitempty"`
 
-	// APIVersions to match. If empty, uses the preferred served version for each group/resource.
-	// Wildcards supported: "*" matches all versions.
-	// Examples:
-	//   - ["v1"] matches only v1 version
-	//   - ["v1", "v1beta1"] matches both versions
-	//   - ["*"] matches all served versions
-	//   - [] matches the preferred served version
-	//
-	// Multi-version note: the built-in cold-start Git path is versionless, so two
-	// objects that differ only by API version resolve to the same file. To watch
-	// several versions of a group/resource and keep them in separate files, give the
-	// GitTarget a placement template that includes {version} (see GitTargetPlacementSpec).
+	// APIVersions are the versions to match, or "*" for every served version. Omitted, each
+	// resource's preferred version is used. The built-in Git path has no version, so two versions
+	// of one object share a file unless the GitTarget's placement template includes {version}.
 	// +optional
 	APIVersions []string `json:"apiVersions,omitempty"`
 
-	// Resources to match (plural names like "pods", "configmaps").
-	// This field is required and determines which resource types trigger this rule.
-	// Wildcard semantics follow Kubernetes admission webhook patterns:
-	//   - "*" matches all resources
-	//   - "pods" matches exactly pods (case-insensitive)
-	//
-	// For custom resources, use the exact plural resource name and set apiGroups
-	// when more than one served API group exposes that name.
-	//
-	// Note: Subresources cannot be added here. Values containing "/" (for example
-	// "pods/log" or "pods/*") are rejected by the API because subresources are
-	// not supported for list/watch snapshot planning. Prefix/suffix wildcards
-	// like "pod*" or "*.example.com" are NOT supported. Use exact matches or the
-	// "*" wildcard for broad matching.
+	// Resources are the resource types to match, by plural name ("configmaps", "deployments"), or
+	// "*" for every type. Matching is exact and case-insensitive; partial wildcards such as "pod*"
+	// match nothing, and subresources ("pods/log") are rejected. For a custom resource whose name
+	// more than one group serves, set apiGroups.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
-	// ObjectSelector selects which objects of the matched types are mirrored, by label. The API
-	// server applies it to every LIST and WATCH this item opens, with list/watch semantics: an
-	// object that stops matching leaves the collection exactly as a deleted one does, and the
-	// GitTarget's spec.prune.mode decides what that does to its Git document.
-	// It is a standard Kubernetes label selector: matchLabels and matchExpressions, ANDed.
-	// Omitted or {} selects every object. A selector that does not parse refuses the whole rule
+	// ObjectSelector mirrors only the objects whose labels match, as a standard label selector.
+	// Omitted or {} selects every object. An object that stops matching leaves the mirror as a
+	// deleted one does, and spec.prune.mode decides what happens to its document. Under prune mode
+	// "Always", a resync also removes documents of the type that the selector never matched. Two
+	// rules on one GitTarget that select the same type in overlapping namespaces must use the same
+	// selector; the newer rule is refused. A selector that does not parse refuses the whole rule
 	// (ResourcesResolved=False, reason InvalidObjectSelector).
-	//
-	// A selected mirror owns every document of its type in its namespace scope, including documents
-	// the selector never matched: under prune.mode Always, a complete snapshot removes them.
-	// Two rules feeding one GitTarget whose collections overlap (same type, and the same namespace or
-	// one of them all namespaces) must use the same selector; the newer rule is refused.
 	// +optional
 	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
 
+	// "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
+	// is the credential's own RBAC and nothing else.
+	//
 	// A denied explicit name refuses the WHOLE WatchRule rather than trimming that item: mirroring
 	// two of the three namespaces a rule asked for is worse than a loud failure.
 	//
@@ -104,22 +72,15 @@ type ResourceRule struct {
 	// credential could read (see CollectionKey in internal/types/collection.go). A target carrying
 	// both therefore runs two streams over overlapping objects, and that is correct.
 
-	// SourceNamespace is the namespace this item watches IN THE SOURCE CLUSTER its GitTarget
-	// mirrors from: omitted for this WatchRule's own namespace, an exact name for one other, or
-	// "*" for every namespace the source credential can read.
+	// SourceNamespace is the source-cluster namespace this rule reads: omitted for this
+	// WatchRule's own namespace, a name for another one, or "*" for every namespace the
+	// KubeProvider's credential can read. Git placement follows each object's own namespace, not
+	// this field.
 	//
-	// "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
-	// is the credential's own RBAC and nothing else.
-	//
-	// Every value, this rule's own namespace included, must be in the union of sourceNamespaces from
-	// all grants in the GitTarget's KubeProvider spec.allowedGitTargets that admit the GitTarget
-	// ("{consumer.namespace}" there is the target's own namespace). "*" needs "*" in at least one of
-	// them; a union without it refuses the rule, it does not narrow the watch. One item outside the
-	// union refuses the whole WatchRule (SourceNamespaceNotAllowed). The check runs when the rule
-	// reconciles, never at admission.
-	//
-	// This changes only which namespace is WATCHED, never where objects are written: Git placement
-	// follows each mirrored object's own namespace.
+	// The KubeProvider's spec.allowedGitTargets must allow the namespace, through the
+	// sourceNamespaces of a grant admitting the GitTarget; "*" needs "*" there. One rule outside
+	// the grants refuses the whole WatchRule (SourceNamespaceNotAllowed), checked when it
+	// reconciles.
 	// +optional
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?)$`
@@ -171,7 +132,9 @@ type WatchRuleStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions represent the latest available observations of an object's state
+	// Conditions are the latest observations of this WatchRule's state. Ready, Reconciling and
+	// Stalled follow kstatus; ResourcesResolved, SourceNamespaceAuthorized and StreamsRunning say
+	// which check holds the rule back.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -179,7 +142,7 @@ type WatchRuleStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Streams is the bounded stream-readiness roll-up for the types this rule resolves.
+	// Streams counts the types this WatchRule resolves, by watch state.
 	// +optional
 	Streams *StreamsStatus `json:"streams,omitempty"`
 }
@@ -200,14 +163,9 @@ type WatchRuleStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// WatchRule selects NAMESPACED resources on the source cluster its GitTarget mirrors from, with
-// filtering by API group, version, source namespace, and object labels. Scope is carried by the rule
-// KIND: a WatchRule never selects cluster-scoped types — use a ClusterWatchRule for those.
-//
-// Each spec.rules[] item watches its own source namespace: this WatchRule's OWN namespace when
-// omitted, an explicit name, or "*" for every namespace the GitTarget admits. Anything other than
-// its own namespace passes the gate described on rules[].sourceNamespace. RBAC controls who may
-// create or modify WatchRules per namespace.
+// WatchRule selects namespaced resources for a GitTarget in its namespace to mirror, by type,
+// API group, version, source namespace and label. Each rule reads one source namespace: this
+// WatchRule's own by default. Use a ClusterWatchRule for cluster-scoped types.
 type WatchRule struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -215,11 +173,11 @@ type WatchRule struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of WatchRule
+	// spec defines the desired state of WatchRule.
 	// +required
 	Spec WatchRuleSpec `json:"spec"`
 
-	// status defines the observed state of WatchRule
+	// status defines the observed state of WatchRule.
 	// +optional
 	Status WatchRuleStatus `json:"status,omitempty"`
 }

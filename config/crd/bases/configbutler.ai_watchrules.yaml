@@ -50,14 +50,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          WatchRule selects NAMESPACED resources on the source cluster its GitTarget mirrors from, with
-          filtering by API group, version, source namespace, and object labels. Scope is carried by the rule
-          KIND: a WatchRule never selects cluster-scoped types — use a ClusterWatchRule for those.
-
-          Each spec.rules[] item watches its own source namespace: this WatchRule's OWN namespace when
-          omitted, an explicit name, or "*" for every namespace the GitTarget admits. Anything other than
-          its own namespace passes the gate described on rules[].sourceNamespace. RBAC controls who may
-          create or modify WatchRules per namespace.
+          WatchRule selects namespaced resources for a GitTarget in its namespace to mirror, by type,
+          API group, version, source namespace and label. Each rule reads one source namespace: this
+          WatchRule's own by default. Use a ClusterWatchRule for cluster-scoped types.
         properties:
           apiVersion:
             description: |-
@@ -77,11 +72,12 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of WatchRule
+            description: spec defines the desired state of WatchRule.
             properties:
               gitTargetRef:
-                description: GitTargetRef names the GitTarget this rule feeds, in
-                  this WatchRule's own namespace.
+                description: |-
+                  GitTargetRef names the GitTarget, in this namespace, that mirrors what this WatchRule
+                  selects.
                 properties:
                   name:
                     description: Name of the referent.
@@ -94,62 +90,40 @@ spec:
                   rule: self.name != ''
               rules:
                 description: |-
-                  Rules define which resources to watch, and in which source namespaces.
-                  Multiple rules create a logical OR - a resource matching ANY rule is watched.
-                  Each rule can specify API groups, versions, resource types, and a source namespace.
-                  A selected resource collection is observed through its whole lifecycle; the GitTarget's
-                  spec.prune.mode decides whether an observed removal deletes the Git document.
+                  Rules select the resources to mirror. A resource matching any rule is mirrored. Each rule
+                  names resource types, optionally narrowed by API group, version, source namespace and
+                  labels. The GitTarget's spec.prune.mode decides whether a removal on the cluster deletes the
+                  Git document.
                 items:
                   description: |-
-                    ResourceRule defines a set of namespaced resources to watch.
-                    Omitted API groups and versions are resolved from the served Kubernetes API surface.
-                    All fields except Resources are optional.
+                    ResourceRule selects namespaced resources by type, and optionally by API group, version, source
+                    namespace and label.
                   properties:
                     apiGroups:
                       description: |-
-                        APIGroups to match. Empty string ("") matches the core API group.
-                        If omitted, GitOps Reverser resolves the resource name across all served API groups.
-                        Wildcards supported: "*" matches all groups.
-                        Examples:
-                          - [""] matches core API (pods, services, configmaps)
-                          - ["apps"] matches apps API group (deployments, statefulsets)
-                          - ["", "apps"] matches both core and apps groups
-                          - ["*"] matches all groups
-                          - [] resolves a named resource only when it is served by one API group
+                        APIGroups are the API groups to match: "" is the core group, and "*" is every group, as in
+                        ["", "apps"] or ["*"]. Omitted, each resource name is looked up across the served groups and
+                        must be served by exactly one.
                       items:
                         type: string
                       type: array
                     apiVersions:
                       description: |-
-                        APIVersions to match. If empty, uses the preferred served version for each group/resource.
-                        Wildcards supported: "*" matches all versions.
-                        Examples:
-                          - ["v1"] matches only v1 version
-                          - ["v1", "v1beta1"] matches both versions
-                          - ["*"] matches all served versions
-                          - [] matches the preferred served version
-
-                        Multi-version note: the built-in cold-start Git path is versionless, so two
-                        objects that differ only by API version resolve to the same file. To watch
-                        several versions of a group/resource and keep them in separate files, give the
-                        GitTarget a placement template that includes {version} (see GitTargetPlacementSpec).
+                        APIVersions are the versions to match, or "*" for every served version. Omitted, each
+                        resource's preferred version is used. The built-in Git path has no version, so two versions
+                        of one object share a file unless the GitTarget's placement template includes {version}.
                       items:
                         type: string
                       type: array
                     objectSelector:
                       description: |-
-                        ObjectSelector selects which objects of the matched types are mirrored, by label. The API
-                        server applies it to every LIST and WATCH this item opens, with list/watch semantics: an
-                        object that stops matching leaves the collection exactly as a deleted one does, and the
-                        GitTarget's spec.prune.mode decides what that does to its Git document.
-                        It is a standard Kubernetes label selector: matchLabels and matchExpressions, ANDed.
-                        Omitted or {} selects every object. A selector that does not parse refuses the whole rule
+                        ObjectSelector mirrors only the objects whose labels match, as a standard label selector.
+                        Omitted or {} selects every object. An object that stops matching leaves the mirror as a
+                        deleted one does, and spec.prune.mode decides what happens to its document. Under prune mode
+                        "Always", a resync also removes documents of the type that the selector never matched. Two
+                        rules on one GitTarget that select the same type in overlapping namespaces must use the same
+                        selector; the newer rule is refused. A selector that does not parse refuses the whole rule
                         (ResourcesResolved=False, reason InvalidObjectSelector).
-
-                        A selected mirror owns every document of its type in its namespace scope, including documents
-                        the selector never matched: under prune.mode Always, a complete snapshot removes them.
-                        Two rules feeding one GitTarget whose collections overlap (same type, and the same namespace or
-                        one of them all namespaces) must use the same selector; the newer rule is refused.
                       properties:
                         matchExpressions:
                           description: matchExpressions is a list of label selector
@@ -196,20 +170,10 @@ spec:
                       x-kubernetes-map-type: atomic
                     resources:
                       description: |-
-                        Resources to match (plural names like "pods", "configmaps").
-                        This field is required and determines which resource types trigger this rule.
-                        Wildcard semantics follow Kubernetes admission webhook patterns:
-                          - "*" matches all resources
-                          - "pods" matches exactly pods (case-insensitive)
-
-                        For custom resources, use the exact plural resource name and set apiGroups
-                        when more than one served API group exposes that name.
-
-                        Note: Subresources cannot be added here. Values containing "/" (for example
-                        "pods/log" or "pods/*") are rejected by the API because subresources are
-                        not supported for list/watch snapshot planning. Prefix/suffix wildcards
-                        like "pod*" or "*.example.com" are NOT supported. Use exact matches or the
-                        "*" wildcard for broad matching.
+                        Resources are the resource types to match, by plural name ("configmaps", "deployments"), or
+                        "*" for every type. Matching is exact and case-insensitive; partial wildcards such as "pod*"
+                        match nothing, and subresources ("pods/log") are rejected. For a custom resource whose name
+                        more than one group serves, set apiGroups.
                       items:
                         minLength: 1
                         pattern: ^[^/]*$
@@ -218,22 +182,15 @@ spec:
                       type: array
                     sourceNamespace:
                       description: |-
-                        SourceNamespace is the namespace this item watches IN THE SOURCE CLUSTER its GitTarget
-                        mirrors from: omitted for this WatchRule's own namespace, an exact name for one other, or
-                        "*" for every namespace the source credential can read.
+                        SourceNamespace is the source-cluster namespace this rule reads: omitted for this
+                        WatchRule's own namespace, a name for another one, or "*" for every namespace the
+                        KubeProvider's credential can read. Git placement follows each object's own namespace, not
+                        this field.
 
-                        "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
-                        is the credential's own RBAC and nothing else.
-
-                        Every value, this rule's own namespace included, must be in the union of sourceNamespaces from
-                        all grants in the GitTarget's KubeProvider spec.allowedGitTargets that admit the GitTarget
-                        ("{consumer.namespace}" there is the target's own namespace). "*" needs "*" in at least one of
-                        them; a union without it refuses the rule, it does not narrow the watch. One item outside the
-                        union refuses the whole WatchRule (SourceNamespaceNotAllowed). The check runs when the rule
-                        reconciles, never at admission.
-
-                        This changes only which namespace is WATCHED, never where objects are written: Git placement
-                        follows each mirrored object's own namespace.
+                        The KubeProvider's spec.allowedGitTargets must allow the namespace, through the
+                        sourceNamespaces of a grant admitting the GitTarget; "*" needs "*" there. One rule outside
+                        the grants refuses the whole WatchRule (SourceNamespaceNotAllowed), checked when it
+                        reconciles.
                       maxLength: 63
                       pattern: ^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?)$
                       type: string
@@ -247,11 +204,13 @@ spec:
             - rules
             type: object
           status:
-            description: status defines the observed state of WatchRule
+            description: status defines the observed state of WatchRule.
             properties:
               conditions:
-                description: Conditions represent the latest available observations
-                  of an object's state
+                description: |-
+                  Conditions are the latest observations of this WatchRule's state. Ready, Reconciling and
+                  Stalled follow kstatus; ResourcesResolved, SourceNamespaceAuthorized and StreamsRunning say
+                  which check holds the rule back.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -316,40 +275,37 @@ spec:
                 format: int64
                 type: integer
               streams:
-                description: Streams is the bounded stream-readiness roll-up for the
-                  types this rule resolves.
+                description: Streams counts the types this WatchRule resolves, by
+                  watch state.
                 properties:
                   blocked:
-                    description: Blocked is how many tracked types cannot currently
-                      be watched.
+                    description: Blocked is how many of them cannot be watched right
+                      now.
                     format: int32
                     type: integer
                   pendingSample:
-                    description: PendingSample is a bounded sample of types not yet
-                      ready.
+                    description: PendingSample names up to five types that are not
+                      ready yet.
                     items:
                       type: string
                     maxItems: 5
                     type: array
                   ready:
-                    description: Ready is how many tracked types are Streaming.
+                    description: Ready is how many of them are streaming events.
                     format: int32
                     type: integer
                   replaying:
-                    description: Replaying is how many tracked types are still replaying
-                      their initial events.
+                    description: Replaying is how many of them are still receiving
+                      their initial list.
                     format: int32
                     type: integer
                   summary:
                     description: |-
-                      Summary is the display-only ready/total ratio, e.g. "3/4".
-
-                      It restates Ready and Total, which the API conventions would normally rule out. It exists
-                      solely to feed the Streams printer column: a column can read one JSONPath, not format two.
-                      Do not compute anything from it — read ready and total.
+                      Summary is ready/total for display, such as "3/4". Read ready and total instead of parsing
+                      it.
                     type: string
                   total:
-                    description: Total is how many types are tracked.
+                    description: Total is how many types are watched.
                     format: int32
                     type: integer
                 required:
