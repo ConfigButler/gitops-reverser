@@ -405,6 +405,15 @@ without `--receiver-bind-address` (chart value `servers.receiver.enabled=false`)
 (one has, but no branch worker writes that branch). A query that read `outcome="unmatched"` reads
 both.
 
+## `eventTemplate` and `groupTemplate` are gone from the schema
+
+`GitTarget.spec.commit.message.eventTemplate` and `groupTemplate`, refused since
+`liveTemplate` replaced them, are removed. `kubectl apply` refuses them as unknown fields, and a
+client that does not validate fields strictly has them pruned. A stored `GitTarget` that still
+carries one loses it and returns to `Validated=True`, committing with `liveTemplate` or the
+built-in template; [migrate the template](#one-live-commit-message-template) first if you want to
+keep its wording.
+
 ## `allowAnySourceNamespace` is gone; `allowCrossNamespace.sources` replaces it
 
 **Breaking.** `ClusterProvider.spec.allowAnySourceNamespace` is no longer read.

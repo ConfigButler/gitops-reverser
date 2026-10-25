@@ -141,15 +141,6 @@ spec:
                     description: Message sets the commit message templates. A template
                       left empty uses the built-in one.
                     properties:
-                      eventTemplate:
-                        description: |-
-                          EventTemplate is retired and rejected. Move it to liveTemplate, reading resource fields from
-                          Resources.
-                        type: string
-                      groupTemplate:
-                        description: GroupTemplate is retired and rejected. Move its
-                          value to liveTemplate.
-                        type: string
                       liveTemplate:
                         description: |-
                           LiveTemplate is the Go template for the message of a commit made from live edits, whatever
@@ -177,11 +168,6 @@ spec:
                           is rejected, and one that fails at commit time commits the message as written.
                         type: string
                     type: object
-                    x-kubernetes-validations:
-                    - message: eventTemplate is retired; migrate to liveTemplate
-                      rule: '!has(self.eventTemplate)'
-                    - message: groupTemplate is retired; migrate to liveTemplate
-                      rule: '!has(self.groupTemplate)'
                   window:
                     description: |-
                       Window sets when this GitTarget's commit windows close. A window opens on an author's first

@@ -184,8 +184,6 @@ type CommitterSpec struct {
 }
 
 // CommitMessageSpec configures commit message formatting, on GitTarget.spec.commit.message.
-// +kubebuilder:validation:XValidation:rule="!has(self.eventTemplate)",message="eventTemplate is retired; migrate to liveTemplate"
-// +kubebuilder:validation:XValidation:rule="!has(self.groupTemplate)",message="groupTemplate is retired; migrate to liveTemplate"
 type CommitMessageSpec struct {
 	// LiveTemplate is the Go template for the message of a commit made from live edits, whatever
 	// its size. Fields: Author (the username, possibly empty), GitTarget, Count (edits after
@@ -220,15 +218,6 @@ type CommitMessageSpec struct {
 	// renamed to ResourceVersion, is rejected.
 	// +optional
 	ReconcileTemplate string `json:"reconcileTemplate,omitempty"`
-
-	// EventTemplate is retired and rejected. Move it to liveTemplate, reading resource fields from
-	// Resources.
-	// +optional
-	EventTemplate string `json:"eventTemplate,omitempty"`
-
-	// GroupTemplate is retired and rejected. Move its value to liveTemplate.
-	// +optional
-	GroupTemplate string `json:"groupTemplate,omitempty"`
 }
 
 // CommitSigningSpec configures commit signing.

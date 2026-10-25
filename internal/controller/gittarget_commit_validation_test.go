@@ -49,22 +49,6 @@ func TestValidateCommitConfig(t *testing.T) {
 			ok: true,
 		},
 		{
-			// A retired field is refused before any template is parsed, so a stored legacy value
-			// reports the migration instruction rather than a parse error about a dead field.
-			name: "a retired event template",
-			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{
-				Message: &configbutleraiv1alpha3.CommitMessageSpec{EventTemplate: "{{.Operation"},
-			},
-			saysA: "retired",
-		},
-		{
-			name: "a retired group template",
-			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{
-				Message: &configbutleraiv1alpha3.CommitMessageSpec{GroupTemplate: "grouped: {{.Author}}"},
-			},
-			saysA: "retired",
-		},
-		{
 			name: "an unparseable live template",
 			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{
 				Message: &configbutleraiv1alpha3.CommitMessageSpec{LiveTemplate: "{{.Author"},
