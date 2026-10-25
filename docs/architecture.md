@@ -21,8 +21,9 @@ write boundary: its credential, branch policy, and targets usually belong togeth
 `KubeProvider` is one **logical source identity**: one client, discovery surface, watch state, and
 attribution partition, shared by every target that names it. Its kubeconfig Secret lives in its own
 namespace, so a tenant's connection keeps its credential with the tenant. Its grants
-(`spec.allowedGitTargets`, `spec.allowedApplierClaims`) admit control-cluster namespaces, its own
-included only by a grant, and bound what they may reach; none grants source-cluster RBAC. The source identity is the provider's
+(`spec.allowedGitTargets`, `spec.allowedApplierClaims`) admit control-cluster namespaces and bound
+what they may reach; omitted, each admits the provider's own namespace, and none grants
+source-cluster RBAC. The source identity is the provider's
 namespace and name, with no API-server identity probe: two providers configured for the same server
 remain separate source partitions, and so do two providers with one name in two namespaces.
 
@@ -81,7 +82,7 @@ fails; there is no plaintext opt-out.
 
 **Writes are serialized per Git branch.** One [BranchWorker](../internal/git/branch_worker.go) owns each
 repository branch: the repository's URL, normalized, and the branch. Multiple `GitTarget`s may share
-one branch, from any namespace, through the one `GitProvider` that owns it. Every write to that
+one branch, from any namespace, through the one `GitBranch` that holds it. Every write to that
 branch goes through the worker's single event loop and commit window.
 
 **The worktree sits at the remote tip, or the worker knows it does not.** The write path used to
@@ -96,7 +97,7 @@ which with writes retained says their local commits are gone and must be replaye
 two would let one kind of doubt clear another. Either one makes the next cycle fetch. The
 failure direction is safe by construction: a stale "untrusted" costs one fetch, while a stale "trusted"
 is caught by the compare-and-swap on the next push. For a new write branch, the worker checks the
-parent's advertised tip before sending the push. A moved parent applier claims fetch, reset, and replay.
+parent's advertised tip before sending the push. A moved parent costs a fetch, a reset, and a replay.
 The server's compare-and-swap protects creation of the write branch with `Old = zero`; it does not
 lock the parent. The parent can still move after the advertisement, so what is guaranteed is the
 parent's tip as that advertisement showed it. **The corollary is the rule to keep in your head
@@ -395,8 +396,9 @@ event serves only to name who scaled the parent.
 
 One `KubeProvider` grant answers two questions in different planes:
 
-- `from` (with `names` or `selector`) authorizes **control-cluster** namespaces to reference the
-  provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
+- `consumerNamespaces` (`from`, with `names` or `selector`) authorizes **control-cluster**
+  namespaces to reference the provider. It is a tenant/export boundary; it neither selects nor
+  grants access to source namespaces.
 - `sourceNamespaces` and `clusterResources` bound what the `GitTarget`s it admits may watch. They
   grant nothing: what may actually be read from the source cluster is bounded by that credential's
   own Kubernetes RBAC. The operator reads no `Namespace` objects in a source cluster for
@@ -464,9 +466,7 @@ exactly one target.
 
 `gitBranchRef`, `kubeProviderRef`, and `path` are immutable so a target cannot silently orphan an
 old materialization or change its source cluster. Among GitTargets on one `GitBranch`, from any
-namespace, the controller rejects overlapping paths. `spec.gitProviderRef`, `spec.branch` and
-`spec.parentBranch` left the `GitTarget` for the `GitBranch`; the schema keeps them only so that
-setting one is refused, naming `gitBranchRef`.
+namespace, the controller rejects overlapping paths.
 
 A `GitTarget` whose `GitBranch` does not exist reports `Validated=False` (`GitBranchNotFound`); one
 whose `GitBranch` does not hold its branch, or is not `Ready`, reports `GitBranchReady=False` and
@@ -485,6 +485,9 @@ Status has a kstatus-compatible summary layer plus domain conditions:
   source API the data plane can currently reach.
 - `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
+- `GitBranchReady` says the `GitBranch` holds its branch and is `Ready`.
+- `RenderMatchesLive` says the folder, as rendered, agrees with the live objects; while it is not
+  `True`, live writes are held or dropped (see [The render-vs-live gate](#the-render-vs-live-gate)).
 - `ApplierClaimReady`, present only with `spec.applierClaimRef`, says the applier claim is `Ready` (its
   applier exists, can be written, and is held: a `Kustomization` suspended, an `Application`'s
   automated sync off) and that the
@@ -539,8 +542,8 @@ it. Every field but `spec.allowedGitTargets` is immutable:
   it does not exist. Omitted means the remote's default branch. An explicit parent must exist when
   creating the write branch (`ParentBranchNotFound`). The grants need not allow it, because it is
   only read.
-- `spec.allowedGitTargets`: which namespaces' `GitTarget`s may write through it, its own included
-  only by a grant.
+- `spec.allowedGitTargets`: which namespaces' `GitTarget`s may write through it. Omitted, its own
+  namespace's; a written list replaces that default, and `[]` admits none.
 - `status.repository`: the normalized repository URL, half of the key one `GitBranch` holds.
 - `status.lastPushNoticeAt`: when a `GitReceiver` last delivered a push to it. It records receipt,
   so it is published even when the look the delivery caused could not read the remote.
@@ -603,7 +606,8 @@ Several namespaces may mirror through one provider, but its source identity must
 because it keys source clients, discovery, watches, and attribution. The identity is the provider's
 `namespace/name` rather than a deduplicated physical-cluster identity, so two providers pointing at the
 same API server still have separate contexts and authorization boundaries. A provider admits only
-the namespaces its grants admit, its own included only by a grant. The check runs on every reconcile
+the namespaces its grants admit; omitted, the grants admit its own namespace, and a written list
+replaces that default. The check runs on every reconcile
 before watches start (`NamespaceNotAuthorized`), and a grant or Namespace label change triggers that
 reconcile, so tightening it also stops an already-existing `GitTarget`, which an admission-time check
 could not do. It guards which tenant may cause the operator to export a source; it does not expand that source
@@ -613,8 +617,12 @@ Its audit route, `spec.attribution.auditRoute`, defaults to `<namespace>.<name>`
 namespace: the namespace the route's first dot-segment names when a provider there carries it,
 otherwise the namespace of the oldest carrier. Providers in the holding namespace may share a route
 (several connections to one API server); one in another namespace reports `Stalled=True`
-(`AuditRouteConflict`) and is not used. The `KubeProvider` validates its connection inputs, while a
-`GitTarget` projects provider readiness and live source reachability.
+(`AuditRouteConflict`) and is not used. `AuditFactsReceived` reports whether the route has ever
+delivered a fact: `Unknown` until one arrives, and it is never part of `Ready`, because a quiet
+cluster and a broken audit policy look the same from here
+([configuration.md](configuration.md#audit-route-and-auditfactsreceived)). The `KubeProvider`
+validates its connection inputs, while a `GitTarget` projects provider readiness and live source
+reachability.
 
 Credentials are re-resolved on the catalog-refresh cadence, not on every watch reconnect, `inCluster`
 ones included. A rotated Secret, a `spec.client` change, or a provider deleted and recreated under the
@@ -731,7 +739,7 @@ flowchart TD
     RESOLVED --> WINDOW
     UNRESOLVED --> WINDOW
 
-    WINDOW --> TIMER{Close applier claim}
+    WINDOW --> TIMER{What closes it?}
     TIMER -->|silence timer| BASE
     TIMER -->|buffer limit or resync boundary| BASE
 
@@ -847,7 +855,11 @@ still the tip), writes the operation through to the applier claim's
 `status.operation`, and only then resumes the `Kustomization` the applier claim holds suspended, with a
 `requestedAt` token. It follows the apply until that token is handled, suspends the `Kustomization`
 again with a second token, and reports the operation complete once that one is handled
-([`apply-trigger.md`](design/apply-trigger.md#the-flux-applier-suspended)). It never retries:
+([`apply-trigger.md`](design/apply-trigger.md#the-flux-applier-suspended)). For an Argo CD
+`Application`, whose automated sync the claim holds off, the dispatcher checks that its single
+`spec.source` is this repository and branch, then sets the `Application`'s operation to a sync
+pinned to that commit, never while another operation is set; the operation is complete when Argo CD
+clears it ([the Argo CD applier](design/apply-trigger.md#the-argo-cd-applier)). It never retries:
 an attempt that does not deliver gives the worker back what it carried, a refusal only while it still
 stands, and the worker decides the retry after a flush, once that applier's backoff has run out. A delivered
 request records an `ApplyRequested` Event, and the worker records the operation on the applier claim's
@@ -1059,16 +1071,15 @@ gap would otherwise win. There is no Redis call on this path: the fast case is a
 
 The resolver takes the strongest evidence available, and the tier it used is the `tier` label on
 `attribution_resolutions_total`. Who that evidence named is the separate `actor_kind` label, in the
-same `user`/`serviceaccount`/`none` vocabulary `commits_total{author_kind}` uses:
+same `user`/`serviceaccount`/`none` vocabulary `git_commits_total{author_kind}` uses:
 
 | Tier | Key | What it asserts |
 |---|---|---|
 | `delete_sticky` | uid (a delete fact, sticky) | who asked for this object's deletion |
 | `exact` | uid + rv | this actor produced this exact version |
 | `deletecollection_body_uid` | uid in a collection fact's set | the API server said this request deleted this object |
-| `latest` | uid (the object's own delete fact) | who removed it |
+| `latest` | uid (the object's own delete fact) | who removed it, when the sticky slot was evicted |
 | `name` | namespace + name | the same, for a fact with no uid (an aggregated API's usual shape) |
-| `latest` | uid (a delete fact) | the object's own delete, when the sticky slot was evicted |
 | `deletecollection_scope` | namespace + selector + window | a collection request covering it was made |
 | `resource_version` | rv (the escape hatch for a fact with no uid) | a fact for this exact version, unidentified |
 | `absent` | none | nothing usable arrived in time |
@@ -1281,7 +1292,7 @@ rather than being pruned. Both protect against accidental Git deletions on a dis
 [typeset-owns-discovery-grace.md](spec/typeset-owns-discovery-grace.md)). Every active source context has
 its own catalog and registry, so a CRD served only by `prod-eu-1` is never resolved for a target mirroring
 `prod-us-1`. Catalogs refresh at startup and on the 30-second reconciliation cadence. CRD/APIService
-applier claim informers run only in the **control plane**, where the operator's own CRDs live; a remote source's
+informers run only in the **control plane**, where the operator's own CRDs live; a remote source's
 API-surface change is discovered on that periodic refresh. A target's plan pass never calls discovery
 itself; for a source nothing has observed yet, it asks for a refresh at once.
 
@@ -1331,7 +1342,7 @@ The watch manager is a controller runtime `Runnable` (`NeedLeaderElection`). It 
 discovery, the per-GitTarget watch sets, and the watched type tables for GitTargets. Its object-state
 intake is the watches themselves. Every active `KubeProvider` has an independent source context; its
 catalog, registry, dynamic client, and reachability can fail or recover without borrowing facts from another
-source. Discovery applier claim informers (CRDs / APIServices) run only in the control plane and accelerate its
+source. Discovery informers (CRDs / APIServices) run only in the control plane and accelerate its
 catalog refresh; remote source catalogs use the periodic refresh.
 
 On `Start` it bootstraps the RuleStore, refreshes the API catalog and TypeRegistry, resolves rule
@@ -1367,9 +1378,9 @@ a new rule starts watching gets a new watch opened (with a
 `sendInitialEvents` replay) and a type no longer claimed has its watch closed.
 
 A **control-plane** CRD / APIService change reaches the same re-resolution through the watch manager
-instead. Its applier claim informers wake a catalog refresh, which re-resolves the watched type tables and
+instead. Its informers wake a catalog refresh, which re-resolves the watched type tables and
 brings the running watches into line. The GitTarget controller does not watch those objects. A remote
-CRD / APIService change has no applier claim informer at all; the next periodic source-catalog refresh
+CRD / APIService change has no informer at all; the next periodic source-catalog refresh
 performs the same re-resolution.
 
 ### Mark and sweep resync
@@ -1423,6 +1434,39 @@ fresh one is asked for once Git is no longer ahead; it would otherwise revert th
 `GitTarget`'s initial snapshots are exempt, and after 5 minutes of discards the next snapshot is
 used anyway. See
 [stale snapshots](spec/reconcile-via-watchlist-mark-and-sweep.md#stale-snapshots-are-discarded).
+
+### The render-vs-live gate
+
+- **Gate state, per collection**: [internal/watch/render_fidelity_gate.go](../internal/watch/render_fidelity_gate.go)
+- **Writer side and the hold**: [internal/git/render_fidelity_gate.go](../internal/git/render_fidelity_gate.go),
+  [internal/git/render_fidelity_hold.go](../internal/git/render_fidelity_hold.go)
+- **Design**: [render-fidelity.md](design/support-boundary/render-fidelity.md)
+
+The operator renders a folder with its own kustomize build, but Flux or Argo CD may apply it with
+context the folder does not hold: a Flux `postBuild.substitute` value for a `${var}` token, or an
+Argo CD `spec.source.kustomize` override. Mirroring a live value over such a token would replace
+the token in Git with whatever the applier substituted. So every `GitTarget` carries a gate:
+each collection's replay compares the rendered `${...}` values of the documents it governs with
+the sanitized live objects, and the gate opens only once every collection of the target has
+reported a clean replay under its current revision. The gate is per `GitTarget`, so one collection
+that is still replaying closes live writes for all of them. `RenderMatchesLive` publishes it:
+
+- **`Unknown` (`Rechecking`): a collection is new, restarted, or still replaying**, which is every
+  collection at operator start. A live event that arrives is judged at once and then **held**; an
+  atomic write is dropped at once.
+  When the gate opens, the held events are released in arrival order, before any later event, and
+  committed with their authors. An applied snapshot of a collection supersedes the events of that
+  collection held before it. The hold is bounded, at 10 minutes from the first held event and by
+  the branch's retained-byte budget. Past either, the held events are dropped and a fresh snapshot
+  is asked for, which commits the current state as the operator. A delete among the dropped events
+  comes back only under `prune.mode: Always`.
+- **`False` (`RenderDoesNotMatchLive`): a rendered token disagrees with live.** Live and atomic
+  writes are dropped and the target is `Stalled`. Scoped resyncs still run, so a fresh replay can
+  measure the folder again. A repair in Git does not reopen the gate on its own; a replay of the
+  target's collections that measures them clean does.
+
+Every dropped write is counted in `git_writes_dropped_total{reason}` (`render_fidelity_pending` for
+a hold that gave up, `render_fidelity_diverged` for a divergence). Nothing replays a dropped write.
 
 ***
 
@@ -1753,21 +1797,27 @@ by the validating webhook, not derived from the audit attribution index.
 
 Controllers watch their dependencies so dependents reconcile quickly after spec changes:
 
-- `GitTargetReconciler` watches `GitProvider`, `KubeProvider`, `Namespace`, `WatchRule`, and
-  `ClusterWatchRule`. Provider changes re-check connection and authorization inputs; control-cluster
+- `GitTargetReconciler` watches `GitBranch`, `GitProvider`, `KubeProvider`, `Namespace`, `WatchRule`,
+  and `ClusterWatchRule`. Provider changes re-check connection and authorization inputs; control-cluster
   Namespace label changes re-check provider-reference access. Rule changes re-resolve selected
   collections. It deliberately does **not** watch encryption Secrets, so their recovery is picked up
   by periodic reconciliation without retaining
   every Secret value in the control-plane cache. It watches the applier claims its `GitTarget`s name,
   for `ApplierClaimReady`.
 - `ApplierClaimReconciler` (one per applier claim kind) watches its applier claims, the `GitTarget`s naming
-  them, `GitProvider`s, `KubeProvider`s and `Namespace` labels. It does not watch appliers: it
+  them, `GitBranch`es, `GitProvider`s, `KubeProvider`s and `Namespace` labels. It does not watch appliers: it
   reads the Flux `Kustomization` or Argo CD `Application` on its tick to set `Configured`, so a
   cluster without the Flux or Argo CD CRDs needs no informer for them.
-- `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget`, `GitProvider` and
-  `KubeProvider` (a `ClusterWatchRule` also `Namespace` labels), populate the RuleStore, and
-  trigger the rule-change reconcile.
-- `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
+- `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget`, `KubeProvider` and
+  `Namespace` labels, plus the watch manager's stream-state events for `StreamsRunning`, populate
+  the RuleStore, and start the rule-change reconcile.
+- `GitProviderReconciler` validates reachability and manages the signing key lifecycle. It watches
+  nothing but its own objects.
+- `GitBranchReconciler` watches `GitProvider`s, `Namespace` labels and the `GitTarget`s naming it.
+  It proves the credential with a push session, keeps the branch claim, and publishes the worker's
+  `status.remote` (see [Git write architecture](#git-write-architecture)).
+- `GitReceiverReconciler` watches only its own objects and publishes `status.webhookPath` once the
+  token Secret holds a token.
 - `KubeProviderReconciler` validates source-connection inputs, decides whether the provider may be used
   at all (the installation's `inCluster` consent, and which namespace holds its audit route), and
   projects its readiness to dependent targets. A provider created, deleted or moved to another route
@@ -1778,9 +1828,9 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   otherwise, so the request claims no actor).
 
 Dependency watches use narrow predicates to avoid status-only heartbeat churn: a `KubeProvider` also
-admits a `Ready` transition, and a `Namespace` admits only label changes. `GitProvider`, `GitTarget`, and
-`CommitRequest` carry immutability constraints where a spec change would orphan a materialized subtree or
-invalidate an in-flight finalize.
+admits a `Ready` transition, and a `Namespace` admits only label changes. `GitProvider`, `GitBranch`,
+`GitTarget`, and `CommitRequest` carry immutability constraints where a spec change would orphan a
+materialized subtree or invalidate an in-flight finalize.
 
 ***
 
@@ -1810,7 +1860,7 @@ flowchart TD
     Hq -->|no| J[Configured-author: no fact streams or index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
-    K --> L[Register GitProvider + KubeProvider + GitTarget + FluxClaim + ArgoCDClaim<br/>+ CommitRequest controllers; admission webhooks]
+    K --> L[Register GitProvider + GitReceiver + KubeProvider + GitBranch + GitTarget<br/>+ FluxClaim + ArgoCDClaim + CommitRequest controllers; admission webhooks]
     L --> M[Add cert watchers + health checks]
     M --> N[mgr.Start]
 ```
@@ -1832,104 +1882,58 @@ commit is committer-authored.
 
 ## Observability
 
-- **Source**: [internal/telemetry/exporter.go](../internal/telemetry/exporter.go)
+- **Instruments**: [internal/telemetry/exporter.go](../internal/telemetry/exporter.go)
+- **Reader's guide**: [interpreting-metrics.md](interpreting-metrics.md), the one place the live
+  instrument list, label vocabularies, queries and suggested alerts are maintained
+- **Why the surface has this shape**: [metrics-observability-plan.md](design/metrics-observability-plan.md)
 
-Metrics are exported over OTLP / the metrics server. The reader's guide to every live family, with
-copy-pasteable PromQL, is [interpreting-metrics.md](interpreting-metrics.md); the design behind the
-current shape is [metrics-observability-plan.md](design/metrics-observability-plan.md).
+Instruments are OpenTelemetry instruments, exported through the SDK's Prometheus exporter onto the
+controller-runtime registry, so they are scraped from the metrics server's `/metrics` with every
+controller-runtime series beside them. Nothing is pushed over OTLP. Every name starts with
+`gitopsreverser_`.
 
-There are **two** ingestion paths, and the metrics follow that split. Watch carries object state and
-decides whether an object reaches Git. Audit carries only the author's name: a missing or late fact
-changes the author, never the state. They meet at the resolver and nowhere else.
+The families follow the architecture, which is why this section is a map rather than a list:
 
-**Object state, stage by stage.** Every stage counts with a bounded `outcome`, so the pipeline reads
-as one funnel and its loss paths as one selector:
+| Family | Follows | In the guide |
+|---|---|---|
+| `resource_condition` | the kstatus trio of every object a human declares | [Configuration state](interpreting-metrics.md#configuration-state) |
+| `watch_*` | ingest: events, sessions, replays, recoveries, resolved types, open streams | [Pipeline](interpreting-metrics.md#pipeline-watch-to-push) |
+| `git_*`, `commit_requests_total` | the branch worker: documents, windows, commits, pushes, fetches, refusals, losses, the retained backlog | [Pipeline](interpreting-metrics.md#pipeline-watch-to-push), [Tuning commit windows](interpreting-metrics.md#tuning-commit-windows) |
+| `placement*` | where a new document lands, and the ones refused | [New-file placement](interpreting-metrics.md#new-file-placement) |
+| `apply_*`, `appliers_held`, `stale_snapshots_total`, `claimed_resource_reconciled_total`, `receiver_deliveries_total` | apply requests, the apply window and the push receiver | [Apply requests](interpreting-metrics.md#apply-requests-and-the-push-receiver) |
+| `audit_*`, `attribution_*` | the optional author lookup: the door, the fact pipeline, the join | [Audit attribution](interpreting-metrics.md#audit-attribution-optional) |
+| `api_catalog_*` | discovery, per source cluster | [API resource catalog](interpreting-metrics.md#api-resource-catalog) |
+| `watch_plan_*` | the queue that plans each `GitTarget`'s watches | [Watch plane owner](interpreting-metrics.md#watch-plane-owner) |
+| `secret_encryptions_total` | the path that keeps Secrets out of Git in plaintext | [Secret encryption](interpreting-metrics.md#secret-encryption) |
 
-- **Ingest.** `gitopsreverser_watch_events_total{gittarget_*,group,version,resource,outcome}` counts
-  every delivered watch event exactly once, at `routeLiveTargetWatchEvent`, the single switch
-  carrying every terminal branch. `outcome` separates the pipeline working (`routed`, `unchanged`,
-  `bookmark`) from a refusal the watch delivers again (`route_failed`). Beside it,
-  `_watch_event_handling_seconds` (stream occupancy, the head-of-line signal),
-  `_watch_sessions_ended_total{reason}` and `_watch_replay_duration_seconds` (`410` pressure and
-  what a rebuild costs), `_watch_recovery_total{mode}`, and `_watch_types{state}`.
-- **Queue.** `gitopsreverser_git_queue_refusals_total{kind}` counts work a worker refused at enqueue,
-  which its producer offers again, and `_git_queue_depth` is read at scrape time rather than published by the worker loop.
-- **Write.** `gitopsreverser_git_documents_total{gittarget_*,group,version,resource,outcome}` is the
-  per-document census (`written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained`, `refused`), with
-  `_placements_total`, `_placement_refusals_total` and `_placement_kustomization_entries_total`
-  answering where a new document landed and which resources were refused.
-- **Commit and push.** `gitopsreverser_git_commits_total{provider_*,branch,author_kind,message_source}`
-  counts commits that **reached the remote**, and `_git_pushes_total{outcome}`,
-  `_git_push_retries_total{reason}` and `_git_push_duration_seconds` cover the cycle that puts them
-  there. `author_kind="unresolved"` means attribution ran and could not name an actor.
-  `_git_fetches_total{reason}` is the other direction: it counts every call that runs a `SmartFetch`
-  (a push reads the remote's advertisement too, and is deliberately not counted here),
-  and it is the only way to answer "is the mirror still pulling on every write?", because the push
-  counters read identically whether the worker fetches constantly or never. On a healthy publishing
-  target `reason="publication"` is flat at zero. See
-  [Interpreting metrics](interpreting-metrics.md#reading-git_fetches_total).
+Six rules hold across all of them, and a new instrument follows them too:
 
-**Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
-attempt the worker decided to send (`applier_kind` is `kustomization` or `application`; `reason` is
-`ForeignCommit`, `Refusal`, `Repair` or `CatchUp`), with `outcome` separating
-`sent` from `failed` (the worker decides the retry), `dropped` (no target may still ask for that
-reason) and `stale` (the tip moved before the patch). It counts attempts, not
-the requests still due. `apply_echoes_total{outcome}` counts the applier's own writes the apply
-window kept out of Git (`not_mirrored`) or mirrored because no window was open (`late`);
-`apply_ownership_conflicts_total` counts objects another applier owns that were kept out of a
-coordinated folder; and `stale_snapshots_total{outcome}` counts resync snapshots discarded because an
-apply made them stale, or used after the 5-minute bound.
-`receiver_deliveries_total{receiver_namespace,receiver_name,type,outcome}` counts receiver
-deliveries per `GitReceiver`: `notified`, `unknown_repository` (no `GitProvider` has the repository),
-`unknown_branch`, `ignored` (a ping, a tag, another event type), `rejected`
-(bad signature) and `invalid`.
-The receiver cannot tell a foreign push from an own one; the worker decides that from the
-advertisement, which is why a `notified` delivery of the worker's own push is followed by no
-request and only a foreign one by a `ForeignCommit`. See
-[Interpreting metrics](interpreting-metrics.md#apply-requests-and-the-push-receiver).
+- **The two ingestion paths are measured apart.** Watch carries object state and decides whether
+  an object reaches Git; audit carries only the author's name. They meet at the resolver and
+  nowhere else, so no metric adds one to the other.
+- **Each stage counts once, with a bounded `outcome`.** The pipeline reads as a funnel, and its
+  loss paths (`git_commit_failures_total`, `git_writes_dropped_total`,
+  `placement_refusals_total`, `git_documents_total{outcome="refused"}`) as one selector.
+- **Two identities, and one join between them.** Watch and document families are labeled by the
+  `GitTarget` (`gittarget_namespace`, `gittarget_name`); branch-worker families by the branch the
+  worker writes (`provider_namespace`, `provider_name`, `branch`), because one worker serves every
+  `GitTarget` on it. `git_branch_targets` maps one to the other. `source_cluster` is the
+  `KubeProvider` as `<namespace>/<name>`. Keys are prefixed because a pod scrape with
+  `honor_labels=false` overwrites a bare `namespace`.
+- **Object names are labels in one family only.** `resource_condition` carries the names of
+  configuration objects, which are bounded by how many someone wrote; a mirrored resource is data
+  and is never a label. A family that grows past its per-instrument cap (15000 points) collapses
+  into one `otel_metric_overflow="true"` series.
+- **A gauge about a work loop is read at scrape time.** One published from inside the loop reports
+  its last healthy moment for as long as the loop is stuck, so the queue, backlog, watch-plane and
+  apply gauges are observable. "How long has this been waiting" is a timestamp, read as
+  `time() - <gauge>`. The few set where they change (`api_catalog_*`, the fact index size, the
+  attribution follower's last success, the transport) record a step that completed.
+- **A metric needs an interpretation.** A new instrument lands with its recording site and its row
+  in the guide in the same change ([adding a metric](interpreting-metrics.md#adding-a-metric)).
 
-**Authorship**, when `--author-attribution` is on:
-
-- **Ingress.** `gitopsreverser_audit_eventlist_duration_seconds{outcome}` times every request at
-  `/audit-webhook`, rejections included (`bad_method`, `bad_path`, `bare_endpoint_disabled`), and
-  its `_count` series is the request counter. A named route is never rejected (it is a partition
-  name, not a claim about an object), so the only route-shaped rejection is the bare endpoint with
-  no annotation key configured.
-- **Per-event census.** `gitopsreverser_audit_events_total{outcome,category,group,version,resource,verb}`
-  gives one terminal outcome per audit event; `category="error"` must stay zero.
-- **Fact pipeline.** `_attribution_facts_total{op}`, `_attribution_fact_index_entries`,
-  `_attribution_fact_index_evictions_total{reason}`, `_attribution_fact_stream_gaps_total{stream}`,
-  `_attribution_fact_stream_decode_errors_total{transport}`,
-  `_attribution_fact_follower_errors_total` with `_..._last_success_timestamp_seconds`, and
-  `_attribution_transport_info{transport}`. The three loss counters are deliberately **not** one
-  metric: an eviction counts a fact, a trim gap counts an occurrence, and a decode error counts an
-  entry carrying a whole batch, so their sum would be in no unit at all.
-- **The join.** `_attribution_resolutions_total{tier,actor_kind,group,version,resource}` says which
-  evidence named the author and who it named; `_resolution_wait_seconds{tier,event_kind}` says what
-  the grace wait cost, split by write and removal.
-
-**Discovery** (`api_catalog_*`) carries a `source_cluster` label (the provider's
-`<namespace>/<name>`) and is recorded for every source cluster, so a degraded `APIService` on a
-remote cluster is visible. **Secret encryption** is one counter, `_secret_encryptions_total{outcome}`.
-
-**Configuration state** is the one family that is not about flow.
-`gitopsreverser_resource_condition{kind,resource_namespace,resource_name,type,status,reason}`
-publishes the kstatus trio of every object a human declared (`GitTarget`, `WatchRule`,
-`ClusterWatchRule`, `GitProvider`, `KubeProvider`, `FluxClaim`, `ArgoCDClaim`) as one series
-per possible status, of which exactly one is `1`. It is recorded at `reconcileStatus.commit()`, the
-single status choke point every controller but the `CommitRequest` one uses, and the object's
-entry is dropped when the object goes: a condition series that outlives its object reports
-`Ready=False` forever and never clears. It is the only family
-carrying object names, which §7.1 of the plan permits for configuration objects and nothing else.
-
-Gauges here are **observable**: their value is read when Prometheus scrapes, not pushed from the
-loop they measure, because a gauge published from inside a work loop reports the loop's last healthy
-moment for as long as the loop is stuck. For the same reason "how long has this been waiting" is
-exported as a timestamp (`watch_plan_oldest_dirty_since_timestamp_seconds`) and read as
-`time() - <gauge>`.
-
-The migration for the names that changed is in [UPGRADING.md](UPGRADING.md).
-See [Operational Boundaries](#operational-boundaries).
+Renamed series are listed in [UPGRADING.md](UPGRADING.md). See
+[Operational boundaries](#operational-boundaries) for what is not measured.
 
 ***
 

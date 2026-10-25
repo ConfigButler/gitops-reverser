@@ -24,6 +24,7 @@
 
 README.md
 docs/architecture.md
+docs/interpreting-metrics.md
 docs/configuration.md
 docs/bi-directional-flux.md
 docs/bi-directional-argocd.md

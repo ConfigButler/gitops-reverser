@@ -84,7 +84,8 @@ var (
 	// GitCommitsTotal counts commit batches that REACHED THE REMOTE, labelled by the recording
 	// BranchWorker's {provider_namespace, provider_name, branch, author_kind} identity plus
 	// message_source. Live, snapshot and resync paths all feed this one counter; message_source
-	// (commit_request / live / reconcile) is what tells them apart. It counts commits that USED a
+	// (live / reconcile / commit_request / commit_request_framed / commit_request_fallback) is what
+	// tells them apart. It counts commits that USED a
 	// request-supplied message, not CommitRequests: a request omitting spec.message renders through
 	// liveTemplate and counts as live.
 	//
@@ -98,7 +99,7 @@ var (
 	// PlacementsTotal counts new-file placements resolved for a resource with no document in
 	// Git yet — the only case placement runs for — labelled by {source, disposition,
 	// gittarget_namespace, gittarget_name, group, version, resource}. source is which
-	// mechanism chose the path (by_type / default / kustomize_root / canonical) and disposition is what
+	// mechanism chose the path (by_type / default / kustomize_root / builtin) and disposition is what
 	// it did with it (new_file / appended).
 	//
 	// It exists because sibling inference was deleted: a
@@ -195,8 +196,9 @@ var (
 	// events are queueing behind it.
 	WatchEventHandlingSeconds metric.Float64Histogram
 	// WatchSessionsEndedTotal counts watch sessions that ended, labelled by {group, version,
-	// resource, reason}: `expired` (the resourceVersion fell out of history — 410 pressure, which
-	// forces a full replay), `error`, or `stopped` (the plan retired the stream, which is routine).
+	// resource, reason}: `closed` (the API server's routine watch timeout, reconnected from the
+	// cursor), `expired` (the resourceVersion fell out of history — 410 pressure, which forces a
+	// full replay), `error`, or `stopped` (the plan retired the stream, which is routine).
 	// A restart storm is a rebuild storm, and a rebuild walks the whole type.
 	WatchSessionsEndedTotal metric.Int64Counter
 	// WatchReplayDurationSeconds records how long an initial-events replay took to reach
@@ -274,14 +276,15 @@ var (
 	// than a third value there; rate(retries)/rate(pushes) is the contention signal.
 	GitPushRetriesTotal metric.Int64Counter
 	// GitFetchesTotal counts every call that runs a SmartFetch against the remote, labelled by
-	// {provider_namespace, provider_name, branch, reason}. reason is `bootstrap` (the worker's
-	// first contact with the repository), `publication` (the fetch at the head of a publication
+	// {provider_namespace, provider_name, branch, reason}. reason is `bootstrap` (repository
+	// preparation, which no production caller reaches today), `publication` (the fetch at the head of a publication
 	// cycle), `recovery` (a cycle that had to re-establish its base), `contention` (the reset onto the
 	// new tip after a rejection, which is one per confirmed rejection because the rejection itself
 	// carries the remote's hash), `push_failure_probe` (the
 	// lookup after a push that failed before the remote said anything, which is credentials or
-	// connectivity rather than another writer) or `forced_recheck` (an operator or controller
-	// asking the worker to re-read Git, and the snapshot a resync judges against).
+	// connectivity rather than another writer), `forced_recheck` (an operator or controller
+	// asking the worker to re-read Git, and the snapshot a resync judges against) or `refresh` (the
+	// periodic top-up of an idle branch, or a push-receiver delivery, when the branch had moved).
 	//
 	// Nothing else in the metric surface can tell you whether a fetch happened. GitPushesTotal
 	// counts cycles and GitPushRetriesTotal counts replays, and both read identically whether the
@@ -445,7 +448,7 @@ var (
 	// choosing the per-target deadline.
 	WatchPlanPassDurationSeconds metric.Float64Histogram
 	// WatchPlanTriggersTotal counts triggers by {reason, coalesced}. reason is declare,
-	// rule_change, shared_refresh or periodic, and shows which source is noisy. coalesced is
+	// rule_change, shared_refresh, periodic or worker_replaced, and shows which source is noisy. coalesced is
 	// "true" when the trigger landed on a GitTarget that was ALREADY dirty, which is the proof
 	// that the silence window does what it claims: one `kubectl apply` of a GitTarget and four
 	// WatchRules should show four coalesced triggers and one pass.

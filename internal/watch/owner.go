@@ -53,9 +53,8 @@ const (
 	sharedRefreshTimeout = 2 * time.Minute
 )
 
-// Trigger reasons, as they appear on the triggers-by-reason metric and in logs. There are three
-// because there are three ways intent reaches the owner, and telling them apart is what shows
-// which source is noisy.
+// Trigger reasons, as they appear on the triggers-by-reason metric and in logs. There is one per
+// way intent reaches the owner, and telling them apart is what shows which source is noisy.
 const (
 	// TriggerReasonDeclare is the GitTarget controller submitting a declaration.
 	TriggerReasonDeclare = "declare"

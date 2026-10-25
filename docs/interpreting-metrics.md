@@ -1,8 +1,9 @@
-# Interpreting GitOps Reverser Metrics
+# Interpreting GitOps Reverser metrics
 
-> Last updated: September 2026, reconciled to the live instrument set in
-> [`internal/telemetry/exporter.go`](../internal/telemetry/exporter.go). Names changed in that pass;
-> [`UPGRADING.md`](UPGRADING.md) carries the old-to-new table.
+> Last reconciled: October 2026, against the instruments in
+> [`internal/telemetry/exporter.go`](../internal/telemetry/exporter.go) and their recording sites:
+> every name, label key and label value below is one the code emits.
+> [`UPGRADING.md`](UPGRADING.md) carries the old-to-new table for renamed series.
 
 The operator's field guide to the metrics GitOps Reverser exports: what each family means, and
 copy-pasteable PromQL for the questions operators actually ask. Every metric here has a production
@@ -24,7 +25,7 @@ Three instrument shapes appear:
 
 | Shape | Suffix | How to read it |
 | --- | --- | --- |
-| **Counter** | `_total` | Monotonic. Always wrap in `rate(...[5m])` or `increase(...[1h])` — the raw value is meaningless. |
+| **Counter** | `_total` | Monotonic. Always wrap in `rate(...[5m])` or `increase(...[1h])`; the raw value is meaningless. |
 | **Histogram** | `_seconds` | Exposes `_bucket`, `_sum`, `_count`. Use `histogram_quantile()` for percentiles; `_count` is a free counter of observations. |
 | **Gauge** | (none) | Instantaneous value; read directly. |
 
@@ -32,9 +33,9 @@ Three instrument shapes appear:
 
 A histogram named `foo_seconds` produces three series:
 
-- `foo_seconds_bucket{le="..."}` — cumulative count per bucket boundary
-- `foo_seconds_count` — total number of observations (use it like a counter)
-- `foo_seconds_sum` — sum of all observed values
+- `foo_seconds_bucket{le="..."}`: cumulative count per bucket boundary
+- `foo_seconds_count`: total number of observations (use it like a counter)
+- `foo_seconds_sum`: sum of all observed values
 
 Percentile:
 
@@ -86,18 +87,18 @@ without a kubeconfig.
 - `type` is the kstatus trio: `Ready` (the summary), `Reconciling` (working on it) and `Stalled`
   (given up, and nothing will retry without a human).
 - `status` is `True`, `False` or `Unknown`.
-- `reason` is the condition's reason as it stands — `ValidationFailed`, `UnsupportedContent`,
-  `BranchConflict` — which is what turns a count panel into a first guess. It is the API's own
+- `reason` is the condition's reason as it stands (`ValidationFailed`, `UnsupportedContent`,
+  `BranchConflict`), which is what turns a count panel into a first guess. It is the API's own
   string, so a release that renames a reason changes the series a selector matches;
   [`UPGRADING.md`](UPGRADING.md) lists every rename.
 
 **Each condition publishes three series, one per possible status, of which exactly one is `1`.**
 So every query below compares `== 1`; a selector without it matches the two zeroes as well. The
-alternative shape — one series whose *value* encodes the status — cannot be selected on and cannot
+alternative shape (one series whose *value* encodes the status) cannot be selected on and cannot
 be aggregated, and `count by (status)` over it means nothing.
 
 **`reason` is part of the series identity.** A condition that changes reason changes series, so any
-aggregation *over time* has to remove it first — otherwise a transition looks like one series ending
+aggregation *over time* has to remove it first; otherwise a transition looks like one series ending
 and another starting:
 
 ```promql
@@ -109,13 +110,13 @@ avg_over_time(sum without (reason) (
 state, and an absent series is indistinguishable from an operator that is not running.
 
 **A deleted object stops publishing.** The series ends when the object goes, rather than reporting
-its last value forever — which matters more than it sounds: a condition gauge that keeps a deleted
+its last value forever. That matters more than it sounds: a condition gauge that keeps a deleted
 object at `Ready=False` manufactures a permanent false positive, and a panel that is permanently
 red is a panel nobody reads.
 
 This is the only family carrying object names, and
 [metrics-observability-plan.md](design/metrics-observability-plan.md) §7.1 permits it here and
-nowhere else. These objects are configuration — bounded by how many someone wrote — where the
+nowhere else. These objects are configuration, bounded by how many someone wrote, where the
 resources being mirrored are data, unbounded, and never a label. `CommitRequest` is excluded on the
 same reasoning: one is created per save, so it is data-shaped, and its state is read from
 `commit_requests_total` in aggregate and from the object's own conditions individually.
@@ -126,7 +127,7 @@ same reasoning: one is created per save, so it is data-shaped, and its state is 
 gitopsreverser_resource_condition{type="Ready", status="False"} == 1
 ```
 
-**The fleet, in one panel** — how many objects of each kind are in each state:
+**The fleet, in one panel**: how many objects of each kind are in each state:
 
 ```promql
 count by (kind, status) (gitopsreverser_resource_condition{type="Ready"} == 1)
@@ -158,11 +159,11 @@ count by (kind, reason) (
 
 The shape is `gotk_reconcile_condition`'s, deliberately: the geometry is battle-tested and the
 Grafana panels for it already exist. The name is not, because the GitOps Toolkit is defined by
-membership under the `fluxcd` organization rather than by behaviour, so `gotk_` on our series would
+membership under the `fluxcd` organization rather than by behavior, so `gotk_` on our series would
 be a false statement about where they came from no matter how closely the conditions match.
 
 For anyone who wants these objects inside Flux-shaped panels, the alias belongs on the consumer's
-side, as a recording rule — opt-in, committing us to nobody else's schema:
+side, as a recording rule: opt-in, committing us to nobody else's schema:
 
 ```yaml
 # Optional. Surfaces gitops-reverser config objects in GOTK-shaped dashboards.
@@ -243,7 +244,7 @@ flatten the metric precisely where a push problem is being investigated.
 **`contention` and `push_failure_probe` are separate because the two failures mean different
 things.** A rejected push already carries the remote's hash, so it costs exactly one fetch: the
 reset onto the new tip, counted as `contention`. A push that failed before the remote said
-anything — an auth failure, a dropped connection — has to look the hash up first, and that lookup
+anything (an auth failure, a dropped connection) has to look the hash up first, and that lookup
 is the probe. Most probes find the remote unmoved, and then no reset follows and the probe is the
 only fetch the failure cost. Folding the two together would make an expired credential read as
 other writers fighting you over the branch.
@@ -275,7 +276,7 @@ parent change, or a replay that did not finish.
 
 `contention` tracks `git_push_retries_total` one-for-one, because both
 count a confirmed moved remote. `push_failure_probe` moving on its own is pushes failing for a
-reason that is not another writer — check credentials and connectivity, not the branch.
+reason that is not another writer: check credentials and connectivity, not the branch.
 `forced_recheck` moving with nothing else is reconcile traffic.
 
 `refresh` is the price of `--git-refresh-interval`, per branch. Multiply its per-second rate by
@@ -320,14 +321,14 @@ did. A workload that sits comfortably at a fraction of the depth can still drop 
 administrative one.
 
 **Size it by burst, not by rate.** A queue slot holds one write request, so what has to fit is the
-number of concurrent write requests a bounded burst can produce — roughly
+number of concurrent write requests a bounded burst can produce, roughly
 `(concurrent writers) × (GitTargets sharing the branch worker)`. A burst that cannot exceed the
 depth is never refused, whatever its arrival shape. Note the second factor: workers are keyed by
 repository branch, so pointing a second GitTarget at a branch, from any namespace, halves the
 headroom of a worker already in use, and nothing in the API surface says so. The branch series keep
 their `provider_namespace` and `provider_name` labels: they name the one `GitProvider` that owns the
 branch. Confirm
-which targets share one worker by joining on `git_branch_targets` — several targets against a
+which targets share one worker by joining on `git_branch_targets`: several targets against a
 single `git_queue_depth` series is one worker serving all of them.
 
 **What it costs.** On a healthy branch `--branch-buffer-max-size` does **not** cover this queue. That
@@ -339,7 +340,7 @@ as well; see the backpressure paragraph below.
 Budget it as **queue depth × serialized size × ~6**. A queued object is held as an unstructured
 map, which measures around six times the bytes it serializes to; the channel itself is negligible
 beside that. So a full queue of 1000 at the ~800-byte resources of a small CRD is about 5 MiB per
-saturated worker, against a 1Gi default limit — but the multiplier is on the payload, so a folder
+saturated worker, against a 1Gi default limit, but the multiplier is on the payload, so a folder
 mirroring megabyte-sized ConfigMaps or Secrets reaches gigabytes at the same depth. Size against
 your own payloads, and against how many workers could saturate at once: the figure is per worker,
 and there is one worker per repository branch.
@@ -376,9 +377,9 @@ every `GitTarget` on the branch says so on `Ready`. A healthy branch never refus
 
 `placement_refusals_total` and `git_documents_total{outcome="refused"}` **overlap the same way**: a
 resource the writer declines to place increments both, so the loss class holds two views of one
-refusal rather than two refusals. Read them for different questions — `placement_refusals_total`
+refusal rather than two refusals. Read them for different questions (`placement_refusals_total`
 carries the `reason` and fires only on the new-file path, `git_documents_total{outcome="refused"}` is
-the write-boundary census view — and never add them. They are not quite 1:1 either: a refusal raised
+the write-boundary census view) and never add them. They are not quite 1:1 either: a refusal raised
 after placement has already resolved reaches the census without a reason, so the census total is the
 one to trust for "how many documents were refused".
 
@@ -426,7 +427,7 @@ one GitTarget uses the branch and fails the moment a second one does.
 write to a branch and nothing about whether any of them had pending work. Two limits follow:
 
 - A branch with **no push series at all** drops out of the multiplication, so the target whose
-  worker never ran — the one most worth seeing — is the one this query cannot show. Query the
+  worker never ran (the one most worth seeing) is the one this query cannot show. Query the
   mapping against `gitopsreverser_git_queue_depth` for that:
 
   ```promql
@@ -487,8 +488,8 @@ histogram_quantile(0.95, sum by (le) (rate(gitopsreverser_watch_replay_duration_
 
 A steady trickle of `reason="closed"` is health, not a fault: the API server ends every watch on a
 randomized timeout and the stream reconnects from its cursor in seconds. Because that reconnect
-deliberately moves no condition — a two-second reattach must not flip `StreamsRunning` and make
-`kubectl wait --for=condition=Ready` flaky on a healthy cluster — this counter is the **only** place
+deliberately moves no condition (a two-second reattach must not flip `StreamsRunning` and make
+`kubectl wait --for=condition=Ready` flaky on a healthy cluster), this counter is the **only** place
 a reconnect is visible, and so the only way to catch a stream that is reconnecting in a hot loop:
 
 ```promql
@@ -510,8 +511,8 @@ request's message committed verbatim, no `requestTemplate` configured), `commit_
 (`requestTemplate` rendered), and `commit_request_fallback` (`requestTemplate` failed to render, so
 the message was committed verbatim instead).
 
-The fallback is the one to alert on. It is a **successful** commit — nothing is refused and no
-condition moves — so without this counter a `requestTemplate` that has quietly stopped applying
+The fallback is the one to alert on. It is a **successful** commit (nothing is refused and no
+condition moves), so without this counter a `requestTemplate` that has quietly stopped applying
 looks exactly like one that was never configured:
 
 ```promql
@@ -529,7 +530,7 @@ degrading attribution path would read as an improving one) nor into `committer` 
 hide it among legitimately unattributed reconcile writes). For a live mutation that should be
 attributable, a non-zero and growing `unresolved` share means the audit-attribution configuration
 or delivery path needs investigation. The namespace/name keys are
-**prefixed on purpose** — a Prometheus pod scrape with
+**prefixed on purpose**: a Prometheus pod scrape with
 `honor_labels=false` overwrites a bare `namespace` attribute with the scraping pod's namespace,
 so a per-provider `namespace` selector would silently match nothing. The same reasoning applies to
 `watch_recovery_total` and `git_queue_depth`.
@@ -541,7 +542,7 @@ target's `liveTemplate`, and `reconcile` is a snapshot or resync rendered throug
 report a source the renderer did not use.
 
 `commit_request` counts commits that USED a request-supplied message, **not** CommitRequests. A
-request that omits `spec.message` takes the target's `liveTemplate`, so it counts as `live` — a
+request that omits `spec.message` takes the target's `liveTemplate`, so it counts as `live`, and a
 low `commit_request` share does not by itself mean requests are failing.
 
 **How much of the history is people naming their own changes?**
@@ -551,7 +552,7 @@ sum by (message_source) (rate(gitopsreverser_git_commits_total[15m]))
 ```
 
 A `commit_request` share that falls to zero after a rollout **may** mean save requests stopped
-reaching an open window — but omitted messages, saves that were no-ops, and pushes that never
+reaching an open window, but omitted messages, saves that were no-ops, and pushes that never
 landed all read the same way here, because none of them produce a commit carrying a request
 message. Confirm against the requests themselves before changing the window: a request that
 attached reports `Ready=True`, one that produced a pushed commit also reports `Pushed=True` with
@@ -583,7 +584,7 @@ metric without bound.
 `attachTimeout` ran out without a window the request could attach to, but only `window_mismatch`
 means one was open meanwhile and belonged to somebody else: the author's edits went into that commit,
 under a **generated** message instead of the sentence they typed. Nothing else in this document
-goes red for it. `no_window` is the benign half — nothing was pending to save.
+goes red for it. `no_window` is the benign half: nothing was pending to save.
 
 The distinction is recorded at expiry from whether a window the request could not attach to was
 seen during its wait, so a foreign window that closes before `attachTimeout` runs out still counts. Reading
@@ -610,7 +611,7 @@ sum by (gittarget_namespace, gittarget_name, close_reason) (
 
 Filter on `timer_source="target"` when tuning a target's own timers. A window a save attached to
 runs on the save's timers, and a save omits `idleTimeout` by default, so its windows would pull the
-picture towards `max_duration`.
+picture toward `max_duration`.
 
 - `idle_timeout` is the normal ending: the writes went quiet.
 - `max_duration` means the maximum was reached first. With the target's timers that usually means
@@ -622,7 +623,7 @@ picture towards `max_duration`.
   commits are being split by interleaving rather than by time, and no timer changes that.
 - `attach_next` is a save with `attach: Next` closing the author's open window before it waits.
 - `buffer_limit` means the worker's retained-write budget was reached, and the window was flushed
-  to stay within it. Writes committed but not yet pushed count towards that budget, so this reads
+  to stay within it. Writes committed but not yet pushed count toward that budget, so this reads
   as "the branch is holding too much", not as a measurement of pod memory. See
   [sizing the branch worker queue](#sizing-the-branch-worker-queue-against-git_queue_refusals_total).
 - `resync_before_apply` and `atomic_before_apply` close the window so a resync or an atomic write can
@@ -700,8 +701,8 @@ sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types)
 gitopsreverser_watch_types{state="blocked"} > 0
 ```
 
-**Does a target's rules resolve to nothing at all?** The most common misconfiguration there is — a
-typo in `resources:`, or a type the default watch policy excludes — produces a target that looks
+**Does a target's rules resolve to nothing at all?** The most common misconfiguration there is (a
+typo in `resources:`, or a type the default watch policy excludes) produces a target that looks
 completely healthy on every other panel, because a pipeline with no input has nothing to report:
 
 ```promql
@@ -723,8 +724,8 @@ resolves **one type** and opens **three watches**. `watch_streams_open` counts t
 sum by (source_cluster) (gitopsreverser_watch_streams_open)
 ```
 
-It counts what the API server itself would count. A session appears when the watch opens — replay
-included, since a replaying watch is an open connection — and disappears when it closes, so a
+It counts what the API server itself would count. A session appears when the watch opens (replay
+included, since a replaying watch is an open connection) and disappears when it closes, so a
 connection attempt that failed and a stream sitting in reconnect backoff are both absent rather than
 counted as held. Internal controller and discovery watches are outside it; this is the object-state
 watch load only.
@@ -755,17 +756,17 @@ sum by (group, version, resource) (
 ### New-file placement
 
 Placement runs **only** for a resource with no document in Git yet; everything already written is
-edited in place, forever. So these counters are sparse by nature — a busy target can go a day without
-one — and a zero rate is the steady state, not a broken exporter.
+edited in place, forever. So these counters are sparse by nature (a busy target can go a day without
+one), and a zero rate is the steady state, not a broken exporter.
 
 `source` answers "why did it land there?", which is the question a folder cannot answer:
 
 | `source` | Means | Needs attention? |
 | --- | --- | --- |
-| `by_type` | a `spec.placement.byType` entry named this exact type | no — this is what you asked for |
-| `default` | no `byType` entry named the type, so the catch-all `spec.placement.default` answered | **maybe** — a rule you meant to write may not be matching |
-| `kustomize_root` | the folder is governed by exactly one supported kustomization, so the file went beside it and joined its `resources:` list | no — the folder's own structure decided |
-| `builtin` | nothing else applied, so the built-in `{namespace}/{group}/{resource}/{name}.yaml` path was used | **maybe** — see below |
+| `by_type` | a `spec.placement.byType` entry named this exact type | no: this is what you asked for |
+| `default` | no `byType` entry named the type, so the catch-all `spec.placement.default` answered | **maybe**: a rule you meant to write may not be matching |
+| `kustomize_root` | the folder is governed by exactly one supported kustomization, so the file went beside it and joined its `resources:` list | no: the folder's own structure decided |
+| `builtin` | nothing else applied, so the built-in `{namespace}/{group}/{resource}/{name}.yaml` path was used | **maybe**: see below |
 
 **Which types are falling back, and in which target?** Each series is a candidate for one
 `placement.byType` line. The operator never guesses a hand-authored layout from the folder, so this
@@ -778,7 +779,7 @@ sum by (gittarget_namespace, gittarget_name, group, version, resource) (
 
 The built-in path is not an error. For a target whose repository the operator bootstrapped, it is the whole
 layout and always will be. It is worth acting on when the folder has a convention the operator was not
-told about — the file lands somewhere tidy but not where the rest of that type lives.
+told about: the file lands somewhere tidy but not where the rest of that type lives.
 
 **Is a bundling policy actually bundling?** `disposition="appended"` proves documents are joining an
 existing file rather than each getting their own. It should only ever appear with `source="by_type"`
@@ -803,11 +804,11 @@ sum by (reason, gittarget_namespace, gittarget_name, resource) (
 | `plaintext_onto_encrypted` | a template routing a plaintext resource at a file holding SOPS data |
 | `mixed_sensitivity_new_file` | a bundling `default` catching both a sensitive and a plaintext resource |
 | `multi_document_target` | the resolved file holds a document the writer cannot account for, so it will not overwrite it |
-| `unclassified` | a refusal shape newer than this table — report it |
+| `unclassified` | a refusal shape newer than this table; report it |
 
 A `{label:key}` template never refuses for a missing label: a resource that does not set it lands
 at the built-in `_unlabeled` bucket, or at whatever the template's own `{label:key|fallback}` names
-— including one directory up, if that fallback is empty — so it is always mirrored somewhere. See
+(including one directory up, if that fallback is empty), so it is always mirrored somewhere. See
 [the label placement docs](layout/new-file-placement-rules.md#labelkey--the-one-metadata-variable)
 if a lot of resources are landing in `_unlabeled` and you would rather they used a declared
 fallback or a different variable.
@@ -822,7 +823,7 @@ sum by (gittarget_namespace, gittarget_name) (
 ```
 
 Placement counters carry `gittarget_*` label keys rather than bare `namespace`/`name` for the
-pod-scrape reason described above, and they deliberately carry **no path or resource-name label** — both
+pod-scrape reason described above, and they deliberately carry **no path or resource-name label**: both
 are unbounded, and both are in the log line at the write site.
 
 ---
@@ -888,9 +889,9 @@ sum by (provider_namespace, provider_name, branch) (
 
 Audit runs when `--author-attribution` is on. The kube-apiserver POSTs audit `EventList` payloads to
 `/audit-webhook`; the handler applies an intrinsic accept gate and appends the accepted events'
-facts to a per-type fact log — **one append per type per request**, not one per event. The watch side
+facts to a per-type fact log: **one append per type per request**, not one per event. The watch side
 follows that log into a bounded, TTL'd in-memory index and joins against it. There is **no body join
-and no second source** — watch, not audit, carries the object body — so the only audit metrics are
+and no second source** (watch, not audit, carries the object body), so the only audit metrics are
 the request boundary and the per-event census.
 
 The log is Redis Streams by default and an in-process ring with
@@ -904,12 +905,12 @@ The log is Redis Streams by default and an in-process ring with
 | `attribution_resolutions_total` | counter | `tier`, `actor_kind`, `group`, `version`, `resource` |
 | `attribution_resolution_wait_seconds` | histogram | `tier`, `event_kind`, `group`, `version`, `resource` |
 | `attribution_facts_total` | counter | `op` |
-| `attribution_fact_index_entries` | gauge | — |
+| `attribution_fact_index_entries` | gauge | none |
 | `attribution_fact_index_evictions_total` | counter | `reason` |
 | `attribution_fact_stream_gaps_total` | counter | `stream` |
 | `attribution_fact_stream_decode_errors_total` | counter | `transport` |
 | `attribution_fact_follower_errors_total` | counter | `transport` |
-| `attribution_fact_follower_last_success_timestamp_seconds` | gauge | — |
+| `attribution_fact_follower_last_success_timestamp_seconds` | gauge | none |
 | `attribution_collection_without_uidset_total` | counter | `reason` |
 | `attribution_transport_info` | gauge (always 1) | `transport` |
 
@@ -927,7 +928,7 @@ apiserver posting nothing.
 `KubeProvider` claims". A named `/audit-webhook/<route>` is accepted as-is, deliberately: a route
 is a partition name, not a claim about an object, and refusing unknown ones dropped audit batches in
 flight while a provider was being recreated. The only route-shaped rejection is the bare
-`/audit-webhook` endpoint when `--audit-route-annotation-key` is unset.
+`/audit-webhook` endpoint when `--author-attribution-audit-route-annotation-key` is unset.
 
 ```promql
 sum by (outcome) (rate(gitopsreverser_audit_eventlist_duration_seconds_count[5m]))
@@ -940,17 +941,17 @@ selector):
 | `category` | Live `outcome` values | Meaning |
 | --- | --- | --- |
 | `stored` | `queued` | Accepted; the event's facts reached the fact log. |
-| `dropped` | `nil_event`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource`, `no_attribution_fact` | Correctly rejected at the accept gate, or accepted and unable to name an author — not an error. |
-| `error` | `write_error` | The transport rejected the append for THIS event's stream, so its fact did not reach the log. Publication is per stream, so a request that fails partway still counts the events whose own stream appended as `queued`; the whole request is failed so the API server retries it, and the landed facts are simply appended again. The one category that should stay zero. |
+| `dropped` | `nil_event`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource`, `missing_cluster_annotation`, `no_attribution_fact` | Correctly rejected at the accept gate, or accepted and unable to name an author; not an error. `missing_cluster_annotation` is an event on the shared, annotation-routed endpoint that names no route; it is never credited to a fallback, so a rising rate is a producer that does not stamp the annotation. |
+| `error` | `write_error` | The transport rejected the append for THIS event's stream, so its fact did not reach the log. Publication is per stream, so a request that fails partway still counts the events whose own stream appended as `queued`; the whole request is failed so the API server retries it, and the landed facts are appended again. The one category that should stay zero. |
 
-The full enum lives in [`internal/audit/outcome/outcome.go`](../internal/audit/outcome/outcome.go)
-— it is the source of truth.
+The full enum lives in [`internal/audit/outcome/outcome.go`](../internal/audit/outcome/outcome.go);
+it is the source of truth.
 
 **`no_attribution_fact` is the one to read carefully.** The event was accepted and could name no
 author, so nothing was appended for it and no watch event can ever join it. The usual cause is an
 aggregated API: the kube-apiserver proxies the request and never decodes the response, so a CREATE's
 `objectRef` carries no name at all. It is `dropped` rather than `error` because nothing failed, and
-this is the only place it can be counted — the event never becomes a fact, so no fact-side counter
+this is the only place it can be counted: the event never becomes a fact, so no fact-side counter
 sees it. A rising share for a type you expect to attribute means commits for that type will be
 authored unresolved:
 
@@ -964,13 +965,13 @@ sum by (group, resource) (rate(gitopsreverser_audit_events_total{outcome="no_att
 sum(rate(gitopsreverser_audit_events_total[5m]))
 ```
 
-**The health invariant — fact-store errors must be zero:**
+**The health invariant.** Fact-store errors must be zero:
 
 ```promql
 sum(rate(gitopsreverser_audit_events_total{category="error"}[5m]))
 ```
 
-**Live audit stream by type — what is actually streaming in.** This is the per-type view of the
+**Live audit stream by type: what is actually streaming in.** This is the per-type view of the
 audit firehose; a type you expect to attribute but never see here means the audit policy is not
 delivering it:
 
@@ -979,14 +980,14 @@ sum by (group, version, resource) (rate(gitopsreverser_audit_events_total[5m]))
 ```
 
 **Have we ever seen audit for this type?** Useful for deciding whether attribution is worth
-waiting on for a given type — zero over a long window means audit never delivers it:
+waiting on for a given type; zero over a long window means audit never delivers it:
 
 ```promql
 sum by (group, resource) (increase(gitopsreverser_audit_events_total[1h])) > 0
 ```
 
-**What strange or high-volume traffic is the webhook receiving?** Top event shapes by outcome —
-surfaces an unexpected flood at a glance:
+**What strange or high-volume traffic is the webhook receiving?** Top event shapes by outcome
+surface an unexpected flood at a glance:
 
 ```promql
 topk(15, sum by (resource, verb, outcome) (rate(gitopsreverser_audit_events_total[5m])))
@@ -1002,7 +1003,7 @@ topk(10, sum by (resource, verb) (
   rate(gitopsreverser_audit_events_total{outcome="non_scale_subresource"}[5m])))
 ```
 
-**Are EventLists failing to decode?** Should be zero — non-zero means a sender is posting
+**Are EventLists failing to decode?** Should be zero; non-zero means a sender is posting
 something that is not an `audit.k8s.io/v1 EventList`:
 
 ```promql
@@ -1026,7 +1027,7 @@ sum(rate(gitopsreverser_attribution_resolutions_total[5m]))
 ```
 
 Coverage is `tier!="absent"` and nothing narrower. `tier=~"exact.*"` reads the collection and name
-tiers as misses, which they are not — they named an actor.
+tiers as misses, which they are not: they named an actor.
 
 The two labels answer two different questions. **`tier`** names which evidence produced the author,
 and it is ordered, strongest first. **`actor_kind`** names who that evidence named, in the same
@@ -1049,15 +1050,15 @@ equally hold a write, and a value that could mean either must not claim a verb.
 | `exact` | Exact UID+resourceVersion match: this actor produced this exact version. For a removal of an object that was not terminating, it is the write that took the object out of view: a label exit. |
 | `deletecollection_body_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. It outranks `latest`, because `latest` names whoever last *wrote* an object while a removal asks who *deleted* it. |
 | `latest` | The UID-latest tier: the object's own last fact, keyed by UID alone. A removal accepts it only when that fact is a delete, which `delete_sticky` normally answers first, so it appears only when the sticky pointer was evicted under the index caps. A *write* here never answers a removal. |
-| `name` | A match on `(namespace, name)` for a fact carrying neither a UID nor a resourceVersion — the usual shape of an aggregated API's audit event, and of a delete the API server answered with a `Status`. |
-| `deletecollection_scope` | A removal matched to a `deletecollection` by scope alone — same type and namespace, the request's selector accepting the object's labels, within the collection window. The weakest evidence the join has, and the only one that can name the wrong actor, which is why it is reached only when every more specific tier missed. |
+| `name` | A match on `(namespace, name)` for a fact carrying neither a UID nor a resourceVersion: the usual shape of an aggregated API's audit event, and of a delete the API server answered with a `Status`. |
+| `deletecollection_scope` | A removal matched to a `deletecollection` by scope alone (same type and namespace, the request's selector accepting the object's labels, within the collection window). The weakest evidence the join has, and the only one that can name the wrong actor, which is why it is reached only when every more specific tier missed. |
 | `resource_version` | The RV-only escape hatch: a fact that carried a resourceVersion and no UID, matched on that version alone. |
 | `absent` | No usable fact matched before the grace window elapsed. The resulting live commit is authored as `unknown (attribution unresolved)`. |
 
 | `actor_kind` | Meaning |
 | --- | --- |
 | `user` | A human (or any non-service-account subject). |
-| `serviceaccount` | A named service account — a controller, an operator, a CI identity. |
+| `serviceaccount` | A named service account: a controller, an operator, a CI identity. |
 | `none` | Nobody was named, which in practice means nothing matched. |
 
 `actor_kind="none"` and `tier="absent"` go together, and that is an invariant rather than a
@@ -1112,7 +1113,7 @@ pressure, and eviction falls on the type holding the most).
 
 This counter is also the removal pointer's only horizon. Every other entry in the index expires on
 the fact TTL; a removal pointer is bounded by these caps instead, so a cluster that deletes rarely
-keeps its removals for a very long time at no cost, and a busy one keeps the most recent — which are
+keeps its removals for a very long time at no cost, and a busy one keeps the most recent, which are
 the ones a replay is likeliest to need. A sustained eviction rate on a type that deletes heavily is
 the signal that its pointers are being reclaimed before a replay can use them.
 
@@ -1126,15 +1127,15 @@ sum by (stream) (rate(gitopsreverser_attribution_fact_stream_gaps_total[5m]))
 ```
 
 **Is a follower silently skipping facts?** An entry the follower refuses is skipped and its
-position passed — which is right, since it can never decode and stalling on it would cost every
-later fact on that stream — so the facts it carried are gone. This is the loss path with **no other
+position passed (which is right, since it can never decode and stalling on it would cost every
+later fact on that stream), so the facts it carried are gone. This is the loss path with **no other
 symptom**: unlike a trim gap it is not detectable after the fact, and unlike a publish failure the
 API server does not retry it.
 
 Two things are refused: a payload that is not valid JSON, and one that is JSON but breaks the fact
-contract by naming nobody (`author` must be present and non-empty — a fact exists to name somebody).
+contract by naming nobody (`author` must be present and non-empty: a fact exists to name somebody).
 Either way the log line names the stream and the entry. Any non-zero rate means something is writing
-entries this operator would not write — a version skew, another producer, or a hand-edited stream:
+entries this operator would not write: a version skew, another producer, or a hand-edited stream:
 
 ```promql
 sum by (transport) (rate(gitopsreverser_attribution_fact_stream_decode_errors_total[5m]))
@@ -1156,8 +1157,8 @@ sum by (transport) (rate(gitopsreverser_attribution_fact_follower_errors_total[5
 ```
 
 **An absent gauge is the worst case, not a healthy one.** The timestamp is not published until the
-follower's first successful read, so a follower that has been wedged since startup — a transport
-unreachable at boot — has no series at all, and `time() - <gauge>` therefore returns nothing rather
+follower's first successful read, so a follower that has been wedged since startup (a transport
+unreachable at boot) has no series at all, and `time() - <gauge>` therefore returns nothing rather
 than a large number. An alert must cover that arm explicitly, which is what `attribution_transport_info`
 is for: it is published when the follower starts, so a transport running without a last-success
 timestamp is exactly the never-succeeded case. Give it a `for: 10m` so an ordinary restart's gap does
@@ -1181,7 +1182,7 @@ gitopsreverser_attribution_transport_info
 
 **How often does a collection delete fall back to scope matching?** A `deletecollection` fact
 carries the UIDs the API server named, when it sent them, and joins by membership. When it cannot,
-the join falls back to `deletecollection_scope`, which is correct but weaker — so the fallback is counted
+the join falls back to `deletecollection_scope`, which is correct but weaker, so the fallback is counted
 rather than inferred:
 
 ```promql
@@ -1189,9 +1190,9 @@ sum by (reason) (rate(gitopsreverser_attribution_collection_without_uidset_total
 ```
 
 `reason` is `uid_cap` (the set was larger than `--author-attribution-collection-uid-cap`) or
-`no_uids` (the API server sent a body with no usable UIDs). A body-less response — a truncated,
-aggregated, or metadata-only `deletecollection` — produces no fact-level degradation event at all,
-because there was never a set to drop; it simply resolves through the scope tier. A production
+`no_uids` (the API server sent a body with no usable UIDs). A body-less response (a truncated,
+aggregated, or metadata-only `deletecollection`) produces no fact-level degradation event at all,
+because there was never a set to drop; it resolves through the scope tier. A production
 cluster running `--audit-webhook-truncate-enabled` is the one most likely to be in that case.
 
 ---
@@ -1199,7 +1200,7 @@ cluster running `--audit-webhook-truncate-enabled` is the one most likely to be 
 ## API resource catalog
 
 The API resource catalog is GitOps Reverser's single trusted in-memory view of the cluster's
-served API surface — every `WatchRule` and `ClusterWatchRule` is resolved against it. The watch
+served API surface: every `WatchRule` and `ClusterWatchRule` is resolved against it. The watch
 manager refreshes it from Kubernetes discovery on its 30 s reconcile ticker, on every
 CRD/APIService change, and on every rule change.
 
@@ -1210,7 +1211,7 @@ CRD/APIService change, and on every rule change.
 | `api_catalog_refresh_total` | counter | `source_cluster`, `outcome` (`changed`/`unchanged`/`error`) |
 | `api_catalog_refresh_duration_seconds` | histogram | `source_cluster` |
 
-`excluded` resources are the default-watch-policy set (pods, events, leases, jobs, …) — served
+`excluded` resources are the default-watch-policy set (pods, events, leases, jobs, …): served
 by the cluster but deliberately never watched. `degraded` group/versions are ones discovery
 reported as failed, usually a broken aggregated APIService.
 
@@ -1234,7 +1235,7 @@ sum by (outcome) (rate(gitopsreverser_api_catalog_refresh_total[15m]))
 gitopsreverser_api_catalog_group_versions{state="degraded"} > 0
 ```
 
-**Discovery latency** — catches a slow or non-aggregated apiserver. Normal is single-digit
+**Discovery latency** catches a slow or non-aggregated apiserver. Normal is single-digit
 milliseconds; the call is two cached GETs on Kubernetes ≥ 1.27:
 
 ```promql
@@ -1246,7 +1247,7 @@ histogram_quantile(0.95,
 
 ## Watch plane owner
 
-One loop owns the watch plane: controllers post an applier claim naming a GitTarget and return, and the
+One loop owns the watch plane: controllers post a request naming a GitTarget and return, and the
 owner runs one plan pass per target once that target has been quiet for a 2 s rolling silence
 window (hard cap ~10 s). Design:
 [watch-manager-ownership.md](design/watch-manager-ownership.md).
@@ -1256,15 +1257,15 @@ five make it legible.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
-| `watch_plan_dirty_targets` | gauge | — |
-| `watch_plan_oldest_dirty_since_timestamp_seconds` | gauge | — |
+| `watch_plan_dirty_targets` | gauge | none |
+| `watch_plan_oldest_dirty_since_timestamp_seconds` | gauge | none |
 | `watch_plan_passes_total` | counter | `outcome` (`completed`/`failed`/`timed_out`), `gittarget_namespace`, `gittarget_name` |
-| `watch_plan_pass_duration_seconds` | histogram | — |
-| `watch_plan_triggers_total` | counter | `reason` (`declare`/`rule_change`/`shared_refresh`/`periodic`), `coalesced` |
+| `watch_plan_pass_duration_seconds` | histogram | none |
+| `watch_plan_triggers_total` | counter | `reason` (`declare`/`rule_change`/`shared_refresh`/`periodic`/`worker_replaced`), `coalesced` |
 
 **Is anything stuck?** This is the one to alert on. The oldest dirty target's age climbs and stays
-up exactly when a target cannot be planned — a source cluster that stopped answering, a catalog
-that never becomes observable — whether the queue is deep or holds a single wedged target. A
+up exactly when a target cannot be planned (a source cluster that stopped answering, a catalog
+that never becomes observable), whether the queue is deep or holds a single wedged target. A
 healthy install sits under the settle window plus a pass, so seconds:
 
 ```promql
@@ -1292,8 +1293,8 @@ sum by (gittarget_namespace, gittarget_name) (
 ```
 
 **Is the silence window earning its keep?** One `kubectl apply` of a GitTarget and four WatchRules
-should show four coalesced applier claims and one pass. A coalescing ratio near zero under a busy config
-plane means edits are arriving further apart than the window, which is not a fault — it is the
+should show four coalesced triggers and one pass. A coalescing ratio near zero under a busy config
+plane means edits are arriving further apart than the window, which is not a fault: it is the
 window doing nothing:
 
 ```promql
@@ -1303,14 +1304,16 @@ sum(rate(gitopsreverser_watch_plan_triggers_total{coalesced="true"}[15m]))
 
 **Which source is noisy?** `periodic` is the 30 s floor and is expected to dominate a quiet
 cluster. A high `shared_refresh` rate means the API surface is flapping; a high `rule_change` rate
-means something is rewriting rules:
+means something is rewriting rules. `worker_replaced` follows a `GitProvider` recreated for another
+repository: the new branch worker has no clone, so every `GitTarget` on the branch re-establishes
+its folder:
 
 ```promql
 sum by (reason) (rate(gitopsreverser_watch_plan_triggers_total[15m]))
 ```
 
 **How long does a pass take?** The input to choosing the per-target deadline. A pass is in-memory
-replanning — discovery is a shared job done once per cluster, not per target — so normal is
+replanning (discovery is a shared job done once per cluster, not per target), so normal is
 sub-millisecond, and anything near a second means a target is doing I/O it should not be:
 
 ```promql
@@ -1328,7 +1331,7 @@ Secrets are never committed in plaintext; these metrics confirm the encryption p
 | --- | --- | --- |
 | `secret_encryptions_total` | counter | One per encryption decision, labeled `outcome`: `encrypted`, `failed` (the write is rejected), or `cached` (unchanged content reused). |
 
-**Encryption failure rate** — should be zero; non-zero means Secret writes are being rejected:
+**Encryption failure rate** should be zero; non-zero means Secret writes are being rejected:
 
 ```promql
 rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[5m])
@@ -1347,28 +1350,37 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 
 | Condition | Meaning |
 | --- | --- |
-| `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | Attribution fact-store writes are failing — check Redis. |
+| `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | Attribution fact-store writes are failing; check Redis. |
 | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome="decode_error"}[10m]) > 0` | A sender is posting non-EventList payloads to `/audit-webhook`. |
 | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome=~"bad_method\|bad_path\|bare_endpoint_disabled"}[15m]) > 0` | An apiserver is posting audit to a path this operator does not serve. |
 | `rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | A schema or version mismatch on the fact stream; facts are being skipped and lost. |
-| `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)`, `for: 10m` | The fact follower is wedged; attribution is degrading to committer-authored cluster-wide. Both arms are needed — see below. |
+| `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)`, `for: 10m` | The fact follower is wedged; attribution is degrading to committer-authored cluster-wide. Both arms are needed; see below. |
 | `rate(gitopsreverser_git_resync_failures_total[15m]) > 0` sustained | Background resyncs are not committing; the folder relies on steady-state events to catch up. |
 | `increase(gitopsreverser_apply_ownership_conflicts_total[1h]) > 0` | Another `Kustomization` or `Application` applies objects into a coordinated folder; they are kept out of Git, and the log names both appliers. |
 | `increase(gitopsreverser_claimed_resource_reconciled_total[1h]) > 0` | Somebody else made a held applier apply, unchecked against the branch; the labels name the applier claim. A steady rate on one claim is a controller that rewrites the `Kustomization` without `spec.suspend`. |
 | `increase(gitopsreverser_stale_snapshots_total{outcome="used"}[1h]) > 0` | An applier has been failing for at least 5 minutes, so a resync decided a snapshot taken while Git was ahead and reverted part of the unapplied commit. |
 | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | Part of the API surface is hidden behind a broken APIService. |
-| `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120`, `for: 5m` | A GitTarget cannot be planned — its source cluster or catalog is unreachable — and its mirror is not converging. The `time() -` is not optional: the gauge is a Unix timestamp, so a bare `> 120` is true of every instant since 1970 and would fire on ordinary planning. |
+| `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120`, `for: 5m` | A GitTarget cannot be planned (its source cluster or catalog is unreachable), and its mirror is not converging. The `time() -` is not optional: the gauge is a Unix timestamp, so a bare `> 120` is true of every instant since 1970 and would fire on ordinary planning. |
 | `rate(gitopsreverser_watch_plan_passes_total{outcome="timed_out"}[15m]) > 0` sustained | Plan passes are hitting their per-target deadline; the target stays dirty and installs nothing. |
 | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected by the encryption path. |
 | `rate(gitopsreverser_git_queue_refusals_total[5m]) > 0 unless on(provider_namespace, provider_name, branch) gitopsreverser_git_intake_paused == 1`, `for: 10m` | A healthy branch keeps refusing work: its queue is too small for its bursts. Producers offer the work again, so this is lag; only a watch cursor that expires first loses commits, and under `OnEvent` deletes. During an outage the intake-paused alert below covers it. |
 | `gitopsreverser_git_queue_depth` rising and not draining | A branch worker is backing up against a stalled remote. |
 | `time() - gitopsreverser_git_oldest_retained_write_timestamp_seconds > 900`, `for: 5m` | A branch has not published for 15 minutes: its writes, and any save riding them, are held. The `time() -` is not optional, as for the plan-dirty gauge above. |
 | `gitopsreverser_git_intake_paused == 1`, `for: 10m` | An outage filled a branch's budget: new changes on its `GitTarget`s are refused until a push lands. |
+| `sum by (provider_namespace, provider_name, branch, kind, reason) (increase(gitopsreverser_git_commit_failures_total[15m])) > 0` | Loss: a window or atomic write died between routing and pushing, and its edits are missing from Git until the next resync. `reason="refused"` will not clear until someone fixes the Git path. |
+| `sum by (provider_namespace, provider_name, branch, reason) (increase(gitopsreverser_git_writes_dropped_total[15m])) > 0` | Loss: writes met a closed render-vs-live gate and were dropped, and nothing replays them. `render_fidelity_diverged` goes with `RenderMatchesLive=False` on a `GitTarget`; `render_fidelity_pending` is a hold that gave up. |
+| `sum by (gittarget_namespace, gittarget_name, reason) (increase(gitopsreverser_placement_refusals_total[1h])) > 0` | Loss: new resources the writer declined to place are absent from the mirror until the placement policy is fixed. |
+| `sum by (gittarget_namespace, gittarget_name) (increase(gitopsreverser_placement_kustomization_entries_total{outcome="failed"}[1h])) > 0` | A new file is in Git without its `resources:` entry, so kustomize never builds it. |
+| `max by (provider_namespace, provider_name, branch) (gitopsreverser_apply_operations_unresolved) > 0`, `for: 15m` | An applier is stuck mid-apply, and nothing more is asked of it until the operation completes. |
+| `max by (provider_namespace, provider_name, branch) (gitopsreverser_appliers_held) > 0`, `for: 15m` | An applier is held behind the initial-snapshot barrier: a `GitTarget` naming its claim watches nothing, or its folder is missing. |
+| `sum by (applier_kind, reason) (rate(gitopsreverser_apply_requests_total{outcome="failed"}[15m])) > 0`, `for: 30m` | Apply requests keep failing; the worker retries at its backoff, and the cluster runs older content than the branch meanwhile. |
+| `sum by (receiver_namespace, receiver_name) (increase(gitopsreverser_receiver_deliveries_total{outcome="rejected"}[15m])) > 0` | A Git host is calling a `GitReceiver` with the wrong secret, so foreign pushes are found only by the periodic refresh. |
+| `sum by (provider_namespace, provider_name) (rate(gitopsreverser_git_commits_total{message_source="commit_request_fallback"}[15m])) > 0` | A `requestTemplate` stopped rendering: saves still commit, with the message verbatim. |
 | `gitopsreverser_resource_condition{type="Ready", status="False"} == 1`, `for: 15m` | A declared object has not been accepted. The `== 1` is not optional: each condition publishes one series per status, so the selector alone matches the two zeroes too. |
 | `gitopsreverser_resource_condition{type="Stalled", status="True"} == 1` | Permanently wedged: `Stalled` is the kstatus "nothing will retry" signal, so this needs a human and will not clear on its own. `reason` names the gate. |
 | any `gitopsreverser_*` series with `otel_metric_overflow="true"` | A metric family exceeded its per-instrument cardinality cap, so the labels identifying those series are gone and every query over that family is under-reporting. Raise the cap or cut a label. |
 | `sum by (group, resource) (rate(gitopsreverser_attribution_resolutions_total{tier="absent"}[10m])) > 0`, `for: 15m` | Events of this type keep waiting out the whole `--author-attribution-grace` and shipping `unknown (attribution unresolved)`. Each one held its watch stream for the full grace, so every later event of the type, including a save's edit, reached its branch worker that much later. Check the audit policy for the type and the `KubeProvider`'s audit route before anything else. An occasional absence is ordinary; a sustained rate is a configuration problem or a fact that can never arrive. |
-| `sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types) == 0`, `for: 10m` | A GitTarget's rules resolve to no watchable type — a typo in `resources:`, or a type the default watch policy excludes. It mirrors nothing while looking healthy everywhere else. The 10 minutes let a freshly declared target settle. |
+| `sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types) == 0`, `for: 10m` | A GitTarget's rules resolve to no watchable type: a typo in `resources:`, or a type the default watch policy excludes. It mirrors nothing while looking healthy everywhere else. The 10 minutes let a freshly declared target settle. |
 
 ---
 
@@ -1394,6 +1406,6 @@ Listed so a missing panel is never read as a healthy zero. The plan for them is
 
 The bar for a row here: a reader who has never seen the metric learns what it measures, one query
 that answers a real operator question, and what a bad value looks like. A metric without an
-interpretation is noise. The rest of the policy — a recording site before an instrument, and the
-doc row in the same change — is
+interpretation is noise. The rest of the policy (a recording site before an instrument, and the
+doc row in the same change) is
 [metrics-observability-plan.md](design/metrics-observability-plan.md) §3.
