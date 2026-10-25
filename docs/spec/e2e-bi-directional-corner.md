@@ -46,8 +46,8 @@ checked in source.
 **The install is pinned to `v3.4.5`**, the latest actual release (`v3.5.0` is
 master's next version and has no tag). Every fact in the tables below was
 re-verified at `v3.4.5` before pinning; line numbers cited are master's, and the
-constants are unchanged between the two. The pin has since moved to `v3.5.5`
-(chart `10.10.5`); the four facts the setup README lists were re-checked at that tag.
+constants are unchanged between the two. The pin has since moved to `v3.5.6`
+(chart `10.11.1`); the four facts the setup README lists were re-checked at that tag.
 
 ### Resource tracking
 
@@ -274,9 +274,9 @@ chart**. `_argocd-installed` `helm pull`s the pinned chart into
 `.stamps/cluster/<ctx>/argocd/` (retryable network step) and `helm upgrade
 --install`s it with `values.yaml` and `--wait`, then gates on CRD establishment.
 
-- `ARGOCD_CHART_VERSION` (e.g. `10.10.5`) lives in `test/e2e/Taskfile-e2e.yml` and pins
+- `ARGOCD_CHART_VERSION` (e.g. `10.11.1`) lives in `test/e2e/Taskfile-e2e.yml` and pins
   the chart, which carries the Argo CD release the specs pin behaviour against (its
-  appVersion, e.g. `v3.5.5`). Unlike `FLUX_VERSION` it is not a devcontainer env
+  appVersion, e.g. `v3.5.6`). Unlike `FLUX_VERSION` it is not a devcontainer env
   var: nothing outside the cluster needs an `argocd` binary — the specs drive Argo
   through `kubectl` alone — so pinning it in the Taskfile avoids a container rebuild.
 - **Why `helm`, not a flat `kubectl apply`.** The chart's `redis-secret-init` runs
