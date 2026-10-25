@@ -4,7 +4,7 @@ The branch makes the API reference more consistent, but several descriptions sti
 to unpack too many rules at once. Keep the useful detail. Give each sentence one job, and use
 bullets where readers need to compare values, check requirements, or follow a precedence order.
 
-This is a proposal only. No Go comments, generated CRDs, or existing documentation are changed.
+This proposal changes wording only; it proposes no schema or controller behavior changes.
 
 ## Scope
 
@@ -23,10 +23,12 @@ plain-text conventions required by [AGENTS.md](../../AGENTS.md). Markdown commen
 - Defaults, namespace resolution, and immutable references are documented near the setting.
 - The short descriptions already work. Keep fields such as `GitTarget.spec.path`,
   `GitProvider.spec.url`, and `GitTarget.spec.encryption` compact.
+- `onRefusal` and `serializeNamespace` already give each value its own paragraph. Their structure
+  works; converting those paragraphs to bullets is optional polish.
 - The generated YAML excludes the long type-level design rationale I checked. For example,
   `GitTarget.spec.placement` uses the field comment. The internal discussion on
-  `GitTargetPlacementSpec` stays in the source. Review the generated description before deciding a comment
-  needs editorial work.
+  `GitTargetPlacementSpec` stays in the source. Review the generated description before deciding
+  a comment needs editorial work.
 
 ## Top risks (ranked)
 
@@ -36,13 +38,14 @@ plain-text conventions required by [AGENTS.md](../../AGENTS.md). Markdown commen
    claims to show how long a connection has been broken; it records the last successful check.
    Failure may begin later, and `Ready=False` can also reflect signing or configuration failures.
    These need corrections before cosmetic edits.
-2. **Dense descriptions hide consequential choices.** `serializeNamespace`, `onRefusal`, grant
-   defaults, and selector pruning all affect what gets written or deleted. A reader should be
-   able to find each choice without rereading a paragraph of exceptions.
+2. **Grant defaults and selector pruning need clearer separation.** Grant descriptions compress
+   omission, explicit lists, and combined permissions into a paragraph. Selector descriptions mix
+   matching, deletion behavior, and conflicting rules. Separate these cases so readers can find
+   the one that applies to them.
 3. **Some references leave readers guessing which object or condition is meant.** Both watch-rule
    `objectSelector` descriptions refer to `spec.prune.mode` without naming the `GitTarget`.
    `ArgoCDClaim.status.conditions` mixes `True` and `False` with `NotConfigured`, which is a
-   reason, not a condition status.
+   reason, not a condition status. It also omits `False` with reason `ArgoCDVersionNotSupported`.
 4. **Long troubleshooting prose is squeezed into a table.** The new row about repeated
    `ClaimedResourceReconciled` events in the Flux guide contains the symptom, implementation
    cause, ownership explanation, and remedy. Give that case its own subsection and leave a short
@@ -58,8 +61,8 @@ Flux has a [documentation style guide](https://fluxcd.io/contributing/docs/style
 in its [website source](https://github.com/fluxcd/website/blob/main/content/en/contributing/docs/style-guide.md).
 It recommends active voice, present tense, direct wording, and avoiding idioms that make reading
 harder for people who speak English as a second language. It recommends grouping related items
-into lists and keeping paragraphs below six sentences. These are website guidelines; I found no
-separate CRD-comment writing standard in the sources reviewed.
+into lists and keeping paragraphs below six sentences. This is a website writing guide; it does
+not prescribe a format for CRD comments.
 
 The source offers useful examples too:
 
@@ -77,7 +80,9 @@ The source offers useful examples too:
 My recommendation is to adopt those structural habits while keeping this repository's conventions
 for field names and literal values. The recommendation to use bullets inside selected CRD
 descriptions is my editorial proposal. Flux's guide does not require it. Sources checked on
-October 25, 2026; the source links track their default branches.
+October 25, 2026, and rechecked when incorporating this feedback. The source links track their
+default branches. The observations above describe these examples, not a project-wide enforcement
+policy.
 
 ## Recommended changes (actionable)
 
@@ -86,6 +91,11 @@ October 25, 2026; the source links track their default branches.
 - Lead with what the field controls. Follow with the default or omitted behavior.
 - Use bullets for alternatives and independent requirements. Use numbered lists when order matters.
 - Keep a short explanation in prose when there is no choice to compare.
+- Keep existing per-value paragraphs when they already make the choices clear.
+- Wrap description text at 76 characters after the Go comment prefix. The repository's
+  [rendering measurements](../facts/crd-descriptions-in-kubectl-explain.md) show that longer lines
+  wrap again in `kubectl explain`, leaving stray words on separate lines. Fix that before optional
+  paragraph-to-bullet changes.
 - Name the subject: the `GitTarget`, the source cluster, or the referenced `GitBranch`.
 - Prefer familiar verbs: `allows`, `uses`, `rejects`, and `restores`. Replace phrases such as
   `a written list`, `admits nobody`, and `hands the switch back` with concrete behavior.
@@ -94,7 +104,70 @@ October 25, 2026; the source links track their default branches.
 - Aim for two to four sentences in ordinary descriptions. Treat the existing 80-word target as
   a prompt to restructure longer text. Preserve necessary warnings.
 
-### 1. Turn namespace choices into bullets
+### 1. Explain the message override accurately
+
+Location: [CommitRequest.spec.message](../../api/v1alpha3/commitrequest_types.go).
+
+```text
+Message supplies the requested commit message. Omitted, the GitTarget's
+spec.commit.message.liveTemplate generates the message.
+
+The text is never evaluated as a template. If the GitTarget configures
+spec.commit.message.requestTemplate, that template wraps this text.
+Otherwise, the text is used as written.
+
+The message must contain 1–1024 characters and at least one non-whitespace
+character. Newlines are allowed for a subject and body; other control
+characters are rejected.
+```
+
+Short paragraphs work here: the message policy and validation are separate topics, but neither
+needs an artificial list.
+
+### 2. Describe the timestamp without claiming an outage duration
+
+Location: [GitProvider.status.lastVerifiedAt](../../api/v1alpha3/gitprovider_types.go).
+
+```text
+LastVerifiedAt is the time of the last successful repository connectivity
+check using this GitProvider's credentials, or anonymous access when
+spec.secretRef is omitted. Failed checks leave this timestamp unchanged.
+Check status.conditions for the reason the GitProvider is not ready.
+```
+
+The controller updates the timestamp only after a successful remote check. The timestamp cannot
+identify when a later failure began.
+
+### 3. Distinguish condition status from reason
+
+Location: [ArgoCDClaim.status.conditions](../../api/v1alpha3/argocdclaim_types.go).
+
+Replace the paragraph beginning `InControl is True` with:
+
+```text
+InControl reports whether GitOps Reverser controls when the Application
+syncs:
+
+- True, reason AutomatedSyncOff: GitOps Reverser controls sync timing.
+- False: control is being released or revoked, or no GitTarget references
+  the claim.
+- False, reason NotConfigured: another field manager has enabled automated
+  sync.
+- False, reason ArgoCDVersionNotSupported: the Application API does not
+  support spec.syncPolicy.automated.enabled, so GitOps Reverser cannot
+  disable automated sync through that field.
+- Unknown, reason NotConfigured: the claim is not configured to control the
+  Application.
+
+A claim with no referencing GitTarget reads no applier and reports
+Ready=True, reason NotReferenced.
+```
+
+These cases come from `holdArgoCD`, `ownedSwitchCondition`, and `switchOff`. The version check in
+`switchOff` also catches an Argo CD downgrade after the configuration check. Apply the same
+status/reason distinction when editing the longer `Configured` paragraph and Flux conditions.
+
+### 4. Turn namespace choices into bullets
 
 Location: [ConsumerNamespaces.From](../../api/v1alpha3/access_grants.go).
 
@@ -110,7 +183,7 @@ From selects which namespaces this grant allows consumers from:
 - "All": every namespace.
 ```
 
-### 2. Make the omitted and empty grant lists easy to distinguish
+### 5. Make the omitted and empty grant lists easy to distinguish
 
 Location: [GitBranch.spec.allowedGitTargets](../../api/v1alpha3/gitbranch_types.go).
 
@@ -118,7 +191,8 @@ The distinction is already present, but `a written list is the whole policy` mak
 translate it. State each case:
 
 ```text
-AllowedGitTargets controls which GitTargets may write through this GitBranch.
+AllowedGitTargets controls which GitTargets may write through this
+GitBranch.
 
 - Omitted: allows GitTargets in this GitBranch's namespace.
 - Empty list ([]): allows no GitTargets.
@@ -132,83 +206,7 @@ Apply the same structure to `KubeProvider.spec.allowedGitTargets` and `allowedAp
 preserving their source-namespace and applier-namespace defaults. Keep
 `GitProvider.spec.allowedGitBranches` distinct: both omission and an empty list deny access.
 
-### 3. Separate refusal choices from the restrictions on reapplying
-
-Location: [GitTarget.spec.onRefusal](../../api/v1alpha3/gittarget_types.go).
-
-```text
-OnRefusal controls what happens when a live edit cannot be written to the folder.
-Defaults to "Ignore". A refused edit makes no commit and remains on the cluster
-until an applier overwrites it from Git.
-
-- "Ignore": reports the refusal in conditions and events.
-- "Reapply": uses spec.applierClaimRef to reapply Git after pending edits are
-  published, reverting the refused edit. Requires spec.applierClaimRef.
-
-Reapply runs only when the document already exists in the folder and the write
-removes no documents. It does not run for folder-wide failures, such as invalid
-YAML. A refusal that persists triggers one reapply, rather than one per check.
-```
-
-This is a justified exception to the word-count target: the restrictions prevent a reader from
-expecting a reapply to repair every refusal.
-
-### 4. Present namespace serialization as three choices
-
-Location: [GitTarget.spec.serializeNamespace](../../api/v1alpha3/gittarget_types.go).
-
-```text
-SerializeNamespace controls whether written documents include metadata.namespace.
-It applies to every write of a namespaced resource. Cluster-scoped resources
-ignore this setting.
-
-- Omitted: leaves out metadata.namespace only when the kustomization governing
-  the document sets the same namespace.
-- true: always includes metadata.namespace. Use this for a flat folder applied
-  directly.
-- false: always omits metadata.namespace. The namespace must come from a
-  kustomization, a Flux Kustomization's targetNamespace, or an Argo CD
-  Application's destination.namespace.
-
-With false, the folder accepts only one source namespace. A WatchRule that adds
-a second is rejected with GitPathAccepted=False, reason MultipleSourceNamespaces.
-```
-
-### 5. Explain the message override accurately
-
-Location: [CommitRequest.spec.message](../../api/v1alpha3/commitrequest_types.go).
-
-```text
-Message supplies the requested commit message. Omitted, the GitTarget's
-spec.commit.message.liveTemplate generates the message.
-
-The text is never evaluated as a template. If the GitTarget configures
-spec.commit.message.requestTemplate, that template wraps this text. Otherwise,
-the text is used as written.
-
-The message must contain 1–1024 characters and at least one non-whitespace
-character. Newlines are allowed for a subject and body; other control characters
-are rejected.
-```
-
-Short paragraphs work here: the message policy and validation are separate topics, but neither
-needs an artificial list.
-
-### 6. Describe the timestamp without claiming an outage duration
-
-Location: [GitProvider.status.lastVerifiedAt](../../api/v1alpha3/gitprovider_types.go).
-
-```text
-LastVerifiedAt is the time of the last successful repository connectivity check
-using this GitProvider's credentials, or anonymous access when spec.secretRef
-is omitted. Failed checks leave this timestamp unchanged. Check status.conditions
-for the reason the GitProvider is not ready.
-```
-
-The controller updates the timestamp only after a successful remote check. The timestamp cannot
-identify when a later failure began.
-
-### 7. Give each receiver type its own line
+### 6. Give each receiver type its own line
 
 Location: [GitReceiver.spec.type](../../api/v1alpha3/gitreceiver_types.go).
 
@@ -225,7 +223,7 @@ Type selects the push payload and authentication format:
 This also replaces the JSON-like `{"repository", "branch", "after"}` fragment, which names fields
 but is not valid JSON.
 
-### 8. Keep template fields available, but group them
+### 7. Keep template fields available, but group them
 
 Location: [GitTarget.spec.commit.message.liveTemplate](../../api/v1alpha3/gitprovider_types.go).
 
@@ -233,8 +231,8 @@ The current description combines the template context, per-resource fields, empt
 and request overrides. Group the context without dropping fields:
 
 ```text
-LiveTemplate is the Go template for commit messages generated from live edits.
-An empty value uses the built-in template.
+LiveTemplate is the Go template for commit messages generated from live
+edits. An empty value uses the built-in template.
 
 The template receives:
 
@@ -246,8 +244,8 @@ The template receives:
 
 Each resource provides Operation, Group, Version, Resource, Namespace, Name,
 APIVersion, ResourceVersion, and Generation. ResourceVersion identifies the
-state written by the commit and may be empty. Generation is 0 for a kind without
-a spec. Guard both values with {{with}}.
+state written by the commit and may be empty. Generation is 0 for a kind
+without a spec. Guard both values with {{with}}.
 
 A CommitRequest message takes precedence without changing the author. The
 requestTemplate field controls whether that message is wrapped.
@@ -255,30 +253,7 @@ requestTemplate field controls whether that message is wrapped.
 
 Keep examples and longer context definitions in the existing [commit message guide](../commit-messages.md).
 
-### 9. Distinguish condition status from reason
-
-Location: [ArgoCDClaim.status.conditions](../../api/v1alpha3/argocdclaim_types.go).
-
-Replace the paragraph beginning `InControl is True` with:
-
-```text
-InControl reports whether GitOps Reverser controls when the Application syncs:
-
-- True, reason AutomatedSyncOff: GitOps Reverser controls sync timing.
-- False: control is being released or revoked, or no GitTarget references the
-  claim. It is also False with reason NotConfigured if another field manager
-  has enabled automated sync.
-- Unknown, reason NotConfigured: the claim is not configured to control the
-  Application.
-
-A claim with no referencing GitTarget reads no applier and reports Ready=True,
-reason NotReferenced.
-```
-
-This preserves the difference found in `holdArgoCD` and `ownedSwitchCondition`. Apply the same
-status/reason distinction when editing the longer `Configured` paragraph and Flux conditions.
-
-### 10. Move the long Flux troubleshooting row into a subsection
+### 8. Move the long Flux troubleshooting row into a subsection
 
 Location: [Flux troubleshooting](../bi-directional-flux.md#troubleshooting).
 
@@ -300,6 +275,57 @@ Proposed subsection text:
 Keep the symptom in the table and link to this explanation. The adjacent `Overriding by hand`
 bullet also benefits from two sentences: first the unchecked apply, then the claim's response.
 
+### 9. Optional: use bullets for refusal choices
+
+Location: [GitTarget.spec.onRefusal](../../api/v1alpha3/gittarget_types.go).
+
+The existing description already separates `Ignore` and `Reapply` into paragraphs. Keep it unless
+a rendered comparison shows a benefit. This alternative mainly separates the restrictions on
+`Reapply` from the value's immediate effect:
+
+```text
+OnRefusal controls what happens when a live edit cannot be written to the
+folder. Defaults to "Ignore". A refused edit makes no commit and remains on
+the cluster until an applier overwrites it from Git.
+
+- "Ignore": reports the refusal in conditions and events.
+- "Reapply": uses spec.applierClaimRef to reapply Git after pending edits
+  are published, reverting the refused edit. Requires spec.applierClaimRef.
+
+Reapply runs only when the document already exists in the folder and the
+write removes no documents. It does not run for folder-wide failures, such
+as invalid YAML. A refusal that persists triggers one reapply, rather than
+one per check.
+```
+
+This is a justified exception to the word-count target: the restrictions prevent a reader from
+expecting a reapply to repair every refusal.
+
+### 10. Optional: use bullets for namespace serialization
+
+Location: [GitTarget.spec.serializeNamespace](../../api/v1alpha3/gittarget_types.go).
+
+Omission, `true`, and `false` already have separate paragraphs. Bullets may make the alternatives
+easier to scan, but this is a lower-priority presentation choice. Correct line wrapping first:
+
+```text
+SerializeNamespace controls whether written documents include
+metadata.namespace. It applies to every write of a namespaced resource.
+Cluster-scoped resources ignore this setting.
+
+- Omitted: leaves out metadata.namespace only when the kustomization
+  governing the document sets the same namespace.
+- true: always includes metadata.namespace. Use this for a flat folder
+  applied directly.
+- false: always omits metadata.namespace. The namespace must come from a
+  kustomization, a Flux Kustomization's targetNamespace, or an Argo CD
+  Application's destination.namespace.
+
+With false, the folder accepts only one source namespace. A WatchRule that
+adds a second is rejected with GitPathAccepted=False, reason
+MultipleSourceNamespaces.
+```
+
 ### Remaining pass, in priority order
 
 | Location | Proposed treatment |
@@ -314,47 +340,14 @@ bullet also benefits from two sentences: first the unchecked apply, then the cla
 | `GitTarget.spec.suspend` | Separate stopping new commits, the final push, and resuming from cluster state. |
 | Upgrade entry for removed message templates | Separate removal, client behavior, and the migration action. |
 
-## Contract integrity (spec/status, status subresource, Conditions)
-
-All ten generated CRDs have a status subresource, `status.observedGeneration`, and condition lists
-keyed by `type`. This proposal changes their explanations only. Controller behavior was checked
-for the specific wording corrections above; readiness behavior across all controllers was not
-retested.
-
-## Schema correctness & webhooks (validation, defaults, CEL)
-
-The omitted-versus-empty grant distinction agrees with the generated defaults and
-[grant helpers](../../api/v1alpha3/access_grants.go). Preserve enum values, namespace requirements,
-and immutable-reference rules. This review proposes no schema, validation, or webhook changes.
-
-## GitOps/SSA ergonomics (lists, patchability)
-
-Grant lists are atomic; condition lists are maps keyed by `type`. Prose bullets have no relationship
-to these schema list types. Keep both unchanged during the wording pass.
-
-## Operator UX (printer columns)
-
-Evaluate proposed bullets in actual `kubectl explain` output before applying them throughout the
-API. Check both default terminal output and any generated reference page: Markdown appearance
-alone does not establish terminal readability. No rendering test has been performed for these
-proposals. Printer-column changes are outside this editorial scope.
-
-## Compatibility & migration impact (mandatory)
-
-The proposed wording changes are non-breaking. The existing branch also removes retired fields
-and their rejection rules; it is not exclusively a description change. The parsed CRD comparison
-against the merge base confirms those removals in `GitTarget`, `GitProvider`, `FluxClaim`, and
-`ArgoCDClaim`. Their migration behavior belongs in [the upgrade guide](../UPGRADING.md), separately
-from this proposal.
-
-The ten inspected CRDs serve and store `v1alpha3`. No API version or conversion change is proposed.
-
-## Minimal improvement plan (PR-sized)
+## Implementation order
 
 1. Correct the message, timestamp, condition, and cross-object-reference wording.
-2. Apply the enum and grant-list examples, then preview their generated descriptions.
+2. Fix description line widths, then apply the enum and grant-list examples.
 3. Restructure the remaining long descriptions and the Flux troubleshooting case.
-4. Regenerate CRDs into a scratch directory and compare with the pre-edit branch snapshot after
+4. Preview `kubectl explain` output. Consider the optional changes to `onRefusal` and
+   `serializeNamespace` only if they improve that output.
+5. Regenerate CRDs into a scratch directory and compare with the pre-edit branch snapshot after
    stripping every `description` key. Preserve scopes, defaults, validation, and list semantics.
-5. Run the repository's required validation for an API-comment implementation. For this proposal
+6. Run the repository's required validation for an API-comment implementation. For this proposal
    alone, run `task lint-docs` and Vale on this file.
