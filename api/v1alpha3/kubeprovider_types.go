@@ -13,62 +13,81 @@ import (
 
 // KubeProviderSpec defines the desired state of KubeProvider.
 //
-// Exactly one credential arm is set, and there is no third: an omitted, malformed or refused
-// credential must never fall through to the operator's own identity, so that identity is an arm
-// of its own (inCluster) rather than what an absent secretRef means.
+// Exactly one credential arm is set, and there is no third: an omitted,
+// malformed or refused credential must never fall through to the operator's
+// own identity, so that identity is an arm of its own (inCluster) rather than
+// what an absent secretRef means.
 // +kubebuilder:validation:XValidation:rule="has(self.secretRef) != has(self.inCluster)",message="set exactly one of spec.secretRef and spec.inCluster"
 //
-// The in-cluster client is the operator's own and is shared by everything that uses it, so a
-// per-provider throttle cannot apply to it. Refused rather than ignored.
+// The in-cluster client is the operator's own and is shared by everything that
+// uses it, so a per-provider throttle cannot apply to it. Refused rather than
+// ignored.
 // +kubebuilder:validation:XValidation:rule="!has(self.inCluster) || !has(self.client)",message="spec.client is refused beside spec.inCluster: the operator's own client is not throttled per provider"
 //
-// Which cluster a provider means must not silently change under the GitTargets mirroring through
-// it, so the credential is immutable, including switching arms. A rotated kubeconfig is a change
-// to the Secret, which stays allowed.
+// Which cluster a provider means must not silently change under the GitTargets
+// mirroring through it, so the credential is immutable, including switching
+// arms. A rotated kubeconfig is a change to the Secret, which stays allowed.
 // +kubebuilder:validation:XValidation:rule="has(self.inCluster) == has(oldSelf.inCluster) && (!has(self.secretRef) || self.secretRef == oldSelf.secretRef)",message="spec.secretRef and spec.inCluster are immutable; delete and recreate the KubeProvider to point it at a different cluster"
 type KubeProviderSpec struct {
-	// SecretRef names the Secret, in this namespace, that holds a kubeconfig for the cluster. With
-	// no key, the kubeconfig is read from "value", then "value.yaml". A kubeconfig that uses exec
-	// auth, insecure-skip-tls-verify or credentials named by file path is refused with
-	// Validated=False unless the installation allows it. Set exactly one of secretRef and
-	// inCluster. Immutable: delete and recreate the KubeProvider to change it.
+	// SecretRef names the Secret, in this namespace, that holds a kubeconfig for
+	// the cluster. With no key, the kubeconfig is read from "value", then
+	// "value.yaml". A kubeconfig that uses exec auth, insecure-skip-tls-verify or
+	// credentials named by file path is refused with Validated=False unless the
+	// installation allows it. Set exactly one of secretRef and inCluster.
+	// Immutable: delete and recreate the KubeProvider to change it.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="size(self.name) > 0",message="spec.secretRef.name must not be empty"
 	SecretRef *meta.SecretKeyReference `json:"secretRef,omitempty"`
 
-	// InCluster makes this KubeProvider use the operator's own identity in the cluster it runs
-	// in. It is honored only for a KubeProvider the installation lists in
-	// --in-cluster-kube-providers; any other reports Stalled=True, reason InClusterNotAuthorized,
-	// and is never used. Set exactly one of secretRef and inCluster. Immutable: delete and
-	// recreate the KubeProvider to change it.
+	// InCluster makes this KubeProvider use the operator's own identity in the
+	// cluster it runs in. It is honored only for a KubeProvider the installation
+	// lists in --in-cluster-kube-providers; any other reports Stalled=True, reason
+	// InClusterNotAuthorized, and is never used. Set exactly one of secretRef and
+	// inCluster. Immutable: delete and recreate the KubeProvider to change it.
 	// +optional
 	InCluster *KubeProviderInCluster `json:"inCluster,omitempty"`
 
-	// AllowedGitTargets says which GitTargets may mirror through this KubeProvider, and what. Each
-	// grant admits GitTargets from some namespaces, bounds which source namespaces their
-	// WatchRules may read (sourceNamespaces), and lists the cluster-scoped types their
-	// ClusterWatchRules may mirror (clusterResources). Omitted, it is one grant for this namespace,
-	// reading the source namespace of the same name and no cluster-scoped type. A written list is
-	// the whole policy, and [] admits nobody. Grants combine by union.
+	// AllowedGitTargets says which GitTargets may mirror through this
+	// KubeProvider, and what. Each grant allows the GitTargets of some
+	// namespaces, bounds which source namespaces their WatchRules may read
+	// (sourceNamespaces), and lists the cluster-scoped types their
+	// ClusterWatchRules may mirror (clusterResources).
+	//
+	// - Omitted: the GitTargets in this KubeProvider's namespace, reading only
+	//   the source namespace of the same name and no cluster-scoped type.
+	// - Empty list ([]): no GitTarget.
+	// - A list of grants: the GitTargets that at least one grant allows, with
+	//   what every grant that allows them permits.
+	//
+	// A list replaces the default: the GitTargets in this namespace keep access
+	// only if at least one grant allows them.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
 	// +kubebuilder:default={{consumerNamespaces: {from: Same}, sourceNamespaces: {"{consumer.namespace}"}}}
 	AllowedGitTargets []KubeProviderGitTargetGrant `json:"allowedGitTargets"`
 
-	// AllowedApplierClaims says which FluxClaims and ArgoCDClaims may hold an applier through this
-	// KubeProvider, and in which namespaces that applier may be (applierNamespaces). Being
-	// admitted to mirror does not admit to apply. Omitted, it is one grant for this namespace,
-	// holding appliers in the namespace of the same name. A written list is the whole policy, and
-	// [] admits nobody. Grants combine by union.
+	// AllowedApplierClaims says which FluxClaims and ArgoCDClaims may hold an
+	// applier through this KubeProvider, and in which namespaces that applier
+	// may be (applierNamespaces). A namespace in allowedGitTargets gets no
+	// applier access from that.
+	//
+	// - Omitted: the claims in this KubeProvider's namespace, holding appliers
+	//   in the namespace of the same name.
+	// - Empty list ([]): no claim.
+	// - A list of grants: the claims that at least one grant allows, holding
+	//   appliers in the applierNamespaces of every grant that allows them.
+	//
+	// A list replaces the default: the claims in this namespace keep access
+	// only if at least one grant allows them.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
 	// +kubebuilder:default={{consumerNamespaces: {from: Same}, applierNamespaces: {"{consumer.namespace}"}}}
 	AllowedApplierClaims []KubeProviderApplierClaimGrant `json:"allowedApplierClaims"`
 
-	// Client sets the request rate limits for this cluster. Omitted, they are 20 QPS with a burst
-	// of 30. Refused beside inCluster.
+	// Client sets the request rate limits for this cluster. Omitted, they are 20
+	// QPS with a burst of 30. Refused beside inCluster.
 	// +optional
 	Client *KubeProviderClient `json:"client,omitempty"`
 
@@ -76,42 +95,54 @@ type KubeProviderSpec struct {
 	// flags are --author-attribution-*: the prefix groups a flat flag namespace, and a block on a
 	// source-cluster object already supplies that scope.
 
-	// Attribution configures how commit authors are found from this cluster's audit events.
+	// Attribution configures how commit authors are found from this cluster's
+	// audit events.
 	// +optional
 	Attribution *KubeProviderAttribution `json:"attribution,omitempty"`
 }
 
-// KubeProviderInCluster selects the operator's own identity. It has no fields: the arm being set
-// is the whole statement.
+// KubeProviderInCluster selects the operator's own identity. It has no fields:
+// the arm being set is the whole statement.
 type KubeProviderInCluster struct{}
 
 // KubeProviderClient holds the per-cluster kube-client throttles.
 type KubeProviderClient struct {
-	// QPS is the sustained request rate to this cluster, in queries per second. Defaults to 20.
+	// QPS is the sustained request rate to this cluster, in queries per second.
+	// Defaults to 20.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	QPS *int32 `json:"qps,omitempty"`
 
-	// Burst is how many requests to this cluster may exceed qps at once. Defaults to 30.
+	// Burst is how many requests to this cluster may exceed qps at once. Defaults
+	// to 30.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	Burst *int32 `json:"burst,omitempty"`
 }
 
-// KubeProviderAttribution holds the per-cluster author-attribution settings. It exists as a block
-// so later per-cluster knobs (grace, mode) have a home beside auditRoute.
+// KubeProviderAttribution holds the per-cluster author-attribution settings.
+// It exists as a block so later per-cluster knobs (grace, mode) have a home
+// beside auditRoute.
 type KubeProviderAttribution struct {
-	// AuditRoute is the route this cluster's audit events arrive on: the <route> in the API
-	// server's audit webhook URL, /audit-webhook/<route>. When several logical clusters share one
-	// webhook backend, it is instead the value of the audit-event annotation that
-	// --author-attribution-audit-route-annotation-key names. KubeProviders with the same route
-	// read the same cluster's attribution facts.
+	// AuditRoute is the route this cluster's audit events arrive on: the <route>
+	// in the API server's audit webhook URL, /audit-webhook/<route>. When several
+	// logical clusters share one webhook backend, it is instead the value of the
+	// audit-event annotation that --author-attribution-audit-route-annotation-key
+	// names. KubeProviders with the same route read the same cluster's
+	// attribution facts.
 	//
-	// Empty means <namespace>.<name>. Set it when several KubeProviders in this namespace connect
-	// to one cluster, since an API server posts under one route. A route belongs to one namespace:
-	// the one it starts with (<namespace>.) when a KubeProvider there carries it, and otherwise
-	// the namespace of the oldest KubeProvider carrying it. KubeProviders in another namespace that
-	// carry it report Stalled=True, reason AuditRouteConflict, and are not used.
+	// Empty means <namespace>.<name>. Set it when several KubeProviders in this
+	// namespace connect to one cluster, since an API server posts under one
+	// route.
+	//
+	// A route belongs to one namespace:
+	//
+	// - the namespace the route starts with (<namespace>.), when a KubeProvider
+	//   there carries it;
+	// - otherwise, the namespace of the oldest KubeProvider carrying it.
+	//
+	// KubeProviders in another namespace that carry the route report
+	// Stalled=True, reason AuditRouteConflict, and are not used.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
@@ -132,23 +163,25 @@ type KubeProviderStatus struct {
 	// is mutable, and without recording which route earned the latch, a provider repointed at a new
 	// route would carry True forward and report facts it has never received there.
 
-	// AuditRoute is the route in use: spec.attribution.auditRoute, or <namespace>.<name> when that
-	// is empty. The AuditFactsReceived condition describes this route, and starts over when it
-	// changes.
+	// AuditRoute is the route in use: spec.attribution.auditRoute, or
+	// <namespace>.<name> when that is empty. The AuditFactsReceived condition
+	// describes this route, and starts over when it changes.
 	// +optional
 	AuditRoute string `json:"auditRoute,omitempty"`
 
-	// Conditions are the latest observations of this KubeProvider's state. Ready, Reconciling and
-	// Stalled follow kstatus; Stalled=True with reason InClusterNotAuthorized or
-	// AuditRouteConflict means the KubeProvider is not used at all. Validated says whether the
-	// credential is safe and readable, checked without connecting.
+	// Conditions are the latest observations of this KubeProvider's state. Ready,
+	// Reconciling and Stalled follow kstatus; Stalled=True with reason
+	// InClusterNotAuthorized or AuditRouteConflict means the KubeProvider is not
+	// used at all. Validated says whether the credential is safe and readable,
+	// checked without connecting.
 	//
-	// AuditFactsReceived, which is not part of Ready, says whether an attribution fact has ever
-	// arrived on status.auditRoute. It is True (Received) from the first one on and never goes
-	// back. Until then it is Unknown, and the reason says where to look: TransportUnavailable (the
-	// fact store refuses writes), NoAuditDelivery (no audit events arrive at all), or RouteUnused
-	// (audit events arrive, but never on this route). It is absent when author attribution is
-	// off.
+	// AuditFactsReceived, which is not part of Ready, says whether an attribution
+	// fact has ever arrived on status.auditRoute. It is True (Received) from the
+	// first one on and never goes back. Until then it is Unknown, and the reason
+	// says where to look: TransportUnavailable (the fact store refuses writes),
+	// NoAuditDelivery (no audit events arrive at all), or RouteUnused (audit
+	// events arrive, but never on this route). It is absent when author
+	// attribution is off.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -167,10 +200,11 @@ type KubeProviderStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// KubeProvider is a connection to a Kubernetes cluster and the identity used there: a kubeconfig
-// Secret in its namespace, or the operator's own identity where the installation allows it.
-// GitTargets mirror from it and applier claims reach their applier through it, as its
-// spec.allowedGitTargets and spec.allowedApplierClaims allow.
+// KubeProvider is a connection to a Kubernetes cluster and the identity used
+// there: a kubeconfig Secret in its namespace, or the operator's own identity
+// where the installation allows it. GitTargets mirror from it and applier
+// claims reach their applier through it, as its spec.allowedGitTargets and
+// spec.allowedApplierClaims allow.
 type KubeProvider struct {
 	metav1.TypeMeta `json:",inline"`
 

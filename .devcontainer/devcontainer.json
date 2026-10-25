@@ -83,7 +83,9 @@
         "golang.go",
         "ms-kubernetes-tools.vscode-kubernetes-tools",
         "ms-azuretools.vscode-docker",
-        "openai.chatgpt",
+        // Pinned: 26.1021.22027's webview never renders in the devcontainer
+        // (renderer_ready_timeout). Unpin once a newer release is confirmed working.
+        "openai.chatgpt@26.1007.21434",
         "anthropic.claude-code"
       ]
     }

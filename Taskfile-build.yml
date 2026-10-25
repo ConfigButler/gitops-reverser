@@ -246,6 +246,25 @@ tasks:
       - lint-actions
       - lint-helm
       - lint-docs
+      - lint-api-doc-width
+
+  lint-api-doc-width:
+    desc: Check that every API doc comment line fits in 76 characters, so kubectl explain prints it whole
+    # kubectl explain keeps a CRD description's line breaks and wraps each line again at
+    # 76 characters of text, so a wider line leaves its last words on a line of their own.
+    # See docs/facts/crd-descriptions-in-kubectl-explain.md.
+    #
+    # It reads api/ rather than config/crd/bases, so it needs no `manifests` dep: the CRDs
+    # also carry descriptions copied from upstream types (metav1.Condition, LabelSelector)
+    # that this repository cannot rewrap. hack/apidocwidth says more.
+    #
+    # Rooted globs only. CI asserts that a second `task lint` run finds this task up to
+    # date, and an unrooted `**` would walk external-sources/.
+    sources:
+      - api/**/*.go
+      - hack/apidocwidth/*.go
+    cmds:
+      - go run ./hack/apidocwidth
 
   lint-docs:
     desc: All documentation checks — references, markdown structure, prose, and metric names

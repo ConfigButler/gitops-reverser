@@ -10,29 +10,32 @@ import (
 
 // GitBranchSpec defines the desired state of GitBranch.
 //
-// gitProviderRef, branch and parentBranch are immutable: together they are the repository branch
-// this object claims, and a claim that could be repointed would move a branch worker's checkout,
-// credential and pending writes to another branch under the GitTargets that reference it. Delete
-// and recreate instead. allowedGitTargets is the branch owner's policy and stays mutable.
+// gitProviderRef, branch and parentBranch are immutable: together they are the
+// repository branch this object claims, and a claim that could be repointed
+// would move a branch worker's checkout, credential and pending writes to
+// another branch under the GitTargets that reference it. Delete and recreate
+// instead. allowedGitTargets is the branch owner's policy and stays mutable.
 //
-// CEL cannot read metadata.namespace, so the reference is compared as written: spelling out the
-// GitBranch's own namespace where it was omitted is refused too.
+// CEL cannot read metadata.namespace, so the reference is compared as written:
+// spelling out the GitBranch's own namespace where it was omitted is refused
+// too.
 // +kubebuilder:validation:XValidation:rule="self.gitProviderRef == oldSelf.gitProviderRef",message="spec.gitProviderRef is immutable; delete and recreate the GitBranch to change it"
 // +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitBranch to change it"
 // +kubebuilder:validation:XValidation:rule="has(self.parentBranch) == has(oldSelf.parentBranch) && (!has(self.parentBranch) || self.parentBranch == oldSelf.parentBranch)",message="spec.parentBranch is immutable; delete and recreate the GitBranch to change it"
 type GitBranchSpec struct {
-	// GitProviderRef names the GitProvider whose repository and credential write this branch. An
-	// omitted namespace means this GitBranch's namespace. The GitProvider's spec.allowedGitBranches
-	// must admit this namespace and spec.branch. Immutable: delete and recreate the GitBranch to
-	// change it.
+	// GitProviderRef names the GitProvider whose repository and credential write
+	// this branch. An omitted namespace means this GitBranch's namespace. The
+	// GitProvider's spec.allowedGitBranches must admit this namespace and
+	// spec.branch. Immutable: delete and recreate the GitBranch to change it.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitProviderRef.name must not be empty"
 	GitProviderRef meta.NamespacedObjectReference `json:"gitProviderRef"`
 
-	// Branch is the branch on the remote that this GitBranch writes. It must match a branch pattern
-	// that the GitProvider's spec.allowedGitBranches give this namespace. Only one GitBranch holds
-	// a repository branch: the oldest admitted one whose credential can open a push session. Any
-	// other reports Stalled, reason BranchConflict. Immutable: delete and recreate the GitBranch to
+	// Branch is the branch on the remote that this GitBranch writes. It must match
+	// a branch pattern that the GitProvider's spec.allowedGitBranches give this
+	// namespace. Only one GitBranch holds a repository branch: the oldest admitted
+	// one whose credential can open a push session. Any other reports Stalled,
+	// reason BranchConflict. Immutable: delete and recreate the GitBranch to
 	// change it.
 	// +required
 	// +kubebuilder:validation:MinLength=1
@@ -43,23 +46,33 @@ type GitBranchSpec struct {
 	// parent changed under a worker holding writes is the one case that needed its own replay, so it
 	// is immutable. It can never hold a commit or tag: a pinned starting point would be a sibling.
 
-	// ParentBranch is the branch spec.branch is created from, and compared against while
-	// spec.branch does not exist on the remote. Omitted, it is the remote's default branch, or no
-	// history at all in an empty repository. When set, it must exist on the remote for spec.branch
-	// to be created; otherwise this GitBranch reports ParentBranchNotFound and writes nothing. Once
-	// spec.branch exists, the parent branch is no longer followed. It is only read, so
-	// spec.allowedGitBranches need not allow it. Immutable, including adding or removing it:
-	// delete and recreate the GitBranch to change it.
+	// ParentBranch is the branch spec.branch is created from, and compared
+	// against while spec.branch does not exist on the remote. Omitted, it is the
+	// remote's default branch, or no history at all in an empty repository.
+	//
+	// When set, it must exist on the remote for spec.branch to be created;
+	// otherwise this GitBranch reports Stalled=True, reason ParentBranchNotFound,
+	// and writes nothing. Once spec.branch exists, the parent branch is no
+	// longer followed. It is only read, so the GitProvider's
+	// spec.allowedGitBranches need not allow it.
+	//
+	// Immutable, including adding or removing it: delete and recreate the
+	// GitBranch to change it.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	ParentBranch string `json:"parentBranch,omitempty"`
 
 	// Mutable, unlike the fields above: claiming a branch includes the right to share it.
 
-	// AllowedGitTargets says which GitTargets may write through this GitBranch. Omitted, it is one
-	// grant for this namespace (consumerNamespaces: {from: Same}). A written list is the whole
-	// policy, so it admits this namespace only if a grant says so, and [] admits nobody. Grants
-	// combine by union.
+	// AllowedGitTargets says which GitTargets may write through this GitBranch:
+	//
+	// - Omitted: the GitTargets in this GitBranch's namespace, as one grant
+	//   with from: "Same".
+	// - Empty list ([]): no GitTarget.
+	// - A list of grants: the GitTargets that at least one grant allows.
+	//
+	// A list replaces the default: the GitTargets in this namespace keep access
+	// only if at least one grant allows them.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
@@ -73,8 +86,9 @@ type GitBranchStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are the latest observations of this GitBranch's state: whether it holds its
-	// repository branch and can write it. Ready, Reconciling and Stalled follow kstatus.
+	// Conditions are the latest observations of this GitBranch's state: whether it
+	// holds its repository branch and can write it. Ready, Reconciling and Stalled
+	// follow kstatus.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -82,40 +96,46 @@ type GitBranchStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Repository is the GitProvider's repository URL, normalized to host and path with no scheme,
-	// user or ".git" suffix. With spec.branch it is what only one GitBranch may hold, so two
-	// GitProviders that spell one repository differently still conflict.
+	// Repository is the GitProvider's repository URL, normalized to host and path
+	// with no scheme, user or ".git" suffix. With spec.branch it is what only one
+	// GitBranch may hold, so two GitProviders that spell one repository
+	// differently still conflict.
 	// +optional
 	Repository string `json:"repository,omitempty"`
 
-	// LastPushNoticeAt is when a GitReceiver last delivered a push for this branch. It records that
-	// the delivery arrived; status.remote says what the remote holds. Absent means no delivery has
-	// reached this branch: no GitReceiver is set up or reachable, the delivery names the repository
-	// by a URL other than the GitProvider's spec.url, or no GitTarget references this GitBranch. It
-	// advances at most once a minute.
+	// LastPushNoticeAt is when a GitReceiver last delivered a push for this
+	// branch. It records that the delivery arrived; status.remote says what the
+	// remote holds. Absent means no delivery has reached this branch: no
+	// GitReceiver is set up or reachable, the delivery names the repository by a
+	// URL other than the GitProvider's spec.url, or no GitTarget references this
+	// GitBranch. It advances at most once a minute.
 	// +optional
 	LastPushNoticeAt *metav1.Time `json:"lastPushNoticeAt,omitempty"`
 
-	// Remote is where this branch is on the Git remote, and when that was last checked by a push or
-	// a fetch. It is updated at most once a minute. Absent until the first check, and again after
-	// the GitProvider is recreated for another repository.
+	// Remote is where this branch is on the Git remote, and when that was last
+	// checked by a push or a fetch. It is updated at most once a minute. Absent
+	// until the first check, and again after the GitProvider is recreated for
+	// another repository.
 	// +optional
 	Remote *GitBranchRemoteStatus `json:"remote,omitempty"`
 
-	// GitTargetCount is how many GitTargets, in any namespace, reference this GitBranch. Each one
-	// reports its own folder's health in its own conditions.
+	// GitTargetCount is how many GitTargets, in any namespace, reference this
+	// GitBranch. Each one reports its own folder's health in its own conditions.
 	// +optional
 	GitTargetCount int32 `json:"gitTargetCount"`
 }
 
-// GitBranchRemoteStatus is the answer to "where is my branch, and when did we last prove it".
+// GitBranchRemoteStatus is the answer to "where is my branch, and when did we
+// last prove it".
 //
-// It is sampled when the GitBranch reconciles, from what its branch worker last proved about the
-// branch, and written at most once a minute. The first observation, and a correction after the
-// repository changed under the branch, are written at once.
+// It is sampled when the GitBranch reconciles, from what its branch worker
+// last proved about the branch, and written at most once a minute. The first
+// observation, and a correction after the repository changed under the branch,
+// are written at once.
 type GitBranchRemoteStatus struct {
-	// Commit is the commit hash the branch is at on the remote. Empty means the branch is not on
-	// the remote yet, which is not an error: a branch nothing has written to does not exist.
+	// Commit is the commit hash the branch is at on the remote. Empty means the
+	// branch is not on the remote yet, which is not an error: a branch nothing has
+	// written to does not exist.
 	// +optional
 	Commit string `json:"commit,omitempty"`
 
@@ -123,20 +143,22 @@ type GitBranchRemoteStatus struct {
 	// +optional
 	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
 
-	// VerifiedBy is how commit was learned: "Push" means the remote accepted a push from GitOps
-	// Reverser, and "Fetch" means a fetch found it. "Fetch" next to a commit GitOps Reverser did not
-	// make means somebody else pushed to the branch.
+	// VerifiedBy is how commit was learned: "Push" means the remote accepted a
+	// push from GitOps Reverser, and "Fetch" means a fetch found it. "Fetch" next
+	// to a commit GitOps Reverser did not make means somebody else pushed to the
+	// branch.
 	// +optional
 	// +kubebuilder:validation:Enum=Push;Fetch
 	VerifiedBy string `json:"verifiedBy,omitempty"`
 
-	// Parent is what the branch would be created from. Set only while the branch is not on the
-	// remote.
+	// Parent is what the branch would be created from. Set only while the branch
+	// is not on the remote.
 	// +optional
 	Parent *GitBranchParentStatus `json:"parent,omitempty"`
 }
 
-// GitBranchParentState is what a branch that does not exist yet would be created from.
+// GitBranchParentState is what a branch that does not exist yet would be
+// created from.
 // +kubebuilder:validation:Enum=Found;Missing;Unborn
 type GitBranchParentState string
 
@@ -153,21 +175,24 @@ const (
 	GitBranchParentUnborn GitBranchParentState = "Unborn"
 )
 
-// GitBranchParentStatus is the parent branch of a branch that does not exist yet.
+// GitBranchParentStatus is the parent branch of a branch that does not exist
+// yet.
 type GitBranchParentStatus struct {
-	// State is what the branch would be created from: "Found" (the parent branch's tip), "Missing"
-	// (the parent branch is not on the remote, so nothing is written) or "Unborn" (an empty
-	// repository and no spec.parentBranch, so the first commit has no history).
+	// State is what the branch would be created from: "Found" (the parent branch's
+	// tip), "Missing" (the parent branch is not on the remote, so nothing is
+	// written) or "Unborn" (an empty repository and no spec.parentBranch, so the
+	// first commit has no history).
 	// +required
 	State GitBranchParentState `json:"state"`
 
-	// Branch is the parent branch: spec.parentBranch, or the remote's default branch when that is
-	// omitted. Empty when state is "Unborn", and when the remote names no default branch.
+	// Branch is the parent branch: spec.parentBranch, or the remote's default
+	// branch when that is omitted. Empty when state is "Unborn", and when the
+	// remote names no default branch.
 	// +optional
 	Branch string `json:"branch,omitempty"`
 
-	// Commit is the commit hash the parent branch is at on the remote, which the branch's first
-	// commit would build on. Set only when state is "Found".
+	// Commit is the commit hash the parent branch is at on the remote, which the
+	// branch's first commit would build on. Set only when state is "Found".
 	// +optional
 	Commit string `json:"commit,omitempty"`
 }
@@ -186,9 +211,9 @@ type GitBranchParentStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// GitBranch is one branch of a Git repository, written with a GitProvider's credential. Every
-// GitTarget that references it writes through it, and only one GitBranch may hold a repository
-// branch at a time.
+// GitBranch is one branch of a Git repository, written with a GitProvider's
+// credential. Every GitTarget that references it writes through it, and only
+// one GitBranch may hold a repository branch at a time.
 type GitBranch struct {
 	metav1.TypeMeta `json:",inline"`
 

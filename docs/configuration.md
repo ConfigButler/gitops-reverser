@@ -1723,8 +1723,10 @@ anything about the branch itself: an unreachable remote yields no observation at
 exactly what the pair `commit` + `lastVerifiedAt` is there to say.
 
 `GitProvider.status.lastVerifiedAt` is the same word for the connection rather than the branch:
-when the credential and the repository were last proved together. It is never cleared, so
-`Ready=False` beside it reads as "broken for this long".
+when the credential and the repository were last proved together. It is never cleared, and a
+failure leaves it unchanged, so it tells you when the provider last worked.
+A `Ready=False` beside it can come from a later connectivity failure, or from a signing-key or
+Secret problem that stops the check from running at all; the condition's reason says which.
 
 ### Keeping an idle target fresh (`--git-refresh-interval`)
 

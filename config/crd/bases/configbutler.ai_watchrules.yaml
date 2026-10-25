@@ -50,9 +50,10 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          WatchRule selects namespaced resources for a GitTarget in its namespace to mirror, by type,
-          API group, version, source namespace and label. Each rule reads one source namespace: this
-          WatchRule's own by default. Use a ClusterWatchRule for cluster-scoped types.
+          WatchRule selects namespaced resources for a GitTarget in its namespace to
+          mirror, by type, API group, version, source namespace and label. Each rule
+          reads one source namespace: this WatchRule's own by default. Use a
+          ClusterWatchRule for cluster-scoped types.
         properties:
           apiVersion:
             description: |-
@@ -76,8 +77,8 @@ spec:
             properties:
               gitTargetRef:
                 description: |-
-                  GitTargetRef names the GitTarget, in this namespace, that mirrors what this WatchRule
-                  selects.
+                  GitTargetRef names the GitTarget, in this namespace, that mirrors what this
+                  WatchRule selects.
                 properties:
                   name:
                     description: Name of the referent.
@@ -90,40 +91,47 @@ spec:
                   rule: self.name != ''
               rules:
                 description: |-
-                  Rules select the resources to mirror. A resource matching any rule is mirrored. Each rule
-                  names resource types, optionally narrowed by API group, version, source namespace and
-                  labels. The GitTarget's spec.prune.mode decides whether a removal on the cluster deletes the
-                  Git document.
+                  Rules select the resources to mirror. A resource matching any rule is
+                  mirrored. Each rule names resource types, optionally narrowed by API group,
+                  version, source namespace and labels. The GitTarget's spec.prune.mode
+                  decides whether a removal on the cluster deletes the Git document.
                 items:
                   description: |-
-                    ResourceRule selects namespaced resources by type, and optionally by API group, version, source
-                    namespace and label.
+                    ResourceRule selects namespaced resources by type, and optionally by API
+                    group, version, source namespace and label.
                   properties:
                     apiGroups:
                       description: |-
-                        APIGroups are the API groups to match: "" is the core group, and "*" is every group, as in
-                        ["", "apps"] or ["*"]. Omitted, each resource name is looked up across the served groups and
-                        must be served by exactly one.
+                        APIGroups are the API groups to match: "" is the core group, and "*" is
+                        every group, as in ["", "apps"] or ["*"]. Omitted, each resource name is
+                        looked up across the served groups and must be served by exactly one.
                       items:
                         type: string
                       type: array
                     apiVersions:
                       description: |-
-                        APIVersions are the versions to match, or "*" for every served version. Omitted, each
-                        resource's preferred version is used. The built-in Git path has no version, so two versions
-                        of one object share a file unless the GitTarget's placement template includes {version}.
+                        APIVersions are the versions to match, or "*" for every served version.
+                        Omitted, each resource's preferred version is used. The built-in Git path
+                        has no version, so two versions of one object share a file unless the
+                        GitTarget's placement template includes {version}.
                       items:
                         type: string
                       type: array
                     objectSelector:
                       description: |-
-                        ObjectSelector mirrors only the objects whose labels match, as a standard label selector.
-                        Omitted or {} selects every object. An object that stops matching leaves the mirror as a
-                        deleted one does, and spec.prune.mode decides what happens to its document. Under prune mode
-                        "Always", a resync also removes documents of the type that the selector never matched. Two
-                        rules on one GitTarget that select the same type in overlapping namespaces must use the same
-                        selector; the newer rule is refused. A selector that does not parse refuses the whole rule
-                        (ResourcesResolved=False, reason InvalidObjectSelector).
+                        ObjectSelector mirrors only the objects whose labels match, as a
+                        standard label selector. Omitted or {} selects every object.
+
+                        An object that stops matching is handled like a deleted one: the
+                        GitTarget's spec.prune.mode decides whether its document is removed.
+                        With prune mode "Always", a resync also removes documents of the type
+                        that the selector does not match.
+
+                        Two rules on one GitTarget that select the same type in overlapping
+                        namespaces must use the same selector. The older rule keeps the type,
+                        and the newer one is refused with ResourcesResolved=False, reason
+                        CollectionOverlap. A selector that does not parse refuses the whole rule
+                        with ResourcesResolved=False, reason InvalidObjectSelector.
                       properties:
                         matchExpressions:
                           description: matchExpressions is a list of label selector
@@ -170,9 +178,10 @@ spec:
                       x-kubernetes-map-type: atomic
                     resources:
                       description: |-
-                        Resources are the resource types to match, by plural name ("configmaps", "deployments"), or
-                        "*" for every type. Matching is exact and case-insensitive; partial wildcards such as "pod*"
-                        match nothing, and subresources ("pods/log") are rejected. For a custom resource whose name
+                        Resources are the resource types to match, by plural name ("configmaps",
+                        "deployments"), or "*" for every type. Matching is exact and
+                        case-insensitive; partial wildcards such as "pod*" match nothing, and
+                        subresources ("pods/log") are rejected. For a custom resource whose name
                         more than one group serves, set apiGroups.
                       items:
                         minLength: 1
@@ -182,15 +191,15 @@ spec:
                       type: array
                     sourceNamespace:
                       description: |-
-                        SourceNamespace is the source-cluster namespace this rule reads: omitted for this
-                        WatchRule's own namespace, a name for another one, or "*" for every namespace the
-                        KubeProvider's credential can read. Git placement follows each object's own namespace, not
-                        this field.
+                        SourceNamespace is the source-cluster namespace this rule reads: omitted for
+                        this WatchRule's own namespace, a name for another one, or "*" for every
+                        namespace the KubeProvider's credential can read. Git placement follows each
+                        object's own namespace, not this field.
 
-                        The KubeProvider's spec.allowedGitTargets must allow the namespace, through the
-                        sourceNamespaces of a grant admitting the GitTarget; "*" needs "*" there. One rule outside
-                        the grants refuses the whole WatchRule (SourceNamespaceNotAllowed), checked when it
-                        reconciles.
+                        The KubeProvider's spec.allowedGitTargets must allow the namespace, through
+                        the sourceNamespaces of a grant admitting the GitTarget; "*" needs "*"
+                        there. One rule outside the grants refuses the whole WatchRule
+                        (SourceNamespaceNotAllowed), checked when it reconciles.
                       maxLength: 63
                       pattern: ^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?)$
                       type: string
@@ -208,9 +217,10 @@ spec:
             properties:
               conditions:
                 description: |-
-                  Conditions are the latest observations of this WatchRule's state. Ready, Reconciling and
-                  Stalled follow kstatus; ResourcesResolved, SourceNamespaceAuthorized and StreamsRunning say
-                  which check holds the rule back.
+                  Conditions are the latest observations of this WatchRule's state. Ready,
+                  Reconciling and Stalled follow kstatus; ResourcesResolved,
+                  SourceNamespaceAuthorized and StreamsRunning say which check holds the rule
+                  back.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -301,8 +311,8 @@ spec:
                     type: integer
                   summary:
                     description: |-
-                      Summary is ready/total for display, such as "3/4". Read ready and total instead of parsing
-                      it.
+                      Summary is ready/total for display, such as "3/4". Read ready and total
+                      instead of parsing it.
                     type: string
                   total:
                     description: Total is how many types are watched.

@@ -13,17 +13,15 @@
 
 # GitOps Reverser
 
-GitOps Reverser watches selected Kubernetes resources and commits a clean YAML representation to Git.
-It strips `status`, `managedFields`, and runtime metadata. For supported layouts, it updates existing
-manifests in place, preserving comments and document structure.
+GitOps Reverser is a Kubernetes operator that turns cluster activity into clean YAML commits.
 
-Use it to capture live changes, bring an existing cluster into Git, or experiment with API-first
-workflows alongside Flux or Argo CD.
+GitOps keeps the desired state of a cluster in Git, so every change has to arrive as a commit. That
+requires everyone who makes a change to know Git, YAML, and the layout of your repo. With
+GitOps Reverser they use the Kubernetes API instead: `kubectl`, a GUI, a CI job, or an AI agent over
+MCP. It commits the result within seconds, and Flux or Argo CD keeps deploying from the repo.
+The operator is **deterministic**, with **no AI at runtime**.
 
-[Quick start](docs/quickstart.md): install the operator and capture your first ConfigMap in Git.
-
-It is pre-1.0: the CRDs are `v1alpha3` and the configuration surface can still change between
-releases. [Before you adopt it](#before-you-adopt-it) covers what to weigh.
+[Quick start](docs/quickstart.md) · [Documentation](docs/README.md)
 
 <div align="center">
   <img src="docs/demo/demo.gif" width="100%"
@@ -31,89 +29,49 @@ releases. [Before you adopt it](#before-you-adopt-it) covers what to weigh.
 </div>
 
 Inspect an [example commit](https://github.com/ConfigButler/example-audit/commit/800a51e5a8edcccbc85c94d5fef7ef7cc8381b7b).
-Named Kubernetes actors in Git history require optional
-[audit attribution](docs/attribution-setup-guide.md); the default uses a configured Git identity.
+Its named Kubernetes actor comes from optional [audit attribution](docs/attribution-setup-guide.md);
+the default uses a configured Git identity.
+
+## Why GitOps Reverser
+
+Use it to:
+
+- **Let people change the cluster without learning Git.** A GUI, a CI job, or an MCP agent works
+  through the Kubernetes API, under its RBAC and admission control, and the change still lands in
+  Git with the rest of your history.
+- **Bring an existing cluster into Git.** A new target commits the selected resources already in the
+  cluster, then follows their changes.
+- **Keep Git in step with live edits.** A `kubectl` fix made during an incident becomes a commit
+  instead of drift.
+
+What sets it apart:
+
+- **Your files keep their shape.** An update edits the existing YAML document in place: key order,
+  comments, and untouched documents in multi-document files survive. In a supported Kustomize
+  layout it edits the source manifest, not the rendered output. See [what it can write](#what-it-can-write).
+- **Authors are established, never asserted.** With [audit attribution](docs/attribution-setup-guide.md),
+  a commit names the identity the API server authenticated, and no field lets anyone type a name in.
+  It needs kube-apiserver flags, so managed control planes that hide them cannot use it. See
+  [attribution](docs/spec/attribution.md#authorship-is-established-never-asserted).
+- **A commit can say why.** Changes are grouped into commit windows, and a `CommitRequest` lets the
+  person making a change explain **why** it was necessary. See [commit windows](#commit-windows).
 
 ## How it works
-
-Changes reach the Kubernetes API however your users make them: `kubectl`, a GUI, a CI job, or an
-agent over MCP.
 
 ![Overview diagram: humans, kubectl, and MCP clients change resources through the Kubernetes API, which GitOps Reverser watches and commits to Git](docs/images/overview.excalidraw.svg)
 
 1. **Watch** the Kubernetes API for the types each `GitTarget` claims, the single source of object
-   state. A new target also reconciles all existing resources of those types into Git.
-2. **Sanitize** the change and compare it against what Git already holds.
+   state.
+2. **Sanitize** the change, stripping `status`, `managedFields`, and runtime metadata, and compare it
+   against what Git already holds.
 3. **Write** stable YAML to the target folder and push, grouping a burst of changes into one commit.
 
-Custom resources configure it: `GitProvider` for repository and credentials, `GitBranch` for one
-branch of that repository, `GitTarget` for a folder on it, `WatchRule` or `ClusterWatchRule` for what
-to capture, `KubeProvider` for the source cluster, created as `local` in the operator's namespace on
-install, and optionally `GitReceiver` for the Git host's push webhook. A rule selects whole resource
-collections, including their deletions; the `GitTarget`'s prune mode decides whether a deletion
-removes the file from Git.
-See [Configuration](docs/configuration.md).
+A `GitTarget` names a folder on a Git branch, and a `WatchRule` or `ClusterWatchRule` says what to
+capture into it. A few more custom resources hold the repo, its credentials, and the source
+cluster. By default it watches its own cluster, and one operator can serve several source clusters,
+repos, branches, and folders. See [Configuration](docs/configuration.md).
 
-By default it watches its own cluster. Add more of each as you need them: one operator can serve
-several source clusters, repositories, branches, and folders.
-
-## Principles
-
-- **Creates Git commits.** The output is Git commits that reflect the state of your cluster.
-  Deploying is Flux's and Argo CD's job: run one alongside to bring changes from Git back into the
-  cluster. Only a folder that both GitOps Reverser writes and Flux or Argo CD applies needs more: an
-  applier claim, so GitOps Reverser decides when it is applied. See
-  [bi-directional usage](docs/bi-directional.md).
-- **API-first, not API-only.** Most changes are assumed to arrive through the API, so that is what
-  publishing is tuned for. Your changes end up in your remote Git repo within seconds. Other
-  authors can push to the same branch, and that is handled without conflicts. If an API edit and a
-  Git commit touch the same resource (which is rare!), then the API wins. See
-  [API-first publication](docs/api-first-publication.md) for more depth.
-- **Authors are established, never asserted.** An attributed commit names the identity the API
-  server authenticated for the change; everything else carries the configured Git identity, or an
-  explicit unknown when attribution is on but cannot resolve. No field lets anyone type a name in. See
-  [attribution](docs/spec/attribution.md#authorship-is-established-never-asserted).
-- **Resources classified as sensitive require encryption before commit.** If encryption fails, or no
-  encryptor is configured, the write is rejected. See [SOPS and age](docs/sops-age-guide.md).
-
-## Features
-
-- **Capture existing resources and future changes.** A new target captures the selected resources
-  already in the cluster, then follows changes, including deletions under a
-  [deletion policy](docs/configuration.md#deletion-policy-specprunemode).
-- **Mirror only the objects you label.** A rule's `objectSelector` lets the API server choose which
-  objects of a type are mirrored; an object that loses its label leaves the mirror like a deleted
-  one. See [selecting objects by label](docs/configuration.md#selecting-objects-by-label-rulesobjectselector).
-- **Each object reaches a target once.** A target watches each object through one collection, so an
-  edit is never delivered twice and a status-only update never splits a commit. A rule that would
-  overlap another on the same target is refused, naming both. See
-  [overlapping collections](docs/configuration.md#overlapping-collections).
-- **In-place edits keep the shape of your file.** Updates preserve key order, comments, and
-  untouched documents in multi-document files.
-- **Inspect a repository before you point at it.** `manifest-analyzer --mode scan-repo` classifies
-  every candidate folder under a repository root, read-only and with no cluster. See
-  [`cmd/manifest-analyzer/`](cmd/manifest-analyzer/).
-- **SOPS and age, set up on the fly.** The operator creates the encryption configuration and can
-  generate a missing age key in your chosen Kubernetes `Secret`. See
-  [SOPS and age](docs/sops-age-guide.md).
-- **Optional audit attribution identifies Kubernetes actors.** Without it, commits carry the
-  configured Git identity; when attribution cannot be resolved, they carry an explicit unknown
-  author. See [audit attribution](docs/attribution-setup-guide.md).
-- **Custom commit messages.** Separate templates for live windows, reconciles, and save requests.
-  See [message templates](docs/commit-messages.md).
-- **SSH-signed commits.** Configured through `GitProvider.spec.commit.signing`. See
-  [commit signing](docs/commit-signing.md).
-- **`kubectl wait` works on every resource.** Conditions follow the kstatus convention, so `Ready`,
-  `Reconciling`, and `Stalled` mean what GitOps tooling expects. See
-  [status conditions](docs/spec/status-conditions-guide.md).
-- **Metrics on a standard endpoint.** Scrape `/metrics` with whatever you already run, or turn on
-  the chart's `ServiceMonitor`. The docs carry example queries for the questions operators ask, and
-  a named list of what is deliberately not instrumented. See
-  [interpreting metrics](docs/interpreting-metrics.md).
-
-## What it can write
-
-Choose the resources to watch and the repository, branch, and folder to write into.
+### What it can write
 
 | Your source in Git | What you can do |
 |---|---|
@@ -122,19 +80,39 @@ Choose the resources to watch and the repository, branch, and folder to write in
 | A Flux `HelmRelease` or Argo CD `Application` | Capture the declaration, including chart versions and inline values |
 | Helm templates or standalone `values.yaml` | No writeback from rendered workloads |
 
-Kustomize support includes local bases and overlays, with the base kept read-only when targeting an
-overlay. Generators, components, remote bases, and several other transforms are unsupported: a
-folder that uses them is refused with `Stalled=True` and a reason, while the folder is still
-untouched. See the [supported subset](docs/configuration.md#kustomize-support-in-the-target-path).
+Local Kustomize bases and overlays work, with the base kept read-only. Generators, components, and
+remote bases are unsupported; such a folder is refused with `Stalled=True` before anything is
+written. See the [supported subset](docs/configuration.md#kustomize-support-in-the-target-path).
 
-Select the resources that express your intent. For example, watch a `HelmRelease` to capture chart
-settings. The operator cannot automatically distinguish authored resources from controller-generated
-ones. See [choosing what to capture](docs/installing-apps-as-krm.md#the-design-decision-capture-intent-not-the-rendered-output).
+Watch the resources that express your intent, such as a `HelmRelease` rather than the workloads it
+renders: the operator cannot tell authored resources from generated ones. See
+[choosing what to capture](docs/installing-apps-as-krm.md#the-design-decision-capture-intent-not-the-rendered-output).
+
+### Commit windows
+
+Changes for the same target and author share a commit window, and each window becomes one commit.
+When a window closes is yours to tune: its timers are set per `GitTarget`, and a `CommitRequest` can
+bring its own timers along with the commit message.
+
+![Kubernetes resource changes flow through GitOps Reverser's commit window into Git](docs/images/commit-window.excalidraw.svg)
+
+The picture shows the [commit-window example](docs/demo/commit-window.md) running on top of the
+[quick start](#quick-start).
+
+### Bi-directional GitOps with Flux and Argo CD
+
+GitOps Reverser writes commits; Flux or Argo CD deploys them. Others can push to the same branch:
+the operator replays its writes on top of their commits, so history stays linear with no merge
+commits. If both touch the same resource, the API wins
+([API-first publication](docs/api-first-publication.md)).
+
+- [Bi-directional GitOps with Flux](docs/bi-directional-flux.md)
+- [Bi-directional GitOps with Argo CD](docs/bi-directional-argocd.md)
 
 ## Quick start
 
 Follow the [installation walkthrough](docs/quickstart.md) to capture ConfigMaps from a demo namespace
-into a disposable repository. You need a Kubernetes cluster, `kubectl`, Helm 3, and Git write access.
+into a disposable repo. You need a Kubernetes cluster, `kubectl`, Helm 3, and Git write access.
 The walkthrough includes cert-manager setup; Redis and audit delivery are optional.
 
 The demo captures a live change:
@@ -143,40 +121,44 @@ The demo captures a live change:
 kubectl create configmap test-config --from-literal=key=value -n gitops-reverser-quickstart-demo
 ```
 
-Inspect the commit under `live-cluster/` in your repository. Then edit the ConfigMap and inspect the
+Inspect the commit under `live-cluster/` in your repo. Then edit the ConfigMap and inspect the
 next diff. The walkthrough includes status checks, troubleshooting, and cleanup.
 
-## Batch changes into a commit
+## Features
 
-Changes for the same target and author share a commit window, and each window becomes one commit.
-When a window closes is yours to tune: its timers are set per `GitTarget`, and a `CommitRequest` can
-bring its own timers along with the commit message. This allows the person making a change to explain
-**why** the change was necessary.
+- **Mirror only the objects you label.** A rule's `objectSelector` lets the API server choose which
+  objects of a type are mirrored; an object that loses its label leaves the mirror like a deleted
+  one. See [selecting objects by label](docs/configuration.md#selecting-objects-by-label-rulesobjectselector).
+- **Secrets never reach Git in plaintext.** Resources classified as sensitive are encrypted with
+  SOPS and age before commit, or the write is rejected. The operator creates the encryption
+  configuration and can generate a missing age key. See [SOPS and age](docs/sops-age-guide.md).
+- **Inspect a repo before you point at it.** `manifest-analyzer --mode scan-repo` classifies
+  every candidate folder under a repo root, read-only and with no cluster. See
+  [`cmd/manifest-analyzer/`](cmd/manifest-analyzer/).
+- **The operational basics.** [SSH-signed commits](docs/commit-signing.md) and
+  [custom commit message templates](docs/commit-messages.md). Conditions follow the kstatus
+  convention, so `kubectl wait` works on every resource
+  ([status conditions](docs/spec/status-conditions-guide.md)). Metrics are on a standard
+  `/metrics` endpoint, with an optional `ServiceMonitor` and
+  [example queries](docs/interpreting-metrics.md).
 
-![Kubernetes resource changes flow through GitOps Reverser's commit window into Git](docs/images/commit-window.excalidraw.svg)
+## Adopting it
 
-The picture shows the [commit-window example](docs/demo/commit-window.md) running. It carries the
-manifests: a `GitTarget` with a `window`, a `WatchRule` selecting the two types, and a save request
-made after the changes or before them. It runs on top of the quickstart above.
-
-## Try it with your existing repo
+### Try it with your existing repo
 
 Start with a [scratch branch](docs/configuration.md#seeing-what-a-target-will-do-before-it-does-it)
 containing your existing manifests, with nothing deploying that branch. Select a small resource
 scope and one destination folder. Inspect the initial commits before making a live edit, then check
 which source files changed.
 
-The operator pushes directly to the configured branch. Flux or Argo CD deploying other folders is
-unaffected. If one of them deploys the folder you write, read the
-[bi-directional guide](docs/bi-directional.md) first. Without an applier claim, live edits can be
-reverted by Flux or Argo CD, and [replaying captured state](docs/api-first-publication.md) can
-overwrite concurrent Git edits to the same object. Decide per folder which side is authoritative.
+The operator pushes directly to the configured branch. If Flux or Argo CD deploys the folder you
+write, read
+[bi-directional GitOps with Flux and Argo CD](#bi-directional-gitops-with-flux-and-argo-cd) first.
 
-## Before you adopt it
+### Limits before 1.0
 
-The CRDs are `v1alpha3`, so the configuration surface can change between releases;
-[`docs/UPGRADING.md`](docs/UPGRADING.md) carries each migration. Keep one `GitProvider` per
-repository, so that two of them never write the same paths.
+It is pre-1.0: the CRDs are `v1alpha3`, so the configuration surface can change between releases;
+[`docs/UPGRADING.md`](docs/UPGRADING.md) carries each migration.
 
 - **Access:** the chart defaults to cluster-wide read access, including Secrets. Review
   [RBAC](docs/rbac.md) to restrict watched types and understand the remaining credential permissions.
@@ -184,36 +166,33 @@ repository, so that two of them never write the same paths.
   be lost on restart; recovery captures current state. Git history is not a complete event log.
 - **Deletes:** the default mirrors observed delete events but retains documents absent from a
   reconnect snapshot. Choose a [deletion policy](docs/configuration.md#deletion-policy-specprunemode)
-  that fits your repository.
+  that fits your repo.
+- **Availability:** it runs one replica, with no standby failover: the chart rejects
+  `replicaCount > 1` rather than let two instances write the same repo.
 - **Versions:** the test suites run against Kubernetes `1.37`, at the API level with `envtest`
   and end-to-end on `k3s`. Other versions may work but are not in the matrix.
-  Importing this repo as a Go module carries its own version floor; see
-  [`docs/UPGRADING.md`](docs/UPGRADING.md).
 
-It runs one replica, with no standby failover: the chart rejects `replicaCount > 1` rather than let
-two instances write the same repository. Ownership coordination and a durable worker queue are on
-the way to 1.0. The backlog is in [docs/TODO.md](docs/TODO.md), and longer-range directions in
+The road to 1.0 is in [docs/TODO.md](docs/TODO.md), and longer-range directions in
 [docs/future/](docs/future/).
 
 ## Rather have it managed?
 
 ConfigButler can run a small, secure, public-facing Kubernetes API for you: we operate GitOps
-Reverser and authorize your end users, with forward-deployed engineers to get you started. You keep a
-clean, self-owned Git repo where your users express their intent.
+Reverser and authorize your end users, and our engineers work with your team to get you started.
+You keep a clean, self-owned Git repo where your users express their intent.
 
 ## Documentation and feedback
 
 - [Configuration](docs/configuration.md): resource selection, Git destinations, and commit behavior
 - [Helm chart](charts/gitops-reverser/README.md): installation options and upgrades
+- [Architecture](docs/architecture.md#ground-rules): the design principles and how the pieces fit
 - [Documentation index](docs/README.md): setup guides and operational details
 - [Reverse GitOps](https://reversegitops.dev/): the manifesto for the broader pattern
 
 Trying it with a real repo? [Open an issue](https://github.com/ConfigButler/gitops-reverser/issues)
-with the layout you tried, the diff you expected, and what happened. Install attempts, first-commit
-experience, audit delivery, Git output shape, and CRD ergonomics are the most useful reports at this
-stage. Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-Or connect on [LinkedIn](https://www.linkedin.com/in/simonkoudijs/): feedback, questions, and ideas
-are all welcome.
+with the layout you tried, the diff you expected, and what happened, or reach out on
+[LinkedIn](https://www.linkedin.com/in/simonkoudijs/). Install attempts, Git output shape, and CRD
+ergonomics are the most useful reports at this stage. Contributions are welcome; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 Licensed under Apache 2.0.

@@ -57,11 +57,18 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ArgoCDClaim hands control of an Argo CD Application to GitOps Reverser. The Application's
-          automated sync stays off, and GitOps Reverser starts each sync, always after the edits pending
-          on the branch are published: after a commit it did not push, a refused or reverted edit, or an
-          object the API created, and once at startup or when a GitTarget first names it. GitTargets name
-          it with spec.applierClaimRef.
+          ArgoCDClaim lets GitOps Reverser decide when an Argo CD Application syncs.
+          The Application's automated sync stays off, and GitOps Reverser starts each
+          sync, always after the edits pending on the branch are published. It starts
+          one:
+
+            - after a commit that GitOps Reverser did not push;
+            - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
+            - after a sync reverted an edit made through the API;
+            - after objects were created through the API in its folders;
+            - once at startup, and when a GitTarget first names this ArgoCDClaim.
+
+          GitTargets name it with spec.applierClaimRef.
         properties:
           apiVersion:
             description: |-
@@ -85,18 +92,21 @@ spec:
             properties:
               applicationRef:
                 description: |-
-                  ApplicationRef names the Argo CD Application that syncs the folders of the GitTargets naming
-                  this ArgoCDClaim. It must have a single spec.source whose targetRevision names a branch.
+                  ApplicationRef names the Argo CD Application that syncs the folders of the
+                  GitTargets naming this ArgoCDClaim. It must have a single spec.source whose
+                  targetRevision names a branch.
 
-                  The ArgoCDClaim keeps its automated sync off by applying spec.syncPolicy.automated.enabled:
-                  false, switches it off again when somebody switches it on, and gives the switch up when it
-                  lets go; automated.prune still applies to the syncs GitOps Reverser starts. An Application
-                  that an ApplicationSet generates, or whose switch another field manager applies, must have
-                  automated sync off already. Each sync is pinned to the commit GitOps Reverser checked, and a
-                  running operation is never replaced.
+                  The ArgoCDClaim keeps its automated sync off by applying
+                  spec.syncPolicy.automated.enabled: false, switches it off again when
+                  somebody switches it on, and gives the switch up when it lets go;
+                  automated.prune still applies to the syncs GitOps Reverser starts. An
+                  Application that an ApplicationSet generates, or whose switch another field
+                  manager applies, must have automated sync off already. Each sync is pinned
+                  to the commit GitOps Reverser checked, and a running operation is never
+                  replaced.
 
-                  An omitted namespace means this ArgoCDClaim's namespace. Immutable: delete and recreate the
-                  ArgoCDClaim to change it.
+                  An omitted namespace means this ArgoCDClaim's namespace. Immutable: delete
+                  and recreate the ArgoCDClaim to change it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -116,11 +126,13 @@ spec:
                   rule: self.name != ''
               kubeProviderRef:
                 description: |-
-                  KubeProviderRef names the KubeProvider of the cluster that runs the Application, such as a
-                  management cluster running Argo CD. An omitted namespace means this ArgoCDClaim's namespace.
-                  The KubeProvider's spec.allowedApplierClaims must admit this namespace, with the
-                  Application's namespace in applierNamespaces, and its identity needs get, update and patch on
-                  the Application. Immutable: delete and recreate the ArgoCDClaim to change it.
+                  KubeProviderRef names the KubeProvider of the cluster that runs the
+                  Application, such as a management cluster running Argo CD. An omitted
+                  namespace means this ArgoCDClaim's namespace. The KubeProvider's
+                  spec.allowedApplierClaims must admit this namespace, with the Application's
+                  namespace in applierNamespaces, and its identity needs get, update and patch
+                  on the Application. Immutable: delete and recreate the ArgoCDClaim to change
+                  it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -147,20 +159,36 @@ spec:
             properties:
               conditions:
                 description: |-
-                  Conditions are the latest observations of this ArgoCDClaim's state. Ready, Reconciling and
-                  Stalled follow kstatus.
+                  Conditions are the latest observations of this ArgoCDClaim's state. Ready,
+                  Reconciling and Stalled follow kstatus.
 
-                  Configured is True when an eligible GitTarget names this ArgoCDClaim, and the Application
-                  exists, syncs a single source, has automated sync off or a switch this ArgoCDClaim may hold,
-                  may be written, and no other ArgoCDClaim holds it. An eligible GitTarget is in this
-                  namespace, is admitted by its KubeProviders, and writes the branch the Application syncs. Of
-                  several ArgoCDClaims for one Application, the one holding it already holds it, then the
-                  oldest; the others are Configured=False, reason HeldByAnotherClaim.
+                  Configured is True when an eligible GitTarget names this ArgoCDClaim, and
+                  the Application exists, syncs a single source, has automated sync off or a
+                  switch this ArgoCDClaim may hold, may be written, and no other ArgoCDClaim
+                  holds it. An eligible GitTarget is in this namespace, is admitted by its
+                  KubeProviders, and writes the branch the Application syncs. Of several
+                  ArgoCDClaims for one Application, the one holding it already holds it, then
+                  the oldest; the others are Configured=False, reason HeldByAnotherClaim.
 
-                  InControl is True (AutomatedSyncOff) while GitOps Reverser decides when the Application
-                  syncs, False while it does not (Releasing, Revoking, NotReferenced), and NotConfigured while
-                  Configured is not True or automated sync was switched on. An ArgoCDClaim no GitTarget names
-                  reads nothing and is Ready=True, reason NotReferenced.
+                  InControl says whether GitOps Reverser decides when the Application
+                  syncs:
+
+                  - True, reason AutomatedSyncOff: automated sync is off and GitOps
+                    Reverser starts every sync, also when another field manager owns the
+                    switch and keeps it off.
+                  - False, reason Releasing or Revoking: the ArgoCDClaim is handing the
+                    Application back.
+                  - False, reason NotReferenced: no GitTarget names this ArgoCDClaim.
+                  - False, reason NotConfigured: another field manager owns the switch and
+                    has turned automated sync on.
+                  - False, reason ArgoCDVersionNotSupported: the Application has no
+                    spec.syncPolicy.automated.enabled field (Argo CD before 3.1).
+                  - Unknown, reason NotConfigured: Configured is not True, or another
+                    ArgoCDClaim holds the Application.
+
+                  A failed read of the Application keeps the previous InControl value. An
+                  ArgoCDClaim no GitTarget names reads nothing and is Ready=True, reason
+                  NotReferenced.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -226,33 +254,36 @@ spec:
                 type: integer
               operation:
                 description: |-
-                  Operation is the sync GitOps Reverser started on the Application: the one in flight, or the
-                  last one. Absent until the first.
+                  Operation is the sync GitOps Reverser started on the Application: the one in
+                  flight, or the last one. Absent until the first.
                 properties:
                   appliedRevision:
                     description: |-
-                      AppliedRevision is the revision the applier reports applying when the operation completes.
-                      It can differ from commit when the branch moved between the check and the apply.
+                      AppliedRevision is the revision the applier reports applying when the
+                      operation completes. It can differ from commit when the branch moved between
+                      the check and the apply.
                     type: string
                   commit:
                     description: |-
-                      Commit is the commit the applier was asked to apply. Empty when the remote did not carry the
-                      branch.
+                      Commit is the commit the applier was asked to apply. Empty when the remote
+                      did not carry the branch.
                     type: string
                   finishedAt:
                     description: FinishedAt is when the operation was seen to complete.
                     format: date-time
                     type: string
                   message:
-                    description: Message says why a Failed operation failed, or why
-                      an Unresolved one is overdue.
+                    description: |-
+                      Message says why a Failed operation failed, or why an Unresolved one is
+                      overdue.
                     type: string
                   phase:
                     description: |-
-                      Phase is where the operation stands. Requested, Running, Settling (Flux only: applied, and
-                      the Kustomization not yet suspended again) and Unresolved (overdue, still followed) are in
-                      flight: the applier can still revert an edit to an object it applies, and is asked for
-                      nothing else. Succeeded and Failed are complete; Failed may have applied part of the commit.
+                      Phase is where the operation stands. Requested, Running, Settling (Flux
+                      only: applied, and the Kustomization not yet suspended again) and Unresolved
+                      (overdue, still followed) are in flight: the applier can still revert an
+                      edit to an object it applies, and is asked for nothing else. Succeeded and
+                      Failed are complete; Failed may have applied part of the commit.
                     enum:
                     - Requested
                     - Running
@@ -263,11 +294,12 @@ spec:
                     type: string
                   reason:
                     description: |-
-                      Reason is why the apply was asked for: ForeignCommit (a commit GitOps Reverser did not push),
-                      Refusal (a refused edit under spec.onRefusal: "Reapply"), Repair (an earlier apply reverted
-                      a newer API edit), or CatchUp (adopting objects the API created, and once at startup or when
-                      a GitTarget first names the claim). With several GitTargets on the claim, it is the strongest
-                      of their reasons.
+                      Reason is why the apply was asked for: ForeignCommit (a commit GitOps
+                      Reverser did not push), Refusal (a refused edit under spec.onRefusal:
+                      "Reapply"), Repair (an earlier apply reverted a newer API edit), or CatchUp
+                      (adopting objects the API created, and once at startup or when a GitTarget
+                      first names the claim). With several GitTargets on the claim, it is the
+                      strongest of their reasons.
                     enum:
                     - ForeignCommit
                     - Refusal
@@ -280,14 +312,15 @@ spec:
                     type: string
                   suspendToken:
                     description: |-
-                      SuspendToken is the reconcile.fluxcd.io/requestedAt value of the suspend that follows the
-                      apply. Once the Kustomization reports it handled, nothing started before the suspend is still
-                      running. Flux only.
+                      SuspendToken is the reconcile.fluxcd.io/requestedAt value of the suspend
+                      that follows the apply. Once the Kustomization reports it handled, nothing
+                      started before the suspend is still running. Flux only.
                     type: string
                   token:
                     description: |-
-                      Token identifies the request in the applier's own status: the reconcile.fluxcd.io/requestedAt
-                      value on a Flux object, or the "gitops-reverser request" entry in an Argo CD operation's info.
+                      Token identifies the request in the applier's own status: the
+                      reconcile.fluxcd.io/requestedAt value on a Flux object, or the
+                      "gitops-reverser request" entry in an Argo CD operation's info.
                     type: string
                 required:
                 - phase
@@ -295,10 +328,11 @@ spec:
                 type: object
               previousSuspendState:
                 description: |-
-                  PreviousSuspendState is how the Application stood before this ArgoCDClaim first switched its
-                  automated sync off, and what handing it back restores: NotSuspended (automated sync on) or
-                  Suspended (off). It is cleared once the Application is handed back. Absent, handing it back
-                  leaves what the Application's own spec says. A switch that an ApplicationSet or another
+                  PreviousSuspendState is how the Application stood before this ArgoCDClaim
+                  first switched its automated sync off, and what handing it back restores:
+                  NotSuspended (automated sync on) or Suspended (off). It is cleared once the
+                  Application is handed back. Absent, handing it back leaves what the
+                  Application's own spec says. A switch that an ApplicationSet or another
                   field manager owns keeps that owner's value either way.
                 enum:
                 - Suspended
@@ -306,23 +340,23 @@ spec:
                 type: string
               repairPending:
                 description: |-
-                  RepairPending is true while a Repair sync is pending: a sync ran a commit older than an edit
-                  made through the API and reverted it on the cluster. Git holds the edit, and the cluster runs
-                  the older value until the next sync.
+                  RepairPending is true while a Repair sync is pending: a sync ran a commit
+                  older than an edit made through the API and reverted it on the cluster. Git
+                  holds the edit, and the cluster runs the older value until the next sync.
                 type: boolean
               source:
                 description: |-
-                  Source is the Application's spec.source, as last read. It is published while an eligible
-                  GitTarget names this ArgoCDClaim, and that GitTarget must write the repository it syncs, on
-                  the branch its targetRevision names.
+                  Source is the Application's spec.source, as last read. It is published while
+                  an eligible GitTarget names this ArgoCDClaim, and that GitTarget must write
+                  the repository it syncs, on the branch its targetRevision names.
                 properties:
                   repoURL:
                     description: RepoURL is the Application's spec.source.repoURL.
                     type: string
                   targetRevision:
                     description: |-
-                      TargetRevision is the Application's spec.source.targetRevision, as written: a branch name,
-                      or refs/heads/ and the name. Empty means Argo CD's HEAD.
+                      TargetRevision is the Application's spec.source.targetRevision, as written:
+                      a branch name, or refs/heads/ and the name. Empty means Argo CD's HEAD.
                     type: string
                 type: object
             type: object

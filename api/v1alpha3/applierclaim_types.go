@@ -36,7 +36,8 @@ const (
 // KubeProvider admits the namespace it is in. A GitTarget that could name an
 // applier claim elsewhere would drive an applier that its own namespace was never admitted to.
 
-// ApplierClaimReference names an applier claim in the GitTarget's own namespace.
+// ApplierClaimReference names an applier claim in the GitTarget's own
+// namespace.
 type ApplierClaimReference struct {
 	// Kind is the applier claim's kind: "FluxClaim" or "ArgoCDClaim".
 	// +required
@@ -67,8 +68,8 @@ const (
 	ApplyReasonCatchUp ApplyReason = "CatchUp"
 )
 
-// SuspendState is whether an applier applied on its own. An Argo CD Application with automated sync
-// off counts as Suspended.
+// SuspendState is whether an applier applied on its own. An Argo CD
+// Application with automated sync off counts as Suspended.
 // +kubebuilder:validation:Enum=Suspended;NotSuspended
 type SuspendState string
 
@@ -108,42 +109,47 @@ func (p ApplyOperationPhase) Completed() bool {
 	return p == ApplyOperationSucceeded || p == ApplyOperationFailed
 }
 
-// ApplyOperation is an apply GitOps Reverser started on the applier claim's applier: the one in flight,
-// or the last one, once it completed. The branch worker writes it on every transition.
+// ApplyOperation is an apply GitOps Reverser started on the applier claim's
+// applier: the one in flight, or the last one, once it completed. The branch
+// worker writes it on every transition.
 type ApplyOperation struct {
-	// Phase is where the operation stands. Requested, Running, Settling (Flux only: applied, and
-	// the Kustomization not yet suspended again) and Unresolved (overdue, still followed) are in
-	// flight: the applier can still revert an edit to an object it applies, and is asked for
-	// nothing else. Succeeded and Failed are complete; Failed may have applied part of the commit.
+	// Phase is where the operation stands. Requested, Running, Settling (Flux
+	// only: applied, and the Kustomization not yet suspended again) and Unresolved
+	// (overdue, still followed) are in flight: the applier can still revert an
+	// edit to an object it applies, and is asked for nothing else. Succeeded and
+	// Failed are complete; Failed may have applied part of the commit.
 	// +required
 	Phase ApplyOperationPhase `json:"phase"`
 
-	// Reason is why the apply was asked for: ForeignCommit (a commit GitOps Reverser did not push),
-	// Refusal (a refused edit under spec.onRefusal: "Reapply"), Repair (an earlier apply reverted
-	// a newer API edit), or CatchUp (adopting objects the API created, and once at startup or when
-	// a GitTarget first names the claim). With several GitTargets on the claim, it is the strongest
-	// of their reasons.
+	// Reason is why the apply was asked for: ForeignCommit (a commit GitOps
+	// Reverser did not push), Refusal (a refused edit under spec.onRefusal:
+	// "Reapply"), Repair (an earlier apply reverted a newer API edit), or CatchUp
+	// (adopting objects the API created, and once at startup or when a GitTarget
+	// first names the claim). With several GitTargets on the claim, it is the
+	// strongest of their reasons.
 	// +optional
 	Reason ApplyReason `json:"reason,omitempty"`
 
-	// Commit is the commit the applier was asked to apply. Empty when the remote did not carry the
-	// branch.
+	// Commit is the commit the applier was asked to apply. Empty when the remote
+	// did not carry the branch.
 	// +optional
 	Commit string `json:"commit,omitempty"`
 
-	// Token identifies the request in the applier's own status: the reconcile.fluxcd.io/requestedAt
-	// value on a Flux object, or the "gitops-reverser request" entry in an Argo CD operation's info.
+	// Token identifies the request in the applier's own status: the
+	// reconcile.fluxcd.io/requestedAt value on a Flux object, or the
+	// "gitops-reverser request" entry in an Argo CD operation's info.
 	// +optional
 	Token string `json:"token,omitempty"`
 
-	// SuspendToken is the reconcile.fluxcd.io/requestedAt value of the suspend that follows the
-	// apply. Once the Kustomization reports it handled, nothing started before the suspend is still
-	// running. Flux only.
+	// SuspendToken is the reconcile.fluxcd.io/requestedAt value of the suspend
+	// that follows the apply. Once the Kustomization reports it handled, nothing
+	// started before the suspend is still running. Flux only.
 	// +optional
 	SuspendToken string `json:"suspendToken,omitempty"`
 
-	// AppliedRevision is the revision the applier reports applying when the operation completes.
-	// It can differ from commit when the branch moved between the check and the apply.
+	// AppliedRevision is the revision the applier reports applying when the
+	// operation completes. It can differ from commit when the branch moved between
+	// the check and the apply.
 	// +optional
 	AppliedRevision string `json:"appliedRevision,omitempty"`
 
@@ -155,13 +161,15 @@ type ApplyOperation struct {
 	// +optional
 	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
 
-	// Message says why a Failed operation failed, or why an Unresolved one is overdue.
+	// Message says why a Failed operation failed, or why an Unresolved one is
+	// overdue.
 	// +optional
 	Message string `json:"message,omitempty"`
 }
 
-// ApplierClaim is what every applier claim kind answers, so the controllers, the branch workers and the
-// dispatcher handle a FluxClaim and an ArgoCDClaim alike.
+// ApplierClaim is what every applier claim kind answers, so the controllers,
+// the branch workers and the dispatcher handle a FluxClaim and an ArgoCDClaim
+// alike.
 // +kubebuilder:object:generate=false
 type ApplierClaim interface {
 	metav1.Object

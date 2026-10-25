@@ -18,58 +18,81 @@ import (
 // applies) has none.
 const ArgoCDClaimFinalizer = "configbutler.ai/argocd-claim"
 
-// ArgoCDClaimSpec names the Argo CD Application the applier claim holds, and the cluster it is in.
+// ArgoCDClaimSpec names the Argo CD Application the applier claim holds, and
+// the cluster it is in.
 type ArgoCDClaimSpec struct {
 	// Immutable for the reason FluxClaimSpec's references are: the applier claim holds what it names.
 
-	// KubeProviderRef names the KubeProvider of the cluster that runs the Application, such as a
-	// management cluster running Argo CD. An omitted namespace means this ArgoCDClaim's namespace.
-	// The KubeProvider's spec.allowedApplierClaims must admit this namespace, with the
-	// Application's namespace in applierNamespaces, and its identity needs get, update and patch on
-	// the Application. Immutable: delete and recreate the ArgoCDClaim to change it.
+	// KubeProviderRef names the KubeProvider of the cluster that runs the
+	// Application, such as a management cluster running Argo CD. An omitted
+	// namespace means this ArgoCDClaim's namespace. The KubeProvider's
+	// spec.allowedApplierClaims must admit this namespace, with the Application's
+	// namespace in applierNamespaces, and its identity needs get, update and patch
+	// on the Application. Immutable: delete and recreate the ArgoCDClaim to change
+	// it.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kubeProviderRef.name must not be empty"
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kubeProviderRef is immutable; delete and recreate the ArgoCDClaim to hold an Application elsewhere"
 	KubeProviderRef meta.NamespacedObjectReference `json:"kubeProviderRef"`
 
-	// ApplicationRef names the Argo CD Application that syncs the folders of the GitTargets naming
-	// this ArgoCDClaim. It must have a single spec.source whose targetRevision names a branch.
+	// ApplicationRef names the Argo CD Application that syncs the folders of the
+	// GitTargets naming this ArgoCDClaim. It must have a single spec.source whose
+	// targetRevision names a branch.
 	//
-	// The ArgoCDClaim keeps its automated sync off by applying spec.syncPolicy.automated.enabled:
-	// false, switches it off again when somebody switches it on, and gives the switch up when it
-	// lets go; automated.prune still applies to the syncs GitOps Reverser starts. An Application
-	// that an ApplicationSet generates, or whose switch another field manager applies, must have
-	// automated sync off already. Each sync is pinned to the commit GitOps Reverser checked, and a
-	// running operation is never replaced.
+	// The ArgoCDClaim keeps its automated sync off by applying
+	// spec.syncPolicy.automated.enabled: false, switches it off again when
+	// somebody switches it on, and gives the switch up when it lets go;
+	// automated.prune still applies to the syncs GitOps Reverser starts. An
+	// Application that an ApplicationSet generates, or whose switch another field
+	// manager applies, must have automated sync off already. Each sync is pinned
+	// to the commit GitOps Reverser checked, and a running operation is never
+	// replaced.
 	//
-	// An omitted namespace means this ArgoCDClaim's namespace. Immutable: delete and recreate the
-	// ArgoCDClaim to change it.
+	// An omitted namespace means this ArgoCDClaim's namespace. Immutable: delete
+	// and recreate the ArgoCDClaim to change it.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.applicationRef is immutable; delete and recreate the ArgoCDClaim to hold another Application"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.applicationRef.name must not be empty"
 	ApplicationRef meta.NamespacedObjectReference `json:"applicationRef"`
 }
 
-// ArgoCDClaimStatus is what the applier claim knows about its Application, and the sync it started.
+// ArgoCDClaimStatus is what the applier claim knows about its Application, and
+// the sync it started.
 type ArgoCDClaimStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are the latest observations of this ArgoCDClaim's state. Ready, Reconciling and
-	// Stalled follow kstatus.
+	// Conditions are the latest observations of this ArgoCDClaim's state. Ready,
+	// Reconciling and Stalled follow kstatus.
 	//
-	// Configured is True when an eligible GitTarget names this ArgoCDClaim, and the Application
-	// exists, syncs a single source, has automated sync off or a switch this ArgoCDClaim may hold,
-	// may be written, and no other ArgoCDClaim holds it. An eligible GitTarget is in this
-	// namespace, is admitted by its KubeProviders, and writes the branch the Application syncs. Of
-	// several ArgoCDClaims for one Application, the one holding it already holds it, then the
-	// oldest; the others are Configured=False, reason HeldByAnotherClaim.
+	// Configured is True when an eligible GitTarget names this ArgoCDClaim, and
+	// the Application exists, syncs a single source, has automated sync off or a
+	// switch this ArgoCDClaim may hold, may be written, and no other ArgoCDClaim
+	// holds it. An eligible GitTarget is in this namespace, is admitted by its
+	// KubeProviders, and writes the branch the Application syncs. Of several
+	// ArgoCDClaims for one Application, the one holding it already holds it, then
+	// the oldest; the others are Configured=False, reason HeldByAnotherClaim.
 	//
-	// InControl is True (AutomatedSyncOff) while GitOps Reverser decides when the Application
-	// syncs, False while it does not (Releasing, Revoking, NotReferenced), and NotConfigured while
-	// Configured is not True or automated sync was switched on. An ArgoCDClaim no GitTarget names
-	// reads nothing and is Ready=True, reason NotReferenced.
+	// InControl says whether GitOps Reverser decides when the Application
+	// syncs:
+	//
+	// - True, reason AutomatedSyncOff: automated sync is off and GitOps
+	//   Reverser starts every sync, also when another field manager owns the
+	//   switch and keeps it off.
+	// - False, reason Releasing or Revoking: the ArgoCDClaim is handing the
+	//   Application back.
+	// - False, reason NotReferenced: no GitTarget names this ArgoCDClaim.
+	// - False, reason NotConfigured: another field manager owns the switch and
+	//   has turned automated sync on.
+	// - False, reason ArgoCDVersionNotSupported: the Application has no
+	//   spec.syncPolicy.automated.enabled field (Argo CD before 3.1).
+	// - Unknown, reason NotConfigured: Configured is not True, or another
+	//   ArgoCDClaim holds the Application.
+	//
+	// A failed read of the Application keeps the previous InControl value. An
+	// ArgoCDClaim no GitTarget names reads nothing and is Ready=True, reason
+	// NotReferenced.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -77,27 +100,28 @@ type ArgoCDClaimStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Source is the Application's spec.source, as last read. It is published while an eligible
-	// GitTarget names this ArgoCDClaim, and that GitTarget must write the repository it syncs, on
-	// the branch its targetRevision names.
+	// Source is the Application's spec.source, as last read. It is published while
+	// an eligible GitTarget names this ArgoCDClaim, and that GitTarget must write
+	// the repository it syncs, on the branch its targetRevision names.
 	// +optional
 	Source *ArgoCDClaimSource `json:"source,omitempty"`
 
-	// Operation is the sync GitOps Reverser started on the Application: the one in flight, or the
-	// last one. Absent until the first.
+	// Operation is the sync GitOps Reverser started on the Application: the one in
+	// flight, or the last one. Absent until the first.
 	// +optional
 	Operation *ApplyOperation `json:"operation,omitempty"`
 
-	// RepairPending is true while a Repair sync is pending: a sync ran a commit older than an edit
-	// made through the API and reverted it on the cluster. Git holds the edit, and the cluster runs
-	// the older value until the next sync.
+	// RepairPending is true while a Repair sync is pending: a sync ran a commit
+	// older than an edit made through the API and reverted it on the cluster. Git
+	// holds the edit, and the cluster runs the older value until the next sync.
 	// +optional
 	RepairPending bool `json:"repairPending,omitempty"`
 
-	// PreviousSuspendState is how the Application stood before this ArgoCDClaim first switched its
-	// automated sync off, and what handing it back restores: NotSuspended (automated sync on) or
-	// Suspended (off). It is cleared once the Application is handed back. Absent, handing it back
-	// leaves what the Application's own spec says. A switch that an ApplicationSet or another
+	// PreviousSuspendState is how the Application stood before this ArgoCDClaim
+	// first switched its automated sync off, and what handing it back restores:
+	// NotSuspended (automated sync on) or Suspended (off). It is cleared once the
+	// Application is handed back. Absent, handing it back leaves what the
+	// Application's own spec says. A switch that an ApplicationSet or another
 	// field manager owns keeps that owner's value either way.
 	// +optional
 	PreviousSuspendState SuspendState `json:"previousSuspendState,omitempty"`
@@ -109,8 +133,8 @@ type ArgoCDClaimSource struct {
 	// +optional
 	RepoURL string `json:"repoURL,omitempty"`
 
-	// TargetRevision is the Application's spec.source.targetRevision, as written: a branch name,
-	// or refs/heads/ and the name. Empty means Argo CD's HEAD.
+	// TargetRevision is the Application's spec.source.targetRevision, as written:
+	// a branch name, or refs/heads/ and the name. Empty means Argo CD's HEAD.
 	// +optional
 	TargetRevision string `json:"targetRevision,omitempty"`
 }
@@ -129,11 +153,18 @@ type ArgoCDClaimSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ArgoCDClaim hands control of an Argo CD Application to GitOps Reverser. The Application's
-// automated sync stays off, and GitOps Reverser starts each sync, always after the edits pending
-// on the branch are published: after a commit it did not push, a refused or reverted edit, or an
-// object the API created, and once at startup or when a GitTarget first names it. GitTargets name
-// it with spec.applierClaimRef.
+// ArgoCDClaim lets GitOps Reverser decide when an Argo CD Application syncs.
+// The Application's automated sync stays off, and GitOps Reverser starts each
+// sync, always after the edits pending on the branch are published. It starts
+// one:
+//
+//   - after a commit that GitOps Reverser did not push;
+//   - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
+//   - after a sync reverted an edit made through the API;
+//   - after objects were created through the API in its folders;
+//   - once at startup, and when a GitTarget first names this ArgoCDClaim.
+//
+// GitTargets name it with spec.applierClaimRef.
 type ArgoCDClaim struct {
 	metav1.TypeMeta `json:",inline"`
 

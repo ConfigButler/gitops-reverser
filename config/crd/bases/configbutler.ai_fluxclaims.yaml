@@ -57,10 +57,17 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          FluxClaim hands control of a Flux Kustomization to GitOps Reverser. The Kustomization stays
-          suspended, and GitOps Reverser resumes it for each apply it starts, always after the edits
-          pending on the branch are published: after a commit it did not push, a refused or reverted
-          edit, or an object the API created, and once at startup or when a GitTarget first names it.
+          FluxClaim lets GitOps Reverser decide when a Flux Kustomization applies.
+          The Kustomization stays suspended, and GitOps Reverser resumes it for each
+          apply it starts, always after the edits pending on the branch are
+          published. It starts one:
+
+            - after a commit that GitOps Reverser did not push;
+            - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
+            - after an apply reverted an edit made through the API;
+            - after objects were created through the API in its folders;
+            - once at startup, and when a GitTarget first names this FluxClaim.
+
           GitTargets name it with spec.applierClaimRef.
         properties:
           apiVersion:
@@ -85,11 +92,13 @@ spec:
             properties:
               kubeProviderRef:
                 description: |-
-                  KubeProviderRef names the KubeProvider of the cluster that runs the Kustomization, such as a
-                  management cluster running Flux. An omitted namespace means this FluxClaim's namespace. The
-                  KubeProvider's spec.allowedApplierClaims must admit this namespace, with the Kustomization's
-                  namespace in applierNamespaces, and its identity needs get and patch on the Kustomization and
-                  its GitRepository. Immutable: delete and recreate the FluxClaim to change it.
+                  KubeProviderRef names the KubeProvider of the cluster that runs the
+                  Kustomization, such as a management cluster running Flux. An omitted
+                  namespace means this FluxClaim's namespace. The KubeProvider's
+                  spec.allowedApplierClaims must admit this namespace, with the
+                  Kustomization's namespace in applierNamespaces, and its identity needs get
+                  and patch on the Kustomization and its GitRepository. Immutable: delete and
+                  recreate the FluxClaim to change it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -109,10 +118,11 @@ spec:
                   rule: self == oldSelf
               kustomizationRef:
                 description: |-
-                  KustomizationRef names the Flux Kustomization that applies the folders of the GitTargets
-                  naming this FluxClaim. Its spec.sourceRef must be a GitRepository that follows a branch. An
-                  omitted namespace means this FluxClaim's namespace. Immutable: delete and recreate the
-                  FluxClaim to change it.
+                  KustomizationRef names the Flux Kustomization that applies the folders of
+                  the GitTargets naming this FluxClaim. Its spec.sourceRef must be a
+                  GitRepository that follows a branch. An omitted namespace means this
+                  FluxClaim's namespace. Immutable: delete and recreate the FluxClaim to
+                  change it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -139,20 +149,33 @@ spec:
             properties:
               conditions:
                 description: |-
-                  Conditions are the latest observations of this FluxClaim's state. Ready, Reconciling and
-                  Stalled follow kstatus.
+                  Conditions are the latest observations of this FluxClaim's state. Ready,
+                  Reconciling and Stalled follow kstatus.
 
-                  Configured is True when an eligible GitTarget names this FluxClaim, and the Kustomization
-                  exists, applies a GitRepository that follows a branch, may be patched, and no other FluxClaim
-                  holds it. An eligible GitTarget is in this namespace, is admitted by its KubeProviders, and
-                  writes the branch the GitRepository fetches. Of several FluxClaims for one Kustomization, the
-                  one with an apply in flight holds it, then the one holding it already, then the oldest; the
-                  others are Configured=False, reason HeldByAnotherClaim.
+                  Configured is True when an eligible GitTarget names this FluxClaim, and the
+                  Kustomization exists, applies a GitRepository that follows a branch, may be
+                  patched, and no other FluxClaim holds it. An eligible GitTarget is in this
+                  namespace, is admitted by its KubeProviders, and writes the branch the
+                  GitRepository fetches. Of several FluxClaims for one Kustomization, the one
+                  with an apply in flight holds it, then the one holding it already, then the
+                  oldest; the others are Configured=False, reason HeldByAnotherClaim.
 
-                  InControl is True while GitOps Reverser decides when the Kustomization applies (Suspended,
-                  Applying), False while it does not (Suspending, Releasing, Revoking, NotReferenced), and
-                  Unknown (NotConfigured) while Configured is not True. A FluxClaim no GitTarget names reads
-                  nothing and is Ready=True, reason NotReferenced.
+                  InControl says whether GitOps Reverser decides when the Kustomization
+                  applies:
+
+                  - True, reason Suspended: the Kustomization is suspended, and GitOps
+                    Reverser starts every apply.
+                  - True, reason Applying: an apply GitOps Reverser started is running;
+                    the Kustomization is suspended again when it ends.
+                  - False, reason Suspending: Flux has not yet handled the suspend.
+                  - False, reason Releasing or Revoking: the FluxClaim is handing the
+                    Kustomization back.
+                  - False, reason NotReferenced: no GitTarget names this FluxClaim.
+                  - Unknown, reason NotConfigured: Configured is not True, or another
+                    FluxClaim holds the Kustomization.
+
+                  A FluxClaim no GitTarget names reads nothing and is Ready=True, reason
+                  NotReferenced.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -218,33 +241,36 @@ spec:
                 type: integer
               operation:
                 description: |-
-                  Operation is the apply GitOps Reverser started on the Kustomization: the one in flight, or
-                  the last one. Absent until the first.
+                  Operation is the apply GitOps Reverser started on the Kustomization: the one
+                  in flight, or the last one. Absent until the first.
                 properties:
                   appliedRevision:
                     description: |-
-                      AppliedRevision is the revision the applier reports applying when the operation completes.
-                      It can differ from commit when the branch moved between the check and the apply.
+                      AppliedRevision is the revision the applier reports applying when the
+                      operation completes. It can differ from commit when the branch moved between
+                      the check and the apply.
                     type: string
                   commit:
                     description: |-
-                      Commit is the commit the applier was asked to apply. Empty when the remote did not carry the
-                      branch.
+                      Commit is the commit the applier was asked to apply. Empty when the remote
+                      did not carry the branch.
                     type: string
                   finishedAt:
                     description: FinishedAt is when the operation was seen to complete.
                     format: date-time
                     type: string
                   message:
-                    description: Message says why a Failed operation failed, or why
-                      an Unresolved one is overdue.
+                    description: |-
+                      Message says why a Failed operation failed, or why an Unresolved one is
+                      overdue.
                     type: string
                   phase:
                     description: |-
-                      Phase is where the operation stands. Requested, Running, Settling (Flux only: applied, and
-                      the Kustomization not yet suspended again) and Unresolved (overdue, still followed) are in
-                      flight: the applier can still revert an edit to an object it applies, and is asked for
-                      nothing else. Succeeded and Failed are complete; Failed may have applied part of the commit.
+                      Phase is where the operation stands. Requested, Running, Settling (Flux
+                      only: applied, and the Kustomization not yet suspended again) and Unresolved
+                      (overdue, still followed) are in flight: the applier can still revert an
+                      edit to an object it applies, and is asked for nothing else. Succeeded and
+                      Failed are complete; Failed may have applied part of the commit.
                     enum:
                     - Requested
                     - Running
@@ -255,11 +281,12 @@ spec:
                     type: string
                   reason:
                     description: |-
-                      Reason is why the apply was asked for: ForeignCommit (a commit GitOps Reverser did not push),
-                      Refusal (a refused edit under spec.onRefusal: "Reapply"), Repair (an earlier apply reverted
-                      a newer API edit), or CatchUp (adopting objects the API created, and once at startup or when
-                      a GitTarget first names the claim). With several GitTargets on the claim, it is the strongest
-                      of their reasons.
+                      Reason is why the apply was asked for: ForeignCommit (a commit GitOps
+                      Reverser did not push), Refusal (a refused edit under spec.onRefusal:
+                      "Reapply"), Repair (an earlier apply reverted a newer API edit), or CatchUp
+                      (adopting objects the API created, and once at startup or when a GitTarget
+                      first names the claim). With several GitTargets on the claim, it is the
+                      strongest of their reasons.
                     enum:
                     - ForeignCommit
                     - Refusal
@@ -272,14 +299,15 @@ spec:
                     type: string
                   suspendToken:
                     description: |-
-                      SuspendToken is the reconcile.fluxcd.io/requestedAt value of the suspend that follows the
-                      apply. Once the Kustomization reports it handled, nothing started before the suspend is still
-                      running. Flux only.
+                      SuspendToken is the reconcile.fluxcd.io/requestedAt value of the suspend
+                      that follows the apply. Once the Kustomization reports it handled, nothing
+                      started before the suspend is still running. Flux only.
                     type: string
                   token:
                     description: |-
-                      Token identifies the request in the applier's own status: the reconcile.fluxcd.io/requestedAt
-                      value on a Flux object, or the "gitops-reverser request" entry in an Argo CD operation's info.
+                      Token identifies the request in the applier's own status: the
+                      reconcile.fluxcd.io/requestedAt value on a Flux object, or the
+                      "gitops-reverser request" entry in an Argo CD operation's info.
                     type: string
                 required:
                 - phase
@@ -287,31 +315,33 @@ spec:
                 type: object
               previousSuspendState:
                 description: |-
-                  PreviousSuspendState is how the Kustomization stood before this FluxClaim first suspended
-                  it, and what handing it back restores: one that was Suspended stays suspended, one that was
-                  NotSuspended is resumed. It is cleared once the Kustomization is handed back. Absent,
-                  handing it back resumes the Kustomization.
+                  PreviousSuspendState is how the Kustomization stood before this FluxClaim
+                  first suspended it, and what handing it back restores: one that was
+                  Suspended stays suspended, one that was NotSuspended is resumed. It is
+                  cleared once the Kustomization is handed back. Absent, handing it back
+                  resumes the Kustomization.
                 enum:
                 - Suspended
                 - NotSuspended
                 type: string
               repairPending:
                 description: |-
-                  RepairPending is true while a Repair apply is pending: an apply ran a commit older than an
-                  edit made through the API and reverted it on the cluster. Git holds the edit, and the cluster
-                  runs the older value until the next apply.
+                  RepairPending is true while a Repair apply is pending: an apply ran a commit
+                  older than an edit made through the API and reverted it on the cluster. Git
+                  holds the edit, and the cluster runs the older value until the next apply.
                 type: boolean
               source:
                 description: |-
-                  Source is the GitRepository the Kustomization applies, as last read. It is published while an
-                  eligible GitTarget names this FluxClaim, and that GitTarget must write the repository and
-                  branch it fetches.
+                  Source is the GitRepository the Kustomization applies, as last read. It is
+                  published while an eligible GitTarget names this FluxClaim, and that
+                  GitTarget must write the repository and branch it fetches.
                 properties:
                   alsoAppliedBy:
                     description: |-
-                      AlsoAppliedBy lists the other objects that apply this GitRepository and that no FluxClaim
-                      holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a new commit
-                      as soon as Flux fetches it. Information only; it never affects Ready.
+                      AlsoAppliedBy lists the other objects that apply this GitRepository and that
+                      no FluxClaim holds: Kustomizations, and HelmReleases whose chart comes from
+                      it. Each applies a new commit as soon as Flux fetches it. Information only;
+                      it never affects Ready.
                     items:
                       description: |-
                         NamespacedObjectKindReference contains enough information to locate the typed referenced Kubernetes resource object
@@ -341,8 +371,9 @@ spec:
                     description: Branch is the GitRepository's spec.ref.branch.
                     type: string
                   gitRepository:
-                    description: GitRepository is the Kustomization's spec.sourceRef,
-                      with its namespace filled in.
+                    description: |-
+                      GitRepository is the Kustomization's spec.sourceRef, with its namespace
+                      filled in.
                     properties:
                       name:
                         description: Name of the referent.
