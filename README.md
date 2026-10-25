@@ -99,16 +99,15 @@ bring its own timers along with the commit message.
 The picture shows the [commit-window example](docs/demo/commit-window.md) running on top of the
 [quick start](#quick-start).
 
-### Alongside Flux and Argo CD
+### Bi-directional GitOps with Flux and Argo CD
 
 GitOps Reverser writes commits; Flux or Argo CD deploys them. Others can push to the same branch:
 the operator replays its writes on top of their commits, so history stays linear with no merge
 commits. If both touch the same resource, the API wins
 ([API-first publication](docs/api-first-publication.md)).
 
-A folder that Flux or Argo CD also applies needs an [applier claim](docs/bi-directional.md): GitOps
-Reverser then decides when the applier runs and publishes pending edits first. An edit made while
-that apply runs keeps its value in Git and is repaired on the cluster afterwards.
+- [Bi-directional GitOps with Flux](docs/bi-directional-flux.md)
+- [Bi-directional GitOps with Argo CD](docs/bi-directional-argocd.md)
 
 ## Quick start
 
@@ -153,7 +152,8 @@ scope and one destination folder. Inspect the initial commits before making a li
 which source files changed.
 
 The operator pushes directly to the configured branch. If Flux or Argo CD deploys the folder you
-write, read [alongside Flux and Argo CD](#alongside-flux-and-argo-cd) first.
+write, read
+[bi-directional GitOps with Flux and Argo CD](#bi-directional-gitops-with-flux-and-argo-cd) first.
 
 ### Limits before 1.0
 
