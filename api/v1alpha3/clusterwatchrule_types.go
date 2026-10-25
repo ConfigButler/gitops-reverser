@@ -64,13 +64,19 @@ type ClusterResourceRule struct {
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
-	// ObjectSelector mirrors only the objects whose labels match, as a standard label selector.
-	// Omitted or {} selects every object. An object that stops matching leaves the mirror as a
-	// deleted one does, and spec.prune.mode decides what happens to its document. Under prune mode
-	// "Always", a resync also removes documents of the type that the selector never matched. Two
-	// rules on one GitTarget that select the same type must use the same selector; the newer rule
-	// is refused. A selector that does not parse refuses the whole rule (ResourcesResolved=False,
-	// reason InvalidObjectSelector).
+	// ObjectSelector mirrors only the objects whose labels match, as a
+	// standard label selector. Omitted or {} selects every object.
+	//
+	// An object that stops matching is handled like a deleted one: the
+	// GitTarget's spec.prune.mode decides whether its document is removed.
+	// With prune mode "Always", a resync also removes documents of the type
+	// that the selector does not match.
+	//
+	// Two rules on one GitTarget that select the same type must use the same
+	// selector. The older rule keeps the type, and the newer one is refused
+	// with ResourcesResolved=False, reason CollectionOverlap. A selector that
+	// does not parse refuses the whole rule with ResourcesResolved=False,
+	// reason InvalidObjectSelector.
 	// +optional
 	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
 }

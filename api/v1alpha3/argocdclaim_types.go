@@ -66,10 +66,25 @@ type ArgoCDClaimStatus struct {
 	// several ArgoCDClaims for one Application, the one holding it already holds it, then the
 	// oldest; the others are Configured=False, reason HeldByAnotherClaim.
 	//
-	// InControl is True (AutomatedSyncOff) while GitOps Reverser decides when the Application
-	// syncs, False while it does not (Releasing, Revoking, NotReferenced), and NotConfigured while
-	// Configured is not True or automated sync was switched on. An ArgoCDClaim no GitTarget names
-	// reads nothing and is Ready=True, reason NotReferenced.
+	// InControl says whether GitOps Reverser decides when the Application
+	// syncs:
+	//
+	// - True, reason AutomatedSyncOff: automated sync is off and GitOps
+	//   Reverser starts every sync, also when another field manager owns the
+	//   switch and keeps it off.
+	// - False, reason Releasing or Revoking: the ArgoCDClaim is handing the
+	//   Application back.
+	// - False, reason NotReferenced: no GitTarget names this ArgoCDClaim.
+	// - False, reason NotConfigured: another field manager owns the switch and
+	//   has turned automated sync on.
+	// - False, reason ArgoCDVersionNotSupported: the Application has no
+	//   spec.syncPolicy.automated.enabled field (Argo CD before 3.1).
+	// - Unknown, reason NotConfigured: Configured is not True, or another
+	//   ArgoCDClaim holds the Application.
+	//
+	// A failed read of the Application keeps the previous InControl value. An
+	// ArgoCDClaim no GitTarget names reads nothing and is Ready=True, reason
+	// NotReferenced.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

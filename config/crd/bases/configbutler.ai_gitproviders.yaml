@@ -405,8 +405,11 @@ spec:
                 x-kubernetes-list-type: map
               lastVerifiedAt:
                 description: |-
-                  LastVerifiedAt is when the remote last answered this GitProvider's credential with its refs.
-                  It is never cleared: next to Ready=False, it says how long the connection has been broken.
+                  LastVerifiedAt is the time of the last successful connectivity check
+                  against the repository, using this GitProvider's credentials, or
+                  anonymous access when spec.secretRef is omitted. It is never cleared, and
+                  a failure leaves it unchanged, so it does not show when a failure began.
+                  status.conditions gives the reason the GitProvider is not ready.
                 format: date-time
                 type: string
               observedGeneration:

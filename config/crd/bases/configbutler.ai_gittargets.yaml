@@ -143,13 +143,30 @@ spec:
                     properties:
                       liveTemplate:
                         description: |-
-                          LiveTemplate is the Go template for the message of a commit made from live edits, whatever
-                          its size. Fields: Author (the username, possibly empty), GitTarget, Count (edits after
-                          coalescing, before comparing with Git), Operations and Resources. Each resource has
-                          Operation, Group, Version, Resource, Namespace, Name, APIVersion, ResourceVersion and
-                          Generation; ResourceVersion is the state this commit wrote and can be empty, and Generation
-                          is 0 for a kind without a spec, so guard both with {{with}}. A CommitRequest's message
-                          replaces this template without changing the author.
+                          LiveTemplate is the Go template for the message of a commit made from
+                          live edits, whatever its size. Omitted, a built-in template is used.
+
+                          The template receives:
+
+                          - Author: the username, which may be empty.
+                          - GitTarget: the GitTarget's name.
+                          - Count: the number of edits after coalescing, before comparing with Git.
+                          - Operations: the number of edits per operation.
+                          - Resources: one entry per resource in the commit.
+                          - LabelValues "key": the distinct values of one label across Resources.
+                          - LabelValue "key": the value of one label that every resource shares,
+                            or empty when they differ.
+
+                          Each resource has Operation, Group, Version, Resource, Kind, Namespace,
+                          Name, APIVersion, ResourceVersion, Generation and Labels. Namespace is
+                          "_cluster" for a cluster-scoped resource. Read one label with
+                          {{.Label "key"}}; {{.Labels.key}} fails the commit for a resource without
+                          that label. Kind and Labels are empty for a deletion, ResourceVersion
+                          can be empty, and Generation is 0 for a kind without a spec, so guard
+                          them with {{with}}.
+
+                          A CommitRequest's message replaces this template without changing the
+                          author; spec.commit.message.requestTemplate can wrap that message.
                         type: string
                       reconcileTemplate:
                         description: |-

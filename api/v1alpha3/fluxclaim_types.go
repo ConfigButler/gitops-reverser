@@ -59,10 +59,22 @@ type FluxClaimStatus struct {
 	// one with an apply in flight holds it, then the one holding it already, then the oldest; the
 	// others are Configured=False, reason HeldByAnotherClaim.
 	//
-	// InControl is True while GitOps Reverser decides when the Kustomization applies (Suspended,
-	// Applying), False while it does not (Suspending, Releasing, Revoking, NotReferenced), and
-	// Unknown (NotConfigured) while Configured is not True. A FluxClaim no GitTarget names reads
-	// nothing and is Ready=True, reason NotReferenced.
+	// InControl says whether GitOps Reverser decides when the Kustomization
+	// applies:
+	//
+	// - True, reason Suspended: the Kustomization is suspended, and GitOps
+	//   Reverser starts every apply.
+	// - True, reason Applying: an apply GitOps Reverser started is running;
+	//   the Kustomization is suspended again when it ends.
+	// - False, reason Suspending: Flux has not yet handled the suspend.
+	// - False, reason Releasing or Revoking: the FluxClaim is handing the
+	//   Kustomization back.
+	// - False, reason NotReferenced: no GitTarget names this FluxClaim.
+	// - Unknown, reason NotConfigured: Configured is not True, or another
+	//   FluxClaim holds the Kustomization.
+	//
+	// A FluxClaim no GitTarget names reads nothing and is Ready=True, reason
+	// NotReferenced.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

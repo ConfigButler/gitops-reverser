@@ -29,10 +29,16 @@ type CommitRequestSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
 	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
 
-	// Message is the commit message, used as written: template syntax in it stays literal. It is
-	// 1–1024 characters, may contain newlines for a subject and body, and may not be only
-	// whitespace or contain any other control character. Omitted, the GitTarget's liveTemplate
-	// words the commit.
+	// Message is the commit message this request asks for. Omitted, the
+	// GitTarget's spec.commit.message.liveTemplate words the commit.
+	//
+	// The text is never evaluated as a template. If the GitTarget sets
+	// spec.commit.message.requestTemplate, that template wraps this text;
+	// otherwise the text is committed as written.
+	//
+	// It is 1–1024 characters and must contain a non-whitespace character.
+	// Newlines are allowed, for a subject and body; tabs and other control
+	// characters are rejected.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=1024

@@ -150,8 +150,11 @@ type GitProviderStatus struct {
 	// The check runs on the steady reconcile interval, so a provider's resourceVersion moves at
 	// that cadence. Providers are few and the check was already running; this adds no request.
 
-	// LastVerifiedAt is when the remote last answered this GitProvider's credential with its refs.
-	// It is never cleared: next to Ready=False, it says how long the connection has been broken.
+	// LastVerifiedAt is the time of the last successful connectivity check
+	// against the repository, using this GitProvider's credentials, or
+	// anonymous access when spec.secretRef is omitted. It is never cleared, and
+	// a failure leaves it unchanged, so it does not show when a failure began.
+	// status.conditions gives the reason the GitProvider is not ready.
 	// +optional
 	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
 }
@@ -185,13 +188,30 @@ type CommitterSpec struct {
 
 // CommitMessageSpec configures commit message formatting, on GitTarget.spec.commit.message.
 type CommitMessageSpec struct {
-	// LiveTemplate is the Go template for the message of a commit made from live edits, whatever
-	// its size. Fields: Author (the username, possibly empty), GitTarget, Count (edits after
-	// coalescing, before comparing with Git), Operations and Resources. Each resource has
-	// Operation, Group, Version, Resource, Namespace, Name, APIVersion, ResourceVersion and
-	// Generation; ResourceVersion is the state this commit wrote and can be empty, and Generation
-	// is 0 for a kind without a spec, so guard both with {{with}}. A CommitRequest's message
-	// replaces this template without changing the author.
+	// LiveTemplate is the Go template for the message of a commit made from
+	// live edits, whatever its size. Omitted, a built-in template is used.
+	//
+	// The template receives:
+	//
+	// - Author: the username, which may be empty.
+	// - GitTarget: the GitTarget's name.
+	// - Count: the number of edits after coalescing, before comparing with Git.
+	// - Operations: the number of edits per operation.
+	// - Resources: one entry per resource in the commit.
+	// - LabelValues "key": the distinct values of one label across Resources.
+	// - LabelValue "key": the value of one label that every resource shares,
+	//   or empty when they differ.
+	//
+	// Each resource has Operation, Group, Version, Resource, Kind, Namespace,
+	// Name, APIVersion, ResourceVersion, Generation and Labels. Namespace is
+	// "_cluster" for a cluster-scoped resource. Read one label with
+	// {{.Label "key"}}; {{.Labels.key}} fails the commit for a resource without
+	// that label. Kind and Labels are empty for a deletion, ResourceVersion
+	// can be empty, and Generation is 0 for a kind without a spec, so guard
+	// them with {{with}}.
+	//
+	// A CommitRequest's message replaces this template without changing the
+	// author; spec.commit.message.requestTemplate can wrap that message.
 	// +optional
 	LiveTemplate string `json:"liveTemplate,omitempty"`
 
