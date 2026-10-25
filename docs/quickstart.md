@@ -25,7 +25,7 @@ you install the chart. (`--set servers.admission.enabled=false` drops the depend
 [chart README](../charts/gitops-reverser/README.md) covers bring-your-own certificates.)
 
 ```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.2/cert-manager.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.3/cert-manager.yaml
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
 ```
 
