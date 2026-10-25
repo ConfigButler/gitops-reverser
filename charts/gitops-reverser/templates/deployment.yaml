@@ -102,9 +102,6 @@ spec:
             {{- with .Values.controllerManager.additionalSensitiveResources }}
             - {{ printf "--additional-sensitive-resources=%s" (join "," .) | quote }}
             {{- end }}
-            {{- with .Values.controllerManager.watchNamespaces }}
-            - {{ printf "--watch-namespaces=%s" (join "," .) | quote }}
-            {{- end }}
             {{- with include "gitops-reverser.inClusterKubeProviders" . }}
             - {{ printf "--in-cluster-kube-providers=%s" . | quote }}
             {{- end }}

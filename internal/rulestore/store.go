@@ -331,14 +331,6 @@ func (s *RuleStore) DeleteClusterWatchRule(key types.NamespacedName) {
 	delete(s.clusterRules, key)
 }
 
-// HasClusterWatchRule reports whether the store holds a compiled ClusterWatchRule under key.
-func (s *RuleStore) HasClusterWatchRule(key types.NamespacedName) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, ok := s.clusterRules[key]
-	return ok
-}
-
 // MarkReady records that initial WatchRule and ClusterWatchRule bootstrap has completed.
 func (s *RuleStore) MarkReady() {
 	s.mu.Lock()

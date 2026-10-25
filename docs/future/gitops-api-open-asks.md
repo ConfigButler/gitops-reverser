@@ -7,17 +7,16 @@ left out: #30 shipped as `GitReceiver` (#432), #33 went with the prefetch in #42
 `commit_requests_total`), #25 shipped in 0.44.0 (#343), and #6 is answered by immutability that
 fails at admission with "delete and recreate". Since revision 15: #32 is a row in
 [the Flux guide](../bi-directional-flux.md#troubleshooting); #31 is
-`claimed_resource_reconciled_total`, labeled by applier kind and claim; #28's first step is
-`--watch-namespaces` ([two instances in one cluster](../configuration.md#two-instances-in-one-cluster));
-ask #23 is pinned at the fact index, for a finalizer cleared by a PATCH or an UPDATE, in either order
+`claimed_resource_reconciled_total`, labeled by applier kind and claim; ask #23 is pinned at the
+fact index, for a finalizer cleared by a PATCH or an UPDATE, in either order
 (`TestFactIndex_AFinalizerClearedByAControllerNamesTheDeleter`); and #11 shipped in 0.41.0 (#290):
 create and update write through one encoder, `internal/yamlstyle`, and a test fails on a second
-one. A file GitOps Reverser did not write is re-indented once, on its first edit. Kind and field names are updated to `main`
-(`FluxClaim` for `FluxTrigger`, `KubeProvider` for `ClusterProvider`, `ClaimedResourceReconciled`
-for `ResumedElsewhere`).
+one. A file GitOps Reverser did not write is re-indented once, on its first edit. Kind and field
+names are updated to `main` (`FluxClaim` for `FluxTrigger`, `KubeProvider` for `ClusterProvider`,
+`ClaimedResourceReconciled` for `ResumedElsewhere`).
 
-Their suggested order, as of revision 15: #34 when the e2e budget allows; then #10; #28's owner
-selector when two owners share a cluster.
+Their suggested order, as of revision 15: #34 when the e2e budget allows; then #10; #28 when two
+owners share a cluster. #28 is deferred: see below for why.
 
 ## 34. An e2e for an in-cluster applier with a remote source cluster
 
@@ -42,26 +41,41 @@ asked: an apply that is not needed is never sent, so it is not counted.
 **Ask.** A way for two instances sharing one config-plane cluster to partition the CR set, so that
 exactly one instance reconciles a given `GitTarget`. Smallest useful first, and they stack:
 
-1. **`--watch-namespaces`**, a `Cache.DefaultNamespaces` pass-through. **Shipped**: it partitions
-   the namespaced kinds, and a `ClusterWatchRule` goes to the instance serving its `GitTarget`'s
-   namespace. The ClusterRole stays cluster-wide (a namespaced cache lists per namespace, so a
-   narrowed role is possible, but the chart does not render one yet).
+1. **`--watch-namespaces`**, a `Cache.DefaultNamespaces` pass-through. It partitions the namespaced
+   kinds, which since #430 includes `KubeProvider`; only `ClusterWatchRule` stays cluster-scoped.
 2. **An explicit owner selector**, a label selector or a `spec.instance`-style field paired with an
-   `--instance-name` flag. Open, and only needed if two instances must share a namespace.
+   `--instance-name` flag, which covers the cluster-scoped kinds too.
 
-**Why.** It is the same mechanism the chart's replica guard
-(`charts/gitops-reverser/templates/validate-replica-count.yaml`) says is missing for HA: "Standby
-replicas need ownership coordination first, so that two instances never write the same GitTarget."
-They hit it moving onto a cluster that already runs an instance for its owner's own workloads: two
-populations, different source clusters, providers, credentials and namespaces, and still both
-instances would reconcile both sets. RBAC is no workaround: controller-runtime issues a cluster-wide
-List, so a narrowed ClusterRole fails the cache sync and the manager exits.
+**Why.** They hit it moving onto a cluster that already runs an instance for its owner's own
+workloads: two populations, different source clusters, providers, credentials and namespaces, and
+still both instances would reconcile both sets. RBAC is no workaround: controller-runtime issues a
+cluster-wide List, so a narrowed ClusterRole fails the cache sync and the manager exits.
 
 **What sharing costs them**, for calibration: one Valkey holding both populations' attribution
 facts; one upgrade cadence; one RBAC posture that is the union of both; and, customer-visible, a
 restart for one owner's reasons costs the other's users their commit message, because
 `RenderMatchesLive` starts `Unknown` after a restart and an open window is dropped. They are not
 blocked: one shared instance works.
+
+**Deferred, not built.** Step 1 was built and dropped before merge (#445). It removed two of the
+four costs above, the shared Valkey and the restart reaching the other owner's users. It could not
+remove the other two:
+
+- **One upgrade cadence stays.** The CRDs are cluster-scoped, so both instances run against one
+  schema, and an API break (we make them without migrations) breaks whichever instance lags.
+- **One RBAC posture stays.** The ClusterRole is still cluster-wide.
+
+It is also not the HA mechanism the chart's replica guard
+(`charts/gitops-reverser/templates/validate-replica-count.yaml`) asks for. Two instances serving
+disjoint namespaces never contend for a `GitTarget`; two replicas of one instance would, and need
+leader or ownership coordination instead. Against that, it adds a lasting cost: a second tenancy
+model beside one instance serving many namespaces through grants (`consumerNamespaces`,
+cross-namespace provider references). Every cross-namespace reference gains a "namespace this
+instance does not serve" failure, and every cluster-scoped kind needs its own ownership check.
+
+The cost their users see is the restart dropping an open window. That is better fixed inside one
+instance, for every installation: the durable pending writes in [the TODO](../TODO.md). A second
+owner who needs its own upgrade cadence or RBAC needs its own cluster; #28 would give it neither.
 
 ## 10. Sibling inference can place an object in another namespace's directory
 

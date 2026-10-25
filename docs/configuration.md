@@ -588,41 +588,6 @@ which cluster a folder means, so every `GitTarget` names its `GitBranch` and its
 Nothing falls back to the provider the chart renders, and that provider admits only the release
 namespace's own objects until the installer grants more.
 
-### Two instances in one cluster
-
-Two installations can share one config-plane cluster when each reconciles its own namespaces. Set
-`--watch-namespaces` (Helm: `controllerManager.watchNamespaces`) on each to a disjoint list:
-
-```yaml
-# The platform's release
-controllerManager:
-  watchNamespaces: [platform, team-a, team-b]
----
-# The customer's release, installed next to it
-controllerManager:
-  watchNamespaces: [customer-mirror]
-```
-
-An instance then reconciles the `GitProvider`s, `GitBranch`es, `GitReceiver`s, `KubeProvider`s,
-`GitTarget`s, rules, applier claims and `CommitRequest`s in its namespaces only. A
-`ClusterWatchRule` is cluster-scoped, so both instances see it; the one serving the namespace of
-the `GitTarget` it names reconciles it, and the other writes nothing to it, status included. The
-chart scopes each release's admission webhook to the same namespaces.
-
-- **List every namespace whose objects reference each other.** A `GitBranch` naming a
-  `GitProvider` in another namespace, or a `GitTarget` naming a `KubeProvider` there, needs both
-  namespaces in the list; one outside it reads as an error, not as a missing object. Include the
-  release's own namespace when the chart renders a `KubeProvider` there.
-- **Grants reach the served namespaces only.** A grant that admits a namespace another instance
-  serves admits nothing there: this instance never reconciles that namespace's objects.
-- **Each instance needs its own Redis key prefix** (`queue.redis.keyPrefix`) when two share one
-  Redis.
-- **The ClusterRole stays cluster-wide.** The namespaced kinds are listed and watched per
-  namespace, but the chart's permissions are not narrowed with them.
-- **High availability is a different thing.** Two instances serving disjoint namespaces never
-  write the same `GitTarget`; two replicas of one instance would, which is why the chart still
-  refuses `replicaCount` above one.
-
 ## `GitProvider`
 
 `GitProvider` defines the Git remote, credentials, who may claim which branches, and commit behavior. A

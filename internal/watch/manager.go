@@ -81,9 +81,6 @@ type Manager struct {
 	// builds its observations, so each TypeRecord carries the right Sensitive fact. The
 	// zero value still treats core Secrets as sensitive.
 	SensitiveResources types.SensitiveResourcePolicy
-	// ServedNamespaces is the config-plane namespaces this instance reconciles. Bootstrap seeds no
-	// ClusterWatchRule naming a GitTarget outside it. The zero value serves every namespace.
-	ServedNamespaces ServedNamespaces
 
 	// dynamicClient overrides the config-built dynamic client when non-nil.
 	// Used in tests to inject a fake client without a real REST config.

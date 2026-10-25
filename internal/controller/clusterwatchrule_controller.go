@@ -56,10 +56,6 @@ type ClusterWatchRuleReconciler struct {
 	WatchManager WatchManagerInterface
 	// Recorder emits a Kubernetes Event on every persisted Ready transition; nil disables Events.
 	Recorder record.EventRecorder
-	// ServedNamespaces is the config-plane namespaces this instance reconciles. A ClusterWatchRule
-	// naming a GitTarget outside them belongs to another instance and is left alone. The zero value
-	// serves every namespace.
-	ServedNamespaces watch.ServedNamespaces
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterwatchrules,verbs=get;list;watch;create;update;patch;delete
@@ -111,11 +107,6 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	if !r.ServedNamespaces.Serves(clusterRule.Spec.GitTargetRef.Namespace) {
-		r.forgetUnservedClusterWatchRule(req.NamespacedName, log)
-		return ctrl.Result{}, nil
-	}
-
 	log.Info("Starting ClusterWatchRule validation",
 		"name", clusterRule.Name,
 		"target", clusterRule.Spec.GitTargetRef,
@@ -140,22 +131,6 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Delegate to target-based reconciliation
 	return r.reconcileClusterWatchRuleViaTarget(ctx, st, &clusterRule)
-}
-
-// forgetUnservedClusterWatchRule leaves a rule another instance serves alone: no status write, so
-// two instances never fight over its conditions. A rule re-pointed out of the served namespaces is
-// dropped from the store, and the plan that ran its streams is redone.
-func (r *ClusterWatchRuleReconciler) forgetUnservedClusterWatchRule(key types.NamespacedName, log logr.Logger) {
-	if !r.RuleStore.HasClusterWatchRule(key) {
-		return
-	}
-	log.Info("ClusterWatchRule now names a GitTarget in a namespace this instance does not serve; dropping it",
-		"name", key.Name)
-	r.RuleStore.DeleteClusterWatchRule(key)
-	if r.WatchManager != nil {
-		r.WatchManager.TriggerAllRuleChange()
-	}
-	telemetry.ForgetResourceConditions(conditionKindClusterWatchRule, key.Namespace, key.Name)
 }
 
 // reconcileClusterWatchRuleViaTarget validates and stores a ClusterWatchRule that references a GitTarget.

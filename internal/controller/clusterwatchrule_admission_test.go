@@ -421,58 +421,6 @@ func TestReconcile_RevocationRemovesCompiledRule(t *testing.T) {
 	assertTerminalRefusal(t, f.reloadRule(ctx, t))
 }
 
-// TestReconcile_AClusterWatchRuleAnotherInstanceServesIsLeftAlone: under --watch-namespaces a rule
-// naming a GitTarget outside the served namespaces belongs to another instance. It is not compiled
-// and its status is not written, so two instances never fight over its conditions.
-func TestReconcile_AClusterWatchRuleAnotherInstanceServesIsLeftAlone(t *testing.T) {
-	ctx := context.Background()
-	f := newCWAFixture(t, []client.Object{
-		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaKubeProvider(cwaAdmitting()),
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
-	}, interceptor.Funcs{})
-	served, err := watch.ParseServedNamespaces("another-team")
-	require.NoError(t, err)
-	f.reconciler.ServedNamespaces = served
-
-	_, err = f.reconcile(ctx)
-	require.NoError(t, err)
-
-	assert.Empty(t, f.compiledNames())
-	assert.Empty(t, f.reloadRule(ctx, t).Status.Conditions, "another instance's rule gets no status from this one")
-	assert.Zero(t, f.wm.replans, "a rule this instance never held needs no replan")
-}
-
-// TestReconcile_AClusterWatchRuleRepointedOutOfTheServedNamespacesIsDropped: a rule this instance
-// compiled, re-pointed at a GitTarget in a namespace it does not serve, leaves the store, and its
-// streams are replanned away.
-func TestReconcile_AClusterWatchRuleRepointedOutOfTheServedNamespacesIsDropped(t *testing.T) {
-	ctx := context.Background()
-	f := newCWAFixture(t, []client.Object{
-		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaKubeProvider(cwaAdmitting()),
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
-	}, interceptor.Funcs{})
-	served, err := watch.ParseServedNamespaces(cwaTargetNS + "," + cwaProviderNS)
-	require.NoError(t, err)
-	f.reconciler.ServedNamespaces = served
-
-	_, err = f.reconcile(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []string{cwaRuleName}, f.compiledNames(), "precondition: the rule is running")
-	replansWhileServed := f.wm.replans
-
-	rule := f.reloadRule(ctx, t)
-	rule.Spec.GitTargetRef.Namespace = "another-team"
-	require.NoError(t, f.client.Update(ctx, rule))
-
-	_, err = f.reconcile(ctx)
-	require.NoError(t, err)
-
-	assert.Empty(t, f.compiledNames())
-	assert.Greater(t, f.wm.replans, replansWhileServed)
-}
-
 // TestReconcile_AdmissionReadErrorRequeuesAndKeepsCompiledRule pins the fail-safe direction. A
 // transient apiserver failure is NOT a denial: tearing the stream down on it would turn every
 // blip into an outage, so the rule stays compiled and the error requeues.

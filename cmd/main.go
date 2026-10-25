@@ -25,13 +25,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -145,7 +142,6 @@ func main() {
 		RuleStore:          ruleStore,
 		EventRouter:        nil, // Will be set below
 		SensitiveResources: cfg.sensitiveResources,
-		ServedNamespaces:   cfg.watchNamespaces,
 		// Resolve a source cluster (named by a GitTarget.spec.kubeProviderRef) into a rest.Config:
 		// read the KubeProvider, then its kubeconfig Secret from the provider's own namespace, or
 		// the operator's own identity where --in-cluster-kube-providers allows it. The manager
@@ -218,8 +214,6 @@ func main() {
 		RuleStore:    ruleStore,
 		WatchManager: watchMgr,
 		Recorder:     mgr.GetEventRecorderFor("clusterwatchrule"),
-		// A ClusterWatchRule is cluster-scoped, so the cache does not confine it.
-		ServedNamespaces: cfg.watchNamespaces,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
 	// Valkey/Redis is optional. When configured it holds each GitTarget's watch resume cursor so work
@@ -521,10 +515,7 @@ type appConfig struct {
 	// operator-supplied kubeconfig is attacker-adjacent input, so unsafe kubeconfigs are REJECTED
 	// (a legible Validated=False), diverging from Flux's silent strip.
 	kubeConfigSafety kubeconfig.SafetyPolicy
-	// watchNamespaces is the config-plane namespaces this instance reconciles; the zero value is
-	// every namespace.
-	watchNamespaces watch.ServedNamespaces
-	zapOpts         zap.Options
+	zapOpts          zap.Options
 }
 
 // parseFlags parses CLI flags and returns the application configuration.
@@ -731,12 +722,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"known_hosts at all. A present-but-unparseable known_hosts is always a hard error.")
 	fs.BoolVar(&cfg.credentialPolicy.AllowInsecureGitHTTP, "insecure-allow-git-http", false,
 		"INSECURE, dev/throwaway clusters only: permit credentials with http:// GitProvider URLs.")
-	var watchNamespaces string
-	fs.StringVar(&watchNamespaces, "watch-namespaces", "",
-		"Comma-separated config-plane namespaces this instance reconciles. Empty (the default): every "+
-			"namespace. Lets two instances share one cluster: each reconciles only the GitTargets, rules, "+
-			"providers and branches in its own namespaces, and a ClusterWatchRule only when its GitTarget "+
-			"is in one of them.")
 	bindReceiverFlags(fs, &cfg)
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.
@@ -798,10 +783,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		return appConfig{}, err
 	}
 	cfg.kubeConfigSafety.InClusterProviders, err = kubeconfig.ParseInClusterProviders(inClusterKubeProviders)
-	if err != nil {
-		return appConfig{}, err
-	}
-	cfg.watchNamespaces, err = watch.ParseServedNamespaces(watchNamespaces)
 	if err != nil {
 		return appConfig{}, err
 	}
@@ -1292,51 +1273,12 @@ func newManager(
 				DisableFor: []client.Object{&corev1.Secret{}},
 			},
 		},
-		Cache: servedNamespacesCacheOptions(cfg.watchNamespaces, cfg.sshHostKeys.ControllerNamespace),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 	return mgr
-}
-
-// servedNamespacesCacheOptions confines the manager's cache to the served namespaces, so this
-// instance lists, watches and reconciles the namespaced kinds there only. Every namespace is
-// served when none are named.
-//
-// Two kinds need more than DefaultNamespaces. A Namespace is cluster-scoped and so unaffected by
-// it; it is narrowed by its immutable name label, so a label change elsewhere enqueues nothing and
-// a grant never reads a namespace this instance does not serve. ConfigMaps are cached in the
-// controller's own namespace as well, for the install-level known_hosts ConfigMap.
-func servedNamespacesCacheOptions(served watch.ServedNamespaces, controllerNamespace string) cache.Options {
-	if served.All() {
-		return cache.Options{}
-	}
-	names := served.Names()
-	defaults := make(map[string]cache.Config, len(names))
-	for _, name := range names {
-		defaults[name] = cache.Config{}
-	}
-	configMapNamespaces := make(map[string]cache.Config, len(names)+1)
-	for name := range defaults {
-		configMapNamespaces[name] = cache.Config{}
-	}
-	if controllerNamespace != "" {
-		configMapNamespaces[controllerNamespace] = cache.Config{}
-	}
-	byName, err := labels.NewRequirement(corev1.LabelMetadataName, selection.In, names)
-	if err != nil {
-		// The names passed ParseServedNamespaces, which is stricter than a label value.
-		panic(fmt.Sprintf("served namespaces are not label values: %v", err))
-	}
-	return cache.Options{
-		DefaultNamespaces: defaults,
-		ByObject: map[client.Object]cache.ByObject{
-			&corev1.Namespace{}: {Label: labels.NewSelector().Add(*byName)},
-			&corev1.ConfigMap{}: {Namespaces: configMapNamespaces},
-		},
-	}
 }
 
 // setupAdmissionWebhooks registers both handlers on the one admission server: the

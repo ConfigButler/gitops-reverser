@@ -54,9 +54,9 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
 
 - [ ] **#34**: an e2e with an in-cluster applier and a remote source cluster, provoking one apply
   window collision.
-- [ ] **#28, step 2**: an owner selector, for two instances sharing a namespace. Step 1,
-  `--watch-namespaces`, shipped; a chart-rendered namespaced Role would let its ClusterRole shrink.
 - [ ] **#10**: consider the namespace when placement follows siblings. Cosmetic.
+- **#28** (two instances sharing one cluster) is deferred, not open work: one instance serving many
+  namespaces is the tenancy model, and the restart cost behind the ask is the durable queue's.
 
 ## Attribution
 
