@@ -135,22 +135,22 @@ type GitTargetSpec struct {
 	// *bool because neither default is safe — false breaks a flat folder, true writes a redundant
 	// line into a kustomize folder that already supplies one.
 
-	// SerializeNamespace decides whether a namespaced resource's document carries
-	// metadata.namespace. It applies to every write, not just the first, and is
-	// ignored for cluster-scoped resources.
+	// SerializeNamespace decides whether a namespaced resource's document
+	// carries metadata.namespace. It applies to every write, not just the
+	// first, and is ignored for cluster-scoped resources.
 	//
-	// Omitted, it is decided per document: the namespace is left out only when the
-	// kustomization governing the document's path sets namespace: to that same
-	// namespace. This suits a folder of nested kustomize roots that each set their
-	// own namespace.
+	// - Omitted: decided per document. The namespace is left out only when the
+	//   kustomization governing the document's path sets namespace: to that
+	//   same namespace. This suits a folder of nested kustomize roots that each
+	//   set their own namespace.
+	// - true: always written. Use it for a flat folder applied as is.
+	// - false: never written, for a folder whose namespace something else
+	//   supplies: a Flux Kustomization's targetNamespace, an Argo CD
+	//   Application's destination.namespace, or a kustomization.
 	//
-	// true always writes it. Use it for a flat folder applied as is.
-	//
-	// false never writes it, for a folder whose namespace something else supplies:
-	// a Flux Kustomization's targetNamespace, an Argo CD Application's
-	// destination.namespace, or a kustomization. Such a folder holds one source
-	// namespace; a WatchRule bringing a second one is refused with
-	// GitPathAccepted=False, reason MultipleSourceNamespaces.
+	// With false, the folder holds one source namespace. A WatchRule bringing a
+	// second one is refused with GitPathAccepted=False, reason
+	// MultipleSourceNamespaces.
 	// +optional
 	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
 
