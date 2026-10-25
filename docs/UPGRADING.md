@@ -407,12 +407,16 @@ both.
 
 ## `eventTemplate` and `groupTemplate` are gone from the schema
 
-`GitTarget.spec.commit.message.eventTemplate` and `groupTemplate`, refused since
-`liveTemplate` replaced them, are removed. `kubectl apply` refuses them as unknown fields, and a
-client that does not validate fields strictly has them pruned. A stored `GitTarget` that still
-carries one loses it and returns to `Validated=True`, committing with `liveTemplate` or the
-built-in template; [migrate the template](#one-live-commit-message-template) first if you want to
-keep its wording.
+`GitTarget.spec.commit.message.eventTemplate` and `groupTemplate` are removed from the schema.
+Earlier releases kept them only to refuse them, after `liveTemplate` replaced them.
+
+- `kubectl apply` refuses either field as unknown. A client that does not validate fields
+  strictly has them pruned, without an error.
+- A stored `GitTarget` that still carries one loses it and returns to `Validated=True`. It then
+  commits with its `liveTemplate`, or with the built-in template.
+
+To keep a template's wording, [move it to `liveTemplate`](#one-live-commit-message-template)
+before you upgrade.
 
 ## `allowAnySourceNamespace` is gone; `allowCrossNamespace.sources` replaces it
 
