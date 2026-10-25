@@ -473,12 +473,10 @@ func (r *EventRouter) handleScopedResyncError(
 		// the replacement's own report is then accepted, and a report is refused when it arrives
 		// under a revision the plan has moved past.
 		//
-		// TEMPORARY at Info, restored. It is normally V(1) because coalescing is routine under
-		// exactly the load it protects against, and it was lowered once on the assumption that the
-		// render-fidelity condition had made every lost report visible. It has not: this path
-		// skips the RETENTION report too, and lowering it re-blinded that path in the very local
-		// reproduction of Failure B that followed. Lower it again only when B is closed.
-		r.Log.Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
+		// V(1) because coalescing is routine under exactly the load it protects against. This path
+		// skips the RETENTION report too, so raise the verbosity when reproducing Failure B of
+		// docs/design/watch-plane-status-convergence-failures.md.
+		r.Log.V(1).Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
 			"gitDest", gitDest.String(), "collection", collection.String())
 		return
 	}

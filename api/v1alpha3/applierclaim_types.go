@@ -38,7 +38,7 @@ const (
 
 // ApplierClaimReference names an applier claim in the GitTarget's own namespace.
 type ApplierClaimReference struct {
-	// Kind is the applier claim's kind: FluxClaim or ArgoCDClaim.
+	// Kind is the applier claim's kind: "FluxClaim" or "ArgoCDClaim".
 	// +required
 	// +kubebuilder:validation:Enum=FluxClaim;ArgoCDClaim
 	Kind string `json:"kind"`
@@ -111,14 +111,18 @@ func (p ApplyOperationPhase) Completed() bool {
 // ApplyOperation is an apply GitOps Reverser started on the applier claim's applier: the one in flight,
 // or the last one, once it completed. The branch worker writes it on every transition.
 type ApplyOperation struct {
-	// Phase is where the operation stands. Requested, Running, Settling and Unresolved are in
-	// flight: while one is, an edit to an object the applier applies can still be reverted by it,
-	// and the applier is asked nothing else. Succeeded and Failed have completed.
+	// Phase is where the operation stands. Requested, Running, Settling (Flux only: applied, and
+	// the Kustomization not yet suspended again) and Unresolved (overdue, still followed) are in
+	// flight: the applier can still revert an edit to an object it applies, and is asked for
+	// nothing else. Succeeded and Failed are complete; Failed may have applied part of the commit.
 	// +required
 	Phase ApplyOperationPhase `json:"phase"`
 
-	// Reason is why the apply was asked for. With several GitTargets on the applier claim, it is the
-	// strongest of their reasons.
+	// Reason is why the apply was asked for: ForeignCommit (a commit GitOps Reverser did not push),
+	// Refusal (a refused edit under spec.onRefusal: "Reapply"), Repair (an earlier apply reverted
+	// a newer API edit), or CatchUp (adopting objects the API created, and once at startup or when
+	// a GitTarget first names the claim). With several GitTargets on the claim, it is the strongest
+	// of their reasons.
 	// +optional
 	Reason ApplyReason `json:"reason,omitempty"`
 
@@ -132,13 +136,13 @@ type ApplyOperation struct {
 	// +optional
 	Token string `json:"token,omitempty"`
 
-	// SuspendToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
-	// Once the Kustomization reports it handled, nothing started before the suspend is still
+	// SuspendToken is the reconcile.fluxcd.io/requestedAt value of the suspend that follows the
+	// apply. Once the Kustomization reports it handled, nothing started before the suspend is still
 	// running. Flux only.
 	// +optional
 	SuspendToken string `json:"suspendToken,omitempty"`
 
-	// AppliedRevision is the revision the applier reports it applied once the operation completed.
+	// AppliedRevision is the revision the applier reports applying when the operation completes.
 	// It can differ from commit when the branch moved between the check and the apply.
 	// +optional
 	AppliedRevision string `json:"appliedRevision,omitempty"`

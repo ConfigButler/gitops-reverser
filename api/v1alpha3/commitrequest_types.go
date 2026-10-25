@@ -23,19 +23,16 @@ import (
 // +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit)",message="CommitRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.whenNothingToCommit) || self.whenNothingToCommit != 'CommitEmpty' || has(self.message)",message="whenNothingToCommit: CommitEmpty requires spec.message, because a message is all an empty commit records"
 type CommitRequestSpec struct {
-	// GitTargetRef names the GitTarget whose commit window this request attaches to.
-	// The GitTarget must be in the same namespace as this CommitRequest.
+	// GitTargetRef names the GitTarget, in this namespace, whose commit window this request
+	// attaches to.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
 	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
 
-	// Message is an optional commit message for the finalized commit. When
-	// omitted, the target's liveTemplate is used. Template-like text remains literal.
-	//
-	// When present it is limited to 1-1024 Unicode characters and used
-	// verbatim as the commit message. Newlines are allowed so a subject and
-	// body can be supplied; all other ASCII control characters (including tab
-	// and carriage return) are rejected. Whitespace-only messages are rejected.
+	// Message is the commit message, used as written: template syntax in it stays literal. It is
+	// 1–1024 characters, may contain newlines for a subject and body, and may not be only
+	// whitespace or contain any other control character. Omitted, the GitTarget's liveTemplate
+	// words the commit.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=1024
@@ -47,20 +44,19 @@ type CommitRequestSpec struct {
 	// the block's CEL rules without applying the nested field defaults first.
 
 	// Window says which commit window this request attaches to, how long it waits for one, and
-	// the timers that close the window once it has attached. They replace the GitTarget's timers
-	// for that window, shorter or longer. Omitted, it is the defaults of every field below: attach
-	// to the author's current or next window within 2s, then close it 2s later.
+	// the timers that close the window once it has. They replace the GitTarget's timers for that
+	// window. A request never opens a window: only a write does. Omitted, the request attaches to
+	// the author's current or next window within 2s and closes it 2s later.
 	// +optional
 	// +kubebuilder:default={attach: "CurrentOrNext", attachTimeout: "2s", maxDuration: "2s"}
 	Window *CommitRequestWindow `json:"window,omitempty"`
 
-	// WhenNothingToCommit decides what the request does when it ends with nothing to commit:
-	// because attachTimeout ran out with no eligible window, or because the window it attached to
-	// closed, for any reason, without changing Git. Resolve finishes without a commit; CommitEmpty
-	// records spec.message in an empty commit, and the Ready reason still says which of the two
-	// happened. A window that belonged to another author never falls back to an empty commit. A
-	// request on a GitTarget that may not be written (suspended, or render fidelity not established)
-	// fails with that reason under either value. Defaults to Resolve.
+	// WhenNothingToCommit decides what happens when the request ends with nothing to commit:
+	// attachTimeout ran out with no window, or the window closed without changing Git. "Resolve"
+	// finishes without a commit; "CommitEmpty" records spec.message in an empty commit. The Ready
+	// reason says which case happened. A window that belonged to another author never gets an
+	// empty commit, and a request on a GitTarget that may not be written (suspended, or render
+	// fidelity not established) fails either way. Defaults to "Resolve".
 	// +optional
 	// +kubebuilder:validation:Enum=Resolve;CommitEmpty
 	// +kubebuilder:default=Resolve
@@ -100,19 +96,19 @@ const (
 // +kubebuilder:validation:XValidation:rule="!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)",message="spec.window.idleTimeout must not exceed maxDuration"
 // +kubebuilder:validation:XValidation:rule="self.attach != 'Next' || duration(self.attachTimeout) > duration('0s')",message="attach: Next needs a positive attachTimeout; with 0s it would close the author's window and give up in the same instant"
 type CommitRequestWindow struct {
-	// Attach selects the window: CurrentOrNext attaches to the author's window if one is open
-	// when the worker registers the request, and otherwise to the next one; Next first closes the
-	// author's open window, under its own message, and attaches to the next one. Defaults to
-	// CurrentOrNext.
+	// Attach selects the window. "CurrentOrNext" attaches to the author's open window, or to the
+	// next one a write opens. "Next" closes the author's open window under its own message first,
+	// and attaches to the next one; it separates earlier writes from later ones, but cannot prove
+	// a write was made after the request. Defaults to "CurrentOrNext".
 	// +optional
 	// +kubebuilder:validation:Enum=CurrentOrNext;Next
 	// +kubebuilder:default=CurrentOrNext
 	Attach AttachPolicy `json:"attach,omitempty"`
 
-	// AttachTimeout is how long the request waits for a window to attach to, counted from when
-	// the branch worker registers it, as a Go duration string. "0s" attaches to a window already
-	// open, or gives up at once. A request whose wait ran out never takes a later window. At most
-	// "5m". Defaults to "2s", which covers a write's wait for its audit fact.
+	// AttachTimeout is how long the request waits for a window, as a Go duration, from when GitOps
+	// Reverser picks the request up. "0s" attaches only to a window already open. A request whose
+	// wait ran out never takes a later window. At most "5m". Defaults to "2s", which covers a
+	// write's wait for its audit event.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
@@ -120,17 +116,17 @@ type CommitRequestWindow struct {
 	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="spec.window.attachTimeout must not exceed 5m"
 	AttachTimeout *metav1.Duration `json:"attachTimeout,omitempty"`
 
-	// IdleTimeout closes the attached window after this much silence; every write it collects
-	// restarts it. Omitted, the window has no idle close and maxDuration alone ends it. At most
-	// "5m".
+	// IdleTimeout closes the attached window this long after its last write, as a Go duration.
+	// Omitted, only maxDuration closes it. At most "5m", and not more than maxDuration.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
 	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="spec.window.idleTimeout must not exceed 5m"
 	IdleTimeout *metav1.Duration `json:"idleTimeout,omitempty"`
 
-	// MaxDuration closes the attached window this long after the request attached, however much
-	// keeps arriving. "0s" finalizes right after the attach. At most "5m". Defaults to "2s".
+	// MaxDuration closes the attached window this long after the request attached, however many
+	// writes keep arriving, as a Go duration. "0s" commits right after attaching. At most "5m".
+	// Defaults to "2s".
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
@@ -156,13 +152,15 @@ type CommitRequestWindow struct {
 //     the final Git author remains the matching watch window's author.
 //   - Pushed (domain): True once the commit is in the remote repository.
 type CommitRequestStatus struct {
-	// ObservedGeneration is the most recent generation observed by the controller.
+	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions report the request's progress and terminal outcome: the Ready
-	// summary, the kstatus Reconciling/Stalled pair, and the domain conditions
-	// AuthorAttributed and Pushed.
+	// Conditions are the latest observations of this CommitRequest's state. Ready, Reconciling
+	// and Stalled follow kstatus: Ready is True once the request ended without error, with a
+	// pushed commit or with nothing to save. Pushed is True once the commit is on the remote.
+	// AuthorAttributed says whether the request's creator, recorded at admission, names the
+	// commit author; False is not a failure and does not affect Ready.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -170,12 +168,11 @@ type CommitRequestStatus struct {
 	// +patchMergeKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Branch is the Git branch the GitTarget commits to. Populated once the
-	// finalize resolves.
+	// Branch is the branch the commit is made on. Set once the request ends.
 	// +optional
 	Branch string `json:"branch,omitempty"`
 
-	// Commit is the resulting commit hash. Set when the commit was pushed (Pushed=True).
+	// Commit is the commit hash. Set once the commit is pushed (Pushed=True).
 	// +optional
 	Commit string `json:"commit,omitempty"`
 }
@@ -192,10 +189,9 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// CommitRequest is a one-shot "save" signal. It attaches to its author's current or next
-// commit window on the referenced GitTarget, closes that window on its own timers instead of the
-// target's, and gives the resulting commit its message. The commit hash is reported in status
-// once the commit is on the remote.
+// CommitRequest asks for a save: it attaches to its author's current or next commit window on a
+// GitTarget, closes that window on its own timers, and gives the commit its message. Its spec is
+// immutable, and status.commit reports the commit once it is on the remote.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -203,11 +199,11 @@ type CommitRequest struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of CommitRequest
+	// spec defines the desired state of CommitRequest. It is immutable after creation.
 	// +required
 	Spec CommitRequestSpec `json:"spec"`
 
-	// status defines the observed state of CommitRequest
+	// status defines the observed state of CommitRequest.
 	// +optional
 	Status CommitRequestStatus `json:"status,omitempty,omitzero"`
 }

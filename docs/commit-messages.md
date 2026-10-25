@@ -248,5 +248,5 @@ name for it. Per run, empty covers two different facts: an all-namespaces sweep 
 type, and a cluster-scoped type that has no namespaces. No single word is true of both, so the
 honest rendering is to say nothing.
 
-`eventTemplate` and `groupTemplate` are retired and rejected. Follow the
+`eventTemplate` and `groupTemplate` are gone. Follow the
 [upgrade instructions](UPGRADING.md#one-live-commit-message-template) to migrate existing templates.

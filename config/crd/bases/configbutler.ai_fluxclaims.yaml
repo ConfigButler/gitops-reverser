@@ -57,10 +57,11 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          FluxClaim holds a Flux Kustomization for GitOps Reverser, which starts every apply it makes,
-          each after publishing the edits pending on the branch: after a commit GitOps Reverser did not
-          push, after a refused edit, after a reverted edit, and to adopt what the API created or converge
-          the Kustomization (CatchUp). GitTargets name it with spec.applierClaimRef.
+          FluxClaim hands control of a Flux Kustomization to GitOps Reverser. The Kustomization stays
+          suspended, and GitOps Reverser resumes it for each apply it starts, always after the edits
+          pending on the branch are published: after a commit it did not push, a refused or reverted
+          edit, or an object the API created, and once at startup or when a GitTarget first names it.
+          GitTargets name it with spec.applierClaimRef.
         properties:
           apiVersion:
             description: |-
@@ -80,26 +81,15 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the Kustomization the applier claim holds
+            description: spec defines the desired state of FluxClaim.
             properties:
-              clusterProviderRef:
-                description: |-
-                  RemovedClusterProviderRef is the replaced spelling of kubeProviderRef. It is never read;
-                  setting it is refused.
-                properties:
-                  name:
-                    description: Name of the referent.
-                    type: string
-                required:
-                - name
-                type: object
               kubeProviderRef:
                 description: |-
-                  KubeProviderRef names the KubeProvider whose cluster holds the Kustomization, such as a
-                  management cluster running Flux for the source cluster. Namespace omitted means this
-                  applier claim's own namespace. The provider's spec.allowedApplierClaims must admit this applier
-                  claim's namespace, with the Kustomization's namespace in applierNamespaces. Its identity needs
-                  get and patch on the Kustomization and its GitRepository. Immutable.
+                  KubeProviderRef names the KubeProvider of the cluster that runs the Kustomization, such as a
+                  management cluster running Flux. An omitted namespace means this FluxClaim's namespace. The
+                  KubeProvider's spec.allowedApplierClaims must admit this namespace, with the Kustomization's
+                  namespace in applierNamespaces, and its identity needs get and patch on the Kustomization and
+                  its GitRepository. Immutable: delete and recreate the FluxClaim to change it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -119,9 +109,10 @@ spec:
                   rule: self == oldSelf
               kustomizationRef:
                 description: |-
-                  KustomizationRef is the Flux Kustomization that applies the folders of the GitTargets naming
-                  this applier claim. Its spec.sourceRef must be a GitRepository that follows a branch. Its namespace
-                  defaults to the applier claim's namespace. Immutable.
+                  KustomizationRef names the Flux Kustomization that applies the folders of the GitTargets
+                  naming this FluxClaim. Its spec.sourceRef must be a GitRepository that follows a branch. An
+                  omitted namespace means this FluxClaim's namespace. Immutable: delete and recreate the
+                  FluxClaim to change it.
                 properties:
                   name:
                     description: Name of the referent.
@@ -143,30 +134,25 @@ spec:
             - kubeProviderRef
             - kustomizationRef
             type: object
-            x-kubernetes-validations:
-            - message: spec.clusterProviderRef was replaced by spec.kubeProviderRef,
-                which names a namespaced KubeProvider
-              rule: '!has(self.clusterProviderRef)'
           status:
-            description: status defines the observed state of FluxClaim
+            description: status defines the observed state of FluxClaim.
             properties:
               conditions:
                 description: |-
-                  Conditions are Configured (an eligible GitTarget names the applier claim; the Kustomization exists,
-                  applies a GitRepository that follows a branch, may be patched, and no other FluxClaim holds
-                  it), InControl (whether GitOps Reverser decides, right now, when the Kustomization applies. True:
-                  Suspended, suspended under GitOps Reverser with the last suspend handled; Applying, resumed for
-                  an apply GitOps Reverser started. False: Suspending, a suspend is not handled yet; Releasing,
-                  being handed back; Revoking, being handed back because a grant no longer admits it;
-                  NotReferenced. Unknown: NotConfigured), and the kstatus
-                  Ready/Reconciling/Stalled trio. An applier claim acts only while an eligible GitTarget references it:
-                  one in its namespace that names it, is admitted by its KubeProviders, and writes the
-                  repository and branch the GitRepository fetches. An applier claim no GitTarget names reads nothing
-                  in the Kustomization's cluster and is Configured=Unknown, Ready=True, both NotReferenced; one
-                  named only by GitTargets that are not eligible is Configured NotBound or a refusal. Of the
-                  FluxClaims in line for one Kustomization in one cluster, one holds it: the one with an apply
-                  in flight, then the one holding it already, then the one created first. The others are
-                  Configured=False (HeldByAnotherClaim) until it lets go, and the next in line takes it over.
+                  Conditions are the latest observations of this FluxClaim's state. Ready, Reconciling and
+                  Stalled follow kstatus.
+
+                  Configured is True when an eligible GitTarget names this FluxClaim, and the Kustomization
+                  exists, applies a GitRepository that follows a branch, may be patched, and no other FluxClaim
+                  holds it. An eligible GitTarget is in this namespace, is admitted by its KubeProviders, and
+                  writes the branch the GitRepository fetches. Of several FluxClaims for one Kustomization, the
+                  one with an apply in flight holds it, then the one holding it already, then the oldest; the
+                  others are Configured=False, reason HeldByAnotherClaim.
+
+                  InControl is True while GitOps Reverser decides when the Kustomization applies (Suspended,
+                  Applying), False while it does not (Suspending, Releasing, Revoking, NotReferenced), and
+                  Unknown (NotConfigured) while Configured is not True. A FluxClaim no GitTarget names reads
+                  nothing and is Ready=True, reason NotReferenced.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -237,7 +223,7 @@ spec:
                 properties:
                   appliedRevision:
                     description: |-
-                      AppliedRevision is the revision the applier reports it applied once the operation completed.
+                      AppliedRevision is the revision the applier reports applying when the operation completes.
                       It can differ from commit when the branch moved between the check and the apply.
                     type: string
                   commit:
@@ -255,9 +241,10 @@ spec:
                     type: string
                   phase:
                     description: |-
-                      Phase is where the operation stands. Requested, Running, Settling and Unresolved are in
-                      flight: while one is, an edit to an object the applier applies can still be reverted by it,
-                      and the applier is asked nothing else. Succeeded and Failed have completed.
+                      Phase is where the operation stands. Requested, Running, Settling (Flux only: applied, and
+                      the Kustomization not yet suspended again) and Unresolved (overdue, still followed) are in
+                      flight: the applier can still revert an edit to an object it applies, and is asked for
+                      nothing else. Succeeded and Failed are complete; Failed may have applied part of the commit.
                     enum:
                     - Requested
                     - Running
@@ -268,8 +255,11 @@ spec:
                     type: string
                   reason:
                     description: |-
-                      Reason is why the apply was asked for. With several GitTargets on the applier claim, it is the
-                      strongest of their reasons.
+                      Reason is why the apply was asked for: ForeignCommit (a commit GitOps Reverser did not push),
+                      Refusal (a refused edit under spec.onRefusal: "Reapply"), Repair (an earlier apply reverted
+                      a newer API edit), or CatchUp (adopting objects the API created, and once at startup or when
+                      a GitTarget first names the claim). With several GitTargets on the claim, it is the strongest
+                      of their reasons.
                     enum:
                     - ForeignCommit
                     - Refusal
@@ -282,8 +272,8 @@ spec:
                     type: string
                   suspendToken:
                     description: |-
-                      SuspendToken is the reconcile.fluxcd.io/requestedAt value the suspend after the apply carried.
-                      Once the Kustomization reports it handled, nothing started before the suspend is still
+                      SuspendToken is the reconcile.fluxcd.io/requestedAt value of the suspend that follows the
+                      apply. Once the Kustomization reports it handled, nothing started before the suspend is still
                       running. Flux only.
                     type: string
                   token:
@@ -297,31 +287,31 @@ spec:
                 type: object
               previousSuspendState:
                 description: |-
-                  PreviousSuspendState is how the Kustomization stood before the applier claim first suspended it,
-                  which handing it back restores: one that was Suspended stays suspended, one that was
-                  NotSuspended is resumed. Recorded with the first suspend, and cleared once the Kustomization is
-                  handed back. Absent, a hand-back resumes the Kustomization.
+                  PreviousSuspendState is how the Kustomization stood before this FluxClaim first suspended
+                  it, and what handing it back restores: one that was Suspended stays suspended, one that was
+                  NotSuspended is resumed. It is cleared once the Kustomization is handed back. Absent,
+                  handing it back resumes the Kustomization.
                 enum:
                 - Suspended
                 - NotSuspended
                 type: string
               repairPending:
                 description: |-
-                  RepairPending is true while a Repair apply is pending for the Kustomization: an apply reverted
-                  an API edit made after its flush, so the cluster runs an older value than Git until the
-                  next apply.
+                  RepairPending is true while a Repair apply is pending: an apply ran a commit older than an
+                  edit made through the API and reverted it on the cluster. Git holds the edit, and the cluster
+                  runs the older value until the next apply.
                 type: boolean
               source:
                 description: |-
-                  Source is the GitRepository the Kustomization applies, as last read, published while an
-                  eligible GitTarget references the applier claim. A GitTarget naming this applier claim must write the
-                  repository and branch it fetches.
+                  Source is the GitRepository the Kustomization applies, as last read. It is published while an
+                  eligible GitTarget names this FluxClaim, and that GitTarget must write the repository and
+                  branch it fetches.
                 properties:
                   alsoAppliedBy:
                     description: |-
-                      AlsoAppliedBy are the other objects in the cluster that apply this GitRepository and that no
-                      FluxClaim holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a
-                      new artifact the moment it arrives. Information only: it never affects Ready.
+                      AlsoAppliedBy lists the other objects that apply this GitRepository and that no FluxClaim
+                      holds: Kustomizations, and HelmReleases whose chart comes from it. Each applies a new commit
+                      as soon as Flux fetches it. Information only; it never affects Ready.
                     items:
                       description: |-
                         NamespacedObjectKindReference contains enough information to locate the typed referenced Kubernetes resource object
@@ -352,7 +342,7 @@ spec:
                     type: string
                   gitRepository:
                     description: GitRepository is the Kustomization's spec.sourceRef,
-                      its namespace defaulted.
+                      with its namespace filled in.
                     properties:
                       name:
                         description: Name of the referent.

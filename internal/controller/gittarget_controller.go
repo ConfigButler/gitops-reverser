@@ -278,13 +278,10 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// the WINNER's older answer and nothing re-enqueues it, because the For() predicate filters
 	// status-only updates by design.
 	requeue := st.requeueAfter(gitTargetRequeue(rd))
-	// TEMPORARY at Info, while Failure A is open. The data plane can converge and this status not
-	// follow it: a run has shown the render gate reaching True and both this GitTarget and every
-	// WatchRule on it still publishing "Rechecking" two minutes later, with no dropped reconcile
-	// request to explain it. This is the only place that publishes the axis, so it is the only
-	// place that can say what it published and how long it intends to wait before saying anything
-	// again.
-	log.Info("GitTarget status published",
+	// This is the only place that publishes the axis, so it is the only place that can say what it
+	// published and how long it intends to wait before saying anything again (the diagnostic that
+	// named Failure A in docs/design/watch-plane-status-convergence-failures.md).
+	log.V(1).Info("GitTarget status published",
 		"writeLost", st.writeLost(),
 		"gitTarget", target.Namespace+"/"+target.Name,
 		"render", string(observed.axes.Render.Status)+"/"+observed.axes.Render.Reason,

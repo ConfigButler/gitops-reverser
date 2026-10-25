@@ -17,17 +17,17 @@ import (
 
 // GitReceiverSpec defines the desired state of GitReceiver.
 type GitReceiverSpec struct {
-	// Type is the payload and signature the Git host sends. "github" checks X-Hub-Signature-256,
-	// "gitlab" checks X-Gitlab-Token, "gitea" checks X-Gitea-Signature, and "generic-hmac" checks
-	// X-Signature: sha256=<hex HMAC of the body> over a {"repository", "branch", "after"} body,
-	// for a relay of your own.
+	// Type is the payload and signature the Git host sends: "github" (X-Hub-Signature-256),
+	// "gitlab" (X-Gitlab-Token), "gitea" (X-Gitea-Signature), or "generic-hmac" for a relay of
+	// your own (X-Signature: sha256=<hex HMAC of the body>, over a {"repository", "branch",
+	// "after"} body).
 	// +required
 	// +kubebuilder:validation:Enum=github;gitlab;gitea;generic-hmac
 	Type ReceiverType `json:"type"`
 
-	// SecretRef names a Secret in this GitReceiver's namespace whose "token" key is the webhook
-	// secret. The token also derives status.webhookPath, so rotating it moves the path: register the
-	// new path with the new secret.
+	// SecretRef names the Secret, in this namespace, whose "token" key is the webhook secret. The
+	// token also determines status.webhookPath, so rotating it moves the path: register the new
+	// path with the new secret.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.secretRef.name must not be empty"
 	SecretRef meta.LocalObjectReference `json:"secretRef"`
@@ -73,9 +73,9 @@ type GitReceiverStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions report whether this GitReceiver serves deliveries: the Ready summary plus the
-	// kstatus Reconciling/Stalled pair. Ready is True once the token Secret is readable and the
-	// receiver listener is on.
+	// Conditions are the latest observations of this GitReceiver's state. Ready, Reconciling and
+	// Stalled follow kstatus; Ready is True once the token is readable and the receiver listener
+	// is on.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -83,10 +83,9 @@ type GitReceiverStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// WebhookPath is the path this GitReceiver is served on, under the receiver listener:
-	// /git-push/ and an HMAC of this GitReceiver's namespace and name, keyed by the token. Point the
-	// Git host's push webhook at the listener plus this path. Empty while the token Secret or its
-	// "token" key is missing.
+	// WebhookPath is the path this GitReceiver is served on, under the receiver listener: /git-push/
+	// and an HMAC of its namespace and name, keyed by the token. Point the Git host's push webhook
+	// at the listener's address plus this path. Empty while the token is missing.
 	// +optional
 	WebhookPath string `json:"webhookPath,omitempty"`
 }
@@ -108,13 +107,12 @@ type GitReceiverStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// GitReceiver is the endpoint a Git host notifies on a push. A delivery to it authenticates against
-// its token, names a repository and a branch, and wakes the branch worker of every GitProvider, in
-// any namespace, whose spec.url the delivery names, for that branch. A provider reaching its host
-// through an alias (another host name or port) is not matched, and finds pushes by its periodic
-// refresh. A delivery is only a hint: the branch worker reads the remote with its own provider's
-// credential to find out what happened, so nothing a delivery says can choose a URL, a credential
-// or a commit. GitBranch.status.lastPushNoticeAt shows that deliveries reach a branch.
+// GitReceiver is the endpoint a Git host notifies when it receives a push. A delivery wakes every
+// GitBranch of every GitProvider, in any namespace, whose spec.url names the delivery's
+// repository, so pushes are picked up at once instead of at the next refresh. A GitProvider that
+// reaches the host through another host name or port is not matched. A delivery is only a hint:
+// the branch is then read with its own GitProvider's credential, so a delivery cannot choose a
+// URL, a credential or a commit. GitBranch.status.lastPushNoticeAt shows deliveries arriving.
 type GitReceiver struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -122,11 +120,11 @@ type GitReceiver struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of GitReceiver
+	// spec defines the desired state of GitReceiver.
 	// +required
 	Spec GitReceiverSpec `json:"spec"`
 
-	// status defines the observed state of GitReceiver
+	// status defines the observed state of GitReceiver.
 	// +optional
 	Status GitReceiverStatus `json:"status,omitempty,omitzero"`
 }

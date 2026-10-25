@@ -38,7 +38,10 @@ spec:
     name: v1alpha3
     schema:
       openAPIV3Schema:
-        description: GitProvider is the Schema for the gitproviders API.
+        description: |-
+          GitProvider is a connection to one Git repository: its URL, the credential that reaches it,
+          the committer identity and commit signing. GitBranches claim branches of the repository
+          through it, as its spec.allowedGitBranches allow.
         properties:
           apiVersion:
             description: |-
@@ -58,37 +61,33 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of GitProvider
+            description: spec defines the desired state of GitProvider.
             properties:
               allowedGitBranches:
                 description: |-
                   AllowedGitBranches says which GitBranches may claim a branch of this repository through this
-                  GitProvider, and which branches: a GitBranch claims only while a grant admits its namespace and
-                  one of that grant's branchPatterns matches its spec.branch. It has no default, unlike the grant
-                  lists of GitBranch and KubeProvider, because which branches a namespace may claim is always
-                  written: omitted or empty, no GitBranch claims through it, this GitProvider's own namespace
-                  included. Grants combine by union. Who may write through a claimed branch is that GitBranch's
-                  spec.allowedGitTargets.
+                  GitProvider: a grant must admit the GitBranch's namespace, and one of its branchPatterns must
+                  match the GitBranch's spec.branch. Grants combine by union. Unlike the grant lists of
+                  GitBranch and KubeProvider it has no default: omitted or empty, no GitBranch may claim
+                  through it, including in this namespace.
                 items:
                   description: |-
-                    GitProviderGitBranchGrant admits GitBranches in some control-cluster namespaces to claim the
-                    branches its patterns match through a GitProvider.
+                    GitProviderGitBranchGrant admits the GitBranches of some namespaces to claim, through a
+                    GitProvider, the branches its patterns match.
                   properties:
                     branchPatterns:
                       description: |-
-                        BranchPatterns are the branches an admitted GitBranch may claim, as patterns matched against
-                        the whole branch name. '*' matches any sequence of characters, '/' included, so "*" alone is
-                        every branch, and a name with no '*', such as "main", matches only itself.
-                        '{consumer.namespace}' and '{consumer.name}' are the claiming GitBranch's namespace and name,
-                        each a whole path segment: "teams/{consumer.namespace}/*". '{consumer.name}' needs
-                        '{consumer.namespace}' in the same pattern, "teams/{consumer.namespace}/{consumer.name}": it is
-                        a naming convention, not a bound, since a GitBranch picks its own name. There is no escaping,
-                        '?' or character class.
+                        BranchPatterns are the branches an admitted GitBranch may claim, each matched against the
+                        whole branch name. "*" matches any characters, "/" included, so "*" alone is every branch and
+                        "main" is only main. "{consumer.namespace}" and "{consumer.name}" are the GitBranch's
+                        namespace and name, each a whole path segment: "teams/{consumer.namespace}/*".
+                        "{consumer.name}" needs "{consumer.namespace}" in the same pattern, because a GitBranch picks
+                        its own name. There is no escaping, "?" or character class.
                       items:
                         description: |-
-                          BranchPattern is a pattern matched against a whole branch name: literal text, '*' for any
-                          sequence of characters ('/' included), and '{consumer.namespace}' and '{consumer.name}' as whole
-                          path segments. '{consumer.name}' needs '{consumer.namespace}' in the same pattern.
+                          BranchPattern matches a whole branch name: literal text, "*" for any characters including "/",
+                          and "{consumer.namespace}" and "{consumer.name}" as whole path segments. "{consumer.name}"
+                          needs "{consumer.namespace}" in the same pattern.
                         maxLength: 255
                         minLength: 1
                         pattern: ^[^\s~^:?\[\\]*$
@@ -129,14 +128,14 @@ spec:
                       x-kubernetes-list-type: set
                     consumerNamespaces:
                       description: |-
-                        ConsumerNamespaces are the control-cluster namespaces whose GitBranches this grant admits.
-                        from: Same is this GitProvider's namespace.
+                        ConsumerNamespaces are the namespaces whose GitBranches this grant admits. from: "Same" is
+                        this GitProvider's namespace.
                       properties:
                         from:
                           description: |-
-                            From is where this grant admits from: Same (the namespace of the object holding the grant, not
-                            the consumer's), Names (the namespaces in names), Selector (the namespaces whose labels match
-                            selector) or All (every namespace).
+                            From is where this grant admits consumers from: "Same" (the namespace of the object that
+                            holds the grant), "Names" (the namespaces in names), "Selector" (the namespaces whose labels
+                            match selector) or "All" (every namespace).
                           enum:
                           - Same
                           - Names
@@ -144,11 +143,11 @@ spec:
                           - All
                           type: string
                         names:
-                          description: 'Names are the control-cluster namespaces admitted
-                            with from: Names, by exact name.'
+                          description: 'Names are the namespaces admitted with from:
+                            "Names", by exact name.'
                           items:
-                            description: GrantNamespace is one control-cluster namespace
-                              a grant admits by name.
+                            description: GrantNamespace is a namespace a grant admits,
+                              by exact name. A variable and "*" are refused.
                             maxLength: 63
                             type: string
                             x-kubernetes-validations:
@@ -170,8 +169,8 @@ spec:
                           x-kubernetes-list-type: set
                         selector:
                           description: |-
-                            Selector matches labels on control-cluster Namespaces, with from: Selector. It must select
-                            something: to admit every namespace, use from: All.
+                            Selector matches the labels of the namespaces admitted with from: "Selector". It must not be
+                            empty: to admit every namespace, use from: "All".
                           properties:
                             matchExpressions:
                               description: matchExpressions is a list of label selector
@@ -243,37 +242,36 @@ spec:
                 x-kubernetes-list-type: atomic
               commit:
                 description: |-
-                  Commit configures the commit identity and signing behavior this connection uses. Message
-                  formatting moved to GitTarget.spec.commit.message.
+                  Commit sets the committer identity and commit signing. Commit messages are set on the
+                  GitTarget, in spec.commit.message.
                 properties:
                   committer:
                     description: |-
-                      Committer configures the operator identity written as the commit committer.
-                      When signing is enabled, Email must be a verified address on the account
-                      that owns the signing key.
+                      Committer is the identity written as each commit's committer. With signing enabled, its
+                      email must be a verified address of the account that owns the signing key.
                     properties:
                       email:
                         default: noreply@configbutler.ai
-                        description: Email is the git committer email.
+                        description: Email is the committer email. Defaults to "noreply@configbutler.ai".
                         type: string
                       name:
                         default: GitOps Reverser
-                        description: Name is the git committer name.
+                        description: Name is the committer name. Defaults to "GitOps
+                          Reverser".
                         type: string
                     type: object
                   signing:
-                    description: Signing configures commit signing.
+                    description: Signing configures SSH commit signing.
                     properties:
                       generateWhenMissing:
                         default: false
                         description: |-
-                          GenerateWhenMissing causes the operator to generate signing key material
-                          in the referenced Secret when it is missing.
+                          GenerateWhenMissing creates a signing key in the Secret when it holds none. Defaults to
+                          false.
                         type: boolean
                       secretRef:
-                        description: |-
-                          SecretRef references the Secret containing the signing key material.
-                          Expected keys will be defined by the signing implementation.
+                        description: SecretRef names the Secret, in this namespace,
+                          that holds the SSH signing key.
                         properties:
                           name:
                             description: Name of the referent.
@@ -290,41 +288,31 @@ spec:
                 type: object
               knownHostsRef:
                 description: |-
-                  KnownHostsRef optionally points at a namespace-local ConfigMap or Secret holding SSH
-                  known_hosts, so host trust can be centralized across GitProviders on the same host instead
-                  of repeated in every credentials Secret. It is used only for SSH and ignored for HTTP auth.
-                  Host keys are resolved in priority order: the credentials Secret's own known_hosts, then this
-                  ref, then the install-level default known-hosts ConfigMap; if none yields valid keys, SSH
-                  fails closed.
+                  KnownHostsRef names a ConfigMap or Secret, in this namespace, holding SSH known_hosts, so
+                  several GitProviders on one host can share them. SSH only. Host keys come from the
+                  credentials Secret's own known_hosts first, then this reference, then the installation's
+                  default; without valid keys, SSH fails.
                 properties:
                   kind:
                     default: ConfigMap
-                    description: 'Kind of the referent: ConfigMap (default) or Secret.'
+                    description: Kind is "ConfigMap" or "Secret". Defaults to "ConfigMap".
                     enum:
                     - ConfigMap
                     - Secret
                     type: string
                   name:
-                    description: Name of the ConfigMap or Secret.
+                    description: |-
+                      Name is the name of the ConfigMap or Secret. Its "known_hosts" key is read, or
+                      "ssh_known_hosts" (the key Argo CD's argocd-ssh-known-hosts-cm uses) when that is absent.
                     minLength: 1
                     type: string
                 required:
                 - name
                 type: object
-              receiver:
-                description: |-
-                  RemovedReceiver is the old place of a GitReceiver's type and secretRef. It is never read;
-                  setting it is refused.
-                type: object
-                x-kubernetes-preserve-unknown-fields: true
               secretRef:
                 description: |-
-                  SecretRef for authentication credentials (may be nil for public repos)
-
-                  An OMITTED secretRef means anonymous access. An empty name is refused rather than treated as
-                  one: a typo there would otherwise downgrade a private repository to anonymous silently, and
-                  the failure would surface as an authentication error against the remote rather than as a
-                  mistake in this object.
+                  SecretRef names the Secret, in this namespace, that holds the credentials for the repository.
+                  Omitted means anonymous access.
                 properties:
                   name:
                     description: Name of the referent.
@@ -338,8 +326,8 @@ spec:
                   rule: self.name != ''
               url:
                 description: |-
-                  URL of the repository (HTTP/SSH).
-                  Immutable: delete and recreate the GitProvider to point at a different repository.
+                  URL is the repository's URL, over HTTPS or SSH. Immutable: delete and recreate the
+                  GitProvider to change it.
                 minLength: 1
                 type: string
             required:
@@ -349,17 +337,14 @@ spec:
             - message: spec.url is immutable; delete and recreate the GitProvider
                 to point at a different repository
               rule: self.url == oldSelf.url
-            - message: 'spec.receiver was replaced by a GitReceiver: create one with
-                this type and secretRef, and remove spec.receiver; deliveries wake
-                every GitProvider whose spec.url they name'
-              rule: '!has(self.receiver)'
           status:
-            description: status defines the observed state of GitProvider
+            description: status defines the observed state of GitProvider.
             properties:
               conditions:
                 description: |-
-                  Conditions report repository validation and commit configuration readiness:
-                  the Ready summary plus the kstatus Reconciling/Stalled pair.
+                  Conditions are the latest observations of this GitProvider's state: whether the repository
+                  answers with its credential, and whether commit signing is ready. Ready, Reconciling and
+                  Stalled follow kstatus.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -420,14 +405,8 @@ spec:
                 x-kubernetes-list-type: map
               lastVerifiedAt:
                 description: |-
-                  LastVerifiedAt is when the credential and the repository were last proved together: the
-                  connectivity check listed the remote's refs with this provider's credential and the remote
-                  answered. It is never cleared — a failure is already carried by Ready=False with a reason —
-                  so the pair "not ready, last verified 11 minutes ago" says how long the connection has been
-                  broken, which is the sentence an operator otherwise has to infer.
-
-                  The check runs on the steady reconcile interval, so a provider's resourceVersion moves at
-                  that cadence. Providers are few and the check was already running; this adds no request.
+                  LastVerifiedAt is when the remote last answered this GitProvider's credential with its refs.
+                  It is never cleared: next to Ready=False, it says how long the connection has been broken.
                 format: date-time
                 type: string
               observedGeneration:
@@ -437,9 +416,9 @@ spec:
                 type: integer
               signingPublicKey:
                 description: |-
-                  SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
-                  Register this as a signing key on your git platform.
-                  Only populated when commit.signing is configured and a signing key is available.
+                  SigningPublicKey is the SSH public key commits are signed with, in authorized_keys format.
+                  Register it as a signing key with your Git host. Set only when spec.commit.signing is
+                  configured and its key is available.
                 type: string
             type: object
         required:
