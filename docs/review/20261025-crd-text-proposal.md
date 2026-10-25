@@ -4,7 +4,8 @@ The branch makes the API reference more consistent, but several descriptions sti
 to unpack too many rules at once. Keep the useful detail. Give each sentence one job, and use
 bullets where readers need to compare values, check requirements, or follow a precedence order.
 
-This proposal changes wording only; it proposes no schema or controller behavior changes.
+This proposal changes wording and line wrapping, and adds one lint check for line width. It proposes
+no schema or controller behavior changes.
 
 ## Scope
 
@@ -38,15 +39,20 @@ plain-text conventions required by [AGENTS.md](../../AGENTS.md). Markdown commen
    claims to show how long a connection has been broken; it records the last successful check.
    Failure may begin later, and `Ready=False` can also reflect signing or configuration failures.
    These need corrections before cosmetic edits.
-2. **Grant defaults and selector pruning need clearer separation.** Grant descriptions compress
+2. **Most descriptions render badly in `kubectl explain`.** It keeps each source line break and
+   wraps every line again at 76 characters of text, so a longer line leaves its last words on a
+   line of their own. 616 of the 1,067 description lines are longer than that. See the
+   [rendering measurements](../facts/crd-descriptions-in-kubectl-explain.md). Restructuring a
+   description does not help until its lines fit.
+3. **Grant defaults and selector pruning need clearer separation.** Grant descriptions compress
    omission, explicit lists, and combined permissions into a paragraph. Selector descriptions mix
    matching, deletion behavior, and conflicting rules. Separate these cases so readers can find
    the one that applies to them.
-3. **Some references leave readers guessing which object or condition is meant.** Both watch-rule
+4. **Some references leave readers guessing which object or condition is meant.** Both watch-rule
    `objectSelector` descriptions refer to `spec.prune.mode` without naming the `GitTarget`.
    `ArgoCDClaim.status.conditions` mixes `True` and `False` with `NotConfigured`, which is a
    reason, not a condition status. It also omits `False` with reason `ArgoCDVersionNotSupported`.
-4. **Long troubleshooting prose is squeezed into a table.** The new row about repeated
+5. **Long troubleshooting prose is squeezed into a table.** The new row about repeated
    `ClaimedResourceReconciled` events in the Flux guide contains the symptom, implementation
    cause, ownership explanation, and remedy. Give that case its own subsection and leave a short
    link in the table.
@@ -60,9 +66,9 @@ Evidence for the behavior corrections: [request message rendering](../../interna
 Flux has a [documentation style guide](https://fluxcd.io/contributing/docs/style-guide/), maintained
 in its [website source](https://github.com/fluxcd/website/blob/main/content/en/contributing/docs/style-guide.md).
 It recommends active voice, present tense, direct wording, and avoiding idioms that make reading
-harder for people who speak English as a second language. It recommends grouping related items
-into lists and keeping paragraphs below six sentences. This is a website writing guide; it does
-not prescribe a format for CRD comments.
+harder for people who speak English as a second language. It puts related items that must appear
+in a specific order into a list, and keeps paragraphs under six sentences. This is a website
+writing guide; it does not prescribe a format for CRD comments.
 
 The source offers useful examples too:
 
@@ -77,12 +83,10 @@ The source offers useful examples too:
   starts with a manifest and explains it with bullets. It gives authentication methods and branch
   selection their own sections.
 
-My recommendation is to adopt those structural habits while keeping this repository's conventions
-for field names and literal values. The recommendation to use bullets inside selected CRD
-descriptions is my editorial proposal. Flux's guide does not require it. Sources checked on
-October 25, 2026, and rechecked when incorporating this feedback. The source links track their
-default branches. The observations above describe these examples, not a project-wide enforcement
-policy.
+Adopt those structural habits, and keep this repository's conventions for field names and literal
+values. Flux's guide supports numbered lists for ordered items, such as a precedence order. Bullets
+for unordered choices are this proposal's own recommendation. Sources checked on October 25, 2026;
+the links track their default branches.
 
 ## Recommended changes (actionable)
 
@@ -92,10 +96,8 @@ policy.
 - Use bullets for alternatives and independent requirements. Use numbered lists when order matters.
 - Keep a short explanation in prose when there is no choice to compare.
 - Keep existing per-value paragraphs when they already make the choices clear.
-- Wrap description text at 76 characters after the Go comment prefix. The repository's
-  [rendering measurements](../facts/crd-descriptions-in-kubectl-explain.md) show that longer lines
-  wrap again in `kubectl explain`, leaving stray words on separate lines. Fix that before optional
-  paragraph-to-bullet changes.
+- Wrap description text at 76 characters after the Go comment prefix (risk 2). Fix that before
+  optional paragraph-to-bullet changes.
 - Name the subject: the `GitTarget`, the source cluster, or the referenced `GitBranch`.
 - Prefer familiar verbs: `allows`, `uses`, `rejects`, and `restores`. Replace phrases such as
   `a written list`, `admits nobody`, and `hands the switch back` with concrete behavior.
@@ -153,9 +155,9 @@ syncs:
   the claim.
 - False, reason NotConfigured: another field manager has enabled automated
   sync.
-- False, reason ArgoCDVersionNotSupported: the Application API does not
-  support spec.syncPolicy.automated.enabled, so GitOps Reverser cannot
-  disable automated sync through that field.
+- False, reason ArgoCDVersionNotSupported: the Application has no
+  spec.syncPolicy.automated.enabled field (Argo CD before 3.1), so GitOps
+  Reverser cannot turn automated sync off.
 - Unknown, reason NotConfigured: the claim is not configured to control the
   Application.
 
@@ -228,7 +230,9 @@ but is not valid JSON.
 Location: [GitTarget.spec.commit.message.liveTemplate](../../api/v1alpha3/gitprovider_types.go).
 
 The current description combines the template context, per-resource fields, empty-value handling,
-and request overrides. Group the context without dropping fields:
+and request overrides. It also omits Kind, Labels, and the Label accessor, which the
+[commit message guide](../commit-messages.md) documents. Group the context and add the missing
+fields:
 
 ```text
 LiveTemplate is the Go template for commit messages generated from live
@@ -242,10 +246,12 @@ The template receives:
 - Operations: counts of retained entries by operation kind.
 - Resources: the resources in the commit window.
 
-Each resource provides Operation, Group, Version, Resource, Namespace, Name,
-APIVersion, ResourceVersion, and Generation. ResourceVersion identifies the
-state written by the commit and may be empty. Generation is 0 for a kind
-without a spec. Guard both values with {{with}}.
+Each resource provides Operation, Group, Version, Resource, Kind, Namespace,
+Name, APIVersion, ResourceVersion, Generation, and Labels. Read one label
+with {{.Label "key"}}. ResourceVersion identifies the state written by the
+commit and may be empty. Kind and Labels are empty for a deletion.
+Generation is 0 for a kind without a spec. Guard Kind, ResourceVersion, and
+Generation with {{with}}.
 
 A CommitRequest message takes precedence without changing the author. The
 requestTemplate field controls whether that message is wrapped.
@@ -342,12 +348,18 @@ MultipleSourceNamespaces.
 
 ## Implementation order
 
-1. Correct the message, timestamp, condition, and cross-object-reference wording.
-2. Fix description line widths, then apply the enum and grant-list examples.
-3. Restructure the remaining long descriptions and the Flux troubleshooting case.
-4. Preview `kubectl explain` output. Consider the optional changes to `onRefusal` and
-   `serializeNamespace` only if they improve that output.
-5. Regenerate CRDs into a scratch directory and compare with the pre-edit branch snapshot after
+1. Correct the message, timestamp, condition, template-field, and cross-object-reference wording.
+2. Rewrap every description at 76 characters, in a commit of its own so the diff stays mechanical.
+   In the same change, add a `task lint` check that fails on any `description` line longer than 76
+   characters under `config/crd/bases`, and add the limit to the CRD house style in
+   [AGENTS.md](../../AGENTS.md). Without the check, the next edit brings long lines back.
+3. Apply the enum and grant-list examples.
+4. Restructure the remaining long descriptions and the Flux troubleshooting case.
+5. Preview `kubectl explain` output, using the envtest recipe in the
+   [rendering measurements](../facts/crd-descriptions-in-kubectl-explain.md#how-to-reproduce).
+   Consider the optional changes to `onRefusal` and `serializeNamespace` only if they improve
+   that output.
+6. Regenerate CRDs into a scratch directory and compare with the pre-edit branch snapshot after
    stripping every `description` key. Preserve scopes, defaults, validation, and list semantics.
-6. Run the repository's required validation for an API-comment implementation. For this proposal
+7. Run the repository's required validation for an API-comment implementation. For this proposal
    alone, run `task lint-docs` and Vale on this file.
