@@ -52,6 +52,11 @@ deleting the definition (and every object of the kind with it) and recreating bo
 
 These are the design decisions to keep in your head while reading or changing the code:
 
+**GitOps Reverser writes Git; Flux or Argo CD deploys.** The output is commits that reflect the
+cluster's state. Bringing a change from Git back into the cluster is the job of a GitOps tool running
+alongside. GitOps Reverser only decides *when* that tool applies a folder it also writes, through an
+applier claim (see "GitOps Reverser decides when Git is applied" below).
+
 **The Kubernetes API is the source of truth for what GitOps Reverser writes.** Git is a
 materialized mirror of desired state from the API, ingested by **watch**; GitOps Reverser never
 reads Git as object state. An edit made in Git reaches the cluster only through Flux or Argo CD.
@@ -60,7 +65,9 @@ publishes the API edits it has decided, then asks the applier to apply. The watc
 result, and the applier's own writes during that apply (its echoes) are not mirrored, because Git
 already holds them. When a push conflicts
 with a newer remote commit, the operator fetches the new remote state, resets its local clone, and
-replays its retained writes from the API.
+replays its retained writes from the API. So the API comes first without being the only author: other
+authors can push to the same branch and their commits stay, and only where an API edit and a Git
+commit touch the same object does the API's version win.
 
 **Watch is the only object-state source.** Each `GitTarget` names one `KubeProvider` and opens one
 Kubernetes watch per claimed `(GVR, scope)` against that source, with `sendInitialEvents=true`. For a
