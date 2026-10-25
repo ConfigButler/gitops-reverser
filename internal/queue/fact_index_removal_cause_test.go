@@ -124,19 +124,56 @@ func TestFactIndex_RemovalNamesAnRVOnlyWriteAtItsOwnVersion(t *testing.T) {
 	require.Equal(t, "bob", resolution.Fact.Author)
 }
 
-// For a terminating object the fact at its version can be the finalizer PATCH, which says who cleared
-// a finalizer rather than who asked for the deletion. Only a deletion counts.
+// For a terminating object the fact at its version can be the finalizer PATCH or UPDATE, which says
+// who cleared a finalizer rather than who asked for the deletion. Only a deletion counts. An operator
+// clearing its finalizer with a whole-object Update (controllerutil.RemoveFinalizer, then Update) is
+// the common case.
 func TestFactIndex_RemovalOfATerminatingObjectNeedsTheDeletion(t *testing.T) {
-	const route = "removal-terminating"
-	h := newFactIndexHarness(t, FactIndexConfig{})
-	h.publish(factIndexTestStream(route), verbFact("finalizer-controller", "11", "patch"))
-	h.waitForFacts(1)
+	for _, verb := range []string{"patch", "update"} {
+		t.Run(verb, func(t *testing.T) {
+			route := "removal-terminating-" + verb
+			h := newFactIndexHarness(t, FactIndexConfig{})
+			h.publish(factIndexTestStream(route), verbFact("finalizer-controller", "11", verb))
+			h.waitForFacts(1)
 
-	h.absent(removalQuery(route, true))
+			h.absent(removalQuery(route, true))
 
-	h.publish(factIndexTestStream(route), verbFact("carol", "11", "delete"))
-	resolution := h.resolve(removalQuery(route, true))
-	require.Equal(t, "carol", resolution.Fact.Author, "the deletion names the initiator")
+			h.publish(factIndexTestStream(route), verbFact("carol", "11", "delete"))
+			resolution := h.resolve(removalQuery(route, true))
+			require.Equal(t, "carol", resolution.Fact.Author, "the deletion names the initiator")
+		})
+	}
+}
+
+// The reported case, in both orders: Carol deletes a resource her operator finalizes, and the
+// operator's service account clears the finalizer, the write at the removal's own version. Whichever
+// fact the index files first, the removal names Carol, at once.
+func TestFactIndex_AFinalizerClearedByAControllerNamesTheDeleter(t *testing.T) {
+	for _, verb := range []string{"patch", "update"} {
+		for name, controllerFirst := range map[string]bool{"controller first": true, "deletion first": false} {
+			t.Run(verb+" "+name, func(t *testing.T) {
+				route := "removal-finalizer-" + verb
+				if controllerFirst {
+					route += "-controller-first"
+				}
+				h := newFactIndexHarness(t, FactIndexConfig{})
+				deletion := verbFact("carol", "10", "delete")
+				clearing := verbFact("system:serviceaccount:team-a:operator", "11", verb)
+				facts := []AuthorFact{deletion, clearing}
+				if controllerFirst {
+					facts = []AuthorFact{clearing, deletion}
+				}
+				h.publish(factIndexTestStream(route), facts...)
+				h.waitForFacts(len(facts))
+
+				started := time.Now()
+				resolution := h.resolve(removalQuery(route, true))
+				require.Equal(t, AttributionDeleteSticky, resolution.Result)
+				require.Equal(t, "carol", resolution.Fact.Author)
+				require.Less(t, time.Since(started), time.Second)
+			})
+		}
+	}
 }
 
 // Bob relabels the object out and Carol deletes it, and both facts arrive in ONE audit batch, Carol's

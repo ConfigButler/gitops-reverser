@@ -24,6 +24,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
 	"github.com/ConfigButler/gitops-reverser/internal/applier/argosim"
 	"github.com/ConfigButler/gitops-reverser/internal/applier/fluxsim"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 var checkoutApplication = k8stypes.NamespacedName{Namespace: "argocd", Name: "checkout"}
@@ -147,9 +148,13 @@ func TestArgoCDClaim_SwitchesAutomatedSyncOff(t *testing.T) {
 // switched on outside GitOps Reverser is switched off again, every time, with a Normal
 // ClaimedResourceReconciled Event each time.
 func TestArgoCDClaim_AutomatedSyncSwitchedOnIsSwitchedOffAgain(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
 	f := newArgoHoldFixture(t, nil, applierArgoApplication(nil))
 	reconcileClaim(t, f.r)
 	f.events()
+	_, counted := claimedResourceReconciledCount(reader, "application")
+	assert.False(t, counted, "an adoption is no sync somebody else started")
 
 	for round := range 2 {
 		f.switchOn(t)
@@ -163,6 +168,8 @@ func TestArgoCDClaim_AutomatedSyncSwitchedOnIsSwitchedOffAgain(t *testing.T) {
 		require.Len(t, events, 1, "an Event every time")
 		assert.True(t, strings.HasPrefix(events[0], "Normal ClaimedResourceReconciled automated sync of Application "+
 			"argocd/checkout was switched on outside GitOps Reverser, which switched it off again"), events[0])
+		count, _ := claimedResourceReconciledCount(reader, "application")
+		assert.Equal(t, int64(round+1), count, "counted every time, where the Event is aggregated")
 	}
 }
 

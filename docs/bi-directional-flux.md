@@ -477,8 +477,9 @@ tip, the `Kustomization`s GitOps Reverser holds ignore the new artifact, and one
 ## Overriding by hand
 
 - **`flux resume ks checkout`** applies the `Kustomization` at once, unchecked. Within a minute the
-  applier claim suspends it again, records a `ClaimedResourceReconciled` Event, and shows the apply as an
-  `Unresolved` operation that completes once nothing it started is running. It does so every time.
+  applier claim suspends it again, records a `ClaimedResourceReconciled` Event, counts it in
+  `claimed_resource_reconciled_total`, and shows the apply as an `Unresolved` operation that completes
+  once nothing it started is running. It does so every time.
 - **`flux reconcile ks checkout`** does nothing visible while the `Kustomization` is suspended: Flux
   marks the request handled without applying.
 - **`flux suspend ks checkout`** is taken back with a token of GitOps Reverser's.
@@ -513,6 +514,7 @@ flux get ks checkout -n flux-system
 | --- | --- | --- |
 | `FluxClaim` `Configured=False`, `ApplierNotFound` | No `Kustomization` with that namespace and name in the applier claim's cluster, or Flux is not installed there | Create it, or recreate the applier claim with the right `kustomizationRef`; an omitted namespace is the applier claim's |
 | `FluxClaim` `Configured=False`, `SuspendOwnedElsewhere` | The manifest that applies the `Kustomization` sets `spec.suspend` | Remove the field from that manifest |
+| Repeated `ClaimedResourceReconciled` Events (a rising `claimed_resource_reconciled_total`), each followed by applier claim `OperationUnresolved` | A controller writes the `Kustomization` with an Update of its whole spec that omits `spec.suspend`, such as `controllerutil.CreateOrUpdate` with a spec it builds from scratch. An Update takes no ownership of a field it removes, so `SuspendOwnedElsewhere` cannot report it, and Flux applies unchecked on each of that controller's writes until the applier claim suspends it again | Make that controller copy `spec.suspend` from the object it read into the spec it writes, or apply with server-side apply and leave the field out |
 | `ApplierClaimReady=False`, `SourceMismatch`, or applier claim `UnsupportedSource` | The message names the broken [`GitRepository` rule](#the-gitrepository) | Fix the `GitRepository`; the applier claim then adopts the `Kustomization`, and the apply that was waiting is asked for |
 | `FluxClaim` `Configured=False`, `ApplierNamespaceNotAllowed` | The `Kustomization` is in a namespace the grants do not give, such as `flux-system` | Add it to `applierNamespaces` in the `KubeProvider`'s `spec.allowedApplierClaims` (Helm: `kubeProvider.allowedApplierClaims`) |
 | `FluxClaim` `Configured=Unknown`, `NotBound` | A `GitTarget` names the applier claim, but cannot be judged yet: its `GitProvider` or `KubeProvider` does not exist | Create the missing object; the message names it |

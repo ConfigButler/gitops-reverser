@@ -13,6 +13,7 @@ import (
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -29,6 +30,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
 	"github.com/ConfigButler/gitops-reverser/internal/applier/fluxsim"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 var checkoutKustomization = k8stypes.NamespacedName{Namespace: "flux-system", Name: "checkout"}
@@ -115,9 +117,13 @@ func TestFluxClaim_AdoptsItsKustomization(t *testing.T) {
 // Kustomization is suspended again with a token, every time, with a Normal Event each time, and
 // recorded as an Unresolved operation that completes once nothing that resume started is running.
 func TestFluxClaim_AnExternalResumeIsSuspendedAgain(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
 	f := newHoldFixture(t, testFluxClaim(claimLocalProvider))
 	reconcileClaim(t, f.r)
 	f.events()
+	_, counted := claimedResourceReconciledCount(reader, "kustomization")
+	assert.False(t, counted, "an adoption is no apply somebody else started")
 
 	for round := range 2 {
 		patch := []byte(`{"spec":{"suspend":false}}`)
@@ -139,6 +145,8 @@ func TestFluxClaim_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 		require.Len(t, events, 1, "an Event every time")
 		assert.True(t, strings.HasPrefix(events[0], "Normal ClaimedResourceReconciled "+
 			"Kustomization flux-system/checkout was resumed outside GitOps Reverser"), events[0])
+		count, _ := claimedResourceReconciledCount(reader, "kustomization")
+		assert.Equal(t, int64(round+1), count, "counted every time, where the Event is aggregated")
 
 		got := reconcileClaim(t, f.r).(*configbutleraiv1alpha3.FluxClaim)
 		require.NotNil(t, got.Status.Operation)
@@ -149,6 +157,14 @@ func TestFluxClaim_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 		assert.True(t, conditionIsTrue(got.Status.Conditions, ApplierClaimConditionInControl))
 	}
 	assert.Len(t, f.sim.Applied(), 2, "each resume applied once, unchecked; that is what the record says")
+}
+
+// claimedResourceReconciledCount reads claimed_resource_reconciled_total for the test claim.
+func claimedResourceReconciledCount(reader *sdkmetric.ManualReader, applierKind string) (int64, bool) {
+	return telemetry.CollectInt64Sum(reader, "gitopsreverser_claimed_resource_reconciled_total",
+		map[string]string{
+			"applier_kind": applierKind, "claim_namespace": claimKey.Namespace, "claim_name": claimKey.Name,
+		})
 }
 
 // TestFluxClaim_LeavesABranchWorkersOperationAlone: a worker records its operation before it

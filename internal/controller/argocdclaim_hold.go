@@ -163,6 +163,7 @@ func (r *ApplierClaimReconciler) switchOff(
 		r.event(claim, corev1.EventTypeNormal, EventReasonAdopted,
 			"switched automated sync of Application %s off: from now on GitOps Reverser starts every sync", ref)
 	case state.On:
+		recordClaimedResourceReconciled(ctx, applierKindApplication, claim)
 		r.event(claim, corev1.EventTypeNormal, EventReasonClaimedResourceReconciled,
 			"automated sync of Application %s was switched on outside GitOps Reverser, which switched it off "+
 				"again; a sync Argo CD started meanwhile was not checked against the branch", ref)
