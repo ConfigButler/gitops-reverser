@@ -390,6 +390,11 @@ linters:
       # caller that supplies a different path is its own test, into t.TempDir().
       - path: 'hack/crdfields/.*\.go'
         linters: [forbidigo, gosec]
+      # The API doc width check is a standalone dev CLI as well: its report is console
+      # output (forbidigo), and it reads the Go files it walks under the directories it is
+      # given, api/ by default (gosec G122/G304). It writes nothing.
+      - path: 'hack/apidocwidth/.*\.go'
+        linters: [forbidigo, gosec]
       # Allow fmt.Println in metrics exporter (initialization logs)
       - path: 'internal/telemetry/.*\.go'
         linters: [forbidigo]
