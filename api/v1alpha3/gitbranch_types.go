@@ -46,14 +46,18 @@ type GitBranchSpec struct {
 	// parent changed under a worker holding writes is the one case that needed its own replay, so it
 	// is immutable. It can never hold a commit or tag: a pinned starting point would be a sibling.
 
-	// ParentBranch is the branch spec.branch is created from, and compared against
-	// while spec.branch does not exist on the remote. Omitted, it is the remote's
-	// default branch, or no history at all in an empty repository. When set, it
-	// must exist on the remote for spec.branch to be created; otherwise this
-	// GitBranch reports ParentBranchNotFound and writes nothing. Once spec.branch
-	// exists, the parent branch is no longer followed. It is only read, so
-	// spec.allowedGitBranches need not allow it. Immutable, including adding or
-	// removing it: delete and recreate the GitBranch to change it.
+	// ParentBranch is the branch spec.branch is created from, and compared
+	// against while spec.branch does not exist on the remote. Omitted, it is the
+	// remote's default branch, or no history at all in an empty repository.
+	//
+	// When set, it must exist on the remote for spec.branch to be created;
+	// otherwise this GitBranch reports Stalled=True, reason ParentBranchNotFound,
+	// and writes nothing. Once spec.branch exists, the parent branch is no
+	// longer followed. It is only read, so the GitProvider's
+	// spec.allowedGitBranches need not allow it.
+	//
+	// Immutable, including adding or removing it: delete and recreate the
+	// GitBranch to change it.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	ParentBranch string `json:"parentBranch,omitempty"`

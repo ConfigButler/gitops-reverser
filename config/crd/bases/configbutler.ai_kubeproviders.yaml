@@ -462,15 +462,21 @@ spec:
                       in the API server's audit webhook URL, /audit-webhook/<route>. When several
                       logical clusters share one webhook backend, it is instead the value of the
                       audit-event annotation that --author-attribution-audit-route-annotation-key
-                      names. KubeProviders with the same route read the same cluster's attribution
-                      facts.
+                      names. KubeProviders with the same route read the same cluster's
+                      attribution facts.
 
                       Empty means <namespace>.<name>. Set it when several KubeProviders in this
-                      namespace connect to one cluster, since an API server posts under one route.
-                      A route belongs to one namespace: the one it starts with (<namespace>.) when
-                      a KubeProvider there carries it, and otherwise the namespace of the oldest
-                      KubeProvider carrying it. KubeProviders in another namespace that carry it
-                      report Stalled=True, reason AuditRouteConflict, and are not used.
+                      namespace connect to one cluster, since an API server posts under one
+                      route.
+
+                      A route belongs to one namespace:
+
+                      - the namespace the route starts with (<namespace>.), when a KubeProvider
+                        there carries it;
+                      - otherwise, the namespace of the oldest KubeProvider carrying it.
+
+                      KubeProviders in another namespace that carry the route report
+                      Stalled=True, reason AuditRouteConflict, and are not used.
                     maxLength: 253
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     type: string

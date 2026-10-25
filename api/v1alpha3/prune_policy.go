@@ -33,10 +33,13 @@ type PrunePolicy struct {
 	// retro-default stored ones. Every reader must go through EffectivePruneMode, which maps an
 	// absent policy and an empty mode to OnEvent.
 
-	// Mode decides which deletions are mirrored. "Never" removes nothing.
-	// "OnEvent" mirrors a delete observed on the source cluster, but a resync
-	// removes nothing. "Always" also lets a resync remove a document that has no
-	// resource on the cluster. Defaults to "OnEvent".
+	// Mode decides which deletions are mirrored. Defaults to "OnEvent".
+	//
+	// - "OnEvent": mirrors a delete observed on the source cluster; a resync
+	//   removes nothing.
+	// - "Never": removes nothing.
+	// - "Always": as "OnEvent", and a resync also removes a document that has
+	//   no resource on the cluster.
 	// +optional
 	// +kubebuilder:validation:Enum=Never;OnEvent;Always
 	// +kubebuilder:default=OnEvent

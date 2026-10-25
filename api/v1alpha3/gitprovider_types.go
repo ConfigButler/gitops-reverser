@@ -38,9 +38,15 @@ type GitProviderSpec struct {
 
 	// KnownHostsRef names a ConfigMap or Secret, in this namespace, holding SSH
 	// known_hosts, so several GitProviders on one host can share them. SSH only.
-	// Host keys come from the credentials Secret's own known_hosts first, then
-	// this reference, then the installation's default; without valid keys, SSH
-	// fails.
+	//
+	// Host keys come from the first of these that has any:
+	//
+	// 1. the known_hosts key of the credentials Secret, spec.secretRef;
+	// 2. this reference;
+	// 3. the installation's default.
+	//
+	// Without host keys, SSH fails unless the installation sets
+	// --insecure-allow-missing-known-hosts.
 	// +optional
 	KnownHostsRef *KnownHostsReference `json:"knownHostsRef,omitempty"`
 

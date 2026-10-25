@@ -107,21 +107,26 @@ type GitTargetSpec struct {
 	// identity inside a file and the write-time guards still refuse a sensitive document in a
 	// shared one.
 
-	// Placement decides where a new resource is written: one with no document in
-	// the folder yet. A resource that already has a document is updated where that
-	// document is, so a change here affects only resources created afterward, and
-	// labeling a resource later never moves its file.
+	// Placement decides where a new resource is written: one with no document
+	// in the folder yet. A resource that already has a document is updated
+	// where that document is. So a change here affects only resources created
+	// afterward, and labeling a resource later never moves its file.
 	//
-	// byType and default are path templates over the resource's identity
-	// ({namespace}, {name}, {group}, {version}, {resource}, {kind} and more), and
+	// byType and default are path templates over the resource's identity:
+	// {namespace}, {name}, {group}, {version}, {resource}, {kind} and more. They
 	// may read a label: "{label:app.kubernetes.io/instance}/configmaps.yaml".
-	// "{label:key}" renders "_unlabeled" for a resource without the label, and
-	// "{namespace}" renders "_cluster" for a cluster-scoped one. Append
-	// "|fallback" to either to choose that value: "{label:team|unassigned}",
-	// "{namespace|_global}". A fallback is up to 63 characters of [A-Za-z0-9._-],
-	// is not "." or "..", and may be empty to drop the path segment. A {namespace}
-	// fallback that names a real namespace files cluster-scoped resources in that
-	// namespace's folder. A fallback on any other variable is rejected.
+	//
+	// Two variables can be absent, and each then renders a built-in value:
+	//
+	// - "{label:key}" renders "_unlabeled" for a resource without the label.
+	// - "{namespace}" renders "_cluster" for a cluster-scoped resource.
+	//
+	// Append "|fallback" to either to choose that value instead:
+	// "{label:team|unassigned}", "{namespace|_global}". A fallback is up to 63
+	// characters of [A-Za-z0-9._-], is not "." or "..", and may be empty to
+	// drop the path segment. A {namespace} fallback that names a real namespace
+	// files cluster-scoped resources in that namespace's folder. A fallback on
+	// any other variable is rejected.
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
 
@@ -186,13 +191,18 @@ type GitTargetSpec struct {
 	// out of order, on resume. status.retention is withheld because nothing is swept, and zero
 	// would read as converged.
 
-	// Suspend stops this GitTarget from making new commits, without deleting it.
-	// Watches keep running and status.placement stays current; status.retention is
-	// not published while it is set. A commit already made locally is still
-	// pushed, so one more commit can appear seconds after it is set: suspend stops
-	// the next write and does not undo the last one. Clearing it resumes from the
-	// current cluster state at the next resync; writes skipped while suspended are
-	// not replayed. Defaults to false.
+	// Suspend stops this GitTarget from making new commits, without deleting
+	// it. Defaults to false.
+	//
+	// While it is set, watches keep running and status.placement stays current,
+	// but status.retention is not published.
+	//
+	// A commit already made locally is still pushed, so one more commit can
+	// appear seconds after it is set: suspend stops the next write and does not
+	// undo the last one.
+	//
+	// Clearing it resumes from the current cluster state at the next resync.
+	// Writes skipped while suspended are not replayed.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
 }

@@ -156,12 +156,18 @@ type FluxClaimSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// FluxClaim hands control of a Flux Kustomization to GitOps Reverser. The
-// Kustomization stays suspended, and GitOps Reverser resumes it for each apply
-// it starts, always after the edits pending on the branch are published: after
-// a commit it did not push, a refused or reverted edit, or an object the API
-// created, and once at startup or when a GitTarget first names it. GitTargets
-// name it with spec.applierClaimRef.
+// FluxClaim lets GitOps Reverser decide when a Flux Kustomization applies.
+// The Kustomization stays suspended, and GitOps Reverser resumes it for each
+// apply it starts, always after the edits pending on the branch are
+// published. It starts one:
+//
+//   - after a commit that GitOps Reverser did not push;
+//   - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
+//   - after an apply reverted an edit made through the API;
+//   - after objects were created through the API in its folders;
+//   - once at startup, and when a GitTarget first names this FluxClaim.
+//
+// GitTargets name it with spec.applierClaimRef.
 type FluxClaim struct {
 	metav1.TypeMeta `json:",inline"`
 

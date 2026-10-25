@@ -153,12 +153,18 @@ type ArgoCDClaimSource struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ArgoCDClaim hands control of an Argo CD Application to GitOps Reverser. The
-// Application's automated sync stays off, and GitOps Reverser starts each
-// sync, always after the edits pending on the branch are published: after a
-// commit it did not push, a refused or reverted edit, or an object the API
-// created, and once at startup or when a GitTarget first names it. GitTargets
-// name it with spec.applierClaimRef.
+// ArgoCDClaim lets GitOps Reverser decide when an Argo CD Application syncs.
+// The Application's automated sync stays off, and GitOps Reverser starts each
+// sync, always after the edits pending on the branch are published. It starts
+// one:
+//
+//   - after a commit that GitOps Reverser did not push;
+//   - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
+//   - after a sync reverted an edit made through the API;
+//   - after objects were created through the API in its folders;
+//   - once at startup, and when a GitTarget first names this ArgoCDClaim.
+//
+// GitTargets name it with spec.applierClaimRef.
 type ArgoCDClaim struct {
 	metav1.TypeMeta `json:",inline"`
 
