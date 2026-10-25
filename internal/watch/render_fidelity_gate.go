@@ -78,14 +78,10 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 		m.logUnappliedFidelityReport(target, collection, revision, "clean")
 		return
 	}
-	// TEMPORARY at Info, while Failure A is open. The refusal paths above are logged and the
-	// accept path was not, so SILENCE from this function was ambiguous between "never called" and
-	// "called and accepted" -- and the reproduction that finally carried every other diagnostic
-	// produced exactly that silence, which decided nothing.
-	//
-	// It is bounded: a scope accepts one report per revision, and a revision only moves when the
-	// plan restarts the collection. Lower it to V(1) once A is named.
-	m.Log.WithName("render-fidelity").Info("render scope result accepted",
+	// Logged so that silence from this function is not ambiguous between "never called" and
+	// "called and accepted". It is bounded: a scope accepts one report per revision, and a revision
+	// only moves when the plan restarts the collection.
+	m.Log.WithName("render-fidelity").V(1).Info("render scope result accepted",
 		"gitDest", target.String(), "collection", collection.String(), "revision", revision,
 		"state", string(status.State), "status", status.Message)
 	// Publish the gate's CURRENT status, not the one this drain observed. Sibling drains record
