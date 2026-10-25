@@ -74,6 +74,12 @@ re-validate spec; a removed field stops being served immediately, not after the 
 migration inventory must be taken BEFORE the upgrade); and a previously-defaulted field cannot be
 removed by `kubectl apply`, which makes refusing one an upgrade nobody can complete.
 
+**Before you write a CRD description:**
+[`facts/crd-descriptions-in-kubectl-explain.md`](facts/crd-descriptions-in-kubectl-explain.md)
+covers how `kubectl explain` renders a doc comment (line breaks kept, each line rewrapped at 76
+characters of text, so longer lines leave stray words), behavior a description must not misstate,
+and Flux's writing style guide.
+
 ## The contracts — [`spec/`](spec/)
 
 The code cites these. Breaking one without updating it is how the next person gets
