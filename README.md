@@ -106,8 +106,9 @@ the operator replays its writes on top of their commits, so history stays linear
 commits. If both touch the same resource, the API wins
 ([API-first publication](docs/api-first-publication.md)).
 
-A folder that Flux or Argo CD also applies needs an [applier claim](docs/bi-directional.md), so an
-apply never reverts a live edit that has not reached Git yet.
+A folder that Flux or Argo CD also applies needs an [applier claim](docs/bi-directional.md): GitOps
+Reverser then decides when the applier runs and publishes pending edits first. An edit made while
+that apply runs keeps its value in Git and is repaired on the cluster afterwards.
 
 ## Quick start
 

@@ -87,8 +87,8 @@ spec:
                   - A list of grants: the claims that at least one grant allows, holding
                     appliers in the applierNamespaces of every grant that allows them.
 
-                  A list replaces the default, so it needs a grant with from: "Same" for
-                  the claims in this namespace to keep access.
+                  A list replaces the default: the claims in this namespace keep access
+                  only if at least one grant allows them.
                 items:
                   description: |-
                     KubeProviderApplierClaimGrant admits the FluxClaims and ArgoCDClaims of some
@@ -263,8 +263,8 @@ spec:
                   - A list of grants: the GitTargets that at least one grant allows, with
                     what every grant that allows them permits.
 
-                  A list replaces the default, so it needs a grant with from: "Same" for
-                  the GitTargets in this namespace to keep access.
+                  A list replaces the default: the GitTargets in this namespace keep access
+                  only if at least one grant allows them.
                 items:
                   description: |-
                     KubeProviderGitTargetGrant admits the GitTargets of some namespaces to

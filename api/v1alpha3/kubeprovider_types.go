@@ -59,8 +59,8 @@ type KubeProviderSpec struct {
 	// - A list of grants: the GitTargets that at least one grant allows, with
 	//   what every grant that allows them permits.
 	//
-	// A list replaces the default, so it needs a grant with from: "Same" for
-	// the GitTargets in this namespace to keep access.
+	// A list replaces the default: the GitTargets in this namespace keep access
+	// only if at least one grant allows them.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
@@ -78,8 +78,8 @@ type KubeProviderSpec struct {
 	// - A list of grants: the claims that at least one grant allows, holding
 	//   appliers in the applierNamespaces of every grant that allows them.
 	//
-	// A list replaces the default, so it needs a grant with from: "Same" for
-	// the claims in this namespace to keep access.
+	// A list replaces the default: the claims in this namespace keep access
+	// only if at least one grant allows them.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
