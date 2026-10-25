@@ -17,11 +17,14 @@ import (
 
 // GitReceiverSpec defines the desired state of GitReceiver.
 type GitReceiverSpec struct {
-	// Type is the payload and signature the Git host sends: "github"
-	// (X-Hub-Signature-256), "gitlab" (X-Gitlab-Token), "gitea"
-	// (X-Gitea-Signature), or "generic-hmac" for a relay of your own (X-Signature:
-	// sha256=<hex HMAC of the body>, over a {"repository", "branch", "after"}
-	// body).
+	// Type is the payload and signature format the Git host sends:
+	//
+	// - "github": GitHub's payload, signed in X-Hub-Signature-256.
+	// - "gitlab": GitLab's payload, with the secret in X-Gitlab-Token.
+	// - "gitea": Gitea's payload, signed in X-Gitea-Signature.
+	// - "generic-hmac": a relay of your own. It sends a JSON object with
+	//   repository, branch and after fields, signed in X-Signature as
+	//   sha256=<hex HMAC of the body>.
 	// +required
 	// +kubebuilder:validation:Enum=github;gitlab;gitea;generic-hmac
 	Type ReceiverType `json:"type"`

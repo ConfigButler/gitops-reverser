@@ -48,12 +48,19 @@ type KubeProviderSpec struct {
 	InCluster *KubeProviderInCluster `json:"inCluster,omitempty"`
 
 	// AllowedGitTargets says which GitTargets may mirror through this
-	// KubeProvider, and what. Each grant admits GitTargets from some namespaces,
-	// bounds which source namespaces their WatchRules may read (sourceNamespaces),
-	// and lists the cluster-scoped types their ClusterWatchRules may mirror
-	// (clusterResources). Omitted, it is one grant for this namespace, reading the
-	// source namespace of the same name and no cluster-scoped type. A written list
-	// is the whole policy, and [] admits nobody. Grants combine by union.
+	// KubeProvider, and what. Each grant allows the GitTargets of some
+	// namespaces, bounds which source namespaces their WatchRules may read
+	// (sourceNamespaces), and lists the cluster-scoped types their
+	// ClusterWatchRules may mirror (clusterResources).
+	//
+	// - Omitted: the GitTargets in this KubeProvider's namespace, reading only
+	//   the source namespace of the same name and no cluster-scoped type.
+	// - Empty list ([]): no GitTarget.
+	// - A list of grants: the GitTargets that at least one grant allows, with
+	//   what every grant that allows them permits.
+	//
+	// A list replaces the default, so it needs a grant with from: "Same" for
+	// the GitTargets in this namespace to keep access.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
@@ -61,11 +68,18 @@ type KubeProviderSpec struct {
 	AllowedGitTargets []KubeProviderGitTargetGrant `json:"allowedGitTargets"`
 
 	// AllowedApplierClaims says which FluxClaims and ArgoCDClaims may hold an
-	// applier through this KubeProvider, and in which namespaces that applier may
-	// be (applierNamespaces). Being admitted to mirror does not admit to apply.
-	// Omitted, it is one grant for this namespace, holding appliers in the
-	// namespace of the same name. A written list is the whole policy, and []
-	// admits nobody. Grants combine by union.
+	// applier through this KubeProvider, and in which namespaces that applier
+	// may be (applierNamespaces). A namespace in allowedGitTargets gets no
+	// applier access from that.
+	//
+	// - Omitted: the claims in this KubeProvider's namespace, holding appliers
+	//   in the namespace of the same name.
+	// - Empty list ([]): no claim.
+	// - A list of grants: the claims that at least one grant allows, holding
+	//   appliers in the applierNamespaces of every grant that allows them.
+	//
+	// A list replaces the default, so it needs a grant with from: "Same" for
+	// the claims in this namespace to keep access.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64

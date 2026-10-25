@@ -138,9 +138,12 @@ spec:
                       properties:
                         from:
                           description: |-
-                            From is where this grant admits consumers from: "Same" (the namespace of the
-                            object that holds the grant), "Names" (the namespaces in names), "Selector"
-                            (the namespaces whose labels match selector) or "All" (every namespace).
+                            From selects which namespaces this grant allows consumers from:
+
+                            - "Same": the namespace of the object that holds the grant.
+                            - "Names": the namespaces listed in names.
+                            - "Selector": the namespaces whose labels match selector.
+                            - "All": every namespace.
                           enum:
                           - Same
                           - Names
@@ -148,7 +151,7 @@ spec:
                           - All
                           type: string
                         names:
-                          description: 'Names are the namespaces admitted with from:
+                          description: 'Names are the namespaces allowed with from:
                             "Names", by exact name.'
                           items:
                             description: |-
@@ -175,8 +178,9 @@ spec:
                           x-kubernetes-list-type: set
                         selector:
                           description: |-
-                            Selector matches the labels of the namespaces admitted with from:
-                            "Selector". It must not be empty: to admit every namespace, use from: "All".
+                            Selector matches the labels of the namespaces allowed with from:
+                            "Selector". It must not be empty: to allow every namespace, use from:
+                            "All".
                           properties:
                             matchExpressions:
                               description: matchExpressions is a list of label selector

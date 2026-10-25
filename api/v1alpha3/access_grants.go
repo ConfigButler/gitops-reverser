@@ -96,21 +96,25 @@ type BranchPattern string
 // +kubebuilder:validation:XValidation:rule="!has(self.selector) || self.from == 'Selector'",message="selector goes only with from: Selector"
 // +kubebuilder:validation:XValidation:rule="!has(self.selector) || (has(self.selector.matchLabels) && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions) && size(self.selector.matchExpressions) > 0)",message="selector: {} is refused; to admit every namespace, use from: All"
 type ConsumerNamespaces struct {
-	// From is where this grant admits consumers from: "Same" (the namespace of the
-	// object that holds the grant), "Names" (the namespaces in names), "Selector"
-	// (the namespaces whose labels match selector) or "All" (every namespace).
+	// From selects which namespaces this grant allows consumers from:
+	//
+	// - "Same": the namespace of the object that holds the grant.
+	// - "Names": the namespaces listed in names.
+	// - "Selector": the namespaces whose labels match selector.
+	// - "All": every namespace.
 	// +required
 	From GrantFrom `json:"from"`
 
-	// Names are the namespaces admitted with from: "Names", by exact name.
+	// Names are the namespaces allowed with from: "Names", by exact name.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=64
 	Names []GrantNamespace `json:"names,omitempty"`
 
-	// Selector matches the labels of the namespaces admitted with from:
-	// "Selector". It must not be empty: to admit every namespace, use from: "All".
+	// Selector matches the labels of the namespaces allowed with from:
+	// "Selector". It must not be empty: to allow every namespace, use from:
+	// "All".
 	// +optional
 	Selector *metav1.LabelSelector `json:"selector,omitempty"`
 }

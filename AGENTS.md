@@ -122,7 +122,8 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
   characters, measured after the `//` prefix and its space: `kubectl explain` keeps each line break and wraps every
   line again, so a longer line leaves its last words on a line of their own
   ([measurements](./docs/facts/crd-descriptions-in-kubectl-explain.md)). `task lint` checks
-  it (`lint-api-doc-width`). Conditions open with `Conditions are the latest
+  it (`lint-api-doc-width`). Use `-` bullets, continued with a two-space indent, when the
+  reader compares values or cases; keep prose where there is no choice. Conditions open with `Conditions are the latest
   observations of this <Kind>'s state.` and `spec`/`status` with `defines the desired/observed
   state of <Kind>.` An array item's Go type doc is also user-visible: it becomes `items`.
 - **Where that block goes matters, and getting it wrong fails silently.** On a FIELD, put it above

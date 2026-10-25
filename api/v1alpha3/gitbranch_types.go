@@ -60,10 +60,15 @@ type GitBranchSpec struct {
 
 	// Mutable, unlike the fields above: claiming a branch includes the right to share it.
 
-	// AllowedGitTargets says which GitTargets may write through this GitBranch.
-	// Omitted, it is one grant for this namespace (consumerNamespaces: {from:
-	// Same}). A written list is the whole policy, so it admits this namespace only
-	// if a grant says so, and [] admits nobody. Grants combine by union.
+	// AllowedGitTargets says which GitTargets may write through this GitBranch:
+	//
+	// - Omitted: the GitTargets in this GitBranch's namespace, as one grant
+	//   with from: "Same".
+	// - Empty list ([]): no GitTarget.
+	// - A list of grants: the GitTargets that at least one grant allows.
+	//
+	// A list replaces the default, so it needs a grant with from: "Same" for
+	// the GitTargets in this namespace to keep access.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
