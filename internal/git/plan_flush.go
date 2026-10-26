@@ -217,6 +217,10 @@ type writeBatch struct {
 	// (ADDED then MODIFIED, or back and gone again) read the pre-batch render and was wrong about
 	// it. See rendersInBatch.
 	rendered map[renderKey]bool
+	// removedGenerated records the generated objects this batch already took out of the folder, so
+	// a second removal of one (a live delete and a sweep, or a replay) is a no-op rather than an
+	// edit of an entry that is gone. See removeGenerated.
+	removedGenerated map[*manifestanalyzer.GeneratedObject]bool
 	// touched records, while one event is applied, each file it touched with that file's bytes
 	// before the event. Nil when nothing is recorded. See beginEvent.
 	touched map[string]touchedFile

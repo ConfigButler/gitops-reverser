@@ -2656,7 +2656,8 @@ A target path may contain `kustomization.yaml` files. The operator retains them 
   key's `KEY=value` item are edited in place, and a removed key's line or item is removed. A new key
   is appended to the entry's `envs:` file when it has exactly one, and otherwise to its `literals:`
   when it has some. Deleting the ConfigMap removes the entry from `configMapGenerator:`, and the
-  input files no other entry, resource or patch reads. A change with no single input to land in is
+  input files no other entry, resource or patch reads; under `spec.prune.mode: Always` a resync
+  sweeps the entry of a generated ConfigMap the cluster no longer has, as it sweeps a document. A change with no single input to land in is
   refused per object: `binaryData`, a label or annotation, a new key with several `envs:` files or
   only `files:` sources, a removed `files:` key, and a generator in a read-only base. The input
   files are build inputs, never foreign content.

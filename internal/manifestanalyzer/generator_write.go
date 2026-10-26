@@ -4,6 +4,7 @@ package manifestanalyzer
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // This file plans the write of a live ConfigMap back into the configMapGenerator entry that
@@ -52,6 +55,50 @@ type GeneratedObject struct {
 	// SharedInputs are the entry's input files something else also reads: another generator
 	// entry, a resources: entry or a patch. A delete of the object keeps them.
 	SharedInputs map[string]struct{}
+	// Resource is the API-side identity of the rendered object, as a document's ResourceIdentity
+	// is: set only when the registry resolves its GVK to a followable resource. The resync sweep
+	// drops only a generated object it can name this way.
+	Resource *types.ResourceIdentifier
+}
+
+// Identity is the manifest identity of the rendered object.
+func (g *GeneratedObject) Identity() manifestedit.Identity {
+	return manifestedit.Identity{
+		APIVersion: g.Rendered.GetAPIVersion(),
+		Kind:       g.Rendered.GetKind(),
+		Namespace:  g.Rendered.GetNamespace(),
+		Name:       g.Rendered.GetName(),
+	}
+}
+
+// resolveGeneratedResources resolves every generated object's API-side identity, as
+// resolveMapping does a document's. A rendered object with no namespace takes the declared one,
+// as a namespace-less document does (WithDeclaredNamespace).
+func (s *ManifestStore) resolveGeneratedResources(
+	ctx context.Context,
+	lookup typeset.Lookup,
+	declaredNamespace string,
+) {
+	if ctx.Err() != nil || !lookup.Ready() {
+		return
+	}
+	for _, g := range s.generated {
+		gvk := g.Rendered.GroupVersionKind()
+		record, known := lookup.ByGVK(gvk)
+		if !known || !record.Followable() {
+			continue
+		}
+		namespace := ""
+		if record.Identity.Scope == typeset.ScopeNamespaced {
+			namespace = g.Rendered.GetNamespace()
+			if namespace == "" {
+				namespace = declaredNamespace
+			}
+		}
+		gvr := record.Identity.GVR
+		ri := types.NewResourceIdentifier(gvr.Group, gvr.Version, gvr.Resource, namespace, g.Rendered.GetName())
+		g.Resource = &ri
+	}
 }
 
 // generatedRender is one generated object one render root produced.

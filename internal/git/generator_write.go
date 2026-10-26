@@ -13,6 +13,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // writeGenerated writes a live ConfigMap that a configMapGenerator renders back into the
@@ -78,10 +79,8 @@ func (wb *writeBatch) writeGenerated(
 	return upsertUpdated, nil
 }
 
-// deleteGenerated mirrors a live delete of an object a configMapGenerator renders: the entry
-// leaves configMapGenerator:, and the input files only it reads are deleted, so the next render
-// does not bring the object back. The oracle proves the object left the render and nothing else
-// moved. A delete no generator renders is a no-op.
+// deleteGenerated mirrors a live delete of an object a configMapGenerator renders; see
+// removeGenerated. A delete no generator renders is a no-op.
 func (wb *writeBatch) deleteGenerated(ctx context.Context, event Event) error {
 	obj := event.Object
 	if obj == nil {
@@ -89,24 +88,41 @@ func (wb *writeBatch) deleteGenerated(ctx context.Context, event Event) error {
 		if id.Group != "" || id.Resource != "configmaps" {
 			return nil
 		}
-		obj = &unstructured.Unstructured{}
-		obj.SetAPIVersion("v1")
-		obj.SetKind("ConfigMap")
-		obj.SetNamespace(id.Namespace)
-		obj.SetName(id.Name)
+		obj = objectNamed(manifestedit.Identity{
+			APIVersion: "v1", Kind: "ConfigMap", Namespace: id.Namespace, Name: id.Name,
+		})
 	}
+	_, err := wb.removeGenerated(ctx, event.Identifier, obj, documentDeletedLive)
+	return err
+}
+
+// removeGenerated takes an object a configMapGenerator renders out of the folder: the entry leaves
+// configMapGenerator:, and the input files only it reads are deleted, so the next render does not
+// bring the object back. The oracle proves the object left the render and nothing else moved. It
+// is the one removal the live delete and the resync sweep share, as removeDocument is for a
+// document, and it reports whether it removed anything: an object no generator renders, or one
+// this batch already removed, is a no-op.
+func (wb *writeBatch) removeGenerated(
+	ctx context.Context,
+	identifier types.ResourceIdentifier,
+	obj *unstructured.Unstructured,
+	outcome string,
+) (bool, error) {
 	generated := wb.store.GeneratedObjectsFor(obj)
 	switch {
 	case len(generated) == 0:
-		return nil
+		return false, nil
 	case len(generated) > 1:
-		return generatedRefusal(obj, generated[0].GeneratedIn, fmt.Errorf(
+		return false, generatedRefusal(obj, generated[0].GeneratedIn, fmt.Errorf(
 			"%d configMapGenerator entries render an object of this name", len(generated)))
 	}
 	gen := generated[0]
+	if wb.removedGenerated[gen] {
+		return false, nil
+	}
 	writes, err := manifestanalyzer.PlanGeneratedDelete(gen, wb.writeSubdir, wb.currentContent)
 	if err != nil {
-		return generatedRefusal(obj, gen.GeneratedIn, err)
+		return false, generatedRefusal(obj, gen.GeneratedIn, err)
 	}
 	for _, w := range writes {
 		buf := wb.buffer(w.Path)
@@ -115,6 +131,10 @@ func (wb *writeBatch) deleteGenerated(ctx context.Context, event Event) error {
 			wb.recordDocumentRemoval(buf)
 		}
 	}
+	if wb.removedGenerated == nil {
+		wb.removedGenerated = map[*manifestanalyzer.GeneratedObject]bool{}
+	}
+	wb.removedGenerated[gen] = true
 	wb.intend(manifestanalyzer.WriteIntent{
 		SourcePath: gen.GeneratedIn,
 		Kind:       obj.GetKind(),
@@ -122,10 +142,20 @@ func (wb *writeBatch) deleteGenerated(ctx context.Context, event Event) error {
 		Removed:    true,
 	})
 	wb.putToKustomize = true
-	wb.tallyDocument(event.Identifier, documentDeletedLive)
+	wb.tallyDocument(identifier, outcome)
 	log.FromContext(ctx).Info("Removed configMapGenerator entry for a deleted ConfigMap",
-		"kustomization", gen.GeneratedIn, "files", len(writes)-1, "resource", event.Identifier.String())
-	return nil
+		"kustomization", gen.GeneratedIn, "files", len(writes)-1, "resource", identifier.String())
+	return true, nil
+}
+
+// objectNamed is a bodiless object with the given identity, enough to look a generated object up.
+func objectNamed(id manifestedit.Identity) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion(id.APIVersion)
+	obj.SetKind(id.Kind)
+	obj.SetNamespace(id.Namespace)
+	obj.SetName(id.Name)
+	return obj
 }
 
 // generatedRefusal reports a generated object the writer cannot write back, as the write-boundary

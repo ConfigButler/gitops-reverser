@@ -3,6 +3,7 @@
 package git
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	sigsyaml "sigs.k8s.io/yaml"
+
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -191,4 +195,59 @@ func TestPlanFlush_AGeneratedConfigMapWithAnExpandedTokenIsRefused(t *testing.T)
 	assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderDoesNotMatchLive))
 	assert.Contains(t, refused.Error(), "${cluster_domain}")
 	assertFileBytes(t, envPath, tokenEnv, "the token stays in the input")
+}
+
+// resyncGenerator folds a complete desired snapshot over the generator folder under one prune
+// mode. The Deployment is always in it, so only the generated ConfigMap can be an orphan.
+func resyncGenerator(
+	t *testing.T,
+	worktree *gogit.Worktree,
+	mode v1alpha3.PruneMode,
+	withFlags bool,
+) ResyncStats {
+	t.Helper()
+	deployment := &unstructured.Unstructured{}
+	require.NoError(t, sigsyaml.Unmarshal([]byte(generatorDeploymentYAML), &deployment.Object))
+	deployment.SetNamespace("coffee")
+	desired := []manifestanalyzer.DesiredResource{{
+		Resource: types.NewResourceIdentifier("apps", "v1", "deployments", "coffee", "coffee"),
+		Object:   deployment,
+	}}
+	if withFlags {
+		flags := flagsEvent("UPDATE", map[string]interface{}{"ENABLE_VOUCHERS": "true", "SHOW_BANNER": "true"})
+		desired = append(desired, manifestanalyzer.DesiredResource{Resource: flags.Identifier, Object: flags.Object})
+	}
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: corpusMapper()}
+	stats, _, err := w.applyResyncToWorktree(
+		t.Context(), worktree, "", ResolvedTargetMetadata{PruneMode: mode}, desired, nil)
+	require.NoError(t, err)
+	return stats
+}
+
+// A generated ConfigMap is as much the folder's content as a document is, so a resync that sweeps
+// removes the generator entry of one the cluster no longer has, keeps it while the cluster has
+// it, and only counts it as retained under a mode that does not sweep.
+func TestResync_SweepsAGeneratedConfigMapTheClusterNoLongerHas(t *testing.T) {
+	t.Run("always, absent: the entry and its env file go", func(t *testing.T) {
+		worktree, envPath := seedGeneratorWorktree(t)
+		stats := resyncGenerator(t, worktree, v1alpha3.PruneAlways, false)
+		assert.Equal(t, 1, stats.Deleted)
+		assert.NoFileExists(t, envPath)
+		kustomization, err := os.ReadFile(filepath.Join(worktree.Filesystem().Root(), "kustomization.yaml"))
+		require.NoError(t, err)
+		assert.NotContains(t, string(kustomization), "coffee-flags")
+	})
+	t.Run("always, present: kept", func(t *testing.T) {
+		worktree, envPath := seedGeneratorWorktree(t)
+		stats := resyncGenerator(t, worktree, v1alpha3.PruneAlways, true)
+		assert.Zero(t, stats.Deleted)
+		assertFileBytes(t, envPath, generatorFlagsEnv, "a generated object the cluster has is matched")
+	})
+	t.Run("onEvent, absent: retained and counted", func(t *testing.T) {
+		worktree, envPath := seedGeneratorWorktree(t)
+		stats := resyncGenerator(t, worktree, v1alpha3.PruneOnEvent, false)
+		assert.Zero(t, stats.Deleted)
+		assert.Equal(t, 1, stats.Retained)
+		assertFileBytes(t, envPath, generatorFlagsEnv, "onEvent never sweeps")
+	})
 }

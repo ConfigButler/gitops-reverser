@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // coffeeKustomization is the issue's own example: a settings file and an env file, each wrapped
@@ -413,4 +414,33 @@ func TestLiteralValue_AgreesWithKustomize(t *testing.T) {
 	got, _, _ := unstructured.NestedStringMap(rendered[0].Object.Object, "data")
 	want["SEED"] = "x"
 	require.Equal(t, want, got)
+}
+
+// The sweep treats a generated object as it treats a document: dropped only when the registry
+// names it, it is in the plan's scope, and the policy drops orphans.
+func TestBuildPlan_SweepsAGeneratedObject(t *testing.T) {
+	fsys := coffeeFS()
+	drops := func(store *ManifestStore, inScope func(types.ResourceIdentifier) bool) []PlanAction {
+		plan := BuildScopedPlan(store, nil, nil, Policy{Sweep: SweepDropOrphans}, inScope)
+		var out []PlanAction
+		for _, a := range plan.Actions {
+			if a.Generated {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	followable := buildStoreFS(context.Background(), fsys, snapMapper(), WriterAllowlist())
+
+	got := drops(followable, allInScope)
+	require.Len(t, got, 2, "both generated ConfigMaps are absent from the empty snapshot")
+	require.Equal(t, PlanDropOrphan, got[0].Kind)
+	require.Equal(t, "kustomization.yaml", got[0].Ref.FilePath)
+	require.Equal(t, "coffee", got[0].Resource.Namespace)
+
+	deploymentsOnly := func(id types.ResourceIdentifier) bool { return id.Resource == "deployments" }
+	require.Empty(t, drops(followable, deploymentsOnly), "a per-type plan sweeps only its own type")
+
+	structureOnly := buildStoreFS(context.Background(), fsys, nil, WriterAllowlist())
+	require.Empty(t, drops(structureOnly, allInScope), "a scan with no registry names nothing to drop")
 }

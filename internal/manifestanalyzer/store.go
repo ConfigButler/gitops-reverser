@@ -465,6 +465,8 @@ func buildStore(
 		generated:              generatedObjects(generated, kusts),
 	}
 
+	store.resolveGeneratedResources(ctx, lookup, settings.declaredNamespace)
+
 	hasNamedRecord := store.materializeRecords(ctx, inv.Records, materializeInputs{
 		lookup:            lookup,
 		allowlist:         allowlist,
