@@ -1,0 +1,13 @@
+# A new key, and the entry reads only files:. A files: source holds exactly one key, the whole
+# file, so there is no input a second key could go to.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        ConfigMap/coffee-menu generated in kustomization.yaml: no destination for the change: key
+        "currency" is new, and the entry has no envs: file or literals: to add it to

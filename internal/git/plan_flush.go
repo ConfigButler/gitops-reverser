@@ -1496,7 +1496,8 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) error {
 	}
 	target, found := wb.resolveDelete(event)
 	if !found {
-		return wb.generatedDeleteRefusal(event)
+		// No document holds it, but a configMapGenerator may render it.
+		return wb.deleteGenerated(ctx, event)
 	}
 	_, err := wb.removeDocument(ctx, event.Identifier, target, documentDeletedLive)
 	return err

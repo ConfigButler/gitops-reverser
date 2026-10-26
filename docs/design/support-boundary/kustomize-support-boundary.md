@@ -13,7 +13,7 @@ language.
 | Class | Fields | Boundary |
 |---|---|---|
 | Editable declarations | local `resources`/`bases`, `namespace`, `images`, `replicas` | supported where the layout provides one write home |
-| Editable inputs | `configMapGenerator` with `disableNameSuffixHash: true` and no `behavior: merge`/`replace` | an edit lands in the `files:` file or on the `envs:` line it came from |
+| Editable inputs | `configMapGenerator` with `disableNameSuffixHash: true` and no `behavior: merge`/`replace` | an edit lands in the `files:` file, on the `envs:` line or in the `literals:` item it came from; a delete removes the entry |
 | Tolerated build context | `patches:` with local strategic-merge `path:` documents | rendered and retained, but neither authored nor edited |
 | Planned authoring surface | scalar strategic-merge patch for an inherited field | see [patch authoring](patch-authoring.md) |
 | Refused | inline/JSON6902/deprecated patches, `secretGenerator`, hash-suffixed or merging `configMapGenerator`, `components`, `namePrefix`/`nameSuffix`, remote bases, `helmCharts`, plugins, `replacements`, `vars` | no safe or owned inverse in the current model |

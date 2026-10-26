@@ -1,0 +1,22 @@
+diff --git a/apps/coffee/flags.env b/apps/coffee/flags.env
+deleted file mode 100644
+--- a/apps/coffee/flags.env
++++ /dev/null
+@@ -1,3 +0,0 @@
+-# Turn off during the conference rush.
+-ENABLE_VOUCHERS=true
+-SHOW_BANNER=true
+diff --git a/apps/coffee/kustomization.yaml b/apps/coffee/kustomization.yaml
+--- a/apps/coffee/kustomization.yaml
++++ b/apps/coffee/kustomization.yaml
+@@ -8,10 +8,6 @@   # The settings file people care about: the whole file is one data key.
+   - name: coffee-menu
+     files:
+       - menu.yaml
+-  # One env file: every line is a data key.
+-  - name: coffee-flags
+-    envs:
+-      - flags.env
+   # Two env files: a new key has no single file to go to.
+   - name: coffee-regions
+     envs:

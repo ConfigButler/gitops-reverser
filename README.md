@@ -81,9 +81,11 @@ repos, branches, and folders. See [Configuration](docs/configuration.md).
 | Helm templates or standalone `values.yaml` | No writeback from rendered workloads |
 
 Local Kustomize bases and overlays work, with the base kept read-only. A `configMapGenerator` with
-`disableNameSuffixHash: true` is writable: a ConfigMap edit lands in the file or `.env` line it
-came from. `secretGenerator`, hash-suffixed generators, components, and remote bases are
-unsupported; such a folder is refused with `Stalled=True` before anything is written. See the [supported subset](docs/configuration.md#kustomize-support-in-the-target-path).
+`disableNameSuffixHash: true` is writable: a ConfigMap edit lands in the file, `.env` line or
+literal it came from, and deleting the ConfigMap removes its generator entry. `secretGenerator`,
+hash-suffixed generators, components, and remote bases are unsupported; such a folder is refused
+with `Stalled=True` before anything is written. See the [supported
+subset](docs/configuration.md#kustomize-support-in-the-target-path).
 
 Watch the resources that express your intent, such as a `HelmRelease` rather than the workloads it
 renders: the operator cannot tell authored resources from generated ones. See

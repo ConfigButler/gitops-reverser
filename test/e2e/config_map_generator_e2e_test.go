@@ -22,7 +22,8 @@ const (
 
 // A ConfigMap a configMapGenerator renders, edited through the API, is written back into the
 // generator's input file as a one-line diff, and Flux, building the folder from that commit, applies
-// the same object again. Flux applies the folder before the GitTarget exists, so the ConfigMap the
+// the same object again. Deleting one through the API removes its generator entry and input file,
+// and Flux's next apply leaves it deleted. Flux applies the folder before the GitTarget exists, so the ConfigMap the
 // spec edits is the one Flux made, and Flux's next apply is what proves the write converges.
 var _ = Describe("Manager ConfigMap Generator", Label("manager", "config-map-generator", "flux"), Ordered, func() {
 	const (
@@ -37,7 +38,9 @@ var _ = Describe("Manager ConfigMap Generator", Label("manager", "config-map-gen
 
 	BeforeAll(func() {
 		testNs = testNamespaceFor("manager-config-map-generator")
-		fluxName = "config-map-generator-" + testNs
+		// Flux labels every object it applies with the Kustomization's name, and a label value
+		// holds at most 63 bytes, so the name cannot carry the namespace.
+		fluxName = fmt.Sprintf("cmg-%d", GinkgoRandomSeed())
 		fluxSecretName = fluxName + "-git"
 		_, _ = kubectlRun("create", "namespace", testNs)
 
@@ -59,7 +62,7 @@ var _ = Describe("Manager ConfigMap Generator", Label("manager", "config-map-gen
 		cleanupNamespace(testNs)
 	})
 
-	It("writes a generated ConfigMap's edit to its env line, and Flux applies the same object", func() {
+	It("writes a generated ConfigMap's edit to its env line and its delete to the entry, as Flux applies", func() {
 		By("seeding a folder whose ConfigMaps a configMapGenerator builds from menu.yaml and flags.env")
 		fixture := renderInPlaceFixtureFolder(configMapGeneratorFixtureRoot, testNs)
 		DeferCleanup(func() { _ = os.RemoveAll(fixture) })
@@ -127,6 +130,31 @@ var _ = Describe("Manager ConfigMap Generator", Label("manager", "config-map-gen
 			pullLatestRepoState(g, repo.CheckoutDir)
 			g.Expect(gitHead(repo.CheckoutDir)).To(Equal(written))
 		}, 20*time.Second, 4*time.Second).Should(Succeed())
+
+		By("deleting coffee-menu through the API: its entry and menu.yaml leave the folder")
+		_, err = kubectlRunInNamespace(testNs, "delete", "configmap", "coffee-menu")
+		Expect(err).NotTo(HaveOccurred(), "failed to delete the generated ConfigMap")
+		menuPath := filepath.Join(repo.CheckoutDir, configMapGeneratorGitPath, "menu.yaml")
+		var removed string
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+			removed = gitHead(repo.CheckoutDir)
+			g.Expect(menuPath).NotTo(BeAnExistingFile())
+		}, configMapGeneratorTimeout, 2*time.Second).Should(Succeed())
+		kustomizationPath := filepath.Join(repo.CheckoutDir, configMapGeneratorGitPath, "kustomization.yaml")
+		kustomization, err := os.ReadFile(kustomizationPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(kustomization)).NotTo(ContainSubstring("coffee-menu"))
+		Expect(string(kustomization)).To(ContainSubstring("coffee-flags"), "the other entry stays")
+
+		By("letting Flux apply the removal: the next render does not bring the ConfigMap back")
+		reconcileFluxKustomizationWithSource(fluxName)
+		Eventually(func(g Gomega) {
+			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(removed))
+		}, configMapGeneratorTimeout, 2*time.Second).Should(Succeed())
+		_, err = kubectlRunInNamespace(testNs, "get", "configmap", "coffee-menu")
+		Expect(err).To(HaveOccurred(), "coffee-menu must stay deleted")
+		Expect(generatedFlag(Default, testNs, "ENABLE_VOUCHERS")).To(Equal("false"))
 	})
 })
 

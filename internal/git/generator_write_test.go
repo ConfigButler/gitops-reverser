@@ -61,6 +61,7 @@ func seedGeneratorWorktree(t *testing.T) (*gogit.Worktree, string) {
 	seedFile(t, root, "kustomization.yaml", generatorKustomizationYAML)
 	seedFile(t, root, "deployment.yaml", generatorDeploymentYAML)
 	seedFile(t, root, "flags.env", generatorFlagsEnv)
+	commitCorpusWorktree(t, worktree, "seed a generator folder")
 	return worktree, filepath.Join(root, "flags.env")
 }
 
@@ -131,23 +132,30 @@ func TestPlanFlush_ANeighbourOfAGeneratorStaysWritable(t *testing.T) {
 	assertFileBytes(t, envPath, generatorFlagsEnv, "the generator's input is untouched")
 }
 
-// A deleted generated ConfigMap has no document to remove, and the generator would bring it
-// back: the delete is refused, naming what a person can do.
-func TestPlanFlush_ADeletedGeneratedConfigMapIsRefused(t *testing.T) {
+// A deleted generated ConfigMap takes its generator entry and the env file only that entry reads
+// with it, whether the event carries the last object or only the identity. With its one entry
+// gone, configMapGenerator: goes too.
+func TestPlanFlush_ADeletedGeneratedConfigMapRemovesItsEntry(t *testing.T) {
 	for name, event := range map[string]Event{
 		"with the last object": flagsEvent("DELETE", map[string]interface{}{"ENABLE_VOUCHERS": "true"}),
 		"by identity only":     flagsEvent("DELETE", nil),
 	} {
 		t.Run(name, func(t *testing.T) {
 			worktree, envPath := seedGeneratorWorktree(t)
-			_, err := flushEventsForTest(t, newContentWriter(types.SensitiveResourcePolicy{}), worktree,
+			changed, err := flushEventsForTest(t, newContentWriter(types.SensitiveResourcePolicy{}), worktree,
 				corpusMapper(), event)
-
-			var refused *manifestanalyzer.AcceptanceRefusedError
-			require.ErrorAs(t, err, &refused)
-			assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueUnplaceableEdit))
-			assert.Contains(t, refused.Error(), "remove the generator entry to delete it")
-			assertFileBytes(t, envPath, generatorFlagsEnv, "a refused flush writes nothing")
+			require.NoError(t, err)
+			assert.True(t, changed)
+			assert.NoFileExists(t, envPath)
+			assertFileBytes(t, filepath.Join(worktree.Filesystem().Root(), "kustomization.yaml"),
+				`apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: coffee
+resources:
+  - deployment.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+`, "the entry and the emptied configMapGenerator: are gone")
 		})
 	}
 }
@@ -165,4 +173,22 @@ func TestPlanFlush_ASensitiveGeneratedConfigMapIsRefused(t *testing.T) {
 	require.ErrorAs(t, err, &refused)
 	assert.Contains(t, refused.Error(), "a generator input is a plaintext file")
 	assertFileBytes(t, envPath, generatorFlagsEnv, "no plaintext reaches the input")
+}
+
+// A ${...} token in an input that the live object carries expanded was substituted downstream, by
+// Flux postBuild. Writing the expansion back would match the re-render and still corrupt the
+// input, so the write is refused as the render-fidelity divergence it is.
+func TestPlanFlush_AGeneratedConfigMapWithAnExpandedTokenIsRefused(t *testing.T) {
+	worktree, envPath := seedGeneratorWorktree(t)
+	tokenEnv := "HOST=shop.${cluster_domain}\nENABLE_VOUCHERS=true\n"
+	seedFile(t, worktree.Filesystem().Root(), "flags.env", tokenEnv)
+
+	_, err := flushEventsForTest(t, newContentWriter(types.SensitiveResourcePolicy{}), worktree, corpusMapper(),
+		flagsEvent("UPDATE", map[string]interface{}{"HOST": "shop.example.com", "ENABLE_VOUCHERS": "false"}))
+
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused)
+	assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderDoesNotMatchLive))
+	assert.Contains(t, refused.Error(), "${cluster_domain}")
+	assertFileBytes(t, envPath, tokenEnv, "the token stays in the input")
 }

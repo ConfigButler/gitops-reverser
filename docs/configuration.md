@@ -2651,12 +2651,14 @@ A target path may contain `kustomization.yaml` files. The operator retains them 
   removes entries. Note that one entry is a shared knob, exactly as in kustomize itself: updating it
   affects every resource in the build whose image matches.
 - **`configMapGenerator` with `disableNameSuffixHash: true`** (in `generatorOptions:` or on the
-  entry): a live change to the generated ConfigMap is written into the generator's input files. A
-  `files:` key's file gets the live value as its content; an `envs:` key's line is edited in place,
-  a new key is appended when the entry has exactly one `envs:` file, and a removed key's line is
-  removed. A change with no single input file to land in is refused per object: a `literals:` key,
-  `binaryData`, a label or annotation, a new key with zero or several `envs:` files, a removed
-  `files:` key, a generator in a read-only base, and a delete of the generated ConfigMap. The input
+  entry): a live change to the generated ConfigMap is written into the generator's inputs. A
+  `files:` key's file gets the live value as its content; an `envs:` key's line and a `literals:`
+  key's `KEY=value` item are edited in place, and a removed key's line or item is removed. A new key
+  is appended to the entry's `envs:` file when it has exactly one, and otherwise to its `literals:`
+  when it has some. Deleting the ConfigMap removes the entry from `configMapGenerator:`, and the
+  input files no other entry, resource or patch reads. A change with no single input to land in is
+  refused per object: `binaryData`, a label or annotation, a new key with several `envs:` files or
+  only `files:` sources, a removed `files:` key, and a generator in a read-only base. The input
   files are build inputs, never foreign content.
 
 Two kustomize shapes beyond that subset are **supported without being authored**:

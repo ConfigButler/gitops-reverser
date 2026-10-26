@@ -1,0 +1,17 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# A new key on an entry that reads only files:.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-menu
+  namespace: coffee
+data:
+  menu.yaml: |
+    # Prices in cents. Keep espresso the cheapest item.
+    products:
+      - sku: espresso
+        priceCents: 275
+      - sku: flat-white
+        priceCents: 395
+  currency: EUR

@@ -27,9 +27,16 @@ import (
 //   - a files: key whose value changed: the file's whole content becomes the live value;
 //   - an envs: key whose value changed: its line is edited in place, so comments, order and
 //     every other line keep their bytes;
-//   - a key the live object added: appended to the entry's env file, when it has exactly one;
-//   - a key the live object removed: its env line goes; a files: key has no line to remove;
-//   - literals:, binaryData, and anything outside data have no input file to land in.
+//   - a literals: key whose value changed: its KEY=value item in kustomization.yaml is edited in
+//     place, as an images: entry is;
+//   - a key the live object added: appended to the entry's env file when it has exactly one, and
+//     otherwise to its literals: when it has some and no env file;
+//   - a key the live object removed: its env line or literal goes; a files: key, whose value is
+//     a whole file, has nothing to remove;
+//   - binaryData, and anything outside data, have no input to land in.
+//
+// A live delete removes the entry from configMapGenerator: and the input files only it reads; see
+// PlanGeneratedDelete.
 
 // GeneratedObject is one object a configMapGenerator entry renders, as kustomize renders it.
 type GeneratedObject struct {
@@ -42,6 +49,9 @@ type GeneratedObject struct {
 	Rendered *unstructured.Unstructured
 	// Roots are the render roots that render this entry, in any namespace, sorted.
 	Roots []string
+	// SharedInputs are the entry's input files something else also reads: another generator
+	// entry, a resources: entry or a patch. A delete of the object keeps them.
+	SharedInputs map[string]struct{}
 }
 
 // generatedRender is one generated object one render root produced.
@@ -61,6 +71,7 @@ func generatedObjects(renders []generatedRender, kusts map[string]*kustomization
 	}
 	roots := map[entryKey]map[string]struct{}{}
 	byObject := map[objectKey]*GeneratedObject{}
+	inputUses := inputUseCounts(kusts)
 	var order []objectKey
 	for _, r := range renders {
 		ek := entryKey{in: r.in, kind: r.object.GetKind(), name: r.object.GetName()}
@@ -72,10 +83,12 @@ func generatedObjects(renders []generatedRender, kusts map[string]*kustomization
 		if _, seen := byObject[ok]; seen {
 			continue
 		}
+		entry := generatorEntryFor(kusts[slashDir(r.in)], r.object)
 		byObject[ok] = &GeneratedObject{
-			GeneratedIn: r.in,
-			Entry:       generatorEntryFor(kusts[slashDir(r.in)], r.object),
-			Rendered:    r.object,
+			GeneratedIn:  r.in,
+			Entry:        entry,
+			Rendered:     r.object,
+			SharedInputs: sharedInputsOf(entry, inputUses),
 		}
 		order = append(order, ok)
 	}
@@ -84,6 +97,44 @@ func generatedObjects(renders []generatedRender, kusts map[string]*kustomization
 		g := byObject[ok]
 		g.Roots = sortedKeysOfSet(roots[ok.entry])
 		out = append(out, g)
+	}
+	return out
+}
+
+// inputUseCounts counts, per file, how many generator entries, resources: entries and patches of
+// the scan read it.
+func inputUseCounts(kusts map[string]*kustomizationDoc) map[string]int {
+	uses := map[string]int{}
+	for _, doc := range kusts {
+		for _, entry := range doc.configMapGenerators {
+			seen := map[string]struct{}{}
+			for _, p := range entry.inputPaths() {
+				if _, dup := seen[p]; !dup {
+					seen[p] = struct{}{}
+					uses[p]++
+				}
+			}
+		}
+		for _, p := range doc.patches {
+			uses[p]++
+		}
+	}
+	for p := range reachedResourceFiles(kusts) {
+		uses[p]++
+	}
+	return uses
+}
+
+// sharedInputsOf is the entry's inputs that more than one reader reads.
+func sharedInputsOf(entry *ConfigMapGeneratorEntry, uses map[string]int) map[string]struct{} {
+	if entry == nil {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for _, p := range entry.inputPaths() {
+		if uses[p] > 1 {
+			out[p] = struct{}{}
+		}
 	}
 	return out
 }
@@ -137,7 +188,8 @@ func (s *ManifestStore) GeneratedObjectsFor(live *unstructured.Unstructured) []*
 	return out
 }
 
-// GeneratedWrite is one generator input file a write rewrites.
+// GeneratedWrite is one file a generator write rewrites: an input file, or the kustomization for
+// a literal or a removed entry. A nil Content deletes the file.
 type GeneratedWrite struct {
 	Path    string
 	Content []byte
@@ -157,18 +209,9 @@ func PlanGeneratedWrite(
 	writeScope string,
 	read func(path string) ([]byte, bool),
 ) ([]GeneratedWrite, error) {
-	entry := gen.Entry
-	if entry == nil {
-		return nil, fmt.Errorf("%w: %s holds no single configMapGenerator entry named %q",
-			errGeneratedWrite, gen.GeneratedIn, gen.Rendered.GetName())
-	}
-	if len(gen.Roots) > 1 {
-		return nil, fmt.Errorf("%w: the generator is rendered by %d render roots (%s), so its inputs are shared",
-			errGeneratedWrite, len(gen.Roots), strings.Join(gen.Roots, ", "))
-	}
-	if writeScope != "" && !pathWithin(entry.KustomizationPath, writeScope) {
-		return nil, fmt.Errorf("%w: the generator lives in %s, which this target reads and never writes",
-			errGeneratedWrite, entry.KustomizationPath)
+	entry, err := writableEntry(gen, writeScope)
+	if err != nil {
+		return nil, err
 	}
 	if fields := changedOutsideData(desired, gen.Rendered); len(fields) > 0 {
 		return nil, fmt.Errorf("%w: %s changed, and a generated ConfigMap takes it from the kustomization, "+
@@ -192,7 +235,84 @@ func PlanGeneratedWrite(
 			return nil, err
 		}
 	}
+	if err := plan.applyLiterals(); err != nil {
+		return nil, err
+	}
 	return plan.writes(read), nil
+}
+
+// writableEntry is the entry behind gen, or the refusal that says why its inputs are not this
+// target's to write: no single entry, an entry two render roots share, or one in a read-only base.
+func writableEntry(gen *GeneratedObject, writeScope string) (*ConfigMapGeneratorEntry, error) {
+	entry := gen.Entry
+	if entry == nil {
+		return nil, fmt.Errorf("%w: %s holds no single configMapGenerator entry named %q",
+			errGeneratedWrite, gen.GeneratedIn, gen.Rendered.GetName())
+	}
+	if len(gen.Roots) > 1 {
+		return nil, fmt.Errorf("%w: the generator is rendered by %d render roots (%s), so its inputs are shared",
+			errGeneratedWrite, len(gen.Roots), strings.Join(gen.Roots, ", "))
+	}
+	if writeScope != "" && !pathWithin(entry.KustomizationPath, writeScope) {
+		return nil, fmt.Errorf("%w: the generator lives in %s, which this target reads and never writes",
+			errGeneratedWrite, entry.KustomizationPath)
+	}
+	return entry, nil
+}
+
+// PlanGeneratedDelete plans the removal of the object gen renders: its entry leaves
+// configMapGenerator:, and every input file only that entry reads is deleted. An input something
+// else also reads stays, and so does one outside the write jail. read returns a file's current
+// bytes. An error is a refusal and names the reason.
+func PlanGeneratedDelete(
+	gen *GeneratedObject,
+	writeScope string,
+	read func(path string) ([]byte, bool),
+) ([]GeneratedWrite, error) {
+	entry, err := writableEntry(gen, writeScope)
+	if err != nil {
+		return nil, err
+	}
+	kustomization, ok := read(entry.KustomizationPath)
+	if !ok {
+		return nil, fmt.Errorf("%w: cannot read %s", errGeneratedWrite, entry.KustomizationPath)
+	}
+	res, diags := manifestedit.RemoveConfigMapGeneratorEntry(
+		entry.KustomizationPath, kustomization, entry.Index, entry.Name)
+	if res.Mode != manifestedit.EditPatched {
+		return nil, fmt.Errorf("%w: the entry cannot be removed from %s%s",
+			errGeneratedWrite, entry.KustomizationPath, diagnosticSuffix(diags))
+	}
+	writes := []GeneratedWrite{{Path: entry.KustomizationPath, Content: res.Content}}
+	for _, p := range sortedKeysOfSet(pathsSet(entry.inputPaths())) {
+		_, shared := gen.SharedInputs[p]
+		_, present := read(p)
+		if shared || !present || (writeScope != "" && !pathWithin(p, writeScope)) {
+			continue
+		}
+		writes = append(writes, GeneratedWrite{Path: p})
+	}
+	return writes, nil
+}
+
+func pathsSet(paths []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		out[p] = struct{}{}
+	}
+	return out
+}
+
+// diagnosticSuffix renders an editor's diagnostics after a refusal's sentence.
+func diagnosticSuffix(diags []manifestedit.Diagnostic) string {
+	if len(diags) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(diags))
+	for _, d := range diags {
+		parts = append(parts, d.Message)
+	}
+	return ": " + strings.Join(parts, "; ")
 }
 
 // generatorPlan accumulates the new content of each input file a write touches.
@@ -201,6 +321,8 @@ type generatorPlan struct {
 	writeScope string
 	read       func(string) ([]byte, bool)
 	files      map[string][]byte
+	// literals are the literals: edits, applied to the kustomization in one call at the end.
+	literals []manifestedit.LiteralEdit
 }
 
 // key routes one data key's difference between the live object and the inputs.
@@ -217,9 +339,12 @@ func (p *generatorPlan) key(key string, live map[string]string, current generato
 	switch {
 	case !known:
 		return fmt.Errorf("%w: key %q has no input file", errGeneratedWrite, key)
+	case src.kind == sourceLiteral && !inLive:
+		p.literals = append(p.literals, manifestedit.LiteralEdit{Key: key, Remove: true})
+		return nil
 	case src.kind == sourceLiteral:
-		return fmt.Errorf("%w: key %q comes from literals: in %s, which the operator does not edit",
-			errGeneratedWrite, key, p.entry.KustomizationPath)
+		p.literals = append(p.literals, manifestedit.LiteralEdit{Key: key, Value: value})
+		return nil
 	case !inLive:
 		return p.removed(key, src)
 	case src.kind == sourceFile:
@@ -233,17 +358,42 @@ func (p *generatorPlan) key(key string, live map[string]string, current generato
 	}
 }
 
-// added routes a key the live object has and the inputs do not: to the entry's one env file.
+// added routes a key the live object has and the inputs do not: to the entry's one env file, or,
+// for an entry with no env file, to its literals:.
 func (p *generatorPlan) added(key, value string) error {
-	switch len(p.entry.Envs) {
-	case 0:
-		return fmt.Errorf("%w: key %q is new, and the entry has no envs: file to add it to", errGeneratedWrite, key)
-	case 1:
+	switch {
+	case len(p.entry.Envs) == 1:
 		return p.setEnv(p.entry.Envs[0], key, value)
-	default:
+	case len(p.entry.Envs) > 1:
 		return fmt.Errorf("%w: key %q is new, and the entry has %d envs: files, so no single one to add it to",
 			errGeneratedWrite, key, len(p.entry.Envs))
+	case len(p.entry.Literals) > 0:
+		p.literals = append(p.literals, manifestedit.LiteralEdit{Key: key, Value: value})
+		return nil
+	default:
+		return fmt.Errorf("%w: key %q is new, and the entry has no envs: file or literals: to add it to",
+			errGeneratedWrite, key)
 	}
+}
+
+// applyLiterals folds the literal edits into the kustomization, in one edit of the entry.
+func (p *generatorPlan) applyLiterals() error {
+	if len(p.literals) == 0 {
+		return nil
+	}
+	path := p.entry.KustomizationPath
+	res, diags := manifestedit.EditConfigMapGeneratorLiterals(
+		path, p.content(path), p.entry.Index, p.entry.Name, p.literals)
+	switch res.Mode {
+	case manifestedit.EditPatched:
+		p.files[path] = res.Content
+		return nil
+	case manifestedit.EditNoChange:
+		return nil
+	case manifestedit.EditSkipped, manifestedit.EditDeleted, manifestedit.EditWholeReplace:
+	}
+	return fmt.Errorf("%w: the literals: of the entry cannot be edited%s",
+		errGeneratedWrite, diagnosticSuffix(diags))
 }
 
 // removed routes a key the inputs have and the live object does not: its env line goes, and a

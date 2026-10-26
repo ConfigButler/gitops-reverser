@@ -5,6 +5,8 @@ package manifestedit
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 const kustomizationFixture = `# pin the app image here
@@ -361,4 +363,22 @@ func TestAppendKustomizationResource_RefusalsLeaveContentUntouched(t *testing.T)
 			}
 		})
 	}
+}
+
+// A configMapGenerator edit pins the entry by index AND name, so a drifted file is skipped rather
+// than mis-edited, exactly as an images: edit is.
+func TestConfigMapGeneratorEdits_SkipADriftedEntry(t *testing.T) {
+	content := []byte("configMapGenerator:\n  - name: menu\n    literals:\n      - A=1\n")
+
+	res, _ := EditConfigMapGeneratorLiterals("kustomization.yaml", content, 0, "flags",
+		[]LiteralEdit{{Key: "A", Value: "2"}})
+	require.Equal(t, EditSkipped, res.Mode)
+	res, _ = RemoveConfigMapGeneratorEntry("kustomization.yaml", content, 1, "menu")
+	require.Equal(t, EditSkipped, res.Mode)
+
+	res, _ = EditConfigMapGeneratorLiterals("kustomization.yaml", content, 0, "menu",
+		[]LiteralEdit{{Key: "A", Remove: true}, {Key: "Z", Remove: true}})
+	require.Equal(t, EditPatched, res.Mode)
+	require.Equal(t, "configMapGenerator:\n  - name: menu\n", string(res.Content),
+		"an emptied literals: goes, and removing an absent key is a no-op")
 }

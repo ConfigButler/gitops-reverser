@@ -4,6 +4,7 @@ package manifestanalyzer
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -354,4 +355,62 @@ func readerOf(files []manifestedit.FileContent) func(string) ([]byte, bool) {
 		}
 		return nil, false
 	}
+}
+
+// A delete keeps an input another entry also reads, and an input outside the write jail; a
+// generator in a read-only base is refused, as an edit to it is.
+func TestPlanGeneratedDelete(t *testing.T) {
+	fsys := fstest.MapFS{
+		"kustomization.yaml": {Data: []byte("configMapGenerator:\n" +
+			"  - {name: a, envs: [shared.env, own.env]}\n" +
+			"  - {name: b, envs: [shared.env]}\n" +
+			"generatorOptions:\n  disableNameSuffixHash: true\n")},
+		"shared.env": {Data: []byte("S=1\n")},
+		"own.env":    {Data: []byte("O=1\n")},
+	}
+	read := func(p string) ([]byte, bool) {
+		f, ok := fsys[p]
+		if !ok {
+			return nil, false
+		}
+		return f.Data, true
+	}
+	generated := generatedFor(t, fsys, liveConfigMap("", "a", nil))
+	require.Len(t, generated, 1)
+
+	writes, err := PlanGeneratedDelete(generated[0], "", read)
+	require.NoError(t, err)
+	require.Equal(t, []GeneratedWrite{
+		{Path: "kustomization.yaml", Content: []byte("configMapGenerator:\n" +
+			"  - {name: b, envs: [shared.env]}\n" +
+			"generatorOptions:\n  disableNameSuffixHash: true\n")},
+		{Path: "own.env"},
+	}, writes, "shared.env is read by entry b too, so it stays")
+
+	_, err = PlanGeneratedDelete(generated[0], "overlays/prod", read)
+	require.ErrorContains(t, err, "which this target reads and never writes")
+}
+
+// TestLiteralValue_AgreesWithKustomize writes literals the way the planner does and asks a real
+// build what they come back as: a value that is itself quoted must survive kustomize removing one
+// pair of surrounding quotes.
+func TestLiteralValue_AgreesWithKustomize(t *testing.T) {
+	values := []string{`plain`, `"double"`, `'single'`, `"unbalanced`, `a=b`, `'`, ``, "two\nlines"}
+	edits := make([]manifestedit.LiteralEdit, 0, len(values))
+	want := map[string]string{}
+	for i, v := range values {
+		key := fmt.Sprintf("K%d", i)
+		edits = append(edits, manifestedit.LiteralEdit{Key: key, Value: v})
+		want[key] = v
+	}
+	kustomization := []byte("configMapGenerator:\n  - name: probe\n    literals: [SEED=x]\n" +
+		"generatorOptions:\n  disableNameSuffixHash: true\n")
+	res, diags := manifestedit.EditConfigMapGeneratorLiterals("kustomization.yaml", kustomization, 0, "probe", edits)
+	require.Equal(t, manifestedit.EditPatched, res.Mode, "%v", diags)
+
+	rendered, err := renderRoot([]manifestedit.FileContent{{Path: "kustomization.yaml", Content: res.Content}}, ".")
+	require.NoError(t, err)
+	got, _, _ := unstructured.NestedStringMap(rendered[0].Object.Object, "data")
+	want["SEED"] = "x"
+	require.Equal(t, want, got)
 }
