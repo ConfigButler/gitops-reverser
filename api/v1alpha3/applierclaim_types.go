@@ -192,10 +192,10 @@ type ApplierClaim interface {
 	// false when the applier has none it shares this way or the applier claim has not read it. Appliers
 	// sharing one have one operation at a time.
 	SharedSource() (source types.NamespacedName, known bool)
-	// ConvergeInterval is spec.convergeInterval, or the kind's default when it is omitted: how long
+	// CatchUpAfter is spec.catchUpAfter, or the kind's default when it is omitted: how long
 	// the applier may stay behind the branch after a push of GitOps Reverser's own. Zero never
 	// converges for that reason.
-	ConvergeInterval() time.Duration
+	CatchUpAfter() time.Duration
 	// Operation is status.operation, and SetOperation replaces it and status.repairPending.
 	Operation() *ApplyOperation
 	RepairPending() bool

@@ -258,7 +258,7 @@ kinds:
         doc: >-
           The `Kustomization` that applies the folders of the `GitTarget`s naming this applier claim. See
           [who applies this folder](#who-applies-this-folder-specapplierclaimref)
-      - path: convergeInterval
+      - path: catchUpAfter
         doc: >-
           How long the `Kustomization` may stay behind the branch after a push of GitOps Reverser's own.
           Such a push needs no apply for the cluster, but leaves `status.lastAppliedRevision` and the
@@ -278,7 +278,7 @@ kinds:
         doc: >-
           The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s
           naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref)
-      - path: convergeInterval
+      - path: catchUpAfter
         doc: >-
           As a `FluxClaim`'s: how long the `Application`'s last sync may stay behind the branch after a
           push of GitOps Reverser's own. Off by default, since a sync runs the `Application`'s hooks and
@@ -305,3 +305,7 @@ kinds:
         doc: Close the attached window this long after the attach
       - path: whenNothingToCommit
         doc: "`CommitEmpty` records the message in an empty commit when nothing changed"
+      - path: catchUp
+        doc: >-
+          `ImmediatelyAfterPush` asks the `GitTarget`'s applier to apply the commit as soon as it is pushed,
+          one apply per request, instead of after the applier claim's `catchUpAfter`

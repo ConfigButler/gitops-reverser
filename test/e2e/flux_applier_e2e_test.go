@@ -293,28 +293,65 @@ data:
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue(), "suspended again")
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "True", "Suspended", "")
-	})
 
-	// A push of GitOps Reverser's own asks no apply at once, but the Kustomization's own state follows
-	// the branch at the applier claim's spec.convergeInterval: its lastAppliedRevision and its
-	// GitRepository's artifact reach the tip a mirrored API edit made, with no push by anyone else.
-	It("brings the applied revision to its own pushes' tip at the convergeInterval", func() {
-		setFluxClaimConvergeInterval(testNs, fluxName, "10s")
-		DeferCleanup(setFluxClaimConvergeInterval, testNs, fluxName, "0s")
-
-		By("mirroring an API edit: the branch moves by GitOps Reverser's own push")
-		applyConfigMap(testNs, "applier-converge-edit")
-		Eventually(func(g Gomega) {
-			g.Expect(runGitIn(repo.CheckoutDir, "fetch", "origin", "main")).To(Succeed())
-			g.Expect(gitShowFiles(repo.CheckoutDir)).To(ContainSubstring("applier-converge-edit"))
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
-
-		By("a CatchUp applies that tip within the interval, and the Kustomization is held again")
+		// The namespace goes when the spec ends. A ConfigMap left in Git for it would fail every later
+		// apply of the folder, so it leaves Git first, and the folder applies without it.
+		By("taking the ConfigMap out of Git again, before its namespace goes")
+		removeFileFromOutside(repo, fluxApplierFolder+"/later.yaml", "e2e: another writer removes the ConfigMap")
 		Eventually(func(g Gomega) {
 			head := remoteHeadSHA(g, repo.CheckoutDir)
 			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
-			g.Expect(fluxArtifactRevision(g, fluxName)).To(ContainSubstring(head))
+			g.Expect(readClaimOperation(g, testNs, fluxClaimResource, fluxName).Phase).To(Equal("Succeeded"))
+		}, 3*time.Minute, 2*time.Second).Should(Succeed())
+	})
+
+	// A push of GitOps Reverser's own asks no apply at once, but the Kustomization's own state follows
+	// the branch at the applier claim's spec.catchUpAfter: its lastAppliedRevision and its
+	// GitRepository's artifact reach the tip a mirrored API edit made, with no push by anyone else.
+	//
+	// The timed edit is an UPDATE of an object the Kustomization already applied. A create would not
+	// do: it is adopted at once (a CatchUp that stamps Flux's owner labels), with no interval at all.
+	It("brings the applied revision to its own pushes' tip at the catchUpAfter", func() {
+		const name = "applier-converge-edit"
+
+		By("creating a ConfigMap, and waiting until its adopt has applied the tip")
+		applyConfigMap(testNs, name)
+		var adoptedHead string
+		var adopted claimOperation
+		Eventually(func(g Gomega) {
+			g.Expect(runGitIn(repo.CheckoutDir, "fetch", "origin", "main")).To(Succeed())
+			g.Expect(gitShowFiles(repo.CheckoutDir)).To(ContainSubstring(name))
+			adoptedHead = remoteHeadSHA(g, repo.CheckoutDir)
+			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(adoptedHead))
+			adopted = readClaimOperation(g, testNs, fluxClaimResource, fluxName)
+			g.Expect(adopted.Phase).To(Equal("Succeeded"))
+		}, 3*time.Minute, 2*time.Second).Should(Succeed())
+
+		// No reset afterwards: the next spec deletes the applier claim.
+		setFluxClaimCatchUpAfter(testNs, fluxName, "30s")
+
+		By("editing it through the API: the branch moves by GitOps Reverser's own push")
+		_, err := kubectlRunInNamespace(testNs, "patch", "configmap", name, "--type=merge", "-p",
+			`{"data":{"test-key":"converged"}}`)
+		Expect(err).NotTo(HaveOccurred())
+		var editedHead string
+		Eventually(func(g Gomega) {
+			editedHead = remoteHeadSHA(g, repo.CheckoutDir)
+			g.Expect(editedHead).NotTo(Equal(adoptedHead), "the edit is pushed")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("no apply at once: the cluster already holds the edit")
+		Consistently(func(g Gomega) {
+			g.Expect(readClaimOperation(g, testNs, fluxClaimResource, fluxName).Token).To(Equal(adopted.Token))
+			g.Expect(fluxLastAppliedRevision(g, fluxName)).NotTo(ContainSubstring(editedHead))
+		}, 10*time.Second, 2*time.Second).Should(Succeed())
+
+		By("once the interval has passed, a CatchUp applies the tip, and the Kustomization is held again")
+		Eventually(func(g Gomega) {
+			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(editedHead))
+			g.Expect(fluxArtifactRevision(g, fluxName)).To(ContainSubstring(editedHead))
 			done := readClaimOperation(g, testNs, fluxClaimResource, fluxName)
+			g.Expect(done.Token).NotTo(Equal(adopted.Token))
 			g.Expect(done.Reason).To(Equal("CatchUp"))
 			g.Expect(done.Phase).To(Equal("Succeeded"))
 			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue())

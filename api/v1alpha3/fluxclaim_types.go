@@ -53,7 +53,7 @@ type FluxClaimSpec struct {
 	// state (its applied revision, its source artifact) would stay at the last foreign commit until
 	// someone else pushed. One apply per interval keeps that level and batches a burst of saves.
 
-	// ConvergeInterval is how long the Kustomization may stay behind the
+	// CatchUpAfter is how long the Kustomization may stay behind the
 	// branch after a push of GitOps Reverser's own, as a Go duration ("1m",
 	// "90s"). Such a push changes nothing on the cluster, which already holds
 	// the edit, but leaves status.lastAppliedRevision and the GitRepository's
@@ -65,8 +65,8 @@ type FluxClaimSpec struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
 	// +kubebuilder:default="1m"
-	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || (duration(self) >= duration('10s') && duration(self) <= duration('24h'))",message="spec.convergeInterval must be 0s, or a Go duration from 10s to 24h"
-	ConvergeInterval *metav1.Duration `json:"convergeInterval,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || (duration(self) >= duration('10s') && duration(self) <= duration('24h'))",message="spec.catchUpAfter must be 0s, or a Go duration from 10s to 24h"
+	CatchUpAfter *metav1.Duration `json:"catchUpAfter,omitempty"`
 }
 
 // FluxClaimStatus is what the applier claim knows about its Kustomization, and
@@ -220,8 +220,8 @@ func init() {
 	SchemeBuilder.Register(&FluxClaim{}, &FluxClaimList{})
 }
 
-// DefaultFluxConvergeInterval is a FluxClaim's spec.convergeInterval when it is omitted.
-const DefaultFluxConvergeInterval = time.Minute
+// DefaultFluxCatchUpAfter is a FluxClaim's spec.catchUpAfter when it is omitted.
+const DefaultFluxCatchUpAfter = time.Minute
 
 var _ ApplierClaim = (*FluxClaim)(nil)
 
@@ -261,9 +261,9 @@ func (t *FluxClaim) SharedSource() (types.NamespacedName, bool) {
 	return types.NamespacedName{Namespace: source.Namespace, Name: source.Name}, true
 }
 
-// ConvergeInterval is spec.convergeInterval, or DefaultFluxConvergeInterval when it is omitted.
-func (t *FluxClaim) ConvergeInterval() time.Duration {
-	return durationOr(t.Spec.ConvergeInterval, DefaultFluxConvergeInterval)
+// CatchUpAfter is spec.catchUpAfter, or DefaultFluxCatchUpAfter when it is omitted.
+func (t *FluxClaim) CatchUpAfter() time.Duration {
+	return durationOr(t.Spec.CatchUpAfter, DefaultFluxCatchUpAfter)
 }
 
 // Operation is status.operation.

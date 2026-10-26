@@ -90,10 +90,10 @@ spec:
           spec:
             description: spec defines the desired state of FluxClaim.
             properties:
-              convergeInterval:
+              catchUpAfter:
                 default: 1m
                 description: |-
-                  ConvergeInterval is how long the Kustomization may stay behind the
+                  CatchUpAfter is how long the Kustomization may stay behind the
                   branch after a push of GitOps Reverser's own, as a Go duration ("1m",
                   "90s"). Such a push changes nothing on the cluster, which already holds
                   the edit, but leaves status.lastAppliedRevision and the GitRepository's
@@ -104,8 +104,8 @@ spec:
                 pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                 type: string
                 x-kubernetes-validations:
-                - message: spec.convergeInterval must be 0s, or a Go duration from
-                    10s to 24h
+                - message: spec.catchUpAfter must be 0s, or a Go duration from 10s
+                    to 24h
                   rule: duration(self) == duration('0s') || (duration(self) >= duration('10s')
                     && duration(self) <= duration('24h'))
               kubeProviderRef:

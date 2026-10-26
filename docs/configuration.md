@@ -159,7 +159,7 @@ The references are immutable: to hold another `Kustomization`, delete the applie
 |---|---|---|
 | `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Kustomization`: the applier claim's own namespace, or `namespace` names another. Its `allowedApplierClaims` must admit this namespace |
 | `kustomizationRef` | **required** | The `Kustomization` that applies the folders of the `GitTarget`s naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref) |
-| `convergeInterval` | `1m` | How long the `Kustomization` may stay behind the branch after a push of GitOps Reverser's own. Such a push needs no apply for the cluster, but leaves `status.lastAppliedRevision` and the `GitRepository`'s artifact at the commit before it; once the interval has passed, the tip is applied. A burst of saves costs one apply, and an edit arriving before the resume defers it by an interval. `0s` never applies for this reason; otherwise `10s` to `24h` |
+| `catchUpAfter` | `1m` | How long the `Kustomization` may stay behind the branch after a push of GitOps Reverser's own. Such a push needs no apply for the cluster, but leaves `status.lastAppliedRevision` and the `GitRepository`'s artifact at the commit before it; once the interval has passed, the tip is applied. A burst of saves costs one apply, and an edit arriving before the resume defers it by an interval. `0s` never applies for this reason; otherwise `10s` to `24h` |
 
 ### `ArgoCDClaim` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync
 
@@ -169,7 +169,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 |---|---|---|
 | `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Application`: the applier claim's own namespace, or `namespace` names another. Its `allowedApplierClaims` must admit this namespace |
 | `applicationRef` | **required** | The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref) |
-| `convergeInterval` | `0s` | As a `FluxClaim`'s: how long the `Application`'s last sync may stay behind the branch after a push of GitOps Reverser's own. Off by default, since a sync runs the `Application`'s hooks and Argo CD's refresh already compares the live state against the tip. Otherwise `10s` to `24h` |
+| `catchUpAfter` | `0s` | As a `FluxClaim`'s: how long the `Application`'s last sync may stay behind the branch after a push of GitOps Reverser's own. Off by default, since a sync runs the `Application`'s hooks and Argo CD's refresh already compares the live state against the tip. Otherwise `10s` to `24h` |
 
 ### `CommitRequest` (namespaced): save now
 
@@ -182,6 +182,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 | `window.idleTimeout` | no idle close | Close the attached window after this much silence |
 | `window.maxDuration` | `2s` | Close the attached window this long after the attach |
 | `whenNothingToCommit` | `Resolve` | `CommitEmpty` records the message in an empty commit when nothing changed |
+| `catchUp` | `AsDefinedOnClaim` | `ImmediatelyAfterPush` asks the `GitTarget`'s applier to apply the commit as soon as it is pushed, one apply per request, instead of after the applier claim's `catchUpAfter` |
 
 <!-- END GENERATED: settings-index -->
 

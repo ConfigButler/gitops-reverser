@@ -22,7 +22,7 @@ import (
 // including one that only touches metadata — was rejected as a spec change.
 // CommitRequestWindow compares its durations as durations, which compares what
 // the fields mean instead of how they were spelled.
-// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit)",message="CommitRequest spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="CommitRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.whenNothingToCommit) || self.whenNothingToCommit != 'CommitEmpty' || has(self.message)",message="whenNothingToCommit: CommitEmpty requires spec.message, because a message is all an empty commit records"
 type CommitRequestSpec struct {
 	// GitTargetRef names the GitTarget, in this namespace, whose commit window
@@ -71,7 +71,31 @@ type CommitRequestSpec struct {
 	// +kubebuilder:validation:Enum=Resolve;CommitEmpty
 	// +kubebuilder:default=Resolve
 	WhenNothingToCommit NothingToCommitAction `json:"whenNothingToCommit,omitempty"`
+
+	// CatchUp decides when the GitTarget's applier is asked to apply the commit
+	// this request pushes. "AsDefinedOnClaim" leaves it to the applier claim's
+	// spec.catchUpAfter. "ImmediatelyAfterPush" asks as soon as the commit is
+	// pushed, which costs one apply per request. The cluster already holds the
+	// saved objects; the apply brings the applier's own state, such as a
+	// Kustomization's status.lastAppliedRevision, to the commit. A request that
+	// pushes no commit, or whose GitTarget names no applier claim, asks for
+	// nothing. Defaults to "AsDefinedOnClaim".
+	// +optional
+	// +kubebuilder:validation:Enum=AsDefinedOnClaim;ImmediatelyAfterPush
+	// +kubebuilder:default=AsDefinedOnClaim
+	CatchUp CatchUpPolicy `json:"catchUp,omitempty"`
 }
+
+// CatchUpPolicy is when a CommitRequest's commit is applied by the GitTarget's
+// applier.
+type CatchUpPolicy string
+
+const (
+	// CatchUpAsDefinedOnClaim leaves the apply to the applier claim's spec.catchUpAfter.
+	CatchUpAsDefinedOnClaim CatchUpPolicy = "AsDefinedOnClaim"
+	// CatchUpImmediatelyAfterPush asks the applier to apply the tip as soon as the commit is pushed.
+	CatchUpImmediatelyAfterPush CatchUpPolicy = "ImmediatelyAfterPush"
+)
 
 // NothingToCommitAction is what a CommitRequest does when it ends with nothing
 // to commit.

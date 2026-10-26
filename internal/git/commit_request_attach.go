@@ -146,6 +146,9 @@ type AttachCommitRequest struct {
 	// CommitEmpty records Message in an empty commit when the request ends with nothing to
 	// commit: whenNothingToCommit: CommitEmpty.
 	CommitEmpty bool
+	// CatchUpNow asks the GitTarget's applier to apply the tip as soon as the request's commit is
+	// pushed: catchUp: ImmediatelyAfterPush.
+	CatchUpNow bool
 }
 
 // commitRequestID is the worker-local key for a CommitRequest: its namespaced
@@ -184,6 +187,8 @@ type pendingCommitRequest struct {
 	// commitEmpty records the message in an empty commit when the request ends with nothing to
 	// commit. Never for a WindowMismatch: that would claim more than happened.
 	commitEmpty bool
+	// catchUpNow asks the GitTarget's applier for a converge once the request's commit is pushed.
+	catchUpNow bool
 	// attached is true once this request is bound to a write: its message to the open window, or
 	// its own empty-commit record. From then on only that write's outcome settles it, and it stays
 	// set while the write is pending, waiting for the push.

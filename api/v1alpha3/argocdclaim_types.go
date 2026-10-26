@@ -60,7 +60,7 @@ type ArgoCDClaimSpec struct {
 	// cost more than a no-op apply, and Argo CD's own refresh already compares the live state
 	// against the tip without a sync. Only the last sync's revision lags.
 
-	// ConvergeInterval is how long the Application may stay behind the branch
+	// CatchUpAfter is how long the Application may stay behind the branch
 	// after a push of GitOps Reverser's own, as a Go duration ("5m"). Such a
 	// push changes nothing on the cluster, which already holds the edit, but
 	// leaves the Application's last sync at the commit before it. Once the
@@ -72,8 +72,8 @@ type ArgoCDClaimSpec struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
 	// +kubebuilder:default="0s"
-	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || (duration(self) >= duration('10s') && duration(self) <= duration('24h'))",message="spec.convergeInterval must be 0s, or a Go duration from 10s to 24h"
-	ConvergeInterval *metav1.Duration `json:"convergeInterval,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || (duration(self) >= duration('10s') && duration(self) <= duration('24h'))",message="spec.catchUpAfter must be 0s, or a Go duration from 10s to 24h"
+	CatchUpAfter *metav1.Duration `json:"catchUpAfter,omitempty"`
 }
 
 // ArgoCDClaimStatus is what the applier claim knows about its Application, and
@@ -215,8 +215,8 @@ func init() {
 	SchemeBuilder.Register(&ArgoCDClaim{}, &ArgoCDClaimList{})
 }
 
-// DefaultArgoCDConvergeInterval is an ArgoCDClaim's spec.convergeInterval when it is omitted: off.
-const DefaultArgoCDConvergeInterval = 0
+// DefaultArgoCDCatchUpAfter is an ArgoCDClaim's spec.catchUpAfter when it is omitted: off.
+const DefaultArgoCDCatchUpAfter = 0
 
 var _ ApplierClaim = (*ArgoCDClaim)(nil)
 
@@ -258,9 +258,9 @@ func (t *ArgoCDClaim) SharedSource() (types.NamespacedName, bool) {
 	return types.NamespacedName{}, false
 }
 
-// ConvergeInterval is spec.convergeInterval, or DefaultArgoCDConvergeInterval when it is omitted.
-func (t *ArgoCDClaim) ConvergeInterval() time.Duration {
-	return durationOr(t.Spec.ConvergeInterval, DefaultArgoCDConvergeInterval)
+// CatchUpAfter is spec.catchUpAfter, or DefaultArgoCDCatchUpAfter when it is omitted.
+func (t *ArgoCDClaim) CatchUpAfter() time.Duration {
+	return durationOr(t.Spec.CatchUpAfter, DefaultArgoCDCatchUpAfter)
 }
 
 // Operation is status.operation.

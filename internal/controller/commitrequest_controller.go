@@ -255,6 +255,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		IdleTimeout:        window.idleTimeout,
 		MaxDuration:        window.maxDuration,
 		CommitEmpty:        commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
+		CatchUpNow:         commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpImmediatelyAfterPush,
 	}
 	if time.Since(commitRequest.CreationTimestamp.Time) >= window.resolveTimeout() {
 		// Past the bound the controller only withdraws: an attach sent now would sit behind the

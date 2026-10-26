@@ -57,7 +57,7 @@ overwrites it is withheld and repaired. Four reasons make one due:
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. The flush replays the pending writes onto it and pushes them first, so the applied commit carries the API side's answer | Every applier on the branch |
 | `Refusal` | An edit to a document the folder holds was refused at the write boundary, and the target opted in with `onRefusal: Reapply` and is not suspended. At most one request a minute per target; a refusal inside that minute is carried by a trailing one | The refusing target's applier |
 | `Repair` | The apply window withheld a late apply over a newer API edit, so the cluster runs an older value than Git | The applier that wrote it |
-| `CatchUp` | Ownership, not safety ([below](#catchup-adopt-and-converge)). An **adopt**: the API created an object in the folder, or a resync added one to Git, and an apply stamps it as the applier's, so a later Git-side delete prunes it. A **converge**: once when the worker starts, once when a `GitTarget` first names the trigger, and once the applier has stayed behind the tip for the claim's `spec.convergeInterval`, unless the applier already applied the tip | The folder's applier for an adopt; for a converge, every applier on the branch at start, and the named one on first naming. Flux and Argo CD alike |
+| `CatchUp` | Ownership, not safety ([below](#catchup-adopt-and-converge)). An **adopt**: the API created an object in the folder, or a resync added one to Git, and an apply stamps it as the applier's, so a later Git-side delete prunes it. A **converge**: once when the worker starts, once when a `GitTarget` first names the trigger, and once the applier has stayed behind the tip for the claim's `spec.catchUpAfter`, unless the applier already applied the tip | The folder's applier for an adopt; for a converge, every applier on the branch at start, and the named one on first naming. Flux and Argo CD alike |
 
 No applier is asked for anything before every initial snapshot of the `GitTarget`s it covers is
 published, and a push of GitOps Reverser's own leaves nothing pending: the cluster already runs the
@@ -263,7 +263,7 @@ deletes its file the applier leaves it on the cluster, and a later resync writes
   applier's own state behind the branch: a `Kustomization`'s `status.lastAppliedRevision` and its
   `GitRepository`'s artifact, an `Application`'s last sync, and whatever reads them (Flux's
   commit-status notifications, a step that publishes what was applied). So once an applier has
-  stayed behind the tip for its claim's `spec.convergeInterval`, a converge is pending for it. The
+  stayed behind the tip for its claim's `spec.catchUpAfter`, a converge is pending for it. The
   clock starts on the first pass that finds it behind and again on every send, so a burst of saves
   inside one interval costs one apply, and an applier at the tip costs nothing. A `FluxClaim`
   defaults to `1m`; an `ArgoCDClaim` to `0s`, never, since a sync runs the `Application`'s hooks
@@ -275,6 +275,10 @@ deletes its file the applier leaves it on the cluster, and a later resync writes
   fresh interval rather than going again after the next flush. While a burst of edits lasts, it
   lands in the first quiet moment. Every other reason applies regardless, as the flush guarantees
   ([above](#flush-then-apply)).
+- **A save can ask to catch up at once.** A `CommitRequest` with `catchUp: ImmediatelyAfterPush`
+  leaves a converge pending for its `GitTarget`'s applier as soon as its commit is pushed, without
+  waiting for `catchUpAfter`. It was asked for, so it does not yield to an edit. A save that pushed
+  no commit asks nothing.
 - **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
   reason, until every collection of every `GitTarget` it covers has a settled snapshot (applied,
   refused or failed; tracked per collection on the watch side) and the worker has published every

@@ -243,11 +243,11 @@ type applierState struct {
 	// named is the GitTarget incarnations that named the applier so far: one naming it for the first
 	// time leaves a converge pending.
 	named map[k8stypes.UID]bool
-	// convergeInterval is how long the applier may stay behind the tip before a converge is pending
+	// catchUpAfter is how long the applier may stay behind the tip before a converge is pending
 	// for it, zero for never, as last read from its applier claim, and behindSince is when this worker first found it behind, zero while
 	// it is not, or since the last attempt was sent (scheduleConverges).
-	convergeInterval time.Duration
-	behindSince      time.Time
+	catchUpAfter time.Duration
+	behindSince  time.Time
 	// lag is whether the converge pending is only scheduleConverges': nothing else asks for the tip,
 	// so its attempt yields to an edit (convergeHolds).
 	lag bool
@@ -420,7 +420,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 }
 
 // scheduleConverges leaves a converge pending for each applier that has stayed behind the tip for its
-// convergeInterval, and returns when the next one still waiting comes due, zero when none waits.
+// catchUpAfter, and returns when the next one still waiting comes due, zero when none waits.
 //
 // A push of the worker's own leaves nothing pending (applyInbox.observe): the flush put its edits on
 // the cluster already. But the applier's own state, its applied revision and its source, stays at the
@@ -437,8 +437,8 @@ func (l *branchWorkerEventLoop) scheduleConverges(now time.Time) time.Time {
 			state.behindSince = time.Time{}
 			continue
 		}
-		state.convergeInterval = l.w.convergeIntervalOf(state)
-		if state.convergeInterval <= 0 {
+		state.catchUpAfter = l.w.catchUpAfterOf(state)
+		if state.catchUpAfter <= 0 {
 			state.behindSince = time.Time{}
 			continue
 		}
@@ -448,24 +448,24 @@ func (l *branchWorkerEventLoop) scheduleConverges(now time.Time) time.Time {
 		if state.converge || l.attemptOut(state) {
 			continue
 		}
-		due := state.behindSince.Add(state.convergeInterval)
+		due := state.behindSince.Add(state.catchUpAfter)
 		if now.Before(due) {
 			next = earliest(next, due)
 			continue
 		}
 		state.converge, state.lag = true, true
-		l.w.Log.V(1).Info("The applier stayed behind the tip for its converge interval; a converge is pending",
+		l.w.Log.V(1).Info("The applier stayed behind the tip for its catchUpAfter; a converge is pending",
 			"branch", l.w.Branch, "applier", state.ref.String(), "applied", state.appliedRevision, "tip", tip,
-			"interval", state.convergeInterval.String())
+			"interval", state.catchUpAfter.String())
 	}
 	return next
 }
 
-// convergeIntervalOf reads the applier's spec.convergeInterval from its applier claim, on every pass
+// catchUpAfterOf reads the applier's spec.catchUpAfter from its applier claim, on every pass
 // that finds it behind, so a change applies from the next wake rather than from the next listing,
 // which a push of the worker's own does not make. The client is cached, so this costs no round trip.
 // An applier claim that cannot be read keeps the interval last read.
-func (w *BranchWorker) convergeIntervalOf(state *applierState) time.Duration {
+func (w *BranchWorker) catchUpAfterOf(state *applierState) time.Duration {
 	ref := state.ref.ApplierClaim
 	applierClaim := v1alpha3.NewApplierClaim(ref.Kind)
 	if applierClaim == nil {
@@ -473,9 +473,9 @@ func (w *BranchWorker) convergeIntervalOf(state *applierState) time.Duration {
 	}
 	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
 	if err := w.Client.Get(w.ctx, key, applierClaim); err != nil {
-		return state.convergeInterval
+		return state.catchUpAfter
 	}
-	return applierClaim.ConvergeInterval()
+	return applierClaim.CatchUpAfter()
 }
 
 // takeReasons moves the reasons the inbox holds onto the appliers listed now, and reports whether
@@ -485,7 +485,7 @@ func (w *BranchWorker) convergeIntervalOf(state *applierState) time.Duration {
 func (l *branchWorkerEventLoop) takeReasons() bool {
 	w := l.w
 	_, foreign, converge := w.inbox.take()
-	if !foreign && !converge && len(l.unsentRefusals) == 0 && !l.appliersHaveWork() {
+	if !foreign && !converge && len(l.unsentRefusals) == 0 && len(l.savedCatchUps) == 0 && !l.appliersHaveWork() {
 		return false
 	}
 	targets, err := w.appliersOnBranch(w.ctx)
@@ -502,7 +502,35 @@ func (l *branchWorkerEventLoop) takeReasons() bool {
 		state.converge = state.converge || converge
 		state.lag = state.lag && !converge
 	}
+	l.takeSavedCatchUps()
 	return true
+}
+
+// catchUpAfterSave leaves a converge pending for the applier of a CommitRequest's GitTarget, whose
+// commit was just pushed and which asked for it (catchUp: ImmediatelyAfterPush). It is taken onto the
+// applier when the appliers are next listed, at the end of this wake.
+func (l *branchWorkerEventLoop) catchUpAfterSave(pcr *pendingCommitRequest) {
+	if l.savedCatchUps == nil {
+		l.savedCatchUps = map[itypes.ResourceReference]bool{}
+	}
+	l.savedCatchUps[itypes.NewResourceReference(pcr.gitTargetName, pcr.gitTargetNamespace)] = true
+}
+
+// takeSavedCatchUps leaves a converge pending for every applier a pushed CommitRequest asked to catch
+// up. It was asked for, so it is no lag converge: it does not yield to an edit (convergeHolds). A
+// GitTarget that names no applier asks nothing.
+func (l *branchWorkerEventLoop) takeSavedCatchUps() {
+	for _, state := range l.appliers {
+		for _, target := range state.targets {
+			if !l.savedCatchUps[target.ref] {
+				continue
+			}
+			state.converge, state.lag = true, false
+			l.w.Log.Info("A CommitRequest asked its applier to catch up with the pushed commit",
+				"branch", l.w.Branch, "applier", state.ref.String(), "gitTarget", target.ref.String())
+		}
+	}
+	l.savedCatchUps = nil
 }
 
 // dueAppliers is the appliers an attempt is due for now, in turn order, and the earliest time one

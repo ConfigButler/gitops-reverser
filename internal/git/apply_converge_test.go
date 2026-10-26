@@ -14,7 +14,7 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// spec.convergeInterval: a push of the worker's own asks nothing at once, but an applier left behind
+// spec.catchUpAfter: a push of the worker's own asks nothing at once, but an applier left behind
 // the tip for the interval is asked a CatchUp of it, so its own state (applied revision, source
 // artifact) catches up with the branch.
 
@@ -36,18 +36,18 @@ func intervalPassed(t *testing.T, loop *branchWorkerEventLoop) {
 	t.Helper()
 	for _, state := range loop.appliers {
 		require.False(t, state.behindSince.IsZero(), "the clock runs only for an applier behind the tip")
-		state.behindSince = state.behindSince.Add(-state.convergeInterval - time.Second)
+		state.behindSince = state.behindSince.Add(-state.catchUpAfter - time.Second)
 	}
 }
 
-func convergeEvery(interval time.Duration) func(*configv1alpha3.FluxClaim) {
-	return func(c *configv1alpha3.FluxClaim) { c.Spec.ConvergeInterval = &metav1.Duration{Duration: interval} }
+func catchUpEvery(interval time.Duration) func(*configv1alpha3.FluxClaim) {
+	return func(c *configv1alpha3.FluxClaim) { c.Spec.CatchUpAfter = &metav1.Duration{Duration: interval} }
 }
 
-// TestConverge_ABurstOfOwnPushesConvergesOnceAfterTheInterval: each push asks nothing at once and the
+// TestCatchUpAfter_ABurstOfOwnPushesConvergesOnceAfterTheInterval: each push asks nothing at once and the
 // timer is armed for the interval; once it has passed, one CatchUp of the newest tip goes, and an
 // applier at the tip is not clocked any more.
-func TestConverge_ABurstOfOwnPushesConvergesOnceAfterTheInterval(t *testing.T) {
+func TestCatchUpAfter_ABurstOfOwnPushesConvergesOnceAfterTheInterval(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	convergedAt(t, loop, requester)
 	state := loop.appliers[applierRef("alpha")]
@@ -58,7 +58,7 @@ func TestConverge_ABurstOfOwnPushesConvergesOnceAfterTheInterval(t *testing.T) {
 		require.Empty(t, requester.taken(), "the worker's own push asks nothing at once")
 	}
 	require.NotNil(t, loop.applierTimer, "the timer wakes the loop when the interval has passed")
-	assert.Equal(t, configv1alpha3.DefaultFluxConvergeInterval, state.convergeInterval, "a FluxClaim's default")
+	assert.Equal(t, configv1alpha3.DefaultFluxCatchUpAfter, state.catchUpAfter, "a FluxClaim's default")
 
 	intervalPassed(t, loop)
 	loop.serviceAppliers()
@@ -74,9 +74,9 @@ func TestConverge_ABurstOfOwnPushesConvergesOnceAfterTheInterval(t *testing.T) {
 	assert.True(t, state.behindSince.IsZero(), "an applier at the tip is not clocked")
 }
 
-// TestConverge_APushDuringAnAttemptWaitsAFreshInterval: the attempt applied the tip it was sent for,
+// TestCatchUpAfter_APushDuringAnAttemptWaitsAFreshInterval: the attempt applied the tip it was sent for,
 // and the push that landed meanwhile waits an interval from the send, not from before it.
-func TestConverge_APushDuringAnAttemptWaitsAFreshInterval(t *testing.T) {
+func TestCatchUpAfter_APushDuringAnAttemptWaitsAFreshInterval(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	convergedAt(t, loop, requester)
 	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
@@ -99,11 +99,11 @@ func TestConverge_APushDuringAnAttemptWaitsAFreshInterval(t *testing.T) {
 	assert.Equal(t, "ccc", requests[0].Commit)
 }
 
-// TestConverge_ZeroNeverConverges: "0s" keeps a push of the worker's own asking nothing, ever; an
+// TestCatchUpAfter_ZeroNeverConverges: "0s" keeps a push of the worker's own asking nothing, ever; an
 // ArgoCDClaim defaults to it, because a sync runs the Application's hooks.
-func TestConverge_ZeroNeverConverges(t *testing.T) {
+func TestCatchUpAfter_ZeroNeverConverges(t *testing.T) {
 	for name, objects := range map[string][]client.Object{
-		"flux 0s": {applierTestTarget("alpha", true), fluxClaim("alpha", convergeEvery(0))},
+		"flux 0s": {applierTestTarget("alpha", true), fluxClaim("alpha", catchUpEvery(0))},
 		"argo cd": {applierTestTarget("alpha", true, argoApplier)},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -113,7 +113,7 @@ func TestConverge_ZeroNeverConverges(t *testing.T) {
 			loop.serviceAppliers()
 
 			for _, state := range loop.appliers {
-				assert.Zero(t, state.convergeInterval)
+				assert.Zero(t, state.catchUpAfter)
 				assert.True(t, state.behindSince.IsZero(), "no clock runs")
 			}
 			assert.Empty(t, requester.taken())
@@ -121,10 +121,10 @@ func TestConverge_ZeroNeverConverges(t *testing.T) {
 	}
 }
 
-// TestConverge_YieldsToAnEditBeforeItsResume: an interval converge's decision stops holding once a
+// TestCatchUpAfter_YieldsToAnEditBeforeItsResume: an interval converge's decision stops holding once a
 // live edit is mirrored after its send, since the tip it fetched lacks that edit and applying it would
 // flip the object on the cluster. Stale, it waits a fresh interval, then goes for the newer tip.
-func TestConverge_YieldsToAnEditBeforeItsResume(t *testing.T) {
+func TestCatchUpAfter_YieldsToAnEditBeforeItsResume(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	convergedAt(t, loop, requester)
 	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
@@ -153,9 +153,9 @@ func TestConverge_YieldsToAnEditBeforeItsResume(t *testing.T) {
 	assert.Equal(t, "ccc", again[0].Commit)
 }
 
-// TestConverge_AnyOtherReasonDoesNotYield: a ForeignCommit is not a catch-up, so an edit does not make
+// TestCatchUpAfter_AnyOtherReasonDoesNotYield: a ForeignCommit is not a catch-up, so an edit does not make
 // it stale; the apply window repairs what it overwrites (S1).
-func TestConverge_AnyOtherReasonDoesNotYield(t *testing.T) {
+func TestCatchUpAfter_AnyOtherReasonDoesNotYield(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	convergedAt(t, loop, requester)
 	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByFetch})
@@ -168,11 +168,11 @@ func TestConverge_AnyOtherReasonDoesNotYield(t *testing.T) {
 	assert.True(t, sent[0].Current())
 }
 
-// TestConverge_AChangedIntervalAppliesFromTheNextWake: the interval is read from the applier claim on
+// TestCatchUpAfter_AChangedIntervalAppliesFromTheNextWake: the interval is read from the applier claim on
 // every pass that finds the applier behind, so a change needs no listing, which a push of the
 // worker's own does not make.
-func TestConverge_AChangedIntervalAppliesFromTheNextWake(t *testing.T) {
-	loop, requester := manualLoop(t, applierTestTarget("alpha", true), fluxClaim("alpha", convergeEvery(0)))
+func TestCatchUpAfter_AChangedIntervalAppliesFromTheNextWake(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true), fluxClaim("alpha", catchUpEvery(0)))
 	convergedAt(t, loop, requester)
 	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
 	loop.serviceAppliers()
@@ -181,14 +181,46 @@ func TestConverge_AChangedIntervalAppliesFromTheNextWake(t *testing.T) {
 
 	claim := &configv1alpha3.FluxClaim{}
 	require.NoError(t, loop.w.Client.Get(t.Context(), client.ObjectKey{Namespace: "team-a", Name: "alpha"}, claim))
-	convergeEvery(30 * time.Second)(claim)
+	catchUpEvery(30 * time.Second)(claim)
 	require.NoError(t, loop.w.Client.Update(t.Context(), claim))
 
 	loop.serviceAppliers()
-	assert.Equal(t, 30*time.Second, state.convergeInterval)
+	assert.Equal(t, 30*time.Second, state.catchUpAfter)
 	intervalPassed(t, loop)
 	loop.serviceAppliers()
 	requests := requester.taken()
 	require.Len(t, requests, 1)
 	assert.Equal(t, "bbb", requests[0].Commit)
+}
+
+// TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce: a CommitRequest with catchUp: ImmediatelyAfterPush
+// leaves a converge pending for its GitTarget's applier once its commit is pushed, without waiting
+// for catchUpAfter; one that pushed no commit asks nothing. It does not yield to an edit: it was
+// asked for.
+func TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+	convergedAt(t, loop, requester)
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+	save := func(name string, commit string) {
+		id := commitRequestID{Namespace: "team-a", Name: name, UID: "uid-" + name}
+		loop.pendingCRs[id] = &pendingCommitRequest{
+			id: id, gitTargetName: "alpha", gitTargetNamespace: "team-a", catchUpNow: true,
+		}
+		loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: commit})
+	}
+
+	save("nothing-pushed", "")
+	loop.serviceAppliers()
+	require.Empty(t, requester.taken(), "no commit, nothing to catch up with")
+
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
+	save("pushed", "bbb")
+	loop.serviceAppliers()
+	requests := requester.taken()
+	require.Len(t, requests, 1, "at once, not after catchUpAfter")
+	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
+	assert.Equal(t, "bbb", requests[0].Commit)
+
+	loop.handleLiveEvents(&WriteRequest{Events: []Event{windowEvent("alpha", "2", "kubectl-edit")}})
+	assert.True(t, requests[0].Current(), "asked for, so it does not yield to an edit")
 }

@@ -162,8 +162,8 @@ func (in *ArgoCDClaimSpec) DeepCopyInto(out *ArgoCDClaimSpec) {
 	*out = *in
 	out.KubeProviderRef = in.KubeProviderRef
 	out.ApplicationRef = in.ApplicationRef
-	if in.ConvergeInterval != nil {
-		in, out := &in.ConvergeInterval, &out.ConvergeInterval
+	if in.CatchUpAfter != nil {
+		in, out := &in.CatchUpAfter, &out.CatchUpAfter
 		*out = new(v1.Duration)
 		**out = **in
 	}
@@ -714,8 +714,8 @@ func (in *FluxClaimSpec) DeepCopyInto(out *FluxClaimSpec) {
 	*out = *in
 	out.KubeProviderRef = in.KubeProviderRef
 	out.KustomizationRef = in.KustomizationRef
-	if in.ConvergeInterval != nil {
-		in, out := &in.ConvergeInterval, &out.ConvergeInterval
+	if in.CatchUpAfter != nil {
+		in, out := &in.CatchUpAfter, &out.CatchUpAfter
 		*out = new(v1.Duration)
 		**out = **in
 	}

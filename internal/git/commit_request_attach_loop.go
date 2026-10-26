@@ -213,6 +213,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		idleTimeout:        req.IdleTimeout,
 		maxDuration:        req.MaxDuration,
 		commitEmpty:        req.CommitEmpty,
+		catchUpNow:         req.CatchUpNow,
 	}
 	l.pendingCRs[id] = pcr
 	l.w.setCommitRequestPhase(id, PhaseWaitingForWindow)
@@ -472,6 +473,9 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 		result.Branch = l.w.Branch
 	}
 	l.w.recordCommitRequestOutcome(id, result)
+	if pcr := l.pendingCRs[id]; pcr != nil && pcr.catchUpNow && result.Commit != "" {
+		l.catchUpAfterSave(pcr)
+	}
 	delete(l.pendingCRs, id)
 	l.w.setCommitRequestPhase(id, "")
 	l.w.Log.Info("CommitRequest resolved",
