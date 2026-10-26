@@ -408,7 +408,9 @@ Argo CD stamps `argocd.argoproj.io/tracking-id` on every non-CRD object it appli
 the live object would stop matching the committed file, and every apply would produce a commit.
 
 GitOps Reverser strips all of it before writing, along with `argocd.argoproj.io/installation-id`,
-`kro.run/`, `applyset.kubernetes.io/`, and `kcp.io/cluster`; the rules and reasons are in
+`kro.run/`, `applyset.kubernetes.io/`, `kcp.io/cluster`, and kustomize's build provenance
+(`config.kubernetes.io/origin`, `alpha.config.kubernetes.io/transformations`), which Flux requests
+for a `kustomization.yaml` with no `resources:`; the rules and reasons are in
 [`internal/sanitize/types.go`](../internal/sanitize/types.go). Under `argocd.argoproj.io/` only the
 exact tracking keys go: `sync-wave`, `sync-options` and `hook` are user intent that belongs in Git.
 That is also why the loop settles: an applied commit GitOps Reverser wrote matches the live object,

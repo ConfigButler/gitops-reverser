@@ -88,7 +88,8 @@ belongs in the evidence table, not as a replacement for it.
 [`internal/sanitize/types.go`](../../internal/sanitize/types.go) strips
 `kustomize.toolkit.fluxcd.io/` (labels + annotations), `kro.run/` (labels only),
 `applyset.kubernetes.io/`, and — by exact key — `argocd.argoproj.io/tracking-id`,
-`argocd.argoproj.io/installation-id`, and `kcp.io/cluster`.
+`argocd.argoproj.io/installation-id`, `kcp.io/cluster`, `config.kubernetes.io/origin`, and
+`alpha.config.kubernetes.io/transformations`.
 
 It does **not** strip, and these are all controller bookkeeping observed on real
 objects:
