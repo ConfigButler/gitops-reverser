@@ -20,7 +20,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -174,20 +173,21 @@ func (r *ApplierClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	st := beginStatus(r.Client, r.Recorder, claim)
 	switch t := claim.(type) {
 	case *configbutleraiv1alpha3.FluxClaim:
-		return r.reconcileFlux(ctx, st, t)
+		return reconcileHeldClaim(ctx, r, st, t, r.holdFlux)
 	case *configbutleraiv1alpha3.ArgoCDClaim:
-		return r.reconcileArgoCD(ctx, st, t)
+		return reconcileHeldClaim(ctx, r, st, t, r.holdArgoCD)
 	}
 	return ctrl.Result{}, fmt.Errorf("no applier claim kind %q", r.Kind)
 }
 
-// reconcileFlux is Reconcile for a FluxClaim: one being deleted, or that no eligible GitTarget
-// references any more, hands its Kustomization back; any other holds it while it is Configured.
-func (r *ApplierClaimReconciler) reconcileFlux(
-	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.FluxClaim,
+// reconcileHeldClaim is Reconcile for one applier claim: one being deleted, or that no eligible GitTarget
+// references any more, hands its applier back; any other holds it with hold while it is Configured.
+func reconcileHeldClaim[C configbutleraiv1alpha3.ApplierClaim](
+	ctx context.Context, r *ApplierClaimReconciler, st *reconcileStatus, claim C,
+	hold func(context.Context, *reconcileStatus, C, claimCheck) (conditionValue, error),
 ) (ctrl.Result, error) {
-	if !claim.DeletionTimestamp.IsZero() {
-		if !controllerutil.ContainsFinalizer(claim, configbutleraiv1alpha3.FluxClaimFinalizer) {
+	if !claim.GetDeletionTimestamp().IsZero() {
+		if !applier.Holding(claim) {
 			return ctrl.Result{}, nil
 		}
 		return r.retire(ctx, st, claim, nil)
@@ -197,7 +197,7 @@ func (r *ApplierClaimReconciler) reconcileFlux(
 	if check.retiring(claim) {
 		return r.retire(ctx, st, claim, &check)
 	}
-	inControl, err := r.holdFlux(ctx, st, claim, check)
+	inControl, err := hold(ctx, st, claim, check)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

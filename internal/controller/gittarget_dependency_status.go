@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -74,23 +73,13 @@ func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionV
 // reports the same reason as a stall or as progress, so a target can flip Stalled while its mirrored
 // Status and Reason stay put, and the rule judges its stall from that verdict (see ruleReadiness).
 func gitTargetReadyProjectionChanged() predicate.Predicate {
-	return predicate.Funcs{
-		CreateFunc:  func(event.CreateEvent) bool { return true },
-		DeleteFunc:  func(event.DeleteEvent) bool { return true },
-		GenericFunc: func(event.GenericEvent) bool { return false },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldTarget, ok1 := e.ObjectOld.(*configbutleraiv1alpha3.GitTarget)
-			newTarget, ok2 := e.ObjectNew.(*configbutleraiv1alpha3.GitTarget)
-			if !ok1 || !ok2 {
-				return true
-			}
-			if oldTarget.Generation != newTarget.Generation {
-				return true
-			}
-			before := gitTargetReadyCondition(*oldTarget)
-			after := gitTargetReadyCondition(*newTarget)
-			return before.Status != after.Status || before.Reason != after.Reason ||
-				gitTargetStalled(*oldTarget) != gitTargetStalled(*newTarget)
-		},
+	type projection struct {
+		status  metav1.ConditionStatus
+		reason  string
+		stalled bool
 	}
+	return specOrStatusChanged(func(target *configbutleraiv1alpha3.GitTarget) projection {
+		ready := gitTargetReadyCondition(*target)
+		return projection{status: ready.Status, reason: ready.Reason, stalled: gitTargetStalled(*target)}
+	})
 }

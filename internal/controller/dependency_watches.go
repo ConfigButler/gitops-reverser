@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -95,4 +96,23 @@ func ruleDependencyWatches(
 			builder.WithPredicates(kubeProviderReadyOrSpecChanged())).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(namespaces),
 			builder.WithPredicates(predicate.LabelChangedPredicate{}))
+}
+
+// specOrStatusChanged passes create and delete, and an update that changed the spec (generation) or
+// what summary reads of the status: the status-only update GenerationChangedPredicate drops. An
+// update whose objects are not a T is let through.
+func specOrStatusChanged[T client.Object, S comparable](summary func(T) S) predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			before, ok1 := e.ObjectOld.(T)
+			after, ok2 := e.ObjectNew.(T)
+			if !ok1 || !ok2 {
+				return true
+			}
+			return before.GetGeneration() != after.GetGeneration() || summary(before) != summary(after)
+		},
+	}
 }

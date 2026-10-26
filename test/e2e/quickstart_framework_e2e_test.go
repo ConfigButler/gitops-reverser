@@ -221,15 +221,7 @@ func (r *quickstartFrameworkRun) verifyStarterConfigMapCommit() {
 	_, err = kubectlRunInNamespace(ns, "create", "configmap", configMapName, "--from-literal=value=one")
 	Expect(err).NotTo(HaveOccurred(), "failed to create quickstart ConfigMap")
 
-	Eventually(func(g Gomega) {
-		g.Expect(r.gitPull()).To(Succeed())
-		content, readErr := os.ReadFile(expectedFile)
-		g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file must exist at %s", expectedFile))
-		g.Expect(string(content)).To(ContainSubstring("value: one"))
-		commitsAfter, countErr := r.gitCommitCount()
-		g.Expect(countErr).NotTo(HaveOccurred())
-		g.Expect(commitsAfter).To(BeNumerically(">", commitsBefore))
-	}, quickstartTimeout(), 2*time.Second).Should(Succeed())
+	r.eventuallyCommitsConfigMapFile(expectedFile, "value: one", commitsBefore)
 
 	_, err = kubectlRunInNamespace(ns, "delete", "configmap", configMapName)
 	Expect(err).NotTo(HaveOccurred(), "failed to delete quickstart ConfigMap")
@@ -421,17 +413,7 @@ func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
 	)
 	Expect(err).NotTo(HaveOccurred(), "failed to create quickstart ConfigMap")
 
-	Eventually(func(g Gomega) {
-		g.Expect(r.gitPull()).To(Succeed())
-
-		content, readErr := os.ReadFile(expectedFile)
-		g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file must exist at %s", expectedFile))
-		g.Expect(string(content)).To(ContainSubstring("value: one"))
-
-		commitsAfter, countErr := r.gitCommitCount()
-		g.Expect(countErr).NotTo(HaveOccurred())
-		g.Expect(commitsAfter).To(BeNumerically(">", commitsBefore))
-	}, quickstartTimeout(), 2*time.Second).Should(Succeed())
+	r.eventuallyCommitsConfigMapFile(expectedFile, "value: one", commitsBefore)
 
 	commitsAfterCreate, err := r.gitCommitCount()
 	Expect(err).NotTo(HaveOccurred())
@@ -447,17 +429,7 @@ func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
 	)
 	Expect(err).NotTo(HaveOccurred(), "failed to patch quickstart ConfigMap")
 
-	Eventually(func(g Gomega) {
-		g.Expect(r.gitPull()).To(Succeed())
-
-		content, readErr := os.ReadFile(expectedFile)
-		g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file must exist at %s", expectedFile))
-		g.Expect(string(content)).To(ContainSubstring("value: two"))
-
-		commitsAfter, countErr := r.gitCommitCount()
-		g.Expect(countErr).NotTo(HaveOccurred())
-		g.Expect(commitsAfter).To(BeNumerically(">", commitsAfterCreate))
-	}, quickstartTimeout(), 2*time.Second).Should(Succeed())
+	r.eventuallyCommitsConfigMapFile(expectedFile, "value: two", commitsAfterCreate)
 
 	commitsAfterUpdate, err := r.gitCommitCount()
 	Expect(err).NotTo(HaveOccurred())
@@ -593,6 +565,22 @@ func (r *quickstartFrameworkRun) verifyInvalidProviderActionableMessage() {
 			strings.Contains(message, "repository") ||
 			strings.Contains(message, "secret")
 		g.Expect(actionable).To(BeTrue(), fmt.Sprintf("expected actionable message, got: %q", readyMessage))
+	}, quickstartTimeout(), 2*time.Second).Should(Succeed())
+}
+
+// eventuallyCommitsConfigMapFile waits until the checkout, pulled, has the ConfigMap file at path
+// containing want, in more commits than before.
+func (r *quickstartFrameworkRun) eventuallyCommitsConfigMapFile(path, want string, before int) {
+	Eventually(func(g Gomega) {
+		g.Expect(r.gitPull()).To(Succeed())
+
+		content, readErr := os.ReadFile(path)
+		g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file must exist at %s", path))
+		g.Expect(string(content)).To(ContainSubstring(want))
+
+		commitsAfter, countErr := r.gitCommitCount()
+		g.Expect(countErr).NotTo(HaveOccurred())
+		g.Expect(commitsAfter).To(BeNumerically(">", before))
 	}, quickstartTimeout(), 2*time.Second).Should(Succeed())
 }
 
