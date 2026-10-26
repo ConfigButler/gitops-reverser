@@ -16,7 +16,7 @@ import (
 // accessors let the session do it once. See internal/controller's statusObject, which is the
 // interface these satisfy.
 //
-// CommitRequest is deliberately not here: it does not use that helper (see the comment on
+// SaveRequest is deliberately not here: it does not use that helper (see the comment on
 // requeueAfter for why), so an accessor on it would be a method nothing calls.
 
 // SetObservedGeneration records the generation this object's status describes.

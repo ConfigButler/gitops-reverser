@@ -186,18 +186,18 @@ var _ = Describe("Duration fields", func() {
 		spec["gitTargetRef"] = map[string]any{"name": "any-target"}
 		return &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "configbutler.ai/v1alpha3",
-			"kind":       "CommitRequest",
+			"kind":       "SaveRequest",
 			"metadata":   map[string]any{"name": name, "namespace": "default"},
 			"spec":       spec,
 		}}
 	}
 
-	It("defaults an omitted CommitRequest window and whenNothingToCommit, and keeps explicit zeros", func() {
+	It("defaults an omitted SaveRequest window and whenNothingToCommit, and keeps explicit zeros", func() {
 		ctx := context.Background()
 
-		omitted := &configbutleraiv1alpha3.CommitRequest{
+		omitted := &configbutleraiv1alpha3.SaveRequest{
 			ObjectMeta: metav1.ObjectMeta{Name: "window-omitted", Namespace: "default"},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+			Spec: configbutleraiv1alpha3.SaveRequestSpec{
 				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
 			},
 		}
@@ -212,11 +212,11 @@ var _ = Describe("Duration fields", func() {
 
 		// The pointers exist for exactly this: an explicit "0s" is a value, and defaulting must
 		// not read it as an omission.
-		zero := &configbutleraiv1alpha3.CommitRequest{
+		zero := &configbutleraiv1alpha3.SaveRequest{
 			ObjectMeta: metav1.ObjectMeta{Name: "window-zeros", Namespace: "default"},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+			Spec: configbutleraiv1alpha3.SaveRequestSpec{
 				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
-				Window: &configbutleraiv1alpha3.CommitRequestWindow{
+				Window: &configbutleraiv1alpha3.SaveRequestWindow{
 					AttachTimeout: &metav1.Duration{},
 					IdleTimeout:   &metav1.Duration{},
 					MaxDuration:   &metav1.Duration{},
@@ -230,7 +230,7 @@ var _ = Describe("Duration fields", func() {
 		Expect(zero.Spec.Window.MaxDuration.Duration).To(BeZero())
 	})
 
-	DescribeTable("refuse a CommitRequest window the rules forbid",
+	DescribeTable("refuse a SaveRequest window the rules forbid",
 		func(name string, spec map[string]any, message string) {
 			err := k8sClient.Create(context.Background(), newRequest(name, spec))
 			Expect(err).To(HaveOccurred())
@@ -265,12 +265,12 @@ var _ = Describe("Duration fields", func() {
 		}
 	})
 
-	// CommitRequest carries the same hazard with immutability on top: its spec may not change
+	// SaveRequest carries the same hazard with immutability on top: its spec may not change
 	// after creation, and a whole-object comparison compares a duration as a STRING. "1m" reads
 	// back into Go and serializes as "1m0s", so before the rule compared durations instead of
 	// spellings, every typed update — including one that only touches a label — was rejected as
 	// an attempt to change an immutable spec.
-	It("lets a typed client update a CommitRequest created with a re-spelled duration", func() {
+	It("lets a typed client update a SaveRequest created with a re-spelled duration", func() {
 		ctx := context.Background()
 
 		// Created as UNSTRUCTURED, carrying the spelling a HUMAN writes. That is the whole
@@ -290,7 +290,7 @@ var _ = Describe("Duration fields", func() {
 
 		key := types.NamespacedName{Name: "window-respelled", Namespace: "default"}
 		Eventually(func() error {
-			var typed configbutleraiv1alpha3.CommitRequest
+			var typed configbutleraiv1alpha3.SaveRequest
 			if err := k8sClient.Get(ctx, key, &typed); err != nil {
 				return err
 			}
@@ -303,15 +303,15 @@ var _ = Describe("Duration fields", func() {
 			"the same duration spelled differently is not a spec change")
 	})
 
-	DescribeTable("still refuse a real change to an immutable CommitRequest spec",
-		func(name string, mutate func(*configbutleraiv1alpha3.CommitRequestSpec)) {
+	DescribeTable("still refuse a real change to an immutable SaveRequest spec",
+		func(name string, mutate func(*configbutleraiv1alpha3.SaveRequestSpec)) {
 			ctx := context.Background()
-			request := &configbutleraiv1alpha3.CommitRequest{
+			request := &configbutleraiv1alpha3.SaveRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-				Spec: configbutleraiv1alpha3.CommitRequestSpec{
+				Spec: configbutleraiv1alpha3.SaveRequestSpec{
 					GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
 					Message:      "save",
-					Window: &configbutleraiv1alpha3.CommitRequestWindow{
+					Window: &configbutleraiv1alpha3.SaveRequestWindow{
 						MaxDuration: &metav1.Duration{Duration: time.Minute},
 					},
 				},
@@ -321,7 +321,7 @@ var _ = Describe("Duration fields", func() {
 
 			key := types.NamespacedName{Name: request.Name, Namespace: request.Namespace}
 			Eventually(func() string {
-				var current configbutleraiv1alpha3.CommitRequest
+				var current configbutleraiv1alpha3.SaveRequest
 				if err := k8sClient.Get(ctx, key, &current); err != nil {
 					return err.Error()
 				}
@@ -333,16 +333,16 @@ var _ = Describe("Duration fields", func() {
 			}, "10s", "200ms").Should(ContainSubstring("immutable"),
 				"comparing by value must not become comparing by nothing")
 		},
-		Entry("maxDuration", "immutable-max", func(spec *configbutleraiv1alpha3.CommitRequestSpec) {
+		Entry("maxDuration", "immutable-max", func(spec *configbutleraiv1alpha3.SaveRequestSpec) {
 			spec.Window.MaxDuration = &metav1.Duration{Duration: 30 * time.Second}
 		}),
-		Entry("attach", "immutable-attach", func(spec *configbutleraiv1alpha3.CommitRequestSpec) {
+		Entry("attach", "immutable-attach", func(spec *configbutleraiv1alpha3.SaveRequestSpec) {
 			spec.Window.Attach = configbutleraiv1alpha3.AttachNext
 		}),
-		Entry("an idleTimeout added later", "immutable-idle", func(spec *configbutleraiv1alpha3.CommitRequestSpec) {
+		Entry("an idleTimeout added later", "immutable-idle", func(spec *configbutleraiv1alpha3.SaveRequestSpec) {
 			spec.Window.IdleTimeout = &metav1.Duration{Duration: time.Second}
 		}),
-		Entry("whenNothingToCommit", "immutable-empty", func(spec *configbutleraiv1alpha3.CommitRequestSpec) {
+		Entry("whenNothingToCommit", "immutable-empty", func(spec *configbutleraiv1alpha3.SaveRequestSpec) {
 			spec.WhenNothingToCommit = configbutleraiv1alpha3.NothingToCommitCommitEmpty
 		}),
 	)

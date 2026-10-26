@@ -23,7 +23,7 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// crName is the single CommitRequest name these tests register; each test uses one.
+// crName is the single SaveRequest name these tests register; each test uses one.
 // crTarget is the GitTarget the worker serves (see createPlainGitTarget).
 const (
 	crName   = "save"
@@ -32,15 +32,15 @@ const (
 
 // serviceAttach drives one attach + servicing pass on the loop, the way run()
 // does after dequeuing an attach work item.
-func serviceAttach(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
-	loop.handleAttachCommitRequest(req)
+func serviceAttach(loop *branchWorkerEventLoop, req *AttachSaveRequest) {
+	loop.handleAttachSaveRequest(req)
 	loop.endWake(0)
 }
 
 // attachReq builds a CurrentOrNext request that waits up to d for a window and, once attached,
 // collects for d with no idle close: the defaults' shape, at any length.
-func attachReq(author string, d time.Duration) *AttachCommitRequest {
-	return &AttachCommitRequest{
+func attachReq(author string, d time.Duration) *AttachSaveRequest {
+	return &AttachSaveRequest{
 		Namespace:          "default",
 		Name:               crName,
 		UID:                "uid-" + crName,
@@ -57,7 +57,7 @@ func attachReq(author string, d time.Duration) *AttachCommitRequest {
 // waiting request's attach deadline passes, and an attached request's window reaches its
 // maxDuration and closes.
 func forceDue(loop *branchWorkerEventLoop) {
-	id := commitRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
+	id := saveRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
 	past := time.Now().Add(-time.Millisecond)
 	if pcr := loop.pendingCRs[id]; pcr != nil && !pcr.attached {
 		pcr.attachDeadline = past
@@ -71,7 +71,7 @@ func forceDue(loop *branchWorkerEventLoop) {
 
 func outcome(t *testing.T, w *BranchWorker) (FinalizeResult, bool) {
 	t.Helper()
-	return w.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
+	return w.LookupSaveRequestOutcome("default", crName, "uid-"+crName)
 }
 
 // TestEnqueueAttach_Success verifies an attach lands on the worker's event queue.
@@ -246,7 +246,7 @@ func TestAttach_TheAttachStartsTheRequestsMaxDuration(t *testing.T) {
 
 	const maxDuration = 60 * time.Second
 	serviceAttach(loop, attachReq("alice", maxDuration))
-	id := commitRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
+	id := saveRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
 	// Almost all of the wait spent: the writes arrive with a second of it left.
 	loop.pendingCRs[id].attachDeadline = time.Now().Add(time.Second)
 
@@ -374,7 +374,7 @@ func TestAttach_TakesOverAnUnattributedWindowAndAuthorsItsCommit(t *testing.T) {
 	commit, err := repo.CommitObject(plumbing.NewHash(res.Commit))
 	require.NoError(t, err)
 	assert.Equal(t, "jane@acme.com", commit.Author.Name, "the submitter authors the commit")
-	assert.Equal(t, "save: from the editor\n\nAuthor-Source: CommitRequest default/save; "+
+	assert.Equal(t, "save: from the editor\n\nAuthor-Source: SaveRequest default/save; "+
 		"no audit record names who made these changes", commit.Message)
 }
 
@@ -529,7 +529,7 @@ func TestAttach_ClaimedSameAuthorWindowIsNotAMismatch(t *testing.T) {
 	second.UID = "uid-save-second"
 	serviceAttach(loop, second)
 
-	pending := loop.pendingCRs[commitRequestID{Namespace: second.Namespace, Name: second.Name, UID: second.UID}]
+	pending := loop.pendingCRs[saveRequestID{Namespace: second.Namespace, Name: second.Name, UID: second.UID}]
 	require.NotNil(t, pending)
 	assert.False(t, pending.sawForeignWindow,
 		"a window this author could have claimed is contention, never a mismatch")
@@ -579,7 +579,7 @@ func TestAttach_IdempotentReSendKeepsFirstDeadline(t *testing.T) {
 	defer loop.stopTimers()
 
 	serviceAttach(loop, attachReq("alice", 60*time.Second))
-	id := commitRequestID{Namespace: "default", Name: "save", UID: "uid-save"}
+	id := saveRequestID{Namespace: "default", Name: "save", UID: "uid-save"}
 	require.Contains(t, loop.pendingCRs, id)
 	firstDeadline := loop.pendingCRs[id].attachDeadline
 
@@ -631,7 +631,7 @@ func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 
 	_, resolved := outcome(t, worker)
 	assert.False(t, resolved, "a request whose write can still land is not failed")
-	assert.Equal(t, PhaseWaitingForPush, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+	assert.Equal(t, PhaseWaitingForPush, worker.LookupSaveRequestPhase("default", crName, "uid-"+crName))
 	assert.Nil(t, loop.openWindow, "the window closed on its own timers")
 	require.Len(t, loop.pendingWrites, 1, "the decided window stays pending")
 	assert.False(t, loop.pendingWrites[0].committedOnce, "nothing could commit it yet")
@@ -679,7 +679,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	// First, commit the ConfigMap (no CommitRequest) and push it, so it is already
+	// First, commit the ConfigMap (no SaveRequest) and push it, so it is already
 	// present in Git.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("present", "alice", "team-a")},
@@ -691,7 +691,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	// Hold the push back, so the next assertion is about the finalize and nothing else.
 	loop.lastPushAt = time.Now()
 
-	// A second window re-asserts the SAME object: no diff. Attach a CommitRequest and
+	// A second window re-asserts the SAME object: no diff. Attach a SaveRequest and
 	// finalize it (maxDuration 0s).
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("present", "alice", "team-a")},
@@ -704,7 +704,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 		"a no-diff finalize must NOT resolve before the remote has been consulted")
 	require.Len(t, loop.pendingWrites, 1, "the no-diff write is retained so it reaches the push")
 	require.True(t, loop.pendingWrites[0].CommitSHA.IsZero(), "no diff means no commit of its own")
-	require.NotNil(t, loop.pendingWrites[0].CommitRequest, "the request rides the retained write")
+	require.NotNil(t, loop.pendingWrites[0].SaveRequest, "the request rides the retained write")
 
 	// The push reads the advertisement, finds the remote already holds this state, and that is
 	// what settles the request.
@@ -855,14 +855,14 @@ func TestAttributionOutcome_ZeroValueIsNotAttempted(t *testing.T) {
 }
 
 // TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems is the permanent regression test for
-// the merge blocker: in the DEFAULT deployment no CommitRequest could attach to any window, so
+// the merge blocker: in the DEFAULT deployment no SaveRequest could attach to any window, so
 // the user's commit message was silently dropped and the change landed under the generated
 // message with no error anywhere.
 //
 // The window's outcome and the request's outcome come from two subsystems configured by two
 // different flags (--author-attribution vs --admission-webhook, cmd/main.go:311-316), so this
 // walks every pair either side can actually produce and names the deployment that produces it.
-// TestCommitRequest_OutcomesAgree in internal/controller pins that these are the real
+// TestSaveRequest_OutcomesAgree in internal/controller pins that these are the real
 // values the two producers emit; here we pin what the matching rule does with them.
 func TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems(t *testing.T) {
 	const otherAuthor = "bob"
@@ -932,7 +932,7 @@ func TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &pendingCommitRequest{
+			p := &pendingSaveRequest{
 				author:             tc.reqAuth,
 				attribution:        tc.request,
 				gitTargetName:      crTarget,
@@ -953,7 +953,7 @@ func TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems(t *testing.T) {
 // rework: no attribution pairing may let a request finalize another target's window.
 func TestMatchesWindow_GitTargetAlwaysScopes(t *testing.T) {
 	for _, o := range []AttributionOutcome{AttributionNotAttempted, AttributionUnresolved, AttributionResolved} {
-		p := &pendingCommitRequest{attribution: o, gitTargetName: crTarget, gitTargetNamespace: "default"}
+		p := &pendingSaveRequest{attribution: o, gitTargetName: crTarget, gitTargetNamespace: "default"}
 		assert.False(t, p.matchesWindow(&openWindow{
 			Attribution: o, GitTarget: "team-b", GitTargetNamespace: "default",
 		}), "outcome %q must not match across GitTarget names", o)
@@ -963,7 +963,7 @@ func TestMatchesWindow_GitTargetAlwaysScopes(t *testing.T) {
 	}
 }
 
-// The re-attach contract. A CommitRequest is settled by the push and by nothing else, so between
+// The re-attach contract. A SaveRequest is settled by the push and by nothing else, so between
 // its window's finalize and that push it is neither pending nor resolved. The controller re-sends
 // its attach every couple of seconds throughout that gap, and these four tests pin what the worker
 // must do with those re-sends.
@@ -988,11 +988,11 @@ func TestAttach_ReSentAttachDuringPushCooldownDoesNotResolve(t *testing.T) {
 	serviceAttach(loop, attachReq("alice", 0))
 
 	require.Len(t, loop.pendingWrites, 1, "the window committed locally and is retained")
-	require.NotNil(t, loop.pendingWrites[0].CommitRequest, "the request rides that write")
+	require.NotNil(t, loop.pendingWrites[0].SaveRequest, "the request rides that write")
 	_, resolved := outcome(t, worker)
 	require.False(t, resolved, "nothing has reached the remote yet")
 
-	// The controller re-sends, twice, exactly as it does every commitRequestPollInterval while it
+	// The controller re-sends, twice, exactly as it does every saveRequestPollInterval while it
 	// has no outcome to read.
 	for range 2 {
 		serviceAttach(loop, attachReq("alice", 0))

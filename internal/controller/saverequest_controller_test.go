@@ -15,32 +15,32 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-var _ = Describe("CommitRequest controller", func() {
+var _ = Describe("SaveRequest controller", func() {
 	const namespace = "default"
 
 	// The suite registers the reconciler in attributed-author mode (a non-nil AuthorLookup
 	// that never resolves) with a Finalizer that never resolves, so these specs cover
 	// the in-progress stamp and the terminal short-circuit only; the full
 	// attribute → attach → terminal flow and the configured-author path are covered by
-	// the unit tests in commitrequest_controller_unit_test.go.
-	It("stamps a freshly created CommitRequest with in-progress conditions", func() {
-		commitRequest := &configbutleraiv1alpha3.CommitRequest{
+	// the unit tests in saverequest_controller_unit_test.go.
+	It("stamps a freshly created SaveRequest with in-progress conditions", func() {
+		saveRequest := &configbutleraiv1alpha3.SaveRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+			Spec: configbutleraiv1alpha3.SaveRequestSpec{
 				GitTargetRef: meta.LocalObjectReference{
 					Name: "team-a-config",
 				},
 				Message: "increase checkout API memory",
 			},
 		}
-		Expect(k8sClient.Create(ctx, commitRequest)).To(Succeed())
-		key := client.ObjectKeyFromObject(commitRequest)
+		Expect(k8sClient.Create(ctx, saveRequest)).To(Succeed())
+		key := client.ObjectKeyFromObject(saveRequest)
 
 		Eventually(func(g Gomega) {
-			var fetched configbutleraiv1alpha3.CommitRequest
+			var fetched configbutleraiv1alpha3.SaveRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			reconciling := apimeta.FindStatusCondition(fetched.Status.Conditions, ConditionTypeReconciling)
 			g.Expect(reconciling).NotTo(BeNil())
@@ -52,23 +52,23 @@ var _ = Describe("CommitRequest controller", func() {
 	})
 
 	It("does not overwrite a terminal outcome that is already recorded", func() {
-		commitRequest := &configbutleraiv1alpha3.CommitRequest{
+		saveRequest := &configbutleraiv1alpha3.SaveRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+			Spec: configbutleraiv1alpha3.SaveRequestSpec{
 				GitTargetRef: meta.LocalObjectReference{
 					Name: "team-a-config",
 				},
 			},
 		}
-		Expect(k8sClient.Create(ctx, commitRequest)).To(Succeed())
-		key := client.ObjectKeyFromObject(commitRequest)
+		Expect(k8sClient.Create(ctx, saveRequest)).To(Succeed())
+		key := client.ObjectKeyFromObject(saveRequest)
 
 		// Wait for the initial in-progress stamp.
 		Eventually(func(g Gomega) {
-			var fetched configbutleraiv1alpha3.CommitRequest
+			var fetched configbutleraiv1alpha3.SaveRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			ready := apimeta.FindStatusCondition(fetched.Status.Conditions, ConditionTypeReady)
 			g.Expect(ready).NotTo(BeNil())
@@ -76,7 +76,7 @@ var _ = Describe("CommitRequest controller", func() {
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 
 		// Simulate a finalize having recorded the terminal outcome (Ready=True).
-		var fetched configbutleraiv1alpha3.CommitRequest
+		var fetched configbutleraiv1alpha3.SaveRequest
 		Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 		apimeta.SetStatusCondition(&fetched.Status.Conditions, metav1.Condition{
 			Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: crReasonCommitted, Message: "committed",
@@ -90,7 +90,7 @@ var _ = Describe("CommitRequest controller", func() {
 
 		// The controller must leave the terminal outcome intact.
 		Consistently(func(g Gomega) {
-			var checked configbutleraiv1alpha3.CommitRequest
+			var checked configbutleraiv1alpha3.SaveRequest
 			g.Expect(k8sClient.Get(ctx, key, &checked)).To(Succeed())
 			ready := apimeta.FindStatusCondition(checked.Status.Conditions, ConditionTypeReady)
 			g.Expect(ready).NotTo(BeNil())
@@ -104,16 +104,16 @@ var _ = Describe("CommitRequest controller", func() {
 // rejected only when the CRD is installed, and a rule that compiles but matches nothing simply
 // never rejects anything, so it is pinned against a real API server rather than only through the
 // controller's Go validator.
-var _ = Describe("CommitRequest message schema", func() {
+var _ = Describe("SaveRequest message schema", func() {
 	const namespace = "default"
 
-	newRequest := func(message string) *configbutleraiv1alpha3.CommitRequest {
-		return &configbutleraiv1alpha3.CommitRequest{
+	newRequest := func(message string) *configbutleraiv1alpha3.SaveRequest {
+		return &configbutleraiv1alpha3.SaveRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "message-schema-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+			Spec: configbutleraiv1alpha3.SaveRequestSpec{
 				GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
 				Message:      message,
 			},

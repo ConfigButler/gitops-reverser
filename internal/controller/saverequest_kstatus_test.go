@@ -13,10 +13,10 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// TestCommitRequestKstatusContract pins the CommitRequest condition set to the
+// TestSaveRequestKstatusContract pins the SaveRequest condition set to the
 // kstatus the GitOps tooling derives from it: Reconciling=True → InProgress,
 // Stalled=True → Failed, otherwise Current (with observedGeneration current).
-func TestCommitRequestKstatusContract(t *testing.T) {
+func TestSaveRequestKstatusContract(t *testing.T) {
 	tests := []struct {
 		name       string
 		conds      []map[string]interface{}
@@ -96,7 +96,7 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := kstatus.Compute(commitRequestStatusObject(tt.conds))
+			result, err := kstatus.Compute(saveRequestStatusObject(tt.conds))
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantStatus, result.Status)
 			if tt.wantMsg != "" {
@@ -106,10 +106,10 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 	}
 }
 
-func commitRequestStatusObject(conditions []map[string]interface{}) *unstructured.Unstructured {
+func saveRequestStatusObject(conditions []map[string]interface{}) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "configbutler.ai/v1alpha3",
-		"kind":       "CommitRequest",
+		"kind":       "SaveRequest",
 		"metadata": map[string]interface{}{
 			"name":       "save-a",
 			"namespace":  "default",

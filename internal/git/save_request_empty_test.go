@@ -21,7 +21,7 @@ import (
 // request that ends with nothing to commit records its message in an empty commit, the outcome
 // keeps the cause, and a window that belonged to someone else never falls back to one.
 
-func commitEmptyReq(author, message string) *AttachCommitRequest {
+func commitEmptyReq(author, message string) *AttachSaveRequest {
 	req := attachReq(author, time.Hour)
 	req.Message = message
 	req.CommitEmpty = true
@@ -244,7 +244,7 @@ func TestCommitEmpty_AFailedPushTreatsEveryCommitShapeAlike(t *testing.T) {
 				_, resolved := outcome(t, worker)
 				require.False(t, resolved, "the remote has neither accepted nor refused it")
 				assert.Equal(t, PhaseWaitingForPush,
-					worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+					worker.LookupSaveRequestPhase("default", crName, "uid-"+crName))
 				require.Len(t, loop.pendingWrites, 1, "and the re-send made no second write")
 			}
 

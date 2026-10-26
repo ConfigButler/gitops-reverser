@@ -19,7 +19,7 @@ import (
 
 // ValidateOperatorTypesPath is the validating admission endpoint scoped to our own
 // operator CRDs. Today its one job is command authorship — capturing the submitter of a
-// command kind (a CommitRequest) into Redis and always allowing — but it is the intended
+// command kind (a SaveRequest) into Redis and always allowing — but it is the intended
 // home for per-our-type admission generally (e.g. config validation of WatchRule /
 // GitProvider / GitTarget later), which would be added as additional webhook-config
 // entries with their own rules and failurePolicy. Distinct from the broad observe-all
@@ -41,7 +41,7 @@ const (
 // case here plus one rule in the webhook config — the handler body does not change.
 func isCommandKind(gr metav1.GroupResource) bool {
 	switch gr {
-	case metav1.GroupResource{Group: "configbutler.ai", Resource: "commitrequests"}:
+	case metav1.GroupResource{Group: "configbutler.ai", Resource: "saverequests"}:
 		return true
 	// future: case metav1.GroupResource{Group: "configbutler.ai", Resource: "<next-command>"}:
 	default:
@@ -59,11 +59,11 @@ type CommandAuthorRecorder interface {
 // ValidateOperatorTypesHandler is the admission handler for our operator CRDs. It dispatches on the
 // resource under review and does two unrelated things:
 //
-//   - For a COMMAND kind (a CommitRequest) it captures the authenticated submitter into the
+//   - For a COMMAND kind (a SaveRequest) it captures the authenticated submitter into the
 //     CommandAuthorStore and always allows — pure observation with a single side effect (a Redis
 //     upsert), never a rejection, so a user's command never depends on it succeeding (a missed
 //     capture leaves the request without a claimed actor; see
-//     docs/spec/commitrequest-admission-authorship.md).
+//     docs/spec/saverequest-admission-authorship.md).
 //   - For a WatchRule it validates the one cross-object rule admission can usefully give feedback
 //     on: a second source namespace against a GitTarget that declared its folder namespace-free.
 //     That one CAN reject, and it is the only thing here that does.
@@ -137,7 +137,7 @@ func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission
 	}
 	// Info (not V(1)) on purpose: command CREATEs are rare, and this line proves the
 	// webhook was actually invoked and the author captured — the first thing to check
-	// when a CommitRequest unexpectedly reports AuthorAttributed=False.
+	// when a SaveRequest unexpectedly reports AuthorAttributed=False.
 	log.Info("recorded command author at admission",
 		"resource", gr.String(), "namespace", req.Namespace, "name", req.Name,
 		"uid", uid, "author", author.Author)

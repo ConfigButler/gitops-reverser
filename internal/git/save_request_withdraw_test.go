@@ -2,7 +2,7 @@
 
 package git
 
-// The controller withdraws a CommitRequest before failing it closed. These pin the worker's half of
+// The controller withdraws a SaveRequest before failing it closed. These pin the worker's half of
 // that agreement: a request the worker has not acted on is cancelled for good, and a request it
 // holds (attached, or committed) is not, so a request reported failed is never committed later.
 
@@ -28,14 +28,14 @@ func TestWithdraw_AWaitingRequestIsCancelledForGood(t *testing.T) {
 
 	req := attachReq("alice", time.Hour)
 	serviceAttach(loop, req)
-	require.Equal(t, PhaseWaitingForWindow, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+	require.Equal(t, PhaseWaitingForWindow, worker.LookupSaveRequestPhase("default", crName, "uid-"+crName))
 
 	loop.handleQueueItem(WorkItem{Withdraw: req})
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok, "a withdrawn request resolves")
-	require.ErrorIs(t, res.Err, ErrCommitRequestWithdrawn)
-	assert.Empty(t, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+	require.ErrorIs(t, res.Err, ErrSaveRequestWithdrawn)
+	assert.Empty(t, worker.LookupSaveRequestPhase("default", crName, "uid-"+crName))
 
 	// A late re-send of the attach, and a window it would have attached to, change nothing.
 	serviceAttach(loop, req)
@@ -46,7 +46,7 @@ func TestWithdraw_AWaitingRequestIsCancelledForGood(t *testing.T) {
 	assert.Nil(t, loop.openWindow.pendingCR, "a withdrawn request never attaches")
 	assert.Empty(t, loop.pendingCRs)
 	res, _ = outcome(t, worker)
-	require.ErrorIs(t, res.Err, ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, res.Err, ErrSaveRequestWithdrawn)
 }
 
 // A withdraw that arrives before the worker ever saw the attach leaves a tombstone, so the attach
@@ -62,7 +62,7 @@ func TestWithdraw_AnUnregisteredRequestCannotRegisterLater(t *testing.T) {
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
-	require.ErrorIs(t, res.Err, ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, res.Err, ErrSaveRequestWithdrawn)
 	assert.Empty(t, loop.pendingCRs)
 }
 
@@ -79,13 +79,13 @@ func TestWithdraw_AnAttachedRequestIsHeldAndStillCommits(t *testing.T) {
 	}})
 	req := attachReq("alice", time.Hour)
 	serviceAttach(loop, req)
-	require.Equal(t, PhaseCollectingWindow, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+	require.Equal(t, PhaseCollectingWindow, worker.LookupSaveRequestPhase("default", crName, "uid-"+crName))
 
 	loop.handleQueueItem(WorkItem{Withdraw: req})
 
 	_, resolved := outcome(t, worker)
 	require.False(t, resolved, "a held request is not withdrawn")
-	assert.True(t, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName).Held())
+	assert.True(t, worker.LookupSaveRequestPhase("default", crName, "uid-"+crName).Held())
 
 	forceDue(loop)
 	loop.pushPending()
@@ -136,8 +136,8 @@ func TestWithdraw_AnOutcomeIsKeptWhileAnAttachForItIsQueued(t *testing.T) {
 	worker.EnqueueAttach(req) // a late attach, still on the FIFO
 
 	// The outcome runs past its TTL while the attach waits, and a GC pass runs.
-	ageCommitRequestOutcome(worker, req.id(), 2*commitRequestOutcomeTTL)
-	worker.recordCommitRequestOutcome(commitRequestID{Namespace: "default", Name: "other"}, FinalizeResult{})
+	ageSaveRequestOutcome(worker, req.id(), 2*saveRequestOutcomeTTL)
+	worker.recordSaveRequestOutcome(saveRequestID{Namespace: "default", Name: "other"}, FinalizeResult{})
 	_, kept := outcome(t, worker)
 	require.True(t, kept, "an outcome with an attach still queued is not collected")
 
@@ -145,11 +145,11 @@ func TestWithdraw_AnOutcomeIsKeptWhileAnAttachForItIsQueued(t *testing.T) {
 	loop.endWake(0)
 	assert.Empty(t, loop.pendingCRs, "the late attach does not register the withdrawn request")
 	res, _ := outcome(t, worker)
-	require.ErrorIs(t, res.Err, ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, res.Err, ErrSaveRequestWithdrawn)
 
 	// With nothing queued for it any more, the outcome is collected as usual.
-	ageCommitRequestOutcome(worker, req.id(), 2*commitRequestOutcomeTTL)
-	worker.recordCommitRequestOutcome(commitRequestID{Namespace: "default", Name: "other"}, FinalizeResult{})
+	ageSaveRequestOutcome(worker, req.id(), 2*saveRequestOutcomeTTL)
+	worker.recordSaveRequestOutcome(saveRequestID{Namespace: "default", Name: "other"}, FinalizeResult{})
 	_, kept = outcome(t, worker)
 	assert.False(t, kept)
 }
@@ -162,7 +162,7 @@ func TestWithdraw_AWorkerThatExitedAtStartupAnswers(t *testing.T) {
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	worker := NewBranchWorker(fake.NewClientBuilder().WithScheme(scheme).Build(), logr.Discard(),
 		"no-such-provider", "default", "main", RepoIdentity{URL: "file:///nowhere"}, nil, BranchWorkerLimits{})
-	owners := &commitRequestOwners{}
+	owners := &saveRequestOwners{}
 	worker.crOwners = owners
 
 	req := attachReq("alice", time.Hour)
@@ -181,7 +181,7 @@ func TestWithdraw_AWorkerThatExitedAtStartupAnswers(t *testing.T) {
 	worker.EnqueueWithdraw(req)
 	res, resolved := outcome(t, worker)
 	require.True(t, resolved, "a withdraw is answered at once")
-	require.ErrorIs(t, res.Err, ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, res.Err, ErrSaveRequestWithdrawn)
 	require.ErrorIs(t, res.Err, ErrBranchWorkerStopped)
 	assert.Zero(t, worker.inflightItems.Load())
 }
@@ -192,7 +192,7 @@ func TestWithdraw_AWorkerThatExitedAtStartupAnswers(t *testing.T) {
 func TestWithdraw_ARetiredWorkerStillAnswersForWhatItHeld(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
-	owners := &commitRequestOwners{}
+	owners := &saveRequestOwners{}
 	worker.crOwners = owners
 	require.NoError(t, worker.Start(context.Background()))
 
@@ -200,7 +200,7 @@ func TestWithdraw_ARetiredWorkerStillAnswersForWhatItHeld(t *testing.T) {
 	req := attachReq("alice", time.Hour)
 	worker.EnqueueAttach(req)
 	require.Eventually(t, func() bool {
-		return worker.LookupCommitRequestPhase("default", crName, "uid-"+crName).Held()
+		return worker.LookupSaveRequestPhase("default", crName, "uid-"+crName).Held()
 	}, 5*time.Second, 10*time.Millisecond)
 
 	worker.Stop()
@@ -210,7 +210,7 @@ func TestWithdraw_ARetiredWorkerStillAnswersForWhatItHeld(t *testing.T) {
 	assert.Same(t, worker, owner)
 	res, resolved := outcome(t, worker)
 	require.True(t, resolved, "its shutdown settled the request, by its last push or by failing it")
-	require.NotErrorIs(t, res.Err, ErrCommitRequestWithdrawn)
+	require.NotErrorIs(t, res.Err, ErrSaveRequestWithdrawn)
 
 	worker.EnqueueWithdraw(req)
 	after, _ := outcome(t, worker)
@@ -222,29 +222,29 @@ func TestWithdraw_ARetiredWorkerStillAnswersForWhatItHeld(t *testing.T) {
 func TestWithdraw_AStoppedWorkerGivesBackWhatItNeverActedOn(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
-	owners := &commitRequestOwners{}
+	owners := &saveRequestOwners{}
 	worker.crOwners = owners
 	require.NoError(t, worker.Start(context.Background()))
 
 	req := attachReq("alice", time.Hour)
 	worker.EnqueueAttach(req)
 	require.Eventually(t, func() bool {
-		return worker.LookupCommitRequestPhase("default", crName, "uid-"+crName) == PhaseWaitingForWindow
+		return worker.LookupSaveRequestPhase("default", crName, "uid-"+crName) == PhaseWaitingForWindow
 	}, 5*time.Second, 10*time.Millisecond)
 
 	worker.Stop()
 
 	_, owned := owners.owner(req.id())
 	assert.False(t, owned)
-	assert.Empty(t, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+	assert.Empty(t, worker.LookupSaveRequestPhase("default", crName, "uid-"+crName))
 	_, resolved := outcome(t, worker)
 	assert.False(t, resolved, "giving it back is not an outcome")
 }
 
-func TestCommitRequestOwners_OneOwnerAtATime(t *testing.T) {
+func TestSaveRequestOwners_OneOwnerAtATime(t *testing.T) {
 	a, b := &BranchWorker{}, &BranchWorker{}
-	id := commitRequestID{Namespace: "default", Name: crName}
-	owners := &commitRequestOwners{}
+	id := saveRequestID{Namespace: "default", Name: crName}
+	owners := &saveRequestOwners{}
 
 	require.True(t, owners.claim(id, a))
 	assert.True(t, owners.claim(id, a), "claiming again is idempotent")
@@ -256,7 +256,7 @@ func TestCommitRequestOwners_OneOwnerAtATime(t *testing.T) {
 	owners.release(id, a)
 	assert.True(t, owners.claim(id, b))
 
-	var none *commitRequestOwners
+	var none *saveRequestOwners
 	assert.True(t, none.claim(id, a), "a worker outside a manager owns what it is sent")
 	_, ok = none.owner(id)
 	assert.False(t, ok)
@@ -264,7 +264,7 @@ func TestCommitRequestOwners_OneOwnerAtATime(t *testing.T) {
 }
 
 func TestEnqueueAttach_AnotherWorkersRequestIsRefused(t *testing.T) {
-	owners := &commitRequestOwners{}
+	owners := &saveRequestOwners{}
 	holder := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1), crOwners: owners}
 	other := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1), crOwners: owners}
 	req := attachReq("alice", 0)
@@ -279,7 +279,7 @@ func TestEnqueueAttach_AnotherWorkersRequestIsRefused(t *testing.T) {
 
 // A dropped attach gives the request back unless the worker knows it otherwise.
 func TestEnqueueAttach_AQueueFullDropGivesTheRequestBack(t *testing.T) {
-	owners := &commitRequestOwners{}
+	owners := &saveRequestOwners{}
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1), crOwners: owners}
 	w.eventQueue <- WorkItem{} // saturate
 
@@ -291,7 +291,7 @@ func TestEnqueueAttach_AQueueFullDropGivesTheRequestBack(t *testing.T) {
 	assert.Empty(t, w.crQueuedAttaches)
 }
 
-func ageCommitRequestOutcome(w *BranchWorker, id commitRequestID, by time.Duration) {
+func ageSaveRequestOutcome(w *BranchWorker, id saveRequestID, by time.Duration) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
 	entry := w.crOutcomes[id]
@@ -299,10 +299,10 @@ func ageCommitRequestOutcome(w *BranchWorker, id commitRequestID, by time.Durati
 	w.crOutcomes[id] = entry
 }
 
-func TestCommitRequestPhase_Held(t *testing.T) {
+func TestSaveRequestPhase_Held(t *testing.T) {
 	assert.True(t, PhaseCollectingWindow.Held())
 	assert.True(t, PhaseWaitingForPush.Held())
 	assert.False(t, PhaseWaitingForWindow.Held())
 	assert.False(t, PhaseWaitingForWorker.Held())
-	assert.False(t, CommitRequestPhase("").Held())
+	assert.False(t, SaveRequestPhase("").Held())
 }

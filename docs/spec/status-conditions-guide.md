@@ -134,7 +134,7 @@ never reconciles one key twice at once), and nothing else re-enqueues the object
 `For()` of every controller using `reconcileStatus` filters status-only updates
 (`GenerationChangedPredicate`, or a variant of it that also admits a reconcile request). So the loss is
 recorded, and the reconcile comes back after `RequeueWriteLostInterval` (100ms) instead of on its
-normal cadence, and recomputes from fresh data. `CommitRequest` does not use this helper: its
+normal cadence, and recomputes from fresh data. `SaveRequest` does not use this helper: its
 `For()` has no such filter, and it retries its terminal status write in place.
 
 ### Reason vocabulary
@@ -326,9 +326,9 @@ A `GitTarget` naming an applier claim gains `ApplierClaimReady`, a gate on its o
 claim (`ApplierClaimNotFound`)
 or one that is not `Ready` yet keeps it `Reconciling`.
 
-### CommitRequest (one-shot)
+### SaveRequest (one-shot)
 
-CommitRequest runs once to a terminal outcome. Best-practice 1 above would suggest a `Succeeded` summary,
+SaveRequest runs once to a terminal outcome. Best-practice 1 above would suggest a `Succeeded` summary,
 but it deliberately keeps `Ready` so every CRD in this project shares one summary type and the kstatus
 trio; the bounded "did the work actually happen" signal lives on the `Pushed` domain condition instead.
 

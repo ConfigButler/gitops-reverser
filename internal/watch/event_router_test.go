@@ -32,8 +32,8 @@ func eventRouterScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func saveAttach(gitTargetName, gitTargetNamespace string) git.AttachCommitRequest {
-	return git.AttachCommitRequest{
+func saveAttach(gitTargetName, gitTargetNamespace string) git.AttachSaveRequest {
+	return git.AttachSaveRequest{
 		Namespace:          gitTargetNamespace,
 		Name:               "save",
 		UID:                "uid-save",
@@ -43,7 +43,7 @@ func saveAttach(gitTargetName, gitTargetNamespace string) git.AttachCommitReques
 	}
 }
 
-func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
+func TestServiceSaveRequest_GitTargetNotFound(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	workerManager := git.NewWorkerManager(
@@ -55,7 +55,7 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	_, resolved, err := router.ServiceCommitRequest(context.Background(), saveAttach("missing", "team-a"))
+	_, resolved, err := router.ServiceSaveRequest(context.Background(), saveAttach("missing", "team-a"))
 	require.Error(t, err)
 	assert.False(t, resolved)
 	require.ErrorIs(t, err, errGitTargetGone)
@@ -63,7 +63,7 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 
 // A save whose GitTarget is gone needs no apply: Applied=True with ApplierGone. Only a commit the
 // branch lost is ever Applied=False.
-func TestLookupCommitRequestApply_GitTargetGoneIsApplied(t *testing.T) {
+func TestLookupSaveRequestApply_GitTargetGoneIsApplied(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	workerManager := git.NewWorkerManager(
@@ -74,7 +74,7 @@ func TestLookupCommitRequestApply_GitTargetGoneIsApplied(t *testing.T) {
 	)
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	apply, known, err := router.LookupCommitRequestApply(context.Background(), saveAttach("missing", "team-a"))
+	apply, known, err := router.LookupSaveRequestApply(context.Background(), saveAttach("missing", "team-a"))
 	require.NoError(t, err)
 	require.True(t, known)
 	assert.True(t, apply.Done)
@@ -314,11 +314,11 @@ func TestGitPathRefusalReason(t *testing.T) {
 	}
 }
 
-// TestServiceCommitRequest_NoWorkerKeepsTheRequestPending pins that a missing worker is not an
-// outcome. At startup a CommitRequest can reach the controller before its GitTarget's worker exists;
+// TestServiceSaveRequest_NoWorkerKeepsTheRequestPending pins that a missing worker is not an
+// outcome. At startup a SaveRequest can reach the controller before its GitTarget's worker exists;
 // resolving it then would end the save before anything could collect its writes or record its
 // message, so it stays pending and the controller polls within its safety window.
-func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
+func TestServiceSaveRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
@@ -336,7 +336,7 @@ func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	result, resolved, err := router.ServiceCommitRequest(context.Background(), saveAttach("team-a-config", "team-a"))
+	result, resolved, err := router.ServiceSaveRequest(context.Background(), saveAttach("team-a-config", "team-a"))
 	require.NoError(t, err, "the GitTarget resolved; only its worker is missing")
 	assert.False(t, resolved, "a worker that does not exist yet is a retry, not an answer")
 	assert.Empty(t, result.Outcome)
@@ -344,7 +344,7 @@ func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 	assert.Equal(t, "main", result.Branch)
 }
 
-func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T) {
+func TestServiceSaveRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	provider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-provider", Namespace: "team-a"},
@@ -387,13 +387,13 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 
 	// No events routed and attachTimeout 0s, so the worker has no window: the attach
 	// is enqueued, processed by the worker loop, and resolves NoOpenWindow. The
-	// controller polls via repeated (idempotent) ServiceCommitRequest calls.
+	// controller polls via repeated (idempotent) ServiceSaveRequest calls.
 	attach := saveAttach("team-a-config", "team-a")
 	var result git.FinalizeResult
 	require.Eventually(t, func() bool {
 		var resolved bool
 		var err error
-		result, resolved, err = router.ServiceCommitRequest(context.Background(), attach)
+		result, resolved, err = router.ServiceSaveRequest(context.Background(), attach)
 		require.NoError(t, err)
 		return resolved
 	}, 5*time.Second, 50*time.Millisecond, "the worker must resolve the attached request")
@@ -401,10 +401,10 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	assert.Equal(t, "main", result.Branch)
 }
 
-// TestWithdrawCommitRequest_NothingHoldsItWithoutAWorker: a deleted GitTarget, or one whose worker
+// TestWithdrawSaveRequest_NothingHoldsItWithoutAWorker: a deleted GitTarget, or one whose worker
 // never started, has nothing that could commit the request, so the withdraw resolves at once and
 // says why when it can.
-func TestWithdrawCommitRequest_NothingHoldsItWithoutAWorker(t *testing.T) {
+func TestWithdrawSaveRequest_NothingHoldsItWithoutAWorker(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
@@ -417,24 +417,24 @@ func TestWithdrawCommitRequest_NothingHoldsItWithoutAWorker(t *testing.T) {
 		client, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	result, resolved, err := router.WithdrawCommitRequest(context.Background(), saveAttach("team-a-config", "team-a"))
+	result, resolved, err := router.WithdrawSaveRequest(context.Background(), saveAttach("team-a-config", "team-a"))
 	require.NoError(t, err)
 	require.True(t, resolved)
-	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, result.Err, git.ErrSaveRequestWithdrawn)
 	assert.Equal(t, git.PhaseWaitingForWorker, result.Phase)
 	assert.Equal(t, "main", result.Branch)
 
-	result, resolved, err = router.WithdrawCommitRequest(context.Background(), saveAttach("deleted", "team-b"))
+	result, resolved, err = router.WithdrawSaveRequest(context.Background(), saveAttach("deleted", "team-b"))
 	require.NoError(t, err)
 	require.True(t, resolved)
-	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, result.Err, git.ErrSaveRequestWithdrawn)
 	assert.Empty(t, result.Branch, "a deleted GitTarget has no identity to report")
 }
 
-// TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest: the withdraw rides the FIFO behind the
+// TestWithdrawSaveRequest_ALiveWorkerCancelsAWaitingRequest: the withdraw rides the FIFO behind the
 // attach, cancels the request while it only waits for a window, and an attach sent afterwards
 // cannot bring it back.
-func TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
+func TestWithdrawSaveRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	provider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-provider", Namespace: "team-a"},
@@ -473,29 +473,29 @@ func TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
 	attach := saveAttach("team-a-config", "team-a")
 	attach.AttachTimeout = time.Hour // it would wait an hour for a window
 
-	_, resolved, err := router.ServiceCommitRequest(context.Background(), attach)
+	_, resolved, err := router.ServiceSaveRequest(context.Background(), attach)
 	require.NoError(t, err)
 	require.False(t, resolved)
 
 	var result git.FinalizeResult
 	require.Eventually(t, func() bool {
 		var err error
-		result, resolved, err = router.WithdrawCommitRequest(context.Background(), attach)
+		result, resolved, err = router.WithdrawSaveRequest(context.Background(), attach)
 		require.NoError(t, err)
 		return resolved
 	}, 5*time.Second, 50*time.Millisecond, "the worker must answer the withdraw")
-	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, result.Err, git.ErrSaveRequestWithdrawn)
 
-	result, resolved, err = router.ServiceCommitRequest(context.Background(), attach)
+	result, resolved, err = router.ServiceSaveRequest(context.Background(), attach)
 	require.NoError(t, err)
 	require.True(t, resolved, "a re-sent attach finds the withdrawn outcome")
-	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, result.Err, git.ErrSaveRequestWithdrawn)
 }
 
-// TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers: a worker is shared by every
+// TestWithdrawSaveRequest_ADeletedGitTargetsWorkerStillAnswers: a worker is shared by every
 // GitTarget on its branch, so it outlives a deleted one. The withdraw must reach that worker, and
 // must never report success while the request is still registered there.
-func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T) {
+func TestWithdrawSaveRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	provider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-provider", Namespace: "team-a"},
@@ -535,10 +535,10 @@ func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 	attach := saveAttach("team-a-config", "team-a")
 	attach.AttachTimeout = time.Hour
-	_, _, err := router.ServiceCommitRequest(context.Background(), attach)
+	_, _, err := router.ServiceSaveRequest(context.Background(), attach)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
-		return worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID) == git.PhaseWaitingForWindow
+		return worker.LookupSaveRequestPhase(attach.Namespace, attach.Name, attach.UID) == git.PhaseWaitingForWindow
 	}, 5*time.Second, 10*time.Millisecond)
 
 	require.NoError(t, client.Delete(context.Background(), gitTarget))
@@ -546,15 +546,15 @@ func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T
 	var result git.FinalizeResult
 	require.Eventually(t, func() bool {
 		var resolved bool
-		result, resolved, err = router.WithdrawCommitRequest(context.Background(), attach)
+		result, resolved, err = router.WithdrawSaveRequest(context.Background(), attach)
 		require.NoError(t, err)
 		if resolved {
-			require.Empty(t, worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID),
+			require.Empty(t, worker.LookupSaveRequestPhase(attach.Namespace, attach.Name, attach.UID),
 				"the withdraw reported success while the worker still held the registration")
 		}
 		return resolved
 	}, 5*time.Second, 50*time.Millisecond)
-	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+	require.ErrorIs(t, result.Err, git.ErrSaveRequestWithdrawn)
 	assert.Equal(t, "main", result.Branch, "the worker answered, not the missing GitTarget")
 }
 

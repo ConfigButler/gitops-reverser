@@ -172,9 +172,9 @@ on the worker.
 
 For an attached save that committed locally, this left `WaitingForPush` with no time limit.
 After its safety window, `withdrawCommitRequest` in the
-[controller](../../internal/controller/commitrequest_controller.go) sends withdrawal and continues
+[controller](../../internal/controller/saverequest_controller.go) sends withdrawal and continues
 polling when the worker still holds the request. `handleWithdrawCommitRequest` in the
-[attach loop](../../internal/git/commit_request_attach_loop.go) leaves attached or committed
+[attach loop](../../internal/git/save_request_attach_loop.go) leaves attached or committed
 requests unchanged. Neither path retries the push. The API showed `Ready=False`,
 `Reconciling=True`, `Stalled=False`, and `Pushed=Unknown`, with reason `WaitingForPush`.
 

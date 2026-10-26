@@ -27,7 +27,7 @@ queue:
 Redis/Valkey holds attribution facts and watch cursors. If its data is lost, recent facts are lost
 and watches cold-replay. For a disposable single-pod setup, `attribution.transport: memory` needs
 no Redis but loses facts whenever the reverser restarts. It also leaves Redis-backed features such
-as `CommitRequest` author capture inactive unless you configure Redis separately.
+as `SaveRequest` author capture inactive unless you configure Redis separately.
 
 The chart's `KubeProvider`, `local` in the release namespace, admits only the release namespace by
 default. Grant the namespaces whose `GitTarget`s may mirror through it in

@@ -55,7 +55,7 @@ func renderLiveCommitMessage(pendingWrite PendingWrite, config CommitConfig) (st
 	return renderCommitTemplate("live", config.Message.LiveTemplate, pendingWrite.liveMessageData())
 }
 
-// renderRequestCommitMessage frames an attached CommitRequest's message with the target's
+// renderRequestCommitMessage frames an attached SaveRequest's message with the target's
 // requestTemplate. The literal rides in as .RequestMessage rather than being parsed, so nothing a
 // requester wrote is ever executed.
 func renderRequestCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
@@ -265,7 +265,7 @@ func validateRequestTemplate(config CommitConfig, events []Event) error {
 	// requester's reason reaches the commit whatever the window happened to contain.
 	if !strings.Contains(rendered, probe) {
 		return errors.New("requestTemplate must render {{.RequestMessage}}: as written it would " +
-			"drop the CommitRequest's message from the commit. Omit requestTemplate to commit that " +
+			"drop the SaveRequest's message from the commit. Omit requestTemplate to commit that " +
 			"message verbatim")
 	}
 	return nil

@@ -12,7 +12,7 @@ package git
 // A push in that state is silently wrong rather than noisily wrong. The local branch is exactly
 // the remote tip, so validatePushState reports "already up to date" and PushAtomic returns nil
 // before it ever compares the cycle's root hash. The worker then counts the writes as published,
-// clears them, and resolves any CommitRequest riding one as Committed, naming a SHA that is not on
+// clears them, and resolves any SaveRequest riding one as Committed, naming a SHA that is not on
 // the remote and never will be.
 //
 // worktreeDirty is false throughout: the reset cleared it, and the worktree really is clean. It is
@@ -114,9 +114,9 @@ func TestReplayFailure_DoesNotLetThePushSettleWorkThatWasReset(t *testing.T) {
 		"the write survived the failed replay and reached the remote on the retry")
 }
 
-// TestReplayFailure_DoesNotResolveACommitRequestThatNeverLanded is the same hazard seen from the
+// TestReplayFailure_DoesNotResolveASaveRequestThatNeverLanded is the same hazard seen from the
 // caller's side, which is where it does real damage: a user is told their save landed, with a SHA.
-func TestReplayFailure_DoesNotResolveACommitRequestThatNeverLanded(t *testing.T) {
+func TestReplayFailure_DoesNotResolveASaveRequestThatNeverLanded(t *testing.T) {
 	f := newLedgerFixture(t, "replay-failure-cr", true)
 	f.createLedgerTarget("team-a", nil)
 	f.publish("prime")
@@ -134,7 +134,7 @@ func TestReplayFailure_DoesNotResolveACommitRequestThatNeverLanded(t *testing.T)
 	req.Message = "save: this must not be reported as committed"
 	serviceAttach(loop, req)
 	require.Len(t, loop.pendingWrites, 1)
-	require.NotNil(t, loop.pendingWrites[0].CommitRequest)
+	require.NotNil(t, loop.pendingWrites[0].SaveRequest)
 
 	restoreAPI := failGitTargetReads(t, f.worker, errors.New("etcdserver: request timed out"))
 	require.Error(t, f.worker.refreshRemoteAndRebuildPendingWrites(
@@ -142,7 +142,7 @@ func TestReplayFailure_DoesNotResolveACommitRequestThatNeverLanded(t *testing.T)
 
 	loop.pushPending()
 
-	_, resolved := f.worker.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
+	_, resolved := f.worker.LookupSaveRequestOutcome("default", crName, "uid-"+crName)
 	require.False(t, resolved,
 		"the request must stay in flight: nothing of its commit is on the remote")
 
@@ -151,7 +151,7 @@ func TestReplayFailure_DoesNotResolveACommitRequestThatNeverLanded(t *testing.T)
 	restoreAPI()
 	loop.pushPending()
 
-	res, resolved := f.worker.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
+	res, resolved := f.worker.LookupSaveRequestOutcome("default", crName, "uid-"+crName)
 	require.True(t, resolved)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
 	assert.Contains(t, remoteFileNames(t, f.repoDir), "saved-by-hand")

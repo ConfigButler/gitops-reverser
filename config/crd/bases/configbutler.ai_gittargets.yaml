@@ -169,7 +169,7 @@ spec:
                           can be empty, and Generation is 0 for a kind without a spec, so guard
                           them with {{with}}.
 
-                          A CommitRequest's message replaces this template without changing the
+                          A SaveRequest's message replaces this template without changing the
                           author; spec.commit.message.requestTemplate can wrap that message.
                         type: string
                       reconcileTemplate:
@@ -183,8 +183,8 @@ spec:
                         type: string
                       requestTemplate:
                         description: |-
-                          RequestTemplate is the Go template that frames a CommitRequest's message. It
-                          is used only for a commit whose CommitRequest supplied a message, and gets
+                          RequestTemplate is the Go template that frames a SaveRequest's message. It
+                          is used only for a commit whose SaveRequest supplied a message, and gets
                           liveTemplate's fields plus RequestMessage, the message as written; template
                           syntax inside the message stays literal. Omitted, the message is committed
                           as written. A template that never renders RequestMessage is rejected, and
@@ -194,7 +194,7 @@ spec:
                   unattributedWindows:
                     default: Keep
                     description: |-
-                      UnattributedWindows says how much a CommitRequest on this GitTarget may
+                      UnattributedWindows says how much a SaveRequest on this GitTarget may
                       claim of a commit window whose writes name no author. It acts only while
                       the GitTarget's KubeProvider has never received an audit fact; on a
                       cluster that has, a write naming no author is never claimed. Defaults to
@@ -221,7 +221,7 @@ spec:
                       Window sets when this GitTarget's commit windows close. A window opens on an
                       author's first write and collects that author's writes until idleTimeout
                       passes without one, or maxDuration after it opened, whichever comes first. A
-                      change applies to windows opened afterward. A CommitRequest attached to a
+                      change applies to windows opened afterward. A SaveRequest attached to a
                       window replaces both timers for that window.
                     properties:
                       idleTimeout:

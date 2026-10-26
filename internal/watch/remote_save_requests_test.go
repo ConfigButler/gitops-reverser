@@ -34,11 +34,11 @@ type saveFinalizer struct {
 	mu       sync.Mutex
 	result   git.FinalizeResult
 	apply    git.SaveApply
-	attaches []git.AttachCommitRequest
+	attaches []git.AttachSaveRequest
 }
 
-func (f *saveFinalizer) ServiceCommitRequest(
-	_ context.Context, attach git.AttachCommitRequest,
+func (f *saveFinalizer) ServiceSaveRequest(
+	_ context.Context, attach git.AttachSaveRequest,
 ) (git.FinalizeResult, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -46,14 +46,14 @@ func (f *saveFinalizer) ServiceCommitRequest(
 	return f.result, true, nil
 }
 
-func (f *saveFinalizer) WithdrawCommitRequest(
-	_ context.Context, _ git.AttachCommitRequest,
+func (f *saveFinalizer) WithdrawSaveRequest(
+	_ context.Context, _ git.AttachSaveRequest,
 ) (git.FinalizeResult, bool, error) {
-	return git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn}, true, nil
+	return git.FinalizeResult{Err: git.ErrSaveRequestWithdrawn}, true, nil
 }
 
-func (f *saveFinalizer) LookupCommitRequestApply(
-	_ context.Context, _ git.AttachCommitRequest,
+func (f *saveFinalizer) LookupSaveRequestApply(
+	_ context.Context, _ git.AttachSaveRequest,
 ) (git.SaveApply, bool, error) {
 	return f.apply, true, nil
 }
@@ -71,11 +71,11 @@ func (a fixedAuthor) ResolveAuthor(context.Context, AuthorQuery) (git.UserInfo, 
 var saveProvider = k8stypes.NamespacedName{Namespace: "providers", Name: "workspace"}
 
 // saveServer is a server for the KubeProvider providers/workspace, whose GitTarget team-a/app mirrors
-// the source namespace "shop" when mirrored is set, with a SaveRequest shop/save on the source cluster.
+// the source namespace "shop" when mirrored is set, with a RemoteSaveRequest shop/save on the source cluster.
 func saveServer(
-	t *testing.T, request *sourcev1alpha1.SaveRequest, mirrored bool, auditFacts metav1.ConditionStatus,
+	t *testing.T, request *sourcev1alpha1.RemoteSaveRequest, mirrored bool, auditFacts metav1.ConditionStatus,
 	author AuthorResolver, finalizer *saveFinalizer,
-) (*SaveRequestServer, dynamic.ResourceInterface) {
+) (*RemoteSaveRequestServer, dynamic.ResourceInterface) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
@@ -103,20 +103,20 @@ func saveServer(
 	require.NoError(t, err)
 	obj := &unstructured.Unstructured{Object: fields}
 	obj.SetAPIVersion(sourcev1alpha1.GroupVersion.String())
-	obj.SetKind("SaveRequest")
+	obj.SetKind("RemoteSaveRequest")
 	dc := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
-		map[schema.GroupVersionResource]string{saveRequestGVR(): "SaveRequestList"}, obj)
-	server := &SaveRequestServer{Manager: manager, Client: c, Finalizer: finalizer, Log: logr.Discard()}
-	return server, dc.Resource(saveRequestGVR()).Namespace("shop")
+		map[schema.GroupVersionResource]string{remoteSaveRequestGVR(): "RemoteSaveRequestList"}, obj)
+	server := &RemoteSaveRequestServer{Manager: manager, Client: c, Finalizer: finalizer, Log: logr.Discard()}
+	return server, dc.Resource(remoteSaveRequestGVR()).Namespace("shop")
 }
 
-func newSaveRequest(catchUp sourcev1alpha1.CatchUpPolicy) *sourcev1alpha1.SaveRequest {
-	return &sourcev1alpha1.SaveRequest{
+func newRemoteSaveRequest(catchUp sourcev1alpha1.CatchUpPolicy) *sourcev1alpha1.RemoteSaveRequest {
+	return &sourcev1alpha1.RemoteSaveRequest{
 		ObjectMeta: metav1.ObjectMeta{Name: "save", Namespace: "shop", UID: "uid-save", Generation: 1},
-		Spec: sourcev1alpha1.SaveRequestSpec{
+		Spec: sourcev1alpha1.RemoteSaveRequestSpec{
 			Message: "save: from the editor",
 			CatchUp: catchUp,
-			Window: &sourcev1alpha1.SaveRequestWindow{
+			Window: &sourcev1alpha1.RemoteSaveRequestWindow{
 				AttachTimeout: &metav1.Duration{Duration: 3 * time.Second},
 				MaxDuration:   &metav1.Duration{Duration: time.Second},
 			},
@@ -126,25 +126,25 @@ func newSaveRequest(catchUp sourcev1alpha1.CatchUpPolicy) *sourcev1alpha1.SaveRe
 
 // serveOnce serves the request and returns its status as written to the source cluster.
 func serveOnce(
-	t *testing.T, server *SaveRequestServer, resource dynamic.ResourceInterface, request *sourcev1alpha1.SaveRequest,
-) sourcev1alpha1.SaveRequestStatus {
+	t *testing.T, server *RemoteSaveRequestServer, resource dynamic.ResourceInterface, request *sourcev1alpha1.RemoteSaveRequest,
+) sourcev1alpha1.RemoteSaveRequestStatus {
 	t.Helper()
-	watcher := &saveRequestWatcher{provider: saveProvider, route: "providers.workspace"}
+	watcher := &remoteSaveRequestWatcher{provider: saveProvider, route: "providers.workspace"}
 	server.serve(context.Background(), logr.Discard(), watcher, resource, request)
 	got, err := resource.Get(context.Background(), request.Name, metav1.GetOptions{})
 	require.NoError(t, err)
-	var written sourcev1alpha1.SaveRequest
+	var written sourcev1alpha1.RemoteSaveRequest
 	require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(got.Object, &written))
 	return written.Status
 }
 
-func condition(status sourcev1alpha1.SaveRequestStatus, conditionType string) *metav1.Condition {
+func condition(status sourcev1alpha1.RemoteSaveRequestStatus, conditionType string) *metav1.Condition {
 	return apimeta.FindStatusCondition(status.Conditions, conditionType)
 }
 
 // A save attaches to the window of every GitTarget that mirrors its namespace, as its author found
 // from the source cluster's audit, and reports each commit and the apply it asked for.
-func TestSaveRequest_SavesEachMirroringGitTargetAndReportsTheApply(t *testing.T) {
+func TestRemoteSaveRequest_SavesEachMirroringGitTargetAndReportsTheApply(t *testing.T) {
 	finalizer := &saveFinalizer{
 		result: git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"},
 		apply: git.SaveApply{
@@ -155,7 +155,7 @@ func TestSaveRequest_SavesEachMirroringGitTargetAndReportsTheApply(t *testing.T)
 		},
 	}
 	author := fixedAuthor{user: git.UserInfo{Username: "alice@example.com"}, outcome: git.AttributionResolved}
-	request := newSaveRequest(sourcev1alpha1.CatchUpAfterPush)
+	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
 	server, resource := saveServer(t, request, true, metav1.ConditionTrue, author, finalizer)
 
 	status := serveOnce(t, server, resource, request)
@@ -173,7 +173,7 @@ func TestSaveRequest_SavesEachMirroringGitTargetAndReportsTheApply(t *testing.T)
 
 	assert.Equal(t, "alice@example.com", status.Author)
 	require.Len(t, status.Targets, 1)
-	assert.Equal(t, sourcev1alpha1.SaveRequestTarget{
+	assert.Equal(t, sourcev1alpha1.RemoteSaveRequestTarget{
 		GitTarget: "team-a/app", Reason: saveReasonCommitted, Message: "the edits were committed and pushed",
 		Branch: "main", Commit: "c0ffee", Applied: git.SaveApplyApplied, AppliedRevision: "main@sha1:c0ffee",
 	}, status.Targets[0])
@@ -186,9 +186,9 @@ func TestSaveRequest_SavesEachMirroringGitTargetAndReportsTheApply(t *testing.T)
 
 // On a cluster with no audit stream a save names nobody, and attaches as such: to a window whose
 // edits name nobody.
-func TestSaveRequest_OnAClusterWithNoAuditItNamesNobody(t *testing.T) {
+func TestRemoteSaveRequest_OnAClusterWithNoAuditItNamesNobody(t *testing.T) {
 	finalizer := &saveFinalizer{result: git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}}
-	request := newSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
+	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
 	server, resource := saveServer(t, request, true, metav1.ConditionUnknown,
 		fixedAuthor{outcome: git.AttributionUnresolved}, finalizer)
 
@@ -203,9 +203,9 @@ func TestSaveRequest_OnAClusterWithNoAuditItNamesNobody(t *testing.T) {
 
 // On a cluster that sends audit events, a save no event names lost its fact: it is refused rather
 // than attached to the window that should stay unattributed.
-func TestSaveRequest_AnUnresolvedSaveOnAnAuditedClusterIsRefused(t *testing.T) {
+func TestRemoteSaveRequest_AnUnresolvedSaveOnAnAuditedClusterIsRefused(t *testing.T) {
 	finalizer := &saveFinalizer{}
-	request := newSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
+	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
 	server, resource := saveServer(t, request, true, metav1.ConditionTrue,
 		fixedAuthor{outcome: git.AttributionUnresolved}, finalizer)
 
@@ -217,9 +217,9 @@ func TestSaveRequest_AnUnresolvedSaveOnAnAuditedClusterIsRefused(t *testing.T) {
 }
 
 // A save in a namespace no GitTarget mirrors has nothing to save.
-func TestSaveRequest_NoGitTargetMirrorsTheNamespace(t *testing.T) {
+func TestRemoteSaveRequest_NoGitTargetMirrorsTheNamespace(t *testing.T) {
 	finalizer := &saveFinalizer{}
-	request := newSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
+	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
 	server, resource := saveServer(t, request, false, "", nil, finalizer)
 
 	status := serveOnce(t, server, resource, request)
@@ -229,9 +229,9 @@ func TestSaveRequest_NoGitTargetMirrorsTheNamespace(t *testing.T) {
 }
 
 // A save that failed in a GitTarget fails, and says where.
-func TestSaveRequest_AFailureFailsTheRequest(t *testing.T) {
+func TestRemoteSaveRequest_AFailureFailsTheRequest(t *testing.T) {
 	finalizer := &saveFinalizer{result: git.FinalizeResult{Err: errors.New("the GitTarget is suspended")}}
-	request := newSaveRequest(sourcev1alpha1.CatchUpAfterPush)
+	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
 	server, resource := saveServer(t, request, true, "", nil, finalizer)
 
 	status := serveOnce(t, server, resource, request)
@@ -245,21 +245,21 @@ func TestSaveRequest_AFailureFailsTheRequest(t *testing.T) {
 
 // A request is finished once Ready is decided, and, when it committed and asked to catch up, once
 // Applied is decided too.
-func TestSaveRequest_Finished(t *testing.T) {
+func TestRemoteSaveRequest_Finished(t *testing.T) {
 	at := metav1.NewTime(time.Now().Add(-time.Hour))
 	ready := func(status metav1.ConditionStatus, reason string) metav1.Condition {
 		return metav1.Condition{Type: "Ready", Status: status, Reason: reason, LastTransitionTime: at}
 	}
-	request := newSaveRequest(sourcev1alpha1.CatchUpAfterPush)
-	_, finished := saveRequestFinished(request)
+	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
+	_, finished := remoteSaveRequestFinished(request)
 	assert.False(t, finished, "no Ready yet")
 
 	request.Status.Conditions = []metav1.Condition{ready(metav1.ConditionUnknown, saveReasonSaving)}
-	_, finished = saveRequestFinished(request)
+	_, finished = remoteSaveRequestFinished(request)
 	assert.False(t, finished, "still saving")
 
 	request.Status.Conditions = []metav1.Condition{ready(metav1.ConditionTrue, saveReasonCommitted)}
-	_, finished = saveRequestFinished(request)
+	_, finished = remoteSaveRequestFinished(request)
 	assert.False(t, finished, "committed, its apply not decided")
 
 	request.Status.Conditions = append(
@@ -271,28 +271,28 @@ func TestSaveRequest_Finished(t *testing.T) {
 			LastTransitionTime: at,
 		},
 	)
-	finishedAt, finished := saveRequestFinished(request)
+	finishedAt, finished := remoteSaveRequestFinished(request)
 	assert.True(t, finished)
 	assert.Equal(t, at.Time, finishedAt)
 
 	request.Spec.CatchUp = sourcev1alpha1.CatchUpAsDefinedOnClaim
 	request.Status.Conditions = []metav1.Condition{ready(metav1.ConditionTrue, saveReasonNoWindow)}
-	_, finished = saveRequestFinished(request)
+	_, finished = remoteSaveRequestFinished(request)
 	assert.True(t, finished)
 }
 
-// The server serves the KubeProviders that enable SaveRequests, and stops serving one that no longer
+// The server serves the KubeProviders that enable RemoteSaveRequests, and stops serving one that no longer
 // does.
-func TestSaveRequest_ServesOnlyTheKubeProvidersThatEnableThem(t *testing.T) {
+func TestRemoteSaveRequest_ServesOnlyTheKubeProvidersThatEnableThem(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	enabled := &configv1alpha3.KubeProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: "providers"},
-		Spec:       configv1alpha3.KubeProviderSpec{SaveRequests: configv1alpha3.SaveRequestsEnabled},
+		Spec:       configv1alpha3.KubeProviderSpec{RemoteSaveRequests: configv1alpha3.RemoteSaveRequestsEnabled},
 	}
 	disabled := &configv1alpha3.KubeProvider{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "providers"}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(enabled, disabled).Build()
-	server := &SaveRequestServer{
+	server := &RemoteSaveRequestServer{
 		Client: c, Log: logr.Discard(),
 		dynamicClient: func(context.Context, k8stypes.NamespacedName) (dynamic.Interface, error) {
 			return nil, errors.New("no cluster in this test")
@@ -305,7 +305,7 @@ func TestSaveRequest_ServesOnlyTheKubeProvidersThatEnableThem(t *testing.T) {
 	assert.Len(t, server.watchers, 1)
 	assert.Contains(t, server.watchers, saveProvider)
 
-	enabled.Spec.SaveRequests = configv1alpha3.SaveRequestsDisabled
+	enabled.Spec.RemoteSaveRequests = configv1alpha3.RemoteSaveRequestsDisabled
 	require.NoError(t, c.Update(ctx, enabled))
 	server.syncProviders(ctx)
 	assert.Empty(t, server.watchers)

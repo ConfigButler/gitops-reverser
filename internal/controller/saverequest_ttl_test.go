@@ -19,15 +19,15 @@ import (
 )
 
 // finishedWithDeleteAfter is a Committed request carrying the given delete-after value.
-func finishedWithDeleteAfter(name, deleteAfter string) *configv1alpha3.CommitRequest {
-	cr := withReadyCommitted(newCommitRequest(name))
-	cr.Annotations = map[string]string{CommitRequestDeleteAfterAnnotation: deleteAfter}
+func finishedWithDeleteAfter(name, deleteAfter string) *configv1alpha3.SaveRequest {
+	cr := withReadyCommitted(newSaveRequest(name))
+	cr.Annotations = map[string]string{SaveRequestDeleteAfterAnnotation: deleteAfter}
 	return cr
 }
 
-func commitRequestExists(t *testing.T, c client.Client, name string) bool {
+func saveRequestExists(t *testing.T, c client.Client, name string) bool {
 	t.Helper()
-	var cr configv1alpha3.CommitRequest
+	var cr configv1alpha3.SaveRequest
 	err := c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, &cr)
 	if apierrors.IsNotFound(err) {
 		return false
@@ -45,146 +45,146 @@ func committedFinalizer() *fakeFinalizer {
 
 // Finishing is what writes the deletion time, so it is on the object for anyone to read or change
 // from the moment the outcome is.
-func TestCommitRequestTTL_FinishingStampsTheDeletionTime(t *testing.T) {
-	c := newCommitRequestClient(t, nil, newCommitRequest("save-now"))
-	r := &CommitRequestReconciler{
+func TestSaveRequestTTL_FinishingStampsTheDeletionTime(t *testing.T) {
+	c := newSaveRequestClient(t, nil, newSaveRequest("save-now"))
+	r := &SaveRequestReconciler{
 		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
 		TTL: 48 * time.Hour,
 	}
 
-	reconcileCommitRequest(t, r, "save-now")
+	reconcileSaveRequest(t, r, "save-now")
 
-	got := fetchCommitRequest(t, c, "save-now")
-	value, ok := got.Annotations[CommitRequestDeleteAfterAnnotation]
+	got := fetchSaveRequest(t, c, "save-now")
+	value, ok := got.Annotations[SaveRequestDeleteAfterAnnotation]
 	require.True(t, ok, "a finished request carries its deletion time")
 	deleteAfter, err := time.Parse(time.RFC3339, value)
 	require.NoError(t, err)
 	assert.WithinDuration(t, time.Now().Add(48*time.Hour), deleteAfter, time.Minute)
 }
 
-func TestCommitRequestTTL_ZeroStampsNothing(t *testing.T) {
-	c := newCommitRequestClient(t, nil, newCommitRequest("save-now"))
-	r := &CommitRequestReconciler{
+func TestSaveRequestTTL_ZeroStampsNothing(t *testing.T) {
+	c := newSaveRequestClient(t, nil, newSaveRequest("save-now"))
+	r := &SaveRequestReconciler{
 		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
 	}
 
-	reconcileCommitRequest(t, r, "save-now")
+	reconcileSaveRequest(t, r, "save-now")
 
-	assert.NotContains(t, fetchCommitRequest(t, c, "save-now").Annotations, CommitRequestDeleteAfterAnnotation)
+	assert.NotContains(t, fetchSaveRequest(t, c, "save-now").Annotations, SaveRequestDeleteAfterAnnotation)
 }
 
 // A request that finished before the annotation existed, or one someone removed it from, is kept:
 // only the transition to terminal stamps, never a later look at a terminal request.
-func TestCommitRequestTTL_AFinishedRequestWithoutTheAnnotationIsKept(t *testing.T) {
-	c := newCommitRequestClient(t, nil, withReadyCommitted(newCommitRequest("save-before")))
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}, TTL: time.Nanosecond}
+func TestSaveRequestTTL_AFinishedRequestWithoutTheAnnotationIsKept(t *testing.T) {
+	c := newSaveRequestClient(t, nil, withReadyCommitted(newSaveRequest("save-before")))
+	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}, TTL: time.Nanosecond}
 
-	res := reconcileCommitRequest(t, r, "save-before")
+	res := reconcileSaveRequest(t, r, "save-before")
 
 	assert.Zero(t, res.RequeueAfter)
-	got := fetchCommitRequest(t, c, "save-before")
-	assert.NotContains(t, got.Annotations, CommitRequestDeleteAfterAnnotation, "it is not stamped after the fact")
+	got := fetchSaveRequest(t, c, "save-before")
+	assert.NotContains(t, got.Annotations, SaveRequestDeleteAfterAnnotation, "it is not stamped after the fact")
 }
 
-func TestCommitRequestTTL_DeletesOnceTheTimeHasPassed(t *testing.T) {
+func TestSaveRequestTTL_DeletesOnceTheTimeHasPassed(t *testing.T) {
 	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
-	c := newCommitRequestClient(t, nil, finishedWithDeleteAfter("save-old", past))
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
+	c := newSaveRequestClient(t, nil, finishedWithDeleteAfter("save-old", past))
+	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
 
-	res := reconcileCommitRequest(t, r, "save-old")
+	res := reconcileSaveRequest(t, r, "save-old")
 
 	assert.Zero(t, res.RequeueAfter)
-	assert.False(t, commitRequestExists(t, c, "save-old"),
+	assert.False(t, saveRequestExists(t, c, "save-old"),
 		"the annotation alone decides; a TTL of zero now does not reach back to it")
 }
 
 // The request comes back when its time is up rather than on a poll, so a namespace full of recent
 // saves costs one requeue each and nothing in between.
-func TestCommitRequestTTL_ComesBackWhenTheTimeIsUp(t *testing.T) {
+func TestSaveRequestTTL_ComesBackWhenTheTimeIsUp(t *testing.T) {
 	future := time.Now().Add(47 * time.Hour).UTC().Format(time.RFC3339)
-	c := newCommitRequestClient(t, nil, finishedWithDeleteAfter("save-recent", future))
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
+	c := newSaveRequestClient(t, nil, finishedWithDeleteAfter("save-recent", future))
+	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
 
-	res := reconcileCommitRequest(t, r, "save-recent")
+	res := reconcileSaveRequest(t, r, "save-recent")
 
-	assert.True(t, commitRequestExists(t, c, "save-recent"))
+	assert.True(t, saveRequestExists(t, c, "save-recent"))
 	assert.InDelta(t, (47 * time.Hour).Seconds(), res.RequeueAfter.Seconds(), 60)
 }
 
-func TestCommitRequestTTL_AnUnreadableTimeKeepsTheRequest(t *testing.T) {
-	c := newCommitRequestClient(t, nil, finishedWithDeleteAfter("save-typo", "tomorrow"))
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
+func TestSaveRequestTTL_AnUnreadableTimeKeepsTheRequest(t *testing.T) {
+	c := newSaveRequestClient(t, nil, finishedWithDeleteAfter("save-typo", "tomorrow"))
+	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
 
-	res := reconcileCommitRequest(t, r, "save-typo")
+	res := reconcileSaveRequest(t, r, "save-typo")
 
 	assert.Zero(t, res.RequeueAfter)
-	assert.True(t, commitRequestExists(t, c, "save-typo"))
+	assert.True(t, saveRequestExists(t, c, "save-typo"))
 }
 
 // A request still waiting for its outcome is neither stamped nor deleted; it is polled as before.
-func TestCommitRequestTTL_LeavesARequestInProgressAlone(t *testing.T) {
-	cr := withInProgress(newCommitRequest("save-pending"))
+func TestSaveRequestTTL_LeavesARequestInProgressAlone(t *testing.T) {
+	cr := withInProgress(newSaveRequest("save-pending"))
 	cr.CreationTimestamp = metav1.Now() // inside the resolve window, so it polls rather than fails closed
-	c := newCommitRequestClient(t, nil, cr)
+	c := newSaveRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
-	r := &CommitRequestReconciler{
+	r := &SaveRequestReconciler{
 		Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice(), TTL: time.Nanosecond,
 	}
 
-	res := reconcileCommitRequest(t, r, "save-pending")
+	res := reconcileSaveRequest(t, r, "save-pending")
 
-	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter, "it keeps polling for the outcome")
-	assert.NotContains(t, fetchCommitRequest(t, c, "save-pending").Annotations, CommitRequestDeleteAfterAnnotation)
+	assert.Equal(t, saveRequestPollInterval, res.RequeueAfter, "it keeps polling for the outcome")
+	assert.NotContains(t, fetchSaveRequest(t, c, "save-pending").Annotations, SaveRequestDeleteAfterAnnotation)
 }
 
 // A person who extends delete-after in the moment between the terminal status write and the stamp
 // must keep the extension. The stamp is computed from the object the status write returned, so an
 // unconditional patch would overwrite the edit and delete the request early.
-func TestCommitRequestTTL_StampDoesNotOverwriteAConcurrentExtension(t *testing.T) {
+func TestSaveRequestTTL_StampDoesNotOverwriteAConcurrentExtension(t *testing.T) {
 	const extended = "2099-01-01T00:00:00Z"
-	c := newCommitRequestClient(t, &interceptor.Funcs{
+	c := newSaveRequestClient(t, &interceptor.Funcs{
 		SubResourceUpdate: func(
 			ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption,
 		) error {
 			if err := cl.SubResource(sub).Update(ctx, obj, opts...); err != nil {
 				return err
 			}
-			if !commitRequestIsTerminal(obj.(*configv1alpha3.CommitRequest)) {
+			if !saveRequestIsTerminal(obj.(*configv1alpha3.SaveRequest)) {
 				return nil
 			}
 			// The edit lands right after the terminal status is published, before the stamp.
-			var live configv1alpha3.CommitRequest
+			var live configv1alpha3.SaveRequest
 			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(obj), &live))
-			live.Annotations = map[string]string{CommitRequestDeleteAfterAnnotation: extended}
+			live.Annotations = map[string]string{SaveRequestDeleteAfterAnnotation: extended}
 			require.NoError(t, cl.Update(ctx, &live))
 			return nil
 		},
-	}, newCommitRequest("save-now"))
-	r := &CommitRequestReconciler{
+	}, newSaveRequest("save-now"))
+	r := &SaveRequestReconciler{
 		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
 		TTL: time.Hour,
 	}
 
-	reconcileCommitRequest(t, r, "save-now")
+	reconcileSaveRequest(t, r, "save-now")
 
 	assert.Equal(t, extended,
-		fetchCommitRequest(t, c, "save-now").Annotations[CommitRequestDeleteAfterAnnotation],
+		fetchSaveRequest(t, c, "save-now").Annotations[SaveRequestDeleteAfterAnnotation],
 		"the extension made after the request finished survives the stamp")
 }
 
 // A submitter may choose its own deletion time up front; finishing does not replace it.
-func TestCommitRequestTTL_AValueSetAtCreationIsKept(t *testing.T) {
+func TestSaveRequestTTL_AValueSetAtCreationIsKept(t *testing.T) {
 	const chosen = "2099-01-01T00:00:00Z"
-	cr := newCommitRequest("save-now")
-	cr.Annotations = map[string]string{CommitRequestDeleteAfterAnnotation: chosen}
-	c := newCommitRequestClient(t, nil, cr)
-	r := &CommitRequestReconciler{
+	cr := newSaveRequest("save-now")
+	cr.Annotations = map[string]string{SaveRequestDeleteAfterAnnotation: chosen}
+	c := newSaveRequestClient(t, nil, cr)
+	r := &SaveRequestReconciler{
 		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
 		TTL: time.Hour,
 	}
 
-	reconcileCommitRequest(t, r, "save-now")
+	reconcileSaveRequest(t, r, "save-now")
 
 	assert.Equal(t, chosen,
-		fetchCommitRequest(t, c, "save-now").Annotations[CommitRequestDeleteAfterAnnotation])
+		fetchSaveRequest(t, c, "save-now").Annotations[SaveRequestDeleteAfterAnnotation])
 }

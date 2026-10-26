@@ -128,10 +128,10 @@ kinds:
         doc: >-
           Audit route this provider joins. A route is held by one namespace. See
           [audit route](#audit-route-and-auditfactsreceived)
-      - path: saveRequests
+      - path: remoteSaveRequests
         doc: >-
-          `Enabled` serves the `SaveRequest`s created on this cluster, which writes to it. See
-          [`SaveRequest`](#saverequest)
+          `Enabled` serves the `RemoteSaveRequest`s created on this cluster, which writes to it. See
+          [`RemoteSaveRequest`](#remotesaverequest)
 
   - kind: GitTarget
     title: "`GitTarget` (namespaced): which branch and folder"
@@ -160,7 +160,7 @@ kinds:
         doc: How commits are phrased. See [commit messages](commit-messages.md)
       - path: commit.unattributedWindows
         doc: >-
-          How much a `CommitRequest` may claim of a window whose writes name no author, on a cluster
+          How much a `SaveRequest` may claim of a window whose writes name no author, on a cluster
           that never sent an audit fact: `Keep`, `SavedBy` or `TakeOver`. See
           [saving where writes name no author](#saving-where-writes-name-no-author)
       - path: placement.byType
@@ -296,8 +296,8 @@ kinds:
           the `Application`'s hooks and Argo CD's refresh already compares the live state against the tip.
           Otherwise `10s` to `24h`
 
-  - kind: CommitRequest
-    title: "`CommitRequest` (namespaced): save now"
+  - kind: SaveRequest
+    title: "`SaveRequest` (namespaced): save now"
     fields:
       - path: gitTargetRef
         doc: The target whose commit window the request attaches to
@@ -327,14 +327,14 @@ kinds:
           pushed, instead of after the applier claim's `catchUpAfter`. The tip may hold later commits,
           and saves pushed close together can share one apply; the `Applied` condition reports it
 
-  - kind: SaveRequest
-    title: "`SaveRequest` (namespaced, on a source cluster): save the edits made here"
+  - kind: RemoteSaveRequest
+    title: "`RemoteSaveRequest` (namespaced, on a source cluster): save the edits made here"
     fields:
       - path: message
         default: each target's templates
         doc: Commit message, committed verbatim unless `requestTemplate` frames it
       - path: window.attachTimeout
-        doc: How long to wait for a window with the edits it saves. See [`SaveRequest`](#saverequest)
+        doc: How long to wait for a window with the edits it saves. See [`RemoteSaveRequest`](#remotesaverequest)
       - path: window.idleTimeout
         default: no idle close
         doc: Close the attached window after this much silence

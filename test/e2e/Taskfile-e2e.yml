@@ -1328,7 +1328,7 @@ tasks:
       - |
         CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/e2e/wait-crds-established.sh 60 \
           crd/kubeproviders.configbutler.ai crd/clusterwatchrules.configbutler.ai \
-          crd/commitrequests.configbutler.ai crd/gitproviders.configbutler.ai \
+          crd/saverequests.configbutler.ai crd/gitproviders.configbutler.ai \
           crd/gitbranches.configbutler.ai crd/gitreceivers.configbutler.ai \
           crd/gittargets.configbutler.ai crd/watchrules.configbutler.ai \
           crd/fluxclaims.configbutler.ai crd/argocdclaims.configbutler.ai

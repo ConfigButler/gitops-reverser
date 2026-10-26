@@ -9,12 +9,12 @@ import (
 
 // The write gates are the two reasons a GitTarget may not be written at all: spec.suspend, and a
 // render-fidelity gate that has not established render-vs-live for it. They are rules about the
-// TARGET, and every path that decides a CommitRequest's outcome asks targetWriteRefusal before it
+// TARGET, and every path that decides a SaveRequest's outcome asks targetWriteRefusal before it
 // reports one, so a save on a target that refuses writes fails with the reason instead of resolving
 // Ready=True with nothing written. That holds whichever path ends the request and whatever its
 // whenNothingToCommit says:
 //
-//   - a request no window reached (expireWaitingCommitRequests, before the record it may make);
+//   - a request no window reached (expireWaitingSaveRequests, before the record it may make);
 //   - the record itself (buildRequestRecordWrite);
 //   - a window a request is attached to (finalizeOpenWindowWithReason before it builds the write,
 //     and gateBuiltWindow after, right before the commit). A render-fidelity refusal seen at
@@ -59,7 +59,7 @@ func (w *BranchWorker) targetWriteRefusal(name, namespace string, suspended bool
 // spec.suspend from the live GitTarget. Only evidence refuses: a target that cannot be read is
 // left to the path that writes, which fails on it, and a request that writes nothing (Resolve)
 // keeps its answer.
-func (w *BranchWorker) requestWriteRefusal(ctx context.Context, pcr *pendingCommitRequest) error {
+func (w *BranchWorker) requestWriteRefusal(ctx context.Context, pcr *pendingSaveRequest) error {
 	suspended := false
 	if target, err := w.getGitTarget(ctx, pcr.gitTargetName, pcr.gitTargetNamespace); err == nil {
 		suspended = target.Spec.Suspend

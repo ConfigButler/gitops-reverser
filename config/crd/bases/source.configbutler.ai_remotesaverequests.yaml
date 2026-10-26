@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.23.0
-  name: saverequests.source.configbutler.ai
+  name: remotesaverequests.source.configbutler.ai
 spec:
   group: source.configbutler.ai
   names:
-    kind: SaveRequest
-    listKind: SaveRequestList
-    plural: saverequests
-    singular: saverequest
+    kind: RemoteSaveRequest
+    listKind: RemoteSaveRequestList
+    plural: remotesaverequests
+    singular: remotesaverequest
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -35,7 +35,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          SaveRequest asks GitOps Reverser to save the edits made in its namespace:
+          RemoteSaveRequest asks GitOps Reverser to save the edits made in its namespace:
           the commit window of each GitTarget that mirrors this namespace gets its
           message and closes on its timers. Create it on the cluster the edits were
           made on, as JSON. Its creator is found from this cluster's audit events,
@@ -62,7 +62,7 @@ spec:
             type: object
           spec:
             description: |-
-              spec defines the desired state of SaveRequest. It is immutable after
+              spec defines the desired state of RemoteSaveRequest. It is immutable after
               creation.
             properties:
               catchUp:
@@ -141,7 +141,7 @@ spec:
                       rule: duration(self) <= duration('5m')
                 type: object
                 x-kubernetes-validations:
-                - message: SaveRequest spec is immutable after creation
+                - message: RemoteSaveRequest spec is immutable after creation
                   rule: duration(self.attachTimeout) == duration(oldSelf.attachTimeout)
                     && duration(self.maxDuration) == duration(oldSelf.maxDuration)
                     && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout)
@@ -150,13 +150,13 @@ spec:
                   rule: '!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)'
             type: object
             x-kubernetes-validations:
-            - message: SaveRequest spec is immutable after creation
+            - message: RemoteSaveRequest spec is immutable after creation
               rule: has(self.message) == has(oldSelf.message) && (!has(self.message)
                 || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window)
                 && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp)
                 || self.catchUp == oldSelf.catchUp)
           status:
-            description: status defines the observed state of SaveRequest.
+            description: status defines the observed state of RemoteSaveRequest.
             properties:
               author:
                 description: |-
@@ -166,7 +166,7 @@ spec:
                 type: string
               conditions:
                 description: |-
-                  Conditions are the latest observations of this SaveRequest's state.
+                  Conditions are the latest observations of this RemoteSaveRequest's state.
                   Ready is True once the request ended without error in every GitTarget,
                   with reason "Committed" when one of them committed, and otherwise the
                   reason of the first: "NoWindow", "AlreadyPresent", "WindowMismatch",
@@ -244,7 +244,7 @@ spec:
                 description: Targets is the save in each GitTarget that mirrors this
                   namespace.
                 items:
-                  description: SaveRequestTarget is the save in one GitTarget.
+                  description: RemoteSaveRequestTarget is the save in one GitTarget.
                   properties:
                     applied:
                       description: |-

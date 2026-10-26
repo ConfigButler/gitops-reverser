@@ -95,7 +95,7 @@ built and released together.
 
 9. **A save is the strongest API intent, and is never trimmed.** A `CommitRequest` keeps every object
    it captured, and its outcome is settled by the push, as the
-   [CommitRequest contract](../spec/commitrequest-design.md) says. Re-asserting a save over a
+   [CommitRequest contract](../spec/saverequest-design.md) says. Re-asserting a save over a
    concurrent Git-side change of the same object is the "API wins" rule.
 
 ## The race
@@ -679,7 +679,7 @@ The build departs from the plan above in twelve places, decided on 2026-10-20:
   startup baseline.
 - [`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md): decide,
   `advance`, materialize, and replay.
-- [`../spec/commitrequest-design.md`](../spec/commitrequest-design.md): the save contract F2 keeps.
+- [`../spec/saverequest-design.md`](../spec/saverequest-design.md): the save contract F2 keeps.
 - [`../spec/reconcile-via-watchlist-mark-and-sweep.md`](../spec/reconcile-via-watchlist-mark-and-sweep.md):
   the resync and its sweep.
 - [`internal/git/apply_window.go`](../../internal/git/apply_window.go): `withholdLateApply`.

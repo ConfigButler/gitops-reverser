@@ -1,11 +1,11 @@
-# CommitRequest window finalization
+# SaveRequest window finalization
 
 > **spec**: current behavior, reviewed at `c12f7970` on 2026-10-20.
 > The code depends on this document; change one, change the other.
 > Index: [`../INDEX.md`](../INDEX.md)
 
-A `CommitRequest` is a one-shot “save now” command for one `GitTarget`. It does not mirror the
-`CommitRequest` object. Instead, it can attach a message to a matching open commit window and asks the
+A `SaveRequest` is a one-shot “save now” command for one `GitTarget`. It does not mirror the
+`SaveRequest` object. Instead, it can attach a message to a matching open commit window and asks the
 worker to close that window after the requested collect delay.
 
 ## Request and window contract
@@ -75,7 +75,7 @@ pushed commit is required; `Ready=True` also includes successful no-commit outco
 
 ## Authorship
 
-The validating admission webhook captures a command submitter before the `CommitRequest` persists. The
+The validating admission webhook captures a command submitter before the `SaveRequest` persists. The
 controller performs one best-effort, present-or-never lookup:
 
 | Admission result | `AuthorAttributed` | Request claim |
@@ -91,14 +91,14 @@ that:
 - a resolved live attribution fact uses the authenticated actor; and
 - a live attribution miss uses `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`.
 
-See [CommitRequest admission authorship](commitrequest-admission-authorship.md) for capture provenance and
+See [SaveRequest admission authorship](saverequest-admission-authorship.md) for capture provenance and
 [architecture: author identity](../architecture.md#author-and-committer-identity-in-git) for the three Git
 author states.
 
 ## Lifecycle and outcomes
 
 The controller stamps its conditions on first reconcile, immediately attaches the request, and polls the
-worker. There is no audit wait for a `CommitRequest`; a delayed admission record cannot arrive after the
+worker. There is no audit wait for a `SaveRequest`; a delayed admission record cannot arrive after the
 object is visible.
 
 | Outcome | Conditions |

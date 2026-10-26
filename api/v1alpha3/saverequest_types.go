@@ -7,7 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// CommitRequestSpec defines the desired state of CommitRequest. The spec is
+// SaveRequestSpec defines the desired state of SaveRequest. The spec is
 // immutable after creation: a CEL validation rule rejects any update that
 // changes it, so a delayed audit event always acts on the spec the object was
 // created with.
@@ -20,11 +20,11 @@ import (
 // does not round-trip as one: a request created with "1m" reads into Go as a
 // time.Duration and serializes back as "1m0s", so every typed update —
 // including one that only touches metadata — was rejected as a spec change.
-// CommitRequestWindow compares its durations as durations, which compares what
+// SaveRequestWindow compares its durations as durations, which compares what
 // the fields mean instead of how they were spelled.
-// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="CommitRequest spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="SaveRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.whenNothingToCommit) || self.whenNothingToCommit != 'CommitEmpty' || has(self.message)",message="whenNothingToCommit: CommitEmpty requires spec.message, because a message is all an empty commit records"
-type CommitRequestSpec struct {
+type SaveRequestSpec struct {
 	// GitTargetRef names the GitTarget, in this namespace, whose commit window
 	// this request attaches to.
 	// +required
@@ -58,7 +58,7 @@ type CommitRequestSpec struct {
 	// window within 2s and closes it 2s later.
 	// +optional
 	// +kubebuilder:default={attach: "CurrentOrNext", author: "Own", attachTimeout: "2s", maxDuration: "2s"}
-	Window *CommitRequestWindow `json:"window,omitempty"`
+	Window *SaveRequestWindow `json:"window,omitempty"`
 
 	// WhenNothingToCommit decides what happens when the request ends with nothing
 	// to commit: attachTimeout ran out with no window, or the window closed
@@ -86,7 +86,7 @@ type CommitRequestSpec struct {
 	CatchUp CatchUpPolicy `json:"catchUp,omitempty"`
 }
 
-// CatchUpPolicy is when a CommitRequest's commit is applied by the GitTarget's
+// CatchUpPolicy is when a SaveRequest's commit is applied by the GitTarget's
 // applier.
 type CatchUpPolicy string
 
@@ -97,7 +97,7 @@ const (
 	CatchUpAfterPush CatchUpPolicy = "AfterPush"
 )
 
-// NothingToCommitAction is what a CommitRequest does when it ends with nothing
+// NothingToCommitAction is what a SaveRequest does when it ends with nothing
 // to commit.
 type NothingToCommitAction string
 
@@ -108,7 +108,7 @@ const (
 	NothingToCommitCommitEmpty NothingToCommitAction = "CommitEmpty"
 )
 
-// AttachPolicy selects the commit window a CommitRequest attaches to.
+// AttachPolicy selects the commit window a SaveRequest attaches to.
 type AttachPolicy string
 
 const (
@@ -121,7 +121,7 @@ const (
 	AttachNext AttachPolicy = "Next"
 )
 
-// WindowAuthor is whose commit window a CommitRequest may attach to.
+// WindowAuthor is whose commit window a SaveRequest may attach to.
 type WindowAuthor string
 
 const (
@@ -135,17 +135,17 @@ const (
 	WindowAuthorTakeOver WindowAuthor = "TakeOver"
 )
 
-// CommitRequestWindow is how a CommitRequest attaches to a commit window and
+// SaveRequestWindow is how a SaveRequest attaches to a commit window and
 // when that window closes. A window is only ever opened by a write; a request
 // waits for one and never opens one.
 //
 // Every duration shares the shape GitTargetCommitSpec documents: a Go duration
 // string behind a pattern and a CEL bound. The immutability rule compares them
-// as durations, for the reason CommitRequestSpec gives.
-// +kubebuilder:validation:XValidation:rule="self.attach == oldSelf.attach && self.author == oldSelf.author && duration(self.attachTimeout) == duration(oldSelf.attachTimeout) && duration(self.maxDuration) == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))",message="CommitRequest spec is immutable after creation"
+// as durations, for the reason SaveRequestSpec gives.
+// +kubebuilder:validation:XValidation:rule="self.attach == oldSelf.attach && self.author == oldSelf.author && duration(self.attachTimeout) == duration(oldSelf.attachTimeout) && duration(self.maxDuration) == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))",message="SaveRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)",message="spec.window.idleTimeout must not exceed maxDuration"
 // +kubebuilder:validation:XValidation:rule="self.attach != 'Next' || duration(self.attachTimeout) > duration('0s')",message="attach: Next needs a positive attachTimeout; with 0s it would close the author's window and give up in the same instant"
-type CommitRequestWindow struct {
+type SaveRequestWindow struct {
 	// Attach selects the window. "CurrentOrNext" attaches to the author's open
 	// window, or to the next one a write opens. "Next" closes the author's open
 	// window under its own message first, and attaches to the next one; it
@@ -199,7 +199,7 @@ type CommitRequestWindow struct {
 	MaxDuration *metav1.Duration `json:"maxDuration,omitempty"`
 }
 
-// CommitRequestStatus defines the observed state of CommitRequest. Progress
+// SaveRequestStatus defines the observed state of SaveRequest. Progress
 // and outcome are reported entirely through conditions (kstatus-compatible),
 // so the object carries no lifecycle phase string:
 //
@@ -221,12 +221,12 @@ type CommitRequestWindow struct {
 //   - Pushed (domain): True once the commit is in the remote repository.
 //   - Applied (domain): with spec.catchUp "AfterPush", whether the applier
 //     caught up with the commit. It never affects Ready.
-type CommitRequestStatus struct {
+type SaveRequestStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are the latest observations of this CommitRequest's state.
+	// Conditions are the latest observations of this SaveRequest's state.
 	// Reconciling and Stalled follow kstatus. AuthorAttributed says whether the
 	// request's creator, recorded at admission, names the commit author; False
 	// is not a failure and does not affect Ready.
@@ -287,39 +287,39 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// CommitRequest asks for a save: it attaches to its author's current or next
+// SaveRequest asks for a save: it attaches to its author's current or next
 // commit window on a GitTarget, closes that window on its own timers, and
 // gives the commit its message. With spec.window.author, and where the
 // GitTarget allows it, it may also claim a window whose writes name no
 // author. Its spec is immutable, and status.commit reports the commit once
 // it is on the remote.
-type CommitRequest struct {
+type SaveRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of CommitRequest. It is immutable after
+	// spec defines the desired state of SaveRequest. It is immutable after
 	// creation.
 	// +required
-	Spec CommitRequestSpec `json:"spec"`
+	Spec SaveRequestSpec `json:"spec"`
 
-	// status defines the observed state of CommitRequest.
+	// status defines the observed state of SaveRequest.
 	// +optional
-	Status CommitRequestStatus `json:"status,omitempty,omitzero"`
+	Status SaveRequestStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// CommitRequestList contains a list of CommitRequest.
-type CommitRequestList struct {
+// SaveRequestList contains a list of SaveRequest.
+type SaveRequestList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 
-	Items []CommitRequest `json:"items"`
+	Items []SaveRequest `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&CommitRequest{}, &CommitRequestList{})
+	SchemeBuilder.Register(&SaveRequest{}, &SaveRequestList{})
 }

@@ -242,7 +242,7 @@ func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
 	assert.Equal(t, int64(0), w.queueDepth(), "a drained, exiting worker must read depth 0")
 }
 
-// A CommitRequest attach still buffered at shutdown is fire-and-forget: it is
+// A SaveRequest attach still buffered at shutdown is fire-and-forget: it is
 // simply drained from the inflight count (the controller re-sends on its next
 // poll), so the exiting worker's depth gauge settles to 0.
 func TestHandleShutdown_DrainsBufferedAttach(t *testing.T) {
@@ -250,7 +250,7 @@ func TestHandleShutdown_DrainsBufferedAttach(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.EnqueueAttach(&AttachCommitRequest{Namespace: "default", Name: "save", Author: "alice"})
+	w.EnqueueAttach(&AttachSaveRequest{Namespace: "default", Name: "save", Author: "alice"})
 	require.Equal(t, int64(1), w.inflightItems.Load())
 
 	loop := newBranchWorkerEventLoop(w, time.Second)
@@ -260,7 +260,7 @@ func TestHandleShutdown_DrainsBufferedAttach(t *testing.T) {
 		"a buffered attach must be drained from the inflight count on shutdown")
 }
 
-// The message_source label is what separates a commit a person named through a CommitRequest from
+// The message_source label is what separates a commit a person named through a SaveRequest from
 // automatic mirroring, so it is asserted on the COLLECTED samples rather than only on
 // messageSource(): a label that never reaches the exporter is not observable.
 func TestRecordPendingWritesMetrics_LabelsCommitsByMessageSource(t *testing.T) {
@@ -287,9 +287,9 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByMessageSource(t *testing.T) {
 	}, 3)
 
 	for source, want := range map[string]int64{
-		messageSourceLive:          1,
-		messageSourceCommitRequest: 1,
-		messageSourceReconcile:     1,
+		messageSourceLive:        1,
+		messageSourceSaveRequest: 1,
+		messageSourceReconcile:   1,
 	} {
 		labels := workerLabels()
 		labels["message_source"] = source
@@ -333,7 +333,7 @@ func TestRecordPendingWritesMetrics_MessageSourceSplitsOneAuthorKind(t *testing.
 	require.True(t, ok)
 	assert.Equal(t, int64(1), live)
 
-	labels["message_source"] = messageSourceCommitRequest
+	labels["message_source"] = messageSourceSaveRequest
 	request, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
 	require.True(t, ok)
 	assert.Equal(t, int64(1), request)

@@ -251,9 +251,9 @@ type applierState struct {
 	// lag is whether the converge pending is only scheduleConverges': nothing else asks for the tip,
 	// so its attempt yields to an edit (convergeHolds).
 	lag bool
-	// waitingSaves is the CommitRequests waiting for this applier's next apply that succeeds, each
+	// waitingSaves is the SaveRequests waiting for this applier's next apply that succeeds, each
 	// with the commit it pushed (save_apply.go); the attempt sent next carries them.
-	waitingSaves map[commitRequestID]string
+	waitingSaves map[saveRequestID]string
 	// appliedRevision is the revision the last operation that succeeded applied, as the applier
 	// reported it, recovered on restart from the applier claim's status.operation. A converge of the commit
 	// it names asks nothing.
@@ -326,9 +326,9 @@ type inflightAttempt struct {
 	refusals map[refusalKey]unsentRefusal
 	// lag is whether it carries only scheduleConverges' converge.
 	lag bool
-	// saves is the CommitRequests whose apply it carries, each with the commit it pushed
+	// saves is the SaveRequests whose apply it carries, each with the commit it pushed
 	// (save_apply.go).
-	saves map[commitRequestID]string
+	saves map[saveRequestID]string
 	// phase is the last report of its operation, empty before the first.
 	phase ApplyOutcome
 	// previous is the operation recorded before this attempt's, with the attempt it belonged to,
@@ -357,7 +357,7 @@ func (s *applierState) hasReason(refusals map[refusalKey]unsentRefusal) bool {
 const barrierRecheckInterval = time.Second
 
 // writeBusy reports whether the loop is in a state in which no flush can be made, and so no request
-// sent: a registered CommitRequest, whose save defines its own commit boundary (a save is announced
+// sent: a registered SaveRequest, whose save defines its own commit boundary (a save is announced
 // before its writes arrive, and an apply landing between the two would revert its first edits before
 // they reach Git), a parent recovery, or a checkout a failed write left dirty. In the last two the
 // worker cannot say what is published.
@@ -367,7 +367,7 @@ func (l *branchWorkerEventLoop) writeBusy() bool {
 
 // closeWindowForPushHint closes the open commit window early when a Git host has said the branch may
 // have moved, so its writes are published, and replayed onto the move, now rather than when the
-// window's timers allow. A window a CommitRequest holds is left to its save.
+// window's timers allow. A window a SaveRequest holds is left to its save.
 func (l *branchWorkerEventLoop) closeWindowForPushHint() {
 	hinted := l.pushHinted
 	l.pushHinted = false

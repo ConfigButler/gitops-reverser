@@ -21,7 +21,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// These tests pin the write gates every CommitRequest outcome passes (write_gate.go): a request
+// These tests pin the write gates every SaveRequest outcome passes (write_gate.go): a request
 // that ends on a target that refuses writes fails with the reason, whatever path it ends on and
 // whatever whenNothingToCommit says. They drive the transitions — a gate that closes after the
 // attach, after the local commit, on a sibling target, across a failed push — and not only the
@@ -46,7 +46,7 @@ func closeRenderGate(worker *BranchWorker) {
 }
 
 // requestFor is a request named name, for target, by alice.
-func requestFor(name, target string, commitEmpty bool) *AttachCommitRequest {
+func requestFor(name, target string, commitEmpty bool) *AttachSaveRequest {
 	req := attachReq("alice", time.Hour)
 	req.Name, req.UID = name, "uid-"+name
 	req.GitTargetName = target
@@ -127,17 +127,17 @@ func TestWriteGate_ARequestOnARefusingTargetFails(t *testing.T) {
 	endings := []struct {
 		name string
 		// run closes the gate at the point this ending puts it, and ends the request.
-		run func(t *testing.T, loop *branchWorkerEventLoop, closeGate func(), req *AttachCommitRequest)
+		run func(t *testing.T, loop *branchWorkerEventLoop, closeGate func(), req *AttachSaveRequest)
 	}{
 		{"no window before the attach timeout", func(_ *testing.T, loop *branchWorkerEventLoop, closeGate func(),
-			req *AttachCommitRequest) {
+			req *AttachSaveRequest) {
 			closeGate()
 			serviceAttach(loop, req)
 			expire(loop)
 			loop.pushPending()
 		}},
 		{"attached, the gate closing before the window closes", func(t *testing.T, loop *branchWorkerEventLoop,
-			closeGate func(), req *AttachCommitRequest) {
+			closeGate func(), req *AttachSaveRequest) {
 			serviceAttach(loop, req)
 			writeTo(loop, "new")
 			require.NotNil(t, loop.openWindow, "the request is attached to an open window")
@@ -146,7 +146,7 @@ func TestWriteGate_ARequestOnARefusingTargetFails(t *testing.T) {
 			loop.pushPending()
 		}},
 		{"attached to a window that changed nothing", func(t *testing.T, loop *branchWorkerEventLoop,
-			closeGate func(), req *AttachCommitRequest) {
+			closeGate func(), req *AttachSaveRequest) {
 			writeTo(loop, "existing")
 			serviceAttach(loop, req)
 			require.NotNil(t, loop.openWindow)
@@ -170,7 +170,7 @@ func TestWriteGate_ARequestOnARefusingTargetFails(t *testing.T) {
 
 					ending.run(t, loop, func() { gate.close(t, worker) }, req)
 
-					res, ok := worker.LookupCommitRequestOutcome("default", req.Name, req.UID)
+					res, ok := worker.LookupSaveRequestOutcome("default", req.Name, req.UID)
 					require.True(t, ok, "the request is resolved")
 					require.ErrorIs(t, res.Err, gate.want, "a refused save is a failure, never Ready=True")
 					assert.Empty(t, res.Commit)
@@ -183,7 +183,7 @@ func TestWriteGate_ARequestOnARefusingTargetFails(t *testing.T) {
 }
 
 // forceDueNamed closes req's attached window at its maxDuration, as forceDue does for crName.
-func forceDueNamed(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
+func forceDueNamed(loop *branchWorkerEventLoop, req *AttachSaveRequest) {
 	id := req.id()
 	if loop.openWindow != nil && loop.openWindow.pendingCR != nil && *loop.openWindow.pendingCR == id {
 		loop.openWindow.timers.maxAt = time.Now().Add(-time.Millisecond)
@@ -207,7 +207,7 @@ func TestWriteGate_ASaveWhoseWritesTheRenderGateDroppedSaysSo(t *testing.T) {
 	expire(loop)
 	loop.pushPending()
 
-	res, ok := worker.LookupCommitRequestOutcome("default", req.Name, req.UID)
+	res, ok := worker.LookupSaveRequestOutcome("default", req.Name, req.UID)
 	require.True(t, ok)
 	require.ErrorIs(t, res.Err, errRenderFidelityClosed)
 	assert.Equal(t, before, remoteHead(t, serverRepo), "no empty commit claims the save saw nothing")
@@ -227,15 +227,15 @@ func TestWriteGate_AGateClosingAfterTheLocalCommitDoesNotRetractIt(t *testing.T)
 	}
 	commits := []struct {
 		name    string
-		commit  func(loop *branchWorkerEventLoop, req *AttachCommitRequest)
+		commit  func(loop *branchWorkerEventLoop, req *AttachSaveRequest)
 		outcome FinalizeOutcome
 	}{
-		{"a window that changed files", func(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
+		{"a window that changed files", func(loop *branchWorkerEventLoop, req *AttachSaveRequest) {
 			serviceAttach(loop, req)
 			writeTo(loop, "new")
 			forceDueNamed(loop, req)
 		}, FinalizeCommitted},
-		{"the record of a request no window reached", func(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
+		{"the record of a request no window reached", func(loop *branchWorkerEventLoop, req *AttachSaveRequest) {
 			serviceAttach(loop, req)
 			expire(loop)
 		}, FinalizeNoOpenWindow},
@@ -255,12 +255,12 @@ func TestWriteGate_AGateClosingAfterTheLocalCommitDoesNotRetractIt(t *testing.T)
 
 				gate.close(t, worker)
 				loop.pushPending()
-				_, resolved := worker.LookupCommitRequestOutcome("default", req.Name, req.UID)
+				_, resolved := worker.LookupSaveRequestOutcome("default", req.Name, req.UID)
 				require.False(t, resolved, "the gate closing does not resolve a request still waiting for its push")
 
 				restore()
 				loop.pushPending()
-				res, ok := worker.LookupCommitRequestOutcome("default", req.Name, req.UID)
+				res, ok := worker.LookupSaveRequestOutcome("default", req.Name, req.UID)
 				require.True(t, ok)
 				require.NoError(t, res.Err)
 				assert.Equal(t, c.outcome, res.Outcome)
@@ -299,11 +299,11 @@ func TestWriteGate_SiblingTargetsAreGatedApart(t *testing.T) {
 			expire(loop)
 			loop.pushPending()
 
-			res, ok := worker.LookupCommitRequestOutcome("default", refused.Name, refused.UID)
+			res, ok := worker.LookupSaveRequestOutcome("default", refused.Name, refused.UID)
 			require.True(t, ok)
 			require.ErrorIs(t, res.Err, gate.want)
 
-			res, ok = worker.LookupCommitRequestOutcome("default", served.Name, served.UID)
+			res, ok = worker.LookupSaveRequestOutcome("default", served.Name, served.UID)
 			require.True(t, ok)
 			require.NoError(t, res.Err, "a sibling's gate is not this target's")
 			assert.Equal(t, FinalizeNoOpenWindow, res.Outcome)
@@ -324,7 +324,7 @@ func TestWriteGate_AWindowMismatchIsStillAMismatch(t *testing.T) {
 	writeTo(loop, "alices-edit")
 	expire(loop)
 
-	res, ok := worker.LookupCommitRequestOutcome("default", req.Name, req.UID)
+	res, ok := worker.LookupSaveRequestOutcome("default", req.Name, req.UID)
 	require.True(t, ok)
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeWindowMismatch, res.Outcome)
@@ -376,7 +376,7 @@ func TestWriteGate_ARenderGateClosingDuringFinalizeStopsTheWholeWindow(t *testin
 			assert.Empty(t, loop.pendingWrites, "nothing is retained")
 			assert.Equal(t, before, remoteHead(t, serverRepo), "nothing reached the remote")
 			if withRequest {
-				res, ok := worker.LookupCommitRequestOutcome("default", req.Name, req.UID)
+				res, ok := worker.LookupSaveRequestOutcome("default", req.Name, req.UID)
 				require.True(t, ok)
 				require.ErrorIs(t, res.Err, errRenderFidelityClosed)
 			}

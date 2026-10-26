@@ -224,21 +224,21 @@ type CommitMessageSpec struct {
 	// can be empty, and Generation is 0 for a kind without a spec, so guard
 	// them with {{with}}.
 	//
-	// A CommitRequest's message replaces this template without changing the
+	// A SaveRequest's message replaces this template without changing the
 	// author; spec.commit.message.requestTemplate can wrap that message.
 	// +optional
 	LiveTemplate string `json:"liveTemplate,omitempty"`
 
 	// Rationale, kept out of the doc comment (and so out of the CRD schema) by the blank line
-	// below: a CommitRequest is created by whoever holds create on it in a namespace, so its
+	// below: a SaveRequest is created by whoever holds create on it in a namespace, so its
 	// author supplies the message but must not set commit-message policy. Framing the message
 	// rather than parsing it keeps that split — the operator owns the wording, the requester owns
 	// the words, and nothing a requester writes is ever executed. Rejecting a template that never
 	// renders RequestMessage is what keeps the split honest in the other direction: silently
 	// discarding a requester's stated reason would be worse than having no template at all.
 
-	// RequestTemplate is the Go template that frames a CommitRequest's message. It
-	// is used only for a commit whose CommitRequest supplied a message, and gets
+	// RequestTemplate is the Go template that frames a SaveRequest's message. It
+	// is used only for a commit whose SaveRequest supplied a message, and gets
 	// liveTemplate's fields plus RequestMessage, the message as written; template
 	// syntax inside the message stays literal. Omitted, the message is committed
 	// as written. A template that never renders RequestMessage is rejected, and

@@ -308,7 +308,7 @@ func TestEnqueueResync_ALabelExitFencesTheSelectedSnapshot(t *testing.T) {
 }
 
 // TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync pins the
-// stranded-write fix in the CommitRequest window contract: a
+// stranded-write fix in the SaveRequest window contract: a
 // resync that closes a live commit window but commits nothing of its own must
 // still schedule the window's commit for push. Before the fix maybeSchedulePush
 // ran only when the resync itself committed, so a window the resync closed was
@@ -438,7 +438,7 @@ func TestEnqueueResync_AReleasedMarkerRunsTheRequestCoalescedIntoIt(t *testing.T
 }
 
 // TestEnqueueResync_DoesNotCoalescePastQueuedAttach pins the same fence for a
-// CommitRequest attach, which carries no resource identity of its own but decides
+// SaveRequest attach, which carries no resource identity of its own but decides
 // which commit window later work joins.
 func TestEnqueueResync_DoesNotCoalescePastQueuedAttach(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
@@ -448,7 +448,7 @@ func TestEnqueueResync_DoesNotCoalescePastQueuedAttach(t *testing.T) {
 		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "100",
 		Result: first,
 	}))
-	w.EnqueueAttach(&AttachCommitRequest{
+	w.EnqueueAttach(&AttachSaveRequest{
 		Namespace: "ns", Name: "cr", GitTargetNamespace: "ns", GitTargetName: "target",
 	})
 	require.True(t, w.EnqueueResync(&ResyncRequest{

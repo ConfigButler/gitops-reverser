@@ -7,6 +7,27 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `CommitRequest` is `SaveRequest`
+
+`CommitRequest` is `SaveRequest`, in the same group and version (`configbutler.ai/v1alpha3`), with
+the same spec and status. Nothing is migrated: a `CommitRequest` is a one-shot request, so let the
+open ones finish, then upgrade and delete the old CRD, which Helm leaves installed:
+
+```bash
+kubectl delete crd commitrequests.configbutler.ai
+```
+
+Everything named after the kind follows it:
+
+- **RBAC.** A Role that lets people `create` `commitrequests` must grant `saverequests` instead.
+- **The TTL.** The flag `--commit-request-ttl` is `--save-request-ttl`, and the Helm value
+  `controllerManager.commitRequestTTL` is `controllerManager.saveRequestTTL`.
+- **Metrics.** `gitopsreverser_commit_requests_total` is `gitopsreverser_save_requests_total`, with
+  the same labels. The `message_source` values `commit_request`, `commit_request_framed` and
+  `commit_request_fallback` of `git_commits_total` are `save_request`, `save_request_framed` and
+  `save_request_fallback`, and the `timer_source` value `commit_request` of
+  `git_commit_windows_total` is `save_request`.
+
 ## A `FluxClaim` applies the tip a minute after GitOps Reverser's own pushes
 
 A push of GitOps Reverser's own asks no apply at once, and in 0.54.0 asked none at all, so a
@@ -14,7 +35,7 @@ A push of GitOps Reverser's own asks no apply at once, and in 0.54.0 asked none 
 commit somebody else pushed. `spec.catchUpAfter` sets when that lag is caught up: once the applier
 has stayed behind the tip that long, an apply of the tip is asked for, one for a whole burst of
 saves. A `FluxClaim` defaults to `1m`; set `0s` to keep 0.54.0's behaviour. An `ArgoCDClaim`
-defaults to `0s`. A `CommitRequest` that sets `catchUp: AfterPush` has the tip applied right after
+defaults to `0s`. A `SaveRequest` that sets `catchUp: AfterPush` has the tip applied right after
 its commit is pushed, whatever the claim's interval, and reports the outcome in its `Applied`
 condition and `status.appliedRevision`.
 

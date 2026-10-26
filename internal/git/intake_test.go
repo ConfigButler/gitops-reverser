@@ -78,7 +78,7 @@ func TestIntake_EveryKindOfHeldWorkCounts(t *testing.T) {
 	req := attachReq("alice", time.Hour)
 	req.GitTargetName = ledgerTargetName
 	req.Message = "save once the window opens"
-	loop.handleAttachCommitRequest(req)
+	loop.handleAttachSaveRequest(req)
 	require.Contains(t, loop.pendingCRs, req.id())
 	assert.GreaterOrEqual(t, loop.heldBytes()-held, int64(pendingWriteOverheadBytes),
 		"a registered save is charged for what it keeps")
@@ -155,7 +155,7 @@ func TestIntake_AWithdrawalProgressesWhilePaused(t *testing.T) {
 	f, loop, _ := outageLoop(t, "intake-withdraw-while-paused")
 	req := attachReq("alice", time.Hour)
 	req.GitTargetName = ledgerTargetName
-	loop.handleAttachCommitRequest(req)
+	loop.handleAttachSaveRequest(req)
 	f.worker.branchBufferMaxBytes = 1
 	loop.publishLoopState(0)
 	require.NotNil(t, f.worker.IntakePaused())
@@ -163,9 +163,9 @@ func TestIntake_AWithdrawalProgressesWhilePaused(t *testing.T) {
 	f.worker.EnqueueWithdraw(req)
 	require.Len(t, f.worker.eventQueue, 1, "a withdrawal is not refused by the pause")
 	loop.handleQueueItem(<-f.worker.eventQueue)
-	outcome, ok := f.worker.LookupCommitRequestOutcome(req.Namespace, req.Name, req.UID)
+	outcome, ok := f.worker.LookupSaveRequestOutcome(req.Namespace, req.Name, req.UID)
 	require.True(t, ok)
-	assert.ErrorIs(t, outcome.Err, ErrCommitRequestWithdrawn)
+	assert.ErrorIs(t, outcome.Err, ErrSaveRequestWithdrawn)
 }
 
 // bigConfigMap is a ConfigMap whose data is about size bytes.

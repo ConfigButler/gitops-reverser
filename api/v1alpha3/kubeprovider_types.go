@@ -100,29 +100,29 @@ type KubeProviderSpec struct {
 	// +optional
 	Attribution *KubeProviderAttribution `json:"attribution,omitempty"`
 
-	// SaveRequests says whether GitOps Reverser serves the SaveRequests
+	// RemoteSaveRequests says whether GitOps Reverser serves the RemoteSaveRequests
 	// (source.configbutler.ai) created on this cluster. "Enabled" watches
 	// them, saves the commit windows of the GitTargets that mirror each one's
 	// namespace through this KubeProvider, and writes each one's status back.
 	// Defaults to "Disabled".
 	//
 	// "Enabled" writes to this cluster: the credential needs get, list, watch
-	// and delete on saverequests, and update on saverequests/status. The
-	// SaveRequest CRD must be installed on the cluster.
+	// and delete on remotesaverequests, and update on remotesaverequests/status. The
+	// RemoteSaveRequest CRD must be installed on the cluster.
 	// +optional
 	// +kubebuilder:validation:Enum=Disabled;Enabled
 	// +kubebuilder:default=Disabled
-	SaveRequests SaveRequestsMode `json:"saveRequests,omitempty"`
+	RemoteSaveRequests RemoteSaveRequestsMode `json:"remoteSaveRequests,omitempty"`
 }
 
-// SaveRequestsMode is whether a KubeProvider's SaveRequests are served.
-type SaveRequestsMode string
+// RemoteSaveRequestsMode is whether a KubeProvider's RemoteSaveRequests are served.
+type RemoteSaveRequestsMode string
 
 const (
-	// SaveRequestsDisabled leaves the cluster's SaveRequests alone.
-	SaveRequestsDisabled SaveRequestsMode = "Disabled"
-	// SaveRequestsEnabled serves the cluster's SaveRequests.
-	SaveRequestsEnabled SaveRequestsMode = "Enabled"
+	// RemoteSaveRequestsDisabled leaves the cluster's RemoteSaveRequests alone.
+	RemoteSaveRequestsDisabled RemoteSaveRequestsMode = "Disabled"
+	// RemoteSaveRequestsEnabled serves the cluster's RemoteSaveRequests.
+	RemoteSaveRequestsEnabled RemoteSaveRequestsMode = "Enabled"
 )
 
 // KubeProviderInCluster selects the operator's own identity. It has no fields:

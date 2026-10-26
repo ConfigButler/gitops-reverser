@@ -94,7 +94,7 @@ flowchart TD
 cooldowns, and retry scheduling. It retains `[]PendingWrite` until a push
 succeeds. Local commit creation does not clear pending work. A write whose first
 commit changes nothing in Git is the exception: it settles at once and is neither
-retained nor pushed. A save (a write carrying a `CommitRequest`) is always
+retained nor pushed. A save (a write carrying a `SaveRequest`) is always
 retained, and the push decides its outcome.
 
 Per-event writes are processed as a stream. The branch worker keeps one open
@@ -106,7 +106,7 @@ closes the window so its edits are published before the apply request is sent
 ([the flush](../design/apply-trigger.md#flush-then-apply), `close_reason="apply_due"`).
 A push notice closes it so its writes are
 published, and replayed onto the move, at once. Neither applies while a
-`CommitRequest` holds the window: no flush is made while a request is registered,
+`SaveRequest` holds the window: no flush is made while a request is registered,
 and a push notice leaves an attached window to its save.
 A timer of `0s` closes the window in the same step that collected the write. Repeated writes to the same
 Git path inside the open window are last-write-wins while preserving first-seen
@@ -134,7 +134,7 @@ between:
 - `PendingWriteAtomic` represents one caller-defined atomic write.
 - `PendingWriteResync` represents one GitTarget's snapshot, applied by
   mark-and-sweep.
-- `PendingWriteRequestRecord` records a `CommitRequest`'s message in an empty
+- `PendingWriteRequestRecord` records a `SaveRequest`'s message in an empty
   commit when no window reached the request and it asked for
   `whenNothingToCommit: CommitEmpty`.
 
@@ -174,9 +174,9 @@ planner-time regrouping pass.
 
 Message precedence is a non-empty literal override, then `commit.message.liveTemplate` for live
 windows or `commit.message.reconcileTemplate` for atomic snapshots and resyncs. Every live window
-uses the same context, including singleton and `0s` windows. A `CommitRequest`'s message is the
+uses the same context, including singleton and `0s` windows. A `SaveRequest`'s message is the
 literal override, and `commit.message.requestTemplate` can frame it (see
-[`commitrequest-design.md`](commitrequest-design.md)). Literal text never changes authorship.
+[`saverequest-design.md`](saverequest-design.md)). Literal text never changes authorship.
 Resolved templates and literal overrides travel with pending writes through retries and conflict
 replay, so editing a target does not change an already finalized write's message configuration.
 
@@ -229,7 +229,7 @@ OPEN WINDOW rather than once per worker, and snapshotted when the window opens:
 editing a target never moves a deadline already running. That is affordable
 because a window is already bound to exactly one `GitTarget` by construction: it
 finalizes the moment the target changes. An unreadable target, or one declaring
-no window, takes the `5s` and `1m` defaults. A `CommitRequest` that attaches
+no window, takes the `5s` and `1m` defaults. A `SaveRequest` that attaches
 replaces both timers for that window.
 
 The byte cap is an operator startup setting, `--branch-buffer-max-size`

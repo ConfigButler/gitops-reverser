@@ -395,15 +395,15 @@ func echoScenarios(run func() *echoRun) {
 		r.pushFromOutside("saved", "s0")
 		r.eventuallyEverywhere("saved", "s0", echoApplyBudget)
 
-		By("saving an API edit with a CommitRequest while a Git-side push changes the same object")
-		name := applyCommitRequestWithGenerateName(r.testNs, "echo-save-", r.targetName, "e2e: save the edit")
+		By("saving an API edit with a SaveRequest while a Git-side push changes the same object")
+		name := applySaveRequestWithGenerateName(r.testNs, "echo-save-", r.targetName, "e2e: save the edit")
 		r.editThroughAPI("saved", "s-save")
 		r.pushFromOutside("saved", "s-git")
 
 		Eventually(func(g Gomega) {
-			g.Expect(commitRequestCondition(g, r.testNs, name, "Ready")).To(Equal("True"))
-			g.Expect(commitRequestField(g, r.testNs, name, `{.status.conditions[?(@.type=="Ready")].reason}`)).
-				To(BeElementOf(commitRequestReasonCommitted, "AlreadyPresent"))
+			g.Expect(saveRequestCondition(g, r.testNs, name, "Ready")).To(Equal("True"))
+			g.Expect(saveRequestField(g, r.testNs, name, `{.status.conditions[?(@.type=="Ready")].reason}`)).
+				To(BeElementOf(saveRequestReasonCommitted, "AlreadyPresent"))
 		}, echoApplyBudget, 2*time.Second).Should(Succeed())
 		r.eventuallyEverywhere("saved", "s-save", echoApplyBudget)
 		r.consistentlyEverywhere("saved", "s-save")

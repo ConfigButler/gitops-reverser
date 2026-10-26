@@ -571,5 +571,5 @@ remains:
 | Retry deadline | [`internal/git/retry.go`](../../internal/git/retry.go) |
 | Publication report and backlog gauges | [`internal/git/publication.go`](../../internal/git/publication.go) |
 | Resyncs | [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go) |
-| Saves | [`internal/git/commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go) |
+| Saves | [`internal/git/save_request_attach_loop.go`](../../internal/git/save_request_attach_loop.go) |
 | Missing parent probe | [`internal/git/parent_recovery.go`](../../internal/git/parent_recovery.go) |

@@ -176,10 +176,11 @@ the parent branch is not followed.
 **Commit window.** The interval a branch worker batches one author's writes to one target over before
 it commits. Only a write opens one; nothing else does. It closes on its `idleTimeout` of silence or
 its `maxDuration` after opening, whichever comes first, or earlier for a flush, unless a
-`CommitRequest` holds it. Windows do not merge across authors, which is why attribution can be
+`SaveRequest` holds it. Windows do not merge across authors, which is why attribution can be
 per-commit.
 
-**Attach.** What a `CommitRequest` does to a commit window: it gives the window its message and
+**Attach.** What a `SaveRequest`, or a `RemoteSaveRequest` made on a source cluster, does to a commit
+window: it gives the window its message and
 replaces the window's timers with its own. A request attaches to at most one window and never opens
 one. One word for the act, in the API (`window.attach`, `attachTimeout`), the code and the docs: not
 "claim", which names a rule's demand on the read side.
@@ -198,7 +199,7 @@ a durable journal, which this is not.
 `status.remote`.
 
 **Commit.** A bare Git commit hash, wherever one appears in the API: `status.remote.commit`,
-`status.remote.parent.commit`, `CommitRequest.status.commit`, `status.placement.resolvedAtCommit`.
+`status.remote.parent.commit`, `SaveRequest.status.commit`, `status.placement.resolvedAtCommit`.
 Not "sha", which names an algorithm Git is in the middle of changing, and not "revision", which Flux uses for a polymorphic
 identifier that may be a tag, a chart version or a composite like `main@sha1:<hash>`. If this project
 ever needs that composite, `revision` is the word waiting for it.

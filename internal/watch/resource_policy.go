@@ -25,7 +25,7 @@ func isDefaultResourceExcluded(group, resource string) bool {
 		groupResourceKey("batch", "jobs"),
 		groupResourceKey("batch", "cronjobs"),
 		// A save is a request to GitOps Reverser, never state to mirror (save_requests.go).
-		groupResourceKey("source.configbutler.ai", "saverequests"):
+		groupResourceKey("source.configbutler.ai", "remotesaverequests"):
 		return true
 	default:
 		return false

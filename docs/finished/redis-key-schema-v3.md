@@ -5,7 +5,7 @@
 > Status: **IMPLEMENTED** — 2026-06-29. The `v2 → v3` key-format bump landed for the live Redis families:
 > the audit author index, the watch-resume cursor, and the new command-author **store** (storage
 > mechanics only — the CommitRequest admission/controller rewrite in
-> [commitrequest-admission-authorship.md](../spec/commitrequest-admission-authorship.md) is a separate round and
+> [saverequest-admission-authorship.md](../spec/saverequest-admission-authorship.md) is a separate round and
 > is **not** wired up yet). Scope: (1) replace the opaque `attr` namespace with a top-level `author`
 > domain; (2) re-lay audit-sourced resource author facts as a readable, **object-grouped** hierarchy
 > (`<group/resource>:object:<uid>:<rv>` + `:last`, plus a type-scoped `:rv:<rv>` escape hatch), carrying
@@ -24,7 +24,7 @@
 > `internal/queue/attribution_index.go`,
 > [`internal/queue/redis_store.go`](../../internal/queue/redis_store.go),
 > [`internal/watch/author_resolver.go`](../../internal/watch/author_resolver.go),
-> [CommitRequest authorship from admission](../spec/commitrequest-admission-authorship.md),
+> [CommitRequest authorship from admission](../spec/saverequest-admission-authorship.md),
 > [attribution](../spec/attribution.md),
 > [watch event ordering & attribution grace](../spec/watch-event-ordering-and-attribution-grace.md),
 > [watch-first ingestion architecture](watch-first-ingestion-architecture.md).

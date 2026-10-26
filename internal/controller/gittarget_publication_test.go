@@ -85,7 +85,7 @@ func TestPublicationReadiness_LeavesAMissingParentToTheParentGate(t *testing.T) 
 
 // A save the worker holds says why it is held, with the same words the GitTarget uses, and the
 // status is written again when that reason changes, not only when the phase does.
-func TestCommitRequestProgress_AHeldSaveSaysWhyItIsHeld(t *testing.T) {
+func TestSaveRequestProgress_AHeldSaveSaysWhyItIsHeld(t *testing.T) {
 	held := failingPublication(false).Message()
 	reason, message := progressFor(git.PhaseWaitingForPush, held)
 	assert.Equal(t, string(git.PhaseWaitingForPush), reason)
@@ -95,11 +95,11 @@ func TestCommitRequestProgress_AHeldSaveSaysWhyItIsHeld(t *testing.T) {
 	_, plain := progressFor(git.PhaseWaitingForPush, "")
 	assert.Equal(t, waitingForPushMessage, plain, "a push that is merely pending says nothing more")
 
-	cr := &configbutleraiv1alpha3.CommitRequest{}
-	markCommitRequestProgressing(cr, attributionFromAdmission, git.PhaseWaitingForPush, "")
+	cr := &configbutleraiv1alpha3.SaveRequest{}
+	markSaveRequestProgressing(cr, attributionFromAdmission, git.PhaseWaitingForPush, "")
 	assert.True(t, progressRecorded(cr, git.PhaseWaitingForPush, ""))
 	assert.False(t, progressRecorded(cr, git.PhaseWaitingForPush, held), "the outage is news to the save")
-	markCommitRequestProgressing(cr, attributionFromAdmission, git.PhaseWaitingForPush, held)
+	markSaveRequestProgressing(cr, attributionFromAdmission, git.PhaseWaitingForPush, held)
 	assert.True(t, progressRecorded(cr, git.PhaseWaitingForPush, held))
 	assert.False(t, progressRecorded(cr, git.PhaseWaitingForPush, ""), "and so is the recovery")
 }

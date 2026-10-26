@@ -152,7 +152,7 @@ stateDiagram-v2
 ```
 
 Three states still hold an apply back, because in them no flush can be made: a commit window a
-[`CommitRequest`](configuration.md#commitrequest) holds (a save defines its own commit boundary, and
+[`SaveRequest`](configuration.md#saverequest) holds (a save defines its own commit boundary, and
 the apply waits for it), a missing parent branch being recovered, and a checkout a failed write left
 dirty. In the last two the branch worker cannot say what is published.
 
@@ -404,7 +404,7 @@ Committing and pushing takes on the order of a second at best, and the Kubernete
 great many changes in a second. Treat a live edit as a change you observe arriving, not a save that
 returns a confirmation. Two edits inside one commit window produce one commit holding the later
 value, so Git history records the states the worker captured, with gaps between them. When a
-specific change has to be confirmed in Git, use a [`CommitRequest`](configuration.md#commitrequest).
+specific change has to be confirmed in Git, use a [`SaveRequest`](configuration.md#saverequest).
 
 ## Keep controller bookkeeping out of Git
 

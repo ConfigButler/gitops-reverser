@@ -24,7 +24,7 @@ can go; each costs a full rebuild. This removes a 14–18 minute leg from most P
 
 These matter more than the duplicates below.
 
-1. **[`commit_request_e2e_test.go`](../../test/e2e/commit_request_e2e_test.go)**: a comment says the
+1. **[`save_request_e2e_test.go`](../../test/e2e/save_request_e2e_test.go)**: a comment says the
    generateName spec "is skipped in configured-author mode", but it has no `Skip`. Add it, or fix
    the comment.
 2. **[`signing_e2e_test.go`](../../test/e2e/signing_e2e_test.go)**: its own comment says the

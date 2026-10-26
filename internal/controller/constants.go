@@ -86,19 +86,19 @@ const (
 	// still being established (the rule is blocked by validation), which must not be rendered as a
 	// permanent failure.
 	ConditionTypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
-	// ConditionTypeAuthorAttributed indicates whether a CommitRequest's commit author
+	// ConditionTypeAuthorAttributed indicates whether a SaveRequest's commit author
 	// was named from the submitter captured at admission. It is binary and immediately
 	// settled (no Unknown, no timeout): True (AttributedFromAdmission) when the
 	// validate-operator-types webhook recorded the submitter, False (CommitterFallback) when
 	// capture ran but found no record, or False (AuthorCaptureDisabled) when capture is off.
 	// False is not a failure and does not affect Ready: the
 	// request claims no actor and can attach only to an unnamed watch window
-	// (docs/architecture.md#commitrequest-finalize).
+	// (docs/architecture.md#saverequest-finalize).
 	ConditionTypeAuthorAttributed = "AuthorAttributed"
-	// ConditionTypePushed indicates whether a CommitRequest's commit reached the
+	// ConditionTypePushed indicates whether a SaveRequest's commit reached the
 	// remote repository.
 	ConditionTypePushed = "Pushed"
-	// ConditionTypeApplied reports, for a CommitRequest with catchUp: AfterPush, whether
+	// ConditionTypeApplied reports, for a SaveRequest with catchUp: AfterPush, whether
 	// its GitTarget's applier applied a commit that holds the request's: Unknown while it applies or
 	// retries, True once applied, False when there was nothing to apply. It never affects Ready.
 	ConditionTypeApplied = "Applied"
@@ -184,10 +184,10 @@ const (
 	// DefaultGitRefreshInterval is how often an IDLE branch's remote state is re-proved. A target
 	// that is publishing renews its observation on every push and never waits for this.
 	DefaultGitRefreshInterval = 10 * time.Minute
-	// DefaultCommitRequestTTL is how long a CommitRequest is kept once it finishes. Each save leaves
+	// DefaultSaveRequestTTL is how long a SaveRequest is kept once it finishes. Each save leaves
 	// one object behind, so without an expiry they accumulate in etcd for as long as the namespace
 	// lives. Two days leaves a weekend's worth of saves to inspect.
-	DefaultCommitRequestTTL = 48 * time.Hour
+	DefaultSaveRequestTTL = 48 * time.Hour
 	// RequeueStreamSettleInterval is the requeue interval while a Ready GitTarget still
 	// has streams pending replay completion. Stream status is computed during reconcile, so
 	// this keeps status.streams fresh while watches converge.

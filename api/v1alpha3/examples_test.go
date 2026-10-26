@@ -137,8 +137,8 @@ func newExampleObject(kind string) any {
 		return &WatchRule{}
 	case "ClusterWatchRule":
 		return &ClusterWatchRule{}
-	case "CommitRequest":
-		return &CommitRequest{}
+	case "SaveRequest":
+		return &SaveRequest{}
 	case ApplierClaimKindFlux:
 		return &FluxClaim{}
 	case ApplierClaimKindArgoCD:

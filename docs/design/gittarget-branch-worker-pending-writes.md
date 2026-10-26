@@ -492,7 +492,7 @@ Remaining limits:
 
 Updated the event model's "Next implementation" and "Problems" sections, the findings in the
 state-of-affairs page, the paragraph after the gate table in
-[`commitrequest-design.md`](../spec/commitrequest-design.md#when-the-target-may-not-be-written),
+[`saverequest-design.md`](../spec/saverequest-design.md#when-the-target-may-not-be-written),
 and [`architecture.md`](../architecture.md), which gained a section on a remote that cannot be
 reached. The effective-point comment in `write_gate.go` already said what was built and is
 unchanged. `UPGRADING.md` gained its entries with each step. The PR body carries the argument; this
@@ -574,7 +574,7 @@ decided from is used once:
   the replay, under `prune.mode: Always` too.
 - **A save keeps every object.** A write carrying a `CommitRequest` is never trimmed: it keeps each
   object it captured, unchanged ones included, and the push decides its outcome (`AlreadyPresent`
-  or `Committed`), as the [CommitRequest contract](../spec/commitrequest-design.md) says.
+  or `Committed`), as the [CommitRequest contract](../spec/saverequest-design.md) says.
 
 Pinned by [`applier_echoes_test.go`](../../internal/git/applier_echoes_test.go): an unchanged object
 is no action, a resync replay applies its decided actions, a replayed resync obeys a tightened prune

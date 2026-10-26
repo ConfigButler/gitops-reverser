@@ -6,18 +6,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// A SaveRequest is the source-cluster twin of a configbutler.ai CommitRequest, for the people who edit
+// A RemoteSaveRequest is the source-cluster twin of a configbutler.ai SaveRequest, for the people who edit
 // a source cluster and cannot reach the cluster GitOps Reverser runs in. It is its own kind, in its own
-// group, rather than a CommitRequest with another schema: it names no GitTarget, because its creator
+// group, rather than a SaveRequest with another schema: it names no GitTarget, because its creator
 // cannot see them, its author comes from the source cluster's audit events rather than from admission,
 // and it is installed alone. docs/future/source-side-save-plan.md has the reasoning.
 //
-// The spec is immutable, compared as CommitRequestSpec compares it: durations as durations, so a typed
+// The spec is immutable, compared as SaveRequestSpec compares it: durations as durations, so a typed
 // client's re-spelling of "1m" as "1m0s" is not a change.
 
-// SaveRequestSpec defines the desired state of SaveRequest. It is immutable.
-// +kubebuilder:validation:XValidation:rule="has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="SaveRequest spec is immutable after creation"
-type SaveRequestSpec struct {
+// RemoteSaveRequestSpec defines the desired state of RemoteSaveRequest. It is immutable.
+// +kubebuilder:validation:XValidation:rule="has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="RemoteSaveRequest spec is immutable after creation"
+type RemoteSaveRequestSpec struct {
 	// Message is the commit message this request asks for. Omitted, each
 	// GitTarget's spec.commit.message.liveTemplate words the commit.
 	//
@@ -43,7 +43,7 @@ type SaveRequestSpec struct {
 	// request waits 5s and closes the window 2s after it attached.
 	// +optional
 	// +kubebuilder:default={attachTimeout: "5s", maxDuration: "2s"}
-	Window *SaveRequestWindow `json:"window,omitempty"`
+	Window *RemoteSaveRequestWindow `json:"window,omitempty"`
 
 	// CatchUp decides when the applier of each GitTarget is asked to apply
 	// the branch after this request pushes a commit. "AsDefinedOnClaim"
@@ -57,7 +57,7 @@ type SaveRequestSpec struct {
 	CatchUp CatchUpPolicy `json:"catchUp,omitempty"`
 }
 
-// CatchUpPolicy is when a SaveRequest's commit is applied by a GitTarget's
+// CatchUpPolicy is when a RemoteSaveRequest's commit is applied by a GitTarget's
 // applier.
 type CatchUpPolicy string
 
@@ -68,12 +68,12 @@ const (
 	CatchUpAfterPush CatchUpPolicy = "AfterPush"
 )
 
-// SaveRequestWindow is how long a SaveRequest waits for a commit window, and
+// RemoteSaveRequestWindow is how long a RemoteSaveRequest waits for a commit window, and
 // when that window closes. A window is only ever opened by an edit; a
 // request waits for one and never opens one.
-// +kubebuilder:validation:XValidation:rule="duration(self.attachTimeout) == duration(oldSelf.attachTimeout) && duration(self.maxDuration) == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))",message="SaveRequest spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="duration(self.attachTimeout) == duration(oldSelf.attachTimeout) && duration(self.maxDuration) == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))",message="RemoteSaveRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)",message="spec.window.idleTimeout must not exceed maxDuration"
-type SaveRequestWindow struct {
+type RemoteSaveRequestWindow struct {
 	// AttachTimeout is how long the request waits for a commit window, as a
 	// Go duration, from when GitOps Reverser picks the request up, which is
 	// after its own author was found. A request whose wait ran out never
@@ -105,8 +105,8 @@ type SaveRequestWindow struct {
 	MaxDuration *metav1.Duration `json:"maxDuration,omitempty"`
 }
 
-// SaveRequestStatus defines the observed state of SaveRequest.
-type SaveRequestStatus struct {
+// RemoteSaveRequestStatus defines the observed state of RemoteSaveRequest.
+type RemoteSaveRequestStatus struct {
 	// ObservedGeneration is the latest generation observed by GitOps Reverser.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -121,9 +121,9 @@ type SaveRequestStatus struct {
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	Targets []SaveRequestTarget `json:"targets,omitempty"`
+	Targets []RemoteSaveRequestTarget `json:"targets,omitempty"`
 
-	// Conditions are the latest observations of this SaveRequest's state.
+	// Conditions are the latest observations of this RemoteSaveRequest's state.
 	// Ready is True once the request ended without error in every GitTarget,
 	// with reason "Committed" when one of them committed, and otherwise the
 	// reason of the first: "NoWindow", "AlreadyPresent", "WindowMismatch",
@@ -142,8 +142,8 @@ type SaveRequestStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
-// SaveRequestTarget is the save in one GitTarget.
-type SaveRequestTarget struct {
+// RemoteSaveRequestTarget is the save in one GitTarget.
+type RemoteSaveRequestTarget struct {
 	// GitTarget is the GitTarget, as namespace/name on the cluster GitOps
 	// Reverser runs in.
 	// +required
@@ -186,40 +186,40 @@ type SaveRequestTarget struct {
 // +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// SaveRequest asks GitOps Reverser to save the edits made in its namespace:
+// RemoteSaveRequest asks GitOps Reverser to save the edits made in its namespace:
 // the commit window of each GitTarget that mirrors this namespace gets its
 // message and closes on its timers. Create it on the cluster the edits were
 // made on, as JSON. Its creator is found from this cluster's audit events,
 // as the edits' authors are, so it saves only its creator's edits; on a
 // cluster with no audit it names nobody, and saves edits that name nobody.
 // Its spec is immutable, and status reports each GitTarget's commit.
-type SaveRequest struct {
+type RemoteSaveRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of SaveRequest. It is immutable after
+	// spec defines the desired state of RemoteSaveRequest. It is immutable after
 	// creation.
 	// +required
-	Spec SaveRequestSpec `json:"spec"`
+	Spec RemoteSaveRequestSpec `json:"spec"`
 
-	// status defines the observed state of SaveRequest.
+	// status defines the observed state of RemoteSaveRequest.
 	// +optional
-	Status SaveRequestStatus `json:"status,omitempty,omitzero"`
+	Status RemoteSaveRequestStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// SaveRequestList contains a list of SaveRequest.
-type SaveRequestList struct {
+// RemoteSaveRequestList contains a list of RemoteSaveRequest.
+type RemoteSaveRequestList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 
-	Items []SaveRequest `json:"items"`
+	Items []RemoteSaveRequest `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&SaveRequest{}, &SaveRequestList{})
+	SchemeBuilder.Register(&RemoteSaveRequest{}, &RemoteSaveRequestList{})
 }

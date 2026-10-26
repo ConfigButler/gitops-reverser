@@ -128,36 +128,36 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 	// Diagnostic first, so its numbers reach the artifacts even when the gating
 	// audit invariant below fails the suite.
 	reportAttributionStats()
-	reportCommitRequestOutcomes()
+	reportSaveRequestOutcomes()
 	assertNoAnomalousAuditOutcomes()
 })
 
-// commitRequestOutcomes is the bounded outcome set of gitopsreverser_commit_requests_total, in the
+// saveRequestOutcomes is the bounded outcome set of gitopsreverser_save_requests_total, in the
 // order a reader wants them: the success, the two refusals, the no-op, then the fault.
-var commitRequestOutcomes = []string{
+var saveRequestOutcomes = []string{
 	"committed", "window_mismatch", "no_window", "already_present", "failed",
 }
 
-// reportCommitRequestOutcomes prints the run's CommitRequest outcome distribution.
+// reportSaveRequestOutcomes prints the run's SaveRequest outcome distribution.
 //
 // DIAGNOSTIC, not a gate. A suite-wide "none failed" assertion would first have to establish that
 // the last save had been scraped, and until that is handled a green result would mean less than it
 // looks. The wiring claim this counter has to support is made where the evidence is local: the
-// Commit Request spec asserts its own save appears, scoped to its own GitTarget.
+// Save Request spec asserts its own save appears, scoped to its own GitTarget.
 //
 // The breakdown is the point. `committed` is what the happy path looks like and the only value
 // these specs produce: `window_mismatch` needs two authors contending for one branch's window,
 // which nothing here arranges. The per-run reset means these numbers are this run's.
-func reportCommitRequestOutcomes() {
-	By("reporting the run's CommitRequest terminal outcomes")
+func reportSaveRequestOutcomes() {
+	By("reporting the run's SaveRequest terminal outcomes")
 	ensurePrometheusClient()
 	verifyPrometheusAvailable()
 
-	for _, oc := range commitRequestOutcomes {
+	for _, oc := range saveRequestOutcomes {
 		n, err := queryPrometheus(fmt.Sprintf(
-			`sum(max_over_time(gitopsreverser_commit_requests_total{outcome=%q}[2h])) or vector(0)`, oc))
+			`sum(max_over_time(gitopsreverser_save_requests_total{outcome=%q}[2h])) or vector(0)`, oc))
 		if err == nil {
-			_, _ = fmt.Fprintf(GinkgoWriter, "   commit request outcome %-16s = %.0f\n", oc, n)
+			_, _ = fmt.Fprintf(GinkgoWriter, "   save request outcome %-16s = %.0f\n", oc, n)
 		}
 	}
 }

@@ -10,7 +10,7 @@ import "time"
 // The cooldown in maybeSchedulePush spaces SUCCESSFUL pushes; it says nothing about failed ones,
 // because lastPushAt advances only on success. Without a schedule of its own a failure had two
 // outcomes, both wrong: a branch that then went quiet kept its work indefinitely (and any
-// CommitRequest riding it stayed WaitingForPush, since the controller never fails a request the
+// SaveRequest riding it stayed WaitingForPush, since the controller never fails a request the
 // worker holds), and a branch that kept receiving commits spent one failed attempt on each of them.
 //
 // So a failed attempt schedules the next one: due one backoff later, 10s doubling to 5m, on a timer

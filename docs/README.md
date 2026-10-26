@@ -11,7 +11,7 @@ If you only want the supported product docs, start with the files below.
 
 - [`../README.md`](../README.md): product overview and supported workflows
 - [`quickstart.md`](quickstart.md): installation and your first Git commit
-- [`demo/commit-window.md`](demo/commit-window.md): two resources and a `CommitRequest`
+- [`demo/commit-window.md`](demo/commit-window.md): two resources and a `SaveRequest`
 - [`configuration.md`](configuration.md): core configuration objects, every setting, and how
   they fit together
 - [`commit-messages.md`](commit-messages.md): the three commit message templates and their context

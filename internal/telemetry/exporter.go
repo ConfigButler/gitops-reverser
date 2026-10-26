@@ -44,7 +44,7 @@ var (
 	// GitTarget: a resync can apply every document and then abort on a precondition, writing
 	// nothing at all.
 	GitDocumentsTotal metric.Int64Counter
-	// CommitRequestsTotal counts CommitRequests reaching a terminal outcome, labelled by
+	// SaveRequestsTotal counts SaveRequests reaching a terminal outcome, labelled by
 	// {outcome, gittarget_namespace, gittarget_name}. outcome is committed / no_window /
 	// window_mismatch / already_present / failed.
 	//
@@ -58,13 +58,13 @@ var (
 	//
 	// An UNRESOLVED target publishes the empty pair rather than the requested name. spec.gitTargetRef
 	// is whatever the client wrote, so labelling it would let anyone with create rights on
-	// commitrequests mint unbounded series by naming targets that do not exist; the requested
+	// saverequests mint unbounded series by naming targets that do not exist; the requested
 	// reference stays on the object's conditions and in the logs.
 	//
 	// It is the fleet view resource_condition deliberately refuses to give this kind. A
-	// CommitRequest is created once per save, so a gauge per object would churn a series
+	// SaveRequest is created once per save, so a gauge per object would churn a series
 	// continuously; a counter over terminal outcomes is bounded by the enum instead. The pointer
-	// that used to stand in for it, git_commits_total{message_source="commit_request"}, counts
+	// that used to stand in for it, git_commits_total{message_source="save_request"}, counts
 	// only the requests that succeeded AND were used, so the whole failure population had no
 	// series at all — and this is the one object a human waits on synchronously. A request that
 	// does not land still produces a green, pushed commit carrying a GENERATED message instead of
@@ -75,19 +75,19 @@ var (
 	//
 	// COUNTING SEMANTICS, because this counter cannot promise what it looks like it promises. It
 	// counts one increment per TERMINAL DECISION ATTEMPT, recorded outside the status-write retry
-	// loop. That is not once per CommitRequest: a status write that fails permanently is requeued
+	// loop. That is not once per SaveRequest: a status write that fails permanently is requeued
 	// and re-decides, and restart recovery re-reconciles any request whose terminal status never
-	// persisted (documented at CommitRequestReconciler.SetupWithManager as a knowingly-accepted
+	// persisted (documented at SaveRequestReconciler.SetupWithManager as a knowingly-accepted
 	// gap). Deduplicating across invocations needs a durable marker on the object, which is an API
 	// change rather than an instrument. Read rates and ratios from it, not exact request counts.
-	CommitRequestsTotal metric.Int64Counter
+	SaveRequestsTotal metric.Int64Counter
 	// GitCommitsTotal counts commit batches that REACHED THE REMOTE, labelled by the recording
 	// BranchWorker's identity {gitbranch_namespace, gitbranch_name, provider_namespace,
 	// provider_name} (gitbranch_* and provider_* below) plus author_kind and
 	// message_source. Live, snapshot and resync paths all feed this one counter; message_source
-	// (live / reconcile / commit_request / commit_request_framed / commit_request_fallback) is what
+	// (live / reconcile / save_request / save_request_framed / save_request_fallback) is what
 	// tells them apart. It counts commits that USED a
-	// request-supplied message, not CommitRequests: a request omitting spec.message renders through
+	// request-supplied message, not SaveRequests: a request omitting spec.message renders through
 	// liveTemplate and counts as live.
 	//
 	// It is recorded on a successful push, not on local commit creation. Recorded at creation it
@@ -186,7 +186,7 @@ var (
 	//
 	// This is the head-of-line signal, and it is a proven failure rather than a theoretical one: a
 	// slow attribution resolution blocks the events queued BEHIND it on the same single-threaded
-	// stream, which broke a CommitRequest e2e spec and was only ever visible by correlating two
+	// stream, which broke a SaveRequest e2e spec and was only ever visible by correlating two
 	// log lines by hand. The attribution wait histogram times each resolution in isolation and
 	// cannot see the delay one imposes on its neighbours; occupancy can, because a stream that is
 	// busy is a stream nothing else is being read from.
@@ -257,7 +257,7 @@ var (
 	// (idle_timeout, max_duration, attach_next, identity_change, buffer_limit, resync_before_apply,
 	// shutdown, foreign_commit for a Git host's push notice, apply_due for the
 	// flush before an apply); timer_source says whose timers were in effect: the GitTarget's,
-	// or a CommitRequest's that attached and replaced them. Every window is counted exactly once, at
+	// or a SaveRequest's that attached and replaced them. Every window is counted exactly once, at
 	// the start of its finalize, so a window that then produces no diff or fails to commit is counted
 	// too. A push replay rebuilds commits and closes no window, and a CommitEmpty record has none.
 	//
@@ -580,7 +580,7 @@ func registerCounters() error {
 	counters := []cSpec{
 		{"gitopsreverser_git_documents_total", &GitDocumentsTotal},
 		{"gitopsreverser_git_commits_total", &GitCommitsTotal},
-		{"gitopsreverser_commit_requests_total", &CommitRequestsTotal},
+		{"gitopsreverser_save_requests_total", &SaveRequestsTotal},
 		{"gitopsreverser_git_commit_failures_total", &GitCommitFailuresTotal},
 		{"gitopsreverser_git_writes_dropped_total", &GitWritesDroppedTotal},
 		{"gitopsreverser_git_commit_windows_total", &GitCommitWindowsTotal},

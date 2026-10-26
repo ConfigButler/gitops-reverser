@@ -186,7 +186,7 @@ var _ = BeforeSuite(func() {
 	// committer immediately, and a Finalizer that never resolves keeps requests in the
 	// Progressing state. Neither ever completes, so these specs cover only the
 	// initial in-progress stamp and the terminal short-circuit.
-	err = (&CommitRequestReconciler{
+	err = (&SaveRequestReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
 		Finalizer:    &fakeFinalizer{resolved: false},

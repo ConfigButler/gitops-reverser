@@ -331,15 +331,15 @@ func main() {
 	// Setup watch manager (must be after controllers are set up)
 	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
-	// SaveRequests are saves made on a source cluster, next to the edits they save: served on every
-	// KubeProvider whose spec.saveRequests is Enabled, attributed from that cluster's audit facts.
-	fatalIfErr(mgr.Add(&watch.SaveRequestServer{
+	// RemoteSaveRequests are saves made on a source cluster, next to the edits they save: served on every
+	// KubeProvider whose spec.remoteSaveRequests is Enabled, attributed from that cluster's audit facts.
+	fatalIfErr(mgr.Add(&watch.RemoteSaveRequestServer{
 		Manager:   watchMgr,
 		Client:    mgr.GetClient(),
 		Finalizer: eventRouter,
-		TTL:       cfg.commitRequestTTL,
-		Log:       ctrl.Log.WithName("saverequests"),
-	}), "unable to add the SaveRequest server")
+		TTL:       cfg.saveRequestTTL,
+		Log:       ctrl.Log.WithName("remotesaverequests"),
+	}), "unable to add the RemoteSaveRequest server")
 
 	// The GitBranch, GitTarget and applier claim controllers find a GitProvider's GitBranches, in any
 	// namespace, through this index.
@@ -417,7 +417,7 @@ func main() {
 	// lives in its own Redis corner (author:v1:command), independent of
 	// --author-attribution (which governs mirrored-resource attribution). It is wired
 	// whenever the admission server is on; the controller reads the captured submitter
-	// back with no wait (docs/spec/commitrequest-admission-authorship.md).
+	// back with no wait (docs/spec/saverequest-admission-authorship.md).
 	//
 	// AuthorLookup must be a nil interface — not a non-nil interface wrapping a nil
 	// *CommandAuthorStore — when the webhook is off, so the controller's nil check
@@ -433,19 +433,19 @@ func main() {
 				"and recorded as the request's named actor")
 		} else {
 			setupLog.Info("validate-operator-types webhook enabled without Redis: command author capture is a " +
-				"no-op; CommitRequests claim no actor (AuthorAttributed=False). " +
+				"no-op; SaveRequests claim no actor (AuthorAttributed=False). " +
 				"Set --redis-addr to capture command authors.")
 		}
 	}
-	if err := (&controller.CommitRequestReconciler{
+	if err := (&controller.SaveRequestReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
 		APIReader:    mgr.GetAPIReader(),
 		Finalizer:    eventRouter,
 		AuthorLookup: commandAuthorLookup,
-		TTL:          cfg.commitRequestTTL,
+		TTL:          cfg.saveRequestTTL,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
+		setupLog.Error(err, "unable to create controller", "controller", "SaveRequest")
 		os.Exit(1)
 	}
 	if cfg.admissionWebhookEnabled {
@@ -505,7 +505,7 @@ type appConfig struct {
 	attributionFactTTL          time.Duration
 	attributionGrace            time.Duration
 	gitRefreshInterval          time.Duration
-	commitRequestTTL            time.Duration
+	saveRequestTTL              time.Duration
 	attributionMaxFactsPerType  int
 	attributionMaxFacts         int
 	attributionCollectionWindow time.Duration
@@ -596,7 +596,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"run without Redis: watches cold-replay on restart instead of resuming, and attribution needs "+
 			"--author-attribution-transport=memory. Required by --author-attribution-transport=redis when "+
 			"attribution is on. --admission-webhook still runs without it, but command-author capture is a "+
-			"no-op: CommitRequests claim no actor.")
+			"no-op: SaveRequests claim no actor.")
 	fs.BoolVar(&cfg.authorAttribution, "author-attribution", true,
 		"Name the real actor (human or service account) who caused each change as the Git commit author, "+
 			"resolved from matching audit facts; this runs the audit webhook ingress (default true). When "+
@@ -657,10 +657,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships unresolved, "+
 			"authored \"unknown (attribution unresolved)\" (duration string; default 3s). Larger values "+
 			"raise attribution hit-rate at the cost of commit latency.")
-	fs.DurationVar(&cfg.commitRequestTTL, "commit-request-ttl", controller.DefaultCommitRequestTTL,
-		"How long a CommitRequest is kept once it finishes (duration string; default 48h, 0 keeps "+
+	fs.DurationVar(&cfg.saveRequestTTL, "save-request-ttl", controller.DefaultSaveRequestTTL,
+		"How long a SaveRequest is kept once it finishes (duration string; default 48h, 0 keeps "+
 			"them). The deletion time is written onto the request as the "+
-			controller.CommitRequestDeleteAfterAnnotation+" annotation when it finishes; remove or edit "+
+			controller.SaveRequestDeleteAfterAnnotation+" annotation when it finishes; remove or edit "+
 			"that annotation to keep the request or move its deletion.")
 	fs.DurationVar(&cfg.gitRefreshInterval, "git-refresh-interval", controller.DefaultGitRefreshInterval,
 		"How often an IDLE GitTarget re-proves where its branch is on the remote (duration string; "+
@@ -769,8 +769,8 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	}
 	// Rejected rather than read as "keep everything": a negative age has no meaning, and 0 already
 	// says that.
-	if cfg.commitRequestTTL < 0 {
-		return appConfig{}, fmt.Errorf("commit-request-ttl must be >= 0, got %s", cfg.commitRequestTTL)
+	if cfg.saveRequestTTL < 0 {
+		return appConfig{}, fmt.Errorf("save-request-ttl must be >= 0, got %s", cfg.saveRequestTTL)
 	}
 
 	bufferQuantity, err := resource.ParseQuantity(branchBufferMaxSizeFlag)
@@ -939,7 +939,7 @@ func validateAdmissionWebhookConfig(cfg appConfig) error {
 		return nil
 	}
 	// No redis-addr requirement here: the admission webhook stays enabled without Redis and
-	// simply no-ops command-author capture (CommitRequests claim no actor). Redis is
+	// simply no-ops command-author capture (SaveRequests claim no actor). Redis is
 	// wired only when configured; see the commandAuthorStore setup.
 	if _, _, err := splitBindAddress(cfg.admissionWebhookBindAddress); err != nil {
 		return fmt.Errorf("invalid admission-webhook-bind-address %q: %w", cfg.admissionWebhookBindAddress, err)

@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.23.0
-  name: commitrequests.configbutler.ai
+  name: saverequests.configbutler.ai
 spec:
   group: configbutler.ai
   names:
-    kind: CommitRequest
-    listKind: CommitRequestList
-    plural: commitrequests
-    singular: commitrequest
+    kind: SaveRequest
+    listKind: SaveRequestList
+    plural: saverequests
+    singular: saverequest
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -54,7 +54,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          CommitRequest asks for a save: it attaches to its author's current or next
+          SaveRequest asks for a save: it attaches to its author's current or next
           commit window on a GitTarget, closes that window on its own timers, and
           gives the commit its message. With spec.window.author, and where the
           GitTarget allows it, it may also claim a window whose writes name no
@@ -80,7 +80,7 @@ spec:
             type: object
           spec:
             description: |-
-              spec defines the desired state of CommitRequest. It is immutable after
+              spec defines the desired state of SaveRequest. It is immutable after
               creation.
             properties:
               catchUp:
@@ -220,7 +220,7 @@ spec:
                       rule: duration(self) <= duration('5m')
                 type: object
                 x-kubernetes-validations:
-                - message: CommitRequest spec is immutable after creation
+                - message: SaveRequest spec is immutable after creation
                   rule: self.attach == oldSelf.attach && self.author == oldSelf.author
                     && duration(self.attachTimeout) == duration(oldSelf.attachTimeout)
                     && duration(self.maxDuration) == duration(oldSelf.maxDuration)
@@ -235,7 +235,7 @@ spec:
             - gitTargetRef
             type: object
             x-kubernetes-validations:
-            - message: CommitRequest spec is immutable after creation
+            - message: SaveRequest spec is immutable after creation
               rule: self.gitTargetRef == oldSelf.gitTargetRef && has(self.message)
                 == has(oldSelf.message) && (!has(self.message) || self.message ==
                 oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit)
@@ -248,7 +248,7 @@ spec:
               rule: '!has(self.whenNothingToCommit) || self.whenNothingToCommit !=
                 ''CommitEmpty'' || has(self.message)'
           status:
-            description: status defines the observed state of CommitRequest.
+            description: status defines the observed state of SaveRequest.
             properties:
               appliedRevision:
                 description: |-
@@ -267,7 +267,7 @@ spec:
                 type: string
               conditions:
                 description: |-
-                  Conditions are the latest observations of this CommitRequest's state.
+                  Conditions are the latest observations of this SaveRequest's state.
                   Reconciling and Stalled follow kstatus. AuthorAttributed says whether the
                   request's creator, recorded at admission, names the commit author; False
                   is not a failure and does not affect Ready.

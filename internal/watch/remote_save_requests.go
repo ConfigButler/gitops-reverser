@@ -29,10 +29,10 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// A SaveRequest is a save made on a source cluster, next to the edits it saves
+// A RemoteSaveRequest is a save made on a source cluster, next to the edits it saves
 // (docs/future/source-side-save-plan.md). The server watches them on every KubeProvider whose
-// spec.saveRequests is "Enabled", through that provider's identity, and serves each one the way the
-// CommitRequest controller serves a CommitRequest: it attaches the request to the commit window of
+// spec.remoteSaveRequests is "Enabled", through that provider's identity, and serves each one the way the
+// SaveRequest controller serves a SaveRequest: it attaches the request to the commit window of
 // every GitTarget that mirrors the request's namespace from that cluster, polls the branch workers
 // for the outcomes, and writes them back to the request's status on the source cluster.
 //
@@ -43,35 +43,35 @@ import (
 // missing; it is refused rather than attached, so it cannot claim the window that should stay
 // unattributed.
 
-// +kubebuilder:rbac:groups=source.configbutler.ai,resources=saverequests,verbs=get;list;watch;delete
-// +kubebuilder:rbac:groups=source.configbutler.ai,resources=saverequests/status,verbs=get;update
+// +kubebuilder:rbac:groups=source.configbutler.ai,resources=remotesaverequests,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=source.configbutler.ai,resources=remotesaverequests/status,verbs=get;update
 
-// saveRequestGVR() is the served resource of a SaveRequest.
-func saveRequestGVR() schema.GroupVersionResource {
-	return sourcev1alpha1.GroupVersion.WithResource("saverequests")
+// remoteSaveRequestGVR() is the served resource of a RemoteSaveRequest.
+func remoteSaveRequestGVR() schema.GroupVersionResource {
+	return sourcev1alpha1.GroupVersion.WithResource("remotesaverequests")
 }
 
 const (
-	// saveRequestProviderResync is how often the server looks for KubeProviders to serve.
-	saveRequestProviderResync = 10 * time.Second
-	// saveRequestReconnect is the wait before a watch of a cluster's SaveRequests opens again.
-	saveRequestReconnect = 10 * time.Second
-	// saveRequestRelist ends a watch this often, so finished requests past their TTL are deleted.
-	saveRequestRelist = 5 * time.Minute
-	// saveRequestPoll is how often a request's outcome is asked for.
-	saveRequestPoll = time.Second
-	// saveRequestPushAllowance is what a request may take beyond its own waits: the push, its
+	// remoteSaveRequestProviderResync is how often the server looks for KubeProviders to serve.
+	remoteSaveRequestProviderResync = 10 * time.Second
+	// remoteSaveRequestReconnect is the wait before a watch of a cluster's RemoteSaveRequests opens again.
+	remoteSaveRequestReconnect = 10 * time.Second
+	// remoteSaveRequestRelist ends a watch this often, so finished requests past their TTL are deleted.
+	remoteSaveRequestRelist = 5 * time.Minute
+	// remoteSaveRequestPoll is how often a request's outcome is asked for.
+	remoteSaveRequestPoll = time.Second
+	// remoteSaveRequestPushAllowance is what a request may take beyond its own waits: the push, its
 	// cooldown and a retry. Past it, a request no worker holds is withdrawn.
-	saveRequestPushAllowance = 2 * time.Minute
-	// saveRequestApplyLost is how long a save's apply may stay unknown to its worker before it is
+	remoteSaveRequestPushAllowance = 2 * time.Minute
+	// remoteSaveRequestApplyLost is how long a save's apply may stay unknown to its worker before it is
 	// reported lost: GitOps Reverser restarted, or the record aged out.
-	saveRequestApplyLost = time.Minute
+	remoteSaveRequestApplyLost = time.Minute
 	// defaultSaveAttachTimeout and defaultSaveMaxDuration are the window when a request sets none.
 	defaultSaveAttachTimeout = 5 * time.Second
 	defaultSaveMaxDuration   = 2 * time.Second
 )
 
-// SaveRequest reasons, on the Ready condition and each target.
+// RemoteSaveRequest reasons, on the Ready condition and each target.
 const (
 	saveReasonCommitted        = "Committed"
 	saveReasonNoWindow         = "NoWindow"
@@ -85,17 +85,17 @@ const (
 	saveReasonApplied          = "Applied"
 )
 
-// SaveFinalizer is what serves a save once it is attached: the CommitRequest service of the event
+// SaveFinalizer is what serves a save once it is attached: the SaveRequest service of the event
 // router, which owns the branch workers.
 type SaveFinalizer interface {
-	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
-	WithdrawCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
-	LookupCommitRequestApply(ctx context.Context, attach git.AttachCommitRequest) (git.SaveApply, bool, error)
+	ServiceSaveRequest(ctx context.Context, attach git.AttachSaveRequest) (git.FinalizeResult, bool, error)
+	WithdrawSaveRequest(ctx context.Context, attach git.AttachSaveRequest) (git.FinalizeResult, bool, error)
+	LookupSaveRequestApply(ctx context.Context, attach git.AttachSaveRequest) (git.SaveApply, bool, error)
 }
 
-// SaveRequestServer serves the SaveRequests of every KubeProvider that enables them. It runs on the
+// RemoteSaveRequestServer serves the RemoteSaveRequests of every KubeProvider that enables them. It runs on the
 // leader only, as every status writer does.
-type SaveRequestServer struct {
+type RemoteSaveRequestServer struct {
 	// Manager is the watch manager: the source clusters' clients, their attribution, and which
 	// GitTargets mirror which namespace.
 	Manager *Manager
@@ -111,11 +111,11 @@ type SaveRequestServer struct {
 	dynamicClient func(ctx context.Context, provider k8stypes.NamespacedName) (dynamic.Interface, error)
 
 	mu       sync.Mutex
-	watchers map[k8stypes.NamespacedName]*saveRequestWatcher
+	watchers map[k8stypes.NamespacedName]*remoteSaveRequestWatcher
 }
 
-// saveRequestWatcher is the watch of one KubeProvider's SaveRequests.
-type saveRequestWatcher struct {
+// remoteSaveRequestWatcher is the watch of one KubeProvider's RemoteSaveRequests.
+type remoteSaveRequestWatcher struct {
 	provider k8stypes.NamespacedName
 	route    string
 	cancel   context.CancelFunc
@@ -124,8 +124,8 @@ type saveRequestWatcher struct {
 }
 
 // Start runs the server until ctx ends.
-func (s *SaveRequestServer) Start(ctx context.Context) error {
-	ticker := time.NewTicker(saveRequestProviderResync)
+func (s *RemoteSaveRequestServer) Start(ctx context.Context) error {
+	ticker := time.NewTicker(remoteSaveRequestProviderResync)
 	defer ticker.Stop()
 	for {
 		s.syncProviders(ctx)
@@ -138,24 +138,24 @@ func (s *SaveRequestServer) Start(ctx context.Context) error {
 	}
 }
 
-// syncProviders runs a watcher for every KubeProvider that enables SaveRequests, and stops the rest.
-func (s *SaveRequestServer) syncProviders(ctx context.Context) {
+// syncProviders runs a watcher for every KubeProvider that enables RemoteSaveRequests, and stops the rest.
+func (s *RemoteSaveRequestServer) syncProviders(ctx context.Context) {
 	var providers configv1alpha3.KubeProviderList
 	if err := s.Client.List(ctx, &providers); err != nil {
-		s.Log.V(1).Info("Cannot list KubeProviders for SaveRequests; will retry", "err", err.Error())
+		s.Log.V(1).Info("Cannot list KubeProviders for RemoteSaveRequests; will retry", "err", err.Error())
 		return
 	}
 	want := map[k8stypes.NamespacedName]string{}
 	for i := range providers.Items {
 		provider := &providers.Items[i]
-		if provider.DeletionTimestamp == nil && provider.Spec.SaveRequests == configv1alpha3.SaveRequestsEnabled {
+		if provider.DeletionTimestamp == nil && provider.Spec.RemoteSaveRequests == configv1alpha3.RemoteSaveRequestsEnabled {
 			want[provider.Key()] = provider.AuditRoute()
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.watchers == nil {
-		s.watchers = map[k8stypes.NamespacedName]*saveRequestWatcher{}
+		s.watchers = map[k8stypes.NamespacedName]*remoteSaveRequestWatcher{}
 	}
 	for key, watcher := range s.watchers {
 		if route, ok := want[key]; !ok || route != watcher.route {
@@ -168,13 +168,13 @@ func (s *SaveRequestServer) syncProviders(ctx context.Context) {
 			continue
 		}
 		watchCtx, cancel := context.WithCancel(ctx)
-		watcher := &saveRequestWatcher{provider: key, route: route, cancel: cancel}
+		watcher := &remoteSaveRequestWatcher{provider: key, route: route, cancel: cancel}
 		s.watchers[key] = watcher
 		go s.run(watchCtx, watcher)
 	}
 }
 
-func (s *SaveRequestServer) stopAll() {
+func (s *RemoteSaveRequestServer) stopAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, watcher := range s.watchers {
@@ -183,47 +183,47 @@ func (s *SaveRequestServer) stopAll() {
 	}
 }
 
-// run watches one KubeProvider's SaveRequests until its context ends, reconnecting after a failure.
-func (s *SaveRequestServer) run(ctx context.Context, watcher *saveRequestWatcher) {
+// run watches one KubeProvider's RemoteSaveRequests until its context ends, reconnecting after a failure.
+func (s *RemoteSaveRequestServer) run(ctx context.Context, watcher *remoteSaveRequestWatcher) {
 	log := s.Log.WithValues("kubeProvider", watcher.provider.String())
-	log.Info("Serving the SaveRequests of a KubeProvider")
+	log.Info("Serving the RemoteSaveRequests of a KubeProvider")
 	if s.Manager != nil && s.Manager.FactStreams != nil {
 		release := s.Manager.FactStreams.Acquire(
-			queue.FactStreamKeyFor(watcher.route, saveRequestGVR().GroupResource()),
+			queue.FactStreamKeyFor(watcher.route, remoteSaveRequestGVR().GroupResource()),
 		)
 		defer release()
 	}
 	for ctx.Err() == nil {
 		if err := s.session(ctx, log, watcher); err != nil && ctx.Err() == nil {
-			log.Info("The watch of SaveRequests ended; reconnecting", "err", err.Error())
+			log.Info("The watch of RemoteSaveRequests ended; reconnecting", "err", err.Error())
 		}
 		select {
 		case <-ctx.Done():
-		case <-time.After(saveRequestReconnect):
+		case <-time.After(remoteSaveRequestReconnect):
 		}
 	}
 }
 
-// session lists the cluster's SaveRequests and watches them, until the watch ends.
-func (s *SaveRequestServer) session(ctx context.Context, log logr.Logger, watcher *saveRequestWatcher) error {
+// session lists the cluster's RemoteSaveRequests and watches them, until the watch ends.
+func (s *RemoteSaveRequestServer) session(ctx context.Context, log logr.Logger, watcher *remoteSaveRequestWatcher) error {
 	dc, err := s.clusterClient(ctx, watcher.provider)
 	if err != nil {
 		return err
 	}
-	resource := dc.Resource(saveRequestGVR())
+	resource := dc.Resource(remoteSaveRequestGVR())
 	list, err := resource.List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("list SaveRequests: %w", err)
+		return fmt.Errorf("list RemoteSaveRequests: %w", err)
 	}
 	for i := range list.Items {
 		s.consider(ctx, log, watcher, resource, &list.Items[i])
 	}
-	timeout := int64(saveRequestRelist / time.Second)
+	timeout := int64(remoteSaveRequestRelist / time.Second)
 	w, err := resource.Watch(ctx, metav1.ListOptions{
 		ResourceVersion: list.GetResourceVersion(), AllowWatchBookmarks: true, TimeoutSeconds: &timeout,
 	})
 	if err != nil {
-		return fmt.Errorf("watch SaveRequests: %w", err)
+		return fmt.Errorf("watch RemoteSaveRequests: %w", err)
 	}
 	defer w.Stop()
 	for {
@@ -240,14 +240,14 @@ func (s *SaveRequestServer) session(ctx context.Context, log logr.Logger, watche
 					s.consider(ctx, log, watcher, resource, u)
 				}
 			case k8swatch.Error:
-				return fmt.Errorf("watch SaveRequests: %w", apierrors.FromObject(ev.Object))
+				return fmt.Errorf("watch RemoteSaveRequests: %w", apierrors.FromObject(ev.Object))
 			case k8swatch.Deleted, k8swatch.Bookmark:
 			}
 		}
 	}
 }
 
-func (s *SaveRequestServer) clusterClient(
+func (s *RemoteSaveRequestServer) clusterClient(
 	ctx context.Context,
 	provider k8stypes.NamespacedName,
 ) (dynamic.Interface, error) {
@@ -259,21 +259,21 @@ func (s *SaveRequestServer) clusterClient(
 
 // consider serves a request that has not finished and is not served yet, and deletes one that
 // finished longer than the TTL ago.
-func (s *SaveRequestServer) consider(
-	ctx context.Context, log logr.Logger, watcher *saveRequestWatcher, resource dynamic.NamespaceableResourceInterface,
+func (s *RemoteSaveRequestServer) consider(
+	ctx context.Context, log logr.Logger, watcher *remoteSaveRequestWatcher, resource dynamic.NamespaceableResourceInterface,
 	u *unstructured.Unstructured,
 ) {
-	var request sourcev1alpha1.SaveRequest
+	var request sourcev1alpha1.RemoteSaveRequest
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &request); err != nil {
-		log.Info("Cannot read a SaveRequest", "saveRequest", u.GetNamespace()+"/"+u.GetName(), "err", err.Error())
+		log.Info("Cannot read a RemoteSaveRequest", "remoteSaveRequest", u.GetNamespace()+"/"+u.GetName(), "err", err.Error())
 		return
 	}
-	if finishedAt, finished := saveRequestFinished(&request); finished {
+	if finishedAt, finished := remoteSaveRequestFinished(&request); finished {
 		if s.TTL > 0 && time.Since(finishedAt) > s.TTL && request.DeletionTimestamp == nil {
 			if err := resource.Namespace(request.Namespace).Delete(ctx, request.Name, metav1.DeleteOptions{
 				Preconditions: &metav1.Preconditions{UID: &request.UID},
 			}); err != nil && !apierrors.IsNotFound(err) {
-				log.V(1).Info("Cannot delete a finished SaveRequest", "saveRequest", request.Namespace+"/"+request.Name,
+				log.V(1).Info("Cannot delete a finished RemoteSaveRequest", "remoteSaveRequest", request.Namespace+"/"+request.Name,
 					"err", err.Error())
 			}
 		}
@@ -291,9 +291,9 @@ func (s *SaveRequestServer) consider(
 	}()
 }
 
-// saveRequestFinished reports whether a request has an outcome that changes no more, and since when:
+// remoteSaveRequestFinished reports whether a request has an outcome that changes no more, and since when:
 // Ready decided, and, for one that asked to catch up and committed, Applied decided too.
-func saveRequestFinished(request *sourcev1alpha1.SaveRequest) (time.Time, bool) {
+func remoteSaveRequestFinished(request *sourcev1alpha1.RemoteSaveRequest) (time.Time, bool) {
 	ready := apimeta.FindStatusCondition(request.Status.Conditions, "Ready")
 	if ready == nil || ready.Status == metav1.ConditionUnknown {
 		return time.Time{}, false
@@ -311,15 +311,15 @@ func saveRequestFinished(request *sourcev1alpha1.SaveRequest) (time.Time, bool) 
 
 // serve takes one request from attribution to its outcome, and to its apply when it asked to catch
 // up, writing each step to its status.
-func (s *SaveRequestServer) serve(
-	ctx context.Context, log logr.Logger, watcher *saveRequestWatcher, resource dynamic.ResourceInterface,
-	request *sourcev1alpha1.SaveRequest,
+func (s *RemoteSaveRequestServer) serve(
+	ctx context.Context, log logr.Logger, watcher *remoteSaveRequestWatcher, resource dynamic.ResourceInterface,
+	request *sourcev1alpha1.RemoteSaveRequest,
 ) {
-	log = log.WithValues("saveRequest", request.Namespace+"/"+request.Name)
+	log = log.WithValues("remoteSaveRequest", request.Namespace+"/"+request.Name)
 	status := request.Status.DeepCopy()
 	write := func() {
-		if err := writeSaveRequestStatus(ctx, resource, request, status); err != nil {
-			log.Info("Cannot write the SaveRequest's status", "err", err.Error())
+		if err := writeRemoteSaveRequestStatus(ctx, resource, request, status); err != nil {
+			log.Info("Cannot write the RemoteSaveRequest's status", "err", err.Error())
 		}
 	}
 	if err := git.ValidateLiteralCommitMessage(request.Spec.Message); err != nil {
@@ -337,13 +337,13 @@ func (s *SaveRequestServer) serve(
 			"no audit event of this cluster names who created this request, though the cluster sends audit "+
 				"events: its event went missing, so it saves nothing. Save again")
 		write()
-		log.Info("Refused a SaveRequest whose author no audit event names, on a cluster that sends them")
+		log.Info("Refused a RemoteSaveRequest whose author no audit event names, on a cluster that sends them")
 		return
 	}
 
 	targets, err := s.mirroringTargets(ctx, watcher.provider, request.Namespace)
 	if err != nil {
-		log.Info("Cannot find the GitTargets that mirror a SaveRequest's namespace; will retry", "err", err.Error())
+		log.Info("Cannot find the GitTargets that mirror a RemoteSaveRequest's namespace; will retry", "err", err.Error())
 		return
 	}
 	if len(targets) == 0 {
@@ -352,11 +352,11 @@ func (s *SaveRequestServer) serve(
 		write()
 		return
 	}
-	status.Targets = make([]sourcev1alpha1.SaveRequestTarget, len(targets))
-	attaches := make([]git.AttachCommitRequest, len(targets))
+	status.Targets = make([]sourcev1alpha1.RemoteSaveRequestTarget, len(targets))
+	attaches := make([]git.AttachSaveRequest, len(targets))
 	for i, target := range targets {
-		status.Targets[i] = sourcev1alpha1.SaveRequestTarget{GitTarget: target.String()}
-		attaches[i] = saveRequestAttach(request, target, author.Username, attribution)
+		status.Targets[i] = sourcev1alpha1.RemoteSaveRequestTarget{GitTarget: target.String()}
+		attaches[i] = remoteSaveRequestAttach(request, target, author.Username, attribution)
 	}
 	setSaveCondition(request, status, "Ready", metav1.ConditionUnknown, saveReasonSaving,
 		"waiting for the edits to reach a commit window")
@@ -364,7 +364,7 @@ func (s *SaveRequestServer) serve(
 
 	s.finalize(ctx, request, status, attaches)
 	write()
-	log.Info("SaveRequest saved", "reason", apimeta.FindStatusCondition(status.Conditions, "Ready").Reason,
+	log.Info("RemoteSaveRequest saved", "reason", apimeta.FindStatusCondition(status.Conditions, "Ready").Reason,
 		"author", status.Author)
 
 	if request.Spec.CatchUp == sourcev1alpha1.CatchUpAfterPush && readyReason(status) == saveReasonCommitted {
@@ -374,15 +374,15 @@ func (s *SaveRequestServer) serve(
 
 // resolveSaveAuthor finds the request's creator from the source cluster's audit facts, as a watched
 // edit's author is found.
-func (s *SaveRequestServer) resolveSaveAuthor(
-	ctx context.Context, route string, request *sourcev1alpha1.SaveRequest,
+func (s *RemoteSaveRequestServer) resolveSaveAuthor(
+	ctx context.Context, route string, request *sourcev1alpha1.RemoteSaveRequest,
 ) (git.UserInfo, git.AttributionOutcome) {
 	if s.Manager == nil || s.Manager.AuthorResolver == nil {
 		return git.UserInfo{}, git.AttributionNotAttempted
 	}
 	return s.Manager.AuthorResolver.ResolveAuthor(ctx, AuthorQuery{
 		AuditRoute:      route,
-		GVR:             saveRequestGVR(),
+		GVR:             remoteSaveRequestGVR(),
 		UID:             request.UID,
 		ResourceVersion: request.ResourceVersion,
 		Namespace:       request.Namespace,
@@ -394,7 +394,7 @@ func (s *SaveRequestServer) resolveSaveAuthor(
 
 // sentAuditFacts reports whether the KubeProvider has ever received an audit fact: its
 // AuditFactsReceived condition is True. A provider that cannot be read says no.
-func (s *SaveRequestServer) sentAuditFacts(ctx context.Context, provider k8stypes.NamespacedName) bool {
+func (s *RemoteSaveRequestServer) sentAuditFacts(ctx context.Context, provider k8stypes.NamespacedName) bool {
 	var kp configv1alpha3.KubeProvider
 	if err := s.Client.Get(ctx, provider, &kp); err != nil {
 		return false
@@ -404,7 +404,7 @@ func (s *SaveRequestServer) sentAuditFacts(ctx context.Context, provider k8stype
 
 // mirroringTargets are the GitTargets that mirror namespace from the KubeProvider: they name it, and
 // one of their running streams watches that namespace, or every namespace.
-func (s *SaveRequestServer) mirroringTargets(
+func (s *RemoteSaveRequestServer) mirroringTargets(
 	ctx context.Context, provider k8stypes.NamespacedName, namespace string,
 ) ([]types.ResourceReference, error) {
 	var targets configv1alpha3.GitTargetList
@@ -438,13 +438,13 @@ func (m *Manager) mirrorsNamespace(gitDest types.ResourceReference, namespace st
 	return false
 }
 
-// saveRequestAttach is the attach of a request to one GitTarget's window. Its identity carries the GitTarget,
+// remoteSaveRequestAttach is the attach of a request to one GitTarget's window. Its identity carries the GitTarget,
 // so one request saving several GitTargets on one branch worker is several requests there.
-func saveRequestAttach(
-	request *sourcev1alpha1.SaveRequest, target types.ResourceReference, author string,
+func remoteSaveRequestAttach(
+	request *sourcev1alpha1.RemoteSaveRequest, target types.ResourceReference, author string,
 	attribution git.AttributionOutcome,
-) git.AttachCommitRequest {
-	attach := git.AttachCommitRequest{
+) git.AttachSaveRequest {
+	attach := git.AttachSaveRequest{
 		Namespace:          request.Namespace,
 		Name:               request.Name,
 		UID:                string(request.UID) + "@" + target.String(),
@@ -475,20 +475,20 @@ func saveRequestAttach(
 
 // finalize polls every GitTarget's outcome until each one resolved, withdrawing those still unheld past
 // the request's bound, and records them on status.
-func (s *SaveRequestServer) finalize(
-	ctx context.Context, request *sourcev1alpha1.SaveRequest, status *sourcev1alpha1.SaveRequestStatus,
-	attaches []git.AttachCommitRequest,
+func (s *RemoteSaveRequestServer) finalize(
+	ctx context.Context, request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
+	attaches []git.AttachSaveRequest,
 ) {
-	bound := time.Now().Add(attaches[0].AttachTimeout + attaches[0].MaxDuration + saveRequestPushAllowance)
+	bound := time.Now().Add(attaches[0].AttachTimeout + attaches[0].MaxDuration + remoteSaveRequestPushAllowance)
 	resolved := make([]bool, len(attaches))
 	for remaining := len(attaches); remaining > 0; {
 		for i := range attaches {
 			if resolved[i] {
 				continue
 			}
-			ask := s.Finalizer.ServiceCommitRequest
+			ask := s.Finalizer.ServiceSaveRequest
 			if time.Now().After(bound) {
-				ask = s.Finalizer.WithdrawCommitRequest
+				ask = s.Finalizer.WithdrawSaveRequest
 			}
 			result, done, err := ask(ctx, attaches[i])
 			if err != nil || !done {
@@ -504,18 +504,18 @@ func (s *SaveRequestServer) finalize(
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(saveRequestPoll):
+		case <-time.After(remoteSaveRequestPoll):
 		}
 	}
 	setSaveReady(request, status)
 }
 
 // recordSaveOutcome records one GitTarget's outcome on its target status.
-func recordSaveOutcome(target *sourcev1alpha1.SaveRequestTarget, result git.FinalizeResult) {
+func recordSaveOutcome(target *sourcev1alpha1.RemoteSaveRequestTarget, result git.FinalizeResult) {
 	target.Branch = result.Branch
 	if result.Err != nil {
 		target.Reason, target.Message = saveReasonFailed, result.Err.Error()
-		if errors.Is(result.Err, git.ErrCommitRequestWithdrawn) {
+		if errors.Is(result.Err, git.ErrSaveRequestWithdrawn) {
 			target.Message = "the save was not served in time and was withdrawn"
 		}
 		return
@@ -540,7 +540,7 @@ func recordSaveOutcome(target *sourcev1alpha1.SaveRequestTarget, result git.Fina
 
 // setSaveReady sets Ready from the targets' outcomes: a failure in any fails the request, a commit in
 // any is Committed, and otherwise the first target's reason says why nothing was committed.
-func setSaveReady(request *sourcev1alpha1.SaveRequest, status *sourcev1alpha1.SaveRequestStatus) {
+func setSaveReady(request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus) {
 	for _, target := range status.Targets {
 		if target.Reason == saveReasonFailed {
 			message := target.GitTarget + ": " + target.Message
@@ -560,20 +560,20 @@ func setSaveReady(request *sourcev1alpha1.SaveRequest, status *sourcev1alpha1.Sa
 }
 
 // followApplies polls the apply each committed save asked for until every one is settled, and records
-// them; a save its worker knows nothing of for saveRequestApplyLost is lost.
-func (s *SaveRequestServer) followApplies(
-	ctx context.Context, request *sourcev1alpha1.SaveRequest, status *sourcev1alpha1.SaveRequestStatus,
-	attaches []git.AttachCommitRequest, write func(),
+// them; a save its worker knows nothing of for remoteSaveRequestApplyLost is lost.
+func (s *RemoteSaveRequestServer) followApplies(
+	ctx context.Context, request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
+	attaches []git.AttachSaveRequest, write func(),
 ) {
 	setSaveCondition(request, status, "Applied", metav1.ConditionUnknown, saveReasonApplying,
 		"waiting for the appliers to apply the commit")
 	write()
 	started := time.Now()
-	for s.pollApplies(ctx, status, attaches, time.Since(started) > saveRequestApplyLost) {
+	for s.pollApplies(ctx, status, attaches, time.Since(started) > remoteSaveRequestApplyLost) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(saveRequestPoll):
+		case <-time.After(remoteSaveRequestPoll):
 		}
 	}
 	setSaveApplied(request, status)
@@ -582,8 +582,8 @@ func (s *SaveRequestServer) followApplies(
 
 // pollApplies asks once for the apply of every committed target not settled yet, records it, and
 // reports whether one is still pending. Once lost, a save its worker knows nothing of is lost.
-func (s *SaveRequestServer) pollApplies(
-	ctx context.Context, status *sourcev1alpha1.SaveRequestStatus, attaches []git.AttachCommitRequest, lost bool,
+func (s *RemoteSaveRequestServer) pollApplies(
+	ctx context.Context, status *sourcev1alpha1.RemoteSaveRequestStatus, attaches []git.AttachSaveRequest, lost bool,
 ) bool {
 	pending := false
 	for i := range attaches {
@@ -591,7 +591,7 @@ func (s *SaveRequestServer) pollApplies(
 		if target.Reason != saveReasonCommitted || saveApplySettled(target.Applied) {
 			continue
 		}
-		apply, known, err := s.Finalizer.LookupCommitRequestApply(ctx, attaches[i])
+		apply, known, err := s.Finalizer.LookupSaveRequestApply(ctx, attaches[i])
 		switch {
 		case err == nil && known:
 			target.Applied, target.AppliedRevision = apply.Reason, apply.AppliedRevision
@@ -617,7 +617,7 @@ func saveApplySettled(reason string) bool {
 
 // setSaveApplied sets Applied from the committed targets' applies: False only for a commit a branch
 // lost, Unknown when one was lost track of, and True otherwise.
-func setSaveApplied(request *sourcev1alpha1.SaveRequest, status *sourcev1alpha1.SaveRequestStatus) {
+func setSaveApplied(request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus) {
 	reason, condition := saveReasonApplied, metav1.ConditionTrue
 	message := "every applier applied a revision that holds the commit, or needed no apply"
 	for _, target := range status.Targets {
@@ -634,7 +634,7 @@ func setSaveApplied(request *sourcev1alpha1.SaveRequest, status *sourcev1alpha1.
 	setSaveCondition(request, status, "Applied", condition, reason, message)
 }
 
-func readyReason(status *sourcev1alpha1.SaveRequestStatus) string {
+func readyReason(status *sourcev1alpha1.RemoteSaveRequestStatus) string {
 	if ready := apimeta.FindStatusCondition(status.Conditions, "Ready"); ready != nil {
 		return ready.Reason
 	}
@@ -642,7 +642,7 @@ func readyReason(status *sourcev1alpha1.SaveRequestStatus) string {
 }
 
 func setSaveCondition(
-	request *sourcev1alpha1.SaveRequest, status *sourcev1alpha1.SaveRequestStatus, conditionType string,
+	request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus, conditionType string,
 	condition metav1.ConditionStatus, reason, message string,
 ) {
 	status.ObservedGeneration = request.Generation
@@ -652,10 +652,10 @@ func setSaveCondition(
 	})
 }
 
-// writeSaveRequestStatus writes status onto the request's latest version, retrying a conflict.
-func writeSaveRequestStatus(
-	ctx context.Context, resource dynamic.ResourceInterface, request *sourcev1alpha1.SaveRequest,
-	status *sourcev1alpha1.SaveRequestStatus,
+// writeRemoteSaveRequestStatus writes status onto the request's latest version, retrying a conflict.
+func writeRemoteSaveRequestStatus(
+	ctx context.Context, resource dynamic.ResourceInterface, request *sourcev1alpha1.RemoteSaveRequest,
+	status *sourcev1alpha1.RemoteSaveRequestStatus,
 ) error {
 	fields, err := runtime.DefaultUnstructuredConverter.ToUnstructured(status)
 	if err != nil {
@@ -668,7 +668,7 @@ func writeSaveRequestStatus(
 			return err
 		}
 		if current.GetUID() != request.UID {
-			return fmt.Errorf("SaveRequest %s/%s was replaced", request.Namespace, request.Name)
+			return fmt.Errorf("RemoteSaveRequest %s/%s was replaced", request.Namespace, request.Name)
 		}
 		if err := unstructured.SetNestedMap(current.Object, fields, "status"); err != nil {
 			return err

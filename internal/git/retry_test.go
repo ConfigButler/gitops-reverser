@@ -5,7 +5,7 @@ package git
 // A failed publication schedules its own retry: a branch that goes quiet after the failure still
 // publishes, a branch that keeps receiving commits does not spend a push on each of them, and a
 // failure caused by a missing parent stays with parent recovery's schedule. These pin all three,
-// and the CommitRequest that rides the retained write.
+// and the SaveRequest that rides the retained write.
 
 import (
 	"context"
@@ -198,15 +198,15 @@ func TestPublicationRetry_AFailureAfterTheParentReturnsWaitsForRecovery(t *testi
 	assert.Equal(t, int32(2), attempts.Load(), "recovery's next deadline does")
 }
 
-// The user-facing half, on the real event loop: a CommitRequest riding a write whose push failed is
+// The user-facing half, on the real event loop: a SaveRequest riding a write whose push failed is
 // held (the controller never fails a held request), so before this it stayed WaitingForPush until
 // some unrelated write came along. It now resolves Committed on its own.
-func TestPublicationRetry_AHeldCommitRequestIsCommittedWithoutAnotherWrite(t *testing.T) {
+func TestPublicationRetry_AHeldSaveRequestIsCommittedWithoutAnotherWrite(t *testing.T) {
 	original := retryInitialBackoff
 	retryInitialBackoff = 50 * time.Millisecond
 	t.Cleanup(func() { retryInitialBackoff = original })
 
-	f := newRealServerNewBranch(t, "retry-held-commit-request", seedMain(t))
+	f := newRealServerNewBranch(t, "retry-held-save-request", seedMain(t))
 	attempts := failNextPushes(t, 1)
 	require.NoError(t, f.worker.Start(context.Background()))
 	t.Cleanup(f.worker.Stop)

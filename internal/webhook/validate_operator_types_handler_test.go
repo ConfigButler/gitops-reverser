@@ -37,8 +37,8 @@ func (f *fakeCommandAuthorRecorder) RecordCommandAuthor(
 	return f.err
 }
 
-func commitRequestResource() metav1.GroupVersionResource {
-	return metav1.GroupVersionResource{Group: "configbutler.ai", Version: "v1alpha3", Resource: "commitrequests"}
+func saveRequestResource() metav1.GroupVersionResource {
+	return metav1.GroupVersionResource{Group: "configbutler.ai", Version: "v1alpha3", Resource: "saverequests"}
 }
 
 // commandReview builds an admission.Request for a command CREATE with the given raw
@@ -72,7 +72,7 @@ func TestValidateOperatorTypesHandler_RecordsCommandAuthor(t *testing.T) {
 		},
 	}
 	resp := h.Handle(context.Background(),
-		commandReview(commitRequestResource(), `{"metadata":{"uid":"cr-uid"}}`, user, nil))
+		commandReview(saveRequestResource(), `{"metadata":{"uid":"cr-uid"}}`, user, nil))
 
 	assert.True(t, resp.Allowed)
 	require.Len(t, rec.calls, 1)
@@ -90,7 +90,7 @@ func TestValidateOperatorTypesHandler_NilStoreNoOp(t *testing.T) {
 	h := &ValidateOperatorTypesHandler{}
 
 	resp := h.Handle(context.Background(),
-		commandReview(commitRequestResource(), `{"metadata":{"uid":"cr-uid"}}`,
+		commandReview(saveRequestResource(), `{"metadata":{"uid":"cr-uid"}}`,
 			authnv1.UserInfo{Username: "alice"}, nil))
 
 	assert.True(t, resp.Allowed, "a missing author store never blocks a command")
@@ -102,7 +102,7 @@ func TestValidateOperatorTypesHandler_ServiceAccountSubmitter(t *testing.T) {
 
 	user := authnv1.UserInfo{Username: "system:serviceaccount:team-a:deployer"}
 	resp := h.Handle(context.Background(),
-		commandReview(commitRequestResource(), `{"metadata":{"uid":"sa-uid"}}`, user, nil))
+		commandReview(saveRequestResource(), `{"metadata":{"uid":"sa-uid"}}`, user, nil))
 
 	assert.True(t, resp.Allowed)
 	require.Len(t, rec.calls, 1)
@@ -129,7 +129,7 @@ func TestValidateOperatorTypesHandler_DryRunIsNotRecorded(t *testing.T) {
 	resp := h.Handle(
 		context.Background(),
 		commandReview(
-			commitRequestResource(),
+			saveRequestResource(),
 			`{"metadata":{"uid":"cr-uid"}}`,
 			authnv1.UserInfo{Username: "alice"},
 			&dryRun,
@@ -145,7 +145,7 @@ func TestValidateOperatorTypesHandler_MissingUIDIsNotRecorded(t *testing.T) {
 	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	resp := h.Handle(context.Background(),
-		commandReview(commitRequestResource(), `{"metadata":{}}`, authnv1.UserInfo{Username: "alice"}, nil))
+		commandReview(saveRequestResource(), `{"metadata":{}}`, authnv1.UserInfo{Username: "alice"}, nil))
 
 	assert.True(t, resp.Allowed)
 	assert.Empty(t, rec.calls, "without a uid the record cannot be keyed")
@@ -156,7 +156,7 @@ func TestValidateOperatorTypesHandler_NoUserIsNotRecorded(t *testing.T) {
 	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	resp := h.Handle(context.Background(),
-		commandReview(commitRequestResource(), `{"metadata":{"uid":"cr-uid"}}`, authnv1.UserInfo{}, nil))
+		commandReview(saveRequestResource(), `{"metadata":{"uid":"cr-uid"}}`, authnv1.UserInfo{}, nil))
 
 	assert.True(t, resp.Allowed)
 	assert.Empty(t, rec.calls, "an unauthenticated request names no author")
@@ -171,7 +171,7 @@ func TestValidateOperatorTypesHandler_RecordErrorStillAllows(t *testing.T) {
 	resp := h.Handle(
 		context.Background(),
 		commandReview(
-			commitRequestResource(),
+			saveRequestResource(),
 			`{"metadata":{"uid":"cr-uid"}}`,
 			authnv1.UserInfo{Username: "alice"},
 			nil,

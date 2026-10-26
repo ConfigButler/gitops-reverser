@@ -150,7 +150,7 @@ func applierClaimLoop(t *testing.T, targets ...client.Object) (*branchWorkerEven
 // holdApplies puts the loop in a state in which no flush can be made, so no apply is sent: a save is
 // registered, and it defines its own commit boundary (writeBusy). releaseApplies ends it.
 func holdApplies(l *branchWorkerEventLoop) {
-	l.pendingCRs = map[commitRequestID]*pendingCommitRequest{{Namespace: "team-a", Name: "save"}: {}}
+	l.pendingCRs = map[saveRequestID]*pendingSaveRequest{{Namespace: "team-a", Name: "save"}: {}}
 }
 
 func releaseApplies(l *branchWorkerEventLoop) { l.pendingCRs = nil }

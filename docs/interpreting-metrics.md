@@ -117,9 +117,9 @@ red is a panel nobody reads.
 Object names are labels here because these objects are configuration, bounded by how many someone
 wrote, as are the `GitTarget`, `GitBranch`, applier claim and `GitReceiver` names other families
 carry. The resources being mirrored are data, unbounded, and never a label
-([metrics-observability-plan.md](design/metrics-observability-plan.md) §7.1). `CommitRequest` is
+([metrics-observability-plan.md](design/metrics-observability-plan.md) §7.1). `SaveRequest` is
 excluded on the same reasoning: one is created per save, so it is data-shaped, and its state is
-read from `commit_requests_total` in aggregate and from the object's own conditions individually.
+read from `save_requests_total` in aggregate and from the object's own conditions individually.
 
 **Which configuration objects are not Ready?** The panel to start from:
 
@@ -206,7 +206,7 @@ boundary, the commit, the push. Background:
 | `git_queue_refusals_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `kind` | Work refused at enqueue: the queue was full, intake was paused through an outage, or the worker was stopping. `kind` is `write` / `attach` / `resync` / `refresh`. The producer keeps a refused item and offers it again: the watch delivers a write again from its cursor, the controller re-sends a save, a resync is gathered again, and the next reconcile asks for a refresh. What it can cost, when its watch cursor expires before the write comes back, is the write's own commit and, under `prune.mode: OnEvent`, a deleted object's removal from Git. |
 | `git_commit_failures_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `reason` | A live commit window that died between routing and pushing; a resync's failure is `git_resync_failures_total`. `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. An unreachable remote does not count: a decided window waits for the publication retry instead. |
 | `git_writes_dropped_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `reason` | A live event the branch worker dropped because its `GitTarget`'s render fidelity was not established. `reason` is `render_fidelity_diverged`: a rendered value does not match the live object, and every write is dropped until a fresh replay measures the folder clean. Or it is `render_fidelity_pending`: a collection of the `GitTarget` has not finished its replay, which closes every collection of that target until it does. A live event that meets a pending gate is held, not dropped, and committed with its author once the gate opens; it is counted here only when the hold gives up, 10 minutes after the first one was held or once the branch holds more than its retained-byte budget, and the worker then asks for a fresh snapshot, which commits the current state as the operator (a deletion comes back only under prune mode `Always`). Nothing replays a dropped write, so each one is an edit missing from Git until the object changes again or its collection replays. The worker logs the first drop under each gate status at Info, naming the collections the gate waits for, and each hold, release and give-up at Info. |
-| `git_commit_windows_total` | counter | `gittarget_namespace`, `gittarget_name`, `close_reason`, `timer_source` | One per closed commit window, whether or not it then produced a commit. `close_reason` is `idle_timeout` / `max_duration` / `attach_next` / `identity_change` / `buffer_limit` / `resync_before_apply` / `foreign_commit` (a Git host said the branch may have moved, so the window is published now) / `apply_due` (an apply came due for an applier on the branch, so the window's edits are published before the apply is sent) / `shutdown`; `timer_source` is `target` or `commit_request`. See [tuning commit windows](#tuning-commit-windows). |
+| `git_commit_windows_total` | counter | `gittarget_namespace`, `gittarget_name`, `close_reason`, `timer_source` | One per closed commit window, whether or not it then produced a commit. `close_reason` is `idle_timeout` / `max_duration` / `attach_next` / `identity_change` / `buffer_limit` / `resync_before_apply` / `foreign_commit` (a Git host said the branch may have moved, so the window is published now) / `apply_due` (an apply came due for an applier on the branch, so the window's edits are published before the apply is sent) / `shutdown`; `timer_source` is `target` or `save_request`. See [tuning commit windows](#tuning-commit-windows). |
 | `git_commit_window_duration_seconds` | histogram | `gittarget_namespace`, `gittarget_name` | How long each window collected: from the write that opened it to the start of its finalize. Its count equals `git_commit_windows_total` summed over `close_reason` and `timer_source`. |
 | `git_queue_depth` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
 | `git_retained_bytes` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | What the worker holds until a push lands, in the units of the retained-byte budget: the open window, the retained writes and waiting saves, each with a 1 KiB per-item charge. Serialized bytes, not heap. |
@@ -216,7 +216,7 @@ boundary, the commit, the push. Background:
 | `git_next_retry_timestamp_seconds` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | When the next attempt at the pending writes is due, as a Unix timestamp. No sample while no retry is scheduled. |
 | `git_materialization_failures_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `reason` | Attempts to commit decided writes that stopped before any push: `reason` is `unreachable` or `parent_unavailable`. Nothing is lost; the writes wait for the retry. A failure `git_pushes_total` cannot see, because no push cycle started. |
 | `git_branch_targets` | gauge | `gitbranch_namespace`, `gitbranch_name`, `gittarget_namespace`, `gittarget_name`, `source_cluster` | Always 1. The **join** between the GitTarget-labeled half of the pipeline and the GitBranch-labeled half: the `GitTarget`'s `spec.gitBranchRef`. Published per configured GitTarget, whether or not its GitBranch exists or its worker runs. |
-| `commit_requests_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | One per `CommitRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. A target that never resolved publishes the empty pair. See the counting note below. |
+| `save_requests_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | One per `SaveRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. A target that never resolved publishes the empty pair. See the counting note below. |
 | `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document at a resolved path. |
 | `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined. Every increment is a resource **absent** from the mirror. |
 | `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | `added` / `no_change` / `failed`. |
@@ -533,9 +533,9 @@ their writes into one commit batch, so the worker is the honest attribution unit
 `user`, `serviceaccount`, `committer`, or `unresolved`; reconcile/resync commits and
 configured-author mode use `committer`.
 
-`message_source` is `live`, `reconcile`, or one of three request values: `commit_request` (a save
-request's message committed verbatim, no `requestTemplate` configured), `commit_request_framed`
-(`requestTemplate` rendered), and `commit_request_fallback` (`requestTemplate` failed to render, so
+`message_source` is `live`, `reconcile`, or one of three request values: `save_request` (a save
+request's message committed verbatim, no `requestTemplate` configured), `save_request_framed`
+(`requestTemplate` rendered), and `save_request_fallback` (`requestTemplate` failed to render, so
 the message was committed verbatim instead).
 
 The fallback is the one to alert on. It is a **successful** commit (nothing is refused and no
@@ -544,7 +544,7 @@ looks exactly like one that was never configured:
 
 ```promql
 sum by (gitbranch_namespace, gitbranch_name) (
-  rate(gitopsreverser_git_commits_total{message_source="commit_request_fallback"}[15m])
+  rate(gitopsreverser_git_commits_total{message_source="save_request_fallback"}[15m])
 ) > 0
 ```
 
@@ -562,15 +562,15 @@ Prometheus pod scrape with `honor_labels=false` renames a bare `namespace` label
 selector would silently match nothing. The same reasoning applies to `watch_recovery_total` and
 `git_queue_depth`.
 
-`message_source` says where each commit's message came from: `commit_request` is text a
-`CommitRequest` supplied and that was used verbatim, `live` is a live window rendered through the
+`message_source` says where each commit's message came from: `save_request` is text a
+`SaveRequest` supplied and that was used verbatim, `live` is a live window rendered through the
 target's `liveTemplate`, and `reconcile` is a snapshot or resync rendered through
 `reconcileTemplate`. It is read from the same decision that renders the message, so it cannot
 report a source the renderer did not use.
 
-`commit_request` counts commits that USED a request-supplied message, **not** CommitRequests. A
+`save_request` counts commits that USED a request-supplied message, **not** SaveRequests. A
 request that omits `spec.message` takes the target's `liveTemplate`, so it counts as `live`, and a
-low `commit_request` share does not by itself mean requests are failing.
+low `save_request` share does not by itself mean requests are failing.
 
 **How much of the history is people naming their own changes?**
 
@@ -578,7 +578,7 @@ low `commit_request` share does not by itself mean requests are failing.
 sum by (message_source) (rate(gitopsreverser_git_commits_total[15m]))
 ```
 
-A `commit_request` share that falls to zero after a rollout **may** mean save requests stopped
+A `save_request` share that falls to zero after a rollout **may** mean save requests stopped
 reaching an open window, but omitted messages, saves that were no-ops, and pushes that never
 landed all read the same way here, because none of them produce a commit carrying a request
 message. Confirm against the requests themselves before changing the window: a request that
@@ -586,10 +586,10 @@ attached reports `Ready=True`, one that produced a pushed commit also reports `P
 `status.commit`, and one that gave up reports `Stalled=True`. Only if those show requests resolving
 without their message reaching a commit is the request's `window` worth tuning.
 
-`commit_requests_total` answers the same question in aggregate, which per-object conditions cannot:
+`save_requests_total` answers the same question in aggregate, which per-object conditions cannot:
 
 ```promql
-sum by (outcome) (rate(gitopsreverser_commit_requests_total[15m]))
+sum by (outcome) (rate(gitopsreverser_save_requests_total[15m]))
 ```
 
 **Which target's saves are failing?** The counter carries the GitTarget, so the fleet view above is
@@ -597,7 +597,7 @@ an aggregation rather than the only view available:
 
 ```promql
 sum by (gittarget_namespace, gittarget_name, outcome) (
-  rate(gitopsreverser_commit_requests_total[15m])
+  rate(gitopsreverser_save_requests_total[15m])
 )
 ```
 
@@ -618,13 +618,13 @@ seen during its wait, so a foreign window that closes before `attachTimeout` run
 `no_window` as "users are being refused" over-reports; reading only `committed` under-reports.
 
 **What one increment means.** One terminal DECISION, recorded outside the status-write retry loop.
-That is not one per `CommitRequest`: a terminal status that never persisted is re-decided when the
+That is not one per `SaveRequest`: a terminal status that never persisted is re-decided when the
 request is redelivered, and a restart re-reconciles anything non-terminal. Read rates and ratios
 from it rather than exact request counts.
 
 ### Tuning commit windows
 
-A GitTarget's `commit.window` timers decide when its changes become a commit, and a `CommitRequest`
+A GitTarget's `commit.window` timers decide when its changes become a commit, and a `SaveRequest`
 can bring its own. Two metrics show what those timers actually do.
 
 **Which timer ends the windows?** Every closed window is counted once, with what closed it and whose
@@ -657,7 +657,7 @@ picture toward `max_duration`.
   stopping.
 - `apply_due` closes the window because an apply came due for an applier on the branch: its edits
   are published at once, ahead of the push cooldown, so the apply includes them. A window a
-  `CommitRequest` holds is never closed this way; the apply waits for the save. Its share follows the
+  `SaveRequest` holds is never closed this way; the apply waits for the save. Its share follows the
   apply traffic (Git-side pushes, API creates, repairs), and no timer changes it. `foreign_commit`
   is the same early close for a push a Git host reported.
 
@@ -1421,7 +1421,7 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | `max by (gitbranch_namespace, gitbranch_name) (gitopsreverser_apply_appliers_held) > 0`, `for: 15m` | An applier is held behind the initial-snapshot barrier: a `GitTarget` naming its claim watches nothing, or its folder is missing. |
 | `sum by (applier_kind, claim_namespace, claim_name, reason) (rate(gitopsreverser_apply_requests_total{outcome="failed"}[15m])) > 0`, `for: 30m` | Apply requests keep failing for the named applier claim; the worker retries at its backoff, and the cluster runs older content than the branch meanwhile. |
 | `sum by (receiver_namespace, receiver_name) (increase(gitopsreverser_receiver_deliveries_total{outcome="rejected"}[15m])) > 0` | A Git host is calling a `GitReceiver` with the wrong secret, so foreign pushes are found only by the periodic refresh. |
-| `sum by (gitbranch_namespace, gitbranch_name) (rate(gitopsreverser_git_commits_total{message_source="commit_request_fallback"}[15m])) > 0` | A `requestTemplate` stopped rendering: saves still commit, with the message verbatim. |
+| `sum by (gitbranch_namespace, gitbranch_name) (rate(gitopsreverser_git_commits_total{message_source="save_request_fallback"}[15m])) > 0` | A `requestTemplate` stopped rendering: saves still commit, with the message verbatim. |
 | `gitopsreverser_resource_condition{type="Ready", status="False"} == 1`, `for: 15m` | A declared object has not been accepted. The `== 1` is not optional: each condition publishes one series per status, so the selector alone matches the two zeroes too. |
 | `gitopsreverser_resource_condition{type="Stalled", status="True"} == 1` | Permanently wedged: `Stalled` is the kstatus "nothing will retry" signal, so this needs a human and will not clear on its own. `reason` names the gate. |
 | any `gitopsreverser_*` series with `otel_metric_overflow="true"` | A metric family exceeded its per-instrument cardinality cap, so the labels identifying those series are gone and every query over that family is under-reporting. Raise the cap or cut a label. |
@@ -1442,7 +1442,7 @@ Listed so a missing panel is never read as a healthy zero. The plan for them is
 - **A relevance-filter breakdown beyond the ingest census.** `watch_events_total{outcome}` names
   where an event stopped; it does not attribute an `unchanged` to sanitization versus a genuine
   no-op diff.
-- **CommitRequest timing.** `commit_requests_total` counts how saves end; how long a save waited
+- **SaveRequest timing.** `save_requests_total` counts how saves end; how long a save waited
   to attach (including the waits that ran out), how long it took end to end, and whether a
   `no_window` save was recorded in an empty commit are not emitted yet.
 - **The reference dashboard and alert rules.** The queries in this document are the specification

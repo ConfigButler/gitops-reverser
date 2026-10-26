@@ -298,8 +298,8 @@ func TestPushCycle_ALostReplyThatLandedIsPublishedNotReplayed(t *testing.T) {
 	f := newLedgerFixture(t, "lost-reply", true)
 	f.createLedgerTarget("apps", nil)
 
-	record, err := f.worker.buildRequestRecordWrite(f.worker.ctx, &pendingCommitRequest{
-		id:                 commitRequestID{Namespace: "default", Name: "save", UID: "save-uid"},
+	record, err := f.worker.buildRequestRecordWrite(f.worker.ctx, &pendingSaveRequest{
+		id:                 saveRequestID{Namespace: "default", Name: "save", UID: "save-uid"},
 		author:             "alice",
 		gitTargetName:      ledgerTargetName,
 		gitTargetNamespace: "default",

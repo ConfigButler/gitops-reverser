@@ -1320,7 +1320,7 @@ func (m *Manager) attachAuthor(
 		Terminating:     u.GetDeletionTimestamp() != nil,
 	})
 	// Stamp the outcome even when no actor was named: an unresolved attribution is a fact the
-	// writer, the author_kind metric, and CommitRequest matching all need. Leaving it at the
+	// writer, the author_kind metric, and SaveRequest matching all need. Leaving it at the
 	// zero value would say "attribution was never attempted", which is exactly the conflation
 	// that made this loss invisible.
 	event.Attribution = outcome

@@ -107,7 +107,7 @@ func branchOnDisk(t *testing.T, repoDir, branch, content string) plumbing.Hash {
 
 // standbyRequest waits for a window and closes it at once: the write it attaches to is committed
 // and, in a cooldown, retained.
-func standbyRequest() *AttachCommitRequest {
+func standbyRequest() *AttachSaveRequest {
 	req := attachReq("alice", time.Hour)
 	req.GitTargetName = newBranchTarget
 	req.MaxDuration = 0

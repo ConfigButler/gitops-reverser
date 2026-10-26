@@ -46,8 +46,8 @@ three lifecycle classes and was unreadable spread across them. The rows below st
 | [`sops-single-file-no-multidoc.md`](sops-single-file-no-multidoc.md) | one encrypted file is one document |
 | [`scale-subresource-audit-rehydration.md`](scale-subresource-audit-rehydration.md) | history: the `/scale` field-patch design; a scale is now mirrored from the watch, and the field-patch writer is what remains |
 | [`commit-window-refactor.md`](commit-window-refactor.md) | one grouped commit = one (author, GitTarget) |
-| [`commitrequest-design.md`](commitrequest-design.md) | how a request binds to a same-actor commit window and reports its outcome |
-| [`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md) | a request's submitter comes from admission, present-or-never, apart from audit facts |
+| [`saverequest-design.md`](saverequest-design.md) | how a request binds to a same-actor commit window and reports its outcome |
+| [`saverequest-admission-authorship.md`](saverequest-admission-authorship.md) | a request's submitter comes from admission, present-or-never, apart from audit facts |
 | [`status-conditions-guide.md`](status-conditions-guide.md) | the conditions and reasons every kind reports |
 | [`gitpath-foreign-content-stringency.md`](gitpath-foreign-content-stringency.md) | a `GitTarget` owns its subtree and refuses foreign content; `.gittargetignore` |
 | [`unsupported-folder-refusal-plan.md`](unsupported-folder-refusal-plan.md) | history of the `GitPathAccepted` refusal of unsupported folder content |

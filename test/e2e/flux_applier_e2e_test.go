@@ -359,14 +359,14 @@ data:
 	})
 
 	// A save that asks to catch up is applied as soon as it is pushed, with catchUpAfter off, and its
-	// CommitRequest reports the apply: Applied=True with the revision Flux applied.
-	It("applies a save that asks to catch up, and reports it on the CommitRequest", func() {
+	// SaveRequest reports the apply: Applied=True with the revision Flux applied.
+	It("applies a save that asks to catch up, and reports it on the SaveRequest", func() {
 		const configMap, request = "applier-converge-edit", "applier-save-catch-up"
 		setFluxClaimCatchUpAfter(testNs, fluxName, "0s")
 
 		By("saving an API edit with catchUp: AfterPush")
 		_, err := kubectlRunWithStdin(testNs, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: CommitRequest
+kind: SaveRequest
 metadata:
   name: %s
   namespace: %s
@@ -387,17 +387,17 @@ spec:
 		By("the save is pushed, and Ready says only that")
 		var commit string
 		Eventually(func(g Gomega) {
-			g.Expect(commitRequestCondition(g, testNs, request, "Ready")).To(Equal("True"))
-			g.Expect(commitRequestField(g, testNs, request, "{.status.conditions[?(@.type==\"Ready\")].reason}")).
-				To(Equal(commitRequestReasonCommitted))
-			commit = commitRequestField(g, testNs, request, "{.status.commit}")
+			g.Expect(saveRequestCondition(g, testNs, request, "Ready")).To(Equal("True"))
+			g.Expect(saveRequestField(g, testNs, request, "{.status.conditions[?(@.type==\"Ready\")].reason}")).
+				To(Equal(saveRequestReasonCommitted))
+			commit = saveRequestField(g, testNs, request, "{.status.commit}")
 			g.Expect(commit).NotTo(BeEmpty())
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("the applier applies it at once, and Applied reports the revision")
 		Eventually(func(g Gomega) {
-			g.Expect(commitRequestCondition(g, testNs, request, "Applied")).To(Equal("True"))
-			g.Expect(commitRequestField(g, testNs, request, "{.status.appliedRevision}")).To(ContainSubstring(commit))
+			g.Expect(saveRequestCondition(g, testNs, request, "Applied")).To(Equal("True"))
+			g.Expect(saveRequestField(g, testNs, request, "{.status.appliedRevision}")).To(ContainSubstring(commit))
 			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(commit))
 			g.Expect(readClaimOperation(g, testNs, fluxClaimResource, fluxName).Reason).To(Equal("CatchUp"))
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())

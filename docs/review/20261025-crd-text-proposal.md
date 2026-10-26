@@ -108,7 +108,7 @@ the links track their default branches.
 
 ### 1. Explain the message override accurately
 
-Location: [CommitRequest.spec.message](../../api/v1alpha3/commitrequest_types.go).
+Location: [CommitRequest.spec.message](../../api/v1alpha3/saverequest_types.go).
 
 ```text
 Message supplies the requested commit message. Omitted, the GitTarget's

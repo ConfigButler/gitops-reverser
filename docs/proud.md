@@ -61,7 +61,7 @@ per process, so you can see exactly what ran concurrently and where the bottlene
 cluster is **reused** between runs via `.stamps`, not torn down. And when things go wrong:
 
 - **Ctrl-C, or a setup failure, preserves the entire live state** so you can poke around.
-- A **failed spec auto-dumps diagnostics** — events, `CommitRequest`s, controller logs, and a pod
+- A **failed spec auto-dumps diagnostics** — events, `SaveRequest`s, controller logs, and a pod
   describe — into the log and the Allure attachment.
 - The spec's **Git checkout survives** under `.stamps/repos/`, with a working remote and
   credentials, so you can `git log`, `git pull`, or `git push` the reversed history of a past run.

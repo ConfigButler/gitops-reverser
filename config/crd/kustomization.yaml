@@ -3,12 +3,12 @@ kind: Kustomization
 resources:
   - bases/configbutler.ai_argocdclaims.yaml
   - bases/configbutler.ai_clusterwatchrules.yaml
-  - bases/configbutler.ai_commitrequests.yaml
   - bases/configbutler.ai_fluxclaims.yaml
   - bases/configbutler.ai_gitbranches.yaml
   - bases/configbutler.ai_gitproviders.yaml
   - bases/configbutler.ai_gitreceivers.yaml
   - bases/configbutler.ai_gittargets.yaml
   - bases/configbutler.ai_kubeproviders.yaml
+  - bases/configbutler.ai_saverequests.yaml
   - bases/configbutler.ai_watchrules.yaml
-  - bases/source.configbutler.ai_saverequests.yaml
+  - bases/source.configbutler.ai_remotesaverequests.yaml

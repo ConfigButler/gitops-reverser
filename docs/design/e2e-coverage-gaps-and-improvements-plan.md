@@ -39,7 +39,7 @@ Reading it against the architecture surfaced three gaps, in increasing order of 
 | Attribution from audit identity | [commit_author_attribution](../../test/e2e/commit_author_attribution_e2e_test.go), [impersonation](../../test/e2e/impersonation_test.go) | ✅ |
 | Commit signing (generated + BYOK) | [signing](../../test/e2e/signing_e2e_test.go) | ✅ |
 | Encryption / SOPS Secrets | [watchrule_configmap_secret](../../test/e2e/watchrule_configmap_secret_e2e_test.go), [flux_bi_directional](../../test/e2e/flux_bi_directional_e2e_test.go) | ✅ |
-| Commit windows + CommitRequest | [commit_window_batching](../../test/e2e/commit_window_batching_e2e_test.go), [commit_request](../../test/e2e/commit_request_e2e_test.go) | ✅ |
+| Commit windows + CommitRequest | [commit_window_batching](../../test/e2e/commit_window_batching_e2e_test.go), [commit_request](../../test/e2e/save_request_e2e_test.go) | ✅ |
 | Scale subresource → `spec.replicas` | [deployment_scale_subresource](../../test/e2e/deployment_scale_subresource_e2e_test.go) | ✅ |
 | Aggregated API server (LIST fallback) | [aggregated_apiserver](../../test/e2e/aggregated_apiserver_e2e_test.go) | ✅ |
 | GitTarget isolation / path overlap | [gittarget_isolation](../../test/e2e/gittarget_isolation_e2e_test.go), [gittarget_overlap](../../test/e2e/gittarget_overlap_e2e_test.go) | ✅ |

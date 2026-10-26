@@ -24,7 +24,7 @@ import (
 // queueDepth() sums the in-flight count and the retained-work flag, so an item that opened a commit
 // window is covered by the first until the second is published. Releasing the count first leaves a
 // window where neither covers it, and the loop does real work inside that window
-// (serviceCommitRequests, advance, serviceAppliers) before the flag is published. A scrape
+// (serviceSaveRequests, advance, serviceAppliers) before the flag is published. A scrape
 // landing there reports a drained queue for a worker holding an uncommitted event, which can satisfy
 // a drain gate early. The loop releases the count only after the wake that handled the item.
 func TestHandledItem_PublishesRetainedWorkBeforeReleasingInflight(t *testing.T) {

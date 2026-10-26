@@ -81,7 +81,7 @@ func (w *BranchWorker) runPendingWrites(
 	refusals := map[int]error{}
 
 	// Index over the slice so the per-write commit hash is written back onto the
-	// caller's PendingWrite (§6.5): a CommitRequest riding a write resolves to this
+	// caller's PendingWrite (§6.5): a SaveRequest riding a write resolves to this
 	// SHA on push, and a rebase-replay (which re-runs this loop on the retained
 	// writes) refreshes it to the post-rebase hash.
 	for i := range pendingWrites {
@@ -164,11 +164,11 @@ func restoreWorktree(repo *gogit.Repository, start plumbing.Hash) error {
 // retained reports whether the loop keeps this write once it is committed: a write that changes
 // nothing in Git does not exist (docs/design/applier-echoes.md, F2), so a write whose plan left no
 // action, a window or a resync alike, is neither retained nor pushed. A save is the exception: it
-// keeps its objects, and the push decides its outcome (resolvePushedCommitRequests). The checkout
+// keeps its objects, and the push decides its outcome (resolvePushedSaveRequests). The checkout
 // counts the same writes (checkoutApplied), so the two can never disagree.
 func (p PendingWrite) retained() bool {
 	switch {
-	case p.Kind == PendingWriteRequestRecord || p.CommitRequest != nil:
+	case p.Kind == PendingWriteRequestRecord || p.SaveRequest != nil:
 		return true
 	case p.Kind == PendingWriteResync:
 		return p.resyncActions == nil || !p.resyncActions.empty()
@@ -179,7 +179,7 @@ func (p PendingWrite) retained() bool {
 
 // keepsEveryObject reports whether a write keeps the objects whose plan changed nothing: only a
 // save does (docs/design/applier-echoes.md, decision 9).
-func (p PendingWrite) keepsEveryObject() bool { return p.CommitRequest != nil || p.AllowEmpty }
+func (p PendingWrite) keepsEveryObject() bool { return p.SaveRequest != nil || p.AllowEmpty }
 
 func (p PendingWrite) path() string {
 	if targetPath := p.Target().Path; targetPath != "" {
@@ -203,12 +203,12 @@ const (
 	messageResolutionUnsupported messageResolution = iota
 	// messageResolutionPreRendered is a resync, which renders the target's reconcile template
 	// itself and hands the result over as the write's message. That is generated text, not a
-	// request's override, so the CommitRequest literal contract does not bind it: an operator's
+	// request's override, so the SaveRequest literal contract does not bind it: an operator's
 	// reconcile template may legitimately be long or contain a tab.
 	messageResolutionPreRendered
-	// messageResolutionRequest is a message a CommitRequest supplied, used verbatim.
+	// messageResolutionRequest is a message a SaveRequest supplied, used verbatim.
 	messageResolutionRequest
-	// messageResolutionRequestTemplate is a CommitRequest's message framed by the target's
+	// messageResolutionRequestTemplate is a SaveRequest's message framed by the target's
 	// requestTemplate. The request's own bytes are never parsed — they ride in as .RequestMessage —
 	// so the formatting policy is the operator's while the message stays the requester's.
 	messageResolutionRequestTemplate
@@ -226,7 +226,7 @@ func (p PendingWrite) resolveMessage() messageResolution {
 	switch {
 	case p.Kind == PendingWriteResync:
 		return messageResolutionPreRendered
-	// Framing is bound to the GROUPED kind, not merely to "carries a message". A CommitRequest
+	// Framing is bound to the GROUPED kind, not merely to "carries a message". A SaveRequest
 	// attaches its message to an open live window, which finalizes as PendingWriteCommit, so that
 	// is the only write requestTemplate describes.
 	case p.Kind == PendingWriteCommit &&
@@ -246,11 +246,11 @@ func (p PendingWrite) resolveMessage() messageResolution {
 func (r messageResolution) label() string {
 	switch r {
 	case messageResolutionRequest:
-		return messageSourceCommitRequest
+		return messageSourceSaveRequest
 	case messageResolutionRequestTemplate:
-		return messageSourceCommitRequestFramed
+		return messageSourceSaveRequestFramed
 	case messageResolutionRequestFallback:
-		return messageSourceCommitRequestFallback
+		return messageSourceSaveRequestFallback
 	case messageResolutionPreRendered:
 		return messageSourceReconcile
 	case messageResolutionLiveTemplate:
@@ -294,7 +294,7 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, messageRes
 		// Validated on THIS arm too, not just the verbatim one. The literal reaches Git either
 		// way — framed on success, and by itself on the fallback below — so framing must not
 		// become a route that smuggles a message past the check the verbatim path enforces.
-		// The controller validates earlier (commitrequest_controller.go), which makes this
+		// The controller validates earlier (saverequest_controller.go), which makes this
 		// belt-and-braces rather than reachable today; it is exactly the kind of invariant that
 		// stops being true once a second producer of PendingWrite appears.
 		if err = ValidateLiteralCommitMessage(p.CommitMessage); err == nil {
@@ -315,7 +315,7 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, messageRes
 	}
 	switch {
 	case p.TakenOver:
-		message = withTakeOverNote(message, p.CommitRequest)
+		message = withTakeOverNote(message, p.SaveRequest)
 	case p.SavedBy.Username != "":
 		message = withSavedByNote(message, p.SavedBy)
 	}
@@ -323,17 +323,17 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, messageRes
 	return message, commitOptionsFor(p, p.CommitConfig, p.Signer, time.Now()), resolution, nil
 }
 
-// withTakeOverNote ends the message of a commit whose CommitRequest took over a window with no author
+// withTakeOverNote ends the message of a commit whose SaveRequest took over a window with no author
 // named (PendingWrite.TakenOver) with a trailer that says the author is the request's submitter.
-func withTakeOverNote(message string, request *commitRequestID) string {
-	name := "a CommitRequest"
+func withTakeOverNote(message string, request *saveRequestID) string {
+	name := "a SaveRequest"
 	if request != nil {
-		name = "CommitRequest " + request.Namespace + "/" + request.Name
+		name = "SaveRequest " + request.Namespace + "/" + request.Name
 	}
 	return withTrailer(message, "Author-Source: "+name+"; no audit record names who made these changes")
 }
 
-// withSavedByNote ends the message of a commit whose CommitRequest gave a window with no author named
+// withSavedByNote ends the message of a commit whose SaveRequest gave a window with no author named
 // its message (PendingWrite.SavedBy) with a trailer naming the request's submitter, in the shape of a
 // Co-authored-by trailer.
 func withSavedByNote(message string, savedBy UserInfo) string {
@@ -346,7 +346,7 @@ func withTrailer(message, trailer string) string {
 	return body + "\n\n" + trailer + message[len(body):]
 }
 
-// framedRequestMessage renders the target's requestTemplate around an attached CommitRequest's
+// framedRequestMessage renders the target's requestTemplate around an attached SaveRequest's
 // message, falling back to that message verbatim if the render fails.
 //
 // The fallback deviates from liveTemplate, where a render failure fails the write, and the
@@ -357,7 +357,7 @@ func withTrailer(message, trailer string) string {
 // harmless.
 //
 // It is never silent. The Error log names the target, and the returned resolution moves the commit
-// to message_source="commit_request_fallback" — because a fallback is a SUCCESSFUL commit, so no
+// to message_source="save_request_fallback" — because a fallback is a SUCCESSFUL commit, so no
 // condition moves, nothing is refused, and a rate is the only way an operator sees a template that
 // has quietly stopped applying.
 //
@@ -365,7 +365,7 @@ func withTrailer(message, trailer string) string {
 func (p PendingWrite) framedRequestMessage() (string, messageResolution) {
 	framed, err := renderRequestCommitMessage(p, p.CommitConfig)
 	if err != nil {
-		log.Log.Error(err, "requestTemplate failed to render; committing the CommitRequest message verbatim",
+		log.Log.Error(err, "requestTemplate failed to render; committing the SaveRequest message verbatim",
 			"gitTarget", p.Target().Namespace+"/"+p.Target().Name)
 		return p.CommitMessage, messageResolutionRequestFallback
 	}
@@ -385,7 +385,7 @@ func (w *BranchWorker) executePendingWrite(
 	case PendingWriteRequestRecord:
 		return w.executeRequestRecord(ctx, worktree, *pendingWrite)
 	case PendingWriteResync:
-		// Resync writes never carry a CommitRequest, so their commit hash is unused;
+		// Resync writes never carry a SaveRequest, so their commit hash is unused;
 		// report ZeroHash to keep the per-write SHA bookkeeping uniform.
 		created, err := w.executeResyncPendingWrite(ctx, repo, worktree, pendingWrite)
 		return created, plumbing.ZeroHash, messageResolutionPreRendered, err
@@ -442,7 +442,7 @@ func (w *BranchWorker) executeEventWrite(
 	if err != nil {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, err
 	}
-	// A window whose writes changed nothing still commits when its CommitRequest asked to record
+	// A window whose writes changed nothing still commits when its SaveRequest asked to record
 	// its message: whenNothingToCommit: CommitEmpty.
 	commitOptions.AllowEmptyCommits = recordEmpty
 
@@ -546,7 +546,7 @@ func (w *BranchWorker) planPendingWriteEvents(
 	return anyChanges, changedBy, nil
 }
 
-// executeRequestRecord commits a CommitRequest's message with an untouched tree: the record a
+// executeRequestRecord commits a SaveRequest's message with an untouched tree: the record a
 // request that ran out of time to attach leaves when it asked for whenNothingToCommit: CommitEmpty.
 func (w *BranchWorker) executeRequestRecord(
 	ctx context.Context,
@@ -563,7 +563,7 @@ func (w *BranchWorker) executeRequestRecord(
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported,
 			fmt.Errorf("failed to create request record commit: %w", err)
 	}
-	log.FromContext(ctx).Info("Empty commit created to record a CommitRequest that found nothing to commit",
+	log.FromContext(ctx).Info("Empty commit created to record a SaveRequest that found nothing to commit",
 		"gitTarget", pendingWrite.GitTargetNamespace+"/"+pendingWrite.GitTargetName,
 		"branch", w.Branch, "commit", hash.String())
 	return 1, hash, source, nil

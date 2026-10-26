@@ -112,7 +112,7 @@ func TestCommitWindowMetrics_AnAttachKeepsTheOpeningTimeAndCountsTheRequestsTime
 	assert.Equal(t, opened, loop.openWindow.openedAt, "the attach restarts the timers, not the opening time")
 	forceDue(loop)
 
-	assert.Equal(t, int64(1), windowsClosed(t, reader, "max_duration", windowTimerSourceCommitRequest))
+	assert.Equal(t, int64(1), windowsClosed(t, reader, "max_duration", windowTimerSourceSaveRequest))
 	assert.Zero(t, windowsClosed(t, reader, "max_duration", windowTimerSourceTarget))
 	requireOneObservationPerWindow(t, reader, 1)
 	sum, _ := telemetry.CollectHistogramSum(reader, commitWindowDurationMetric,

@@ -205,7 +205,7 @@ func TestExecutor_AppliesEncryptionFromPendingWrite_NotFromWorker(t *testing.T) 
 }
 
 // A resync renders the target's reconcile template and hands the result over as the pending
-// write's message. That generated text is not a CommitRequest literal override, so the request
+// write's message. That generated text is not a SaveRequest literal override, so the request
 // contract's length and control-character limits must not reject an operator's own template.
 func TestCommitMetadata_ResyncRenderedMessageIsNotHeldToTheLiteralRequestContract(t *testing.T) {
 	longMessage := "chore: reconcile " + strings.Repeat("x", 1200)
@@ -247,13 +247,13 @@ func TestMessageSource_MatchesTheMessageActuallyRendered(t *testing.T) {
 			want:  messageSourceLive,
 		},
 		{
-			name: "an attached request message is commit_request",
+			name: "an attached request message is save_request",
 			write: PendingWrite{
 				Kind:          PendingWriteCommit,
 				Events:        []Event{makeEvent("api")},
 				CommitMessage: "fix(api): correct the port",
 			},
-			want:    messageSourceCommitRequest,
+			want:    messageSourceSaveRequest,
 			message: "fix(api): correct the port",
 		},
 		{

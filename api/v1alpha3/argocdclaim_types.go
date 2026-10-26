@@ -186,7 +186,7 @@ type ArgoCDClaimSource struct {
 //   - after objects were created through the API in its folders;
 //   - once at startup, and when a GitTarget first names this ArgoCDClaim;
 //   - once spec.catchUpAfter passed since a push of GitOps Reverser's own;
-//   - after a CommitRequest with spec.catchUp "AfterPush" pushed a commit.
+//   - after a SaveRequest with spec.catchUp "AfterPush" pushed a commit.
 //
 // GitTargets name it with spec.applierClaimRef.
 type ArgoCDClaim struct {

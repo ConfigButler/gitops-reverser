@@ -255,7 +255,7 @@ func TestRenderFidelityGate_DroppedScopeStopsCounting(t *testing.T) {
 
 // A plan that selects nothing restarts every scope only vacuously, which is the absence of a
 // measurement rather than a fresh one. Clearing on it would readmit the writes that do not come
-// from a watch — a CommitRequest — on the strength of nothing.
+// from a watch — a SaveRequest — on the strength of nothing.
 func TestRenderFidelityGate_AnEmptyPlanDoesNotClearAWriteDivergence(t *testing.T) {
 	gate := NewRenderFidelityGate()
 	target := types.NewResourceReference("apps", "default")
@@ -405,7 +405,7 @@ func TestRenderFidelityGate_InvalidateAdvancesEveryScopeRevision(t *testing.T) {
 // TestRenderFidelityGate_InvalidateHoldsATargetWithNoScopes is the vacuous case, and it is the one
 // an unregistered target got wrong: with no scopes to report, an empty plan reduces to True, so a
 // target whose rules select nothing would have been writable against a repository nothing has
-// looked at. A CommitRequest does not come from a watch.
+// looked at. A SaveRequest does not come from a watch.
 func TestRenderFidelityGate_InvalidateHoldsATargetWithNoScopes(t *testing.T) {
 	gate := NewRenderFidelityGate()
 	target := types.NewResourceReference("apps", "default")

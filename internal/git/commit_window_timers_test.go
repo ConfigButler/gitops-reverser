@@ -13,7 +13,7 @@ import (
 )
 
 // These tests pin the clock rules of docs/design/commit-timing-surface.md: a window opened by a
-// write takes the GitTarget's timers, and a CommitRequest that attaches replaces them, shorter or
+// write takes the GitTarget's timers, and a SaveRequest that attaches replaces them, shorter or
 // longer. Each one drives the loop directly, so no test waits on a real timer longer than a few
 // milliseconds.
 
@@ -25,7 +25,7 @@ func writeTo(loop *branchWorkerEventLoop, name string) {
 	}})
 }
 
-func namedAttachReq(name string, d time.Duration) *AttachCommitRequest {
+func namedAttachReq(name string, d time.Duration) *AttachSaveRequest {
 	req := attachReq("alice", d)
 	req.Name = name
 	req.UID = "uid-" + name
@@ -229,7 +229,7 @@ func TestAttachSelection_TheWorkerReportsEachPhase(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
-	phase := func() CommitRequestPhase { return worker.LookupCommitRequestPhase("default", crName, "uid-"+crName) }
+	phase := func() SaveRequestPhase { return worker.LookupSaveRequestPhase("default", crName, "uid-"+crName) }
 
 	assert.Empty(t, phase(), "nothing is reported before the worker registers the request")
 	loop.lastPushAt = time.Now() // keep the push behind its cooldown, so WaitingForPush is observable
@@ -266,7 +266,7 @@ func TestWindowTimers_AWaitingRequestWithMaxDurationZeroCommitsExactlyTheNextWri
 	req.Message = "save: exactly the next change"
 	serviceAttach(loop, req)
 	require.Nil(t, loop.openWindow, "the request waits; it opens nothing")
-	assert.Equal(t, PhaseWaitingForWindow, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+	assert.Equal(t, PhaseWaitingForWindow, worker.LookupSaveRequestPhase("default", crName, "uid-"+crName))
 
 	writeTo(loop, "the-change")
 	loop.endWake(0)

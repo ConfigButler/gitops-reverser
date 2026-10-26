@@ -57,7 +57,7 @@ func TestFramedRequestMessage_ComposesTheReasonWithWhatWasSaved(t *testing.T) {
 
 // The contract PR 1 of this series must not break: the request's bytes reach the commit unaltered.
 // A target with no requestTemplate commits exactly what was supplied — no trimming, no framing, no
-// reformatting — which is what makes a CommitRequest auditable against the commit it produced.
+// reformatting — which is what makes a SaveRequest auditable against the commit it produced.
 func TestCommitMetadata_WithoutARequestTemplateTheLiteralIsCommittedByteForByte(t *testing.T) {
 	literal := "  fix(api): correct the service port  \n\n  Route traffic to the API container.  "
 	write := requestWrite(literal, ResolveCommitConfig(nil))
@@ -67,7 +67,7 @@ func TestCommitMetadata_WithoutARequestTemplateTheLiteralIsCommittedByteForByte(
 
 	assert.Equal(t, literal, message, "an unframed request message must not be altered at all")
 	assert.Equal(t, messageResolutionRequest, resolution)
-	assert.Equal(t, messageSourceCommitRequest, resolution.label())
+	assert.Equal(t, messageSourceSaveRequest, resolution.label())
 }
 
 // A requestTemplate that fails at render time must not cost the window. The literal already passed
@@ -88,7 +88,7 @@ func TestFramedRequestMessage_RenderFailureFallsBackToTheLiteralAndSaysSo(t *tes
 
 	assert.Equal(t, "fix(api): correct the service port", message)
 	assert.Equal(t, messageResolutionRequestFallback, resolution)
-	assert.Equal(t, messageSourceCommitRequestFallback, resolution.label())
+	assert.Equal(t, messageSourceSaveRequestFallback, resolution.label())
 }
 
 // The framed and fallback arms must stay distinguishable in commits_total. Folding them together
@@ -96,15 +96,15 @@ func TestFramedRequestMessage_RenderFailureFallsBackToTheLiteralAndSaysSo(t *tes
 func TestMessageSource_SeparatesFramedFromFallbackAndPlainRequest(t *testing.T) {
 	framedConfig := requestConfig(requestBodyTemplate)
 
-	assert.Equal(t, messageSourceCommitRequest,
+	assert.Equal(t, messageSourceSaveRequest,
 		requestWrite("save", ResolveCommitConfig(nil)).messageSource())
-	assert.Equal(t, messageSourceCommitRequestFramed,
+	assert.Equal(t, messageSourceSaveRequestFramed,
 		requestWrite("save", framedConfig).messageSource())
 
 	// Stamped at commit time, which is the only place the fallback is known.
 	stamped := requestWrite("save", framedConfig)
 	stamped.committedMessageSource = messageResolutionRequestFallback
-	assert.Equal(t, messageSourceCommitRequestFallback, stamped.messageSource())
+	assert.Equal(t, messageSourceSaveRequestFallback, stamped.messageSource())
 }
 
 // Precedence: a configured requestTemplate outranks the verbatim arm, and a window with no request
@@ -244,7 +244,7 @@ func TestNewRequestTemplateProbe_IsFreshEachTime(t *testing.T) {
 	assert.NotEmpty(t, first)
 }
 
-// requestTemplate describes the commit a CommitRequest's message produces, and a CommitRequest
+// requestTemplate describes the commit a SaveRequest's message produces, and a SaveRequest
 // attaches to a live window, which finalizes as PendingWriteCommit. A resync arrives pre-rendered
 // and is never framed, whatever requestTemplate says.
 func TestResolveMessage_AResyncIsNeverFramed(t *testing.T) {

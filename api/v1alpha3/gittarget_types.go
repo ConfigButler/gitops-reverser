@@ -228,7 +228,7 @@ type GitTargetCommitSpec struct {
 	// Window sets when this GitTarget's commit windows close. A window opens on an
 	// author's first write and collects that author's writes until idleTimeout
 	// passes without one, or maxDuration after it opened, whichever comes first. A
-	// change applies to windows opened afterward. A CommitRequest attached to a
+	// change applies to windows opened afterward. A SaveRequest attached to a
 	// window replaces both timers for that window.
 	// +optional
 	Window *CommitWindow `json:"window,omitempty"`
@@ -238,7 +238,7 @@ type GitTargetCommitSpec struct {
 	// +optional
 	Message *CommitMessageSpec `json:"message,omitempty"`
 
-	// UnattributedWindows says how much a CommitRequest on this GitTarget may
+	// UnattributedWindows says how much a SaveRequest on this GitTarget may
 	// claim of a commit window whose writes name no author. It acts only while
 	// the GitTarget's KubeProvider has never received an audit fact; on a
 	// cluster that has, a write naming no author is never claimed. Defaults to
@@ -261,7 +261,7 @@ type GitTargetCommitSpec struct {
 	UnattributedWindows UnattributedWindowPolicy `json:"unattributedWindows,omitempty"`
 }
 
-// UnattributedWindowPolicy is how much a CommitRequest may claim of a commit
+// UnattributedWindowPolicy is how much a SaveRequest may claim of a commit
 // window whose writes name no author.
 type UnattributedWindowPolicy string
 
@@ -274,7 +274,7 @@ const (
 	UnattributedWindowsTakeOver UnattributedWindowPolicy = "TakeOver"
 )
 
-// Allows reports whether a CommitRequest asking for author may attach as it asks under this policy:
+// Allows reports whether a SaveRequest asking for author may attach as it asks under this policy:
 // "TakeOver" allows every ask, "SavedBy" allows "SavedBy" and "Own", and "Keep" (or empty) allows only
 // "Own". An unknown value allows only "Own".
 func (p UnattributedWindowPolicy) Allows(author WindowAuthor) bool {
