@@ -1,0 +1,14 @@
+# THEME comes from a literals: entry, which is kustomization.yaml text rather than an input
+# file. Out of scope for now.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        ConfigMap/coffee-branding generated in kustomization.yaml: no destination for the
+        change: key "THEME" comes from literals: in kustomization.yaml, which the operator does
+        not edit

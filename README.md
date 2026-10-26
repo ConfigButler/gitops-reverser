@@ -76,13 +76,14 @@ repos, branches, and folders. See [Configuration](docs/configuration.md).
 | Your source in Git | What you can do |
 |---|---|
 | Plain Kubernetes manifests | Capture resources and update their existing YAML documents |
-| Supported Kustomize layouts | Update source manifests or image/replica declarations; add and remove resources |
+| Supported Kustomize layouts | Update source manifests, image/replica declarations, and `configMapGenerator` input files; add and remove resources |
 | A Flux `HelmRelease` or Argo CD `Application` | Capture the declaration, including chart versions and inline values |
 | Helm templates or standalone `values.yaml` | No writeback from rendered workloads |
 
-Local Kustomize bases and overlays work, with the base kept read-only. Generators, components, and
-remote bases are unsupported; such a folder is refused with `Stalled=True` before anything is
-written. See the [supported subset](docs/configuration.md#kustomize-support-in-the-target-path).
+Local Kustomize bases and overlays work, with the base kept read-only. A `configMapGenerator` with
+`disableNameSuffixHash: true` is writable: a ConfigMap edit lands in the file or `.env` line it
+came from. `secretGenerator`, hash-suffixed generators, components, and remote bases are
+unsupported; such a folder is refused with `Stalled=True` before anything is written. See the [supported subset](docs/configuration.md#kustomize-support-in-the-target-path).
 
 Watch the resources that express your intent, such as a `HelmRelease` rather than the workloads it
 renders: the operator cannot tell authored resources from generated ones. See

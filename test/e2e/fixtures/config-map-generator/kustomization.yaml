@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: __E2E_NAMESPACE__
+configMapGenerator:
+  - name: coffee-menu
+    files:
+      - menu.yaml
+  - name: coffee-flags
+    envs:
+      - flags.env
+generatorOptions:
+  disableNameSuffixHash: true
+  # The WatchRule selects on this label, so the namespace's other ConfigMaps
+  # (kube-root-ca.crt) are not mirrored into the folder.
+  labels:
+    app.kubernetes.io/part-of: coffee-generator-e2e

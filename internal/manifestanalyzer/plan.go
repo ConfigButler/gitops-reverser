@@ -323,6 +323,11 @@ func (b *planBuilder) planDesired(dr DesiredResource) {
 		if b.nonClaiming[id] {
 			return
 		}
+		// A configMapGenerator renders it: there is nothing to create, and its write goes into the
+		// generator's inputs, which only the writer plans (PlanGeneratedWrite).
+		if len(b.store.GeneratedObjectsFor(obj)) > 0 {
+			return
+		}
 		b.actions = append(b.actions, PlanAction{
 			Kind:     PlanCreate,
 			Identity: id,

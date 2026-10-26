@@ -335,6 +335,10 @@ func collectFiles(fsys fs.FS) FolderScan {
 	sort.Slice(scan.YAMLFiles, func(i, j int) bool { return scan.YAMLFiles[i].Path < scan.YAMLFiles[j].Path })
 	sort.Strings(scan.NonYAML)
 	sort.Slice(scan.Foreign, func(i, j int) bool { return scan.Foreign[i].Path < scan.Foreign[j].Path })
+	AttachGeneratorInputs(&scan, func(p string) ([]byte, bool) {
+		content, err := fs.ReadFile(fsys, p)
+		return content, err == nil
+	})
 	return scan
 }
 

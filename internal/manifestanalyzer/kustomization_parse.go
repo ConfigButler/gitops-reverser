@@ -35,12 +35,14 @@ func supportedKustomizationFields() map[string]struct{} {
 		"TypeMeta": {}, // apiVersion / kind
 		"MetaData": {}, // the kustomization's own metadata; renders nothing
 
-		// The modelled subset: the contextual-namespace walk plus the two
-		// edit-through channels.
-		"Namespace": {},
-		"Resources": {},
-		"Images":    {},
-		"Replicas":  {},
+		// The modelled subset: the contextual-namespace walk plus the edit-through channels.
+		// A configMapGenerator is modelled only with the name hash disabled and no behavior:
+		// merge or replace; configMapGenerators names the rest.
+		"Namespace":          {},
+		"Resources":          {},
+		"Images":             {},
+		"Replicas":           {},
+		"ConfigMapGenerator": {},
 
 		// TOLERATED, NOT AUTHORED: kustomize applies it, we mirror what it renders, nothing is
 		// routed INTO it. Only safe because the projection leaves every field the BUILD supplies
@@ -59,7 +61,7 @@ func supportedKustomizationFields() map[string]struct{} {
 		"CommonAnnotations": {},
 		"BuildMetadata":     {},
 
-		"GeneratorOptions": {}, // inert on its own; every generator is refused below
+		"GeneratorOptions": {}, // read with configMapGenerator; secretGenerator is refused
 		"SortOptions":      {}, // output ordering only
 	}
 }
@@ -145,6 +147,11 @@ func parseKustomization(content []byte, path string, tree map[string][]byte) (*k
 	}
 	if doc.replicas, ok = replicaOverrides(k.Replicas, path); !ok {
 		features[featureMalformedReplicas] = struct{}{}
+	}
+	var generatorFeatures []string
+	doc.configMapGenerators, generatorFeatures = configMapGenerators(k, path)
+	for _, f := range generatorFeatures {
+		features[f] = struct{}{}
 	}
 	doc.patches = patchPaths(k.Patches, slashDir(path), tree)
 	for _, refusal := range patchRefusals(k.Patches, slashDir(path), tree) {

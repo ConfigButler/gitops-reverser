@@ -1,0 +1,16 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# THEME comes from a literals: entry in kustomization.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-branding
+  namespace: coffee
+  labels:
+    team: baristas
+data:
+  tagline: |
+    Fresh every morning.
+  THEME: light
+binaryData:
+  logo: iVBORw0KGgo=

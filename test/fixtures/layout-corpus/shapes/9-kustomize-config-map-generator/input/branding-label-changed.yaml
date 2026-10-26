@@ -1,0 +1,16 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# The team label comes from the entry's options:, not from an input file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-branding
+  namespace: coffee
+  labels:
+    team: roasters
+data:
+  tagline: |
+    Fresh every morning.
+  THEME: dark
+binaryData:
+  logo: iVBORw0KGgo=

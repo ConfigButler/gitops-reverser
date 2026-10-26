@@ -1,0 +1,11 @@
+diff --git a/apps/coffee/menu.yaml b/apps/coffee/menu.yaml
+--- a/apps/coffee/menu.yaml
++++ b/apps/coffee/menu.yaml
+@@ -1,6 +1,6 @@
+ # Prices in cents. Keep espresso the cheapest item.
+ products:
+   - sku: espresso
+-    priceCents: 275
++    priceCents: 300
+   - sku: flat-white
+     priceCents: 395

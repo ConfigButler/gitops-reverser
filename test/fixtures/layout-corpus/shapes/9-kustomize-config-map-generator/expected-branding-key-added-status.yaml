@@ -1,0 +1,13 @@
+# A new key, and the entry reads only files: and literals:. A files: source holds one key
+# and a literal lives in kustomization.yaml, so neither takes it.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        ConfigMap/coffee-branding generated in kustomization.yaml: no destination for the
+        change: key "SLOGAN" is new, and the entry has no envs: file to add it to

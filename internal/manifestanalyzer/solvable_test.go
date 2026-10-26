@@ -313,7 +313,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 		"unsupported kustomize, the support boundary": {
 			fsys: fstest.MapFS{
 				"kustomization.yaml": {Data: []byte("apiVersion: kustomize.config.k8s.io/v1beta1\n" +
-					"kind: Kustomization\nconfigMapGenerator:\n  - name: settings\n    literals:\n      - a=b\n")},
+					"kind: Kustomization\nsecretGenerator:\n  - name: settings\n    literals:\n      - a=b\n")},
 			},
 			policy: AcceptancePolicy{Allowlist: DefaultAllowlist()},
 			want: []wantIssue{{
@@ -435,7 +435,7 @@ func TestClassifyKustomizeFeatures_SolvableOnlyWhenEveryConstructIs(t *testing.T
 		"unrecognised only":      {[]string{"someFutureField"}, unsolvable},
 		"the author's file":      {[]string{featureUnparseable}, solvable},
 		"context we do not read": {[]string{featureRemoteBase}, unsolvable},
-		"the boundary":           {[]string{"configMapGenerator"}, unsolvable},
+		"the boundary":           {[]string{"secretGenerator"}, unsolvable},
 		"solvable and not":       {[]string{featureUnparseable, featureRemoteBase}, unsolvable},
 		"two unsolvable":         {[]string{featureRemoteBase, "vars"}, unsolvable},
 		// An unrecognised construct is a construct we cannot vouch for, so the answer is the
@@ -497,7 +497,7 @@ func TestRefusedStructuralIsClassified(t *testing.T) {
 		want          Classification
 	}{
 		"a generator is not solvable": {
-			kustomization: kustHeader + "configMapGenerator:\n  - name: settings\n    literals:\n      - a=b\n",
+			kustomization: kustHeader + "secretGenerator:\n  - name: settings\n    literals:\n      - a=b\n",
 			want:          Classification{Solvable: false},
 		},
 		"helm inflation is not solvable": {
@@ -560,8 +560,8 @@ func TestUnsupportedKustomizeDetailAgreesWithClassification(t *testing.T) {
 		},
 		"an unsupported construct keeps the stem it always had": {
 			class:        Classification{Solvable: false},
-			features:     []string{"configMapGenerator", "namePrefix"},
-			wantContains: "kustomization uses unsupported feature(s): configMapGenerator, namePrefix",
+			features:     []string{"secretGenerator", "namePrefix"},
+			wantContains: "kustomization uses unsupported feature(s): secretGenerator, namePrefix",
 		},
 		"no features at all is the conservative sentence": {
 			class:        Classification{},

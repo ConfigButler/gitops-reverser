@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: coffee
+resources:
+  - deployment.yaml
+configMapGenerator:
+  # The settings file people care about: the whole file is one data key.
+  - name: coffee-menu
+    files:
+      - menu.yaml
+  # One env file: every line is a data key.
+  - name: coffee-flags
+    envs:
+      - flags.env
+  # Two env files: a new key has no single file to go to.
+  - name: coffee-regions
+    envs:
+      - regions/eu.env
+      - regions/us.env
+  # A text file, a binary file and a literal: none of them takes a new key.
+  - name: coffee-branding
+    files:
+      - tagline=branding/tagline.txt
+      - logo=branding/logo.bin
+    literals:
+      - THEME=dark
+    options:
+      labels:
+        team: baristas
+generatorOptions:
+  disableNameSuffixHash: true

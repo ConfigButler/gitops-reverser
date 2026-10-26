@@ -1,0 +1,13 @@
+# The menu.yaml key's value is the whole of menu.yaml, so removing the key has no line to
+# remove. Deleting the file and its files: entry is a change the operator leaves to a person.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        ConfigMap/coffee-menu generated in kustomization.yaml: no destination for the change:
+        key "menu.yaml" was removed, and its value is the whole of menu.yaml

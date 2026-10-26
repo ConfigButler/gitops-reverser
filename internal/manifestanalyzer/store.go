@@ -91,6 +91,14 @@ type ManifestStore struct {
 	// See docs/design/support-boundary/values-file-projection.md §2 (Move 1).
 	ValueFileRefs map[string]struct{}
 
+	// GeneratorInputs is the set of files a configMapGenerator reads (FolderScan.InputFiles):
+	// named context the render reads and the writer may edit, never a document, never foreign.
+	GeneratorInputs map[string]struct{}
+
+	// generated is every object a configMapGenerator renders, one per generator entry and
+	// namespace. See GeneratedObjectsFor.
+	generated []*GeneratedObject
+
 	// RenderedInventory records what each render root RENDERS TO, keyed by the root's
 	// directory: which type lands in which namespace, from the objects kustomize actually
 	// produced. It is what a tool must settle before it provisions from a folder, and it is
@@ -425,7 +433,8 @@ func buildStore(
 	kusts := parseKustomizations(yamlFiles)
 	resourceFiles := resourceFilePaths(yamlFiles)
 	nsAssignments := kustomizeNamespaceAssignments(kusts, resourceFiles)
-	ovAssignments, renderedInventory, renderFailures := renderChains(yamlFiles, kusts)
+	// The render reads the generator inputs too; the store models only the YAML files.
+	ovAssignments, renderedInventory, renderFailures, generated := renderChains(scan.RenderFiles(), kusts)
 
 	store := &ManifestStore{
 		FilesByPath:        map[string]*FileModel{},
@@ -452,6 +461,8 @@ func buildStore(
 		reachedByMultipleRoots: renderRootFanIn(kusts),
 		renderInputs:           reachedResourceFiles(kusts),
 		renderedDocuments:      renderedDocumentsOf(ovAssignments),
+		GeneratorInputs:        pathSet(scan.InputFiles),
+		generated:              generatedObjects(generated, kusts),
 	}
 
 	hasNamedRecord := store.materializeRecords(ctx, inv.Records, materializeInputs{
@@ -838,6 +849,10 @@ type kustomizationDoc struct {
 	// the scan root. They are BUILD INPUTS, not resources: retained outside the managed model, so
 	// no live object is ever mirrored over one and no sweep ever deletes one.
 	patches []string
+	// configMapGenerators are its configMapGenerator entries, with input paths resolved against
+	// the scan root. Entries that refuse the folder are still listed: their inputs are named
+	// context either way.
+	configMapGenerators []ConfigMapGeneratorEntry
 	// features names every unmodelled feature, sorted — the refusal, in the user's own words.
 	features    []string
 	unsupported bool // uses generators/components/remote bases/name(pre|suf)fix/an unauthorable patch/...

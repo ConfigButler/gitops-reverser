@@ -363,7 +363,10 @@ func foreignMessage(f ForeignEntry) string {
 // every folder walker produces, so the analyzer scan and the live writer feed the store
 // and the acceptance gate identically.
 type FolderScan struct {
-	YAMLFiles    []manifestedit.FileContent
+	YAMLFiles []manifestedit.FileContent
+	// InputFiles are the files a configMapGenerator reads, YAML or not: render inputs the writer
+	// may edit, never modelled as documents. See AttachGeneratorInputs.
+	InputFiles   []manifestedit.FileContent
 	NonYAML      []string
 	Foreign      []ForeignEntry
 	Ignore       *IgnoreMatcher

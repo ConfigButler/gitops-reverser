@@ -86,7 +86,8 @@ templates, and multi-input ResourceSet templates alike. It is specified once, in
 | kustomize `patches:` — a strategic-merge document named by `path:` | **Tolerated, not authored** | the folder is accepted and the render is mirrored; the patch is read-only build context. An edit to a field the patch OWNS is refused per object, not per folder |
 | kustomize `patches:` — inline, JSON6902, or a path outside the tree | **Refused** | not a sparse KRM document we can read; refused by name |
 | kustomize `patchesStrategicMerge`, `patchesJson6902` (deprecated spellings) | **Refused** | kustomize does not fold them into `patches:` (measured), so they refuse under their own names |
-| kustomize generators, `components`, `namePrefix`/`nameSuffix`, remote bases | **Refused** | non-invertible |
+| kustomize `configMapGenerator` with `disableNameSuffixHash: true` | **Editable** | the edit lands in the `files:` file or on the `envs:` line it came from, checked by re-render; a change with no single input file is refused per object |
+| kustomize `secretGenerator`, hash-suffixed or merging `configMapGenerator`, `components`, `namePrefix`/`nameSuffix`, remote bases | **Refused** | non-invertible |
 | kustomize `helmCharts:` (inflation) | **Refused** | we never render a chart |
 | A Helm chart (`Chart.yaml` + `templates/` + `values.yaml` + `crds/`) | **Planned: skipped as a unit** | this needs chart-folder detection; today `scan-repo` can report an incidental `crds/` directory as accepted |
 | Helm knobs on a `HelmRelease` / `Application` (chart version, inline values, parameters) | **Editable** | the Helm surface people actually use — see below |

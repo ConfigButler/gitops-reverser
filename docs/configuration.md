@@ -2650,6 +2650,14 @@ A target path may contain `kustomization.yaml` files. The operator retains them 
   keeps its bytes. Only fields the entry already declares are updated; the operator never adds or
   removes entries. Note that one entry is a shared knob, exactly as in kustomize itself: updating it
   affects every resource in the build whose image matches.
+- **`configMapGenerator` with `disableNameSuffixHash: true`** (in `generatorOptions:` or on the
+  entry): a live change to the generated ConfigMap is written into the generator's input files. A
+  `files:` key's file gets the live value as its content; an `envs:` key's line is edited in place,
+  a new key is appended when the entry has exactly one `envs:` file, and a removed key's line is
+  removed. A change with no single input file to land in is refused per object: a `literals:` key,
+  `binaryData`, a label or annotation, a new key with zero or several `envs:` files, a removed
+  `files:` key, a generator in a read-only base, and a delete of the generated ConfigMap. The input
+  files are build inputs, never foreign content.
 
 Two kustomize shapes beyond that subset are **supported without being authored**:
 
@@ -2662,7 +2670,9 @@ Two kustomize shapes beyond that subset are **supported without being authored**
 
 Everything else outside the modeled subset **refuses the whole target path before anything is
 written**: inline or JSON6902 patches and the deprecated `patchesStrategicMerge`/`patchesJson6902`
-spellings, generators, `components`, Helm fields, `replacements`, `transformers`,
+spellings, `secretGenerator`, a `configMapGenerator` whose name hash is not disabled (the message
+says to set `disableNameSuffixHash: true`) or whose `behavior:` is `merge` or `replace`,
+`components`, Helm fields, `replacements`, `transformers`,
 `namePrefix`/`nameSuffix`, remote bases, and `images:`/`replicas:` values that do not parse (those
 would fail `kustomize build` too). A refusal is loud: the target reports `GitPathAccepted=False`,
 `Stalled=True`, and `Ready=False` with reason `UnsupportedContent` until the path is cleaned up.

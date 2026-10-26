@@ -1,0 +1,13 @@
+# A new key, and two envs: files it could go to. Picking one would decide which region the
+# key belongs to, which nothing in the live object says.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        ConfigMap/coffee-regions generated in kustomization.yaml: no destination for the change:
+        key "CLOSING" is new, and the entry has 2 envs: files, so no single one to add it to

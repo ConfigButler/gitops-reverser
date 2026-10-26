@@ -13,9 +13,10 @@ language.
 | Class | Fields | Boundary |
 |---|---|---|
 | Editable declarations | local `resources`/`bases`, `namespace`, `images`, `replicas` | supported where the layout provides one write home |
+| Editable inputs | `configMapGenerator` with `disableNameSuffixHash: true` and no `behavior: merge`/`replace` | an edit lands in the `files:` file or on the `envs:` line it came from |
 | Tolerated build context | `patches:` with local strategic-merge `path:` documents | rendered and retained, but neither authored nor edited |
 | Planned authoring surface | scalar strategic-merge patch for an inherited field | see [patch authoring](patch-authoring.md) |
-| Refused | inline/JSON6902/deprecated patches, generators, `components`, `namePrefix`/`nameSuffix`, remote bases, `helmCharts`, plugins, `replacements`, `vars` | no safe or owned inverse in the current model |
+| Refused | inline/JSON6902/deprecated patches, `secretGenerator`, hash-suffixed or merging `configMapGenerator`, `components`, `namePrefix`/`nameSuffix`, remote bases, `helmCharts`, plugins, `replacements`, `vars` | no safe or owned inverse in the current model |
 | Refused for editor safety | `configurations`, `openapi`, `crds` | they alter merge semantics that the writer must not guess |
 
 `labels`, `commonLabels`, and `commonAnnotations` are not field-authoring channels.
@@ -92,7 +93,8 @@ described in [patch authoring](patch-authoring.md) exist.
 - No chart inflation or remote-base resolution.
 - No plugin execution or controller-side transform emulation.
 - No write-through to a shared base or another environment.
-- No generic inversion of patches, generators, name references, or merge keys.
+- No generic inversion of patches, name references, or merge keys, and no generator beyond a
+  hash-disabled `configMapGenerator`.
 
 The fixture corpus under [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/)
 is the executable evidence for these verdicts. The more detailed history of the renderer and

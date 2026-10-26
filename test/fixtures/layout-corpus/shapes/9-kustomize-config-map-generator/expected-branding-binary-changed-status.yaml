@@ -1,0 +1,13 @@
+# The logo is not UTF-8, so kustomize puts it in binaryData. The operator writes no binary
+# input file.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        ConfigMap/coffee-branding generated in kustomization.yaml: no destination for the
+        change: binaryData changed, and the operator writes no binary input file

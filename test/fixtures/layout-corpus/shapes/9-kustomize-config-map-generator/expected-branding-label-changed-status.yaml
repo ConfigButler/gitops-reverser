@@ -1,0 +1,14 @@
+# The team label comes from the entry's options:. A generated ConfigMap's metadata is the
+# kustomization's, and no input file holds it.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        ConfigMap/coffee-branding generated in kustomization.yaml: no destination for the
+        change: metadata.labels changed, and a generated ConfigMap takes it from the
+        kustomization, not from an input file

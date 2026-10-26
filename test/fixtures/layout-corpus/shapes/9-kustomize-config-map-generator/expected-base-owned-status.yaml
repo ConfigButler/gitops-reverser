@@ -1,0 +1,13 @@
+# The generator lives in ../../base, which the overlay reads and never writes: base-owned,
+# the same rule as for a base document.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        ConfigMap/shop-menu generated in base/kustomization.yaml: no destination for the change:
+        the generator lives in base/kustomization.yaml, which this target reads and never writes

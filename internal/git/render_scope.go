@@ -67,6 +67,7 @@ func scanRenderScope(root, base string) (renderScopeResult, error) {
 		return renderScopeResult{}, err
 	}
 	if len(readFiles) == 0 {
+		attachGeneratorInputs(&specScan, root, base)
 		return renderScopeResult{scan: specScan, renderBase: base, writeSubdir: ""}, nil
 	}
 
@@ -93,8 +94,18 @@ func scanRenderScope(root, base string) (renderScopeResult, error) {
 		scan.YAMLFiles = append(scan.YAMLFiles, manifestedit.FileContent{Path: key, Content: content})
 	}
 	sort.Slice(scan.YAMLFiles, func(i, j int) bool { return scan.YAMLFiles[i].Path < scan.YAMLFiles[j].Path })
+	attachGeneratorInputs(&scan, root, renderBase)
 
 	return renderScopeResult{scan: scan, renderBase: renderBase, writeSubdir: writeSubdir}, nil
+}
+
+// attachGeneratorInputs moves the files a configMapGenerator reads into scan.InputFiles, reading
+// a non-YAML one from the worktree under the scan anchor. An out-of-scope input arrives as one of
+// the read-scope files, already read; see manifestanalyzer.AttachGeneratorInputs.
+func attachGeneratorInputs(scan *manifestanalyzer.FolderScan, root, anchor string) {
+	manifestanalyzer.AttachGeneratorInputs(scan, func(rel string) ([]byte, bool) {
+		return readFileBytes(root, cleanSlash(path.Join(anchor, rel)))
+	})
 }
 
 // resolveReadScope returns the sorted, distinct set of files (slash, worktree-relative) the
@@ -167,9 +178,11 @@ func reachableTargets(root, base, dir string, content []byte) (reachableSplit, e
 		return reachableSplit{}, nil // unparseable: the acceptance gate refuses it, not us
 	}
 	var out reachableSplit
-	entries := make([]string, 0, len(resources)+len(patches))
+	inputs := manifestanalyzer.KustomizationGeneratorInputs(content)
+	entries := make([]string, 0, len(resources)+len(patches)+len(inputs))
 	entries = append(entries, resources...)
 	entries = append(entries, patches...)
+	entries = append(entries, inputs...)
 	for _, entry := range entries {
 		if manifestanalyzer.IsRemoteBaseEntry(entry) {
 			continue

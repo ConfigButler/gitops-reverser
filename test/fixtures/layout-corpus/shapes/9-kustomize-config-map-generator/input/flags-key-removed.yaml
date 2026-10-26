@@ -1,0 +1,10 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# SHOW_BANNER is gone.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-flags
+  namespace: coffee
+data:
+  ENABLE_VOUCHERS: "true"

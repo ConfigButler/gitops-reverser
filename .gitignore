@@ -14,6 +14,10 @@ Dockerfile.cross
 # The GitOps layout fixtures check in a kustomize secretGenerator env file on purpose.
 # Its contents are placeholder text, never a real credential.
 !test/fixtures/gitops-layouts/**/*.env
+# So do the configMapGenerator write-through fixtures: their env files are the input a live
+# ConfigMap edit is written into.
+!test/fixtures/layout-corpus/**/*.env
+!test/e2e/fixtures/**/*.env
 
 # Test binary, built with `go test -c`
 *.test

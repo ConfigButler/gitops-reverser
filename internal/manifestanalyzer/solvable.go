@@ -87,6 +87,9 @@ func kustomizeFeatureClassification() map[string]Classification {
 		featureMalformedReplicas: {Solvable: true, Actor: ActorRepositoryAuthor},
 		featurePatchOutsideTree:  {Solvable: true, Actor: ActorRepositoryAuthor},
 		featureRenderFailed:      {Solvable: true, Actor: ActorRepositoryAuthor},
+		// A choice the author made, and one setting away from adoptable: with the hash off,
+		// the object keeps its name and the generator becomes writable.
+		featureGeneratorNameHash: {Solvable: true, Actor: ActorRepositoryAuthor},
 
 		// Read-only context this release does not fetch, and merge semantics it does not
 		// model. Nobody can make the folder adoptable while it declares them.
@@ -105,20 +108,20 @@ func kustomizeFeatureClassification() map[string]Classification {
 
 		// Build-time synthesis, post-read rewriting, and plugin code: no source document
 		// to route an edit back into.
-		featurePatchInline:      {Solvable: false},
-		featurePatchJSON6902:    {Solvable: false},
-		"components":            {Solvable: false},
-		"configMapGenerator":    {Solvable: false},
-		"secretGenerator":       {Solvable: false},
-		"generators":            {Solvable: false},
-		"transformers":          {Solvable: false},
-		"replacements":          {Solvable: false},
-		"vars":                  {Solvable: false},
-		"validators":            {Solvable: false},
-		"namePrefix":            {Solvable: false},
-		"nameSuffix":            {Solvable: false},
-		"patchesStrategicMerge": {Solvable: false},
-		"patchesJson6902":       {Solvable: false},
+		featurePatchInline:       {Solvable: false},
+		featurePatchJSON6902:     {Solvable: false},
+		"components":             {Solvable: false},
+		featureGeneratorBehavior: {Solvable: false},
+		"secretGenerator":        {Solvable: false},
+		"generators":             {Solvable: false},
+		"transformers":           {Solvable: false},
+		"replacements":           {Solvable: false},
+		"vars":                   {Solvable: false},
+		"validators":             {Solvable: false},
+		"namePrefix":             {Solvable: false},
+		"nameSuffix":             {Solvable: false},
+		"patchesStrategicMerge":  {Solvable: false},
+		"patchesJson6902":        {Solvable: false},
 	}
 }
 
@@ -164,13 +167,21 @@ func unsupportedKustomizeDetail(class Classification, features []string, decodeE
 		return "kustomization uses an unsupported feature the operator cannot map back to editable source"
 	}
 	stem := "kustomization uses unsupported feature(s): "
-	if class.Solvable {
-		// Every solvable construct is a fault in the file or a path reaching out of the
-		// tree, so "fixed in the repository" holds for all five without naming a person
-		// the classification may not have named.
+	switch {
+	case class.Solvable && onlySettingFeatures(features):
+		// A deliberate setting rather than a mistake, so the file has no "fault"; the action
+		// the detail carries is the change.
+		stem = "kustomization uses a setting that can be changed in the repository: "
+	case class.Solvable:
+		// Every other solvable construct is a fault in the file or a path reaching out of the
+		// tree, so "fixed in the repository" holds for them all without naming a person the
+		// classification may not have named.
 		stem = "kustomization has a fault that can be fixed in the repository: "
 	}
 	detail := stem + strings.Join(features, ", ")
+	if action := kustomizeFeatureActions(features); action != "" {
+		detail += " (" + action + ")"
+	}
 	if decodeErr != "" {
 		// "unparseable" on its own says nothing a user can act on. kustomize's decoder
 		// knows exactly what is wrong — that a resources: is a string, or that the file
@@ -178,6 +189,33 @@ func unsupportedKustomizeDetail(class Classification, features []string, decodeE
 		detail += " (" + decodeErr + ")"
 	}
 	return detail
+}
+
+// onlySettingFeatures reports whether every feature is a setting the author chose, rather than a
+// fault in the file.
+func onlySettingFeatures(features []string) bool {
+	for _, f := range features {
+		if f != featureGeneratorNameHash {
+			return false
+		}
+	}
+	return len(features) > 0
+}
+
+// kustomizeFeatureActions names what the author can do about the features that have one action,
+// joined in feature order. Most features have none: naming one for a construct that cannot be
+// adopted would send someone off to change a file for nothing.
+func kustomizeFeatureActions(features []string) string {
+	actions := map[string]string{
+		featureGeneratorNameHash: "set disableNameSuffixHash: true in generatorOptions or on the entry",
+	}
+	var out []string
+	for _, f := range features {
+		if a, ok := actions[f]; ok {
+			out = append(out, a)
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 // retainedUnsupportedFeatures names the constructs behind one unsupported retention: the

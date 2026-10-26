@@ -228,6 +228,84 @@ func layoutCorpus() []corpusScenario {
 			status: "expected-env-change-status.yaml",
 		},
 		{
+			// A settings file wrapped by a configMapGenerator: the live value replaces the file's
+			// bytes, so the comment survives as part of the value and the diff is one line.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "menu-price-changed.yaml",
+			patch: "expected-menu-price-changed.patch",
+		},
+		{
+			// An envs: file: the changed key's line is edited in place.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "flags-value-changed.yaml",
+			patch: "expected-flags-value-changed.patch",
+		},
+		{
+			// A new key, and exactly one env file to append it to.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "flags-key-added.yaml",
+			patch: "expected-flags-key-added.patch",
+		},
+		{
+			// A removed key: its line goes, and every other line keeps its bytes.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "flags-key-removed.yaml",
+			patch: "expected-flags-key-removed.patch",
+		},
+		{
+			// The refusal halves of shape 9. Each change has no single input file to land in, and a
+			// ConfigMap document beside the generator would collide with it in the build.
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "menu-key-removed.yaml",
+			status: "expected-menu-key-removed-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "regions-key-added.yaml",
+			status: "expected-regions-key-added-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "branding-key-added.yaml",
+			status: "expected-branding-key-added-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "branding-literal-changed.yaml",
+			status: "expected-branding-literal-changed-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "branding-binary-changed.yaml",
+			status: "expected-branding-binary-changed-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "branding-label-changed.yaml",
+			status: "expected-branding-label-changed-status.yaml",
+		},
+		{
+			// The name hash is the one generator refusal the author can clear: the message names
+			// the setting.
+			dir:    "shapes/9-kustomize-config-map-generator",
+			config: "gittarget-hashed.yaml",
+			input:  "hashed-menu-changed.yaml",
+			status: "expected-hashed-status.yaml",
+		},
+		{
+			// The generator lives in the base the overlay reads: base-owned, as any base document.
+			dir:    "shapes/9-kustomize-config-map-generator",
+			config: "gittarget-prod.yaml",
+			input:  "shop-menu-changed.yaml",
+			status: "expected-base-owned-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			config: "gittarget-staging.yaml",
+			input:  "shop-staging-menu-changed.yaml",
+			status: "expected-behavior-merge-status.yaml",
+		},
+		{
 			dir:   "specific-examples/homelab-argocd",
 			input: "paperless.yaml",
 			patch: "expected-paperless.patch",

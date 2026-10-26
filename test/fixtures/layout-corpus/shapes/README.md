@@ -30,6 +30,10 @@ a `ConfigMap` named `checkout-config` in namespace `shop`. Each folder holds `co
 | [6](6-kustomize-base-and-overlays/README.md) | Base + three environment overlays | — | unset | none |
 | [7](7-kustomize-layered/README.md) | Layered kustomize | — | unset | none |
 | [8](8-base-owned-field-edit/README.md) | Editing a field the **base** owns | — | unset | none — **write path, not placement** |
+| [9](9-kustomize-config-map-generator/README.md) | A ConfigMap a `configMapGenerator` renders | — | unset | none — **write path, not placement** |
+
+Scenario 9 is not a folder shape either: it is the write path for an object no document holds,
+because a generator builds it from the files beside its kustomization.
 
 Scenario 8 is not an eighth folder shape: it is shape 6's repository with the question changed from
 *where does a new file go* to *what happens when the changed field belongs to the base*. It sits in

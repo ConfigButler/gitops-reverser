@@ -136,6 +136,8 @@ func markReachable(kusts map[string]*kustomizationDoc, dir string, covered map[s
 // moves every object it covers, so what a folder's files declare and what it renders to
 // are different answers whenever a layout transform is involved.
 //
+// It also returns every object a configMapGenerator produced, per root, for generatedObjects.
+//
 // It also returns, per kustomization path, the roots that FAILED to build. Those
 // must refuse the folder, and it is important to see why a silent skip would be
 // unsafe rather than merely unhelpful: a root that does not build yields no chain,
@@ -148,10 +150,11 @@ func markReachable(kusts map[string]*kustomizationDoc, dir string, covered map[s
 func renderChains(
 	files []manifestedit.FileContent,
 	kusts map[string]*kustomizationDoc,
-) (map[chainKey]*overrideAssignment, map[string]RenderedTypes, map[string]string) {
+) (map[chainKey]*overrideAssignment, map[string]RenderedTypes, map[string]string, []generatedRender) {
 	out := map[chainKey]*overrideAssignment{}
 	inventory := map[string]RenderedTypes{}
 	failed := map[string]string{}
+	var generated []generatedRender
 
 	// One dye plan for the whole scan, so the nonces are stable across roots and a base
 	// reached by two overlays is dyed identically in both. Building it costs no render.
@@ -175,7 +178,12 @@ func renderChains(
 
 		for _, ro := range rendered {
 			if ro.OriginPath == "" {
-				continue // a generated resource: it has no source document to edit
+				// A generated resource has no source document; a configMapGenerator's is
+				// recorded so the writer can route an edit into the generator's inputs.
+				if ro.GeneratedIn != "" {
+					generated = append(generated, generatedRender{root: rootDir, in: ro.GeneratedIn, object: ro.Object})
+				}
+				continue
 			}
 			key := chainKey{
 				originPath: ro.OriginPath,
@@ -185,7 +193,7 @@ func renderChains(
 			record(out, key, chainOf(ro, kusts), attribution[key])
 		}
 	}
-	return out, inventory, failed
+	return out, inventory, failed, generated
 }
 
 // inventoryOf reduces one root's rendered objects to what a tool must know before it
