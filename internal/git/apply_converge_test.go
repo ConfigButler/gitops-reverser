@@ -224,3 +224,78 @@ func TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce(t *testing.T) {
 	loop.handleLiveEvents(&WriteRequest{Events: []Event{windowEvent("alpha", "2", "kubectl-edit")}})
 	assert.True(t, requests[0].Current(), "asked for, so it does not yield to an edit")
 }
+
+// TestSaveApply_FollowsTheAttemptThatCarriesIt: a save that asked to catch up waits on its applier,
+// is carried by the attempt sent next, is retried when that attempt does not succeed, and is
+// settled applied by the one that does. One that pushed nothing, or whose GitTarget names no
+// applier, is settled at once as not applied.
+func TestSaveApply_FollowsTheAttemptThatCarriesIt(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("loner", false))
+	convergedAt(t, loop, requester)
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+	save := func(name, target, commit string) commitRequestID {
+		id := commitRequestID{Namespace: "team-a", Name: name, UID: "uid-" + name}
+		loop.pendingCRs[id] = &pendingCommitRequest{
+			id: id, gitTargetName: target, gitTargetNamespace: "team-a", catchUpNow: true,
+		}
+		loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: commit})
+		return id
+	}
+	lookup := func(id commitRequestID) SaveApply {
+		apply, known := loop.w.LookupSaveApply(id.Namespace, id.Name, id.UID)
+		require.True(t, known, "the worker knows %s", id.Name)
+		return apply
+	}
+
+	nothing := save("nothing", "alpha", "")
+	assert.Equal(t, SaveApply{Done: true, Reason: SaveApplyNothingPushed, Message: lookup(nothing).Message},
+		lookup(nothing))
+
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
+	pushed := save("pushed", "alpha", "bbb")
+	alone := save("alone", "loner", "bbb")
+	assert.Equal(t, SaveApplyApplying, lookup(pushed).Reason)
+	loop.serviceAppliers()
+	assert.True(t, lookup(alone).Done)
+	assert.Equal(t, SaveApplyNoApplier, lookup(alone).Reason)
+
+	first := requester.taken()
+	require.Len(t, first, 1)
+	report(first[0], ApplyFailed)
+	loop.serviceAppliers()
+	assert.Equal(t, SaveApplyRetrying, lookup(pushed).Reason)
+	assert.False(t, lookup(pushed).Done)
+
+	dueNow(loop)
+	loop.serviceAppliers()
+	again := requester.taken()
+	require.Len(t, again, 1, "the retry carries the save")
+	again[0].Report(ApplyResult{ID: again[0].ID, Outcome: ApplySucceeded, AppliedRevision: "main@sha1:bbb"})
+	loop.serviceAppliers()
+	settled := lookup(pushed)
+	assert.True(t, settled.Done)
+	assert.True(t, settled.Applied)
+	assert.Equal(t, "main@sha1:bbb", settled.AppliedRevision)
+}
+
+// TestSaveApply_AnApplierAlreadyAtTheTipSettlesIt: when the applier applied the tip before the save's
+// converge went, nothing is asked, and the save is applied all the same.
+func TestSaveApply_AnApplierAlreadyAtTheTipSettlesIt(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+	convergedAt(t, loop, requester)
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+	id := commitRequestID{Namespace: "team-a", Name: "late", UID: "uid-late"}
+	loop.pendingCRs[id] = &pendingCommitRequest{
+		id:                 id,
+		gitTargetName:      "alpha",
+		gitTargetNamespace: "team-a",
+		catchUpNow:         true,
+	}
+	loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: "aaa"})
+
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken())
+	apply, known := loop.w.LookupSaveApply(id.Namespace, id.Name, id.UID)
+	require.True(t, known)
+	assert.True(t, apply.Applied)
+}

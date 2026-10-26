@@ -35,6 +35,10 @@ spec:
       name: Pushed
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Applied")].status
+      name: Applied
+      priority: 1
+      type: string
     - jsonPath: .status.branch
       name: Branch
       priority: 1
@@ -228,6 +232,12 @@ spec:
           status:
             description: status defines the observed state of CommitRequest.
             properties:
+              appliedRevision:
+                description: |-
+                  AppliedRevision is the revision the GitTarget's applier reported applying
+                  for this request, as in a Kustomization's status.lastAppliedRevision. Set
+                  once Applied is True.
+                type: string
               branch:
                 description: Branch is the branch the commit is made on. Set once
                   the request ends.
@@ -244,6 +254,19 @@ spec:
                   once the commit is on the remote. AuthorAttributed says whether the
                   request's creator, recorded at admission, names the commit author; False is
                   not a failure and does not affect Ready.
+
+                  Applied is set only with spec.catchUp "ImmediatelyAfterPush", once Ready is
+                  True. It says whether the GitTarget's applier applied a commit holding this
+                  request's:
+
+                  - Unknown, reason Applying or Retrying: the apply runs, or failed and is
+                    asked again; the message says why.
+                  - True, reason Applied: status.appliedRevision names what was applied.
+                  - False, reason NothingPushed, NoApplierClaim or ApplierGone: there was
+                    nothing to apply, or no applier to ask.
+                  - Unknown, reason Lost: GitOps Reverser restarted before it knew.
+
+                  It never affects Ready: the save is done once it is pushed.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

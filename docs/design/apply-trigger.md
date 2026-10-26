@@ -278,7 +278,10 @@ deletes its file the applier leaves it on the cluster, and a later resync writes
 - **A save can ask to catch up at once.** A `CommitRequest` with `catchUp: ImmediatelyAfterPush`
   leaves a converge pending for its `GitTarget`'s applier as soon as its commit is pushed, without
   waiting for `catchUpAfter`. It was asked for, so it does not yield to an edit. A save that pushed
-  no commit asks nothing.
+  no commit asks nothing. The save waits on its applier until an attempt that carries it succeeds
+  (any apply sent after its push holds its commit), and the request's `Applied` condition reports
+  it: retried with the applier's backoff, settled applied, or settled not applied when there is no
+  applier, nothing was pushed, or the applier stops being named (`save_apply.go`).
 - **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
   reason, until every collection of every `GitTarget` it covers has a settled snapshot (applied,
   refused or failed; tracked per collection on the watch side) and the worker has published every

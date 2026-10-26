@@ -251,6 +251,9 @@ type applierState struct {
 	// lag is whether the converge pending is only scheduleConverges': nothing else asks for the tip,
 	// so its attempt yields to an edit (convergeHolds).
 	lag bool
+	// waitingSaves is the CommitRequests waiting for this applier's next apply that succeeds
+	// (save_apply.go); the attempt sent next carries them.
+	waitingSaves map[commitRequestID]bool
 	// appliedRevision is the revision the last operation that succeeded applied, as the applier
 	// reported it, recovered on restart from the applier claim's status.operation. A converge of the commit
 	// it names asks nothing.
@@ -288,6 +291,17 @@ type applierState struct {
 	followedSuspend string
 }
 
+// restoreLag sets lag for the converge an attempt gives back, before it is merged: it is only
+// scheduleConverges' when that is all either side holds.
+func (s *applierState) restoreLag(attempt *inflightAttempt) {
+	switch {
+	case attempt.converge && !attempt.lag:
+		s.lag = false
+	case attempt.lag && !s.converge:
+		s.lag = true
+	}
+}
+
 // onlyLag reports whether scheduleConverges' converge is all that is pending for the applier, given its
 // unsent refusals: an attempt carrying nothing else yields to an edit (convergeHolds).
 func (s *applierState) onlyLag(refusals map[refusalKey]unsentRefusal) bool {
@@ -310,6 +324,8 @@ type inflightAttempt struct {
 	refusals map[refusalKey]unsentRefusal
 	// lag is whether it carries only scheduleConverges' converge.
 	lag bool
+	// saves is the CommitRequests whose apply it carries (save_apply.go).
+	saves map[commitRequestID]bool
 	// phase is the last report of its operation, empty before the first.
 	phase ApplyOutcome
 	// previous is the operation recorded before this attempt's, with the attempt it belonged to,
@@ -506,33 +522,6 @@ func (l *branchWorkerEventLoop) takeReasons() bool {
 	return true
 }
 
-// catchUpAfterSave leaves a converge pending for the applier of a CommitRequest's GitTarget, whose
-// commit was just pushed and which asked for it (catchUp: ImmediatelyAfterPush). It is taken onto the
-// applier when the appliers are next listed, at the end of this wake.
-func (l *branchWorkerEventLoop) catchUpAfterSave(pcr *pendingCommitRequest) {
-	if l.savedCatchUps == nil {
-		l.savedCatchUps = map[itypes.ResourceReference]bool{}
-	}
-	l.savedCatchUps[itypes.NewResourceReference(pcr.gitTargetName, pcr.gitTargetNamespace)] = true
-}
-
-// takeSavedCatchUps leaves a converge pending for every applier a pushed CommitRequest asked to catch
-// up. It was asked for, so it is no lag converge: it does not yield to an edit (convergeHolds). A
-// GitTarget that names no applier asks nothing.
-func (l *branchWorkerEventLoop) takeSavedCatchUps() {
-	for _, state := range l.appliers {
-		for _, target := range state.targets {
-			if !l.savedCatchUps[target.ref] {
-				continue
-			}
-			state.converge, state.lag = true, false
-			l.w.Log.Info("A CommitRequest asked its applier to catch up with the pushed commit",
-				"branch", l.w.Branch, "applier", state.ref.String(), "gitTarget", target.ref.String())
-		}
-	}
-	l.savedCatchUps = nil
-}
-
 // dueAppliers is the appliers an attempt is due for now, in turn order, and the earliest time one
 // still waiting comes due. The appliers are taken in turn order, so in a group, which has one attempt
 // out at a time, the attempt goes to the applier whose turn is longest ago.
@@ -553,6 +542,8 @@ func (l *branchWorkerEventLoop) dueAppliers(now time.Time) ([]*applierState, tim
 		refusals := l.unsentRefusalsFor(state)
 		if l.alreadyConverged(state, refusals, tip) {
 			state.converge, state.lag = false, false
+			l.settleSaves(state.waitingSaves, state.appliedRevision)
+			state.waitingSaves = nil
 			l.w.Log.V(1).Info("The applier already applied the tip; the converge asks nothing",
 				"branch", l.w.Branch, "applier", state.ref.String(), "commit", tip)
 		}
@@ -727,6 +718,7 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	l.forgetFolders(listed)
 	for ref, state := range l.appliers {
 		if _, ok := named[ref]; !ok {
+			l.dropSaves(state)
 			if state.inflight != nil {
 				state.inflight.abandon()
 			}
@@ -837,9 +829,10 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		id: l.nextApplyID, foreign: state.foreign, adopt: state.adopt, converge: state.converge,
 		repair: state.repair, refusals: refusals, abandon: abandon,
 		previous: state.operation, previousID: state.operationID,
-		lag: state.onlyLag(refusals),
+		lag: state.onlyLag(refusals), saves: state.waitingSaves,
 	}
 	state.foreign, state.adopt, state.converge, state.repair, state.lag = false, false, false, false, false
+	state.waitingSaves = nil
 	state.behindSince = time.Time{}
 	state.inflight = attempt
 	state.lastTurn = attempt.id
@@ -915,6 +908,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 			if state.appliedRevision == "" && state.operation != nil {
 				state.appliedRevision = state.operation.Commit
 			}
+			l.settleSaves(attempt.saves, state.appliedRevision)
 			continue
 		case ApplyStale:
 			if attempt.lag {
@@ -935,6 +929,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 		state.failures++
 		state.retryAt = now.Add(applierRetryDelay(state.failures, res.Outcome == ApplyRejected))
 		l.restoreAttempt(state, attempt)
+		l.retrySaves(attempt.saves, errString(res.Err))
 		l.lookIfSourceMoved(state, res)
 		message := "An apply attempt did not deliver; deciding it again after its backoff"
 		if res.Outcome == ApplyFailed {
@@ -1122,15 +1117,12 @@ func (l *branchWorkerEventLoop) publishUnresolved() {
 func (l *branchWorkerEventLoop) restoreAttempt(state *applierState, attempt *inflightAttempt) {
 	state.foreign = state.foreign || attempt.foreign
 	state.adopt = state.adopt || attempt.adopt
-	// The converge given back is only scheduleConverges' when that is all either side holds.
-	switch {
-	case attempt.converge && !attempt.lag:
-		state.lag = false
-	case attempt.lag && !state.converge:
-		state.lag = true
-	}
+	state.restoreLag(attempt)
 	state.converge = state.converge || attempt.converge
 	state.repair = state.repair || attempt.repair
+	for id := range attempt.saves {
+		state.waitSave(id)
+	}
 	for key, refusal := range attempt.refusals {
 		if !l.w.refusalStands(key) {
 			continue

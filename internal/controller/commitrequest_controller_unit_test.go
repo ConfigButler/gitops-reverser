@@ -45,6 +45,19 @@ type fakeFinalizer struct {
 	withdrawErr      error
 	withdrawPending  bool
 	withdrawCalls    []git.AttachCommitRequest
+
+	// The apply a request with catchUp: ImmediatelyAfterPush asked for, and the lookups made.
+	apply        git.SaveApply
+	applyKnown   bool
+	applyErr     error
+	applyLookups int
+}
+
+func (f *fakeFinalizer) LookupCommitRequestApply(
+	_ context.Context, _ git.AttachCommitRequest,
+) (git.SaveApply, bool, error) {
+	f.applyLookups++
+	return f.apply, f.applyKnown, f.applyErr
 }
 
 func (f *fakeFinalizer) WithdrawCommitRequest(

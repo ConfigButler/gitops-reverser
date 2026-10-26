@@ -204,6 +204,19 @@ type CommitRequestStatus struct {
 	// once the commit is on the remote. AuthorAttributed says whether the
 	// request's creator, recorded at admission, names the commit author; False is
 	// not a failure and does not affect Ready.
+	//
+	// Applied is set only with spec.catchUp "ImmediatelyAfterPush", once Ready is
+	// True. It says whether the GitTarget's applier applied a commit holding this
+	// request's:
+	//
+	// - Unknown, reason Applying or Retrying: the apply runs, or failed and is
+	//   asked again; the message says why.
+	// - True, reason Applied: status.appliedRevision names what was applied.
+	// - False, reason NothingPushed, NoApplierClaim or ApplierGone: there was
+	//   nothing to apply, or no applier to ask.
+	// - Unknown, reason Lost: GitOps Reverser restarted before it knew.
+	//
+	// It never affects Ready: the save is done once it is pushed.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -218,6 +231,12 @@ type CommitRequestStatus struct {
 	// Commit is the commit hash. Set once the commit is pushed (Pushed=True).
 	// +optional
 	Commit string `json:"commit,omitempty"`
+
+	// AppliedRevision is the revision the GitTarget's applier reported applying
+	// for this request, as in a Kustomization's status.lastAppliedRevision. Set
+	// once Applied is True.
+	// +optional
+	AppliedRevision string `json:"appliedRevision,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -228,6 +247,7 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.commit`
 // +kubebuilder:printcolumn:name="AuthorAttributed",type=string,JSONPath=`.status.conditions[?(@.type=="AuthorAttributed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`,priority=1
+// +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`,priority=1
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

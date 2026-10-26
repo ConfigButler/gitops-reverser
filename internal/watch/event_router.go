@@ -161,6 +161,24 @@ func (r *EventRouter) WithdrawCommitRequest(
 	return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
 }
 
+// LookupCommitRequestApply reports where the apply a CommitRequest asked for stands, from the
+// branch worker of its GitTarget, and false while that worker knows nothing of it or none runs.
+func (r *EventRouter) LookupCommitRequestApply(
+	ctx context.Context,
+	attach git.AttachCommitRequest,
+) (git.SaveApply, bool, error) {
+	worker, _, err := r.commitRequestWorker(ctx, attach)
+	if errors.Is(err, errGitTargetGone) {
+		return git.SaveApply{Done: true, Reason: git.SaveApplyApplierGone,
+			Message: "the GitTarget is gone, so its applier is asked for nothing"}, true, nil
+	}
+	if err != nil || worker == nil {
+		return git.SaveApply{}, false, err
+	}
+	apply, known := worker.LookupSaveApply(attach.Namespace, attach.Name, attach.UID)
+	return apply, known, nil
+}
+
 // heldBecause is why a request waiting for its push has not reached the remote: the worker's
 // publication report while it cannot publish, empty otherwise.
 func heldBecause(worker *git.BranchWorker, phase git.CommitRequestPhase) string {

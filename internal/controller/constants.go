@@ -98,6 +98,10 @@ const (
 	// ConditionTypePushed indicates whether a CommitRequest's commit reached the
 	// remote repository.
 	ConditionTypePushed = "Pushed"
+	// ConditionTypeApplied reports, for a CommitRequest with catchUp: ImmediatelyAfterPush, whether
+	// its GitTarget's applier applied a commit that holds the request's: Unknown while it applies or
+	// retries, True once applied, False when there was nothing to apply. It never affects Ready.
+	ConditionTypeApplied = "Applied"
 
 	// KubeProviderConditionValidated reports whether a KubeProvider's credential is safe and
 	// resolvable: an inCluster provider is Validated while the installation lists it in

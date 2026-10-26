@@ -60,6 +60,7 @@ func (w *BranchWorker) recordCommitRequestOutcomeLocked(id commitRequestID, resu
 			w.crOwners.release(k, w)
 		}
 	}
+	w.collectSaveApplies(now)
 }
 
 // countQueuedAttach records an attach entering the FIFO. The caller holds pendingResyncsMu, so the
@@ -473,8 +474,8 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 		result.Branch = l.w.Branch
 	}
 	l.w.recordCommitRequestOutcome(id, result)
-	if pcr := l.pendingCRs[id]; pcr != nil && pcr.catchUpNow && result.Commit != "" {
-		l.catchUpAfterSave(pcr)
+	if pcr := l.pendingCRs[id]; pcr != nil && pcr.catchUpNow {
+		l.catchUpAfterSave(pcr, result.Commit)
 	}
 	delete(l.pendingCRs, id)
 	l.w.setCommitRequestPhase(id, "")

@@ -15,7 +15,8 @@ commit somebody else pushed. `spec.catchUpAfter` bounds that lag: once the appli
 behind the tip that long, the tip is applied, one apply for a whole burst of saves. A `FluxClaim`
 defaults to `1m`; set `0s` to keep 0.54.0's behaviour. An `ArgoCDClaim` defaults to `0s`.
 A `CommitRequest` that sets `catchUp: ImmediatelyAfterPush` has its commit applied as soon as it is
-pushed, whatever the claim's interval.
+pushed, whatever the claim's interval, and reports the apply in its `Applied` condition and
+`status.appliedRevision`.
 
 ## `kube-root-ca.crt` is not mirrored
 

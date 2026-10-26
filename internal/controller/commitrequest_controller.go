@@ -37,6 +37,9 @@ type CommitRequestFinalizer interface {
 	// answer: resolved with git.ErrCommitRequestWithdrawn when it is cancelled, the real outcome
 	// when the worker got there first, or resolved=false with the worker's phase while it decides.
 	WithdrawCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
+	// LookupCommitRequestApply reports where the apply a request with catchUp:
+	// ImmediatelyAfterPush asked for stands, and false while the worker knows nothing of it.
+	LookupCommitRequestApply(ctx context.Context, attach git.AttachCommitRequest) (git.SaveApply, bool, error)
 }
 
 // CommandAuthorLookup resolves the author of a CommitRequest from the submitter
@@ -202,6 +205,9 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	if done {
 		if commitRequest != nil {
+			if followsApply(commitRequest) {
+				return r.followApply(ctx, commitRequest)
+			}
 			return r.expireFinished(ctx, commitRequest)
 		}
 		return ctrl.Result{}, nil

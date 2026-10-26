@@ -370,6 +370,9 @@ type BranchWorker struct {
 	// crPhases holds where each unresolved CommitRequest stands, for the controller to report
 	// while it waits. Guarded by crOutcomesMu; the event loop is the only writer.
 	crPhases map[commitRequestID]CommitRequestPhase
+	// crApplies holds where the apply each CommitRequest asked for stands (save_apply.go). Guarded by
+	// crOutcomesMu; the event loop is the only writer.
+	crApplies map[commitRequestID]saveApplyEntry
 	// crQueuedAttaches counts, per request, the attaches on the FIFO that the loop has not handled
 	// yet. An outcome is not collected while any are queued: the outcome is what turns a late attach
 	// into a no-op, so collecting it first would let that attach register a withdrawn request
@@ -1044,9 +1047,10 @@ type branchWorkerEventLoop struct {
 	// window opens (then it attaches to it) or its attach deadline passes.
 	// Loop-goroutine only.
 	pendingCRs map[commitRequestID]*pendingCommitRequest
-	// savedCatchUps is the GitTargets whose pushed CommitRequest asked their applier to catch up at
-	// once (catchUp: ImmediatelyAfterPush), until the appliers are next listed (takeReasons).
-	savedCatchUps map[itypes.ResourceReference]bool
+	// savedCatchUps is the CommitRequests, by GitTarget, whose pushed commit asked their applier to
+	// catch up at once (catchUp: ImmediatelyAfterPush), until the appliers are next listed
+	// (takeReasons, save_apply.go).
+	savedCatchUps map[itypes.ResourceReference][]commitRequestID
 	// crSeq numbers registrations, so competing requests attach first come, first served.
 	crSeq uint64
 	// refusalTimer fires at the earliest deadline in refusalPending. See refusal_reapply.go.

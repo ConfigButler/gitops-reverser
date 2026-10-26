@@ -3121,6 +3121,28 @@ request produced a pushed commit:
   watch window, whose Git author remains either the configured committer or the explicit unresolved author
   according to the watch attribution outcome.
 - **Pushed**: `True` once the commit, empty or not, is in the remote repository.
+- **Applied**: only with [`catchUp: ImmediatelyAfterPush`](#applying-a-save-at-once), once `Ready=True`.
+  It never changes `Ready`.
+
+### Applying a save at once
+
+A save is in Git once it is pushed, and the cluster already runs it, so by default nothing applies
+it: the applier claim's `catchUpAfter` brings the applier's own state (a `Kustomization`'s
+`status.lastAppliedRevision`, its `GitRepository`'s artifact) level later. A request that needs that
+state at once, to publish what was applied, sets `spec.catchUp: ImmediatelyAfterPush`. Its
+`GitTarget`'s applier is then asked to apply the tip as soon as the commit is pushed, one apply per
+such request, and the request reports the apply in its `Applied` condition:
+
+| `Applied` | Reason | Means |
+| --- | --- | --- |
+| `Unknown` | `Applying` | the apply is asked for or runs |
+| `Unknown` | `Retrying` | it did not complete and is asked again; the message says why |
+| `True` | `Applied` | applied; `status.appliedRevision` names the revision, as the applier reported it |
+| `False` | `NothingPushed`, `NoApplierClaim`, `ApplierGone` | nothing to apply, or no applier to ask |
+| `Unknown` | `Lost` | GitOps Reverser restarted before it learnt how the apply went |
+
+Wait for `Applied=True` for "saved and applied"; `Ready=True` stays "saved". A finished request is
+deleted only after its `Applied` condition is settled.
 
 ### Finished requests are deleted after 48 hours
 
