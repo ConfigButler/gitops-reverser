@@ -21,7 +21,7 @@ func claimForTest(m *WorkerManager, provider, namespace, branch string, repo Rep
 	gitBranch := testGitBranch(provider, namespace, branch)
 	m.Claims().Observe(BranchKeyFor(repo.URL, branch), BranchClaimant{
 		GitBranch: gitBranch,
-		UID:       k8stypes.UID(gitBranch.String()),
+		UID:       testGitBranchUID(gitBranch),
 		Created:   time.Unix(0, 0),
 	}, true)
 	return WorkerRequest{
@@ -30,6 +30,12 @@ func claimForTest(m *WorkerManager, provider, namespace, branch string, repo Rep
 		Branch:    branch,
 		Repo:      repo,
 	}
+}
+
+// testGitBranchUID is the UID claimForTest gives gitBranch. Like a real one, it holds no slash: it
+// names the worker's checkout directory.
+func testGitBranchUID(gitBranch k8stypes.NamespacedName) k8stypes.UID {
+	return k8stypes.UID("uid-" + gitBranch.Namespace + "-" + gitBranch.Name)
 }
 
 // testGitBranchName is the name of testGitBranch(provider, namespace, branch).

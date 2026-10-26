@@ -70,10 +70,12 @@ var (
 // It can serve multiple GitTargets that write to different paths in the same branch.
 // This design ensures serialized commits per branch, preventing merge conflicts.
 type BranchWorker struct {
-	// Identity (immutable after creation). GitBranch is the claim holder this worker writes for;
-	// GitProviderRef and GitProviderNamespace name that GitBranch's GitProvider, whose credential
-	// and signing key it uses.
+	// Identity (immutable after creation). GitBranch is the claim holder this worker writes for, and
+	// GitBranchUID its metadata.uid, which names the checkout; GitProviderRef and
+	// GitProviderNamespace name that GitBranch's GitProvider, whose credential and signing key it
+	// uses.
 	GitBranch            types.NamespacedName
+	GitBranchUID         types.UID
 	GitProviderRef       string
 	GitProviderNamespace string
 	Branch               string
@@ -459,61 +461,39 @@ func NewBranchWorker(
 //nolint:gochecknoglobals // a test seam, like pushAtomicFn above
 var workerStateRoot = filepath.Join("/tmp", "gitops-reverser-workers")
 
-// branchPathComponent renders a branch name as ONE directory component.
-//
-// Git branch names contain slashes — `release/v1` is ordinary — and joining one into a path makes
-// its worker's directory a CHILD of the `release` worker's. That is harmless while nothing deletes
-// anything, and it is a data-loss bug the moment something does: retiring `release` would take the
-// live `release/v1` worker's checkout with it.
-//
-// The readable prefix is for whoever is looking at the directory; the hash of the raw name is what
-// makes it unambiguous, including for the names sanitising would otherwise collapse together
-// (`release/v1` and `release-v1`).
-func branchPathComponent(branch string) string {
-	sum := sha256.Sum256([]byte(branch))
-	digest := hex.EncodeToString(sum[:8])
+// SetWorkerStateRoot points every worker's on-disk state at dir, for the whole process. The
+// operator never calls it. A test binary that runs a WorkerManager calls it from TestMain, before
+// any worker exists: the manager's sweep deletes every directory under the root that its own
+// GitBranches do not name, so under the shared default it would delete the checkouts of every
+// other process using that root.
+func SetWorkerStateRoot(dir string) { workerStateRoot = dir }
 
-	readable := make([]rune, 0, len(branch))
-	for _, r := range branch {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			readable = append(readable, r)
-		default:
-			readable = append(readable, '-')
-		}
-	}
-	if len(readable) > branchComponentReadableMax {
-		readable = readable[:branchComponentReadableMax]
-	}
-	return string(readable) + "-" + digest
-}
-
-// branchComponentReadableMax caps the readable half so a long branch name cannot push the path
-// past what a filesystem accepts; the digest that follows is what carries the identity.
-const branchComponentReadableMax = 40
-
-// repoRootPath is where this worker keeps its checkout: the GitProvider's UID, then the branch.
+// repoRootPath is where this worker keeps its checkout: one directory, named by the UID of the
+// GitBranch it writes for.
 //
-// The UID is the whole of the first component, and it replaces three things that were there
-// before: the provider's namespace, its name, and a digest of the remote URL. A UID is globally
-// unique and is minted fresh by the API server for every object, so it says everything those
-// three said and one thing they could not — WHICH INCARNATION of the provider this is. A
-// repointed provider is a recreated one, so its worker cannot inherit, share, or delete the
-// directory its predecessor was using, and no digest has to stand in for that.
+// The GitBranch pins the branch (spec.branch is immutable), the claim gives a repository branch to
+// one GitBranch at a time, and EnsureWorker keeps at most one live worker per GitBranch, so no two
+// live workers share a directory. A UID is minted fresh for every object, so a GitBranch deleted
+// and recreated under its name starts in a new directory. And because the branch is not part of
+// the path, a branch name's slashes cannot nest one worker's checkout inside another's.
+//
+// The repository is the one thing the UID does not pin: the GitProvider is named, not owned, and
+// can be recreated against another URL. EnsureWorker removes the old worker's checkout before the
+// replacement starts in the same directory, and a checkout left behind by a restart is never
+// trusted: a new worker's first cycle repoints origin, fetches and resets.
 func (w *BranchWorker) repoRootPath() string {
-	return filepath.Join(workerStateRoot, w.stateComponent(), branchPathComponent(w.Branch))
+	return filepath.Join(workerStateRoot, w.stateComponent())
 }
 
 // stateComponent names this worker's state directory.
 //
-// A worker built with no GitProvider behind it — the CLI, and tests — has no UID to be unique by,
-// and every one of them would otherwise share one directory per branch. Those workers fall back to
-// a digest of the remote they were built for, which is the only identity they have.
+// A worker built with no GitBranch behind it — tests — has no UID to be unique by. It falls back
+// to a digest of its remote and branch, which is the only identity it has.
 func (w *BranchWorker) stateComponent() string {
-	if w.repo.ProviderUID != "" {
-		return string(w.repo.ProviderUID)
+	if w.GitBranchUID != "" {
+		return string(w.GitBranchUID)
 	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(w.repo.URL)))
+	sum := sha256.Sum256([]byte(strings.TrimSpace(w.repo.URL) + "\x00" + w.Branch))
 	return "url-" + hex.EncodeToString(sum[:16])
 }
 
@@ -529,18 +509,17 @@ func (w *BranchWorker) stateComponent() string {
 // have that happen to it; the WorkerManager replaces it instead.
 func (w *BranchWorker) repoPath() string { return w.repoRootPath() }
 
-// removeLocalState deletes everything this worker kept on disk: the clone of every remote it
-// worked with, under its own (provider UID, branch) directory.
+// removeLocalState deletes everything this worker kept on disk: its GitBranch's directory.
 //
 // It is called only when a worker is being retired because nothing needs it any more, never on
 // shutdown — a restart wants the clones it left behind, and re-cloning every branch on every
 // restart is exactly the cost the on-disk cache exists to avoid.
 //
-// The identity guard is not defensive programming. repoRootPath joins the UID and the branch into
-// a fixed prefix, so a worker with neither — which tests build — resolves to the ROOT of every
-// worker's state, and deleting that would take out the live workers next to it.
+// Only a worker with a GitBranch UID reclaims anything. That is every worker the WorkerManager
+// starts; one a test builds by hand has a directory derived from whatever identity it was given,
+// down to none at all, and deleting a directory nobody can name is how a live worker's goes too.
 func (w *BranchWorker) removeLocalState() {
-	if w.repo.IsZero() || w.Branch == "" {
+	if w.GitBranchUID == "" {
 		w.Log.V(1).Info("Not removing worker state: the worker has no complete identity")
 		return
 	}

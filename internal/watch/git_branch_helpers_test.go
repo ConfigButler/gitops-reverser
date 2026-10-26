@@ -26,7 +26,7 @@ func claimWorkerForTest(
 	gitBranch := gitBranchForTest(provider, namespace, branch)
 	m.Claims().Observe(git.BranchKeyFor(repo.URL, branch), git.BranchClaimant{
 		GitBranch: gitBranch,
-		UID:       k8stypes.UID(gitBranch.String()),
+		UID:       k8stypes.UID("uid-" + gitBranch.Namespace + "-" + gitBranch.Name),
 		Created:   time.Unix(0, 0),
 	}, true)
 	return git.WorkerRequest{

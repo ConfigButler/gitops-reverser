@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -448,37 +448,21 @@ func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "the retired worker's checkout must go with it")
 }
 
-// TestRemoveLocalState_RefusesAWorkerWithNoIdentity. repoRootPath joins the identity and the
-// branch into a fixed prefix, so a worker with neither resolves to the ROOT of every worker's
-// state. Deleting that would take out the live workers beside it, which is a far worse outcome
-// than the leak this reclaims.
+// TestRemoveLocalState_RefusesAWorkerWithNoIdentity. Only a worker the WorkerManager started has a
+// GitBranch UID, and only its directory is known to be its own. Deleting anything else risks the
+// live workers beside it, which is a far worse outcome than the leak this reclaims.
 func TestRemoveLocalState_RefusesAWorkerWithNoIdentity(t *testing.T) {
 	root := withTemporaryWorkerStateRoot(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "someone-elses-state"), 0o750))
 
 	(&BranchWorker{Log: logr.Discard()}).removeLocalState()
+	(&BranchWorker{Log: logr.Discard(), repo: RepoIdentity{URL: "https://example.invalid/repo.git"}, Branch: "main"}).
+		removeLocalState()
 
-	_, err := os.Stat(filepath.Join(root, "someone-elses-state"))
-	assert.NoError(t, err, "a worker with no identity must never delete the shared root")
-}
-
-// TestBranchPathComponent_KeepsOneBranchOutOfAnothersDirectory. Git branch names contain slashes,
-// so joining one into a path made `release/v1`'s worker a child of `release`'s — and once a
-// retired worker deletes its directory, retiring `release` would take the live worker's checkout
-// with it.
-func TestBranchPathComponent_KeepsOneBranchOutOfAnothersDirectory(t *testing.T) {
-	withTemporaryWorkerStateRoot(t)
-	provider := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
-	parent := &BranchWorker{repo: provider, Branch: "release"}
-	child := &BranchWorker{repo: provider, Branch: "release/v1"}
-
-	rel, err := filepath.Rel(parent.repoRootPath(), child.repoRootPath())
+	entries, err := os.ReadDir(root)
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(rel, ".."), "release/v1 must not be reachable from inside release")
-
-	// And names that sanitising alone would collapse stay apart.
-	lookalike := &BranchWorker{repo: provider, Branch: "release-v1"}
-	assert.NotEqual(t, child.repoRootPath(), lookalike.repoRootPath())
+	require.Len(t, entries, 1, "a worker with no GitBranch UID must never delete anything")
+	assert.Equal(t, "someone-elses-state", entries[0].Name())
 }
 
 // withTemporaryWorkerStateRoot points every worker's on-disk state at this test's own directory,
@@ -493,23 +477,31 @@ func withTemporaryWorkerStateRoot(t *testing.T) string {
 	return root
 }
 
-// TestRepoRootPath_IsKeyedByTheProviderIncarnation. The UID is the whole of the first path
-// component, which is what makes a repointed provider's worker unable to inherit, share or delete
-// the directory its predecessor was using: a repoint is a recreate, and a recreate mints a UID.
-func TestRepoRootPath_IsKeyedByTheProviderIncarnation(t *testing.T) {
-	withTemporaryWorkerStateRoot(t)
-	sameURL := "https://example.invalid/repo.git"
-	before := &BranchWorker{repo: RepoIdentity{ProviderUID: "uid-1", URL: sameURL}, Branch: "main"}
-	after := &BranchWorker{repo: RepoIdentity{ProviderUID: "uid-2", URL: sameURL}, Branch: "main"}
+// TestRepoRootPath_IsOneDirectoryPerGitBranch. The GitBranch's UID is the whole path below the
+// root, so the branch name, slashes included, never shapes it: `release/v1`'s checkout cannot sit
+// inside `release`'s, where retiring `release` would take it.
+func TestRepoRootPath_IsOneDirectoryPerGitBranch(t *testing.T) {
+	root := withTemporaryWorkerStateRoot(t)
+	repo := RepoIdentity{ProviderUID: "uid-provider", URL: "https://example.invalid/repo.git"}
+	parent := &BranchWorker{GitBranchUID: "uid-release", repo: repo, Branch: "release"}
+	child := &BranchWorker{GitBranchUID: "uid-release-v1", repo: repo, Branch: "release/v1"}
 
-	assert.NotEqual(t, before.repoRootPath(), after.repoRootPath(),
-		"the same URL under a recreated provider is a different checkout")
+	assert.Equal(t, filepath.Join(root, "uid-release"), parent.repoRootPath())
+	assert.Equal(t, filepath.Join(root, "uid-release-v1"), child.repoRootPath())
 
-	// A worker with no provider behind it — the CLI, and tests — has only its remote to be unique
-	// by, and two of them must still not share a directory.
-	cliA := &BranchWorker{repo: RepoIdentity{URL: "https://example.invalid/a.git"}, Branch: "main"}
-	cliB := &BranchWorker{repo: RepoIdentity{URL: "https://example.invalid/b.git"}, Branch: "main"}
-	assert.NotEqual(t, cliA.repoRootPath(), cliB.repoRootPath())
+	// A worker with no GitBranch behind it, which only tests build, has its remote and branch to be
+	// unique by, and two of them must still not share a directory.
+	tests := map[string]*BranchWorker{
+		"another remote": {repo: RepoIdentity{URL: "https://example.invalid/other.git"}, Branch: "main"},
+		"another branch": {repo: RepoIdentity{URL: "https://example.invalid/repo.git"}, Branch: "release"},
+	}
+	base := &BranchWorker{repo: RepoIdentity{URL: "https://example.invalid/repo.git"}, Branch: "main"}
+	for name, other := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.NotEqual(t, base.repoRootPath(), other.repoRootPath())
+			assert.Equal(t, root, filepath.Dir(other.repoRootPath()), "still one directory below the root")
+		})
+	}
 }
 
 // TestWorkerLifecycle_BuildsAndReclaimsItsOwnState walks one worker's whole life on disk, because
@@ -527,17 +519,17 @@ func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
 	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", repo)))
 	worker, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
-	require.True(t, strings.HasPrefix(worker.repoPath(), root+string(filepath.Separator)),
-		"precondition: the worker keeps its state under the root this test owns")
+	own := filepath.Join(root, string(testGitBranchUID(testGitBranch("repo1", "gitops-system", "main"))))
+	require.Equal(t, own, worker.repoPath(),
+		"precondition: the worker keeps its state under the root this test owns, named by its GitBranch")
 
-	// Three directories under that root: this worker's, another provider's, and — the one that
-	// matters most — a SIBLING BRANCH of the same provider. Branch siblings share the UID
-	// component, so a removal one level too high takes every branch the provider mirrors.
+	// Three directories under that root: this worker's, and those of two other GitBranches — one
+	// writing another branch of the same repository, one writing the same branch name elsewhere.
+	// Both GitBranches exist, so the sweep of orphaned checkouts keeps their directories too.
 	require.NoError(t, os.MkdirAll(worker.repoPath(), 0o750))
-	sibling := filepath.Join(root, string(repo.ProviderUID), branchPathComponent("release"))
-	neighbour := filepath.Join(root, "uid-2", branchPathComponent("main"))
+	sibling := createGitBranchCheckout(ctx, t, manager, "gitops-system", "repo1-release")
+	neighbour := createGitBranchCheckout(ctx, t, manager, "other", "repo2-main")
 	for _, dir := range []string{sibling, neighbour} {
-		require.NoError(t, os.MkdirAll(dir, 0o750))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
 	}
 
@@ -547,37 +539,97 @@ func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
 	_, err := os.Stat(worker.repoPath())
 	assert.True(t, os.IsNotExist(err), "a retired worker takes its checkout with it")
 	_, err = os.Stat(filepath.Join(sibling, "HEAD"))
-	require.NoError(t, err, "a sibling BRANCH of the same provider is not this worker's to delete")
+	require.NoError(t, err, "another GitBranch on the same repository is not this worker's to delete")
 	_, err = os.Stat(filepath.Join(neighbour, "HEAD"))
-	require.NoError(t, err, "and neither is another provider's")
+	require.NoError(t, err, "and neither is any other GitBranch's")
 	_, err = os.Stat(root)
 	require.NoError(t, err, "least of all the root every worker's state lives under")
 	_, stillThere := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	assert.False(t, stillThere)
 }
 
-// TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout is the same rule across a
-// repoint. The two workers are different incarnations of one (provider, branch), so they hold
-// different directories, and stopping the old one must not touch the new one's — which is exactly
-// what the old layout, keyed by provider NAME with a URL digest inside it, could not promise for a
-// provider recreated against the same repository.
-func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *testing.T) {
+// createGitBranchCheckout creates a GitBranch and the directory its worker would keep, and returns
+// that directory.
+func createGitBranchCheckout(ctx context.Context, t *testing.T, m *WorkerManager, namespace, name string) string {
+	t.Helper()
+	uid := k8stypes.UID("uid-" + namespace + "-" + name)
+	require.NoError(t, m.Client.Create(ctx, &configv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, UID: uid},
+	}))
+	dir := filepath.Join(workerStateRoot, string(uid))
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	return dir
+}
+
+// TestReconcileWorkers_ReclaimsCheckoutsNoGitBranchNames. A retiring worker removes its own
+// checkout, but a GitBranch deleted while no worker ran for it, across a restart that kept the
+// disk, has nobody to do that. The sweep removes every directory no GitBranch names, and keeps
+// the checkout of a GitBranch whose worker has not started yet, and that of any live worker.
+func TestReconcileWorkers_ReclaimsCheckoutsNoGitBranchNames(t *testing.T) {
+	manager, ctx := startedManager(t)
+	root := workerStateRoot
+
+	waiting := createGitBranchCheckout(ctx, t, manager, "team-a", "waiting")
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "team-b", "main",
+		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"})))
+	live, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "team-b", "main"))
+	require.True(t, ok)
+	require.NoError(t, os.MkdirAll(live.repoPath(), 0o750))
+	deleted := filepath.Join(root, "uid-of-a-deleted-gitbranch")
+	previousLayout := filepath.Join(root, "uid-of-a-provider", "main-0123456789abcdef")
+	for _, dir := range []string{deleted, previousLayout} {
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+	}
+
+	manager.lifecycleMu.Lock()
+	err := manager.reclaimOrphanedCheckoutsLocked(ctx)
+	manager.lifecycleMu.Unlock()
+	require.NoError(t, err)
+
+	for _, kept := range []string{waiting, live.repoPath()} {
+		_, err := os.Stat(kept)
+		require.NoError(t, err, "%s belongs to a GitBranch or a live worker", kept)
+	}
+	for _, gone := range []string{deleted, filepath.Dir(previousLayout)} {
+		_, err := os.Stat(gone)
+		assert.True(t, os.IsNotExist(err), "%s is named by no GitBranch", gone)
+	}
+}
+
+// TestReconcileWorkers_ReclaimsNothingWhenTheGitBranchesCannotBeRead. Reading "I could not list
+// the GitBranches" as "there are none" would delete every checkout the operator keeps.
+func TestReconcileWorkers_ReclaimsNothingWhenTheGitBranchesCannotBeRead(t *testing.T) {
+	root := withTemporaryWorkerStateRoot(t)
+	orphan := filepath.Join(root, "uid-of-a-deleted-gitbranch")
+	require.NoError(t, os.MkdirAll(orphan, 0o750))
+	k8sClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errors.New("the API server is unreachable")
+		},
+	}).Build()
+	manager := NewWorkerManager(k8sClient, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+
+	require.Error(t, manager.reclaimOrphanedCheckoutsLocked(context.Background()))
+
+	_, err := os.Stat(orphan)
+	require.NoError(t, err, "a failed List deletes nothing")
+}
+
+// TestWorkerLifecycle_AReplacementStartsFromAnEmptyCheckout is the same rule across a repoint.
+// The replacement writes for the same GitBranch, so it works in the same directory, and the clone
+// there is about the repository the provider used to name. The old worker takes it with it before
+// the replacement starts, so nothing of the old repository is left to plan against.
+func TestWorkerLifecycle_AReplacementStartsFromAnEmptyCheckout(t *testing.T) {
 	withTemporaryWorkerStateRoot(t)
 	manager, ctx := startedManager(t)
-	sameURL := "https://example.invalid/repo.git"
-	before := RepoIdentity{ProviderUID: "uid-1", URL: sameURL}
-	after := RepoIdentity{ProviderUID: "uid-2", URL: sameURL}
+	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 
 	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", before)))
 	old, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	require.NoError(t, os.MkdirAll(old.repoPath(), 0o750))
-
-	// The replacement's directory, and a sentinel in it, BEFORE the replacement happens: a
-	// directory created afterwards would prove nothing about what the removal deleted.
-	successor := filepath.Join(workerStateRoot, string(after.ProviderUID), branchPathComponent("main"))
-	require.NoError(t, os.MkdirAll(successor, 0o750))
-	sentinel := filepath.Join(successor, "HEAD")
+	sentinel := filepath.Join(old.repoPath(), "HEAD")
 	require.NoError(t, os.WriteFile(sentinel, []byte("ref: refs/heads/main\n"), 0o600))
 
 	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "gitops-system", "main", after)))
@@ -585,14 +637,9 @@ func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *te
 	require.True(t, ok)
 	require.NotSame(t, old, replacement)
 
-	require.Equal(t, successor, replacement.repoPath(),
-		"the replacement's checkout is the one the sentinel was placed in")
-	require.NotEqual(t, old.repoPath(), replacement.repoPath(),
-		"one repository under two provider incarnations is two checkouts")
-	_, err := os.Stat(old.repoPath())
-	assert.True(t, os.IsNotExist(err), "the retired worker took its own checkout with it")
-	_, err = os.Stat(sentinel)
-	require.NoError(t, err, "and left the replacement's alone")
+	assert.Equal(t, old.repoPath(), replacement.repoPath(), "one GitBranch is one directory")
+	_, err := os.Stat(sentinel)
+	assert.True(t, os.IsNotExist(err), "the retired worker took the old repository's checkout with it")
 	assert.True(t, manager.ReplacementPending(BranchKeyFor(after.URL, "main")),
 		"and the targets on the branch still wait to be rebuilt in the new one")
 }

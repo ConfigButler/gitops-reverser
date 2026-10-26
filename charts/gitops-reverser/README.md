@@ -485,6 +485,27 @@ resources:
     memory: 1Gi
 ```
 
+### Keeping Git checkouts across pod restarts
+
+The controller keeps one Git checkout per `GitBranch` under `/tmp/gitops-reverser-workers`. By
+default that is the pod's `emptyDir`: it survives a container restart, and a new pod clones every
+branch again. To keep the checkouts across pod replacement too, mount a volume there:
+
+```yaml
+volumes:
+  - name: git-checkouts
+    persistentVolumeClaim:
+      claimName: gitops-reverser-git-checkouts
+volumeMounts:
+  - name: git-checkouts
+    mountPath: /tmp/gitops-reverser-workers
+```
+
+Create the `PersistentVolumeClaim` yourself, in the release namespace. `ReadWriteOnce` is enough: the
+chart runs one replica, and the default `deploymentStrategy` stops the old pod before it starts the
+new one. A checkout found on disk is a cache only. The controller fetches and resets it before
+its first write, and deletes every checkout whose `GitBranch` no longer exists.
+
 ## Release Strategy
 
 New versions are automatically released via GitHub Actions:

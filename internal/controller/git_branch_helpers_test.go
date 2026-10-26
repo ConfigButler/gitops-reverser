@@ -24,7 +24,7 @@ var shopRepo1Main = k8stypes.NamespacedName{Namespace: "shop", Name: gitBranchNa
 func claimWorkerForTest(m *git.WorkerManager, repo git.RepoIdentity) git.WorkerRequest {
 	m.Claims().Observe(git.BranchKeyFor(repo.URL, "main"), git.BranchClaimant{
 		GitBranch: shopRepo1Main,
-		UID:       k8stypes.UID(shopRepo1Main.String()),
+		UID:       "uid-shop-repo1-main",
 		Created:   time.Unix(0, 0),
 	}, true)
 	return git.WorkerRequest{
