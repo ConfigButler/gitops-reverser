@@ -170,23 +170,14 @@ func newScopeFacts() *scopeFacts {
 
 // putExact stores the immutable (uid, rv) fact.
 func (s *scopeFacts) putExact(uid, rv string, entry *indexedFact) {
-	key := exactFactKey{uid: uid, rv: rv}
-	if _, ok := s.exact[key]; !ok {
-		s.count++
-	}
-	s.exact[key] = entry
-	s.order = append(s.order, factRef{kind: factKindExact, uid: uid, rv: rv, seq: entry.seq})
+	putKeyed(s, s.exact, exactFactKey{uid: uid, rv: rv}, entry, factRef{kind: factKindExact, uid: uid, rv: rv})
 }
 
 // putLatest stores the last-writer-wins pointer for an object. Entries are applied in delivery
 // order, which is what makes "last writer" mean the last fact appended rather than whichever
 // goroutine got there first.
 func (s *scopeFacts) putLatest(uid string, entry *indexedFact) {
-	if _, ok := s.latest[uid]; !ok {
-		s.count++
-	}
-	s.latest[uid] = entry
-	s.order = append(s.order, factRef{kind: factKindLatest, uid: uid, seq: entry.seq})
+	putKeyed(s, s.latest, uid, entry, factRef{kind: factKindLatest, uid: uid})
 }
 
 // putRemoval stores the sticky removal pointer for an object: the fact that it was DELETED, and by
@@ -203,32 +194,32 @@ func (s *scopeFacts) putLatest(uid string, entry *indexedFact) {
 //
 // A later removal fact may replace it, because that is a statement about the same question.
 func (s *scopeFacts) putRemoval(uid string, entry *indexedFact) {
-	if _, ok := s.removals[uid]; !ok {
-		s.count++
-	}
-	s.removals[uid] = entry
-	s.order = append(s.order, factRef{kind: factKindRemoval, uid: uid, seq: entry.seq})
+	putKeyed(s, s.removals, uid, entry, factRef{kind: factKindRemoval, uid: uid})
 }
 
 // putRV stores the rv-only escape hatch.
 func (s *scopeFacts) putRV(rv string, entry *indexedFact) {
-	if _, ok := s.rvOnly[rv]; !ok {
-		s.count++
-	}
-	s.rvOnly[rv] = entry
-	s.order = append(s.order, factRef{kind: factKindRV, rv: rv, seq: entry.seq})
+	putKeyed(s, s.rvOnly, rv, entry, factRef{kind: factKindRV, rv: rv})
 }
 
 // putName stores the (namespace, name) floor. Like putLatest it is last-writer-wins: two writes to
 // one name inside the TTL leave the later actor, which is the same answer the uid tier would give
 // for the same pair of writes.
 func (s *scopeFacts) putName(namespace, name string, entry *indexedFact) {
-	key := nameFactKey{namespace: namespace, name: name}
-	if _, ok := s.byName[key]; !ok {
+	putKeyed(s, s.byName, nameFactKey{namespace: namespace, name: name}, entry,
+		factRef{kind: factKindName, namespace: namespace, name: name})
+}
+
+// putKeyed stores entry under key in one keyed tier, and its reference last in order. It is counted
+// only when the key is new: the entry it overwrites leaves a stale reference in order, which remove
+// skips.
+func putKeyed[K comparable](s *scopeFacts, tier map[K]*indexedFact, key K, entry *indexedFact, ref factRef) {
+	if _, ok := tier[key]; !ok {
 		s.count++
 	}
-	s.byName[key] = entry
-	s.order = append(s.order, factRef{kind: factKindName, namespace: namespace, name: name, seq: entry.seq})
+	tier[key] = entry
+	ref.seq = entry.seq
+	s.order = append(s.order, ref)
 }
 
 // putCollection appends one collection fact. Collection facts are not keyed one per namespace:

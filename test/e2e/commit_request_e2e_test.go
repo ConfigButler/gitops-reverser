@@ -40,43 +40,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	const commitWindow = "300s"
 
 	BeforeAll(func() {
-		By("creating commit-request test namespace and applying git secrets")
-		testNs = testNamespaceFor("commit-request")
-		_, _ = kubectlRun("create", "namespace", testNs)
-		repo = SetupRepo(
-			resolveE2EContext(),
-			testNs,
-			fmt.Sprintf("e2e-commit-request-%d", GinkgoRandomSeed()),
-		)
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
-		applySOPSAgeKeyToNamespace(testNs)
-
-		seed := GinkgoRandomSeed()
-		gitProvName = fmt.Sprintf("commit-request-gitprovider-%d", seed)
-		gitTargetName = fmt.Sprintf("commit-request-gittarget-%d", seed)
-		watchRuleName = fmt.Sprintf("commit-request-watchrule-%d", seed)
-
-		createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-
-		By(fmt.Sprintf("creating GitTarget with spec.commit.window=%s", commitWindow))
-		createValidatedGitTargetWithCommitWindow(
-			gitTargetName, testNs, gitProvName, "e2e/commit-request-test", commitWindow)
-
-		// Watch Deployments, not ConfigMaps: a fresh namespace contains NO Deployments, whereas every
-		// namespace is pre-populated with a kube-root-ca.crt ConfigMap that a configmaps WatchRule
-		// would match — its initial reconcile would establish main before the spec's own edit, hiding
-		// the pure "branch not even created until something is finalized" behaviour this suite tests.
-		applyDeploymentWatchRule(testNs, watchRuleName, gitTargetName)
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
-
-		// Gate on StreamsRunning=True before any spec creates a Deployment: under watch-first, "Ready" only
-		// means the watch set is reconciled, not that each watch has opened and finished its
-		// sendInitialEvents replay. A Deployment created before the (empty) initial replay completes
-		// is folded into that committer-authored reconcile and committed immediately — establishing
-		// main and breaking the "branch not even created until the window is finalized" assertion.
-		// StreamsRunning=True is the documented barrier that the object is a genuine live, windowed event.
-		waitForStreamsRunning(gitTargetName, testNs)
+		p := setupWindowedDeploymentPipeline("commit-request", "e2e/commit-request-test", commitWindow)
+		testNs, repo, gitProvName, gitTargetName, watchRuleName = p.ns, p.repo, p.gitProvider, p.gitTarget, p.watchRule
 	})
 
 	AfterAll(func() {
@@ -327,42 +292,8 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 	const commitWindow = "300s"
 
 	BeforeAll(func() {
-		By("creating commit-request-bundle test namespace and applying git secrets")
-		testNs = testNamespaceFor("commit-request-bundle")
-		_, _ = kubectlRun("create", "namespace", testNs)
-		repo = SetupRepo(
-			resolveE2EContext(),
-			testNs,
-			fmt.Sprintf("e2e-commit-request-bundle-%d", GinkgoRandomSeed()),
-		)
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
-		applySOPSAgeKeyToNamespace(testNs)
-
-		seed := GinkgoRandomSeed()
-		gitProvName = fmt.Sprintf("commit-request-bundle-gitprovider-%d", seed)
-		gitTargetName = fmt.Sprintf("commit-request-bundle-gittarget-%d", seed)
-		watchRuleName = fmt.Sprintf("commit-request-bundle-watchrule-%d", seed)
-
-		createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-
-		By(fmt.Sprintf("creating GitTarget with spec.commit.window=%s", commitWindow))
-		createValidatedGitTargetWithCommitWindow(
-			gitTargetName, testNs, gitProvName, "e2e/commit-request-bundle", commitWindow)
-
-		// Deployments only (no ConfigMaps): a fresh namespace has no Deployments, so
-		// main stays absent until the bundle is finalized — unlike a ConfigMap rule,
-		// which would mirror the pre-existing kube-root-ca.crt and establish main early.
-		applyDeploymentWatchRule(testNs, watchRuleName, gitTargetName)
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
-
-		// Gate on StreamsRunning=True before any spec creates a Deployment: under watch-first, "Ready" only
-		// means the watch set is reconciled, not that each watch has opened and finished its
-		// sendInitialEvents replay. A Deployment created before the (empty) initial replay completes
-		// is folded into that committer-authored reconcile and committed immediately — establishing
-		// main and breaking the "branch not even created until the window is finalized" assertion.
-		// StreamsRunning=True is the documented barrier that the object is a genuine live, windowed event.
-		waitForStreamsRunning(gitTargetName, testNs)
+		p := setupWindowedDeploymentPipeline("commit-request-bundle", "e2e/commit-request-bundle", commitWindow)
+		testNs, repo, gitProvName, gitTargetName, watchRuleName = p.ns, p.repo, p.gitProvider, p.gitTarget, p.watchRule
 	})
 
 	AfterAll(func() {
@@ -637,4 +568,54 @@ func expectCommitRequestCommitted(g Gomega, namespace, name, diagnostics string)
 		"a committed CommitRequest must report Pushed=True\n%s", outcome)
 	g.Expect(outcome.Commit).NotTo(BeEmpty(), "a committed CommitRequest must report status.commit\n%s", outcome)
 	return outcome.Commit
+}
+
+// windowedDeploymentPipeline is the pipeline a CommitRequest suite saves through: a namespace and
+// Gitea repo of its own, a GitProvider, a GitTarget with a long spec.commit.window, and a WatchRule
+// on Deployments.
+type windowedDeploymentPipeline struct {
+	ns          string
+	repo        *RepoArtifacts
+	gitProvider string
+	gitTarget   string
+	watchRule   string
+}
+
+// setupWindowedDeploymentPipeline creates the pipeline, every name derived from name, and returns
+// once its streams run: from then on a Deployment is a live, windowed event, and nothing is on main
+// until a commit window is finalized.
+func setupWindowedDeploymentPipeline(name, basePath, commitWindow string) windowedDeploymentPipeline {
+	By("creating " + name + " test namespace and applying git secrets")
+	p := windowedDeploymentPipeline{ns: testNamespaceFor(name)}
+	_, _ = kubectlRun("create", "namespace", p.ns)
+	p.repo = SetupRepo(resolveE2EContext(), p.ns, fmt.Sprintf("e2e-%s-%d", name, GinkgoRandomSeed()))
+	_, err := kubectlRunInNamespace(p.ns, "apply", "-f", p.repo.SecretsYAML)
+	Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
+	applySOPSAgeKeyToNamespace(p.ns)
+
+	seed := GinkgoRandomSeed()
+	p.gitProvider = fmt.Sprintf("%s-gitprovider-%d", name, seed)
+	p.gitTarget = fmt.Sprintf("%s-gittarget-%d", name, seed)
+	p.watchRule = fmt.Sprintf("%s-watchrule-%d", name, seed)
+
+	createReadyGitProvider(p.gitProvider, p.ns, p.repo.GitSecretHTTP, p.repo.RepoURLHTTP)
+
+	By(fmt.Sprintf("creating GitTarget with spec.commit.window=%s", commitWindow))
+	createValidatedGitTargetWithCommitWindow(p.gitTarget, p.ns, p.gitProvider, basePath, commitWindow)
+
+	// Watch Deployments, not ConfigMaps: a fresh namespace contains NO Deployments, whereas every
+	// namespace is pre-populated with a kube-root-ca.crt ConfigMap that a configmaps WatchRule
+	// would match — its initial reconcile would establish main before the spec's own edit, hiding
+	// the pure "branch not even created until something is finalized" behaviour these suites test.
+	applyDeploymentWatchRule(p.ns, p.watchRule, p.gitTarget)
+	verifyResourceStatus("watchrule", p.watchRule, p.ns, "True", "Succeeded", "")
+
+	// Gate on StreamsRunning=True before any spec creates a Deployment: under watch-first, "Ready" only
+	// means the watch set is reconciled, not that each watch has opened and finished its
+	// sendInitialEvents replay. A Deployment created before the (empty) initial replay completes
+	// is folded into that committer-authored reconcile and committed immediately — establishing
+	// main and breaking the "branch not even created until the window is finalized" assertion.
+	// StreamsRunning=True is the documented barrier that the object is a genuine live, windowed event.
+	waitForStreamsRunning(p.gitTarget, p.ns)
+	return p
 }

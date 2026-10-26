@@ -11,8 +11,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
@@ -40,32 +38,6 @@ import (
 // ReasonAutomatedSyncOff is InControl=True on an ArgoCDClaim whose Application has automated sync off:
 // held off by GitOps Reverser, or kept off by the switch's owner (the message says which).
 const ReasonAutomatedSyncOff = "AutomatedSyncOff"
-
-// reconcileArgoCD is Reconcile for an ArgoCDClaim: one being deleted, or that no eligible
-// GitTarget references any more, hands its Application's automated sync back; any other holds it
-// off while it is Configured.
-func (r *ApplierClaimReconciler) reconcileArgoCD(
-	ctx context.Context, st *reconcileStatus, claim *configbutleraiv1alpha3.ArgoCDClaim,
-) (ctrl.Result, error) {
-	if !claim.DeletionTimestamp.IsZero() {
-		if !controllerutil.ContainsFinalizer(claim, configbutleraiv1alpha3.ArgoCDClaimFinalizer) {
-			return ctrl.Result{}, nil
-		}
-		return r.retire(ctx, st, claim, nil)
-	}
-	check := r.configuredVerdict(ctx, claim)
-	publishCheck(st, claim, check)
-	if check.retiring(claim) {
-		return r.retire(ctx, st, claim, &check)
-	}
-	inControl, err := r.holdArgoCD(ctx, st, claim, check)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	st.setValue(ApplierClaimConditionInControl, inControl)
-	return r.commitClaim(ctx, st, r.claimReadiness(claim, check.configured, &inControl), &inControl,
-		heldClaimSteadyInterval)
-}
 
 // holdArgoCD returns an ArgoCDClaim's InControl condition. A Configured applier claim holds its
 // Application's automated sync off. One that is not Configured holds nothing, and one in line

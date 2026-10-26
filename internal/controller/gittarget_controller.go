@@ -1735,43 +1735,17 @@ func kubeProviderReadyStatus(cp *configbutleraiv1alpha3.KubeProvider) metav1.Con
 // controller: fire on create/delete, and on an update when the SPEC changed (generation) OR the
 // Ready condition status changed — the latter a status-only update GenerationChangedPredicate drops.
 func kubeProviderReadyOrSpecChanged() predicate.Predicate {
-	return predicate.Funcs{
-		CreateFunc:  func(event.CreateEvent) bool { return true },
-		DeleteFunc:  func(event.DeleteEvent) bool { return true },
-		GenericFunc: func(event.GenericEvent) bool { return false },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldKP, ok1 := e.ObjectOld.(*configbutleraiv1alpha3.KubeProvider)
-			newKP, ok2 := e.ObjectNew.(*configbutleraiv1alpha3.KubeProvider)
-			if !ok1 || !ok2 {
-				return true
-			}
-			return oldKP.Generation != newKP.Generation ||
-				kubeProviderReadyStatus(oldKP) != kubeProviderReadyStatus(newKP)
-		},
-	}
+	return specOrStatusChanged(kubeProviderReadyStatus)
 }
 
 // gitBranchReadyOrSpecChanged is the GitBranch watch predicate for the GitTarget controller: fire on
 // create/delete, and on an update when the spec changed or the Ready condition's status or reason
 // did. A status.remote write alone is filtered.
 func gitBranchReadyOrSpecChanged() predicate.Predicate {
-	readyOf := func(b *configbutleraiv1alpha3.GitBranch) string {
+	return specOrStatusChanged(func(b *configbutleraiv1alpha3.GitBranch) string {
 		if c := findCondition(b.Status.Conditions, ConditionTypeReady); c != nil {
 			return string(c.Status) + "/" + c.Reason
 		}
 		return ""
-	}
-	return predicate.Funcs{
-		CreateFunc:  func(event.CreateEvent) bool { return true },
-		DeleteFunc:  func(event.DeleteEvent) bool { return true },
-		GenericFunc: func(event.GenericEvent) bool { return false },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldB, ok1 := e.ObjectOld.(*configbutleraiv1alpha3.GitBranch)
-			newB, ok2 := e.ObjectNew.(*configbutleraiv1alpha3.GitBranch)
-			if !ok1 || !ok2 {
-				return true
-			}
-			return oldB.Generation != newB.Generation || readyOf(oldB) != readyOf(newB)
-		},
-	}
+	})
 }

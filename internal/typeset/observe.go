@@ -95,23 +95,9 @@ func observationFromEntry(
 // (gvk-not-unique). Exact duplicates (same GVR) collapse, so a doubly-listed resource
 // is not mistaken for a conflict.
 func distinctGVRsByGVK(entries []Entry) map[schema.GroupVersionKind][]schema.GroupVersionResource {
-	seen := map[schema.GroupVersionKind]map[schema.GroupVersionResource]struct{}{}
-	for _, e := range entries {
-		if e.Subresource {
-			continue
-		}
-		if seen[e.GVK] == nil {
-			seen[e.GVK] = map[schema.GroupVersionResource]struct{}{}
-		}
-		seen[e.GVK][e.GVR] = struct{}{}
-	}
-	out := make(map[schema.GroupVersionKind][]schema.GroupVersionResource, len(seen))
-	for gvk, set := range seen {
-		for gvr := range set {
-			out[gvk] = append(out[gvk], gvr)
-		}
-	}
-	return out
+	return distinctByKey(entries, func(e Entry) (schema.GroupVersionKind, schema.GroupVersionResource) {
+		return e.GVK, e.GVR
+	})
 }
 
 // distinctGVKsByGVR indexes each resource to the distinct kinds it resolves to, so a
@@ -121,20 +107,29 @@ func distinctGVRsByGVK(entries []Entry) map[schema.GroupVersionKind][]schema.Gro
 // hand-crafted (snapshot) surface; modelling it keeps the bijection honest in both
 // directions rather than silently picking a winner.
 func distinctGVKsByGVR(entries []Entry) map[schema.GroupVersionResource][]schema.GroupVersionKind {
-	seen := map[schema.GroupVersionResource]map[schema.GroupVersionKind]struct{}{}
+	return distinctByKey(entries, func(e Entry) (schema.GroupVersionResource, schema.GroupVersionKind) {
+		return e.GVR, e.GVK
+	})
+}
+
+// distinctByKey indexes the top-level entries by the key pair returns, to the distinct values it
+// returns for that key. Subresources are skipped, and the order of each value list is unspecified.
+func distinctByKey[K, V comparable](entries []Entry, pair func(Entry) (K, V)) map[K][]V {
+	seen := map[K]map[V]struct{}{}
 	for _, e := range entries {
 		if e.Subresource {
 			continue
 		}
-		if seen[e.GVR] == nil {
-			seen[e.GVR] = map[schema.GroupVersionKind]struct{}{}
+		key, value := pair(e)
+		if seen[key] == nil {
+			seen[key] = map[V]struct{}{}
 		}
-		seen[e.GVR][e.GVK] = struct{}{}
+		seen[key][value] = struct{}{}
 	}
-	out := make(map[schema.GroupVersionResource][]schema.GroupVersionKind, len(seen))
-	for gvr, set := range seen {
-		for gvk := range set {
-			out[gvr] = append(out[gvr], gvk)
+	out := make(map[K][]V, len(seen))
+	for key, set := range seen {
+		for value := range set {
+			out[key] = append(out[key], value)
 		}
 	}
 	return out
