@@ -190,7 +190,7 @@ boundary, the commit, the push. Background:
 
 | Metric | Type | Labels | Notes |
 | --- | --- | --- | --- |
-| `watch_events_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The ingest census: every delivered watch event, exactly once. `outcome` is `routed` / `unchanged` / `not_object` / `bookmark` / `shutdown` / `stream_error` / `route_failed`. |
+| `watch_events_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The ingest census: every delivered watch event, exactly once. `outcome` is `routed` / `unchanged` / `cluster_generated` (`kube-root-ca.crt`, never mirrored) / `not_object` / `bookmark` / `shutdown` / `stream_error` / `route_failed`. |
 | `watch_event_handling_seconds` | histogram | `source_cluster`, `group`, `version`, `resource` | How long a stream was **busy** on one event, attribution wait included. Occupancy, not queue delay. |
 | `watch_sessions_ended_total` | counter | `source_cluster`, `group`, `version`, `resource`, `reason` | `closed` (the API server's routine watch timeout: the most common ending on a healthy cluster) / `expired` (cursor out of history, forcing a rebuild) / `error` / `stopped`. |
 | `watch_replay_duration_seconds` | histogram | `source_cluster`, `group`, `version`, `resource` | Time to `initial-events-end`: what a `410` storm charges. |

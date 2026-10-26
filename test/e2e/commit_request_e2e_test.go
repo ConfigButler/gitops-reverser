@@ -603,10 +603,9 @@ func setupWindowedDeploymentPipeline(name, basePath, commitWindow string) window
 	By(fmt.Sprintf("creating GitTarget with spec.commit.window=%s", commitWindow))
 	createValidatedGitTargetWithCommitWindow(p.gitTarget, p.ns, p.gitProvider, basePath, commitWindow)
 
-	// Watch Deployments, not ConfigMaps: a fresh namespace contains NO Deployments, whereas every
-	// namespace is pre-populated with a kube-root-ca.crt ConfigMap that a configmaps WatchRule
-	// would match — its initial reconcile would establish main before the spec's own edit, hiding
-	// the pure "branch not even created until something is finalized" behaviour these suites test.
+	// Watch Deployments: a fresh namespace contains NO Deployments, so the initial reconcile
+	// commits nothing and cannot establish main before the spec's own edit, which would hide the
+	// pure "branch not even created until something is finalized" behaviour these suites test.
 	applyDeploymentWatchRule(p.ns, p.watchRule, p.gitTarget)
 	verifyResourceStatus("watchrule", p.watchRule, p.ns, "True", "Succeeded", "")
 

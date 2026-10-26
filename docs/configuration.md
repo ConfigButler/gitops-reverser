@@ -2708,6 +2708,13 @@ The important fields are:
 - `spec.rules[].sourceNamespace`: the source-cluster namespace that item watches; omitted means the
   rule's own namespace
 
+**The `kube-root-ca.crt` ConfigMap is never mirrored**, whatever a rule selects. The cluster writes
+it into every namespace, it holds that one cluster's CA, and the cluster overwrites any other value,
+so a copy in Git can be neither edited nor restored. A copy already in Git is treated like any
+document the cluster does not hold: prune mode `Always` removes it on the next resync, and under
+`OnEvent` you delete it yourself. Each snapshot that leaves it out logs `left out cluster-generated
+objects on purpose`, and `watch_events_total{outcome="cluster_generated"}` counts its live events.
+
 ### Watching a different source namespace
 
 Set `spec.rules[].sourceNamespace` to mirror a namespace other than the one the `WatchRule` lives in

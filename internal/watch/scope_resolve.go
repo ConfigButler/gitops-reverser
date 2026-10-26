@@ -94,6 +94,9 @@ func desiredFromObject(
 	if u.GetDeletionTimestamp() != nil {
 		return manifestanalyzer.DesiredResource{}, false
 	}
+	if clusterGenerated(gvr, u) {
+		return manifestanalyzer.DesiredResource{}, false
+	}
 	id := types.NewResourceIdentifier(gvr.Group, gvr.Version, gvr.Resource, u.GetNamespace(), u.GetName())
 	return manifestanalyzer.DesiredResource{Resource: id, Object: sanitize.Sanitize(u)}, true
 }

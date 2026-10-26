@@ -7,6 +7,15 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `kube-root-ca.crt` is not mirrored
+
+The `kube-root-ca.crt` ConfigMap the cluster writes into every namespace is never mirrored, whatever
+a `WatchRule` selects: it holds that one cluster's CA, and the cluster overwrites any other value.
+A copy already in Git is left like any document the cluster does not hold. Under prune mode
+`Always` the next resync removes it; under `OnEvent` (the default) delete it from Git yourself. If an
+applier applied that folder, it prunes the ConfigMap when the file goes, and the cluster recreates
+it at once.
+
 ## Upgrading from 0.53.0: recreate the connection objects in one pass
 
 **Breaking, with no in-place conversion.** The objects that connect a folder to a cluster, a

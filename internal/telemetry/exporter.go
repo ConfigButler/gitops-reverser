@@ -149,6 +149,8 @@ var (
 	//     unchanged           — a live UPDATE whose sanitized content equals what Git already
 	//                           holds: the /status-churn case, expected in volume.
 	//     bookmark            — a watch bookmark, carrying cursor progress and no object.
+	//     cluster_generated   — an object the cluster itself writes and Git never holds
+	//                           (kube-root-ca.crt), dropped on purpose.
 	//     shutdown            — the stream was cancelled while the event waited for its author.
 	//                           Not loss: a restart replays and resyncs the object.
 	//
