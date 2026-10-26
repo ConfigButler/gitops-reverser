@@ -4,6 +4,7 @@ package v1alpha3
 
 import (
 	"strings"
+	"time"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -54,6 +55,25 @@ type ArgoCDClaimSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.applicationRef is immutable; delete and recreate the ArgoCDClaim to hold another Application"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.applicationRef.name must not be empty"
 	ApplicationRef meta.NamespacedObjectReference `json:"applicationRef"`
+
+	// Why off by default, where a FluxClaim's is on: a sync runs the Application's hooks, which
+	// cost more than a no-op apply, and Argo CD's own refresh already compares the live state
+	// against the tip without a sync. Only the last sync's revision lags.
+
+	// ConvergeInterval is how long the Application may stay behind the branch
+	// after a push of GitOps Reverser's own, as a Go duration ("5m"). Such a
+	// push changes nothing on the cluster, which already holds the edit, but
+	// leaves the Application's last sync at the commit before it. Once the
+	// interval has passed, the tip is synced, hooks included: a burst of saves
+	// costs one sync, and an Application at the tip costs none. "0s" never
+	// syncs for this reason. Otherwise at least "10s" and at most "24h".
+	// Defaults to "0s".
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:default="0s"
+	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || (duration(self) >= duration('10s') && duration(self) <= duration('24h'))",message="spec.convergeInterval must be 0s, or a Go duration from 10s to 24h"
+	ConvergeInterval *metav1.Duration `json:"convergeInterval,omitempty"`
 }
 
 // ArgoCDClaimStatus is what the applier claim knows about its Application, and
@@ -195,6 +215,9 @@ func init() {
 	SchemeBuilder.Register(&ArgoCDClaim{}, &ArgoCDClaimList{})
 }
 
+// DefaultArgoCDConvergeInterval is an ArgoCDClaim's spec.convergeInterval when it is omitted: off.
+const DefaultArgoCDConvergeInterval = 0
+
 var _ ApplierClaim = (*ArgoCDClaim)(nil)
 
 // ClaimKind is ArgoCDClaim.
@@ -233,6 +256,11 @@ func (t *ArgoCDClaim) SourceBinding() (string, string, bool) {
 // do not disturb each other's operations.
 func (t *ArgoCDClaim) SharedSource() (types.NamespacedName, bool) {
 	return types.NamespacedName{}, false
+}
+
+// ConvergeInterval is spec.convergeInterval, or DefaultArgoCDConvergeInterval when it is omitted.
+func (t *ArgoCDClaim) ConvergeInterval() time.Duration {
+	return durationOr(t.Spec.ConvergeInterval, DefaultArgoCDConvergeInterval)
 }
 
 // Operation is status.operation.

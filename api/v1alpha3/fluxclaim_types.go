@@ -3,6 +3,8 @@
 package v1alpha3
 
 import (
+	"time"
+
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,6 +47,26 @@ type FluxClaimSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kustomizationRef is immutable; delete and recreate the FluxClaim to hold another Kustomization"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kustomizationRef.name must not be empty"
 	KustomizationRef meta.NamespacedObjectReference `json:"kustomizationRef"`
+
+	// Why a timer: a push of GitOps Reverser's own needs no apply for the cluster (the flush
+	// already put the edit there), so none is asked for at once; but what reads the applier's own
+	// state (its applied revision, its source artifact) would stay at the last foreign commit until
+	// someone else pushed. One apply per interval keeps that level and batches a burst of saves.
+
+	// ConvergeInterval is how long the Kustomization may stay behind the
+	// branch after a push of GitOps Reverser's own, as a Go duration ("1m",
+	// "90s"). Such a push changes nothing on the cluster, which already holds
+	// the edit, but leaves status.lastAppliedRevision and the GitRepository's
+	// artifact at the commit before it. Once the interval has passed, the tip is
+	// applied: a burst of saves costs one apply, and a Kustomization at the tip
+	// costs none. "0s" never applies for this reason. Otherwise at least "10s"
+	// and at most "24h". Defaults to "1m".
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:default="1m"
+	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || (duration(self) >= duration('10s') && duration(self) <= duration('24h'))",message="spec.convergeInterval must be 0s, or a Go duration from 10s to 24h"
+	ConvergeInterval *metav1.Duration `json:"convergeInterval,omitempty"`
 }
 
 // FluxClaimStatus is what the applier claim knows about its Kustomization, and
@@ -198,6 +220,9 @@ func init() {
 	SchemeBuilder.Register(&FluxClaim{}, &FluxClaimList{})
 }
 
+// DefaultFluxConvergeInterval is a FluxClaim's spec.convergeInterval when it is omitted.
+const DefaultFluxConvergeInterval = time.Minute
+
 var _ ApplierClaim = (*FluxClaim)(nil)
 
 // ClaimKind is FluxClaim.
@@ -234,6 +259,11 @@ func (t *FluxClaim) SharedSource() (types.NamespacedName, bool) {
 	}
 	source := t.Status.Source.GitRepository
 	return types.NamespacedName{Namespace: source.Namespace, Name: source.Name}, true
+}
+
+// ConvergeInterval is spec.convergeInterval, or DefaultFluxConvergeInterval when it is omitted.
+func (t *FluxClaim) ConvergeInterval() time.Duration {
+	return durationOr(t.Spec.ConvergeInterval, DefaultFluxConvergeInterval)
 }
 
 // Operation is status.operation.

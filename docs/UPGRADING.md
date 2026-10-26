@@ -7,6 +7,14 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A `FluxClaim` applies the tip a minute after GitOps Reverser's own pushes
+
+A push of GitOps Reverser's own asks no apply at once, and in 0.54.0 asked none at all, so a
+`Kustomization`'s `status.lastAppliedRevision` and its `GitRepository`'s artifact stayed at the last
+commit somebody else pushed. `spec.convergeInterval` bounds that lag: once the applier has stayed
+behind the tip that long, the tip is applied, one apply for a whole burst of saves. A `FluxClaim`
+defaults to `1m`; set `0s` to keep 0.54.0's behaviour. An `ArgoCDClaim` defaults to `0s`.
+
 ## `kube-root-ca.crt` is not mirrored
 
 The `kube-root-ca.crt` ConfigMap the cluster writes into every namespace is never mirrored, whatever

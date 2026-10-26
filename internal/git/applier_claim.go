@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -242,6 +243,14 @@ type applierState struct {
 	// named is the GitTarget incarnations that named the applier so far: one naming it for the first
 	// time leaves a converge pending.
 	named map[k8stypes.UID]bool
+	// convergeInterval is how long the applier may stay behind the tip before a converge is pending
+	// for it, zero for never, as last read from its applier claim, and behindSince is when this worker first found it behind, zero while
+	// it is not, or since the last attempt was sent (scheduleConverges).
+	convergeInterval time.Duration
+	behindSince      time.Time
+	// lag is whether the converge pending is only scheduleConverges': nothing else asks for the tip,
+	// so its attempt yields to an edit (convergeHolds).
+	lag bool
 	// appliedRevision is the revision the last operation that succeeded applied, as the applier
 	// reported it, recovered on restart from the applier claim's status.operation. A converge of the commit
 	// it names asks nothing.
@@ -279,6 +288,12 @@ type applierState struct {
 	followedSuspend string
 }
 
+// onlyLag reports whether scheduleConverges' converge is all that is pending for the applier, given its
+// unsent refusals: an attempt carrying nothing else yields to an edit (convergeHolds).
+func (s *applierState) onlyLag(refusals map[refusalKey]unsentRefusal) bool {
+	return s.lag && !s.foreign && !s.adopt && !s.repair && len(refusals) == 0
+}
+
 // repairPending reports whether a Repair is pending: not yet carried, or carried by the attempt out.
 func (s *applierState) repairPending() bool {
 	return s.repair || (s.inflight != nil && s.inflight.repair)
@@ -293,6 +308,8 @@ type inflightAttempt struct {
 	converge bool
 	repair   bool
 	refusals map[refusalKey]unsentRefusal
+	// lag is whether it carries only scheduleConverges' converge.
+	lag bool
 	// phase is the last report of its operation, empty before the first.
 	phase ApplyOutcome
 	// previous is the operation recorded before this attempt's, with the attempt it belonged to,
@@ -363,10 +380,12 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	now := time.Now()
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
+	converging := l.scheduleConverges(now)
 	work := l.takeReasons()
 	// A listing that failed is retried on the applier timer (listRetryAt), which every arming below
 	// keeps.
 	closing := earliest(earliest(l.reportApplyWindows(now), l.snapshotHoldDeadline()), l.listRetryAt)
+	closing = earliest(closing, converging)
 
 	if !work {
 		l.endFlush()
@@ -400,6 +419,65 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	l.armApplierTimer(now, wait)
 }
 
+// scheduleConverges leaves a converge pending for each applier that has stayed behind the tip for its
+// convergeInterval, and returns when the next one still waiting comes due, zero when none waits.
+//
+// A push of the worker's own leaves nothing pending (applyInbox.observe): the flush put its edits on
+// the cluster already. But the applier's own state, its applied revision and its source, stays at the
+// commit before, and other things read it. The interval bounds that lag. The clock starts on the first
+// pass that finds the applier behind, and starts again when an attempt is sent, so a burst of pushes
+// inside one interval costs one apply, and an applier at the tip costs nothing. The converge then
+// waits like any other: for the barrier, the backoff and the flush (dueAppliers), and asks nothing
+// of an applier that applied the tip meanwhile.
+func (l *branchWorkerEventLoop) scheduleConverges(now time.Time) time.Time {
+	tip := l.w.inbox.lastTip()
+	var next time.Time
+	for _, state := range l.appliers {
+		if tip == "" || revisionNamesCommit(state.appliedRevision, tip) {
+			state.behindSince = time.Time{}
+			continue
+		}
+		state.convergeInterval = l.w.convergeIntervalOf(state)
+		if state.convergeInterval <= 0 {
+			state.behindSince = time.Time{}
+			continue
+		}
+		if state.behindSince.IsZero() {
+			state.behindSince = now
+		}
+		if state.converge || l.attemptOut(state) {
+			continue
+		}
+		due := state.behindSince.Add(state.convergeInterval)
+		if now.Before(due) {
+			next = earliest(next, due)
+			continue
+		}
+		state.converge, state.lag = true, true
+		l.w.Log.V(1).Info("The applier stayed behind the tip for its converge interval; a converge is pending",
+			"branch", l.w.Branch, "applier", state.ref.String(), "applied", state.appliedRevision, "tip", tip,
+			"interval", state.convergeInterval.String())
+	}
+	return next
+}
+
+// convergeIntervalOf reads the applier's spec.convergeInterval from its applier claim, on every pass
+// that finds it behind, so a change applies from the next wake rather than from the next listing,
+// which a push of the worker's own does not make. The client is cached, so this costs no round trip.
+// An applier claim that cannot be read keeps the interval last read.
+func (w *BranchWorker) convergeIntervalOf(state *applierState) time.Duration {
+	ref := state.ref.ApplierClaim
+	applierClaim := v1alpha3.NewApplierClaim(ref.Kind)
+	if applierClaim == nil {
+		return 0
+	}
+	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
+	if err := w.Client.Get(w.ctx, key, applierClaim); err != nil {
+		return state.convergeInterval
+	}
+	return applierClaim.ConvergeInterval()
+}
+
 // takeReasons moves the reasons the inbox holds onto the appliers listed now, and reports whether
 // any applier has work. A listing that fails leaves them in the inbox, and sets listRetryAt, when
 // the applier timer looks again; only a listing that succeeds clears it (followRecordedOperations
@@ -422,6 +500,7 @@ func (l *branchWorkerEventLoop) takeReasons() bool {
 	for _, state := range l.appliers {
 		state.foreign = state.foreign || foreign
 		state.converge = state.converge || converge
+		state.lag = state.lag && !converge
 	}
 	return true
 }
@@ -445,7 +524,7 @@ func (l *branchWorkerEventLoop) dueAppliers(now time.Time) ([]*applierState, tim
 		}
 		refusals := l.unsentRefusalsFor(state)
 		if l.alreadyConverged(state, refusals, tip) {
-			state.converge = false
+			state.converge, state.lag = false, false
 			l.w.Log.V(1).Info("The applier already applied the tip; the converge asks nothing",
 				"branch", l.w.Branch, "applier", state.ref.String(), "commit", tip)
 		}
@@ -651,7 +730,7 @@ func (l *branchWorkerEventLoop) listApplier(ref ApplierRef, named []branchTarget
 	state.targets = named
 	for _, target := range named {
 		if !state.named[target.uid] {
-			state.named[target.uid], state.converge = true, true
+			state.named[target.uid], state.converge, state.lag = true, true, false
 		}
 	}
 }
@@ -730,8 +809,10 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		id: l.nextApplyID, foreign: state.foreign, adopt: state.adopt, converge: state.converge,
 		repair: state.repair, refusals: refusals, abandon: abandon,
 		previous: state.operation, previousID: state.operationID,
+		lag: state.onlyLag(refusals),
 	}
-	state.foreign, state.adopt, state.converge, state.repair = false, false, false, false
+	state.foreign, state.adopt, state.converge, state.repair, state.lag = false, false, false, false, false
+	state.behindSince = time.Time{}
 	state.inflight = attempt
 	state.lastTurn = attempt.id
 	l.reportApplyWindow(state)
@@ -767,7 +848,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		Record:        record,
 		Targets:       targets,
 		PriorFailures: state.failures,
-		Current:       func() bool { return w.decisionHolds(tip) },
+		Current:       w.currentFor(tip, attempt.lag),
 		Report:        w.reportApplyResult,
 		Abandoned:     abandoned.Done(),
 	})
@@ -808,6 +889,14 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 			}
 			continue
 		case ApplyStale:
+			if attempt.lag {
+				// It yielded to an edit, or to a newer tip: it only catches the applier's state
+				// up, so it waits a fresh interval rather than going again after the next flush.
+				state.behindSince = now
+				l.w.Log.V(1).Info("A converge yielded to an edit before its resume; waiting a fresh interval",
+					"branch", l.w.Branch, "applier", state.ref.String())
+				continue
+			}
 			// The decision went stale before the write: nothing failed, and the next wake
 			// decides again, at the tip as it is then.
 			l.restoreAttempt(state, attempt)
@@ -1005,6 +1094,13 @@ func (l *branchWorkerEventLoop) publishUnresolved() {
 func (l *branchWorkerEventLoop) restoreAttempt(state *applierState, attempt *inflightAttempt) {
 	state.foreign = state.foreign || attempt.foreign
 	state.adopt = state.adopt || attempt.adopt
+	// The converge given back is only scheduleConverges' when that is all either side holds.
+	switch {
+	case attempt.converge && !attempt.lag:
+		state.lag = false
+	case attempt.lag && !state.converge:
+		state.lag = true
+	}
 	state.converge = state.converge || attempt.converge
 	state.repair = state.repair || attempt.repair
 	for key, refusal := range attempt.refusals {
@@ -1046,6 +1142,27 @@ func (w *BranchWorker) provider() k8stypes.NamespacedName {
 // goroutine, so it reads only what is safe to read there.
 func (w *BranchWorker) decisionHolds(tip string) bool {
 	return w.inbox.tipIs(tip)
+}
+
+// currentFor is ApplyRequest.Current for an attempt decided at tip: decisionHolds, and for an attempt
+// that only catches the applier's state up (lag), convergeHolds as well.
+func (w *BranchWorker) currentFor(tip string, lag bool) func() bool {
+	if !lag {
+		return func() bool { return w.decisionHolds(tip) }
+	}
+	edits := w.liveEdits.Load()
+	return func() bool { return w.convergeHolds(tip, edits) }
+}
+
+// convergeHolds is the decision of a converge that only catches the applier's state up
+// (scheduleConverges): the branch is still at tip, and no live edit was mirrored since the send, the
+// count of which was edits then. The fetch before the resume writes nothing to the cluster; the apply
+// after it would put tip there, and an edit made meanwhile is not in tip, so the apply would revert it
+// and a Repair would put it back: a flip on the cluster, for an apply nothing needed. Such a converge
+// yields instead, and waits a fresh interval. An apply with any other reason does not: S1 keeps
+// continuous editing from starving it, and the apply window repairs what it overwrites.
+func (w *BranchWorker) convergeHolds(tip string, edits uint64) bool {
+	return w.decisionHolds(tip) && w.liveEdits.Load() == edits
 }
 
 // reportApplyResult is ApplyRequest.Report: it records the report and wakes the loop to settle it.

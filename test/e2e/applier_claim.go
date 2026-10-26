@@ -20,6 +20,10 @@ const (
 
 // createFluxClaim creates the FluxClaim name in namespace, holding the Kustomization
 // flux-system/<kustomization> in the operator's own cluster (the install's "local" KubeProvider).
+//
+// Its spec.convergeInterval is "0s", not the "1m" default: the specs count the applies an edit or a
+// push asks for, and a converge a minute after the worker's own push would land inside their holds.
+// The spec that tests the converge sets one (setFluxClaimConvergeInterval).
 func createFluxClaim(namespace, name, kustomization string) {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
@@ -32,9 +36,18 @@ spec:
   kustomizationRef:
     namespace: flux-system
     name: %s
+  convergeInterval: 0s
 `, name, namespace, localKubeProviderRef(), kustomization)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to create FluxClaim %s/%s", namespace, name)
+}
+
+// setFluxClaimConvergeInterval sets the FluxClaim's spec.convergeInterval.
+func setFluxClaimConvergeInterval(namespace, name, interval string) {
+	GinkgoHelper()
+	_, err := kubectlRunInNamespace(namespace, "patch", fluxClaimResource, name, "--type=merge", "-p",
+		fmt.Sprintf(`{"spec":{"convergeInterval":%q}}`, interval))
+	Expect(err).NotTo(HaveOccurred(), "failed to set the convergeInterval of FluxClaim %s/%s", namespace, name)
 }
 
 // createArgoCDClaim creates the ArgoCDClaim name in namespace, holding the Application

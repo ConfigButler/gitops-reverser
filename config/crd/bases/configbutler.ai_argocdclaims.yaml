@@ -124,6 +124,24 @@ spec:
                   rule: self == oldSelf
                 - message: spec.applicationRef.name must not be empty
                   rule: self.name != ''
+              convergeInterval:
+                default: 0s
+                description: |-
+                  ConvergeInterval is how long the Application may stay behind the branch
+                  after a push of GitOps Reverser's own, as a Go duration ("5m"). Such a
+                  push changes nothing on the cluster, which already holds the edit, but
+                  leaves the Application's last sync at the commit before it. Once the
+                  interval has passed, the tip is synced, hooks included: a burst of saves
+                  costs one sync, and an Application at the tip costs none. "0s" never
+                  syncs for this reason. Otherwise at least "10s" and at most "24h".
+                  Defaults to "0s".
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: spec.convergeInterval must be 0s, or a Go duration from
+                    10s to 24h
+                  rule: duration(self) == duration('0s') || (duration(self) >= duration('10s')
+                    && duration(self) <= duration('24h'))
               kubeProviderRef:
                 description: |-
                   KubeProviderRef names the KubeProvider of the cluster that runs the

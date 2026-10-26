@@ -3,6 +3,8 @@
 package v1alpha3
 
 import (
+	"time"
+
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -190,6 +192,10 @@ type ApplierClaim interface {
 	// false when the applier has none it shares this way or the applier claim has not read it. Appliers
 	// sharing one have one operation at a time.
 	SharedSource() (source types.NamespacedName, known bool)
+	// ConvergeInterval is spec.convergeInterval, or the kind's default when it is omitted: how long
+	// the applier may stay behind the branch after a push of GitOps Reverser's own. Zero never
+	// converges for that reason.
+	ConvergeInterval() time.Duration
 	// Operation is status.operation, and SetOperation replaces it and status.repairPending.
 	Operation() *ApplyOperation
 	RepairPending() bool
@@ -212,6 +218,14 @@ func NewApplierClaim(kind string) ApplierClaim {
 	default:
 		return nil
 	}
+}
+
+// durationOr is d, or fallback when it is omitted.
+func durationOr(d *metav1.Duration, fallback time.Duration) time.Duration {
+	if d == nil {
+		return fallback
+	}
+	return d.Duration
 }
 
 // defaultedNamespace is namespace, or fallback when it is empty.

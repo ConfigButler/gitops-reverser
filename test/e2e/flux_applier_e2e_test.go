@@ -295,6 +295,32 @@ data:
 		verifyResourceCondition(fluxClaimResource, fluxName, testNs, "InControl", "True", "Suspended", "")
 	})
 
+	// A push of GitOps Reverser's own asks no apply at once, but the Kustomization's own state follows
+	// the branch at the applier claim's spec.convergeInterval: its lastAppliedRevision and its
+	// GitRepository's artifact reach the tip a mirrored API edit made, with no push by anyone else.
+	It("brings the applied revision to its own pushes' tip at the convergeInterval", func() {
+		setFluxClaimConvergeInterval(testNs, fluxName, "10s")
+		DeferCleanup(setFluxClaimConvergeInterval, testNs, fluxName, "0s")
+
+		By("mirroring an API edit: the branch moves by GitOps Reverser's own push")
+		applyConfigMap(testNs, "applier-converge-edit")
+		Eventually(func(g Gomega) {
+			g.Expect(runGitIn(repo.CheckoutDir, "fetch", "origin", "main")).To(Succeed())
+			g.Expect(gitShowFiles(repo.CheckoutDir)).To(ContainSubstring("applier-converge-edit"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("a CatchUp applies that tip within the interval, and the Kustomization is held again")
+		Eventually(func(g Gomega) {
+			head := remoteHeadSHA(g, repo.CheckoutDir)
+			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
+			g.Expect(fluxArtifactRevision(g, fluxName)).To(ContainSubstring(head))
+			done := readClaimOperation(g, testNs, fluxClaimResource, fluxName)
+			g.Expect(done.Reason).To(Equal("CatchUp"))
+			g.Expect(done.Phase).To(Equal("Succeeded"))
+			g.Expect(kustomizationSuspended(g, fluxName)).To(BeTrue())
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	})
+
 	// Deleting the applier claim hands the Kustomization back: its finalizer waits until nothing is
 	// running and releases spec.suspend, so Flux applies on its own again.
 	It("hands the Kustomization back to Flux when the applier claim is deleted", func() {
@@ -414,6 +440,14 @@ func appliedColor(g Gomega, appliedNs string) string {
 func fluxLastAppliedRevision(g Gomega, name string) string {
 	out, err := kubectlRunInNamespace("flux-system", "get", "kustomization", name,
 		"-o", "jsonpath={.status.lastAppliedRevision}")
+	g.Expect(err).NotTo(HaveOccurred())
+	return strings.TrimSpace(out)
+}
+
+// fluxArtifactRevision is the revision of the GitRepository name's artifact.
+func fluxArtifactRevision(g Gomega, name string) string {
+	out, err := kubectlRunInNamespace("flux-system", "get", "gitrepository", name,
+		"-o", "jsonpath={.status.artifact.revision}")
 	g.Expect(err).NotTo(HaveOccurred())
 	return strings.TrimSpace(out)
 }

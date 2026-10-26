@@ -90,6 +90,24 @@ spec:
           spec:
             description: spec defines the desired state of FluxClaim.
             properties:
+              convergeInterval:
+                default: 1m
+                description: |-
+                  ConvergeInterval is how long the Kustomization may stay behind the
+                  branch after a push of GitOps Reverser's own, as a Go duration ("1m",
+                  "90s"). Such a push changes nothing on the cluster, which already holds
+                  the edit, but leaves status.lastAppliedRevision and the GitRepository's
+                  artifact at the commit before it. Once the interval has passed, the tip is
+                  applied: a burst of saves costs one apply, and a Kustomization at the tip
+                  costs none. "0s" never applies for this reason. Otherwise at least "10s"
+                  and at most "24h". Defaults to "1m".
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: spec.convergeInterval must be 0s, or a Go duration from
+                    10s to 24h
+                  rule: duration(self) == duration('0s') || (duration(self) >= duration('10s')
+                    && duration(self) <= duration('24h'))
               kubeProviderRef:
                 description: |-
                   KubeProviderRef names the KubeProvider of the cluster that runs the

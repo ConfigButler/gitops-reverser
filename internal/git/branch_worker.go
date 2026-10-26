@@ -163,6 +163,10 @@ type BranchWorker struct {
 	applyEpoch    atomic.Uint64
 	appliersAhead atomic.Bool
 	hasAppliers   atomic.Bool
+	// liveEdits counts the live events the loop has mirrored, for the requester's goroutine to read: a
+	// converge that only catches the applier's state up yields to an edit that arrives before its
+	// resume (convergeHolds).
+	liveEdits atomic.Uint64
 	// initialSnapshots reports whether every collection a GitTarget watches has a settled
 	// snapshot, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
 	// WorkerManager before Start; nil in the CLI and in tests (apply_epoch.go).
@@ -1275,6 +1279,7 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 		if !l.mirrors(event) {
 			continue
 		}
+		l.w.liveEdits.Add(1)
 		l.appendLiveEvent(event)
 	}
 }
