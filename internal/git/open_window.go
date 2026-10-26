@@ -52,6 +52,15 @@ type openWindow struct {
 	claim     UnattributedClaim
 	claimedBy UserInfo
 
+	// namespace is the source namespace of the window's writes while they all share one, "" for a
+	// cluster-scoped write; spansNamespaces is set once two writes' namespaces differ.
+	namespace       string
+	spansNamespaces bool
+	// sourceNamespace confines the window to the writes of one source namespace once a request that
+	// saves only those attached (AttachSaveRequest.SourceNamespace): a write anywhere else cannot
+	// join it. Empty confines nothing.
+	sourceNamespace string
+
 	// timers decide when the window closes. They are the GitTarget's, snapshotted when the window
 	// opened, until a SaveRequest attaches and replaces them with its own.
 	timers windowTimers
@@ -96,6 +105,7 @@ func newOpenWindow(e Event, writer eventContentWriter) *openWindow {
 		GitTargetNamespace: e.GitTargetNamespace,
 		pathToEvent:        make(map[string]Event),
 		writer:             writer,
+		namespace:          e.Identifier.Namespace,
 		openedAt:           time.Now(),
 	}
 }
@@ -107,13 +117,22 @@ func (w *openWindow) canAppend(e Event) bool {
 	return e.Attribution == w.Attribution &&
 		e.UserInfo.Username == w.Author &&
 		e.GitTargetName == w.GitTarget &&
-		e.GitTargetNamespace == w.GitTargetNamespace
+		e.GitTargetNamespace == w.GitTargetNamespace &&
+		(w.sourceNamespace == "" || e.Identifier.Namespace == w.sourceNamespace)
+}
+
+// holdsOnly reports whether every write in the window was made in namespace.
+func (w *openWindow) holdsOnly(namespace string) bool {
+	return !w.spansNamespaces && w.namespace == namespace
 }
 
 // add records an event in the window. If the path was already present the
 // event replaces the previous one (last-write-wins inside a single window), which
 // it returns; otherwise pathOrder is extended.
 func (w *openWindow) add(e Event) (Event, bool) {
+	if e.Identifier.Namespace != w.namespace {
+		w.spansNamespaces = true
+	}
 	key := windowPathKey(e, w.writer)
 	replaced, exists := w.pathToEvent[key]
 	if !exists {

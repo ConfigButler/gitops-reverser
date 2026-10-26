@@ -120,6 +120,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `commit.window.maxDuration` | `1m` | Close a commit window this long after it opened, however much keeps arriving |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
 | `commit.unattributedWindows` | `Keep` | How much a `SaveRequest` may claim of a window whose writes name no author, on a cluster that never sent an audit fact: `Keep`, `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author) |
+| `allowedRemoteSaveRequests` | none admitted | The `RemoteSaveRequest`s, by source namespace and labels, that may save this target's windows. See [`RemoteSaveRequest`](#remotesaverequest) |
 | `placement.byType` | the built-in path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
 | `placement.default` | the built-in path | Catch-all path template for types with no `byType` entry |
 | `placement.useKustomize` | off | Keep the folder a kustomize folder. See [keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize) |
@@ -195,7 +196,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 | `window.attachTimeout` | `5s` | How long to wait for a window with the edits it saves. See [`RemoteSaveRequest`](#remotesaverequest) |
 | `window.idleTimeout` | no idle close | Close the attached window after this much silence |
 | `window.maxDuration` | `2s` | Close the attached window this long after the attach |
-| `catchUp` | `AsDefinedOnClaim` | `AfterPush` asks each `GitTarget`'s applier to apply the branch tip right after the commit is pushed; `status.targets` reports it |
+| `catchUp` | `AsDefinedOnClaim` | `AfterPush` asks each `GitTarget`'s applier to apply the branch tip right after the commit is pushed; `status.gitTargets` reports it |
 
 <!-- END GENERATED: settings-index -->
 

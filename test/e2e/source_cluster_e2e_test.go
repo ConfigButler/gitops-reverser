@@ -863,14 +863,20 @@ spec:
 		})
 
 		// A save made in the workspace itself: a RemoteSaveRequest, served because the workspace's
-		// KubeProvider enables them. It names no GitTarget; it saves the window of every GitTarget that
-		// mirrors its namespace. kcp sends no audit facts, so the request names nobody, like the edit,
+		// KubeProvider enables them, and saving only for a GitTarget that admits it. It names no
+		// GitTarget; it saves the window of every admitting GitTarget that mirrors its namespace, first
+		// refused while the GitTarget admits none. kcp sends no audit facts, so the request names nobody, like the edit,
 		// and attaches to the edit's window under the ordinary rule, with no takeover. Its own author is
 		// looked for first, for the whole attribution grace, so the edit is made once the request is
 		// waiting for a window.
 		It("saves an edit made in the workspace with a RemoteSaveRequest created there", func() {
 			By("installing the RemoteSaveRequest CRD in the workspace, and serving the workspace's RemoteSaveRequests")
-			_, err := kcp.wsKubectl(hash, "apply", "-f", "config/crd/bases/source.configbutler.ai_remotesaverequests.yaml")
+			_, err := kcp.wsKubectl(
+				hash,
+				"apply",
+				"-f",
+				"config/crd/bases/source.configbutler.ai_remotesaverequests.yaml",
+			)
 			Expect(err).NotTo(HaveOccurred())
 			_, err = kcp.wsKubectl(hash, "wait", "--for=condition=Established",
 				"crd/remotesaverequests.source.configbutler.ai", "--timeout=60s")
@@ -878,15 +884,39 @@ spec:
 			_, err = kubectlRunInNamespace(testNs, "patch", "kubeprovider", ws, "--type=merge", "-p",
 				`{"spec":{"remoteSaveRequests":"Enabled"}}`)
 			Expect(err).NotTo(HaveOccurred())
+			requestField := func(g Gomega, name, jsonPath string) string {
+				out, getErr := kcp.wsKubectl(
+					hash,
+					"-n",
+					testNs,
+					"get",
+					"remotesaverequest",
+					name,
+					"-o",
+					"jsonpath="+jsonPath,
+				)
+				g.Expect(getErr).NotTo(HaveOccurred())
+				return strings.TrimSpace(out)
+			}
+
+			By("refusing a RemoteSaveRequest while the GitTarget admits none")
+			const refused = "sc-flux-workspace-save-refused"
+			createWorkspaceRemoteSaveRequest(kcp, hash, testNs, refused, "e2e: not admitted")
+			Eventually(func(g Gomega) {
+				g.Expect(requestField(g, refused, `{.status.conditions[?(@.type=="Ready")].status}`)).To(Equal("False"))
+				g.Expect(requestField(g, refused, `{.status.conditions[?(@.type=="Ready")].reason}`)).
+					To(Equal("NotAllowed"))
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("admitting the workspace namespace's RemoteSaveRequests on the GitTarget")
+			_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", p.targetName, "--type=merge", "-p",
+				fmt.Sprintf(`{"spec":{"allowedRemoteSaveRequests":[{"sourceNamespaces":[%q]}]}}`, testNs))
+			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a RemoteSaveRequest in the workspace, and editing once it waits for a window")
 			const name, message = "sc-flux-workspace-save", "e2e: save from the workspace"
 			createWorkspaceRemoteSaveRequest(kcp, hash, testNs, name, message)
-			saveField := func(g Gomega, jsonPath string) string {
-				out, getErr := kcp.wsKubectl(hash, "-n", testNs, "get", "remotesaverequest", name, "-o", "jsonpath="+jsonPath)
-				g.Expect(getErr).NotTo(HaveOccurred())
-				return strings.TrimSpace(out)
-			}
+			saveField := func(g Gomega, jsonPath string) string { return requestField(g, name, jsonPath) }
 			Eventually(func(g Gomega) {
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].reason}`)).To(Equal("Saving"))
 			}, 2*time.Minute, time.Second).Should(Succeed(), "the server picks the request up and waits for a window")
@@ -897,8 +927,9 @@ spec:
 			Eventually(func(g Gomega) {
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].status}`)).To(Equal("True"))
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].reason}`)).To(Equal("Committed"))
-				g.Expect(saveField(g, "{.status.targets[0].gitTarget}")).To(Equal(testNs + "/" + p.targetName))
-				commit = saveField(g, "{.status.targets[0].commit}")
+				g.Expect(saveField(g, "{.status.gitTargets[0].namespace}")).To(Equal(testNs))
+				g.Expect(saveField(g, "{.status.gitTargets[0].name}")).To(Equal(p.targetName))
+				commit = saveField(g, "{.status.gitTargets[0].commit}")
 				g.Expect(commit).NotTo(BeEmpty())
 				g.Expect(saveField(g, "{.status.author}")).To(BeEmpty(), "kcp sends no audit facts")
 			}, 2*time.Minute, 2*time.Second).Should(Succeed())
@@ -911,8 +942,8 @@ spec:
 
 			Eventually(func(g Gomega) {
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Applied")].status}`)).To(Equal("True"))
-				g.Expect(saveField(g, "{.status.targets[0].applied}")).To(Equal("Applied"))
-				g.Expect(saveField(g, "{.status.targets[0].appliedRevision}")).To(ContainSubstring(commit))
+				g.Expect(saveField(g, "{.status.gitTargets[0].applied}")).To(Equal("Applied"))
+				g.Expect(saveField(g, "{.status.gitTargets[0].appliedRevision}")).To(ContainSubstring(commit))
 				g.Expect(fluxLastAppliedRevision(g, ksName)).To(ContainSubstring(commit))
 			}, echoApplyBudget, 2*time.Second).Should(Succeed())
 			r.consistentlyEverywhere(timingConfigMap, "saved-3")

@@ -107,6 +107,97 @@ spec:
           spec:
             description: spec defines the desired state of GitTarget.
             properties:
+              allowedRemoteSaveRequests:
+                description: |-
+                  AllowedRemoteSaveRequests are the RemoteSaveRequests, made on the cluster
+                  spec.kubeProviderRef names, that may save this GitTarget's commit
+                  windows. A request is admitted when one grant admits both its namespace
+                  and its labels. Omitted or empty, none is. A request that GitTargets
+                  mirror but none admits reports "NotAllowed". The KubeProvider must also
+                  set spec.remoteSaveRequests "Enabled".
+
+                  An admitted request saves only the edits made in its own namespace.
+                items:
+                  description: |-
+                    GitTargetRemoteSaveRequestGrant admits the RemoteSaveRequests of some
+                    namespaces of the source cluster to save a GitTarget's commit windows.
+                  properties:
+                    requestSelector:
+                      description: |-
+                        RequestSelector narrows this grant to the RemoteSaveRequests whose labels
+                        match. Omitted, it admits every request from sourceNamespaces. Whoever
+                        creates a request picks its labels, so this picks requests and proves
+                        nothing about who made them.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    sourceNamespaces:
+                      description: |-
+                        SourceNamespaces are the namespaces, on the cluster the GitTarget's
+                        spec.kubeProviderRef names, whose RemoteSaveRequests this grant admits:
+                        exact names, or "*" for every namespace the GitTarget mirrors.
+                      items:
+                        description: |-
+                          SourceNamespace is a namespace of a source cluster, by exact name, or "*"
+                          for every namespace.
+                        maxLength: 63
+                        type: string
+                        x-kubernetes-validations:
+                        - message: a source namespace is a namespace name, or '*'
+                            alone; variables are refused, because a source cluster's
+                            namespaces are not the control cluster's
+                          rule: self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                  required:
+                  - sourceNamespaces
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: atomic
               applierClaimRef:
                 description: |-
                   ApplierClaimRef names the FluxClaim or ArgoCDClaim, in this namespace, that

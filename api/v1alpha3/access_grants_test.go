@@ -349,3 +349,47 @@ func TestGitBranch_GitProviderKey(t *testing.T) {
 	branch.Spec.GitProviderRef.Namespace = "platform"
 	assert.Equal(t, "platform/shared-repo", branch.GitProviderKey().String())
 }
+
+// A GitTarget admits a RemoteSaveRequest only when one grant admits both its namespace and its
+// labels; a grant whose selector does not convert admits nothing, and says why only when no other
+// grant admits.
+func TestGitTarget_AdmitsRemoteSaveRequest(t *testing.T) {
+	broken := &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+		{Key: "app", Operator: "Near"},
+	}}
+	cart := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "cart"}}
+	target := func(grants ...GitTargetRemoteSaveRequestGrant) *GitTarget {
+		return &GitTarget{Spec: GitTargetSpec{AllowedRemoteSaveRequests: grants}}
+	}
+	labels := map[string]string{"app": "cart"}
+
+	admitted, err := target().AdmitsRemoteSaveRequest("shop", labels)
+	require.NoError(t, err)
+	assert.False(t, admitted, "nothing is admitted by default")
+
+	admitted, err = target(GitTargetRemoteSaveRequestGrant{SourceNamespaces: []SourceNamespace{"*"}}).
+		AdmitsRemoteSaveRequest("shop", labels)
+	require.NoError(t, err)
+	assert.True(t, admitted)
+
+	admitted, err = target(
+		GitTargetRemoteSaveRequestGrant{SourceNamespaces: []SourceNamespace{"shop"}, RequestSelector: cart},
+	).
+		AdmitsRemoteSaveRequest("shop", map[string]string{"app": "admin"})
+	require.NoError(t, err)
+	assert.False(t, admitted, "its labels must match too")
+
+	admitted, err = target(
+		GitTargetRemoteSaveRequestGrant{SourceNamespaces: []SourceNamespace{"shop"}, RequestSelector: broken},
+	).
+		AdmitsRemoteSaveRequest("shop", labels)
+	require.Error(t, err)
+	assert.False(t, admitted)
+
+	admitted, err = target(
+		GitTargetRemoteSaveRequestGrant{SourceNamespaces: []SourceNamespace{"shop"}, RequestSelector: broken},
+		GitTargetRemoteSaveRequestGrant{SourceNamespaces: []SourceNamespace{"shop"}, RequestSelector: cart},
+	).AdmitsRemoteSaveRequest("shop", labels)
+	require.NoError(t, err, "another grant admits")
+	assert.True(t, admitted)
+}

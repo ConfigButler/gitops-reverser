@@ -120,6 +120,25 @@ var _ = Describe("Access grants at admission", func() {
 		refused(kubeProvider("allowedApplierClaims", consumers(same)), "applierNamespaces: Required value")
 	})
 
+	It("takes a GitTarget's RemoteSaveRequest grants by source namespace name or *, and nothing else", func() {
+		gitTarget := func(grants ...any) *unstructured.Unstructured {
+			return object("GitTarget", map[string]any{
+				"gitBranchRef": map[string]any{"name": "b"}, "path": "apps",
+				"kubeProviderRef": map[string]any{"name": "k"}, "allowedRemoteSaveRequests": grants,
+			})
+		}
+		from := func(namespaces ...any) map[string]any { return map[string]any{"sourceNamespaces": namespaces} }
+		accepted(gitTarget(from("shop", "billing")))
+		accepted(gitTarget(from("*")))
+		labelled := from("shop")
+		labelled["requestSelector"] = map[string]any{"matchLabels": map[string]any{"app": "cart"}}
+		accepted(gitTarget(labelled))
+		refused(gitTarget(from("{consumer.namespace}")), "variables are refused")
+		refused(gitTarget(from("Shop")), "a source namespace is a namespace name")
+		refused(gitTarget(from()), "sourceNamespaces")
+		refused(gitTarget(map[string]any{}), "sourceNamespaces: Required value")
+	})
+
 	// consumerNamespaces is required on every grant type and from is required inside it, with no default
 	// for either, so a grant that leaves the "who" out admits nobody instead of its holder's namespace.
 	// The block's own rules cannot make it required, so each list is checked here.

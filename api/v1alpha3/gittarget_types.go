@@ -186,6 +186,25 @@ type GitTargetSpec struct {
 	// +optional
 	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 
+	// Consent lives on the GitTarget, not on the KubeProvider that serves the requests: the provider's
+	// owner lends a cluster, and whether a save made on it may steer this folder's commits, with its
+	// message, its timers and an apply, is the folder's owner's decision. Nothing is admitted by
+	// default, because a source cluster's namespaces are not the control cluster's, so there is no
+	// "Same" to default to.
+
+	// AllowedRemoteSaveRequests are the RemoteSaveRequests, made on the cluster
+	// spec.kubeProviderRef names, that may save this GitTarget's commit
+	// windows. A request is admitted when one grant admits both its namespace
+	// and its labels. Omitted or empty, none is. A request that GitTargets
+	// mirror but none admits reports "NotAllowed". The KubeProvider must also
+	// set spec.remoteSaveRequests "Enabled".
+	//
+	// An admitted request saves only the edits made in its own namespace.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=16
+	AllowedRemoteSaveRequests []GitTargetRemoteSaveRequestGrant `json:"allowedRemoteSaveRequests,omitempty"`
+
 	// The scan keeps running while writes are suspended: freezing status.placement too would leave
 	// a stale answer at the moment it costs most. A suspended target is Ready=True reason
 	// Suspended, because not writing is the configured outcome rather than ill health. A local

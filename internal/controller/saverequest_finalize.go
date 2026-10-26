@@ -64,6 +64,9 @@ func saveRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
 		return crOutcomeWindowMismatch
 	case git.FinalizeAlreadyPresent:
 		return crOutcomeAlreadyPresent
+	case git.FinalizeWindowOutsideNamespace:
+		// Only a RemoteSaveRequest is confined to a namespace, so a SaveRequest never ends this way.
+		return crOutcomeFailed
 	default:
 		return crOutcomeFailed
 	}
@@ -308,6 +311,10 @@ func applyFinalizeResultToStatus(
 	case git.FinalizeAlreadyPresent:
 		// The change already matches the remote, so the commit was dropped.
 		resolveNothingToCommit(cr, result, crReasonAlreadyPresent, alreadyPresentMessage)
+	case git.FinalizeWindowOutsideNamespace:
+		// Only a RemoteSaveRequest is confined to a namespace (AttachSaveRequest.SourceNamespace), so
+		// this outcome is a bug here, as an unknown one is.
+		failSaveRequest(cr, crReasonUnexpectedOutcome, "unexpected finalize outcome: "+string(result.Outcome))
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; fail it so it is not silently hidden.

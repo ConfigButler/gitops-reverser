@@ -219,6 +219,60 @@ type KubeProviderApplierClaimGrant struct {
 	ApplierNamespaces []ScopeNamespace `json:"applierNamespaces"`
 }
 
+// SourceNamespace is a namespace of a source cluster, by exact name, or "*"
+// for every namespace.
+// +kubebuilder:validation:MaxLength=63
+// +kubebuilder:validation:XValidation:rule="self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="a source namespace is a namespace name, or '*' alone; variables are refused, because a source cluster's namespaces are not the control cluster's"
+type SourceNamespace string
+
+// GitTargetRemoteSaveRequestGrant admits the RemoteSaveRequests of some
+// namespaces of the source cluster to save a GitTarget's commit windows.
+type GitTargetRemoteSaveRequestGrant struct {
+	// SourceNamespaces are the namespaces, on the cluster the GitTarget's
+	// spec.kubeProviderRef names, whose RemoteSaveRequests this grant admits:
+	// exact names, or "*" for every namespace the GitTarget mirrors.
+	// +required
+	// +listType=set
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
+	SourceNamespaces []SourceNamespace `json:"sourceNamespaces"`
+
+	// RequestSelector narrows this grant to the RemoteSaveRequests whose labels
+	// match. Omitted, it admits every request from sourceNamespaces. Whoever
+	// creates a request picks its labels, so this picks requests and proves
+	// nothing about who made them.
+	// +optional
+	RequestSelector *metav1.LabelSelector `json:"requestSelector,omitempty"`
+}
+
+// AdmitsRemoteSaveRequest reports whether spec.allowedRemoteSaveRequests admits a RemoteSaveRequest
+// in namespace, on the source cluster, carrying requestLabels. A selector that does not convert is an
+// error, never a silent allow; it is returned only when no grant admits.
+func (t *GitTarget) AdmitsRemoteSaveRequest(namespace string, requestLabels map[string]string) (bool, error) {
+	var errs []error
+	for i := range t.Spec.AllowedRemoteSaveRequests {
+		grant := &t.Spec.AllowedRemoteSaveRequests[i]
+		if !slices.ContainsFunc(grant.SourceNamespaces, func(ns SourceNamespace) bool {
+			return ns == "*" || string(ns) == namespace
+		}) {
+			continue
+		}
+		if grant.RequestSelector == nil {
+			return true, nil
+		}
+		selector, err := metav1.LabelSelectorAsSelector(grant.RequestSelector)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("grant %d: requestSelector %s: %w", i,
+				metav1.FormatLabelSelector(grant.RequestSelector), err))
+			continue
+		}
+		if selector.Matches(labels.Set(requestLabels)) {
+			return true, nil
+		}
+	}
+	return false, errors.Join(errs...)
+}
+
 // The API server defaults an omitted grant list on GitBranch and KubeProvider (the
 // +kubebuilder:default markers on their fields), so a list read from it is never nil. These mirror
 // those markers for an object that did not come from the API server, such as one built in memory or

@@ -31,10 +31,17 @@ import (
 
 // A RemoteSaveRequest is a save made on a source cluster, next to the edits it saves
 // (docs/future/source-side-save-plan.md). The server watches them on every KubeProvider whose
-// spec.remoteSaveRequests is "Enabled", through that provider's identity, and serves each one the way the
-// SaveRequest controller serves a SaveRequest: it attaches the request to the commit window of
-// every GitTarget that mirrors the request's namespace from that cluster, polls the branch workers
-// for the outcomes, and writes them back to the request's status on the source cluster.
+// spec.remoteSaveRequests is "Enabled", through that provider's identity, and serves each one the way
+// the SaveRequest controller serves a SaveRequest: it attaches the request to the commit window of
+// every GitTarget that mirrors the request's namespace from that cluster and admits it in
+// spec.allowedRemoteSaveRequests, polls the branch workers for the outcomes, and writes them back to
+// the request's status on the source cluster. The provider's switch makes the requests reachable;
+// the GitTarget's grant is its owner's consent to being steered by them.
+//
+// A request saves only the edits made in its own namespace: the worker attaches it only to a window
+// whose writes are all there, and keeps every other write out of that window once it has
+// (git.AttachSaveRequest.SourceNamespace). A window groups by author and GitTarget, not by
+// namespace, so without that a save in one namespace would commit edits made in another.
 //
 // The request's author is found as the edits' authors are, from the source cluster's audit facts, so
 // a save attaches only to its creator's windows by the ordinary author rule. On a cluster that sends
@@ -76,9 +83,11 @@ const (
 	saveReasonCommitted        = "Committed"
 	saveReasonNoWindow         = "NoWindow"
 	saveReasonWindowMismatch   = "WindowMismatch"
+	saveReasonOutsideNamespace = "WindowOutsideNamespace"
 	saveReasonAlreadyPresent   = "AlreadyPresent"
 	saveReasonFailed           = "Failed"
 	saveReasonNoGitTarget      = "NoGitTarget"
+	saveReasonNotAllowed       = "NotAllowed"
 	saveReasonAuthorUnresolved = "AuthorUnresolved"
 	saveReasonSaving           = "Saving"
 	saveReasonApplying         = "Applying"
@@ -148,7 +157,8 @@ func (s *RemoteSaveRequestServer) syncProviders(ctx context.Context) {
 	want := map[k8stypes.NamespacedName]string{}
 	for i := range providers.Items {
 		provider := &providers.Items[i]
-		if provider.DeletionTimestamp == nil && provider.Spec.RemoteSaveRequests == configv1alpha3.RemoteSaveRequestsEnabled {
+		if provider.DeletionTimestamp == nil &&
+			provider.Spec.RemoteSaveRequests == configv1alpha3.RemoteSaveRequestsEnabled {
 			want[provider.Key()] = provider.AuditRoute()
 		}
 	}
@@ -205,7 +215,11 @@ func (s *RemoteSaveRequestServer) run(ctx context.Context, watcher *remoteSaveRe
 }
 
 // session lists the cluster's RemoteSaveRequests and watches them, until the watch ends.
-func (s *RemoteSaveRequestServer) session(ctx context.Context, log logr.Logger, watcher *remoteSaveRequestWatcher) error {
+func (s *RemoteSaveRequestServer) session(
+	ctx context.Context,
+	log logr.Logger,
+	watcher *remoteSaveRequestWatcher,
+) error {
 	dc, err := s.clusterClient(ctx, watcher.provider)
 	if err != nil {
 		return err
@@ -260,12 +274,21 @@ func (s *RemoteSaveRequestServer) clusterClient(
 // consider serves a request that has not finished and is not served yet, and deletes one that
 // finished longer than the TTL ago.
 func (s *RemoteSaveRequestServer) consider(
-	ctx context.Context, log logr.Logger, watcher *remoteSaveRequestWatcher, resource dynamic.NamespaceableResourceInterface,
+	ctx context.Context,
+	log logr.Logger,
+	watcher *remoteSaveRequestWatcher,
+	resource dynamic.NamespaceableResourceInterface,
 	u *unstructured.Unstructured,
 ) {
 	var request sourcev1alpha1.RemoteSaveRequest
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &request); err != nil {
-		log.Info("Cannot read a RemoteSaveRequest", "remoteSaveRequest", u.GetNamespace()+"/"+u.GetName(), "err", err.Error())
+		log.Info(
+			"Cannot read a RemoteSaveRequest",
+			"remoteSaveRequest",
+			u.GetNamespace()+"/"+u.GetName(),
+			"err",
+			err.Error(),
+		)
 		return
 	}
 	if finishedAt, finished := remoteSaveRequestFinished(&request); finished {
@@ -273,8 +296,9 @@ func (s *RemoteSaveRequestServer) consider(
 			if err := resource.Namespace(request.Namespace).Delete(ctx, request.Name, metav1.DeleteOptions{
 				Preconditions: &metav1.Preconditions{UID: &request.UID},
 			}); err != nil && !apierrors.IsNotFound(err) {
-				log.V(1).Info("Cannot delete a finished RemoteSaveRequest", "remoteSaveRequest", request.Namespace+"/"+request.Name,
-					"err", err.Error())
+				log.V(1).
+					Info("Cannot delete a finished RemoteSaveRequest", "remoteSaveRequest", request.Namespace+"/"+request.Name,
+						"err", err.Error())
 			}
 		}
 		return
@@ -341,21 +365,30 @@ func (s *RemoteSaveRequestServer) serve(
 		return
 	}
 
-	targets, err := s.mirroringTargets(ctx, watcher.provider, request.Namespace)
+	targets, mirrored, err := s.admittingTargets(ctx, watcher.provider, request)
 	if err != nil {
-		log.Info("Cannot find the GitTargets that mirror a RemoteSaveRequest's namespace; will retry", "err", err.Error())
+		log.Info("Cannot find the GitTargets that admit a RemoteSaveRequest; will retry", "err", err.Error())
 		return
 	}
 	if len(targets) == 0 {
+		if mirrored {
+			message := "a GitTarget mirrors this namespace from this cluster, but none admits this request " +
+				"in spec.allowedRemoteSaveRequests"
+			setSaveCondition(request, status, "Ready", metav1.ConditionFalse, saveReasonNotAllowed, message)
+			setSaveCondition(request, status, "Stalled", metav1.ConditionTrue, saveReasonNotAllowed, message)
+			write()
+			log.Info("Refused a RemoteSaveRequest no GitTarget admits")
+			return
+		}
 		setSaveCondition(request, status, "Ready", metav1.ConditionTrue, saveReasonNoGitTarget,
 			"no GitTarget mirrors this namespace from this cluster, so there is nothing to save")
 		write()
 		return
 	}
-	status.Targets = make([]sourcev1alpha1.RemoteSaveRequestTarget, len(targets))
+	status.GitTargets = make([]sourcev1alpha1.RemoteSaveRequestGitTarget, len(targets))
 	attaches := make([]git.AttachSaveRequest, len(targets))
 	for i, target := range targets {
-		status.Targets[i] = sourcev1alpha1.RemoteSaveRequestTarget{GitTarget: target.String()}
+		status.GitTargets[i] = sourcev1alpha1.RemoteSaveRequestGitTarget{Namespace: target.Namespace, Name: target.Name}
 		attaches[i] = remoteSaveRequestAttach(request, target, author.Username, attribution)
 	}
 	setSaveCondition(request, status, "Ready", metav1.ConditionUnknown, saveReasonSaving,
@@ -402,36 +435,52 @@ func (s *RemoteSaveRequestServer) sentAuditFacts(ctx context.Context, provider k
 	return apimeta.IsStatusConditionTrue(kp.Status.Conditions, "AuditFactsReceived")
 }
 
-// mirroringTargets are the GitTargets that mirror namespace from the KubeProvider: they name it, and
-// one of their running streams watches that namespace, or every namespace.
-func (s *RemoteSaveRequestServer) mirroringTargets(
-	ctx context.Context, provider k8stypes.NamespacedName, namespace string,
-) ([]types.ResourceReference, error) {
+// admittingTargets are the GitTargets a request saves: they name the KubeProvider, mirror the
+// request's namespace, and admit the request in spec.allowedRemoteSaveRequests. mirrored reports
+// whether any GitTarget mirrors the namespace, admitting or not.
+func (s *RemoteSaveRequestServer) admittingTargets(
+	ctx context.Context, provider k8stypes.NamespacedName, request *sourcev1alpha1.RemoteSaveRequest,
+) ([]types.ResourceReference, bool, error) {
 	var targets configv1alpha3.GitTargetList
 	if err := s.Client.List(ctx, &targets); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var out []types.ResourceReference
+	mirrored := false
 	for i := range targets.Items {
 		target := &targets.Items[i]
 		if target.DeletionTimestamp != nil || target.KubeProviderKey() != provider {
 			continue
 		}
 		ref := types.NewResourceReference(target.Name, target.Namespace)
-		if s.Manager.mirrorsNamespace(ref, namespace) {
+		if !s.Manager.mirrorsNamespace(ref, request.Namespace) {
+			continue
+		}
+		mirrored = true
+		admitted, err := target.AdmitsRemoteSaveRequest(request.Namespace, request.Labels)
+		if err != nil {
+			s.Log.Info("A GitTarget's spec.allowedRemoteSaveRequests cannot be read; it admits nothing",
+				"gitTarget", ref.String(), "err", err.Error())
+		}
+		if admitted {
 			out = append(out, ref)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
-	return out, nil
+	return out, mirrored, nil
 }
 
-// mirrorsNamespace reports whether a running stream of gitDest watches namespace, or every namespace.
+// mirrorsNamespace reports whether gitDest mirrors a namespaced type in namespace: a WatchRule
+// watches the type there, or a rule watches it across every namespace. A cluster-scoped type is in
+// no namespace, so a GitTarget that mirrors only those mirrors none.
 func (m *Manager) mirrorsNamespace(gitDest types.ResourceReference, namespace string) bool {
-	m.streamProgressMu.Lock()
-	defer m.streamProgressMu.Unlock()
-	for collection := range m.streamProgress[gitDest.Key()] {
-		if collection.Namespace == namespace || collection.Namespace == "" {
+	for _, wt := range m.residentWatchedTypeTable(gitDest).Types {
+		if !wt.Namespaced {
+			continue
+		}
+		_, named := wt.NamespaceScopes[namespace]
+		_, everywhere := wt.NamespaceScopes[""]
+		if named || everywhere {
 			return true
 		}
 	}
@@ -457,6 +506,7 @@ func remoteSaveRequestAttach(
 		AttachTimeout:      defaultSaveAttachTimeout,
 		MaxDuration:        defaultSaveMaxDuration,
 		CatchUpNow:         request.Spec.CatchUp == sourcev1alpha1.CatchUpAfterPush,
+		SourceNamespace:    request.Namespace,
 	}
 	if window := request.Spec.Window; window != nil {
 		if window.AttachTimeout != nil {
@@ -496,7 +546,7 @@ func (s *RemoteSaveRequestServer) finalize(
 			}
 			resolved[i] = true
 			remaining--
-			recordSaveOutcome(&status.Targets[i], result)
+			recordSaveOutcome(&status.GitTargets[i], result)
 		}
 		if remaining == 0 {
 			break
@@ -511,7 +561,7 @@ func (s *RemoteSaveRequestServer) finalize(
 }
 
 // recordSaveOutcome records one GitTarget's outcome on its target status.
-func recordSaveOutcome(target *sourcev1alpha1.RemoteSaveRequestTarget, result git.FinalizeResult) {
+func recordSaveOutcome(target *sourcev1alpha1.RemoteSaveRequestGitTarget, result git.FinalizeResult) {
 	target.Branch = result.Branch
 	if result.Err != nil {
 		target.Reason, target.Message = saveReasonFailed, result.Err.Error()
@@ -530,6 +580,9 @@ func recordSaveOutcome(target *sourcev1alpha1.RemoteSaveRequestTarget, result gi
 	case git.FinalizeWindowMismatch:
 		target.Reason = saveReasonWindowMismatch
 		target.Message = "only another author's commit window was open"
+	case git.FinalizeWindowOutsideNamespace:
+		target.Reason = saveReasonOutsideNamespace
+		target.Message = "the open commit window held edits made outside this namespace, so it was left alone"
 	case git.FinalizeAlreadyPresent:
 		target.Reason = saveReasonAlreadyPresent
 		target.Message = "the edits were in Git already"
@@ -541,21 +594,21 @@ func recordSaveOutcome(target *sourcev1alpha1.RemoteSaveRequestTarget, result gi
 // setSaveReady sets Ready from the targets' outcomes: a failure in any fails the request, a commit in
 // any is Committed, and otherwise the first target's reason says why nothing was committed.
 func setSaveReady(request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus) {
-	for _, target := range status.Targets {
+	for _, target := range status.GitTargets {
 		if target.Reason == saveReasonFailed {
-			message := target.GitTarget + ": " + target.Message
+			message := gitTargetName(target) + ": " + target.Message
 			setSaveCondition(request, status, "Ready", metav1.ConditionFalse, saveReasonFailed, message)
 			setSaveCondition(request, status, "Stalled", metav1.ConditionTrue, saveReasonFailed, message)
 			return
 		}
 	}
-	for _, target := range status.Targets {
+	for _, target := range status.GitTargets {
 		if target.Reason == saveReasonCommitted {
 			setSaveCondition(request, status, "Ready", metav1.ConditionTrue, saveReasonCommitted, target.Message)
 			return
 		}
 	}
-	first := status.Targets[0]
+	first := status.GitTargets[0]
 	setSaveCondition(request, status, "Ready", metav1.ConditionTrue, first.Reason, first.Message)
 }
 
@@ -587,7 +640,7 @@ func (s *RemoteSaveRequestServer) pollApplies(
 ) bool {
 	pending := false
 	for i := range attaches {
-		target := &status.Targets[i]
+		target := &status.GitTargets[i]
 		if target.Reason != saveReasonCommitted || saveApplySettled(target.Applied) {
 			continue
 		}
@@ -620,18 +673,23 @@ func saveApplySettled(reason string) bool {
 func setSaveApplied(request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus) {
 	reason, condition := saveReasonApplied, metav1.ConditionTrue
 	message := "every applier applied a revision that holds the commit, or needed no apply"
-	for _, target := range status.Targets {
+	for _, target := range status.GitTargets {
 		switch target.Applied {
 		case git.SaveApplyCommitDropped:
 			setSaveCondition(request, status, "Applied", metav1.ConditionFalse, target.Applied,
-				target.GitTarget+": the branch no longer holds the commit")
+				gitTargetName(target)+": the branch no longer holds the commit")
 			return
 		case "Lost":
 			reason, condition = "Lost", metav1.ConditionUnknown
-			message = target.GitTarget + ": GitOps Reverser does not know how the apply went"
+			message = gitTargetName(target) + ": GitOps Reverser does not know how the apply went"
 		}
 	}
 	setSaveCondition(request, status, "Applied", condition, reason, message)
+}
+
+// gitTargetName is a target status's GitTarget as namespace/name, for a message.
+func gitTargetName(target sourcev1alpha1.RemoteSaveRequestGitTarget) string {
+	return target.Namespace + "/" + target.Name
 }
 
 func readyReason(status *sourcev1alpha1.RemoteSaveRequestStatus) string {

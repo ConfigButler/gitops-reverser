@@ -15,7 +15,8 @@ import (
 // The spec is immutable, compared as SaveRequestSpec compares it: durations as durations, so a typed
 // client's re-spelling of "1m" as "1m0s" is not a change.
 
-// RemoteSaveRequestSpec defines the desired state of RemoteSaveRequest. It is immutable.
+// RemoteSaveRequestSpec defines the desired state of RemoteSaveRequest. It
+// is immutable.
 // +kubebuilder:validation:XValidation:rule="has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="RemoteSaveRequest spec is immutable after creation"
 type RemoteSaveRequestSpec struct {
 	// Message is the commit message this request asks for. Omitted, each
@@ -57,8 +58,8 @@ type RemoteSaveRequestSpec struct {
 	CatchUp CatchUpPolicy `json:"catchUp,omitempty"`
 }
 
-// CatchUpPolicy is when a RemoteSaveRequest's commit is applied by a GitTarget's
-// applier.
+// CatchUpPolicy is when a RemoteSaveRequest's commit is applied by a
+// GitTarget's applier.
 type CatchUpPolicy string
 
 const (
@@ -68,9 +69,9 @@ const (
 	CatchUpAfterPush CatchUpPolicy = "AfterPush"
 )
 
-// RemoteSaveRequestWindow is how long a RemoteSaveRequest waits for a commit window, and
-// when that window closes. A window is only ever opened by an edit; a
-// request waits for one and never opens one.
+// RemoteSaveRequestWindow is how long a RemoteSaveRequest waits for a commit
+// window, and when that window closes. A window is only ever opened by an
+// edit; a request waits for one and never opens one.
 // +kubebuilder:validation:XValidation:rule="duration(self.attachTimeout) == duration(oldSelf.attachTimeout) && duration(self.maxDuration) == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))",message="RemoteSaveRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)",message="spec.window.idleTimeout must not exceed maxDuration"
 type RemoteSaveRequestWindow struct {
@@ -117,19 +118,23 @@ type RemoteSaveRequestStatus struct {
 	// +optional
 	Author string `json:"author,omitempty"`
 
-	// Targets is the save in each GitTarget that mirrors this namespace.
+	// GitTargets is the save in each GitTarget that admitted this request.
 	// +optional
-	// +listType=atomic
+	// +listType=map
+	// +listMapKey=namespace
+	// +listMapKey=name
 	// +kubebuilder:validation:MaxItems=64
-	Targets []RemoteSaveRequestTarget `json:"targets,omitempty"`
+	GitTargets []RemoteSaveRequestGitTarget `json:"gitTargets,omitempty"`
 
 	// Conditions are the latest observations of this RemoteSaveRequest's state.
 	// Ready is True once the request ended without error in every GitTarget,
 	// with reason "Committed" when one of them committed, and otherwise the
 	// reason of the first: "NoWindow", "AlreadyPresent", "WindowMismatch",
-	// "NoGitTarget" when no GitTarget mirrors this namespace, or
-	// "AuthorUnresolved" when this cluster sends audit events and none named
-	// the request's creator. Ready=False with Stalled=True is a failure.
+	// "WindowOutsideNamespace", "NoGitTarget" when no GitTarget mirrors this
+	// namespace, or "AuthorUnresolved" when this cluster sends audit events
+	// and none named the request's creator. Ready=False with Stalled=True is a
+	// failure, with reason "NotAllowed" when GitTargets mirror this namespace
+	// and none admits the request.
 	//
 	// Applied, with spec.catchUp "AfterPush", is True once every GitTarget's
 	// applier applied a revision that holds its commit, or needed none, and
@@ -142,16 +147,21 @@ type RemoteSaveRequestStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
-// RemoteSaveRequestTarget is the save in one GitTarget.
-type RemoteSaveRequestTarget struct {
-	// GitTarget is the GitTarget, as namespace/name on the cluster GitOps
-	// Reverser runs in.
+// RemoteSaveRequestGitTarget is the save in one GitTarget.
+type RemoteSaveRequestGitTarget struct {
+	// Namespace is the GitTarget's namespace, on the cluster GitOps Reverser
+	// runs in.
 	// +required
-	GitTarget string `json:"gitTarget"`
+	Namespace string `json:"namespace"`
+
+	// Name is the GitTarget's name.
+	// +required
+	Name string `json:"name"`
 
 	// Reason is how the save ended in this GitTarget, as the Ready reasons
-	// above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch", or
-	// "Failed". Empty while it runs.
+	// above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch",
+	// "WindowOutsideNamespace" when the open window held edits made outside
+	// this namespace, or "Failed". Empty while it runs.
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
@@ -186,13 +196,15 @@ type RemoteSaveRequestTarget struct {
 // +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// RemoteSaveRequest asks GitOps Reverser to save the edits made in its namespace:
-// the commit window of each GitTarget that mirrors this namespace gets its
-// message and closes on its timers. Create it on the cluster the edits were
-// made on, as JSON. Its creator is found from this cluster's audit events,
-// as the edits' authors are, so it saves only its creator's edits; on a
-// cluster with no audit it names nobody, and saves edits that name nobody.
-// Its spec is immutable, and status reports each GitTarget's commit.
+// RemoteSaveRequest asks GitOps Reverser to save the edits made in its
+// namespace: the commit window of each GitTarget that mirrors this namespace
+// and admits the request, in spec.allowedRemoteSaveRequests, gets its message
+// and closes on its timers. Edits made elsewhere are never part of its save.
+// Create it on the cluster the edits were made on, as JSON. Its creator is
+// found from this cluster's audit events, as the edits' authors are, so it
+// saves only its creator's edits; on a cluster with no audit it names
+// nobody, and saves edits that name nobody. Its spec is immutable, and
+// status reports each GitTarget's commit.
 type RemoteSaveRequest struct {
 	metav1.TypeMeta `json:",inline"`
 

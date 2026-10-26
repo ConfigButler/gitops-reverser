@@ -35,13 +35,15 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          RemoteSaveRequest asks GitOps Reverser to save the edits made in its namespace:
-          the commit window of each GitTarget that mirrors this namespace gets its
-          message and closes on its timers. Create it on the cluster the edits were
-          made on, as JSON. Its creator is found from this cluster's audit events,
-          as the edits' authors are, so it saves only its creator's edits; on a
-          cluster with no audit it names nobody, and saves edits that name nobody.
-          Its spec is immutable, and status reports each GitTarget's commit.
+          RemoteSaveRequest asks GitOps Reverser to save the edits made in its
+          namespace: the commit window of each GitTarget that mirrors this namespace
+          and admits the request, in spec.allowedRemoteSaveRequests, gets its message
+          and closes on its timers. Edits made elsewhere are never part of its save.
+          Create it on the cluster the edits were made on, as JSON. Its creator is
+          found from this cluster's audit events, as the edits' authors are, so it
+          saves only its creator's edits; on a cluster with no audit it names
+          nobody, and saves edits that name nobody. Its spec is immutable, and
+          status reports each GitTarget's commit.
         properties:
           apiVersion:
             description: |-
@@ -170,9 +172,11 @@ spec:
                   Ready is True once the request ended without error in every GitTarget,
                   with reason "Committed" when one of them committed, and otherwise the
                   reason of the first: "NoWindow", "AlreadyPresent", "WindowMismatch",
-                  "NoGitTarget" when no GitTarget mirrors this namespace, or
-                  "AuthorUnresolved" when this cluster sends audit events and none named
-                  the request's creator. Ready=False with Stalled=True is a failure.
+                  "WindowOutsideNamespace", "NoGitTarget" when no GitTarget mirrors this
+                  namespace, or "AuthorUnresolved" when this cluster sends audit events
+                  and none named the request's creator. Ready=False with Stalled=True is a
+                  failure, with reason "NotAllowed" when GitTargets mirror this namespace
+                  and none admits the request.
 
                   Applied, with spec.catchUp "AfterPush", is True once every GitTarget's
                   applier applied a revision that holds its commit, or needed none, and
@@ -235,16 +239,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              observedGeneration:
-                description: ObservedGeneration is the latest generation observed
-                  by GitOps Reverser.
-                format: int64
-                type: integer
-              targets:
-                description: Targets is the save in each GitTarget that mirrors this
-                  namespace.
+              gitTargets:
+                description: GitTargets is the save in each GitTarget that admitted
+                  this request.
                 items:
-                  description: RemoteSaveRequestTarget is the save in one GitTarget.
+                  description: RemoteSaveRequestGitTarget is the save in one GitTarget.
                   properties:
                     applied:
                       description: |-
@@ -262,26 +261,39 @@ spec:
                       description: Commit is the commit the save made, once it is
                         on the remote.
                       type: string
-                    gitTarget:
-                      description: |-
-                        GitTarget is the GitTarget, as namespace/name on the cluster GitOps
-                        Reverser runs in.
-                      type: string
                     message:
                       description: Message says more about the reason.
+                      type: string
+                    name:
+                      description: Name is the GitTarget's name.
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the GitTarget's namespace, on the cluster GitOps Reverser
+                        runs in.
                       type: string
                     reason:
                       description: |-
                         Reason is how the save ended in this GitTarget, as the Ready reasons
-                        above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch", or
-                        "Failed". Empty while it runs.
+                        above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch",
+                        "WindowOutsideNamespace" when the open window held edits made outside
+                        this namespace, or "Failed". Empty while it runs.
                       type: string
                   required:
-                  - gitTarget
+                  - name
+                  - namespace
                   type: object
                 maxItems: 64
                 type: array
-                x-kubernetes-list-type: atomic
+                x-kubernetes-list-map-keys:
+                - namespace
+                - name
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by GitOps Reverser.
+                format: int64
+                type: integer
             type: object
         required:
         - spec

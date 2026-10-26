@@ -53,6 +53,10 @@ const (
 	// produced no diff — the change already matches the remote, so no commit was
 	// made (loop prevention). Resolved at finalize, never waiting on a push.
 	FinalizeAlreadyPresent FinalizeOutcome = "AlreadyPresent"
+	// FinalizeWindowOutsideNamespace means the request's own window was open during its wait but held
+	// writes made outside the one namespace the request saves (AttachSaveRequest.SourceNamespace), so
+	// it was left untouched and the wait ran out without a window this request could attach to.
+	FinalizeWindowOutsideNamespace FinalizeOutcome = "WindowOutsideNamespace"
 )
 
 // SaveRequestPhase is where an unresolved SaveRequest stands on the worker. It is what the
@@ -155,6 +159,11 @@ type AttachSaveRequest struct {
 	// the GitTarget's KubeProvider has never received an audit fact. Once it has, a write naming no
 	// author means its fact went missing, and that window stays another's.
 	Unattributed UnattributedClaim
+	// SourceNamespace confines the save to the writes made in one namespace of the source cluster: the
+	// request attaches only to a window whose writes are all there, and once it has, a write anywhere
+	// else, cluster-scoped ones included, opens a window of its own. A RemoteSaveRequest sets its own
+	// namespace; empty confines nothing.
+	SourceNamespace string
 }
 
 // UnattributedClaim is what a SaveRequest may claim of a commit window whose writes name no author.
@@ -212,6 +221,8 @@ type pendingSaveRequest struct {
 	// unattributed is what the request may claim of a window whose writes name no author
 	// (AttachSaveRequest.Unattributed).
 	unattributed UnattributedClaim
+	// sourceNamespace confines the save to one source namespace (AttachSaveRequest.SourceNamespace).
+	sourceNamespace string
 	// attached is true once this request is bound to a write: its message to the open window, or
 	// its own empty-commit record. From then on only that write's outcome settles it, and it stays
 	// set while the write is pending, waiting for the push.
@@ -231,6 +242,9 @@ type pendingSaveRequest struct {
 	// instant check at expiry would miss the common case and report the refusal as "nothing was
 	// pending" — intermittently, which is worse than never.
 	sawForeignWindow bool
+	// sawWiderWindow is set when the request's own window was open during its wait but held writes
+	// outside its sourceNamespace. Sticky for the reason sawForeignWindow is.
+	sawWiderWindow bool
 }
 
 // expiryOutcome is the terminal outcome for a request whose attach timeout ran out without it
@@ -245,6 +259,9 @@ type pendingSaveRequest struct {
 func (p *pendingSaveRequest) expiryOutcome() FinalizeOutcome {
 	if p.sawForeignWindow {
 		return FinalizeWindowMismatch
+	}
+	if p.sawWiderWindow {
+		return FinalizeWindowOutsideNamespace
 	}
 	return FinalizeNoOpenWindow
 }
@@ -271,6 +288,12 @@ func (p *pendingSaveRequest) expiryOutcome() FinalizeOutcome {
 // would let one author's request finalize another's window. Comparing both costs nothing and
 // keeps "bob never attaches to alice's window" true regardless of what the outcomes say.
 func (p *pendingSaveRequest) matchesWindow(w *openWindow) bool {
+	return p.identifiesWindow(w) && p.withinScope(w)
+}
+
+// identifiesWindow is matchesWindow without the namespace confinement: the window is on the
+// request's GitTarget and is its author's, or one it may claim.
+func (p *pendingSaveRequest) identifiesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false
 	}
@@ -278,6 +301,22 @@ func (p *pendingSaveRequest) matchesWindow(w *openWindow) bool {
 		return false
 	}
 	return p.author == w.Author && p.attribution.NamesActor() == w.Attribution.NamesActor() || p.claims(w)
+}
+
+// withinScope reports whether every write in the window is in the request's sourceNamespace, or the
+// request confines nothing.
+func (p *pendingSaveRequest) withinScope(w *openWindow) bool {
+	return p.sourceNamespace == "" || w.holdsOnly(p.sourceNamespace)
+}
+
+// noteUnmatchedWindow records why the open window, which the request cannot attach to, is not its
+// own: another author's or GitTarget's, or its own holding writes outside its namespace.
+func (p *pendingSaveRequest) noteUnmatchedWindow(w *openWindow) {
+	if p.identifiesWindow(w) {
+		p.sawWiderWindow = true
+		return
+	}
+	p.sawForeignWindow = true
 }
 
 // claims reports whether the request matches a window on its GitTarget whose writes name no author

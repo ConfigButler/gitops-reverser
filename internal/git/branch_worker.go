@@ -1314,6 +1314,7 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 			l.w.Log.Info("Window identity change forces finalize before appending event",
 				"windowAuthor", l.openWindow.Author,
 				"eventAuthor", event.UserInfo.Username,
+				"windowSourceNamespace", l.openWindow.sourceNamespace,
 				"operation", event.Operation,
 				"resource", event.Identifier.String(),
 				"eventTarget", event.GitTargetNamespace+"/"+event.GitTargetName)

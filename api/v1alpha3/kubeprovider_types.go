@@ -100,22 +100,25 @@ type KubeProviderSpec struct {
 	// +optional
 	Attribution *KubeProviderAttribution `json:"attribution,omitempty"`
 
-	// RemoteSaveRequests says whether GitOps Reverser serves the RemoteSaveRequests
-	// (source.configbutler.ai) created on this cluster. "Enabled" watches
-	// them, saves the commit windows of the GitTargets that mirror each one's
-	// namespace through this KubeProvider, and writes each one's status back.
+	// RemoteSaveRequests says whether GitOps Reverser serves the
+	// RemoteSaveRequests (source.configbutler.ai) created on this cluster.
+	// "Enabled" watches them, saves the commit windows of the GitTargets that
+	// mirror each one's namespace through this KubeProvider and admit it in
+	// spec.allowedRemoteSaveRequests, and writes each one's status back.
 	// Defaults to "Disabled".
 	//
 	// "Enabled" writes to this cluster: the credential needs get, list, watch
-	// and delete on remotesaverequests, and update on remotesaverequests/status. The
-	// RemoteSaveRequest CRD must be installed on the cluster.
+	// and delete on remotesaverequests, and update on
+	// remotesaverequests/status. The RemoteSaveRequest CRD must be installed
+	// on the cluster.
 	// +optional
 	// +kubebuilder:validation:Enum=Disabled;Enabled
 	// +kubebuilder:default=Disabled
 	RemoteSaveRequests RemoteSaveRequestsMode `json:"remoteSaveRequests,omitempty"`
 }
 
-// RemoteSaveRequestsMode is whether a KubeProvider's RemoteSaveRequests are served.
+// RemoteSaveRequestsMode is whether a KubeProvider's RemoteSaveRequests are
+// served.
 type RemoteSaveRequestsMode string
 
 const (

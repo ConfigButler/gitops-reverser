@@ -216,7 +216,8 @@ func (l *branchWorkerEventLoop) handleAttachSaveRequest(req *AttachSaveRequest) 
 		commitEmpty:        req.CommitEmpty,
 		catchUpNow:         req.CatchUpNow,
 
-		unattributed: req.Unattributed,
+		unattributed:    req.Unattributed,
+		sourceNamespace: req.SourceNamespace,
 	}
 	l.pendingCRs[id] = pcr
 	l.w.setSaveRequestPhase(id, PhaseWaitingForWindow)
@@ -235,7 +236,7 @@ func (l *branchWorkerEventLoop) handleAttachSaveRequest(req *AttachSaveRequest) 
 		// passed: with attachTimeout: 0s that is every request, so a foreign window open at
 		// registration would go unseen and the request would resolve NoWindow — and, with
 		// CommitEmpty, record an empty commit while another author's work is in flight.
-		pcr.sawForeignWindow = true
+		pcr.noteUnmatchedWindow(l.openWindow)
 		return
 	}
 	if req.Attach == v1alpha3.AttachNext {
@@ -295,7 +296,20 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 	}
 	now := time.Now()
 	for _, pcr := range l.pendingCRs {
-		if !pcr.waiting(now) || pcr.sawForeignWindow || pcr.matchesWindow(l.openWindow) {
+		if !pcr.waiting(now) || pcr.matchesWindow(l.openWindow) {
+			continue
+		}
+		if pcr.identifiesWindow(l.openWindow) {
+			if !pcr.sawWiderWindow {
+				pcr.sawWiderWindow = true
+				l.w.Log.Info("SaveRequest is waiting on its window, which holds writes outside its namespace",
+					"request", pcr.id.Namespace+"/"+pcr.id.Name,
+					"sourceNamespace", pcr.sourceNamespace,
+					"requestTarget", pcr.gitTargetNamespace+"/"+pcr.gitTargetName)
+			}
+			continue
+		}
+		if pcr.sawForeignWindow {
 			continue
 		}
 		pcr.sawForeignWindow = true
@@ -347,6 +361,7 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingSaveRequest) {
 	}
 	l.openWindow.timers = timers
 	l.openWindow.lastWriteAt = now
+	l.openWindow.sourceNamespace = pcr.sourceNamespace
 	if pcr.claims(l.openWindow) {
 		l.openWindow.claim, l.openWindow.claimedBy = pcr.unattributed, UserInfo{Username: pcr.author}
 		l.w.Log.Info("SaveRequest claimed a window whose writes name no author",

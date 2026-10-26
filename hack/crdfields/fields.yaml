@@ -163,6 +163,11 @@ kinds:
           How much a `SaveRequest` may claim of a window whose writes name no author, on a cluster
           that never sent an audit fact: `Keep`, `SavedBy` or `TakeOver`. See
           [saving where writes name no author](#saving-where-writes-name-no-author)
+      - path: allowedRemoteSaveRequests
+        default: none admitted
+        doc: >-
+          The `RemoteSaveRequest`s, by source namespace and labels, that may save this target's
+          windows. See [`RemoteSaveRequest`](#remotesaverequest)
       - path: placement.byType
         default: the built-in path
         doc: >-
@@ -343,4 +348,4 @@ kinds:
       - path: catchUp
         doc: >-
           `AfterPush` asks each `GitTarget`'s applier to apply the branch tip right after the commit
-          is pushed; `status.targets` reports it
+          is pushed; `status.gitTargets` reports it
