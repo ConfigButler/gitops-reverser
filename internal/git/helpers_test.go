@@ -237,6 +237,10 @@ func newTestBranchWorker(
 		nil,
 		BranchWorkerLimits{},
 	)
+	// The GitBranch's UID names the checkout, as it does for every worker the WorkerManager starts,
+	// so it differs wherever the provider UID above does, and per branch too.
+	branchDigest := sha256.Sum256([]byte(string(providerUID) + "\x00" + branch))
+	worker.GitBranchUID = k8stypes.UID("uid-gitbranch-" + hex.EncodeToString(branchDigest[:8]))
 	worker.ctx = context.Background()
 	return worker, nil
 }

@@ -1560,19 +1560,17 @@ pushed at once, cooldown or not, because the apply waits for them.
 
 ### Local clones and conflict retry
 
-Local clones live under `/tmp/gitops-reverser-workers/{provider UID}/{branch-component}`. The first
-segment is the `GitProvider`'s `metadata.uid`: globally unique, and minted fresh by the API server for
-every object, so it says which **incarnation** of the provider this is. `spec.url` is immutable and a
-repoint is therefore a recreate, which means a replacement worker cannot inherit, share, or delete the
-directory its predecessor was using. Two providers naming one repository do not share a checkout
-either. A worker built with no provider behind it (the CLI, and tests) has no UID to be unique by and
-falls back to a digest of its remote.
+Local clones live under `/tmp/gitops-reverser-workers/{GitBranch UID}`: one directory per
+`GitBranch`, named by its `metadata.uid`. A `GitBranch` pins its branch (`spec.branch` is immutable),
+the branch claim gives a repository branch to one `GitBranch` at a time, and a UID is minted fresh for
+every object, so no two live workers share a directory and a `GitBranch` recreated under its name starts
+in a new one. The branch name is not part of the path, so its slashes cannot nest one checkout inside
+another. The repository is the one thing the UID does not pin: a `GitProvider` recreated against
+another URL keeps the `GitBranch`, so its replacement worker reuses the directory, after the old worker
+has removed the clone in it. A worker never trusts a checkout it finds on disk: its first cycle repoints
+`origin`, fetches and resets.
 
-`{branch-component}` is the branch rendered as **one** path component
-([`branchPathComponent`](../internal/git/branch_worker.go)): a readable prefix for whoever is looking at
-the directory, plus a digest of the raw name. Branch names contain slashes, and joining one in would make
-`release/v1`'s directory a child of `release`'s, which is data loss the moment a retired worker deletes
-its own tree. [PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the
+[PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the
 remote diverged it smart fetches the latest tip, hard resets the local clone, replays the retained pending
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.

@@ -414,7 +414,8 @@ func (m *WorkerManager) EnsureWorker(_ context.Context, req WorkerRequest) error
 	if key == (BranchKey{}) {
 		return fmt.Errorf("GitProvider %s names no repository", req.Provider)
 	}
-	if err := m.refuseUnclaimed(key, req.GitBranch); err != nil {
+	holder, err := m.refuseUnclaimed(key, req.GitBranch)
+	if err != nil {
 		return err
 	}
 
@@ -459,27 +460,31 @@ func (m *WorkerManager) EnsureWorker(_ context.Context, req WorkerRequest) error
 	defer m.mu.Unlock()
 
 	if _, live := m.workers[key]; !live {
-		return m.startWorkerLocked(key, req)
+		return m.startWorkerLocked(key, req, holder.UID)
 	}
 
 	return nil
 }
 
 // refuseUnclaimed is EnsureWorker's claim check: only the GitBranch holding key gets its worker.
-func (m *WorkerManager) refuseUnclaimed(key BranchKey, gitBranch k8stypes.NamespacedName) error {
+// It returns that holder.
+func (m *WorkerManager) refuseUnclaimed(key BranchKey, gitBranch k8stypes.NamespacedName) (BranchClaimant, error) {
 	holder, held := m.Claims().Holder(key)
 	switch {
 	case !held:
-		return fmt.Errorf("%w: %s, and no GitBranch holds it yet", ErrBranchOwnedElsewhere, key)
+		return BranchClaimant{}, fmt.Errorf("%w: %s, and no GitBranch holds it yet", ErrBranchOwnedElsewhere, key)
 	case holder.GitBranch != gitBranch:
-		return fmt.Errorf("%w: %s, held by GitBranch %s", ErrBranchOwnedElsewhere, key, holder.GitBranch)
+		return BranchClaimant{}, fmt.Errorf("%w: %s, held by GitBranch %s",
+			ErrBranchOwnedElsewhere, key, holder.GitBranch)
 	}
-	return nil
+	return holder, nil
 }
 
 // startWorkerLocked creates and starts the worker for key, writing through provider, and records
-// it. Called with lifecycleMu and mu held.
-func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest) error {
+// it. gitBranchUID is the claim holder's UID, read from the claim rather than the request because
+// the claim is what EnsureWorker just checked; it names the worker's checkout. Called with
+// lifecycleMu and mu held.
+func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest, gitBranchUID k8stypes.UID) error {
 	provider, repo, parentBranch := req.Provider, req.Repo, req.ParentBranch
 	providerName, providerNamespace, branch := provider.Name, provider.Namespace, key.Branch
 	m.Log.Info("Creating new branch worker", "key", key.String(), "repository", repo.String())
@@ -497,6 +502,7 @@ func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest) erro
 	// goroutine Start spawns, so setting it here (under m.mu, before that goroutine
 	// exists) is race-free.
 	worker.GitBranch = req.GitBranch
+	worker.GitBranchUID = gitBranchUID
 	worker.SetParentBranch(parentBranch)
 	worker.mapper = m.mapper
 	worker.clusterMapper = m.clusterMapper
