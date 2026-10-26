@@ -765,16 +765,38 @@ spec:
 			r.consistentlyEverywhere(timingConfigMap, "seed")
 		})
 
-		// The collision the apply window exists for, as E5 provokes it: an edit through the workspace's
-		// API while an apply runs. The apply reverts it in the workspace; the window withholds that
-		// write, because the object's managedFields name kustomize-controller alone, after the edit.
-		It("withholds an apply that reverts an edit made in the workspace during it", func() {
+		// The collision the apply window exists for: an edit the apply reverts. E5 edits once the apply
+		// was asked for, and races Flux, which often writes first. Here every event from the workspace
+		// waits out the attribution grace before it reaches the worker (kcp sends no audit facts), and
+		// that makes the collision certain: an edit made just before a Git-side push reaches the worker
+		// only after the push was heard, its apply asked for, and Flux applied it. The commit Flux
+		// applied does not hold the edit, so Flux reverts it in the workspace. Its write reaches the
+		// worker after the edit, later still, and the window, which waits until the watch delivered every
+		// write made before the apply completed, withholds it: the object's managedFields name
+		// kustomize-controller alone, after the edit. Git keeps the edit, and a Repair puts it back.
+		//
+		// It holds while the attribution grace (10s in e2e) outlasts the time from the push to the apply
+		// request, which the receiver makes a second or two.
+		It("withholds an apply that reverts an edit made in the workspace", func() {
 			withheld := fmt.Sprintf(`sum(gitopsreverser_apply_window_collisions_total{gitbranch_namespace=%q,`+
 				`gitbranch_name=%q,outcome="withheld"}) or vector(0)`, testNs, gitBranchName(p.providerName, "main"))
 			before, err := queryPrometheus(withheld)
 			Expect(err).NotTo(HaveOccurred())
 
-			r.editDuringApply()
+			r.pushFromOutside("during", "d0")
+			r.eventuallyEverywhere("during", "d0", echoApplyBudget)
+
+			By("editing an object in the workspace, and pushing a Git-side change to another before its event arrives")
+			token := r.applier.operation(Default).Token
+			r.editThroughAPI("during", "d-edit")
+			r.pushFromOutside("during-other", "o1")
+			Eventually(func(g Gomega) {
+				g.Expect(r.applier.operation(g).Token).NotTo(Equal(token), "the apply is asked for")
+			}, echoApplyBudget, 250*time.Millisecond).Should(Succeed())
+
+			r.eventuallyEverywhere("during", "d-edit", echoApplyBudget)
+			r.eventuallyEverywhere("during-other", "o1", echoApplyBudget)
+			r.consistentlyEverywhere("during", "d-edit")
 			waitForMetricWithTimeout(withheld, func(v float64) bool { return v > before },
 				"the apply over the workspace edit is counted as a withheld collision", time.Minute)
 		})

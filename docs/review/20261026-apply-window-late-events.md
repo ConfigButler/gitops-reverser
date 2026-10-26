@@ -259,6 +259,11 @@ stream.
 
 ## The spec, separately
 
-Neither fix makes the collision spec deterministic. It needs the edit to land after the apply was
-asked for and before Flux writes the object. Flux wrote within about a second of the resume here,
-and nothing in the spec holds the apply open longer than that.
+Neither fix makes E5's way of provoking a collision deterministic: it edits once the apply was asked
+for, and Flux often writes within a second of the resume, before the edit lands. The source-cluster
+spec uses the delay this document is about instead. It edits first and pushes a Git-side change
+right after. The edit's event waits out the attribution grace, so the push is heard, its apply asked
+for and applied before the edit reaches the worker. The applied commit does not hold the edit, so
+Flux reverts it, and with fix 2 the window still judges that write when it arrives, and withholds
+it. That holds while the attribution grace (10s in e2e) outlasts the time from the push to the
+apply request.
