@@ -35,3 +35,12 @@ docs/demo/commit-window.md
 docs/facts/kubernetes-watch-options.md
 docs/spec/watch-event-ordering-and-attribution-grace.md
 docs/bi-directional.md
+docs/README.md
+docs/github-setup-guide.md
+docs/attribution-setup-guide.md
+docs/audit-setup/cluster/readme.md
+docs/sops-age-guide.md
+docs/commit-signing.md
+docs/commit-messages.md
+docs/definitions.md
+charts/gitops-reverser/README.md
