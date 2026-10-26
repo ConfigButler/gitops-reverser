@@ -105,6 +105,7 @@ Set exactly one of `secretRef` and `inCluster`. Both are immutable: delete and r
 | `client.qps` | `20` | Client rate limit for this source cluster. Refused beside `inCluster` |
 | `client.burst` | `30` | Client burst for this source cluster. Refused beside `inCluster` |
 | `attribution.auditRoute` | `<namespace>.<name>` | Audit route this provider joins. A route is held by one namespace. See [audit route](#audit-route-and-auditfactsreceived) |
+| `saveRequests` | `Disabled` | `Enabled` serves the `SaveRequest`s created on this cluster, which writes to it. See [`SaveRequest`](#saverequest) |
 
 ### `GitTarget` (namespaced): which branch and folder
 
@@ -185,6 +186,16 @@ The references are immutable: to hold another `Application`, delete the applier 
 | `window.maxDuration` | `2s` | Close the attached window this long after the attach |
 | `whenNothingToCommit` | `Resolve` | `CommitEmpty` records the message in an empty commit when nothing changed |
 | `catchUp` | `AsDefinedOnClaim` | `AfterPush` asks the `GitTarget`'s applier to apply the branch tip right after the commit is pushed, instead of after the applier claim's `catchUpAfter`. The tip may hold later commits, and saves pushed close together can share one apply; the `Applied` condition reports it |
+
+### `SaveRequest` (namespaced, on a source cluster): save the edits made here
+
+| Field | Default | What it does |
+|---|---|---|
+| `message` | each target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
+| `window.attachTimeout` | `5s` | How long to wait for a window with the edits it saves. See [`SaveRequest`](#saverequest) |
+| `window.idleTimeout` | no idle close | Close the attached window after this much silence |
+| `window.maxDuration` | `2s` | Close the attached window this long after the attach |
+| `catchUp` | `AsDefinedOnClaim` | `AfterPush` asks each `GitTarget`'s applier to apply the branch tip right after the commit is pushed; `status.targets` reports it |
 
 <!-- END GENERATED: settings-index -->
 
@@ -3208,6 +3219,74 @@ The period comes from `--commit-request-ttl` (Helm: `controllerManager.commitReq
 `48h`). Changing it only affects requests that finish afterwards. `0` writes no annotation, so new
 requests are kept. A request that finished before this feature existed has no annotation and is
 never deleted.
+
+## `SaveRequest`
+
+A `SaveRequest` (`source.configbutler.ai/v1alpha1`) is a save made on a **source cluster**, next to the
+edits it saves, by someone who may have no access to the cluster GitOps Reverser runs in. It names no
+`GitTarget`: it saves the commit window of every `GitTarget` that mirrors its own namespace from that
+cluster, and each window gets its message and closes on its timers, as with a
+[`CommitRequest`](#commitrequest).
+
+```yaml
+apiVersion: source.configbutler.ai/v1alpha1
+kind: SaveRequest
+metadata:
+  name: save-now
+  namespace: shop
+spec:
+  message: "fix(shop): raise the cart limit"
+  catchUp: AfterPush
+```
+
+### Serving the `SaveRequest`s of a cluster
+
+Two things turn it on, both on purpose:
+
+1. **Install the CRD on the source cluster.** It is one small CRD,
+   `config/crd/bases/source.configbutler.ai_saverequests.yaml`, apart from the `configbutler.ai` kinds
+   of the cluster GitOps Reverser runs in. The Helm chart and the installer install it there too, for
+   the clusters the operator mirrors with its own identity.
+2. **Set `spec.saveRequests: Enabled` on the `KubeProvider`.** GitOps Reverser then watches the
+   cluster's `SaveRequest`s through that provider, and writes each one's status back. It is the one
+   write GitOps Reverser makes on a source cluster: the provider's credential needs `get`, `list`,
+   `watch` and `delete` on `saverequests`, and `update` on `saverequests/status`, in the
+   `source.configbutler.ai` group. A `SaveRequest` is never mirrored, whatever a `WatchRule` selects.
+
+### Who the save is from
+
+A `SaveRequest`'s creator is found from the source cluster's audit events, as the edits' authors are,
+so a save attaches only to its creator's windows, by the ordinary author rule. Create it as JSON:
+`kubectl` and browsers send JSON, and an API server that drops the audit event of a YAML body loses
+the save's author without an error.
+
+| The source cluster | The save |
+| --- | --- |
+| sends audit events, and one names the creator | attaches to the creator's windows; `status.author` names them |
+| sends no audit events at all (its `KubeProvider` never received one) | names nobody, and attaches to a window whose edits name nobody; the commit's author stays unresolved |
+| sends audit events, but none names the creator | is refused, `Ready=True` with reason `AuthorUnresolved`: its event went missing, and attaching it would claim the window that should stay unattributed. Save again |
+
+`spec.window.attachTimeout` (default `5s`) counts from when GitOps Reverser picks the request up,
+which is after the request's own audit event arrived, so it only covers the spread between the
+request's event and its edits'. `maxDuration` (default `2s`) and `idleTimeout` close the attached
+window as for a `CommitRequest`.
+
+### Its status
+
+`status.targets` lists each `GitTarget` that mirrors the namespace, as `namespace/name` on the cluster
+GitOps Reverser runs in, with the save's `reason` there (`Committed`, `NoWindow`, `AlreadyPresent`,
+`WindowMismatch` or `Failed`), its `branch` and `commit`, and, with `catchUp: AfterPush`, its
+`applied` reason and `appliedRevision`.
+
+- **Ready** is `True` once the save ended without error in every `GitTarget`, with reason `Committed`
+  when one of them committed, and otherwise the first one's reason, `NoGitTarget` when no `GitTarget`
+  mirrors the namespace, or `AuthorUnresolved`. `Ready=False` with `Stalled=True` is a failure.
+- **Applied**, with `catchUp: AfterPush`, is `True` once every applier applied a revision that holds
+  the commit, or needed none, `False` only when a branch lost the commit, and `Unknown` with reason
+  `Lost` when GitOps Reverser restarted before it learned how an apply went.
+
+A finished `SaveRequest` is deleted `--commit-request-ttl` (default `48h`) after it finished; `0`
+keeps it.
 
 ## Audit ingestion settings
 

@@ -115,3 +115,19 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - source.configbutler.ai
+  resources:
+  - saverequests
+  verbs:
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - source.configbutler.ai
+  resources:
+  - saverequests/status
+  verbs:
+  - get
+  - update

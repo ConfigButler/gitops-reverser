@@ -55,6 +55,7 @@ tasks:
       - exclude: cmd/**/zz_generated.deepcopy.go
     generates:
       - config/crd/bases/configbutler.ai*.yaml
+      - config/crd/bases/source.configbutler.ai*.yaml
       - config/rbac/role.yaml
     cmds:
       - |
@@ -93,6 +94,7 @@ tasks:
       - exclude: cmd/**/zz_generated.deepcopy.go
     generates:
       - charts/gitops-reverser/crds/configbutler.*.yaml
+      - charts/gitops-reverser/crds/source.configbutler.*.yaml
       - charts/gitops-reverser/config/role.yaml
     cmds:
       - |
@@ -110,6 +112,7 @@ tasks:
       - exclude: api/**/zz_generated.deepcopy.go
     generates:
       - api/v1alpha3/zz_generated.deepcopy.go
+      - api/source/v1alpha1/zz_generated.deepcopy.go
     cmds:
       - '{{.CONTROLLER_GEN}} object:headerFile="hack/boilerplate.go.txt" paths=./api/...'
 

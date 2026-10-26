@@ -331,6 +331,15 @@ func main() {
 	// Setup watch manager (must be after controllers are set up)
 	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
+	// SaveRequests are saves made on a source cluster, next to the edits they save: served on every
+	// KubeProvider whose spec.saveRequests is Enabled, attributed from that cluster's audit facts.
+	fatalIfErr(mgr.Add(&watch.SaveRequestServer{
+		Manager:   watchMgr,
+		Client:    mgr.GetClient(),
+		Finalizer: eventRouter,
+		TTL:       cfg.commitRequestTTL,
+		Log:       ctrl.Log.WithName("saverequests"),
+	}), "unable to add the SaveRequest server")
 
 	// The GitBranch, GitTarget and applier claim controllers find a GitProvider's GitBranches, in any
 	// namespace, through this index.

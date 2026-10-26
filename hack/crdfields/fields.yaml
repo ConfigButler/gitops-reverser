@@ -128,6 +128,10 @@ kinds:
         doc: >-
           Audit route this provider joins. A route is held by one namespace. See
           [audit route](#audit-route-and-auditfactsreceived)
+      - path: saveRequests
+        doc: >-
+          `Enabled` serves the `SaveRequest`s created on this cluster, which writes to it. See
+          [`SaveRequest`](#saverequest)
 
   - kind: GitTarget
     title: "`GitTarget` (namespaced): which branch and folder"
@@ -322,3 +326,21 @@ kinds:
           `AfterPush` asks the `GitTarget`'s applier to apply the branch tip right after the commit is
           pushed, instead of after the applier claim's `catchUpAfter`. The tip may hold later commits,
           and saves pushed close together can share one apply; the `Applied` condition reports it
+
+  - kind: SaveRequest
+    title: "`SaveRequest` (namespaced, on a source cluster): save the edits made here"
+    fields:
+      - path: message
+        default: each target's templates
+        doc: Commit message, committed verbatim unless `requestTemplate` frames it
+      - path: window.attachTimeout
+        doc: How long to wait for a window with the edits it saves. See [`SaveRequest`](#saverequest)
+      - path: window.idleTimeout
+        default: no idle close
+        doc: Close the attached window after this much silence
+      - path: window.maxDuration
+        doc: Close the attached window this long after the attach
+      - path: catchUp
+        doc: >-
+          `AfterPush` asks each `GitTarget`'s applier to apply the branch tip right after the commit
+          is pushed; `status.targets` reports it

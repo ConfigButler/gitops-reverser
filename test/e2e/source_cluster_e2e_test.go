@@ -35,9 +35,9 @@ import (
 //     gitops-api runs: Flux applies a folder into a workspace through Kustomization.spec.kubeConfig,
 //     the GitTarget mirrors that workspace, and its FluxClaim holds the Kustomization through the
 //     install's own provider. It shows the startup converge landing in the workspace, an edit made
-//     there during an apply withheld from the apply's revert by the REMOTE object's managedFields,
-//     and two saves that take over their edits' windows (the workspace sends no audit facts) and
-//     report the apply.
+//     there withheld from the apply's revert by the REMOTE object's managedFields, two
+//     CommitRequests that take over their edits' windows (the workspace sends no audit facts) and
+//     report the apply, and a SaveRequest created in the workspace itself.
 //
 // The whole suite is gated by skipUnlessSourceClusterEnabled() (env E2E_ENABLE_SOURCE_CLUSTER),
 // and the kcp specs additionally Skip when kcp is not installed — so a default `task test-e2e`
@@ -657,6 +657,8 @@ spec:
 			p      *timingPipeline
 			r      *echoRun
 			ksName string
+			// hash is the workspace's logical cluster.
+			hash string
 		)
 
 		BeforeAll(func() {
@@ -675,7 +677,7 @@ spec:
 
 			By("provisioning the workspace, and the namespace the folder holds inside it")
 			DeferCleanup(kcp.deleteWorkspace, ws)
-			hash := kcp.createWorkspace(ws)
+			hash = kcp.createWorkspace(ws)
 			_, err = kcp.wsKubectl(hash, "create", "namespace", testNs)
 			Expect(err).NotTo(HaveOccurred(), "create the folder's namespace in %s", ws)
 
@@ -859,8 +861,90 @@ spec:
 			}, echoApplyBudget, 2*time.Second).Should(Succeed())
 			r.eventuallyEverywhere(timingConfigMap, "saved-2", echoApplyBudget)
 		})
+
+		// A save made in the workspace itself: a SaveRequest, served because the workspace's
+		// KubeProvider enables them. It names no GitTarget; it saves the window of every GitTarget that
+		// mirrors its namespace. kcp sends no audit facts, so the request names nobody, like the edit,
+		// and attaches to the edit's window under the ordinary rule, with no takeover. Its own author is
+		// looked for first, for the whole attribution grace, so the edit is made once the request is
+		// waiting for a window.
+		It("saves an edit made in the workspace with a SaveRequest created there", func() {
+			By("installing the SaveRequest CRD in the workspace, and serving the workspace's SaveRequests")
+			_, err := kcp.wsKubectl(hash, "apply", "-f", "config/crd/bases/source.configbutler.ai_saverequests.yaml")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = kcp.wsKubectl(hash, "wait", "--for=condition=Established",
+				"crd/saverequests.source.configbutler.ai", "--timeout=60s")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = kubectlRunInNamespace(testNs, "patch", "kubeprovider", ws, "--type=merge", "-p",
+				`{"spec":{"saveRequests":"Enabled"}}`)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a SaveRequest in the workspace, and editing once it waits for a window")
+			const name, message = "sc-flux-workspace-save", "e2e: save from the workspace"
+			createWorkspaceSaveRequest(kcp, hash, testNs, name, message)
+			saveField := func(g Gomega, jsonPath string) string {
+				out, getErr := kcp.wsKubectl(hash, "-n", testNs, "get", "saverequest", name, "-o", "jsonpath="+jsonPath)
+				g.Expect(getErr).NotTo(HaveOccurred())
+				return strings.TrimSpace(out)
+			}
+			Eventually(func(g Gomega) {
+				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].reason}`)).To(Equal("Saving"))
+			}, 2*time.Minute, time.Second).Should(Succeed(), "the server picks the request up and waits for a window")
+			r.editThroughAPI(timingConfigMap, "saved-3")
+
+			By("the save commits the edit, and reports the commit and the apply on the request")
+			var commit string
+			Eventually(func(g Gomega) {
+				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].status}`)).To(Equal("True"))
+				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].reason}`)).To(Equal("Committed"))
+				g.Expect(saveField(g, "{.status.targets[0].gitTarget}")).To(Equal(testNs + "/" + p.targetName))
+				commit = saveField(g, "{.status.targets[0].commit}")
+				g.Expect(commit).NotTo(BeEmpty())
+				g.Expect(saveField(g, "{.status.author}")).To(BeEmpty(), "kcp sends no audit facts")
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+			committed, inGit := r.committedValue(Default, timingConfigMap)
+			Expect(inGit).To(BeTrue())
+			Expect(committed).To(Equal("saved-3"))
+			body, err := gitRun(p.repo.CheckoutDir, "show", "-s", "--format=%B", commit)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(body)).To(Equal(message))
+
+			Eventually(func(g Gomega) {
+				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Applied")].status}`)).To(Equal("True"))
+				g.Expect(saveField(g, "{.status.targets[0].applied}")).To(Equal("Applied"))
+				g.Expect(saveField(g, "{.status.targets[0].appliedRevision}")).To(ContainSubstring(commit))
+				g.Expect(fluxLastAppliedRevision(g, ksName)).To(ContainSubstring(commit))
+			}, echoApplyBudget, 2*time.Second).Should(Succeed())
+			r.consistentlyEverywhere(timingConfigMap, "saved-3")
+		})
 	})
 })
+
+// createWorkspaceSaveRequest creates the SaveRequest name in namespace of a workspace, asking to catch
+// up. It waits up to 30s for a window: an edit from a cluster with no audit stream reaches its window
+// only after the attribution grace.
+func createWorkspaceSaveRequest(kcp *kcpTunnel, hash, namespace, name, message string) {
+	GinkgoHelper()
+	f, err := os.CreateTemp("", "e2e-saverequest-*.yaml")
+	Expect(err).NotTo(HaveOccurred())
+	defer func() { _ = os.Remove(f.Name()) }()
+	_, err = fmt.Fprintf(f, `apiVersion: source.configbutler.ai/v1alpha1
+kind: SaveRequest
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  message: %q
+  catchUp: AfterPush
+  window:
+    attachTimeout: "30s"
+    maxDuration: "4s"
+`, name, namespace, message)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(f.Close()).To(Succeed())
+	_, err = kcp.wsKubectl(hash, "create", "-f", f.Name())
+	Expect(err).NotTo(HaveOccurred(), "failed to create SaveRequest %s/%s in the workspace", namespace, name)
+}
 
 // applyFluxIntoWorkspace creates, in flux-system, a GitRepository following main and a Kustomization
 // applying path from it into a kcp workspace: its spec.kubeConfig names a Secret holding kubeconfig

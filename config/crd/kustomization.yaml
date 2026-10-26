@@ -11,3 +11,4 @@ resources:
   - bases/configbutler.ai_gittargets.yaml
   - bases/configbutler.ai_kubeproviders.yaml
   - bases/configbutler.ai_watchrules.yaml
+  - bases/source.configbutler.ai_saverequests.yaml

@@ -99,7 +99,31 @@ type KubeProviderSpec struct {
 	// audit events.
 	// +optional
 	Attribution *KubeProviderAttribution `json:"attribution,omitempty"`
+
+	// SaveRequests says whether GitOps Reverser serves the SaveRequests
+	// (source.configbutler.ai) created on this cluster. "Enabled" watches
+	// them, saves the commit windows of the GitTargets that mirror each one's
+	// namespace through this KubeProvider, and writes each one's status back.
+	// Defaults to "Disabled".
+	//
+	// "Enabled" writes to this cluster: the credential needs get, list, watch
+	// and delete on saverequests, and update on saverequests/status. The
+	// SaveRequest CRD must be installed on the cluster.
+	// +optional
+	// +kubebuilder:validation:Enum=Disabled;Enabled
+	// +kubebuilder:default=Disabled
+	SaveRequests SaveRequestsMode `json:"saveRequests,omitempty"`
 }
+
+// SaveRequestsMode is whether a KubeProvider's SaveRequests are served.
+type SaveRequestsMode string
+
+const (
+	// SaveRequestsDisabled leaves the cluster's SaveRequests alone.
+	SaveRequestsDisabled SaveRequestsMode = "Disabled"
+	// SaveRequestsEnabled serves the cluster's SaveRequests.
+	SaveRequestsEnabled SaveRequestsMode = "Enabled"
+)
 
 // KubeProviderInCluster selects the operator's own identity. It has no fields:
 // the arm being set is the whole statement.

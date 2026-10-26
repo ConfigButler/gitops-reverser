@@ -86,6 +86,16 @@ evaluated against `Namespace`s in the *source* cluster, so a remote provider's i
 grant it exactly the namespaces and types the rules name — a `sourceNamespace: "*"` item asks for a
 cluster-wide `list`/`watch` of its types, and gets a clean 403 if the credential cannot serve it.
 
+### `saverequests` on a source cluster
+
+A source credential only reads, with one opt-in exception. A `KubeProvider` with
+`spec.saveRequests: Enabled` serves the [`SaveRequest`s](configuration.md#saverequest) created on its
+cluster, and writes their status back there. Its credential then needs, in the
+`source.configbutler.ai` group, `get`, `list`, `watch` and `delete` on `saverequests` (`delete` for
+the finished-request TTL), and `update` on `saverequests/status`. Nothing else on a source cluster is
+written. The manager role carries the same rules for the cluster the operator runs in, for an
+`inCluster` provider.
+
 ## The operator does not read Secrets wholesale
 
 It holds **no Secret informer**: Secrets are excluded from the manager's cache

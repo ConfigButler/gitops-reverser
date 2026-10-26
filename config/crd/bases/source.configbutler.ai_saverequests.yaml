@@ -1,0 +1,292 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: saverequests.source.configbutler.ai
+spec:
+  group: source.configbutler.ai
+  names:
+    kind: SaveRequest
+    listKind: SaveRequestList
+    plural: saverequests
+    singular: saverequest
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.author
+      name: Author
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Applied")].status
+      name: Applied
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          SaveRequest asks GitOps Reverser to save the edits made in its namespace:
+          the commit window of each GitTarget that mirrors this namespace gets its
+          message and closes on its timers. Create it on the cluster the edits were
+          made on, as JSON. Its creator is found from this cluster's audit events,
+          as the edits' authors are, so it saves only its creator's edits; on a
+          cluster with no audit it names nobody, and saves edits that name nobody.
+          Its spec is immutable, and status reports each GitTarget's commit.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              spec defines the desired state of SaveRequest. It is immutable after
+              creation.
+            properties:
+              catchUp:
+                default: AsDefinedOnClaim
+                description: |-
+                  CatchUp decides when the applier of each GitTarget is asked to apply
+                  the branch after this request pushes a commit. "AsDefinedOnClaim"
+                  leaves it to the applier claim's spec.catchUpAfter. "AfterPush" asks
+                  right after the push, and status.targets reports how it went. The
+                  cluster already holds the saved objects. Defaults to
+                  "AsDefinedOnClaim".
+                enum:
+                - AsDefinedOnClaim
+                - AfterPush
+                type: string
+              message:
+                description: |-
+                  Message is the commit message this request asks for. Omitted, each
+                  GitTarget's spec.commit.message.liveTemplate words the commit.
+
+                  The text is never evaluated as a template. If a GitTarget sets
+                  spec.commit.message.requestTemplate, that template wraps this text;
+                  otherwise the text is committed as written.
+
+                  It is 1–1024 characters and must contain a non-whitespace character.
+                  Newlines are allowed, for a subject and body; tabs and other control
+                  characters are rejected.
+                maxLength: 1024
+                minLength: 1
+                pattern: ^[^\x00-\x09\x0B-\x1F\x7F]*$
+                type: string
+                x-kubernetes-validations:
+                - message: message must contain a non-whitespace character
+                  rule: self.matches(r'[^\s\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}]')
+              window:
+                default:
+                  attachTimeout: 5s
+                  maxDuration: 2s
+                description: |-
+                  Window says how long the request waits for a commit window with the
+                  edits it saves, and when that window closes once it has. Omitted, the
+                  request waits 5s and closes the window 2s after it attached.
+                properties:
+                  attachTimeout:
+                    default: 5s
+                    description: |-
+                      AttachTimeout is how long the request waits for a commit window, as a
+                      Go duration, from when GitOps Reverser picks the request up, which is
+                      after its own author was found. A request whose wait ran out never
+                      takes a later window. At most "5m". Defaults to "5s".
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: spec.window.attachTimeout must not exceed 5m
+                      rule: duration(self) <= duration('5m')
+                  idleTimeout:
+                    description: |-
+                      IdleTimeout closes the attached window this long after its last edit,
+                      as a Go duration. Omitted, only maxDuration closes it. At most "5m",
+                      and not more than maxDuration.
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: spec.window.idleTimeout must not exceed 5m
+                      rule: duration(self) <= duration('5m')
+                  maxDuration:
+                    default: 2s
+                    description: |-
+                      MaxDuration closes the attached window this long after the request
+                      attached, however many edits keep arriving, as a Go duration. At most
+                      "5m". Defaults to "2s".
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: spec.window.maxDuration must not exceed 5m
+                      rule: duration(self) <= duration('5m')
+                type: object
+                x-kubernetes-validations:
+                - message: SaveRequest spec is immutable after creation
+                  rule: duration(self.attachTimeout) == duration(oldSelf.attachTimeout)
+                    && duration(self.maxDuration) == duration(oldSelf.maxDuration)
+                    && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout)
+                    || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))
+                - message: spec.window.idleTimeout must not exceed maxDuration
+                  rule: '!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)'
+            type: object
+            x-kubernetes-validations:
+            - message: SaveRequest spec is immutable after creation
+              rule: has(self.message) == has(oldSelf.message) && (!has(self.message)
+                || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window)
+                && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp)
+                || self.catchUp == oldSelf.catchUp)
+          status:
+            description: status defines the observed state of SaveRequest.
+            properties:
+              author:
+                description: |-
+                  Author is who created this request, as this cluster's audit events name
+                  them. Empty when they name nobody: then the request saves only edits
+                  that name nobody either.
+                type: string
+              conditions:
+                description: |-
+                  Conditions are the latest observations of this SaveRequest's state.
+                  Ready is True once the request ended without error in every GitTarget,
+                  with reason "Committed" when one of them committed, and otherwise the
+                  reason of the first: "NoWindow", "AlreadyPresent", "WindowMismatch",
+                  "NoGitTarget" when no GitTarget mirrors this namespace, or
+                  "AuthorUnresolved" when this cluster sends audit events and none named
+                  the request's creator. Ready=False with Stalled=True is a failure.
+
+                  Applied, with spec.catchUp "AfterPush", is True once every GitTarget's
+                  applier applied a revision that holds its commit, or needed none, and
+                  False only when a branch lost the commit. It never changes Ready.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by GitOps Reverser.
+                format: int64
+                type: integer
+              targets:
+                description: Targets is the save in each GitTarget that mirrors this
+                  namespace.
+                items:
+                  description: SaveRequestTarget is the save in one GitTarget.
+                  properties:
+                    applied:
+                      description: |-
+                        Applied is how the apply the save asked for went, with spec.catchUp
+                        "AfterPush": "Applying", "Retrying", "Applied", "NothingToApply",
+                        "NoApplierClaim", "ApplierGone", "CommitDropped" or "Lost".
+                      type: string
+                    appliedRevision:
+                      description: AppliedRevision is the revision the applier applied.
+                      type: string
+                    branch:
+                      description: Branch is the branch the save was committed on.
+                      type: string
+                    commit:
+                      description: Commit is the commit the save made, once it is
+                        on the remote.
+                      type: string
+                    gitTarget:
+                      description: |-
+                        GitTarget is the GitTarget, as namespace/name on the cluster GitOps
+                        Reverser runs in.
+                      type: string
+                    message:
+                      description: Message says more about the reason.
+                      type: string
+                    reason:
+                      description: |-
+                        Reason is how the save ended in this GitTarget, as the Ready reasons
+                        above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch", or
+                        "Failed". Empty while it runs.
+                      type: string
+                  required:
+                  - gitTarget
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
