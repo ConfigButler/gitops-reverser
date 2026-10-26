@@ -99,7 +99,7 @@ func main() {
 
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()
-	_, err := telemetry.InitOTLPExporter(setupCtx)
+	_, err := telemetry.InitPrometheusExporter(setupCtx)
 	fatalIfErr(err, "unable to initialize metrics exporter")
 
 	// TLS/options

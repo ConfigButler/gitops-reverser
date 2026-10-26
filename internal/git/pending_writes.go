@@ -47,68 +47,6 @@ func (w *BranchWorker) buildGroupedPendingWrite(ctx context.Context, events []Ev
 	}, nil
 }
 
-func (w *BranchWorker) buildAtomicPendingWrite(ctx context.Context, request *WriteRequest) (*PendingWrite, error) {
-	if request == nil {
-		return nil, errors.New("write request is required")
-	}
-	if len(request.Events) == 0 {
-		return nil, errors.New("atomic pending write requires at least one event")
-	}
-
-	provider, err := w.getGitProvider(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get GitProvider: %w", err)
-	}
-
-	signer, err := getCommitSigner(ctx, w.Client, provider)
-	if err != nil {
-		return nil, fmt.Errorf("resolve signer: %w", err)
-	}
-
-	commitConfig := ResolveCommitConfig(provider.Spec.Commit)
-	resolvedEvents := append([]Event(nil), request.Events...)
-	targets := map[pendingTargetKey]ResolvedTargetMetadata{}
-
-	if request.GitTargetName != "" && request.GitTargetNamespace != "" {
-		targetMetadata, err := w.resolveTargetMetadata(
-			ctx,
-			request.GitTargetName,
-			request.GitTargetNamespace,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		targetKey := pendingTargetKey{
-			Name:      targetMetadata.Name,
-			Namespace: targetMetadata.Namespace,
-		}
-		targets[targetKey] = targetMetadata
-		commitConfig = commitConfig.WithTargetMessage(targetMetadata.CommitMessage)
-
-		for i := range resolvedEvents {
-			if resolvedEvents[i].Path == "" {
-				resolvedEvents[i].Path = targetMetadata.Path
-			}
-			resolvedEvents[i].GitTargetName = targetMetadata.Name
-			resolvedEvents[i].GitTargetNamespace = targetMetadata.Namespace
-			resolvedEvents[i].BootstrapOptions = targetMetadata.BootstrapOptions
-		}
-	}
-
-	return &PendingWrite{
-		Kind:               PendingWriteAtomic,
-		Events:             resolvedEvents,
-		CommitMessage:      request.CommitMessage,
-		CommitConfig:       commitConfig,
-		Signer:             signer,
-		GitTargetName:      request.GitTargetName,
-		GitTargetNamespace: request.GitTargetNamespace,
-		Targets:            targets,
-		ByteSize:           w.estimateEventsSize(resolvedEvents),
-	}, nil
-}
-
 func (w *BranchWorker) resolveEventsForPendingWrite(
 	ctx context.Context,
 	events []Event,
@@ -309,13 +247,13 @@ func (p PendingWrite) Author() string {
 }
 
 // AuthorUserInfo returns the full author identity for commit-shaped pending
-// writes, including any OIDC display name and email. Atomic and empty writes
-// have no per-user author and return the zero value.
+// writes, including any OIDC display name and email. Empty writes have no
+// per-user author and return the zero value.
 func (p PendingWrite) AuthorUserInfo() UserInfo {
 	if p.Kind == PendingWriteRequestRecord {
 		return p.RequestAuthor
 	}
-	if p.Kind == PendingWriteAtomic || len(p.Events) == 0 {
+	if len(p.Events) == 0 {
 		return UserInfo{}
 	}
 	return p.Events[0].UserInfo
@@ -353,8 +291,7 @@ const (
 	messageSourceCommitRequestFallback = "commit_request_fallback"
 	// messageSourceLive is a live window rendered through the target's liveTemplate.
 	messageSourceLive = "live"
-	// messageSourceReconcile is an atomic snapshot or a resync rendered through
-	// reconcileTemplate.
+	// messageSourceReconcile is a resync rendered through reconcileTemplate.
 	messageSourceReconcile = "reconcile"
 	// messageSourceUnknown is a write with no message path. It cannot reach the counter today
 	// (such a write fails to render and creates no commit) and exists so that it could never be
@@ -364,12 +301,12 @@ const (
 
 // AttributionOutcome returns the attribution outcome for commit-shaped pending writes. It
 // mirrors AuthorUserInfo: the window is single-author, so the first event's outcome describes
-// the whole write. Atomic and empty writes never attempt attribution.
+// the whole write. Empty writes never attempt attribution.
 func (p PendingWrite) AttributionOutcome() AttributionOutcome {
 	if p.Kind == PendingWriteRequestRecord {
 		return p.RequestAttribution
 	}
-	if p.Kind == PendingWriteAtomic || len(p.Events) == 0 {
+	if len(p.Events) == 0 {
 		return AttributionNotAttempted
 	}
 	return p.Events[0].Attribution
@@ -418,7 +355,7 @@ func (p PendingWrite) Target() ResolvedTargetMetadata {
 }
 
 func (p PendingWrite) targetIdentity() (string, string) {
-	if p.Kind == PendingWriteAtomic || p.Kind == PendingWriteResync {
+	if p.Kind == PendingWriteResync {
 		return p.GitTargetName, p.GitTargetNamespace
 	}
 	if len(p.Events) == 0 {

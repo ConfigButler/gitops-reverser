@@ -137,7 +137,6 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 			configMapTargetEvent("explicit-a", "alice", "team-a"),
 			configMapTargetEvent("explicit-b", "alice", "team-a"),
 		},
-		CommitMode: CommitModePerEvent,
 	}})
 	require.NotNil(t, loop.openWindow, "events should accumulate in an open window")
 
@@ -177,8 +176,7 @@ func TestAttach_EmptyMessageUsesGeneratedMessage(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("solo", "bob", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("solo", "bob", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 
@@ -218,8 +216,7 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 
 	// The work arrives during the grace and opens a window; it must attach.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("late", "alice", "team-a")},
 	}})
 	loop.endWake(0)
 	require.NotNil(t, loop.openWindow)
@@ -255,8 +252,7 @@ func TestAttach_TheAttachStartsTheRequestsMaxDuration(t *testing.T) {
 
 	attached := time.Now()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("late", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the request attached to the window")
@@ -284,8 +280,7 @@ func TestAttach_AnExpiredWaitNeverTakesALaterWindow(t *testing.T) {
 	forceDue(loop) // the wait ran out, and its timer has not been served yet
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("late", "alice", "team-a")},
 	}})
 	loop.endWake(0)
 
@@ -314,8 +309,7 @@ func TestAttach_WritesAfterTheClaimJoinOneCommit(t *testing.T) {
 
 	for _, name := range []string{"first", "second"} {
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-			Events:     []Event{configMapTargetEvent(name, "alice", "team-a")},
-			CommitMode: CommitModePerEvent,
+			Events: []Event{configMapTargetEvent(name, "alice", "team-a")},
 		}})
 		loop.endWake(0)
 		_, resolved := outcome(t, worker)
@@ -358,8 +352,7 @@ func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 
@@ -415,8 +408,7 @@ func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 
@@ -448,8 +440,7 @@ func TestAttach_ClaimedSameAuthorWindowIsNotAMismatch(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 
@@ -489,8 +480,7 @@ func TestAttach_ForeignWindowOpeningAfterExpiryIsNotAMismatch(t *testing.T) {
 
 	// Only now does alice's work arrive and open a window.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 	loop.endWake(0)
@@ -558,8 +548,7 @@ func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 
@@ -587,8 +576,7 @@ func TestFinalizeOpenWindow_ReturnsCommittedFlag(t *testing.T) {
 	assert.False(t, loop.finalizeOpenWindow(), "no open window → false")
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 
@@ -619,8 +607,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	// First, commit the ConfigMap (no CommitRequest) and push it, so it is already
 	// present in Git.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("present", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("present", "alice", "team-a")},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	loop.pushPending()
@@ -632,8 +619,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	// A second window re-asserts the SAME object: no diff. Attach a CommitRequest and
 	// finalize it (maxDuration 0s).
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("present", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("present", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 	serviceAttach(loop, attachReq("alice", 0))
@@ -682,8 +668,7 @@ func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
 
 	// Open alice's window with one edit.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 
@@ -740,8 +725,7 @@ func TestAttach_ConflictReplayResolvesToPostReplaySHA(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
 	const message = "save: survive a conflict replay"
 	req := attachReq("alice", 0)
@@ -923,8 +907,7 @@ func TestAttach_ReSentAttachDuringPushCooldownDoesNotResolve(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 	serviceAttach(loop, attachReq("alice", 0))
@@ -969,8 +952,7 @@ func TestAttach_ReSentAttachDuringAFailedPushDoesNotResolve(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
 	serviceAttach(loop, attachReq("alice", 0))
 	require.Len(t, loop.pendingWrites, 1)
@@ -1016,8 +998,7 @@ func TestAttach_ACommittedRequestNeverClaimsAnotherWindow(t *testing.T) {
 
 	const message = "save: only my own window"
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("mine", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("mine", "alice", "team-a")},
 	}})
 	req := attachReq("alice", 0)
 	req.Message = message
@@ -1027,8 +1008,7 @@ func TestAttach_ACommittedRequestNeverClaimsAnotherWindow(t *testing.T) {
 	// The controller re-sends, and a fresh window of alice's opens while the push is still held.
 	serviceAttach(loop, attachReq("alice", 0))
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("someone-elses-save", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("someone-elses-save", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 	loop.endWake(0)
@@ -1052,8 +1032,7 @@ func TestAttach_ShutdownFailsACommittedRequestThatNeverPushed(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("stranded", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("stranded", "alice", "team-a")},
 	}})
 	serviceAttach(loop, attachReq("alice", 0))
 	require.Len(t, loop.pendingWrites, 1)

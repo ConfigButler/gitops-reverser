@@ -32,10 +32,10 @@ import (
 //     Publishing from a map read at scrape time makes the delete a map delete: ForgetResourceConditions
 //     drops the key and the series stops. There is no gauge value to "unset".
 //
-// It is also the only family here keyed on object identity, which
-// docs/design/metrics-observability-plan.md §7.1 permits for exactly this population and nothing
-// else: these are CONFIG objects, bounded by how many a human wrote, not the watched objects the
-// operator mirrors, which are data and unbounded. The label keys are prefixed — resource_namespace,
+// It is keyed on object identity, which docs/design/metrics-observability-plan.md §7.1 permits for
+// this population as it does for the gittarget_*, gitbranch_* and claim_* labels elsewhere: these
+// are CONFIG objects, bounded by how many a human wrote, not the watched objects the operator
+// mirrors, which are data and unbounded. The label keys are prefixed — resource_namespace,
 // not a bare namespace — because a Prometheus pod scrape with honor_labels=false overwrites a bare
 // `namespace` attribute with the scraped pod's own.
 

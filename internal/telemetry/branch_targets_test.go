@@ -26,17 +26,17 @@ func branchTargetSeries(
 	})
 }
 
-// The whole point of the instrument: two GitTargets sharing one provider and branch each publish
-// their own series, so a query keyed on {provider_namespace, provider_name, branch} fans out to
-// both. One series per branch would answer the easy case and lose the case the ask was filed about.
+// The whole point of the instrument: two GitTargets sharing one GitBranch each publish their own
+// series, so a query keyed on {gitbranch_namespace, gitbranch_name} fans out to both. One series
+// per branch would answer the easy case and lose the case the ask was filed about.
 func TestBranchTargets_TwoTargetsOnOneBranchEachPublish(t *testing.T) {
 	reader, err := InitTestExporter()
 	require.NoError(t, err)
 	defer ForgetBranchTarget("team-a", "mirror")
 	defer ForgetBranchTarget("team-a", "docs")
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
-	RecordBranchTarget("team-a", "docs", "team-a", "acme", "main", "default")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme-main", "default")
+	RecordBranchTarget("team-a", "docs", "team-a", "acme-main", "default")
 
 	for _, name := range []string{"mirror", "docs"} {
 		value, ok := branchTargetSeries(t, reader, "team-a", name)
@@ -47,13 +47,12 @@ func TestBranchTargets_TwoTargetsOnOneBranchEachPublish(t *testing.T) {
 	// The join keys have to be exactly the ones the Git-side instruments carry, or the vector
 	// match silently returns nothing.
 	value, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{
-		"provider_namespace":  "team-a",
-		"provider_name":       "acme",
-		"branch":              "main",
+		"gitbranch_namespace": "team-a",
+		"gitbranch_name":      "acme-main",
 		"gittarget_namespace": "team-a",
 		"gittarget_name":      "mirror",
 	})
-	require.True(t, ok, "the destination labels must match providerAttrs' key names exactly")
+	require.True(t, ok, "the destination labels must match gitBranchAttrs' key names exactly")
 	assert.Equal(t, int64(1), value)
 }
 
@@ -63,7 +62,7 @@ func TestBranchTargets_ForgetStopsTheSeries(t *testing.T) {
 	reader, err := InitTestExporter()
 	require.NoError(t, err)
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme-main", "default")
 	_, ok := branchTargetSeries(t, reader, "team-a", "mirror")
 	require.True(t, ok)
 
@@ -79,8 +78,8 @@ func TestBranchTargets_ForgetIsScopedToOneTarget(t *testing.T) {
 	require.NoError(t, err)
 	defer ForgetBranchTarget("team-a", "docs")
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
-	RecordBranchTarget("team-a", "docs", "team-a", "acme", "main", "default")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme-main", "default")
+	RecordBranchTarget("team-a", "docs", "team-a", "acme-main", "default")
 
 	ForgetBranchTarget("team-a", "mirror")
 
@@ -98,7 +97,7 @@ func TestBranchTargets_RepeatedRecordStaysOneSeries(t *testing.T) {
 	defer ForgetBranchTarget("team-a", "mirror")
 
 	for range 5 {
-		RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
+		RecordBranchTarget("team-a", "mirror", "team-a", "acme-main", "default")
 	}
 
 	value, ok := branchTargetSeries(t, reader, "team-a", "mirror")
@@ -115,8 +114,8 @@ func TestBranchTargets_SourceClusterDistinguishesLocalFromRemote(t *testing.T) {
 	defer ForgetBranchTarget("team-a", "local")
 	defer ForgetBranchTarget("team-a", "remote")
 
-	RecordBranchTarget("team-a", "local", "team-a", "acme", "main", "gitops-reverser/local")
-	RecordBranchTarget("team-a", "remote", "team-a", "acme", "main", "team-a/tenant-eu-1")
+	RecordBranchTarget("team-a", "local", "team-a", "acme-main", "gitops-reverser/local")
+	RecordBranchTarget("team-a", "remote", "team-a", "acme-main", "team-a/tenant-eu-1")
 
 	for name, cluster := range map[string]string{"local": "gitops-reverser/local", "remote": "team-a/tenant-eu-1"} {
 		value, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{
@@ -141,15 +140,14 @@ func TestBranchTargets_OneBranchCanSpanTwoClusters(t *testing.T) {
 	defer ForgetBranchTarget("team-a", "from-eu")
 	defer ForgetBranchTarget("team-a", "from-us")
 
-	RecordBranchTarget("team-a", "from-eu", "team-a", "acme", "main", "tenant-eu-1")
-	RecordBranchTarget("team-a", "from-us", "team-a", "acme", "main", "tenant-us-1")
+	RecordBranchTarget("team-a", "from-eu", "team-a", "acme-main", "tenant-eu-1")
+	RecordBranchTarget("team-a", "from-us", "team-a", "acme-main", "tenant-us-1")
 
 	for _, cluster := range []string{"tenant-eu-1", "tenant-us-1"} {
 		value, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{
-			"provider_namespace": "team-a",
-			"provider_name":      "acme",
-			"branch":             "main",
-			"source_cluster":     cluster,
+			"gitbranch_namespace": "team-a",
+			"gitbranch_name":      "acme-main",
+			"source_cluster":      cluster,
 		})
 		require.True(t, ok, "cluster %s must be reachable from the branch's own labels", cluster)
 		assert.Equal(t, int64(1), value)
@@ -164,8 +162,8 @@ func TestBranchTargets_RerecordReplacesTheClusterRatherThanAdding(t *testing.T) 
 	require.NoError(t, err)
 	defer ForgetBranchTarget("team-a", "mirror")
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "tenant-eu-1")
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "tenant-eu-1")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme-main", "tenant-eu-1")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme-main", "tenant-eu-1")
 
 	value, ok := branchTargetSeries(t, reader, "team-a", "mirror")
 	require.True(t, ok)
@@ -173,7 +171,7 @@ func TestBranchTargets_RerecordReplacesTheClusterRatherThanAdding(t *testing.T) 
 }
 
 // Two GitTargets with the same name in different namespaces are different objects writing to
-// different providers. Keying on name alone would collapse them, and the mapping would name the
+// different GitBranches. Keying on name alone would collapse them, and the mapping would name the
 // wrong tenant's target for a branch failure.
 func TestBranchTargets_NamespaceIsPartOfTheIdentity(t *testing.T) {
 	reader, err := InitTestExporter()
@@ -181,13 +179,13 @@ func TestBranchTargets_NamespaceIsPartOfTheIdentity(t *testing.T) {
 	defer ForgetBranchTarget("team-a", "mirror")
 	defer ForgetBranchTarget("team-b", "mirror")
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
-	RecordBranchTarget("team-b", "mirror", "team-b", "globex", "main", "default")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme-main", "default")
+	RecordBranchTarget("team-b", "mirror", "team-b", "globex-main", "default")
 
 	value, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{
 		"gittarget_namespace": "team-b",
 		"gittarget_name":      "mirror",
-		"provider_name":       "globex",
+		"gitbranch_name":      "globex-main",
 	})
 	require.True(t, ok)
 	assert.Equal(t, int64(1), value)

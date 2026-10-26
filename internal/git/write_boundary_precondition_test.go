@@ -246,7 +246,7 @@ func TestEventLoop_LiveFanInRefusal_FailsGitTargetAndCommitsNothing(t *testing.T
 	event.UserInfo = UserInfo{Username: "alice"}
 	event.GitTargetName = "podinfo-test"
 	event.GitTargetNamespace = "default"
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
 	require.NotNil(t, loop.openWindow, "the live event must open a commit window")
 
 	assert.False(t, loop.finalizeOpenWindow(), "a refused write plan must not produce a pending write")

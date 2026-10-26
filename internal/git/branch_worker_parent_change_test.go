@@ -25,7 +25,7 @@ import (
 
 // allFetchReasons is every series a fetch can be counted under.
 var allFetchReasons = []string{
-	fetchReasonBootstrap, fetchReasonPublication, fetchReasonRecovery, fetchReasonContention,
+	fetchReasonPublication, fetchReasonRecovery, fetchReasonContention,
 	fetchReasonPushFailureProbe, fetchReasonRefresh,
 }
 

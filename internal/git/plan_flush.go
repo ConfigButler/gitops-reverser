@@ -761,7 +761,7 @@ func (wb *writeBatch) writeColdBundleMember(
 	rel string,
 	sensitive bool,
 ) (upsertOutcome, error) {
-	content, err := wb.writer.buildContentForWrite(ctx, event)
+	content, err := wb.writer.buildContentForWrite(ctx, wb.target, event)
 	if err != nil {
 		return upsertNoChange, err
 	}
@@ -804,7 +804,7 @@ func (wb *writeBatch) coldBundleHasSensitive(rel string) bool {
 // Append placement for a sensitive resource (see its doc comment), so this path is
 // plaintext-only.
 func (wb *writeBatch) appendNewDocument(ctx context.Context, event Event, rel string) (upsertOutcome, error) {
-	content, err := wb.writer.buildContentForWrite(ctx, event)
+	content, err := wb.writer.buildContentForWrite(ctx, wb.target, event)
 	if err != nil {
 		return upsertNoChange, err
 	}
@@ -1422,7 +1422,7 @@ func gitDocRawObject(content []byte, idx int) (map[string]interface{}, bool) {
 // file is unsupported, so it is refused), and a write that matches the current bytes is a
 // no-op (the byte state machine, with the semantic-equality guard for comment-only diffs).
 func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel string) (upsertOutcome, error) {
-	content, err := wb.writer.buildContentForWrite(ctx, event)
+	content, err := wb.writer.buildContentForWrite(ctx, wb.target, event)
 	if err != nil {
 		if wb.writer.isSensitiveIdentifier(event.Identifier) {
 			log.FromContext(ctx).Info(

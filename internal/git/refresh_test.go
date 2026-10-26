@@ -529,10 +529,9 @@ func TestEnqueueRefresh_CountsTheDropOnAFullQueue(t *testing.T) {
 	h.worker.EnqueueRefresh(&RefreshRequest{Target: h.target, Path: h.path, MaxAge: time.Hour})
 
 	labels := map[string]string{
-		"provider_namespace": h.worker.GitProviderNamespace,
-		"provider_name":      h.worker.GitProviderRef,
-		"branch":             h.worker.Branch,
-		"kind":               queueRefusalRefresh,
+		"gitbranch_namespace": h.worker.GitBranch.Namespace,
+		"gitbranch_name":      h.worker.GitBranch.Name,
+		"kind":                queueRefusalRefresh,
 	}
 	drops, ok := telemetry.CollectInt64Sum(reader, queueRefusalsMetric, labels)
 	require.True(t, ok, "a dropped refresh must be counted like any other lost work item")
@@ -633,8 +632,7 @@ func TestRefresh_ANewBranchDoesNotDependOnARecentRefresh(t *testing.T) {
 	loop := newBranchWorkerEventLoop(h.worker, 0)
 	defer loop.stopTimers()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("cm1", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("cm1", "alice", ledgerTargetName)},
 	}})
 	require.Empty(t, loop.pendingWrites, "the write was published")
 

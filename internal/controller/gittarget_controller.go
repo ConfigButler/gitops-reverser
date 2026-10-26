@@ -305,15 +305,11 @@ func (r *GitTargetReconciler) publishAheadOfGates(
 ) {
 	layout, scanned := r.observeLayout(target)
 	publishLayout(st, target, layout, scanned)
-	// The provider labels join git_pushes_total, which the worker labels with the provider it
-	// pushes through: the GitBranch's, which may live in another namespace than the GitBranch.
-	provider := dest.providerKey()
-	if provider.Name == "" {
-		provider.Namespace = dest.key.Namespace
-	}
+	// The GitBranch labels join git_pushes_total, which the worker labels with the GitBranch it
+	// writes for. They come from spec.gitBranchRef alone, so a GitBranch that does not exist yet is
+	// still named.
 	telemetry.RecordBranchTarget(
-		target.Namespace, target.Name, provider.Namespace, provider.Name, dest.branchName(),
-		target.SourceCluster())
+		target.Namespace, target.Name, dest.key.Namespace, dest.key.Name, target.SourceCluster())
 }
 
 // convergeAsSuspended gives a suspended GitTarget the converged outcome, under its own reason.

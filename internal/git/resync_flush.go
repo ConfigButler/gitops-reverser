@@ -22,10 +22,10 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// applyResync decides one revision-pinned resync in order on the worker goroutine. It mirrors the
-// atomic-commit path: any open live window is finalized first so arrival order is preserved; the
-// resync is then decided like every other write, and its caller answered when its commit is made
-// or fails (settleResyncApplied, settleFailed), or as soon as the remote holds it back
+// applyResync decides one revision-pinned resync in order on the worker goroutine. Any open live
+// window is finalized first so arrival order is preserved; the resync is then decided like every
+// other write, and its caller answered when its commit is made or fails (settleResyncApplied,
+// settleFailed), or as soon as the remote holds it back
 // (replyToDeferredResyncs). A resync that commits nothing stops being pending at once, so it never
 // schedules a push. A build or commit failure answers with the error and commits nothing: the
 // gatherer already guaranteed the snapshot is complete, so a failure here is a write fault, never a

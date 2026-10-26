@@ -26,6 +26,11 @@ var ErrResyncSuperseded = errors.New("resync superseded by a newer request for t
 // the GitTarget once Git is no longer ahead.
 var ErrResyncDiscarded = errors.New("resync snapshot discarded: an apply made it stale; a fresh one is requested")
 
+// ErrResyncDeferred replies to a resync the worker could not apply yet because the remote could not
+// be reached, or the parent branch a new write branch is created from is missing. It is NOT lost:
+// it stays pending in its place and is applied with the writes around it once the remote answers.
+var ErrResyncDeferred = errors.New("resync deferred until the remote can be reached")
+
 // FinalizeOutcome is the terminal result of resolving a CommitRequest.
 type FinalizeOutcome string
 

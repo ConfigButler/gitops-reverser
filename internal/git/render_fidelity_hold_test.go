@@ -31,7 +31,7 @@ func (f *replayFixture) streamEvent(name, author string, operation itypes.Operat
 }
 
 func (f *replayFixture) send(events ...Event) {
-	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: events, CommitMode: CommitModePerEvent}})
+	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: events}})
 }
 
 // windowNames is the objects the open window holds, in the order they were added.
@@ -69,7 +69,7 @@ func TestRenderFidelityHold_AnEditMadeWhileAnotherCollectionReplaysIsCommittedBy
 	assert.Equal(t, "alice", f.loop.openWindow.Author, "with its author")
 	assert.Empty(t, f.loop.held)
 	assert.Zero(t, f.loop.heldEventBytes)
-	assert.Zero(t, writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityPending))
+	assert.Zero(t, writesDropped(t, reader, writeDropRenderFidelityPending))
 }
 
 // TestRenderFidelityHold_HeldEditsGoBeforeLaterOnes: a gate can open between two wakes, and the next
@@ -321,7 +321,7 @@ func TestRenderFidelityHold_AHoldPastItsLimitAsksForAFreshSnapshot(t *testing.T)
 	assert.Empty(t, f.loop.held, "given up")
 	assert.Zero(t, f.loop.heldEventBytes)
 	assert.Equal(t, []itypes.ResourceReference{f.target}, asked, "a fresh snapshot is asked for")
-	assert.Equal(t, int64(2), writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityPending))
+	assert.Equal(t, int64(2), writesDropped(t, reader, writeDropRenderFidelityPending))
 	gaveUp := logged.matching("Dropped the live writes held")
 	require.Len(t, gaveUp, 1)
 	assert.Contains(t, gaveUp[0], `"deletions"=1`, "it says how many deletions a snapshot may not bring back")
@@ -359,5 +359,5 @@ func TestRenderFidelityHold_ADivergenceAfterAReplayDropsWhatWasHeld(t *testing.T
 
 	assert.Empty(t, f.loop.held)
 	assert.Nil(t, f.loop.openWindow)
-	assert.Equal(t, int64(1), writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityDiverged))
+	assert.Equal(t, int64(1), writesDropped(t, reader, writeDropRenderFidelityDiverged))
 }

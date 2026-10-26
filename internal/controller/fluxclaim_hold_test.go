@@ -159,9 +159,9 @@ func TestFluxClaim_AnExternalResumeIsSuspendedAgain(t *testing.T) {
 	assert.Len(t, f.sim.Applied(), 2, "each resume applied once, unchecked; that is what the record says")
 }
 
-// claimedResourceReconciledCount reads claimed_resource_reconciled_total for the test claim.
+// claimedResourceReconciledCount reads apply_claimed_resource_reconciled_total for the test claim.
 func claimedResourceReconciledCount(reader *sdkmetric.ManualReader, applierKind string) (int64, bool) {
-	return telemetry.CollectInt64Sum(reader, "gitopsreverser_claimed_resource_reconciled_total",
+	return telemetry.CollectInt64Sum(reader, "gitopsreverser_apply_claimed_resource_reconciled_total",
 		map[string]string{
 			"applier_kind": applierKind, "claim_namespace": claimKey.Namespace, "claim_name": claimKey.Name,
 		})

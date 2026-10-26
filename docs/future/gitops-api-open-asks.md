@@ -7,7 +7,7 @@ left out: #30 shipped as `GitReceiver` (#432), #33 went with the prefetch in #42
 `commit_requests_total`), #25 shipped in 0.44.0 (#343), and #6 is answered by immutability that
 fails at admission with "delete and recreate". Since revision 15: #32 is a row in
 [the Flux guide](../bi-directional-flux.md#troubleshooting); #31 is
-`claimed_resource_reconciled_total`, labeled by applier kind and claim; ask #23 is pinned at the
+`apply_claimed_resource_reconciled_total`, labeled by applier kind and claim; ask #23 is pinned at the
 fact index, for a finalizer cleared by a PATCH or an UPDATE, in either order
 (`TestFactIndex_AFinalizerClearedByAControllerNamesTheDeleter`); and #11 shipped in 0.41.0 (#290):
 create and update write through one encoder, `internal/yamlstyle`, and a test fails on a second

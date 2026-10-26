@@ -59,8 +59,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 	// One write is committed and retained, and then the checkout has to be rebuilt before anything
 	// can commit on it, while the remote is unreachable.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("retained", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("retained", "alice", ledgerTargetName)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	f.worker.markWorktreeDirty("a write failed part-way and could not be undone")
@@ -68,8 +67,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 
 	// A save's window closes during the outage.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("saved-during-outage", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("saved-during-outage", "alice", ledgerTargetName)},
 	}})
 	req := attachReq("alice", 0)
 	req.GitTargetName = ledgerTargetName
@@ -86,8 +84,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 
 	// Another window during the outage is decided without spending a connection on the rebuild.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("also-during-outage", "bob", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("also-during-outage", "bob", ledgerTargetName)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	assert.Equal(t, int32(1), syncs.Load(), "a decision waits for the pending retry instead of fetching")
@@ -122,7 +119,7 @@ func TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy(t *testing.T) {
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
 	defer loop.stopTimers()
 	write := func(event Event) {
-		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
 		require.True(t, loop.finalizeOpenWindow())
 	}
 
@@ -170,8 +167,7 @@ func TestDecidedWrite_AdmissionClosesAtTheBudgetDuringAnOutage(t *testing.T) {
 	defer loop.stopTimers()
 	write := func(name string) {
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-			Events:     []Event{configMapTargetEvent(name, "alice", ledgerTargetName)},
-			CommitMode: CommitModePerEvent,
+			Events: []Event{configMapTargetEvent(name, "alice", ledgerTargetName)},
 		}})
 		loop.finalizeOpenWindow() // the budget usually closed it on arrival already
 		loop.publishLoopState(0)  // what every loop iteration does
@@ -270,8 +266,7 @@ func TestDecidedWrite_AResyncDuringBackoffWaitsForTheRetry(t *testing.T) {
 
 	require.ErrorContains(t, resync(), "connection refused", "the caller hears the known failure at once")
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("behind-the-resyncs", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("behind-the-resyncs", "alice", ledgerTargetName)},
 	}})
 	loop.finalizeOpenWindow()
 	assert.Equal(t, int32(1), calls.Load(), "nothing dials the remote before the retry is due")
@@ -299,7 +294,7 @@ func TestDecidedWrite_SameObjectEditsReplayAsDecidedOntoARemoteHoldingTheLast(t 
 	edit := func(value string) []byte {
 		event := configMapTargetEvent("settings", "alice", ledgerTargetName)
 		event.Object.Object["data"] = map[string]any{"value": value}
-		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
 		path := filepath.Join(f.worker.repoPath(), "team-a",
 			generateFilePath(event.Identifier, itypes.SensitiveResourcePolicy{}))
 		content, err := os.ReadFile(path)

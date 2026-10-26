@@ -224,8 +224,8 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		waitForMetricWithTimeout(
 			fmt.Sprintf(
 				`sum(gitopsreverser_git_queue_depth`+
-					`{provider_namespace=%q,provider_name=%q,branch="main",pod=%q}) or vector(0)`,
-				testNs, providerName, newControllerPod,
+					`{gitbranch_namespace=%q,gitbranch_name=%q,pod=%q}) or vector(0)`,
+				testNs, gitBranchName(providerName, "main"), newControllerPod,
 			),
 			func(v float64) bool { return v == 0 },
 			"branch worker queue drained after restart",

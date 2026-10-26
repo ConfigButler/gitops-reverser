@@ -12,6 +12,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -33,6 +34,7 @@ const testRepoURL = "https://example.com/test"
 
 func newMetricsTestWorker() *BranchWorker {
 	return &BranchWorker{
+		GitBranch:            k8stypes.NamespacedName{Namespace: "test-ns", Name: "test-branch"},
 		GitProviderRef:       "test-provider",
 		GitProviderNamespace: "test-ns",
 		Branch:               "main",
@@ -46,9 +48,10 @@ func newMetricsTestWorker() *BranchWorker {
 
 func workerLabels() map[string]string {
 	return map[string]string{
-		"provider_namespace": "test-ns",
-		"provider_name":      "test-provider",
-		"branch":             "main",
+		"gitbranch_namespace": "test-ns",
+		"gitbranch_name":      "test-branch",
+		"provider_namespace":  "test-ns",
+		"provider_name":       "test-provider",
 	}
 }
 
@@ -59,10 +62,10 @@ func commitAndPush(w *BranchWorker, writes []PendingWrite, _ int) {
 	w.publishCommitsForPush(writes)
 }
 
-// commits_total must be labelled with the recording worker's identity
-// {provider_namespace, provider_name, branch}. Without labels the counter is a single global
+// commits_total must be labelled with the recording worker's GitBranch and its GitProvider
+// {gitbranch_namespace, gitbranch_name, provider_namespace, provider_name}. Without labels the counter is a single global
 // series; with them, concurrent workers (and parallel e2e specs, isolated by their per-suite
-// GitProvider namespace) count separately.
+// GitBranch namespace) count separately.
 func TestRecordPendingWritesMetrics_LabelsCommitsByWorkerIdentity(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -75,10 +78,10 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByWorkerIdentity(t *testing.T) 
 	assert.Equal(t, int64(2), commits)
 }
 
-// A query scoped to a different provider_namespace must not see this worker's
+// A query scoped to a different gitbranch_namespace must not see this worker's
 // commits — this is the property that lets parallel e2e specs each assert on only
-// their own commits (each suite mints its GitProvider in a unique namespace).
-func TestRecordPendingWritesMetrics_CommitsIsolatedByProviderNamespace(t *testing.T) {
+// their own commits (each suite mints its GitBranch in a unique namespace).
+func TestRecordPendingWritesMetrics_CommitsIsolatedByGitBranchNamespace(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
@@ -86,9 +89,9 @@ func TestRecordPendingWritesMetrics_CommitsIsolatedByProviderNamespace(t *testin
 	commitAndPush(w, committerWrites(1), 1)
 
 	otherNamespace := workerLabels()
-	otherNamespace["provider_namespace"] = "other-suite-ns"
+	otherNamespace["gitbranch_namespace"] = "other-suite-ns"
 	_, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, otherNamespace)
-	assert.False(t, ok, "a different provider_namespace must not match this worker's commits")
+	assert.False(t, ok, "a different gitbranch_namespace must not match this worker's commits")
 }
 
 func TestRecordPendingWritesMetrics_LabelsCommitsByAuthorKind(t *testing.T) {
@@ -193,8 +196,8 @@ func TestQueueDepthGauge_ReportsWorkTheLoopHasNotReachedYet(t *testing.T) {
 
 	// Work is accepted. The loop is not running at all, which is the worst case of "has not got to
 	// it yet", and no metric call is made anywhere on this path.
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
 
 	depth, ok := telemetry.CollectInt64Sum(reader, queueDepthMetric, workerLabels())
 	require.True(t, ok, "the scrape must observe the queue even with the loop stopped")
@@ -209,8 +212,8 @@ func TestEnqueueRequest_FullQueueCountsTheDrop(t *testing.T) {
 
 	w := newMetricsTestWorker()
 	w.eventQueue = make(chan WorkItem, 1)
-	require.True(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent}))
-	require.False(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent}),
+	require.True(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}}))
+	require.False(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}}),
 		"the second request must be refused by the full queue")
 
 	labels := workerLabels()
@@ -227,8 +230,8 @@ func TestEnqueueRequest_FullQueueCountsTheDrop(t *testing.T) {
 func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
 	w := newMetricsTestWorker()
 	// Two write requests accepted onto the queue but never handled by the loop.
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
 	require.Equal(t, int64(2), w.inflightItems.Load())
 
 	loop := newBranchWorkerEventLoop(w, time.Second)
@@ -467,11 +470,10 @@ func TestRecordCommitFailure_SeparatesRefusalFromWriteFault(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
-	w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
+	w.recordCommitFailure(commitFailureRefused)
+	w.recordCommitFailure(commitFailureError)
 
 	refused := workerLabels()
-	refused["kind"] = commitFailureKindWindow
 	refused["reason"] = commitFailureRefused
 	count, ok := telemetry.CollectInt64Sum(reader, commitFailuresMetric, refused)
 	require.True(t, ok, "a refused window must be counted")
@@ -480,7 +482,6 @@ func TestRecordCommitFailure_SeparatesRefusalFromWriteFault(t *testing.T) {
 	// The two reasons need different people: a refusal is a Git path a human has to fix and will
 	// not clear on its own, while an error may be transient. Folding them would hide that.
 	faulted := workerLabels()
-	faulted["kind"] = commitFailureKindAtomic
 	faulted["reason"] = commitFailureError
 	count, ok = telemetry.CollectInt64Sum(reader, commitFailuresMetric, faulted)
 	require.True(t, ok)

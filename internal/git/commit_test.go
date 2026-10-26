@@ -108,14 +108,10 @@ func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
 	assert.Equal(t, "audit(platform): alice UPDATE prod/api", message)
 }
 
-func TestRenderReconcileCommitMessageFromEvents_DefaultTemplate(t *testing.T) {
-	// The events-based path carries no type or revision, so the default falls back to the
+func TestRenderReconcileCommitMessage_DefaultTemplateForTheWholeTarget(t *testing.T) {
+	// A whole-GitTarget reconcile carries no type or revision, so the default falls back to the
 	// type-less subject with no resourceVersion suffix.
-	message, err := renderReconcileCommitMessageFromEvents(
-		[]Event{{Operation: "CREATE"}, {Operation: "DELETE"}},
-		"demo",
-		ResolveCommitConfig(nil),
-	)
+	message, err := renderReconcileCommitMessage(2, "demo", nil, "", ResolveCommitConfig(nil))
 	require.NoError(t, err)
 	assert.Equal(t, "chore: reconcile 2 resources", message)
 }
@@ -261,7 +257,7 @@ func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
 func TestCommitOptionsFor_EmptyAuthorFallsThroughToCommitter(t *testing.T) {
 	config := ResolveCommitConfig(nil)
 	pendingWrite := PendingWrite{
-		Kind: PendingWriteAtomic,
+		Kind: PendingWriteCommit,
 	}
 	when := time.Now()
 

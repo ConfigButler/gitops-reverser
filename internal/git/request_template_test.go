@@ -245,25 +245,10 @@ func TestNewRequestTemplateProbe_IsFreshEachTime(t *testing.T) {
 }
 
 // requestTemplate describes the commit a CommitRequest's message produces, and a CommitRequest
-// attaches to a live window — which finalizes as PendingWriteCommit. An atomic snapshot can also
-// carry a message, and it must keep the behaviour it had before requestTemplate existed: committed
-// verbatim, never framed with a live context it was not written for.
-func TestResolveMessage_AtomicWriteIsNeverFramed(t *testing.T) {
-	config := requestConfig(requestBodyTemplate)
-
-	atomic := requestWrite("chore: snapshot", config)
-	atomic.Kind = PendingWriteAtomic
-	assert.Equal(t, messageResolutionRequest, atomic.resolveMessage(),
-		"an atomic write with a message stays verbatim even when requestTemplate is configured")
-	assert.Equal(t, messageSourceCommitRequest, atomic.messageSource())
-
-	// And with no message it still renders reconcileTemplate, as documented.
-	plainAtomic := requestWrite("", config)
-	plainAtomic.Kind = PendingWriteAtomic
-	assert.Equal(t, messageResolutionReconcileTemplate, plainAtomic.resolveMessage())
-
-	// A resync is untouched either way.
-	resync := requestWrite("pre-rendered", config)
+// attaches to a live window, which finalizes as PendingWriteCommit. A resync arrives pre-rendered
+// and is never framed, whatever requestTemplate says.
+func TestResolveMessage_AResyncIsNeverFramed(t *testing.T) {
+	resync := requestWrite("pre-rendered", requestConfig(requestBodyTemplate))
 	resync.Kind = PendingWriteResync
 	assert.Equal(t, messageResolutionPreRendered, resync.resolveMessage())
 }

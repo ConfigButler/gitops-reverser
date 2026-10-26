@@ -170,8 +170,7 @@ func (f *newBranchFixture) localHead() (plumbing.ReferenceName, plumbing.Hash) {
 // liveWrite sends one live ConfigMap event through the loop's commit window.
 func liveWrite(loop *branchWorkerEventLoop, name string) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent(name, "alice", newBranchTarget)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent(name, "alice", newBranchTarget)},
 	}})
 }
 

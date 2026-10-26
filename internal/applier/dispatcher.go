@@ -662,7 +662,7 @@ func (d *Dispatcher) completed(
 			result.Message = progress.Message
 			if telemetry.ApplyRevisionMismatchesTotal != nil {
 				telemetry.ApplyRevisionMismatchesTotal.Add(context.WithoutCancel(ctx), 1,
-					metric.WithAttributes(attribute.String("applier_kind", applierKindOf(req))))
+					metric.WithAttributes(applyAttrs(req)...))
 			}
 		} else {
 			op.log.V(1).Info("the applier finished the requested apply", "after", took.String())
@@ -872,11 +872,26 @@ func (d *Dispatcher) count(ctx context.Context, req git.ApplyRequest, outcome st
 	if telemetry.ApplyRequestsTotal == nil {
 		return
 	}
-	telemetry.ApplyRequestsTotal.Add(context.WithoutCancel(ctx), 1, metric.WithAttributes(
-		attribute.String("applier_kind", applierKindOf(req)),
+	telemetry.ApplyRequestsTotal.Add(context.WithoutCancel(ctx), 1, metric.WithAttributes(applyAttrs(req,
 		attribute.String("reason", string(req.Reason)),
 		attribute.String("outcome", outcome),
-	))
+	)...))
+}
+
+// applyAttrs is the identity an apply attempt is counted under: the GitBranch whose worker asked and
+// its GitProvider, as every branch-worker series names them, and the applier claim it asked, as
+// apply_claimed_resource_reconciled_total names it. Neither invents an owner: one worker decides the
+// attempt and one claim holds the applier, so the pair adds no series beyond the claims.
+func applyAttrs(req git.ApplyRequest, extra ...attribute.KeyValue) []attribute.KeyValue {
+	return append([]attribute.KeyValue{
+		attribute.String("gitbranch_namespace", req.GitBranch.Namespace),
+		attribute.String("gitbranch_name", req.GitBranch.Name),
+		attribute.String("provider_namespace", req.Provider.Namespace),
+		attribute.String("provider_name", req.Provider.Name),
+		attribute.String("applier_kind", applierKindOf(req)),
+		attribute.String("claim_namespace", req.Applier.ApplierClaim.Namespace),
+		attribute.String("claim_name", req.Applier.ApplierClaim.Name),
+	}, extra...)
 }
 
 // applierKindOf is the applier_kind label of a request's applier.

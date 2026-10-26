@@ -212,16 +212,40 @@ func (r *EventRouter) commitRequestWorker(
 	return nil, gitBranch.Spec.Branch, nil
 }
 
-// recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or
-// timed out at the worker, so the failure is observable even though delivery was already
-// marked on enqueue. No-op until the counter is registered.
-func (r *EventRouter) recordBackgroundResyncFailure(gitDest types.ResourceReference) {
+// git_resync_failures_total reasons. Only error and timeout are a snapshot that did not land: a
+// refused one is gathered again by its stream, and a deferred one stays pending at the worker.
+const (
+	resyncFailureRefused  = "refused"
+	resyncFailureDeferred = "deferred"
+	resyncFailureTimeout  = "timeout"
+	resyncFailureError    = "error"
+)
+
+// resyncFailureReason classifies a resync's error for git_resync_failures_total. A refusal at
+// intake is also git_queue_refusals_total{kind="resync"}, and a deferral also
+// git_materialization_failures_total: the reason keeps those two views apart from a real failure.
+func resyncFailureReason(err error) string {
+	switch {
+	case errors.Is(err, git.ErrFinalizeQueueFull):
+		return resyncFailureRefused
+	case errors.Is(err, git.ErrResyncDeferred):
+		return resyncFailureDeferred
+	default:
+		return resyncFailureError
+	}
+}
+
+// recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed, was refused or
+// deferred, or timed out at the worker, so the failure is observable even though delivery was
+// already marked on enqueue. No-op until the counter is registered.
+func (r *EventRouter) recordBackgroundResyncFailure(gitDest types.ResourceReference, reason string) {
 	if telemetry.GitResyncFailuresTotal == nil {
 		return
 	}
 	telemetry.GitResyncFailuresTotal.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("gittarget_namespace", gitDest.Namespace),
 		attribute.String("gittarget_name", gitDest.Name),
+		attribute.String("reason", reason),
 	))
 }
 
@@ -416,7 +440,7 @@ func (r *EventRouter) drainScopedResync(
 			r.WatchManager.markSnapshotSettled(gitDest, collection, snapshots)
 		}
 		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "collection", collection.String())
-		r.recordBackgroundResyncFailure(gitDest)
+		r.recordBackgroundResyncFailure(gitDest, resyncFailureTimeout)
 	}
 }
 
@@ -481,7 +505,7 @@ func (r *EventRouter) handleScopedResyncError(
 		return
 	}
 	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "collection", collection.String())
-	r.recordBackgroundResyncFailure(gitDest)
+	r.recordBackgroundResyncFailure(gitDest, resyncFailureReason(err))
 }
 
 func renderFidelityDivergence(refused *manifestanalyzer.AcceptanceRefusedError) manifestanalyzer.RenderDivergence {

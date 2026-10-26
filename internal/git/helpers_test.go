@@ -241,8 +241,8 @@ func newTestBranchWorker(
 	return worker, nil
 }
 
-// makeEvent builds a ConfigMap event for commit planning tests.
-func makeEvent(author, name string) Event {
+// makeEvent builds a ConfigMap event by alice for commit planning tests.
+func makeEvent(name string) Event {
 	const target = "team-a"
 
 	return Event{
@@ -265,7 +265,7 @@ func makeEvent(author, name string) Event {
 				"data": map[string]interface{}{"v": "v1"},
 			},
 		},
-		UserInfo:           UserInfo{Username: author},
+		UserInfo:           UserInfo{Username: "alice"},
 		Path:               "team-" + target,
 		GitTargetName:      target,
 		GitTargetNamespace: "default",

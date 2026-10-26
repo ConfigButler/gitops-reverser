@@ -229,8 +229,8 @@ data:
 	}
 
 	branchSeries := func(metric, extra string) string {
-		return fmt.Sprintf(`sum(%s{provider_namespace=%q,branch=%q%s}) or vector(0)`,
-			metric, testNs, writeBranch, extra)
+		return fmt.Sprintf(`sum(%s{gitbranch_namespace=%q,gitbranch_name=%q%s}) or vector(0)`,
+			metric, testNs, gitBranchName(providerName, writeBranch), extra)
 	}
 	pushes := func() float64 {
 		GinkgoHelper()

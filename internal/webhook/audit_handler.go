@@ -198,6 +198,24 @@ type auditRoute struct {
 	annotationKey string
 }
 
+// routeLabel is the audit_route an event is counted under: its route when a KubeProvider declares
+// it, so "whose audit stopped" is a selector. It reads the route the way resolveEventRoute does,
+// without its side effects, because an event the accept gate drops is counted before it is routed.
+func (h *AuditHandler) routeLabel(route auditRoute, event *auditv1.Event) string {
+	name := route.route
+	if route.annotationKey != "" && event != nil {
+		name = event.Annotations[route.annotationKey]
+	}
+	switch {
+	case name == "":
+		return outcome.RouteNone
+	case h.config.RouteHealth.RouteDeclared(name):
+		return name
+	default:
+		return outcome.RouteUnrecognized
+	}
+}
+
 // auditRouteForPath maps an accepted request path to the AUDIT ROUTE its facts belong to and
 // whether the path named one. /audit-webhook/<route> carries the route (named=true). The bare
 // /audit-webhook names none — it is the shared, annotation-routed endpoint, so it returns
@@ -326,7 +344,7 @@ func (h *AuditHandler) processEvents(ctx context.Context, route auditRoute, even
 		batches.add(result)
 	}
 	appended, err := h.publishFactBatches(ctx, batches)
-	h.recordAcceptedOutcomes(ctx, accepted, appended)
+	h.recordAcceptedOutcomes(ctx, route, accepted, appended)
 	if err != nil {
 		return err
 	}
@@ -344,11 +362,13 @@ func (h *AuditHandler) processEvents(ctx context.Context, route auditRoute, even
 // the only place it can be counted: no fact exists, so no fact-side counter can ever see it.
 func (h *AuditHandler) recordAcceptedOutcomes(
 	ctx context.Context,
+	route auditRoute,
 	accepted []acceptedFact,
 	appended map[queue.FactStreamKey]struct{},
 ) {
 	for i := range accepted {
-		outcome.Record(ctx, accepted[i].event, acceptedOutcome(accepted[i], appended))
+		outcome.Record(ctx, accepted[i].event, acceptedOutcome(accepted[i], appended),
+			h.routeLabel(route, accepted[i].event))
 	}
 }
 
@@ -399,12 +419,12 @@ func (h *AuditHandler) processEvent(
 
 	if !shouldForwardSubresource(&event) {
 		// A non-/scale subresource (or an unmapped-verb subresource): dropped before recording.
-		outcome.Record(ctx, &event, outcome.NonScaleSubresource)
+		outcome.Record(ctx, &event, outcome.NonScaleSubresource, h.routeLabel(route, &event))
 		return acceptedFact{}
 	}
 
 	if decision := classifyAuditIngress(&event); !decision.Process {
-		outcome.Record(ctx, &event, outcome.Outcome(decision.Reason))
+		outcome.Record(ctx, &event, outcome.Outcome(decision.Reason), h.routeLabel(route, &event))
 		log.V(1).Info("Dropped audit event before recording",
 			"reason", decision.Reason, "gvr", extractGVR(&event), "auditID", event.AuditID)
 		return acceptedFact{}
@@ -541,7 +561,8 @@ func (h *AuditHandler) rejectUnroutableEvent(
 	annotationKey string,
 	sourceCluster string,
 ) {
-	outcome.Record(ctx, event, reason)
+	// Its only caller is an event that names no route.
+	outcome.Record(ctx, event, reason, outcome.RouteNone)
 
 	log := logf.Log.WithName("audit-handler")
 	fields := []any{

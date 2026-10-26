@@ -40,8 +40,7 @@ func TestWithdraw_AWaitingRequestIsCancelledForGood(t *testing.T) {
 	// A late re-send of the attach, and a window it would have attached to, change nothing.
 	serviceAttach(loop, req)
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("late", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow)
 	assert.Nil(t, loop.openWindow.pendingCR, "a withdrawn request never attaches")
@@ -76,8 +75,7 @@ func TestWithdraw_AnAttachedRequestIsHeldAndStillCommits(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
 	req := attachReq("alice", time.Hour)
 	serviceAttach(loop, req)

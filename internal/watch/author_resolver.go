@@ -213,8 +213,9 @@ const (
 //
 // The two instruments carry DIFFERENT label sets on purpose. actor_kind is a property of the answer
 // and belongs on the census; event_kind is a property of the question and only changes what the
-// wait means. Putting both on both would multiply a histogram that already carries the type triple
-// by six for no reading anyone would make.
+// wait means. The type triple is on the census only: a histogram pays its bucket count for every
+// label combination, which made this the largest family in the cardinality budget, and the wait a
+// type's attribution costs is read from the census's tier="absent" rate for that type.
 func recordAttributionResolution(
 	ctx context.Context,
 	query AuthorQuery,
@@ -235,7 +236,9 @@ func recordAttributionResolution(
 	}
 	if telemetry.AttributionResolutionWaitSeconds != nil {
 		telemetry.AttributionResolutionWaitSeconds.Record(ctx, wait.Seconds(), metric.WithAttributes(
-			append(typeAttrs, attribute.String("event_kind", attributionEventKind(query)))...))
+			attribute.String("tier", string(tier)),
+			attribute.String("event_kind", attributionEventKind(query)),
+		))
 	}
 }
 

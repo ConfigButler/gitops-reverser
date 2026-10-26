@@ -718,60 +718,6 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 	assert.Equal(t, remoteRefBefore.Hash(), remoteRefAfter.Hash())
 }
 
-func TestBranchWorker_AtomicAndGroupedInterleaved_PreservesArrivalOrder(t *testing.T) {
-	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
-
-	groupedFirst, err := worker.buildGroupedPendingWrite(
-		worker.ctx,
-		[]Event{configMapEvent("grouped-first", "alice", "team-a")},
-	)
-	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*groupedFirst}))
-
-	atomicRequest := &WriteRequest{
-		Events:        []Event{configMapEvent("atomic-second", "reconciler", "team-a")},
-		CommitMode:    CommitModeAtomic,
-		CommitMessage: "atomic: second write",
-	}
-	atomicSecond, err := worker.buildAtomicPendingWrite(worker.ctx, atomicRequest)
-	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*atomicSecond}))
-
-	groupedThird, err := worker.buildGroupedPendingWrite(
-		worker.ctx,
-		[]Event{configMapEvent("grouped-third", "bob", "team-a")},
-	)
-	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*groupedThird}))
-
-	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*groupedFirst, *atomicSecond, *groupedThird}))
-
-	headRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
-	require.NoError(t, err)
-	headCommit, err := serverRepo.CommitObject(headRef.Hash())
-	require.NoError(t, err)
-	require.Len(t, headCommit.ParentHashes, 1)
-	assert.Equal(
-		t,
-		expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "grouped-third"),
-		headCommit.Message,
-	)
-
-	atomicCommit, err := serverRepo.CommitObject(headCommit.ParentHashes[0])
-	require.NoError(t, err)
-	require.Len(t, atomicCommit.ParentHashes, 1)
-	assert.Equal(t, "atomic: second write", atomicCommit.Message)
-
-	firstCommit, err := serverRepo.CommitObject(atomicCommit.ParentHashes[0])
-	require.NoError(t, err)
-	require.Len(t, firstCommit.ParentHashes, 1)
-	assert.Equal(
-		t,
-		expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "grouped-first"),
-		firstCommit.Message,
-	)
-}
-
 func TestBranchWorker_Replay_DropsUnitsThatBecomeNoOpAgainstNewRemoteTree(t *testing.T) {
 	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
 
@@ -830,7 +776,6 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 			configMapEvent("first", "alice", "team-a"),
 			configMapEvent("second", "alice", "team-a"),
 		},
-		CommitMode: CommitModePerEvent,
 	}})
 
 	assert.Nil(t, loop.openWindow, "commitWindow=0 must finalize the open window on every event")
@@ -867,7 +812,6 @@ func TestEventLoop_AuthorChangeFinalizesOpenWindow(t *testing.T) {
 			configMapEvent("first", "alice", "team-a"),
 			configMapEvent("second", "bob", "team-a"),
 		},
-		CommitMode: CommitModePerEvent,
 	}})
 
 	require.Len(t, loop.pendingWrites, 1)
@@ -891,7 +835,6 @@ func TestEventLoop_TargetChangeFinalizesOpenWindow(t *testing.T) {
 			configMapTargetEvent("first", "alice", "team-a"),
 			configMapTargetEvent("second", "alice", "team-b"),
 		},
-		CommitMode: CommitModePerEvent,
 	}})
 
 	require.Len(t, loop.pendingWrites, 1)
@@ -913,8 +856,7 @@ func TestEventLoop_RepeatedPathEditsCollapseInOpenWindow(t *testing.T) {
 	second.Object.Object["data"] = map[string]interface{}{"key": "latest"}
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{first, second, configMapEvent("other", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{first, second, configMapEvent("other", "alice", "team-a")},
 	}})
 
 	require.NotNil(t, loop.openWindow)
@@ -931,32 +873,6 @@ func TestEventLoop_RepeatedPathEditsCollapseInOpenWindow(t *testing.T) {
 	loop.stopTimers()
 }
 
-func TestEventLoop_AtomicRequestFinalizesOpenWindowFirst(t *testing.T) {
-	worker, _, _ := setupCommitPushSplitWorker(t)
-	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
-
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("live", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
-	}})
-	require.NotNil(t, loop.openWindow)
-
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("atomic", "reconciler", "team-a")},
-		CommitMode: CommitModeAtomic,
-	}})
-
-	assert.Nil(t, loop.openWindow)
-	require.Len(t, loop.pendingWrites, 2)
-	assert.Equal(t, PendingWriteCommit, loop.pendingWrites[0].Kind)
-	assert.Equal(t, "live", loop.pendingWrites[0].Events[0].Identifier.Name)
-	assert.Equal(t, PendingWriteAtomic, loop.pendingWrites[1].Kind)
-	assert.Equal(t, "atomic", loop.pendingWrites[1].Events[0].Identifier.Name)
-
-	loop.stopTimers()
-}
-
 func TestEventLoop_ByteCapFinalizesIncludingTrippingEvent(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	worker.branchBufferMaxBytes = 1
@@ -964,8 +880,7 @@ func TestEventLoop_ByteCapFinalizesIncludingTrippingEvent(t *testing.T) {
 	loop.lastPushAt = time.Now()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("oversized", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapEvent("oversized", "alice", "team-a")},
 	}})
 
 	assert.Nil(t, loop.openWindow)
@@ -982,15 +897,13 @@ func TestEventLoop_AuthorChangeStartsFreshCommitTimer(t *testing.T) {
 	loop.lastPushAt = time.Now()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("first", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapEvent("first", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.commitTimer)
 	firstTimer := loop.commitTimer
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("second", "bob", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapEvent("second", "bob", "team-a")},
 	}})
 
 	require.NotNil(t, loop.commitTimer)
@@ -1016,8 +929,7 @@ func TestEventLoop_CrossAuthorSamePathPingPongUsesOnlyAuthorBoundaries(t *testin
 		// changes nothing settles at once, and would leave no window to count.
 		event.Object.Object["data"] = map[string]interface{}{"key": fmt.Sprintf("v%d", i)}
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-			Events:     []Event{event},
-			CommitMode: CommitModePerEvent,
+			Events: []Event{event},
 		}})
 	}
 	loop.finalizeOpenWindow()
@@ -1037,42 +949,7 @@ func TestEventLoop_CrossAuthorSamePathPingPongUsesOnlyAuthorBoundaries(t *testin
 	loop.stopTimers()
 }
 
-func TestEventLoop_AtomicRequest_RespectsCooldownAndUsesNormalPushPath(t *testing.T) {
-	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
-
-	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
-	require.NoError(t, err)
-
-	loop := newBranchWorkerEventLoop(worker, time.Second)
-	loop.lastPushAt = time.Now()
-
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("atomic", "reconciler", "team-a")},
-		CommitMode: CommitModeAtomic,
-	}})
-
-	assert.Nil(t, loop.openWindow, "atomic requests should not remain in the live-event window")
-	assert.Len(t, loop.pendingWrites, 1,
-		"atomic requests should join pendingWrites and wait for the normal push cycle")
-	assert.NotNil(t, loop.pushTimer,
-		"active cooldown should defer the push with the regular timer path")
-
-	afterCommitRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
-	require.NoError(t, err)
-	assert.Equal(t, initialRef.Hash(), afterCommitRef.Hash(),
-		"remote must not advance while cooldown defers the push")
-
-	localRepo, err := git.PlainOpen(worker.repoPath())
-	require.NoError(t, err)
-	localRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
-	require.NoError(t, err)
-	assert.NotEqual(t, initialRef.Hash(), localRef.Hash(),
-		"local branch should already contain the atomic commit")
-
-	loop.stopTimers()
-}
-
-func TestEventLoop_DeferredEventCommitsAndAtomicDuringCooldownPushTogether(t *testing.T) {
+func TestEventLoop_DeferredEventCommitsDuringCooldownPushTogether(t *testing.T) {
 	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "target-a", "iso-a")
 	createPlainGitTarget(t, worker, "target-b", "iso-b")
@@ -1085,61 +962,46 @@ func TestEventLoop_DeferredEventCommitsAndAtomicDuringCooldownPushTogether(t *te
 	loop.lastPushAt = time.Now()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("live-a", "alice", "target-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("live-a", "alice", "target-a")},
 	}})
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("live-b", "bob", "target-b")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("live-b", "bob", "target-b")},
 	}})
 	require.Len(t, loop.pendingWrites, 2,
 		"deferred event commits during cooldown are retained as local commits, not lost")
 	loop.publishLoopState(0)
-
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:             []Event{configMapEvent("snapshot-only", "reconciler", "")},
-		CommitMode:         CommitModeAtomic,
-		GitTargetName:      "target-b",
-		GitTargetNamespace: "default",
-	}})
-	require.Len(t, loop.pendingWrites, 3)
 
 	loop.pushPending()
 
 	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
 	commits := commitsAfterHash(t, serverRepo, finalRef.Hash(), initialHash)
-	require.Len(t, commits, 3)
+	require.Len(t, commits, 2)
 	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "live-a"), commits[0].Message)
 	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "live-b"), commits[1].Message)
-	assert.Equal(t, "chore: reconcile 1 resources", commits[2].Message)
 
 	loop.stopTimers()
 }
 
-func TestEventLoop_AtomicPushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t *testing.T) {
+func TestEventLoop_PushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t *testing.T) {
 	worker, _, remoteURL := setupCommitPushSplitWorker(t)
 
-	request := &WriteRequest{
-		Events:     []Event{configMapEvent("atomic", "reconciler", "team-a")},
-		CommitMode: CommitModeAtomic,
-	}
-
-	pendingWrite, err := worker.buildAtomicPendingWrite(worker.ctx, request)
+	pendingWrite, err := worker.buildGroupedPendingWrite(
+		worker.ctx, []Event{configMapEvent("live", "alice", "team-a")})
 	require.NoError(t, err)
 
 	loop := newBranchWorkerEventLoop(worker, time.Second)
 	loop.decide(*pendingWrite)
 	loop.commitDecided()
-	require.Len(t, loop.pendingWrites, 1, "the atomic write is committed and pending its push")
+	require.Len(t, loop.pendingWrites, 1, "the write is committed and pending its push")
 
 	remotePath := strings.TrimPrefix(remoteURL, "file://")
 	require.NoError(t, os.RemoveAll(remotePath))
 
 	loop.pushPending()
 
-	assert.True(t, loop.lastPushAt.IsZero(), "failed atomic push must not advance cooldown state")
-	assert.Len(t, loop.pendingWrites, 1, "failed atomic push must retain pending work for retry")
+	assert.True(t, loop.lastPushAt.IsZero(), "a failed push must not advance cooldown state")
+	assert.Len(t, loop.pendingWrites, 1, "a failed push must retain pending work for retry")
 }
 
 // TestResync_WorkerAppliesMarkAndSweepAndCommits drives a resync through the worker
@@ -1160,8 +1022,7 @@ func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
 
 	// Seed a managed ConfigMap under the GitTarget path with a normal per-event commit.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("drop-me", "alice", "target-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("drop-me", "alice", "target-a")},
 	}})
 	require.Len(t, loop.pendingWrites, 1)
 
@@ -1232,8 +1093,7 @@ func TestResync_WorkerEmptyDesiredSweepsManagedResource(t *testing.T) {
 	loop := newBranchWorkerEventLoop(worker, 0)
 	loop.lastPushAt = time.Now()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("orphan", "alice", "target-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("orphan", "alice", "target-a")},
 	}})
 	require.Len(t, loop.pendingWrites, 1)
 

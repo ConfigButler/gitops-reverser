@@ -132,8 +132,8 @@ func TestPendingWriteCommit_DerivesMetadata(t *testing.T) {
 	pendingWrite := PendingWrite{
 		Kind: PendingWriteCommit,
 		Events: []Event{
-			makeEvent("alice", "b"),
-			makeEvent("alice", "c"),
+			makeEvent("b"),
+			makeEvent("c"),
 		},
 		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
 			{Name: "team-a", Namespace: "default"}: {
@@ -151,33 +151,10 @@ func TestPendingWriteCommit_DerivesMetadata(t *testing.T) {
 	assert.Equal(t, "c", pendingWrite.Events[1].Identifier.Name)
 }
 
-func TestPendingWriteAtomic_DerivesBatchMetadata(t *testing.T) {
+// A resync names its GitTarget on the write itself, not on events, which it carries none of.
+func TestPendingWriteResync_TargetIsTheWritesOwn(t *testing.T) {
 	pendingWrite := PendingWrite{
-		Kind:               PendingWriteAtomic,
-		Events:             []Event{makeEvent("alice", "a"), makeEvent("bob", "b")},
-		CommitMessage:      "explicit batch message",
-		GitTargetName:      "team-a",
-		GitTargetNamespace: "default",
-		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
-			{Name: "team-a", Namespace: "default"}: {
-				Name:      "team-a",
-				Namespace: "default",
-				Path:      "team-team-a",
-			},
-		},
-	}
-
-	assert.Empty(t, pendingWrite.Author())
-	assert.Equal(t, "explicit batch message", pendingWrite.CommitMessage)
-	assert.Equal(t, "team-a", pendingWrite.Target().Name)
-	require.Len(t, pendingWrite.Events, 2)
-	assert.Equal(t, "a", pendingWrite.Events[0].Identifier.Name)
-	assert.Equal(t, "b", pendingWrite.Events[1].Identifier.Name)
-}
-
-func TestPendingWriteAtomic_TargetFallsBackToRequestTarget(t *testing.T) {
-	pendingWrite := PendingWrite{
-		Kind:               PendingWriteAtomic,
+		Kind:               PendingWriteResync,
 		GitTargetName:      "team-a",
 		GitTargetNamespace: "default",
 	}
@@ -203,13 +180,13 @@ func TestExecutor_PendingWrites_PreservesArrivalOrder(t *testing.T) {
 	commitsCreated, err := worker.executePendingWrites(context.Background(), repo, []PendingWrite{
 		{
 			Kind:         PendingWriteCommit,
-			Events:       []Event{makeEvent("alice", "a")},
+			Events:       []Event{makeEvent("a")},
 			CommitConfig: config,
 			Targets:      targets,
 		},
 		{
 			Kind:         PendingWriteCommit,
-			Events:       []Event{makeEvent("alice", "c")},
+			Events:       []Event{makeEvent("c")},
 			CommitConfig: config,
 			Targets:      targets,
 		},

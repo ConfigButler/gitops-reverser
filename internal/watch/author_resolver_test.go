@@ -359,3 +359,21 @@ func TestAuthorResolver_AuthorlessMatchProvesTheRouteIsAlive(t *testing.T) {
 		assert.False(t, warn, "a route that has delivered a fact must never be accused of delivering none")
 	}
 }
+
+// The wait histogram carries no type: a histogram pays its bucket count for every label
+// combination, and the per-type question is answered by the census beside it.
+func TestAuthorResolver_WaitHistogramCarriesNoType(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}}
+	r := NewAuthorResolver(lookup, 0, logr.Discard(), nil)
+	_, _ = r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "999", false))
+
+	_, typed := telemetry.CollectHistogramCount(reader, "gitopsreverser_attribution_resolution_wait_seconds",
+		map[string]string{"resource": resolverGVR.Resource})
+	assert.False(t, typed, "the wait histogram must not carry the type triple")
+	_, counted := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
+		map[string]string{"tier": string(queue.AttributionAbsent), "resource": resolverGVR.Resource})
+	assert.True(t, counted, "the census still counts the resolution, by type")
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -32,8 +33,7 @@ func outageLoop(t *testing.T, slug string) (*ledgerFixture, *branchWorkerEventLo
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
 	t.Cleanup(loop.stopTimers)
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("held-during-the-outage", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("held-during-the-outage", "alice", ledgerTargetName)},
 	}})
 	loop.finalizeOpenWindow()
 	loop.publishLoopState(0)
@@ -229,7 +229,7 @@ func TestIntake_AWindowChargesAReplacedEventOnce(t *testing.T) {
 	_, loop, _ := outageLoop(t, "intake-window-replaced")
 	edit := func() {
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-			Events: []Event{deleteEvent("edited-twice")}, CommitMode: CommitModePerEvent,
+			Events: []Event{deleteEvent("edited-twice")},
 		}})
 	}
 	edit()
@@ -302,4 +302,24 @@ func TestEnqueueResync_ACoalescedSnapshotIsNotKeptByTheQueue(t *testing.T) {
 	f.worker.intake.mu.Unlock()
 	assert.Equal(t, queued, reachable, "the queue keeps exactly the snapshots it is charged for")
 	assert.LessOrEqual(t, loop.heldBytes()+reachable, f.worker.branchBufferMaxBytes)
+}
+
+// A resync the worker cannot apply while the remote is unreachable is answered as deferred, not
+// failed: its caller hears ErrResyncDeferred, and the resync itself stays pending in its place.
+func TestIntake_AResyncDuringAnOutageIsDeferred(t *testing.T) {
+	_, loop, _ := outageLoop(t, "resync-deferred")
+	scope := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "")
+	resultCh := make(chan ResyncResult, 1)
+	loop.handleResyncRequest(&ResyncRequest{
+		GitTargetName: ledgerTargetName, GitTargetNamespace: "default", Scope: &scope, Result: resultCh,
+	})
+	fireRetry(loop)
+
+	select {
+	case result := <-resultCh:
+		require.ErrorIs(t, result.Err, ErrResyncDeferred)
+	default:
+		t.Fatal("the resync's caller was not answered")
+	}
+	assert.Len(t, loop.pendingWrites, 2, "the deferred resync stays pending behind the held write")
 }

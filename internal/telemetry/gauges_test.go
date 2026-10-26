@@ -19,18 +19,18 @@ func TestObservableGauge_ReadsTheSourceAtCollectionTime(t *testing.T) {
 
 	depth := int64(0)
 	SetGaugeSource(GaugeGitQueueDepth, func() []GaugeSample {
-		return []GaugeSample{{Value: depth, Attrs: []attribute.KeyValue{attribute.String("branch", "main")}}}
+		return []GaugeSample{{Value: depth, Attrs: []attribute.KeyValue{attribute.String("gitbranch_name", "main")}}}
 	})
 	defer SetGaugeSource(GaugeGitQueueDepth, nil)
 
-	value, ok := CollectInt64Sum(reader, "gitopsreverser_git_queue_depth", map[string]string{"branch": "main"})
+	value, ok := CollectInt64Sum(reader, "gitopsreverser_git_queue_depth", map[string]string{"gitbranch_name": "main"})
 	require.True(t, ok)
 	require.Equal(t, int64(0), value)
 
 	// Nothing republishes. The next scrape must still see the new value.
 	depth = 7
 
-	value, ok = CollectInt64Sum(reader, "gitopsreverser_git_queue_depth", map[string]string{"branch": "main"})
+	value, ok = CollectInt64Sum(reader, "gitopsreverser_git_queue_depth", map[string]string{"gitbranch_name": "main"})
 	require.True(t, ok)
 	assert.Equal(t, int64(7), value)
 }

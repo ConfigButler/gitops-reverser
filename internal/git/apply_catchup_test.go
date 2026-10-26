@@ -78,16 +78,16 @@ func TestCatchUp_AnAPICreateIsAdoptedEvenAtTheTip(t *testing.T) {
 			require.Empty(t, requester.taken())
 
 			ownApply := createdEvent("alpha", tc.manager)
-			loop.handleLiveEvents(&WriteRequest{Events: []Event{ownApply}, CommitMode: CommitModePerEvent})
+			loop.handleLiveEvents(&WriteRequest{Events: []Event{ownApply}})
 			owned := createdEvent("alpha", "kubectl-create")
 			owned.AppliedBy = AppliedBy{Kind: configv1alpha3.ApplierKindKustomization, Namespace: "x", Name: "other"}
-			loop.handleLiveEvents(&WriteRequest{Events: []Event{owned}, CommitMode: CommitModePerEvent})
+			loop.handleLiveEvents(&WriteRequest{Events: []Event{owned}})
 			loop.openWindow = nil
 			loop.serviceAppliers()
 			require.Empty(t, requester.taken(), "neither is an API create of the folder's own objects")
 
 			loop.handleLiveEvents(&WriteRequest{
-				Events: []Event{createdEvent("alpha", "kubectl-create")}, CommitMode: CommitModePerEvent,
+				Events: []Event{createdEvent("alpha", "kubectl-create")},
 			})
 			loop.openWindow = nil
 			loop.serviceAppliers()

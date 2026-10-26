@@ -65,7 +65,7 @@ func newExecutorSecretEvent(path string) Event {
 func seedEventContent(t *testing.T, repoPath string, worktree *git.Worktree, writer *contentWriter, event Event) {
 	t.Helper()
 
-	content, err := writer.buildContentForWrite(context.Background(), event)
+	content, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 
 	gitPath := generateFilePath(event.Identifier, types.SensitiveResourcePolicy{})
@@ -105,7 +105,7 @@ func TestExecutor_GroupedSingleEvent_UsesLiveTemplate(t *testing.T) {
 
 	pendingWrite := PendingWrite{
 		Kind:         PendingWriteCommit,
-		Events:       []Event{makeEvent("alice", "api")},
+		Events:       []Event{makeEvent("api")},
 		CommitConfig: config,
 	}
 
@@ -123,8 +123,8 @@ func TestExecutor_GroupedMultiEvent_UsesLiveTemplate(t *testing.T) {
 	pendingWrite := PendingWrite{
 		Kind: PendingWriteCommit,
 		Events: []Event{
-			makeEvent("alice", "api"),
-			makeEvent("alice", "worker"),
+			makeEvent("api"),
+			makeEvent("worker"),
 		},
 		CommitConfig: config,
 	}
@@ -133,29 +133,6 @@ func TestExecutor_GroupedMultiEvent_UsesLiveTemplate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "group: alice 2 team-a", message)
 	assert.Equal(t, "alice", options.Author.Name)
-	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
-}
-
-func TestExecutor_AtomicUnit_UsesReconcileMessage(t *testing.T) {
-	config := ResolveCommitConfig(nil)
-	config.Message.ReconcileTemplate = "reconcile: {{.Count}} {{.GitTarget}}"
-
-	pendingWrite := PendingWrite{
-		Kind:          PendingWriteAtomic,
-		CommitMessage: "",
-		Events: []Event{
-			makeEvent("alice", "api"),
-			makeEvent("bob", "worker"),
-		},
-		CommitConfig:       config,
-		GitTargetName:      "team-a",
-		GitTargetNamespace: "default",
-	}
-
-	message, options, _, err := pendingWrite.commitMetadata()
-	require.NoError(t, err)
-	assert.Equal(t, "reconcile: 2 team-a", message)
-	assert.Equal(t, DefaultCommitterName, options.Author.Name)
 	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 }
 
@@ -266,23 +243,18 @@ func TestMessageSource_MatchesTheMessageActuallyRendered(t *testing.T) {
 	}{
 		{
 			name:  "a live window renders the live template",
-			write: PendingWrite{Kind: PendingWriteCommit, Events: []Event{makeEvent("alice", "api")}},
+			write: PendingWrite{Kind: PendingWriteCommit, Events: []Event{makeEvent("api")}},
 			want:  messageSourceLive,
 		},
 		{
 			name: "an attached request message is commit_request",
 			write: PendingWrite{
 				Kind:          PendingWriteCommit,
-				Events:        []Event{makeEvent("alice", "api")},
+				Events:        []Event{makeEvent("api")},
 				CommitMessage: "fix(api): correct the port",
 			},
 			want:    messageSourceCommitRequest,
 			message: "fix(api): correct the port",
-		},
-		{
-			name:  "an atomic snapshot is reconcile",
-			write: PendingWrite{Kind: PendingWriteAtomic, Events: []Event{makeEvent("alice", "api")}},
-			want:  messageSourceReconcile,
 		},
 		{
 			// A resync arrives pre-rendered, so it must not be mistaken for a literal override.

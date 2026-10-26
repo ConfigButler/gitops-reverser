@@ -478,7 +478,7 @@ tip, the `Kustomization`s GitOps Reverser holds ignore the new artifact, and one
 
 - **`flux resume ks checkout`** applies the `Kustomization` at once, without GitOps Reverser
   checking the commit first. Within a minute the applier claim suspends it again: it records a
-  `ClaimedResourceReconciled` Event, counts it in `claimed_resource_reconciled_total`, and shows the
+  `ClaimedResourceReconciled` Event, counts it in `apply_claimed_resource_reconciled_total`, and shows the
   apply as an `Unresolved` operation that completes once nothing it started is running. It does so
   every time.
 - **`flux reconcile ks checkout`** does nothing visible while the `Kustomization` is suspended: Flux
@@ -534,7 +534,7 @@ flux get ks checkout -n flux-system
 ### Repeated `ClaimedResourceReconciled` events
 
 Repeated `ClaimedResourceReconciled` Events mean something keeps undoing the applier claim's
-suspension. A rising `claimed_resource_reconciled_total` counts these corrections. A person who
+suspension. A rising `apply_claimed_resource_reconciled_total` counts these corrections. A person who
 runs `flux resume` causes one each time, as [overriding by hand](#overriding-by-hand) describes. If
 they keep coming and the applier claim also reports `OperationUnresolved`, look at the controller
 that writes the `Kustomization`.

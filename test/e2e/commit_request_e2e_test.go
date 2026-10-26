@@ -186,11 +186,12 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		waitForMetric(
 			fmt.Sprintf(
 				`sum(gitopsreverser_git_branch_targets{gittarget_namespace=%q,gittarget_name=%q,`+
-					`provider_namespace=%q,provider_name=%q,branch="main",source_cluster=%q}) `+
+					`gitbranch_namespace=%q,gitbranch_name=%q,source_cluster=%q}) `+
 					`or vector(0)`,
-				testNs, gitTargetName, testNs, gitProvName, resolveE2ENamespace()+"/"+e2eKubeProviderName),
+				testNs, gitTargetName, testNs, gitBranchName(gitProvName, "main"),
+				resolveE2ENamespace()+"/"+e2eKubeProviderName),
 			func(v float64) bool { return v == 1 },
-			"the join series maps this GitTarget to the provider and branch its commits are labelled by",
+			"the join series maps this GitTarget to the GitBranch its commits are labelled by",
 		)
 
 		By("cleaning up the test Deployment and CommitRequest")

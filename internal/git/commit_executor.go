@@ -215,8 +215,6 @@ const (
 	// was committed instead. Never returned by resolveMessage: it is decided at render time and
 	// stamped onto the write, because a silent, SUCCESSFUL commit is otherwise invisible.
 	messageResolutionRequestFallback
-	// messageResolutionReconcileTemplate renders reconcileTemplate from the write's events.
-	messageResolutionReconcileTemplate
 	// messageResolutionLiveTemplate renders liveTemplate for a live window.
 	messageResolutionLiveTemplate
 )
@@ -229,17 +227,13 @@ func (p PendingWrite) resolveMessage() messageResolution {
 		return messageResolutionPreRendered
 	// Framing is bound to the GROUPED kind, not merely to "carries a message". A CommitRequest
 	// attaches its message to an open live window, which finalizes as PendingWriteCommit, so that
-	// is the only write requestTemplate describes. An atomic snapshot can also carry a message
-	// (WriteRequest.CommitMessage), and framing one with the live context would silently reroute
-	// the documented atomic path through a template written for save requests.
+	// is the only write requestTemplate describes.
 	case p.Kind == PendingWriteCommit &&
 		p.CommitMessage != "" &&
 		p.CommitConfig.Message.RequestTemplate != "":
 		return messageResolutionRequestTemplate
 	case p.CommitMessage != "":
 		return messageResolutionRequest
-	case p.Kind == PendingWriteAtomic:
-		return messageResolutionReconcileTemplate
 	case p.Kind == PendingWriteCommit:
 		return messageResolutionLiveTemplate
 	default:
@@ -247,9 +241,7 @@ func (p PendingWrite) resolveMessage() messageResolution {
 	}
 }
 
-// label is the commits_total `message_source` value for this resolution. A resync and an atomic
-// snapshot are both reported as reconcile: they differ in how the text is produced, not in where
-// an operator would say the message came from.
+// label is the commits_total `message_source` value for this resolution.
 func (r messageResolution) label() string {
 	switch r {
 	case messageResolutionRequest:
@@ -258,7 +250,7 @@ func (r messageResolution) label() string {
 		return messageSourceCommitRequestFramed
 	case messageResolutionRequestFallback:
 		return messageSourceCommitRequestFallback
-	case messageResolutionPreRendered, messageResolutionReconcileTemplate:
+	case messageResolutionPreRendered:
 		return messageSourceReconcile
 	case messageResolutionLiveTemplate:
 		return messageSourceLive
@@ -307,8 +299,6 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, messageRes
 		if err = ValidateLiteralCommitMessage(p.CommitMessage); err == nil {
 			message, resolution = p.framedRequestMessage()
 		}
-	case messageResolutionReconcileTemplate:
-		message, err = renderReconcileCommitMessageFromEvents(p.Events, p.Target().Name, p.CommitConfig)
 	case messageResolutionLiveTemplate:
 		message, err = renderLiveCommitMessage(p, p.CommitConfig)
 	case messageResolutionRequestFallback:
@@ -369,7 +359,7 @@ func (w *BranchWorker) executePendingWrite(
 		// report ZeroHash to keep the per-write SHA bookkeeping uniform.
 		created, err := w.executeResyncPendingWrite(ctx, repo, worktree, pendingWrite)
 		return created, plumbing.ZeroHash, messageResolutionPreRendered, err
-	case PendingWriteCommit, PendingWriteAtomic:
+	case PendingWriteCommit:
 		return w.executeEventWrite(ctx, repo, worktree, pendingWrite)
 	default:
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported,
@@ -377,7 +367,7 @@ func (w *BranchWorker) executePendingWrite(
 	}
 }
 
-// executeEventWrite applies a grouped window's or an atomic batch's events and commits them. The
+// executeEventWrite applies a grouped window's events and commits them. The
 // first time, the write keeps only the events whose plan changed the tree: an object that changed
 // nothing is no action, and a replay must not plan it again onto a newer tip, where it would revert
 // what that tip changed (docs/design/applier-echoes.md, F2). A save keeps every object.

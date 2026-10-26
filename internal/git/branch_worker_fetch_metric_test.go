@@ -33,10 +33,9 @@ const fetchesTotalMetric = "gitopsreverser_git_fetches_total"
 // fetchLabels is the identity a ledger fixture's worker records under, narrowed to one reason.
 func fetchLabels(worker *BranchWorker, reason string) map[string]string {
 	return map[string]string{
-		"provider_namespace": worker.GitProviderNamespace,
-		"provider_name":      worker.GitProviderRef,
-		"branch":             worker.Branch,
-		"reason":             reason,
+		"gitbranch_namespace": worker.GitBranch.Namespace,
+		"gitbranch_name":      worker.GitBranch.Name,
+		"reason":              reason,
 	}
 }
 
@@ -192,20 +191,15 @@ func TestGitFetchesTotal_ProbeThenResetWhenTheRemoteDidMove(t *testing.T) {
 		"the probe confirmed movement, so the reset that follows is contention")
 }
 
-// TestGitFetchesTotal_ForcedRecheckAndBootstrap covers the two reasons that must keep counting
-// after the flip: a worker's first contact with the repository, and somebody asking it to look at
-// Git now.
-func TestGitFetchesTotal_ForcedRecheckAndBootstrap(t *testing.T) {
+// TestGitFetchesTotal_ForcedRecheck covers the reason that must keep counting after the flip:
+// somebody asking the worker to look at Git now.
+func TestGitFetchesTotal_ForcedRecheck(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	f := newLedgerFixture(t, "metric-recheck", true)
 	f.createLedgerTarget("team-a", nil)
-
-	require.NoError(t, f.worker.EnsurePathBootstrapped("team-a", "target-a", "default"))
-	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonBootstrap),
-		"the bootstrap is instrumented at prepareBootstrapRepository. NOTE: its only caller is\n"+
-			"EnsurePathBootstrapped, which has no production caller, so this series is test-only today")
+	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
 
 	err = f.worker.syncWithRemote(f.worker.ctx, fetchReasonForcedRecheck)
 	require.NoError(t, err)
@@ -239,7 +233,6 @@ func TestGitFetchesTotal_IdleTargetNeverFetches(t *testing.T) {
 	}
 
 	for _, reason := range []string{
-		fetchReasonBootstrap,
 		fetchReasonPublication,
 		fetchReasonRecovery,
 		fetchReasonContention,
@@ -260,9 +253,8 @@ func TestGitFetchesTotal_IdleTargetNeverFetches(t *testing.T) {
 // list docs/interpreting-metrics.md publishes.
 func TestGitFetchesTotal_ReasonSetMatchesTheDocumentedOne(t *testing.T) {
 	assert.Equal(t,
-		[]string{"bootstrap", "publication", "recovery", "contention", "push_failure_probe", "forced_recheck"},
+		[]string{"publication", "recovery", "contention", "push_failure_probe", "forced_recheck"},
 		[]string{
-			fetchReasonBootstrap,
 			fetchReasonPublication,
 			fetchReasonRecovery,
 			fetchReasonContention,
@@ -295,8 +287,7 @@ func TestGitFetchesTotal_ResyncWithRetainedWritesStillReadsTheRemote(t *testing.
 	loop.lastPushAt = time.Now()
 	defer loop.stopTimers()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("retained", "alice", "live")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapEvent("retained", "alice", "live")},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 1, "the resync must arrive with work retained")
@@ -340,8 +331,7 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 
 	// Retained work, so the loop's replay path is the one that recovers.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("retained", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapEvent("retained", "alice", "team-a")},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 1)

@@ -162,30 +162,6 @@ func (c *Client) EnsureUserKeyAsAdmin(ctx context.Context, login, title, publicK
 	return c.RegisterUserKeyAsAdmin(ctx, login, title, publicKey)
 }
 
-// RegisterUserKeyAsUser registers a public key via POST /user/keys using the
-// currently authenticated user. Use this when comparing whether admin-upload
-// vs user-upload lands the key with a different key_type in Gitea's classification.
-func (c *Client) RegisterUserKeyAsUser(ctx context.Context, title, publicKey string) (*PublicKey, error) {
-	publicKey = strings.TrimSpace(publicKey)
-	if publicKey == "" {
-		return nil, errors.New("public key is empty")
-	}
-	payload := map[string]any{"title": title, "key": publicKey, "read_only": false}
-	var created PublicKey
-	code, raw, err := c.Do(ctx, http.MethodPost, "/user/keys", payload, &created)
-	if err != nil {
-		return nil, err
-	}
-	switch code {
-	case http.StatusCreated:
-		return &created, nil
-	case http.StatusUnprocessableEntity:
-		return nil, fmt.Errorf("register user key: HTTP 422: %s", TruncateBody(string(raw)))
-	default:
-		return nil, unexpectedStatus(http.MethodPost, "/user/keys", code, raw)
-	}
-}
-
 // GetVerificationToken returns the per-user verification token. The same token
 // is used by the GPG and SSH verification flows; Gitea's web form accepts an
 // SSH signature over it (namespace "gitea") to flip public_key.verified=1.

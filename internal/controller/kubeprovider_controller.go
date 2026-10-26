@@ -86,16 +86,26 @@ func (r *KubeProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			// value: a gauge that keeps reporting Ready=False for a deleted object is a permanent
 			// false positive that trains people to ignore the panel.
 			telemetry.ForgetResourceConditions(conditionKindKubeProvider, req.Namespace, req.Name)
+			r.forgetAuditRoute(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "unable to fetch KubeProvider", "kubeProvider", req.NamespacedName)
 		return ctrl.Result{}, err
 	}
 	if !provider.DeletionTimestamp.IsZero() {
+		// A provider being deleted carries no route (v1alpha3.AuditRouteHolder).
+		r.forgetAuditRoute(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
 	return r.reconcileKubeProvider(ctx, log, &provider)
+}
+
+// forgetAuditRoute drops a provider's route from the set the audit census labels by.
+func (r *KubeProviderReconciler) forgetAuditRoute(provider k8stypes.NamespacedName) {
+	if r.AuditFacts != nil {
+		r.AuditFacts.ForgetRoute(provider)
+	}
 }
 
 // reconcileKubeProvider performs the main validation logic.
@@ -131,6 +141,11 @@ func (r *KubeProviderReconciler) reconcileKubeProvider(
 	// the credential earned; the provider is still not used, which is a stall a human must fix.
 	if !route.Allowed {
 		rd.stalled(route.Reason, route.Message)
+	}
+	// Declared whether or not this provider holds it: facts posted under a route are labelled by it
+	// as long as any provider names it, and the holder declares it too.
+	if r.AuditFacts != nil {
+		r.AuditFacts.DeclareRoute(provider.Key(), provider.AuditRoute())
 	}
 	st.set(KubeProviderConditionValidated, validated, reason, message)
 	// Written after the readiness trio and deliberately not contributing to it: an audit route

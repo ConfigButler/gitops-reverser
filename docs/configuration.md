@@ -2216,8 +2216,9 @@ companions matter as much:
 - `gitopsreverser_placement_refusals_total{reason}` counts resources the operator **did not write**:
   a template that escapes `spec.path` (`invalid_path`), a sensitive resource whose path is already
   taken (`sensitive_append`), a plaintext resource routed at an encrypted file
-  (`plaintext_onto_encrypted`), and two resources of mixed sensitivity landing on one new file
-  (`mixed_sensitivity_new_file`). Any of these means a policy to fix; the write is retried after you
+  (`plaintext_onto_encrypted`), two resources of mixed sensitivity landing on one new file
+  (`mixed_sensitivity_new_file`), and a path whose multi-document file the writer cannot append to
+  without dropping a sibling (`multi_document_target`). Any of these means a policy to fix; the write is retried after you
   fix it.
 - `gitopsreverser_placement_kustomization_entries_total{outcome="failed"}` counts new files whose
   `resources:` entry could not be added. The file is committed and kustomize will never build it, so

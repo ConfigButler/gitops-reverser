@@ -345,6 +345,7 @@ func (f *dispatcherFixture) count(reason v1alpha3.ApplyReason, outcome string) i
 func (f *dispatcherFixture) countKind(kind string, reason v1alpha3.ApplyReason, outcome string) int64 {
 	value, _ := telemetry.CollectInt64Sum(f.reader, applyRequestsMetric, map[string]string{
 		"applier_kind": kind, "reason": string(reason), "outcome": outcome,
+		"gitbranch_namespace": testGitBranch.Namespace, "gitbranch_name": testGitBranch.Name,
 	})
 	return value
 }
@@ -1209,8 +1210,14 @@ func TestDispatcher_AnApplyOfAnotherRevisionIsCounted(t *testing.T) {
 	assert.Equal(t, git.ApplySucceeded, res.Outcome)
 	assert.Contains(t, res.Message, "not commit")
 	mismatches, _ := telemetry.CollectInt64Sum(f.reader, "gitopsreverser_apply_revision_mismatches_total",
-		map[string]string{"applier_kind": applierKindKustomization})
-	assert.Equal(t, int64(1), mismatches)
+		map[string]string{
+			"applier_kind":        applierKindKustomization,
+			"gitbranch_namespace": testGitBranch.Namespace,
+			"gitbranch_name":      testGitBranch.Name,
+			"claim_namespace":     req.Applier.ApplierClaim.Namespace,
+			"claim_name":          "checkout",
+		})
+	assert.Equal(t, int64(1), mismatches, "counted under the GitBranch that asked and the claim it asked")
 }
 
 // TestApplyVerdict_ReadsTheReconcileThatHandledTheToken pins the outcome table.

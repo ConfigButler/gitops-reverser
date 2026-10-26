@@ -104,12 +104,12 @@ func TestRenderFidelityGate_PendingScopeCannotOpenLiveWindow(t *testing.T) {
 	loop := newBranchWorkerEventLoop(worker, DefaultCommitWindow)
 	event := Event{GitTargetName: target.Name, GitTargetNamespace: target.Namespace, Operation: "UPDATE"}
 
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
 	assert.Nil(t, loop.openWindow, "Unknown must block a new live window")
 
 	_, applied := gate.RecordScopeClean(target, revisions[scope], scope)
 	require.True(t, applied)
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
 	assert.NotNil(t, loop.openWindow, "every scope reporting clean reopens normal writes")
 }
 
@@ -255,7 +255,7 @@ func TestRenderFidelityGate_DroppedScopeStopsCounting(t *testing.T) {
 
 // A plan that selects nothing restarts every scope only vacuously, which is the absence of a
 // measurement rather than a fresh one. Clearing on it would readmit the writes that do not come
-// from a watch — an atomic request, a CommitRequest — on the strength of nothing.
+// from a watch — a CommitRequest — on the strength of nothing.
 func TestRenderFidelityGate_AnEmptyPlanDoesNotClearAWriteDivergence(t *testing.T) {
 	gate := NewRenderFidelityGate()
 	target := types.NewResourceReference("apps", "default")
@@ -405,7 +405,7 @@ func TestRenderFidelityGate_InvalidateAdvancesEveryScopeRevision(t *testing.T) {
 // TestRenderFidelityGate_InvalidateHoldsATargetWithNoScopes is the vacuous case, and it is the one
 // an unregistered target got wrong: with no scopes to report, an empty plan reduces to True, so a
 // target whose rules select nothing would have been writable against a repository nothing has
-// looked at. Atomic requests and CommitRequests do not come from a watch.
+// looked at. A CommitRequest does not come from a watch.
 func TestRenderFidelityGate_InvalidateHoldsATargetWithNoScopes(t *testing.T) {
 	gate := NewRenderFidelityGate()
 	target := types.NewResourceReference("apps", "default")

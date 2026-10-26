@@ -67,15 +67,14 @@ func (f *replayFixture) replay() *ResyncRequest {
 
 func (f *replayFixture) liveEvent(name string) {
 	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent(name, "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent(name, "alice", ledgerTargetName)},
 	}})
 }
 
-func writesDropped(t *testing.T, reader *sdkmetric.ManualReader, kind, reason string) int64 {
+func writesDropped(t *testing.T, reader *sdkmetric.ManualReader, reason string) int64 {
 	t.Helper()
 	got, _ := telemetry.CollectInt64Sum(reader, "gitopsreverser_git_writes_dropped_total",
-		map[string]string{"kind": kind, "reason": reason})
+		map[string]string{"reason": reason})
 	return got
 }
 
@@ -97,7 +96,7 @@ func TestRenderFidelity_ALiveEventQueuedBehindAReplayResyncIsKept(t *testing.T) 
 
 	assert.NotNil(t, f.loop.openWindow, "the event queued behind the replay is kept")
 	assert.True(t, f.gate.AllowsWrites(f.target), "the loop recorded the scope before answering")
-	assert.Zero(t, writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityPending))
+	assert.Zero(t, writesDropped(t, reader, writeDropRenderFidelityPending))
 	require.NoError(t, (<-req.Result).Err)
 
 	// The drain records the same result once it has the answer, and the gate takes it unchanged.
@@ -153,28 +152,21 @@ func TestRenderFidelity_ADroppedWriteIsCountedAndLoggedOncePerGateStatus(t *test
 
 	f.liveEvent("first")
 	f.liveEvent("second")
-	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("snapshot", "alice", ledgerTargetName)},
-		CommitMode: CommitModeAtomic,
-	}})
 
 	assert.Nil(t, f.loop.openWindow, "a pending scope closes the GitTarget")
 	require.NotNil(t, f.loop.held[f.target])
 	assert.Len(t, f.loop.held[f.target].events, 2, "its live writes are held, not dropped")
 	assert.Len(t, logged.matching("Holding the GitTarget's live writes"), 1, "the hold is said once")
-	assert.Zero(t, writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityPending))
-	assert.Equal(t, int64(1), writesDropped(t, reader, writeDroppedAtomic, writeDropRenderFidelityPending))
-	drops := logged.matching("Dropped a write")
-	require.Len(t, drops, 1)
-	assert.Contains(t, drops[0], "Waiting for 1 of 1", "it says which scopes the gate waits for")
+	assert.Zero(t, writesDropped(t, reader, writeDropRenderFidelityPending))
+	assert.Empty(t, logged.matching("Dropped a write"), "nothing is dropped while the gate is pending")
 
 	_, applied := f.gate.RecordScopeDivergence(f.target, f.revision, f.scope.Collection,
 		manifestanalyzer.RenderDivergence{Field: "data.region", Token: "${REGION}"})
 	require.True(t, applied)
 	f.liveEvent("third")
 	assert.Nil(t, f.loop.held[f.target], "a divergence drops what was held")
-	assert.Equal(t, int64(3), writesDropped(t, reader, writeDroppedEvent, writeDropRenderFidelityDiverged))
-	assert.Len(t, logged.matching("Dropped a write"), 2, "a new gate status logs again, once")
+	assert.Equal(t, int64(3), writesDropped(t, reader, writeDropRenderFidelityDiverged))
+	assert.Len(t, logged.matching("Dropped a write"), 1, "the drops under one gate status log once")
 	assert.Nil(t, f.loop.openWindow)
 }
 

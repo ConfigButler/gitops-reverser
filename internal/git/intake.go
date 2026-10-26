@@ -123,7 +123,7 @@ func (w *BranchWorker) intakeRefusal(charge int64) error {
 	return errAdmissionClosed
 }
 
-// eventCharge is what a queued live or atomic write is charged: what keeping each of its events
+// eventCharge is what a queued live write is charged: what keeping each of its events
 // costs, as a window or a decided write keeps it.
 func eventCharge(request *WriteRequest) int64 {
 	var charge int64

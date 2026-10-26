@@ -112,21 +112,3 @@ func (w *BranchWorker) reportPathRefusal(
 	}
 	return true, refused
 }
-
-// atomicRefusalTarget names the GitTarget an atomic request writes for. Request-level target
-// metadata is authoritative when set — buildAtomicPendingWrite resolves it and stamps it onto
-// every event — but it fills that metadata only when the request carries it, leaving requests
-// whose events name their own target. So fall back to the events rather than reporting a
-// refusal against an empty reference. Returns the target's (name, namespace), both empty when
-// nothing names a target — which reportPathRefusal treats as unattributable.
-func atomicRefusalTarget(request *WriteRequest) (string, string) {
-	if request.GitTargetName != "" && request.GitTargetNamespace != "" {
-		return request.GitTargetName, request.GitTargetNamespace
-	}
-	for _, event := range request.Events {
-		if event.GitTargetName != "" && event.GitTargetNamespace != "" {
-			return event.GitTargetName, event.GitTargetNamespace
-		}
-	}
-	return "", ""
-}

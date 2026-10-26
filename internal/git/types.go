@@ -247,28 +247,18 @@ type UserInfo struct {
 	Email string
 }
 
-// CommitMode defines how a write request should be committed.
-type CommitMode string
-
-const (
-	// CommitModePerEvent streams request events through the live commit window.
-	// With commitWindow=0 each event finalizes immediately; otherwise events
-	// coalesce by author and target until the window's idle timeout or maximum duration.
-	CommitModePerEvent CommitMode = "per_event"
-	// CommitModeAtomic creates one commit for all events in the request.
-	CommitModeAtomic CommitMode = "atomic"
-)
-
-// WriteRequest is the unit of work queued and written by the BranchWorker.
+// WriteRequest is the unit of work queued and written by the BranchWorker: live events, which
+// stream through the commit window. Each event names its own GitTarget.
 type WriteRequest struct {
-	Events             []Event
-	CommitMessage      string
-	CommitConfig       *CommitConfig
-	Signer             gogit.Signer
-	GitTargetName      string
-	GitTargetNamespace string
-	BootstrapOptions   pathBootstrapOptions
-	CommitMode         CommitMode
+	Events []Event
+}
+
+// gitTarget is the GitTarget the request's first event writes for, as namespace/name, for logs.
+func (r *WriteRequest) gitTarget() string {
+	if r == nil || len(r.Events) == 0 {
+		return ""
+	}
+	return r.Events[0].GitTargetNamespace + "/" + r.Events[0].GitTargetName
 }
 
 // PendingWriteKind distinguishes the durable write shapes retained until push.
@@ -277,9 +267,6 @@ type PendingWriteKind string
 const (
 	// PendingWriteCommit is one finalized commit-shaped live-event window.
 	PendingWriteCommit PendingWriteKind = "grouped_window"
-	// PendingWriteAtomic is a caller-defined atomic request, typically from
-	// reconciliation.
-	PendingWriteAtomic PendingWriteKind = "atomic"
 	// PendingWriteResync is a streaming-snapshot resync (M8): it carries the COMPLETE
 	// desired resource set for one GitTarget, and the worker materialises it with a
 	// content-derived mark-and-sweep against the worktree (upsert every desired

@@ -133,7 +133,7 @@ func splitLines(s string) []string {
 
 // writeWindow sends one window of live writes, closed at once (the loop's window is zero).
 func (f *echoFixture) writeWindow(events ...Event) {
-	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: events, CommitMode: CommitModePerEvent}})
+	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: events}})
 }
 
 // TestApplierEchoes_AnUnchangedObjectIsNoAction is F2 for a window, without timing luck: the write

@@ -94,16 +94,27 @@ func recordWatchEvent(
 	telemetry.WatchEventsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
+// streamAttrs is the {source_cluster, group, version, resource} identity of the per-type stream
+// instruments. A type is served by one API server per cluster, and that server is what closes,
+// expires and replays a watch, so the cluster is part of what a session is. It is the same
+// source_cluster value watch_types and watch_streams_open carry. The GitTarget is deliberately not
+// here: two of these are histograms, which pay bucket count + 2 series per label combination.
+func streamAttrs(clusterID string, gvr schema.GroupVersionResource) []attribute.KeyValue {
+	return append([]attribute.KeyValue{attribute.String("source_cluster", clusterID)}, gvrAttrs(gvr)...)
+}
+
 // recordWatchEventHandling times how long the stream was busy on one event.
 //
 // Occupancy, not queue delay: see telemetry.WatchEventHandlingSeconds for why the wait itself
 // cannot be measured honestly from this side of a client-go watch channel.
-func recordWatchEventHandling(ctx context.Context, gvr schema.GroupVersionResource, started time.Time) {
+func recordWatchEventHandling(
+	ctx context.Context, clusterID string, gvr schema.GroupVersionResource, started time.Time,
+) {
 	if telemetry.WatchEventHandlingSeconds == nil {
 		return
 	}
 	telemetry.WatchEventHandlingSeconds.Record(ctx, time.Since(started).Seconds(),
-		metric.WithAttributes(gvrAttrs(gvr)...))
+		metric.WithAttributes(streamAttrs(clusterID, gvr)...))
 }
 
 // sessionEndReason classifies why a watch session ended.
@@ -136,20 +147,22 @@ func sessionEndReason(ctx context.Context, err error) string {
 }
 
 // recordWatchSessionEnded counts one watch session ending, under the reason it ended for.
-func recordWatchSessionEnded(ctx context.Context, gvr schema.GroupVersionResource, reason string) {
+func recordWatchSessionEnded(ctx context.Context, clusterID string, gvr schema.GroupVersionResource, reason string) {
 	if telemetry.WatchSessionsEndedTotal == nil {
 		return
 	}
-	attrs := append(gvrAttrs(gvr), attribute.String("reason", reason))
+	attrs := append(streamAttrs(clusterID, gvr), attribute.String("reason", reason))
 	telemetry.WatchSessionsEndedTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // recordWatchReplayDuration times one initial-events replay to initial-events-end. It is what a
 // 410 storm charges: the cost of every rebuild it forces.
-func recordWatchReplayDuration(ctx context.Context, gvr schema.GroupVersionResource, started time.Time) {
+func recordWatchReplayDuration(
+	ctx context.Context, clusterID string, gvr schema.GroupVersionResource, started time.Time,
+) {
 	if telemetry.WatchReplayDurationSeconds == nil {
 		return
 	}
 	telemetry.WatchReplayDurationSeconds.Record(ctx, time.Since(started).Seconds(),
-		metric.WithAttributes(gvrAttrs(gvr)...))
+		metric.WithAttributes(streamAttrs(clusterID, gvr)...))
 }

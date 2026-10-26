@@ -22,25 +22,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// renderReconcileCommitMessageFromEvents renders the reconcile commit message for the
-// events-based atomic path from the provider's ReconcileTemplate. It carries no single
-// type and no snapshot version, so those template fields stay empty (the default guards them).
-// Literal overrides are resolved by the caller.
-func renderReconcileCommitMessageFromEvents(
-	events []Event,
-	gitTarget string,
-	config CommitConfig,
-) (string, error) {
-	return renderCommitTemplate(
-		"reconcile",
-		config.Message.ReconcileTemplate,
-		ReconcileCommitMessageData{
-			Count:     len(events),
-			GitTarget: gitTarget,
-		},
-	)
-}
-
 // renderReconcileCommitMessage renders the reconcile commit message for a resync from the
 // provider's ReconcileTemplate, so a resync honours a custom reconcile template. count is the
 // number of resources the reconcile changed; scopeGVR names the synced type for a per-type
@@ -123,11 +104,9 @@ func ValidateCommitConfig(config CommitConfig) error {
 		GitTargetName: "example-target",
 	}
 
-	if _, err := renderReconcileCommitMessageFromEvents(
-		[]Event{sampleEvent},
-		"example-target",
-		config,
-	); err != nil {
+	// The whole-GitTarget reconcile carries no type and no snapshot version, so those template
+	// fields render empty; the default template guards them.
+	if _, err := renderReconcileCommitMessage(1, "example-target", nil, "", config); err != nil {
 		return err
 	}
 
