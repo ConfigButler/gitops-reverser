@@ -48,7 +48,7 @@ func TestPlanFlush_CreatesNewResourceAtBuiltinPath(t *testing.T) {
 	builtinFull := filepath.Join(root, writer.filePathForIdentifier(event.Identifier))
 	got, err := os.ReadFile(builtinFull)
 	require.NoError(t, err)
-	want, err := writer.buildContentForWrite(context.Background(), event)
+	want, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 	assert.Equal(t, string(want), string(got), "a new file is the canonical rendering")
 }

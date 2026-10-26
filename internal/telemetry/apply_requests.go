@@ -5,8 +5,8 @@ package telemetry
 import "go.opentelemetry.io/otel/metric"
 
 // ApplyRequestsTotal counts the apply attempts GitOps Reverser made, one per attempt to one applier
-// object, labelled by {gitbranch_namespace, gitbranch_name, applier_kind, claim_namespace,
-// claim_name, reason, outcome}.
+// object, labelled by {gitbranch_namespace, gitbranch_name, provider_namespace, provider_name,
+// applier_kind, claim_namespace, claim_name, reason, outcome}.
 //
 // applier_kind names the applier: "kustomization" (a Flux Kustomization) or "application" (an Argo
 // CD Application). reason is the attempt's ApplyReason (ForeignCommit, Refusal, Repair, CatchUp),
@@ -32,7 +32,8 @@ import "go.opentelemetry.io/otel/metric"
 // followed by the branch worker, and an ApplyFailed or ApplyUnresolved Event marks one that did not
 // complete, or not in time (apply_operations_unresolved counts the latter).
 //
-// The GitBranch is the worker that decided the attempt and the claim is the one holding the applier
+// The GitBranch, with its GitProvider as every branch-worker series carries it, is the worker that
+// decided the attempt, and the claim is the one holding the applier
 // it asked, so both are owners rather than guesses, and "which applier keeps failing" is a selector.
 // No GitTarget identity: one attempt is for one applier, which several targets can share, so a
 // target label would have to invent an owner. The ApplyRequested and ApplyRequestFailed Events on
@@ -51,8 +52,7 @@ var ApplyRequestsTotal metric.Int64Counter
 var ClaimedResourceReconciledTotal metric.Int64Counter
 
 // ApplyRevisionMismatchesTotal counts apply operations that succeeded on another revision than the
-// commit GitOps Reverser checked, labelled by {gitbranch_namespace, gitbranch_name, applier_kind,
-// claim_namespace, claim_name}, as ApplyRequestsTotal is. A Flux Kustomization applies whatever
+// commit GitOps Reverser checked, labelled as ApplyRequestsTotal is, without reason and outcome. A Flux Kustomization applies whatever
 // its GitRepository's artifact holds when it reconciles; the artifact is read again just before the
 // resume, so this is somebody stamping the GitRepository between that read and the reconcile (a
 // person, or the source's own interval). The apply window still withholds a late write over a

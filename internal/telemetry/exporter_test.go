@@ -20,10 +20,10 @@ func metricAttrs(key, value string) metric.MeasurementOption {
 	return metric.WithAttributes(attribute.String(key, value))
 }
 
-func TestInitOTLPExporter_Success(t *testing.T) {
+func TestInitPrometheusExporter_Success(t *testing.T) {
 	ctx := context.Background()
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 
 	require.NoError(t, err)
 	assert.NotNil(t, shutdownFunc)
@@ -60,7 +60,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 func TestMetricsInitialization(t *testing.T) {
 	ctx := context.Background()
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
@@ -110,7 +110,7 @@ func TestMeterInitialization(t *testing.T) {
 func TestAuditPipelineMetricUsage(t *testing.T) {
 	ctx := context.Background()
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
@@ -129,7 +129,7 @@ func TestAuditPipelineMetricUsage(t *testing.T) {
 func TestAPICatalogMetricUsage(t *testing.T) {
 	ctx := context.Background()
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
@@ -151,7 +151,7 @@ func TestAPICatalogMetricUsage(t *testing.T) {
 func TestConcurrentMetricsUsage(t *testing.T) {
 	ctx := context.Background()
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
@@ -191,7 +191,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 func TestHistogramMetricBehavior(t *testing.T) {
 	ctx := context.Background()
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
@@ -229,7 +229,7 @@ func TestMetricsErrorHandling(t *testing.T) {
 func TestShutdownFunction(t *testing.T) {
 	ctx := context.Background()
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, shutdownFunc)
 
@@ -244,7 +244,7 @@ func TestShutdownFunction(t *testing.T) {
 func TestMetricsAfterShutdown(t *testing.T) {
 	ctx := context.Background()
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 	require.NoError(t, err)
 
 	assert.NotPanics(t, func() {
@@ -337,7 +337,7 @@ func TestNoOpMeterProvider(t *testing.T) {
 	otel.SetMeterProvider(noopProvider)
 	defer otel.SetMeterProvider(nil)
 
-	shutdownFunc, err := InitOTLPExporter(ctx)
+	shutdownFunc, err := InitPrometheusExporter(ctx)
 	require.NoError(t, err)
 	assert.NotNil(t, shutdownFunc)
 

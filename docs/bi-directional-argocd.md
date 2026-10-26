@@ -39,7 +39,7 @@ for each of these, and for the settings that look like a fix and are not.
 server-side apply under its own field manager, `gitops-reverser`, and touches nothing else of
 `automated`, so `prune` and `selfHeal` stay as they are. Switching automated sync on again (Argo
 CD's *Enable Auto-Sync*, `kubectl edit`) is undone within a minute, with a
-`ClaimedResourceReconciled` Event, and counted in `claimed_resource_reconciled_total`; a sync Argo CD
+`ClaimedResourceReconciled` Event, and counted in `apply_claimed_resource_reconciled_total`; a sync Argo CD
 started in that minute runs to its end, unchecked against the branch.
 Deleting the applier claim, or no longer naming it from any `GitTarget`, hands the switch back as it
 was: syncing on its own if it did before, manual if it was. The applier claim records which in

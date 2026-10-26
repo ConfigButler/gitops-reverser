@@ -60,10 +60,6 @@ const (
 	// target's join series ends at the next scrape rather than attributing a live branch's
 	// failures to an object that is gone. See branch_targets.go.
 	GaugeGitBranchTargets = "git_branch_targets"
-	// GaugeGitBranchInfo is the third of these: one series per GitBranch naming its GitProvider and
-	// branch, keyed by GitBranch so a deleted one's series ends at the next scrape. See
-	// branch_info.go.
-	GaugeGitBranchInfo = "git_branch_info"
 	// GaugeApplyOperationsUnresolved is how many apply operations on a GitBranch did not complete
 	// within the dispatcher's budget and are still followed, each holding its applier's apply
 	// window open and its next attempt back. Read from what the branch worker's loop last published.
@@ -71,7 +67,7 @@ const (
 	// GaugeAppliersHeld is how many appliers on a GitBranch have a reason pending that the initial
 	// snapshot barrier holds back: a GitTarget they cover is not mirrored yet, or its folder is not on
 	// the branch. Read from what the branch worker's loop last published.
-	GaugeAppliersHeld = "appliers_held"
+	GaugeAppliersHeld = "apply_appliers_held"
 )
 
 var (

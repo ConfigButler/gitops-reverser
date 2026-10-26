@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -47,7 +48,7 @@ func TestBuildContentForWrite_MarshalOrderedYAML(t *testing.T) {
 		},
 	}
 
-	got, err := writer.buildContentForWrite(context.Background(), event)
+	got, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 
 	output := string(got)
@@ -79,7 +80,7 @@ func TestBuildContentForWrite_ReturnsMarshalError(t *testing.T) {
 		},
 	}
 
-	_, err := writer.buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to marshal object to YAML")
 }
@@ -110,7 +111,7 @@ func TestBuildContentForWrite_SecretRequiresEncryptor(t *testing.T) {
 		},
 	}
 
-	_, err := writer.buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption is required but no encryptor is configured")
 }
@@ -121,7 +122,7 @@ func TestBuildContentForWrite_AdditionalSensitiveResourceRequiresEncryptor(t *te
 	writer := newContentWriter(policy)
 
 	event := tenantSecretEvent("v1beta1")
-	_, err = writer.buildContentForWrite(context.Background(), event)
+	_, err = writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption is required but no encryptor is configured")
 }
@@ -133,7 +134,7 @@ func TestBuildContentForWrite_AdditionalSensitiveResourceEncrypts(t *testing.T) 
 	enc := &stubEncryptor{result: []byte("encrypted tenant secret\n")}
 	writer.setEncryptor(enc, "test-scope")
 
-	got, err := writer.buildContentForWrite(context.Background(), tenantSecretEvent("v1alpha1"))
+	got, err := writer.buildContentForWrite(context.Background(), placementTarget{}, tenantSecretEvent("v1alpha1"))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("encrypted tenant secret\n"), got)
 	assert.Equal(t, 1, enc.callCount)
@@ -173,9 +174,9 @@ func TestBuildContentForWrite_SecretEncryptionCacheMarkerReuse(t *testing.T) {
 		Object: obj,
 	}
 
-	first, err := writer.buildContentForWrite(context.Background(), event)
+	first, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
-	second, err := writer.buildContentForWrite(context.Background(), event)
+	second, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 	assert.Equal(t, 1, enc.callCount)
 	assert.Equal(t, first, second)
@@ -216,11 +217,11 @@ func TestBuildContentForWrite_SecretUIDChangeForcesReencrypt(t *testing.T) {
 		},
 		Object: makeSecret("uid-1"),
 	}
-	_, err := writer.buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 
 	event.Object = makeSecret("uid-2")
-	_, err = writer.buildContentForWrite(context.Background(), event)
+	_, err = writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 	assert.Equal(t, 2, enc.callCount)
 }
@@ -253,7 +254,7 @@ func TestBuildContentForWrite_SecretEncryptionFailure(t *testing.T) {
 		},
 	}
 
-	_, err := writer.buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption failed")
 }
@@ -287,14 +288,14 @@ func TestBuildContentForWrite_SecretEncryptionScopeChangeForcesReencrypt(t *test
 		},
 	}
 
-	_, err := writer.buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
-	_, err = writer.buildContentForWrite(context.Background(), event)
+	_, err = writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 	assert.Equal(t, 1, enc.callCount, "same scope should reuse cached encrypted content")
 
 	writer.setEncryptor(enc, "scope-b")
-	_, err = writer.buildContentForWrite(context.Background(), event)
+	_, err = writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 	assert.Equal(t, 2, enc.callCount, "scope change should force re-encryption")
 }
@@ -321,5 +322,48 @@ func tenantSecretEvent(version string) Event {
 				},
 			},
 		},
+	}
+}
+
+// secret_encryptions_total names the GitTarget the write was for, so a rejected Secret write is
+// found by selector: a failed encryption, and then the cache hit on a later identical write.
+func TestBuildContentForWrite_CountsEncryptionsPerGitTarget(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	target := placementTarget{namespace: "team-a", name: "vault"}
+	labels := func(outcome string) map[string]string {
+		return map[string]string{"gittarget_namespace": "team-a", "gittarget_name": "vault", "outcome": outcome}
+	}
+
+	writer.setEncryptor(&stubEncryptor{err: errors.New("no key")}, "scope")
+	_, err = writer.buildContentForWrite(context.Background(), target, secretEventWithUID("uid-1"))
+	require.Error(t, err)
+	failed, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_secret_encryptions_total", labels("failed"))
+	require.True(t, ok)
+	assert.Equal(t, int64(1), failed)
+
+	writer.setEncryptor(&stubEncryptor{result: []byte("encrypted: true\n")}, "scope")
+	for range 2 {
+		_, err = writer.buildContentForWrite(context.Background(), target, secretEventWithUID("uid-1"))
+		require.NoError(t, err)
+	}
+	cached, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_secret_encryptions_total", labels("cached"))
+	require.True(t, ok)
+	assert.Equal(t, int64(1), cached)
+}
+
+// secretEventWithUID is a v1 Secret write carrying the identity the encryption cache keys on.
+func secretEventWithUID(uid string) Event {
+	return Event{
+		Identifier: types.ResourceIdentifier{Version: "v1", Resource: "secrets", Namespace: "default", Name: "s"},
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]interface{}{
+				"name": "s", "namespace": "default", "uid": uid, "resourceVersion": "10",
+			},
+			"data": map[string]interface{}{"password": "cGxhaW4="},
+		}},
 	}
 }

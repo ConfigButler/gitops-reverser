@@ -467,7 +467,6 @@ provider and branch so different workers do not hide one another's behavior.
 | Same counter, reason `push_failure_probe` | Remote-state lookup after an unclassified push failure |
 | Same counter, reason `recovery` | Attempts to rebuild unsafe retained work or clean a dirty checkout |
 | Same counter, reason `forced_recheck` | Explicit refresh, and the snapshot a resync judges against |
-| Same counter, reason `bootstrap` | Instrumented bootstrap helper; currently called only by tests |
 | `gitopsreverser_git_pushes_total` and `gitopsreverser_git_push_retries_total` | Completed publication cycles and contention retries within them |
 | `gitopsreverser_git_push_duration_seconds` | Time inside a push cycle, including its inline replays |
 | `gitopsreverser_git_queue_depth` and `gitopsreverser_git_queue_refusals_total` | Outstanding work and queue overload |

@@ -198,30 +198,29 @@ boundary, the commit, the push. Background:
 | `watch_types` | gauge | `source_cluster`, `gittarget_namespace`, `gittarget_name`, `state` | Types this target resolves, by `streaming` / `replaying` / `blocked`. `sum` is the resolved total. |
 | `watch_streams_open` | gauge | `source_cluster`, `gittarget_namespace`, `gittarget_name` | Watch **sessions** currently open against the source cluster. Not the same as types: one type across three namespaces is three sessions. |
 | `git_documents_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The write-boundary census, per **document**. `outcome` is `written` / `deleted_live` / `deleted_sweep` / `unchanged` / `retained` / `refused`. |
-| `git_commits_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `author_kind`, `message_source` | Commit batches that **reached the remote**. |
-| `git_pushes_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `outcome` | One per push cycle: `pushed` or `failed`. |
-| `git_push_retries_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `reason` | Replay rounds inside a cycle. `reason` is `remote_moved`. |
-| `git_push_duration_seconds` | histogram | `gitbranch_namespace`, `gitbranch_name` | One cycle end to end, retries included. |
-| `git_fetches_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (repository preparation; **no production caller reaches it today**, so the series stays at zero) / `publication` (the head of a publication cycle) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty that could not be undone locally) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against) / `refresh` (the periodic top-up of an idle branch, or a push receiver delivery on one, and only when the branch had actually moved). See the note below. |
-| `git_queue_refusals_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `kind` | Work refused at enqueue: the queue was full, intake was paused through an outage, or the worker was stopping. `kind` is `write` / `attach` / `resync` / `refresh`. The producer keeps a refused item and offers it again: the watch delivers a write again from its cursor, the controller re-sends a save, a resync is gathered again, and the next reconcile asks for a refresh. What it can cost, when its watch cursor expires before the write comes back, is the write's own commit and, under `prune.mode: OnEvent`, a deleted object's removal from Git. |
-| `git_commit_failures_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. An unreachable remote does not count: a decided window waits for the publication retry instead. |
-| `git_writes_dropped_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `kind`, `reason` | A live event (`kind="event"`) or atomic write (`kind="atomic"`) the branch worker dropped because its `GitTarget`'s render fidelity was not established. `reason` is `render_fidelity_diverged`: a rendered value does not match the live object, and every write is dropped until a fresh replay measures the folder clean. Or it is `render_fidelity_pending`: a collection of the `GitTarget` has not finished its replay, which closes every collection of that target until it does. A live event that meets a pending gate is held, not dropped, and committed with its author once the gate opens; it is counted here only when the hold gives up, 10 minutes after the first one was held or once the branch holds more than its retained-byte budget, and the worker then asks for a fresh snapshot, which commits the current state as the operator (a deletion comes back only under prune mode `Always`). An atomic write is dropped at once. Nothing replays a dropped write, so each one is an edit missing from Git until the object changes again or its collection replays. The worker logs the first drop under each gate status at Info, naming the collections the gate waits for, and each hold, release and give-up at Info. |
+| `git_commits_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `author_kind`, `message_source` | Commit batches that **reached the remote**. |
+| `git_pushes_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `outcome` | One per push cycle: `pushed` or `failed`. |
+| `git_push_retries_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `reason` | Replay rounds inside a cycle. `reason` is `remote_moved`. |
+| `git_push_duration_seconds` | histogram | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | One cycle end to end, retries included. |
+| `git_fetches_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `publication` (the head of a publication cycle, and a worker's first contact with the repository) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty that could not be undone locally) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against) / `refresh` (the periodic top-up of an idle branch, or a push receiver delivery on one, and only when the branch had actually moved). See the note below. |
+| `git_queue_refusals_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `kind` | Work refused at enqueue: the queue was full, intake was paused through an outage, or the worker was stopping. `kind` is `write` / `attach` / `resync` / `refresh`. The producer keeps a refused item and offers it again: the watch delivers a write again from its cursor, the controller re-sends a save, a resync is gathered again, and the next reconcile asks for a refresh. What it can cost, when its watch cursor expires before the write comes back, is the write's own commit and, under `prune.mode: OnEvent`, a deleted object's removal from Git. |
+| `git_commit_failures_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic` (an atomic write request, which nothing in production sends today; a resync's failure is `git_resync_failures_total`); `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. An unreachable remote does not count: a decided window waits for the publication retry instead. |
+| `git_writes_dropped_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `kind`, `reason` | A live event (`kind="event"`) or atomic write (`kind="atomic"`) the branch worker dropped because its `GitTarget`'s render fidelity was not established. `reason` is `render_fidelity_diverged`: a rendered value does not match the live object, and every write is dropped until a fresh replay measures the folder clean. Or it is `render_fidelity_pending`: a collection of the `GitTarget` has not finished its replay, which closes every collection of that target until it does. A live event that meets a pending gate is held, not dropped, and committed with its author once the gate opens; it is counted here only when the hold gives up, 10 minutes after the first one was held or once the branch holds more than its retained-byte budget, and the worker then asks for a fresh snapshot, which commits the current state as the operator (a deletion comes back only under prune mode `Always`). An atomic write is dropped at once. Nothing replays a dropped write, so each one is an edit missing from Git until the object changes again or its collection replays. The worker logs the first drop under each gate status at Info, naming the collections the gate waits for, and each hold, release and give-up at Info. |
 | `git_commit_windows_total` | counter | `gittarget_namespace`, `gittarget_name`, `close_reason`, `timer_source` | One per closed commit window, whether or not it then produced a commit. `close_reason` is `idle_timeout` / `max_duration` / `attach_next` / `identity_change` / `buffer_limit` / `resync_before_apply` / `atomic_before_apply` / `foreign_commit` (a Git host said the branch may have moved, so the window is published now) / `apply_due` (an apply came due for an applier on the branch, so the window's edits are published before the apply is sent) / `shutdown`; `timer_source` is `target` or `commit_request`. See [tuning commit windows](#tuning-commit-windows). |
 | `git_commit_window_duration_seconds` | histogram | `gittarget_namespace`, `gittarget_name` | How long each window collected: from the write that opened it to the start of its finalize. Its count equals `git_commit_windows_total` summed over `close_reason` and `timer_source`. |
-| `git_queue_depth` | gauge | `gitbranch_namespace`, `gitbranch_name` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
-| `git_retained_bytes` | gauge | `gitbranch_namespace`, `gitbranch_name` | What the worker holds until a push lands, in the units of the retained-byte budget: the open window, the retained writes and waiting saves, each with a 1 KiB per-item charge. Serialized bytes, not heap. |
-| `git_retained_writes` | gauge | `gitbranch_namespace`, `gitbranch_name` | Decided writes waiting for a push. |
-| `git_intake_paused` | gauge | `gitbranch_namespace`, `gitbranch_name` | 1 while the worker refuses new writes, saves and resyncs because an outage filled its budget; 0 otherwise. |
-| `git_oldest_retained_write_timestamp_seconds` | gauge | `gitbranch_namespace`, `gitbranch_name` | When the oldest write still waiting for a push was decided, as a Unix timestamp. No sample while nothing waits. |
-| `git_next_retry_timestamp_seconds` | gauge | `gitbranch_namespace`, `gitbranch_name` | When the next attempt at the pending writes is due, as a Unix timestamp. No sample while no retry is scheduled. |
-| `git_materialization_failures_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `reason` | Attempts to commit decided writes that stopped before any push: `reason` is `unreachable` or `parent_unavailable`. Nothing is lost; the writes wait for the retry. A failure `git_pushes_total` cannot see, because no push cycle started. |
+| `git_queue_depth` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
+| `git_retained_bytes` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | What the worker holds until a push lands, in the units of the retained-byte budget: the open window, the retained writes and waiting saves, each with a 1 KiB per-item charge. Serialized bytes, not heap. |
+| `git_retained_writes` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | Decided writes waiting for a push. |
+| `git_intake_paused` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | 1 while the worker refuses new writes, saves and resyncs because an outage filled its budget; 0 otherwise. |
+| `git_oldest_retained_write_timestamp_seconds` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | When the oldest write still waiting for a push was decided, as a Unix timestamp. No sample while nothing waits. |
+| `git_next_retry_timestamp_seconds` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | When the next attempt at the pending writes is due, as a Unix timestamp. No sample while no retry is scheduled. |
+| `git_materialization_failures_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `reason` | Attempts to commit decided writes that stopped before any push: `reason` is `unreachable` or `parent_unavailable`. Nothing is lost; the writes wait for the retry. A failure `git_pushes_total` cannot see, because no push cycle started. |
 | `git_branch_targets` | gauge | `gitbranch_namespace`, `gitbranch_name`, `gittarget_namespace`, `gittarget_name`, `source_cluster` | Always 1. The **join** between the GitTarget-labeled half of the pipeline and the GitBranch-labeled half: the `GitTarget`'s `spec.gitBranchRef`. Published per configured GitTarget, whether or not its GitBranch exists or its worker runs. |
-| `git_branch_info` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `branch` | Always 1. What each `GitBranch` writes: its `GitProvider` and its `spec.branch`, both immutable. Published per `GitBranch`, whether or not it holds its branch. The join for grouping branch-worker series by provider. |
 | `commit_requests_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | One per `CommitRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. A target that never resolved publishes the empty pair. See the counting note below. |
 | `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document at a resolved path. |
 | `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined. Every increment is a resource **absent** from the mirror. |
 | `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | `added` / `no_change` / `failed`. |
-| `git_resync_failures_total` | counter | `gittarget_namespace`, `gittarget_name` | Rule-change resyncs whose apply failed **after** enqueue. |
+| `git_resync_failures_total` | counter | `gittarget_namespace`, `gittarget_name`, `reason` | Rule-change resyncs that did not apply. `reason` is `error` (the commit failed) or `timeout` (no answer in time): the snapshot did not land. `refused` (refused at intake; the same refusal is `git_queue_refusals_total{kind="resync"}`, and the stream gathers it again) and `deferred` (the remote could not be reached; it stays pending and applies later, beside `git_materialization_failures_total`) lose nothing. A resync's commit failure is counted here only, never in `git_commit_failures_total`. |
 
 `source_cluster` is the `KubeProvider` the `GitTarget` mirrors from, as `<namespace>/<name>`
 (`gitops-reverser/local` for the chart's provider), so two providers with one name in two namespaces
@@ -327,7 +326,8 @@ number of concurrent write requests a bounded burst can produce, roughly
 depth is never refused, whatever its arrival shape. Note the second factor: workers are keyed by
 repository branch, so pointing a second GitTarget at a branch, from any namespace, halves the
 headroom of a worker already in use. The branch series are labeled by the `GitBranch` the worker
-writes for, and `GitBranch.status.gitTargetCount` says how many targets reference it. Confirm
+writes for and its `GitProvider`, and `GitBranch.status.gitTargetCount` says how many targets
+reference it. Confirm
 which targets share one worker by joining on `git_branch_targets`: several targets against a
 single `git_queue_depth` series is one worker serving all of them.
 
@@ -440,18 +440,13 @@ write to a branch and nothing about whether any of them had pending work. Two li
   stuck; `resource_condition` does.
 
 **Which `GitProvider` is failing?** A credential that expired fails every branch its
-`GitProvider` writes. The branch-worker series name only the `GitBranch`; `git_branch_info` carries
-its provider and branch name, one series per `GitBranch`, so `group_left` copies them across:
+`GitProvider` writes. Every branch-worker series carries the provider beside the `GitBranch`, which
+adds no series (a `GitBranch`'s provider cannot change), so the grouping is one selector:
 
 ```promql
 sum by (provider_namespace, provider_name) (
-  rate(gitopsreverser_git_pushes_total{outcome="failed"}[15m])
-  * on(gitbranch_namespace, gitbranch_name) group_left(provider_namespace, provider_name)
-  gitopsreverser_git_branch_info
-)
+  rate(gitopsreverser_git_pushes_total{outcome="failed"}[15m]))
 ```
-
-The same `group_left(branch)` puts the branch name on any branch-worker panel that wants it.
 
 **What does the `GitBranch` itself say?** Its conditions are on `resource_condition` under the
 generic `resource_namespace` and `resource_name` keys, so rename them to match:
@@ -463,8 +458,8 @@ label_replace(label_replace(
   "gitbranch_name", "$1", "resource_name", "(.*)")
 ```
 
-A `GitBranch` reporting `BranchConflict` holds no branch and runs no worker, so it has
-`git_branch_info` and conditions but no branch-worker series.
+A `GitBranch` reporting `BranchConflict` holds no branch and runs no worker, so it has conditions
+and no branch-worker series.
 
 **How contended is the branch?** A retry is a replay round *inside* a cycle, not a terminal
 outcome, which is why it is its own counter rather than a third value on `git_pushes_total`. The
@@ -532,8 +527,8 @@ One close per stream per watch timeout is expected; the threshold above is rough
 magnitude above that. `error` now means a session that ended on a genuine fault, and `expired`
 remains the one that costs a full rebuild.
 
-`git_commits_total` carries the **`BranchWorker`'s** `GitBranch`, plus `author_kind` and
-`message_source`, not a GitTarget: one worker serves every GitTarget on its `GitBranch`, coalescing
+`git_commits_total` carries the **`BranchWorker`'s** `GitBranch` and `GitProvider`, plus
+`author_kind` and `message_source`, not a GitTarget: one worker serves every GitTarget on its `GitBranch`, coalescing
 their writes into one commit batch, so the worker is the honest attribution unit. `author_kind` is
 `user`, `serviceaccount`, `committer`, or `unresolved`; reconcile/resync commits and
 configured-author mode use `committer`.
@@ -659,7 +654,8 @@ picture toward `max_duration`.
   as "the branch is holding too much", not as a measurement of pod memory. See
   [sizing the branch worker queue](#sizing-the-branch-worker-queue-against-git_queue_refusals_total).
 - `resync_before_apply` and `atomic_before_apply` close the window so a resync or an atomic write can
-  apply after it; `shutdown` is the worker stopping.
+  apply after it (nothing in production sends an atomic write today, so the second stays at zero);
+  `shutdown` is the worker stopping.
 - `apply_due` closes the window because an apply came due for an applier on the branch: its edits
   are published at once, ahead of the push cooldown, so the apply includes them. A window a
   `CommitRequest` holds is never closed this way; the apply waits for the save. Its share follows the
@@ -722,7 +718,7 @@ committing and the folder is relying on steady-state events to catch up:
 
 ```promql
 sum by (gittarget_namespace, gittarget_name) (
-  rate(gitopsreverser_git_resync_failures_total[15m]))
+  rate(gitopsreverser_git_resync_failures_total{reason=~"error|timeout"}[15m]))
 ```
 
 **How much is each GitTarget watching, and how much of it is actually running?** `sum` is the
@@ -868,15 +864,15 @@ else pushed. See [who applies this folder](configuration.md#who-applies-this-fol
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `apply_requests_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `applier_kind`, `claim_namespace`, `claim_name`, `reason`, `outcome` | One per attempt to one applier, labeled by the `GitBranch` whose worker asked and the applier claim holding the applier it asked. `applier_kind` is `kustomization` (a Flux `Kustomization`) or `application` (an Argo CD `Application`); `reason` is `ForeignCommit` / `Refusal` / `Repair` / `CatchUp`, for either kind (`CatchUp` adopts an object the API created in the folder, or converges once when the worker starts and once when a `GitTarget` first names the applier claim); `outcome` is `sent` (the applier was asked and the ask landed; it says nothing about how the apply went. What needs no apply, a converge of the commit the applier last applied or a branch the remote does not carry, the branch worker never sends, so it is not counted), `failed` (could not ask, including an applier that applies another repository or branch, an `Application` with automated sync on, or one whose running sync did not end within 5 minutes; the branch worker keeps the reason pending and decides the retry after a flush, so a failure that persists keeps counting at its backoff) or `dropped` (no `GitTarget` may still ask for that reason: each was deleted or recreated, moved to another branch or applier, is no longer admitted by its `KubeProvider`, or withdrew its consent to a `Refusal`) or `stale` (asked nothing because the branch tip moved before the ask landed; the worker decides again at once, at the new tip, and frequent stale attempts mean the branch keeps moving within an attempt's lifetime) |
-| `apply_revision_mismatches_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `applier_kind`, `claim_namespace`, `claim_name` | One per apply operation that succeeded on another revision than the commit GitOps Reverser checked. A `Kustomization` applies whatever its `GitRepository` artifact holds when it reconciles; the artifact is read again just before the resume, so this is somebody fetching the source in between (a person, or the source's own interval). The apply window still withholds a late write over a newer edit; a steady rate means something else keeps fetching the source |
-| `claimed_resource_reconciled_total` | counter | `applier_kind`, `claim_namespace`, `claim_name` | One per apply an applier claim did not start: a held `Kustomization` resumed (`flux resume`, or a controller writing its spec without `spec.suspend`), or a held `Application`'s automated sync switched on, by somebody else. From then until the claim takes it back, on its next look within a minute, the applier applies whatever its source holds, unchecked against the branch. The claim records a `ClaimedResourceReconciled` Event for each as well, but the API server folds identical Events into one and expires them, so alert on this counter. A `Kustomization` resumed so also shows the apply as an `Unresolved` operation on the claim |
-| `apply_window_collisions_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `outcome` | One per write by the applier, while an apply it was asked for runs, to an object the API side edited after the flush before that request: the apply arriving late over a newer edit. `outcome` is `withheld` (proven to be the applier's write, by its field manager alone, with an entry as new as the edit or newer: `kustomize-controller`, or `argocd-controller` / `argocd-application-controller`; so not mirrored: Git keeps the API's value, and a `Repair` of the applier follows, which restores it on the cluster) or `ambiguous` (the applier and another field manager wrote in the same second, so it was mirrored as ever; if it was the apply, the revert is in Git as the applier's commit). An applier entry older than the edit is not counted: it is the API's undo of an edit, mirrored |
-| `apply_echoes_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `outcome` | One per write by the applier's own field managers alone, judged by the apply window: an apply GitOps Reverser asked for landing, object by object. `outcome` is `not_mirrored` (the applier wrote the object last, at or after the earliest send of the apply windows still open, and nobody edited it in the window: the apply itself, whose content is the commit Git already holds, so it is not mirrored) or `late` (the applier's managers alone wrote the object last with no apply window open: an echo arriving more than 10 seconds after its operation completed, or an apply somebody else started; it is mirrored as an edit). `not_mirrored` rises with every apply and needs no action. A steady `late` rate means applies keep landing outside the windows, and such a write can revert a newer Git-side change to the object: look for a person or a tool applying the folder by hand (`flux reconcile`, a manual sync), or for watch events reaching the worker long after the apply |
-| `apply_ownership_conflicts_total` | counter | `gitbranch_namespace`, `gitbranch_name` | One per object another applier owns that the branch worker kept out of a coordinated folder: a live write not mirrored, or a snapshot object neither upserted nor swept. The owner is read from Flux's owner labels (`kustomize.toolkit.fluxcd.io/name` and `/namespace`) or Argo CD's tracking annotation (`argocd.argoproj.io/tracking-id`). Any non-zero rate is a misconfiguration: another `Kustomization` or `Application` applies objects into a namespace the folder mirrors, and two appliers applying one object fight each other. The worker logs each object once, naming both appliers; narrow the `WatchRule`, or move the object to one applier |
-| `stale_snapshots_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `outcome` | One per resync snapshot the branch worker found stale: collected while Git was ahead of the cluster (a commit pushed and not yet applied), collected across an apply, or arriving while Git is ahead. `outcome` is `discarded` (not decided; a fresh snapshot of its `GitTarget` is asked for once Git is no longer ahead, and the `GitTarget`'s live writes are held back by the render-fidelity gate until it lands) or `used` (the `GitTarget`'s snapshots had been held for 5 minutes while an apply kept failing, so this one was decided anyway, and whatever the unapplied commit changed in its objects is reverted, as the API-wins rule says). `discarded` comes in short bursts around applies and needs no action; a discard is not a resync failure and is not counted in `git_resync_failures_total`. Any `used` means an applier is failing for minutes at a time: read the applier claim's `status.operation` and the `ApplyFailed` Events. See [stale snapshots](spec/reconcile-via-watchlist-mark-and-sweep.md#stale-snapshots-are-discarded) |
-| `apply_operations_unresolved` | gauge | `gitbranch_namespace`, `gitbranch_name` | Apply operations on the branch that have not completed 5 minutes after they were requested. Each is still followed, holds its applier's apply window open, and holds back the applier's next request until it completes, so a value that stays above zero is an applier stuck mid-apply: read its status, and the `ApplyUnresolved` Event on the `GitTarget`s. Read at scrape time |
-| `appliers_held` | gauge | `gitbranch_namespace`, `gitbranch_name` | Appliers on the branch with a reason pending that the initial-snapshot barrier holds back: no applier is asked for anything until every `GitTarget` naming its claim has had a snapshot of each collection it watches published, and its folder is on the branch. A short hold follows a start, a newly named claim or a watch change. A value that stays above zero is a `GitTarget` that is not mirrored: one whose `WatchRule` selects nothing holds its applier until it watches something, and one whose folder is missing waits for the fresh snapshot the worker asked for (a suspended `GitTarget` never writes it). The worker logs each hold, its reason and its end at Info ("An apply is held back"). Read at scrape time |
+| `apply_requests_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `applier_kind`, `claim_namespace`, `claim_name`, `reason`, `outcome` | One per attempt to one applier, labeled by the `GitBranch` whose worker asked and the applier claim holding the applier it asked. `applier_kind` is `kustomization` (a Flux `Kustomization`) or `application` (an Argo CD `Application`); `reason` is `ForeignCommit` / `Refusal` / `Repair` / `CatchUp`, for either kind (`CatchUp` adopts an object the API created in the folder, or converges once when the worker starts and once when a `GitTarget` first names the applier claim); `outcome` is `sent` (the applier was asked and the ask landed; it says nothing about how the apply went. What needs no apply, a converge of the commit the applier last applied or a branch the remote does not carry, the branch worker never sends, so it is not counted), `failed` (could not ask, including an applier that applies another repository or branch, an `Application` with automated sync on, or one whose running sync did not end within 5 minutes; the branch worker keeps the reason pending and decides the retry after a flush, so a failure that persists keeps counting at its backoff) or `dropped` (no `GitTarget` may still ask for that reason: each was deleted or recreated, moved to another branch or applier, is no longer admitted by its `KubeProvider`, or withdrew its consent to a `Refusal`) or `stale` (asked nothing because the branch tip moved before the ask landed; the worker decides again at once, at the new tip, and frequent stale attempts mean the branch keeps moving within an attempt's lifetime) |
+| `apply_revision_mismatches_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `applier_kind`, `claim_namespace`, `claim_name` | One per apply operation that succeeded on another revision than the commit GitOps Reverser checked. A `Kustomization` applies whatever its `GitRepository` artifact holds when it reconciles; the artifact is read again just before the resume, so this is somebody fetching the source in between (a person, or the source's own interval). The apply window still withholds a late write over a newer edit; a steady rate means something else keeps fetching the source |
+| `apply_claimed_resource_reconciled_total` | counter | `applier_kind`, `claim_namespace`, `claim_name` | One per apply an applier claim did not start: a held `Kustomization` resumed (`flux resume`, or a controller writing its spec without `spec.suspend`), or a held `Application`'s automated sync switched on, by somebody else. From then until the claim takes it back, on its next look within a minute, the applier applies whatever its source holds, unchecked against the branch. The claim records a `ClaimedResourceReconciled` Event for each as well, but the API server folds identical Events into one and expires them, so alert on this counter. A `Kustomization` resumed so also shows the apply as an `Unresolved` operation on the claim |
+| `apply_window_collisions_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `outcome` | One per write by the applier, while an apply it was asked for runs, to an object the API side edited after the flush before that request: the apply arriving late over a newer edit. `outcome` is `withheld` (proven to be the applier's write, by its field manager alone, with an entry as new as the edit or newer: `kustomize-controller`, or `argocd-controller` / `argocd-application-controller`; so not mirrored: Git keeps the API's value, and a `Repair` of the applier follows, which restores it on the cluster) or `ambiguous` (the applier and another field manager wrote in the same second, so it was mirrored as ever; if it was the apply, the revert is in Git as the applier's commit). An applier entry older than the edit is not counted: it is the API's undo of an edit, mirrored |
+| `apply_echoes_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `outcome` | One per write by the applier's own field managers alone, judged by the apply window: an apply GitOps Reverser asked for landing, object by object. `outcome` is `not_mirrored` (the applier wrote the object last, at or after the earliest send of the apply windows still open, and nobody edited it in the window: the apply itself, whose content is the commit Git already holds, so it is not mirrored) or `late` (the applier's managers alone wrote the object last with no apply window open: an echo arriving more than 10 seconds after its operation completed, or an apply somebody else started; it is mirrored as an edit). `not_mirrored` rises with every apply and needs no action. A steady `late` rate means applies keep landing outside the windows, and such a write can revert a newer Git-side change to the object: look for a person or a tool applying the folder by hand (`flux reconcile`, a manual sync), or for watch events reaching the worker long after the apply |
+| `apply_ownership_conflicts_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | One per object another applier owns that the branch worker kept out of a coordinated folder: a live write not mirrored, or a snapshot object neither upserted nor swept. The owner is read from Flux's owner labels (`kustomize.toolkit.fluxcd.io/name` and `/namespace`) or Argo CD's tracking annotation (`argocd.argoproj.io/tracking-id`). Any non-zero rate is a misconfiguration: another `Kustomization` or `Application` applies objects into a namespace the folder mirrors, and two appliers applying one object fight each other. The worker logs each object once, naming both appliers; narrow the `WatchRule`, or move the object to one applier |
+| `apply_stale_snapshots_total` | counter | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name`, `outcome` | One per resync snapshot the branch worker found stale: collected while Git was ahead of the cluster (a commit pushed and not yet applied), collected across an apply, or arriving while Git is ahead. `outcome` is `discarded` (not decided; a fresh snapshot of its `GitTarget` is asked for once Git is no longer ahead, and the `GitTarget`'s live writes are held back by the render-fidelity gate until it lands) or `used` (the `GitTarget`'s snapshots had been held for 5 minutes while an apply kept failing, so this one was decided anyway, and whatever the unapplied commit changed in its objects is reverted, as the API-wins rule says). `discarded` comes in short bursts around applies and needs no action; a discard is not a resync failure and is not counted in `git_resync_failures_total`. Any `used` means an applier is failing for minutes at a time: read the applier claim's `status.operation` and the `ApplyFailed` Events. See [stale snapshots](spec/reconcile-via-watchlist-mark-and-sweep.md#stale-snapshots-are-discarded) |
+| `apply_operations_unresolved` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | Apply operations on the branch that have not completed 5 minutes after they were requested. Each is still followed, holds its applier's apply window open, and holds back the applier's next request until it completes, so a value that stays above zero is an applier stuck mid-apply: read its status, and the `ApplyUnresolved` Event on the `GitTarget`s. Read at scrape time |
+| `apply_appliers_held` | gauge | `gitbranch_namespace`, `gitbranch_name`, `provider_namespace`, `provider_name` | Appliers on the branch with a reason pending that the initial-snapshot barrier holds back: no applier is asked for anything until every `GitTarget` naming its claim has had a snapshot of each collection it watches published, and its folder is on the branch. A short hold follows a start, a newly named claim or a watch change. A value that stays above zero is a `GitTarget` that is not mirrored: one whose `WatchRule` selects nothing holds its applier until it watches something, and one whose folder is missing waits for the fresh snapshot the worker asked for (a suspended `GitTarget` never writes it). The worker logs each hold, its reason and its end at Info ("An apply is held back"). Read at scrape time |
 | `receiver_deliveries_total` | counter | `receiver_namespace`, `receiver_name`, `type`, `outcome` | One per verified-or-refused delivery to a `GitReceiver`'s `/git-push/` path. `type` is its `spec.type`; `outcome` is `notified` (handed to at least one branch worker), `unknown_repository` (no `GitProvider`, in any namespace, has the repository the delivery names under any URL it carries), `unknown_branch` (one has, but no branch worker writes that branch for it), `ignored` (a ping, an event other than a push, or a tag or other non-branch ref), `rejected` (a missing or wrong signature or token, or an oversized body) or `invalid` (verified but unparseable, or naming no repository). Every outcome but `rejected` and `invalid` answers `202`. `unknown_repository` and `unknown_branch` are expected on an organization or GitHub App hook, which delivers for every repository and branch. On a repository's own hook, a steady `unknown_repository` rate means the payload names the repository by a URL no provider's `spec.url` matches, such as an SSH alias: the affected `GitBranch` has no `status.lastPushNoticeAt` |
 
 A delivery counted `notified` is only a hint: the worker reads the advertisement, and fetches under
@@ -903,7 +899,7 @@ sum by (gitbranch_namespace, gitbranch_name, outcome) (
   increase(gitopsreverser_apply_window_collisions_total[1h])) > 0
 # An applier that somebody else made apply, by claim: each was unchecked against the branch.
 sum by (applier_kind, claim_namespace, claim_name) (
-  increase(gitopsreverser_claimed_resource_reconciled_total[1h])) > 0
+  increase(gitopsreverser_apply_claimed_resource_reconciled_total[1h])) > 0
 # An applier stuck mid-apply: nothing more is asked of it until its operation completes.
 max by (gitbranch_namespace, gitbranch_name) (gitopsreverser_apply_operations_unresolved) > 0
 # Applier writes mirrored as edits because no apply window was open. A steady rate can revert
@@ -915,7 +911,7 @@ sum by (gitbranch_namespace, gitbranch_name) (
   increase(gitopsreverser_apply_ownership_conflicts_total[1h])) > 0
 # Snapshots used although Git was ahead: an applier has been failing for at least 5 minutes.
 sum by (gitbranch_namespace, gitbranch_name) (
-  increase(gitopsreverser_stale_snapshots_total{outcome="used"}[1h])) > 0
+  increase(gitopsreverser_apply_stale_snapshots_total{outcome="used"}[1h])) > 0
 ```
 
 ## Audit attribution (optional)
@@ -934,9 +930,9 @@ The log is Redis Streams by default and an in-process ring with
 | Metric | Type | Labels |
 | --- | --- | --- |
 | `audit_eventlist_duration_seconds` | histogram | `outcome` |
-| `audit_events_total` | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` |
+| `audit_events_total` | counter | `audit_route`, `outcome`, `category`, `group`, `version`, `resource`, `verb` |
 | `attribution_resolutions_total` | counter | `tier`, `actor_kind`, `group`, `version`, `resource` |
-| `attribution_resolution_wait_seconds` | histogram | `tier`, `event_kind`, `group`, `version`, `resource` |
+| `attribution_resolution_wait_seconds` | histogram | `tier`, `event_kind` |
 | `attribution_facts_total` | counter | `op` |
 | `attribution_fact_index_entries` | gauge | none |
 | `attribution_fact_index_evictions_total` | counter | `reason` |
@@ -969,7 +965,11 @@ sum by (outcome) (rate(gitopsreverser_audit_eventlist_duration_seconds_count[5m]
 
 **Per-event census.** `audit_events_total` increments exactly once per decoded event. `category`
 is the coarse bucket of `outcome` (carried as its own label so the health invariant is a simple
-selector):
+selector). `audit_route` is the route the event was posted under, `/audit-webhook/<route>` or the
+shared endpoint's annotation, when some `KubeProvider` declares it; `unrecognized` when none does,
+and `none` for an event that names no route. A route is producer-chosen text, so only declared ones
+become label values. A fresh pod reads every route as `unrecognized` until its `KubeProvider`s have
+reconciled, which takes seconds.
 
 | `category` | Live `outcome` values | Meaning |
 | --- | --- | --- |
@@ -997,6 +997,18 @@ sum by (group, resource) (rate(gitopsreverser_audit_events_total{outcome="no_att
 ```promql
 sum(rate(gitopsreverser_audit_events_total[5m]))
 ```
+
+**Whose audit stopped?** With several `KubeProvider`s, one cluster's API server can stop posting
+while the others carry on, and the total stays positive. Per route:
+
+```promql
+sum by (audit_route) (rate(gitopsreverser_audit_events_total[15m])) == 0
+```
+
+A route missing from that result entirely has never posted since the pod started; the
+`KubeProvider`'s `AuditFactsReceived` condition says which silence it is in. A steady
+`audit_route="unrecognized"` rate is an API server posting under a route no `KubeProvider` carries:
+its facts are never read.
 
 **The health invariant.** Fact-store errors must be zero:
 
@@ -1362,7 +1374,7 @@ Secrets are never committed in plaintext; these metrics confirm the encryption p
 
 | Metric | Type | Notes |
 | --- | --- | --- |
-| `secret_encryptions_total` | counter | One per encryption decision, labeled `outcome`: `encrypted`, `failed` (the write is rejected), or `cached` (unchanged content reused). |
+| `secret_encryptions_total` | counter | One per encryption decision, labeled by the `GitTarget` (`gittarget_namespace`, `gittarget_name`) and `outcome`: `encrypted`, `failed` (the write is rejected), or `cached` (unchanged content reused). |
 
 **Encryption failure rate** should be zero; non-zero means Secret writes are being rejected:
 
@@ -1384,14 +1396,15 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | Condition | Meaning |
 | --- | --- |
 | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | Attribution fact-store writes are failing; check Redis. |
+| `sum by (audit_route) (rate(gitopsreverser_audit_events_total{audit_route!~"unrecognized\|none"}[15m])) == 0`, `for: 15m` | One cluster's API server stopped posting audit while it still did earlier in the pod's life; its commits are authored unresolved. A cluster whose audit policy forwards nothing for 15 minutes reads the same way. |
 | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome="decode_error"}[10m]) > 0` | A sender is posting non-EventList payloads to `/audit-webhook`. |
 | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome=~"bad_method\|bad_path\|bare_endpoint_disabled"}[15m]) > 0` | An apiserver is posting audit to a path this operator does not serve. |
 | `rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | A schema or version mismatch on the fact stream; facts are being skipped and lost. |
 | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)`, `for: 10m` | The fact follower is wedged; attribution is degrading to committer-authored cluster-wide. Both arms are needed; see below. |
-| `rate(gitopsreverser_git_resync_failures_total[15m]) > 0` sustained | Background resyncs are not committing; the folder relies on steady-state events to catch up. |
+| `rate(gitopsreverser_git_resync_failures_total{reason=~"error\|timeout"}[15m]) > 0` sustained | Background resyncs are not committing; the folder relies on steady-state events to catch up. |
 | `increase(gitopsreverser_apply_ownership_conflicts_total[1h]) > 0` | Another `Kustomization` or `Application` applies objects into a coordinated folder; they are kept out of Git, and the log names both appliers. |
-| `increase(gitopsreverser_claimed_resource_reconciled_total[1h]) > 0` | Somebody else made a held applier apply, unchecked against the branch; the labels name the applier claim. A steady rate on one claim is a controller that rewrites the `Kustomization` without `spec.suspend`. |
-| `increase(gitopsreverser_stale_snapshots_total{outcome="used"}[1h]) > 0` | An applier has been failing for at least 5 minutes, so a resync decided a snapshot taken while Git was ahead and reverted part of the unapplied commit. |
+| `increase(gitopsreverser_apply_claimed_resource_reconciled_total[1h]) > 0` | Somebody else made a held applier apply, unchecked against the branch; the labels name the applier claim. A steady rate on one claim is a controller that rewrites the `Kustomization` without `spec.suspend`. |
+| `increase(gitopsreverser_apply_stale_snapshots_total{outcome="used"}[1h]) > 0` | An applier has been failing for at least 5 minutes, so a resync decided a snapshot taken while Git was ahead and reverted part of the unapplied commit. |
 | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | Part of the API surface is hidden behind a broken APIService. |
 | `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120`, `for: 5m` | A GitTarget cannot be planned (its source cluster or catalog is unreachable), and its mirror is not converging. The `time() -` is not optional: the gauge is a Unix timestamp, so a bare `> 120` is true of every instant since 1970 and would fire on ordinary planning. |
 | `rate(gitopsreverser_watch_plan_passes_total{outcome="timed_out"}[15m]) > 0` sustained | Plan passes are hitting their per-target deadline; the target stays dirty and installs nothing. |
@@ -1405,7 +1418,7 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | `sum by (gittarget_namespace, gittarget_name, reason) (increase(gitopsreverser_placement_refusals_total[1h])) > 0` | Loss: new resources the writer declined to place are absent from the mirror until the placement policy is fixed. |
 | `sum by (gittarget_namespace, gittarget_name) (increase(gitopsreverser_placement_kustomization_entries_total{outcome="failed"}[1h])) > 0` | A new file is in Git without its `resources:` entry, so kustomize never builds it. |
 | `max by (gitbranch_namespace, gitbranch_name) (gitopsreverser_apply_operations_unresolved) > 0`, `for: 15m` | An applier is stuck mid-apply, and nothing more is asked of it until the operation completes. |
-| `max by (gitbranch_namespace, gitbranch_name) (gitopsreverser_appliers_held) > 0`, `for: 15m` | An applier is held behind the initial-snapshot barrier: a `GitTarget` naming its claim watches nothing, or its folder is missing. |
+| `max by (gitbranch_namespace, gitbranch_name) (gitopsreverser_apply_appliers_held) > 0`, `for: 15m` | An applier is held behind the initial-snapshot barrier: a `GitTarget` naming its claim watches nothing, or its folder is missing. |
 | `sum by (applier_kind, claim_namespace, claim_name, reason) (rate(gitopsreverser_apply_requests_total{outcome="failed"}[15m])) > 0`, `for: 30m` | Apply requests keep failing for the named applier claim; the worker retries at its backoff, and the cluster runs older content than the branch meanwhile. |
 | `sum by (receiver_namespace, receiver_name) (increase(gitopsreverser_receiver_deliveries_total{outcome="rejected"}[15m])) > 0` | A Git host is calling a `GitReceiver` with the wrong secret, so foreign pushes are found only by the periodic refresh. |
 | `sum by (gitbranch_namespace, gitbranch_name) (rate(gitopsreverser_git_commits_total{message_source="commit_request_fallback"}[15m])) > 0` | A `requestTemplate` stopped rendering: saves still commit, with the message verbatim. |

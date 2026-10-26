@@ -187,28 +187,50 @@ A `WatchRule` or `ClusterWatchRule` no longer reads the GitProvider and no longe
 Deleting a `GitBranch` stops its branch worker after it has pushed or refused every pending write and
 settled every `CommitRequest` it held. It never deletes the branch on the remote.
 
-**The branch worker's metrics are labeled by the `GitBranch`.** Every series a branch worker
-records carries `gitbranch_namespace` and `gitbranch_name` where it carried `provider_namespace`,
-`provider_name` and `branch`: the `git_commits_total`, `git_pushes_total`,
-`git_push_retries_total`, `git_push_duration_seconds`, `git_fetches_total`,
-`git_queue_refusals_total`, `git_commit_failures_total`, `git_writes_dropped_total` and
-`git_materialization_failures_total` counters; the `git_queue_depth`, `git_retained_bytes`,
-`git_retained_writes`, `git_intake_paused`, `git_oldest_retained_write_timestamp_seconds` and
-`git_next_retry_timestamp_seconds` gauges; and `apply_window_collisions_total`,
-`apply_echoes_total`, `apply_ownership_conflicts_total`, `stale_snapshots_total`,
-`apply_operations_unresolved` and `appliers_held`. `git_branch_targets` maps each `GitTarget` to
-its `GitBranch` the same way. The provider and branch name are on `git_branch_info`, one series per
-`GitBranch`, for a query that groups by provider:
+The branch worker's metrics are labeled by the `GitBranch`; see the metrics entry below. Log lines
+name a branch as `repository@branch`.
+
+## Metrics: the branch worker's series name their `GitBranch`, and three apply series are renamed
+
+**Every series a branch worker records carries `gitbranch_namespace` and `gitbranch_name`, and no
+longer carries `branch`.** `provider_namespace` and `provider_name` stay. That is the
+`git_commits_total`, `git_pushes_total`, `git_push_retries_total`, `git_push_duration_seconds`,
+`git_fetches_total`, `git_queue_refusals_total`, `git_commit_failures_total`,
+`git_writes_dropped_total` and `git_materialization_failures_total` counters; the
+`git_queue_depth`, `git_retained_bytes`, `git_retained_writes`, `git_intake_paused`,
+`git_oldest_retained_write_timestamp_seconds` and `git_next_retry_timestamp_seconds` gauges; and
+the apply window and echo series below. Select a branch by its `GitBranch`:
 
 ```promql
-# 0.53.0: sum by (provider_namespace, provider_name, branch) (...git_pushes_total...)
-sum by (gitbranch_namespace, gitbranch_name) (rate(gitopsreverser_git_pushes_total[5m]))
+# 0.53.0: gitopsreverser_git_pushes_total{provider_namespace="platform", branch="main"}
+gitopsreverser_git_pushes_total{gitbranch_namespace="platform", gitbranch_name="platform-main"}
 ```
 
-`apply_requests_total` and `apply_revision_mismatches_total` gain the same two labels plus
-`claim_namespace` and `claim_name`, and `watch_sessions_ended_total`,
-`watch_replay_duration_seconds` and `watch_event_handling_seconds` gain `source_cluster`; a query
-that sums over them reads as before. Log lines name a branch as `repository@branch`.
+`git_branch_targets` maps each `GitTarget` to its `GitBranch` (`gitbranch_namespace`,
+`gitbranch_name`) and no longer carries the provider or the branch.
+
+**Three apply series are renamed** so that every apply series starts with `apply_`:
+
+| 0.53.0 | Now |
+| --- | --- |
+| `appliers_held` | `apply_appliers_held` |
+| `stale_snapshots_total` | `apply_stale_snapshots_total` |
+| `claimed_resource_reconciled_total` | `apply_claimed_resource_reconciled_total` |
+
+**Labels that changed elsewhere:**
+
+- `git_resync_failures_total` gains `reason`: `error` and `timeout` are a snapshot that did not
+  land; `refused` and `deferred` are counted too, and lose nothing. Alert on
+  `reason=~"error|timeout"`.
+- `git_fetches_total` no longer has `reason="bootstrap"`, which never emitted.
+- `attribution_resolution_wait_seconds` carries only `tier` and `event_kind`; the type is on
+  `attribution_resolutions_total`.
+- `apply_requests_total` and `apply_revision_mismatches_total` gain `gitbranch_namespace`,
+  `gitbranch_name`, `provider_namespace`, `provider_name`, `claim_namespace` and `claim_name`;
+  `audit_events_total` gains `audit_route`; `secret_encryptions_total` gains
+  `gittarget_namespace` and `gittarget_name`; `watch_sessions_ended_total`,
+  `watch_replay_duration_seconds` and `watch_event_handling_seconds` gain `source_cluster`. A query
+  that sums over these reads as before.
 
 ## Grants say who may use a provider or a branch; `allowedBranches` is `allowedGitBranches`
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -48,6 +49,12 @@ type RouteHealth struct {
 	resolved  map[string]bool
 	absent    map[string]int
 	warned    map[string]bool
+
+	// declared is the route each live KubeProvider carries, as its reconcile last saw it. The audit
+	// ingress labels its census by route only when some provider declares it: the route is a path
+	// segment or an annotation the producer chose, and a label taken from it unchecked would be
+	// bounded by nothing this operator controls.
+	declared map[types.NamespacedName]string
 
 	// delivered and transportFailing are PROCESS-WIDE, deliberately not keyed by route: an audit
 	// request reaching this operator at all, and the fact transport being able to accept a write,
@@ -133,6 +140,46 @@ func notifyFirstFact(ch chan event.GenericEvent, route string) {
 	case ch <- evt:
 	default:
 	}
+}
+
+// DeclareRoute records the route one KubeProvider carries, replacing what it carried before.
+func (h *RouteHealth) DeclareRoute(provider types.NamespacedName, route string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.declared == nil {
+		h.declared = map[types.NamespacedName]string{}
+	}
+	h.declared[provider] = route
+}
+
+// ForgetRoute drops one KubeProvider's route: it was deleted, or no longer uses its route.
+func (h *RouteHealth) ForgetRoute(provider types.NamespacedName) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.declared, provider)
+}
+
+// RouteDeclared reports whether some live KubeProvider carries route. It is a scan over the
+// providers rather than an index: there are as many as someone wrote, and the caller asks once per
+// request, or once per event on the shared endpoint.
+func (h *RouteHealth) RouteDeclared(route string) bool {
+	if h == nil || route == "" {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, declared := range h.declared {
+		if declared == route {
+			return true
+		}
+	}
+	return false
 }
 
 // RecordAuditDelivery notes that an audit request carrying events reached this operator. It says

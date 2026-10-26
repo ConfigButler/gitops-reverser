@@ -911,7 +911,7 @@ func (r *ApplierClaimReconciler) event(object client.Object, eventType, reason, 
 	}
 }
 
-// applier_kind label values of claimed_resource_reconciled_total, as apply_requests_total spells them.
+// applier_kind label values of apply_claimed_resource_reconciled_total, as apply_requests_total spells them.
 const (
 	applierKindKustomization = "kustomization"
 	applierKindApplication   = "application"

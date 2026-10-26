@@ -27,7 +27,8 @@ func branchTargetSeries(
 }
 
 // The whole point of the instrument: two GitTargets sharing one GitBranch each publish their own
-// series, so a query keyed on {gitbranch_namespace, gitbranch_name} fans out to both. One series per branch would answer the easy case and lose the case the ask was filed about.
+// series, so a query keyed on {gitbranch_namespace, gitbranch_name} fans out to both. One series
+// per branch would answer the easy case and lose the case the ask was filed about.
 func TestBranchTargets_TwoTargetsOnOneBranchEachPublish(t *testing.T) {
 	reader, err := InitTestExporter()
 	require.NoError(t, err)

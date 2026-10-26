@@ -8,6 +8,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -44,6 +45,10 @@ type AuditRouteFacts interface {
 	// TransportName is the configured transport ("redis" or "memory"), used only to point the
 	// reader at the right thing while publishes are failing. Empty yields neutral wording.
 	TransportName() string
+	// DeclareRoute and ForgetRoute keep the set of routes some KubeProvider carries, which bounds
+	// the audit_route label on the audit census.
+	DeclareRoute(provider types.NamespacedName, route string)
+	ForgetRoute(provider types.NamespacedName)
 }
 
 // applyAuditFactsCondition writes the one-way AuditFactsReceived latch.

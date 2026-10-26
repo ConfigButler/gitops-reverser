@@ -50,6 +50,8 @@ func workerLabels() map[string]string {
 	return map[string]string{
 		"gitbranch_namespace": "test-ns",
 		"gitbranch_name":      "test-branch",
+		"provider_namespace":  "test-ns",
+		"provider_name":       "test-provider",
 	}
 }
 
@@ -60,8 +62,8 @@ func commitAndPush(w *BranchWorker, writes []PendingWrite, _ int) {
 	w.publishCommitsForPush(writes)
 }
 
-// commits_total must be labelled with the recording worker's GitBranch
-// {gitbranch_namespace, gitbranch_name}. Without labels the counter is a single global
+// commits_total must be labelled with the recording worker's GitBranch and its GitProvider
+// {gitbranch_namespace, gitbranch_name, provider_namespace, provider_name}. Without labels the counter is a single global
 // series; with them, concurrent workers (and parallel e2e specs, isolated by their per-suite
 // GitBranch namespace) count separately.
 func TestRecordPendingWritesMetrics_LabelsCommitsByWorkerIdentity(t *testing.T) {

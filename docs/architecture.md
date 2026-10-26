@@ -1901,7 +1901,7 @@ The families follow the architecture, which is why this section is a map rather 
 | `watch_*` | ingest: events, sessions, replays, recoveries, resolved types, open streams | [Pipeline](interpreting-metrics.md#pipeline-watch-to-push) |
 | `git_*`, `commit_requests_total` | the branch worker: documents, windows, commits, pushes, fetches, refusals, losses, the retained backlog | [Pipeline](interpreting-metrics.md#pipeline-watch-to-push), [Tuning commit windows](interpreting-metrics.md#tuning-commit-windows) |
 | `placement*` | where a new document lands, and the ones refused | [New-file placement](interpreting-metrics.md#new-file-placement) |
-| `apply_*`, `appliers_held`, `stale_snapshots_total`, `claimed_resource_reconciled_total`, `receiver_deliveries_total` | apply requests, the apply window and the push receiver | [Apply requests](interpreting-metrics.md#apply-requests-and-the-push-receiver) |
+| `apply_*`, `receiver_deliveries_total` | apply requests, the apply window and the push receiver | [Apply requests](interpreting-metrics.md#apply-requests-and-the-push-receiver) |
 | `audit_*`, `attribution_*` | the optional author lookup: the door, the fact pipeline, the join | [Audit attribution](interpreting-metrics.md#audit-attribution-optional) |
 | `api_catalog_*` | discovery, per source cluster | [API resource catalog](interpreting-metrics.md#api-resource-catalog) |
 | `watch_plan_*` | the queue that plans each `GitTarget`'s watches | [Watch plane owner](interpreting-metrics.md#watch-plane-owner) |
@@ -1917,10 +1917,9 @@ Six rules hold across all of them, and a new instrument follows them too:
   `placement_refusals_total`, `git_documents_total{outcome="refused"}`) as one selector.
 - **Two identities, and one join between them.** Watch and document families are labeled by the
   `GitTarget` (`gittarget_namespace`, `gittarget_name`); branch-worker families by the `GitBranch`
-  the worker writes for (`gitbranch_namespace`, `gitbranch_name`), because one worker serves every
-  `GitTarget` on it. `git_branch_targets` maps one to the other, and `git_branch_info` names each
-  `GitBranch`'s provider and branch. `source_cluster` is the `KubeProvider` as
-  `<namespace>/<name>`. Keys are prefixed because a pod scrape with `honor_labels=false` renames a
+  the worker writes for and its `GitProvider` (`gitbranch_*`, `provider_*`), because one worker
+  serves every `GitTarget` on it. `git_branch_targets` maps one to the other. `source_cluster` is
+  the `KubeProvider` as `<namespace>/<name>`. Keys are prefixed because a pod scrape with `honor_labels=false` renames a
   bare `namespace` to `exported_namespace` and puts the scraped pod's own in its place.
 - **Configuration objects are labels; mirrored resources never are.** A `GitTarget`, `GitBranch`,
   applier claim or `GitReceiver` name is bounded by how many someone wrote, so it may be a label; a

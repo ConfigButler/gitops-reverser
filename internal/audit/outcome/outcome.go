@@ -120,15 +120,28 @@ func (o Outcome) Category() Category {
 	}
 }
 
+// The audit_route values that are not a route. A route is a label only once a KubeProvider declares
+// it, because the producer chooses it: unchecked, the label would be bounded by nothing this
+// operator controls.
+const (
+	// RouteUnrecognized is an event posted under a route no KubeProvider carries.
+	RouteUnrecognized = "unrecognized"
+	// RouteNone is an event on the shared endpoint that names no route at all.
+	RouteNone = "none"
+)
+
 // Record increments gitopsreverser_audit_events_total once for the event's
-// outcome, labelled {outcome, category, group, version, resource, verb}. It is
-// nil-guarded so it is a no-op when telemetry is not initialized (unit tests).
-func Record(ctx context.Context, event *auditv1.Event, o Outcome) {
+// outcome, labelled {audit_route, outcome, category, group, version, resource,
+// verb}. auditRoute is the caller's already-bounded label value: a declared
+// route, RouteUnrecognized or RouteNone. It is nil-guarded so it is a no-op when
+// telemetry is not initialized (unit tests).
+func Record(ctx context.Context, event *auditv1.Event, o Outcome, auditRoute string) {
 	if telemetry.AuditEventsTotal == nil {
 		return
 	}
 	group, version, resource := gvrParts(event)
 	telemetry.AuditEventsTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("audit_route", auditRoute),
 		attribute.String("outcome", string(o)),
 		attribute.String("category", string(o.Category())),
 		attribute.String("group", group),

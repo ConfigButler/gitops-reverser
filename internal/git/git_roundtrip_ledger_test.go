@@ -205,21 +205,21 @@ type ledgerOp struct {
 func ledgerOperations() []ledgerOp {
 	return []ledgerOp{
 		{
-			name:   "1. bootstrap helper, empty remote",
+			name:   "1. first clone, empty remote",
 			slug:   "start-empty",
 			seeded: false,
 			run: func(f *ledgerFixture) {
 				f.createLedgerTarget("team-a", nil)
-				require.NoError(f.t, f.worker.EnsurePathBootstrapped("team-a", "target-a", "default"))
+				require.NoError(f.t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
 			},
 		},
 		{
-			name:   "2. bootstrap helper, populated remote",
+			name:   "2. first clone, populated remote",
 			slug:   "start-populated",
 			seeded: true,
 			run: func(f *ledgerFixture) {
 				f.createLedgerTarget("team-a", nil)
-				require.NoError(f.t, f.worker.EnsurePathBootstrapped("team-a", "target-a", "default"))
+				require.NoError(f.t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
 			},
 		},
 		{

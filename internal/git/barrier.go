@@ -26,7 +26,7 @@ import (
 //
 // The hold is approved; the silence was the defect. Every applier the barrier holds a reason back
 // for is logged at Info when the hold begins, changes reason or lifts, and counted in the
-// appliers_held gauge.
+// apply_appliers_held gauge.
 
 // barrierHold says why the barrier holds the applier back, leaving out its folders
 // (missingFolders), or "" when it does not.
@@ -123,7 +123,7 @@ func (l *branchWorkerEventLoop) noteHeld(state *applierState, held string) {
 }
 
 // publishHeld publishes how many of this branch's appliers the barrier holds a reason back for, for
-// the appliers_held gauge.
+// the apply_appliers_held gauge.
 func (l *branchWorkerEventLoop) publishHeld() {
 	var held int64
 	for _, state := range l.appliers {

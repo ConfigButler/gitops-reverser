@@ -6,8 +6,8 @@ import "go.opentelemetry.io/otel/metric"
 
 // ApplyWindowCollisionsTotal counts writes by an applier, inside its apply window (from the attempt
 // being sent until its operation completed, plus a short grace), to an object the API side edited after the
-// attempt was sent: the apply arriving late over a newer edit. Labelled by {gitbranch_namespace,
-// gitbranch_name, outcome}. outcome is a frozen enum:
+// attempt was sent: the apply arriving late over a newer edit. Labelled by {gitbranch_*,
+// provider_*, outcome}. outcome is a frozen enum:
 //
 //	withheld   — the write is proven to be the applier's (its field manager alone wrote last), so it
 //	             was not mirrored. Git keeps the API's value, and a Repair is pending for the applier, an
@@ -23,7 +23,7 @@ import "go.opentelemetry.io/otel/metric"
 var ApplyWindowCollisionsTotal metric.Int64Counter
 
 // ApplyEchoesTotal counts the applier's own writes the apply window judged: an apply GitOps Reverser
-// asked for landing, object by object. Labelled by {gitbranch_namespace, gitbranch_name,
+// asked for landing, object by object. Labelled by {gitbranch_*, provider_*,
 // outcome}. outcome is a frozen enum:
 //
 //	not_mirrored — the applier's managers alone wrote the object last, at or after the earliest send
@@ -39,8 +39,8 @@ var ApplyEchoesTotal metric.Int64Counter
 
 // ApplyOwnershipConflictsTotal counts objects another applier owns that a branch worker kept out of a
 // coordinated folder: a live write not mirrored, or a snapshot object neither upserted
-// nor swept (docs/design/applier-echoes.md, F4). Labelled by {gitbranch_namespace,
-// gitbranch_name}. Any non-zero rate is a misconfiguration: another Kustomization or Application applies
+// nor swept (docs/design/applier-echoes.md, F4). Labelled by {gitbranch_*,
+// provider_*}. Any non-zero rate is a misconfiguration: another Kustomization or Application applies
 // objects into a namespace the folder mirrors, and its log line names both.
 //
 // Registered in registerCounters (exporter.go) with every other counter.
@@ -48,8 +48,8 @@ var ApplyOwnershipConflictsTotal metric.Int64Counter
 
 // StaleSnapshotsTotal counts resync snapshots a branch worker found stale: collected while Git was
 // ahead of the cluster, across an apply, or arriving while Git is ahead, so an apply was about to make
-// the picture they hold wrong (docs/design/applier-echoes.md, F3). Labelled by {gitbranch_namespace,
-// gitbranch_name, outcome}. outcome is a frozen enum:
+// the picture they hold wrong (docs/design/applier-echoes.md, F3). Labelled by {gitbranch_*,
+// provider_*, outcome}. outcome is a frozen enum:
 //
 //	discarded — the snapshot was not decided, and a fresh one of its GitTarget is asked for once Git
 //	            is no longer ahead.

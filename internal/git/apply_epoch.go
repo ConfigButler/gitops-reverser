@@ -38,7 +38,7 @@ import (
 // discarded: applierRetryMax, so an applier at full backoff gets at least one more attempt first.
 const snapshotHoldLimit = applierRetryMax
 
-// Stale snapshot outcomes, the outcome label of stale_snapshots_total.
+// Stale snapshot outcomes, the outcome label of apply_stale_snapshots_total.
 const (
 	staleSnapshotDiscarded = "discarded"
 	staleSnapshotUsed      = "used"

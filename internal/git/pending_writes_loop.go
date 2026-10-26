@@ -480,7 +480,7 @@ func (l *branchWorkerEventLoop) replyToDeferredResyncs(err error) {
 		req := origin.resync
 		l.w.Log.Error(err, "Cannot refresh the remote before resync; it stays pending",
 			"resources", len(req.Desired), "gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName)
-		answerResync(req, ResyncResult{Err: fmt.Errorf("refresh remote before resync: %w", err)})
+		answerResync(req, ResyncResult{Err: fmt.Errorf("%w: refresh remote before resync: %w", ErrResyncDeferred, err)})
 		origin.answered = true
 	}
 }

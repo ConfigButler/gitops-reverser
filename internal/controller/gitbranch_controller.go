@@ -136,11 +136,6 @@ func (r *GitBranchReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.ensureFinalizer(ctx, st, &branch); err != nil {
 		return ctrl.Result{}, err
 	}
-	// After the finalizer, so finalize is sure to run and forget it. From the immutable spec alone,
-	// so it holds whatever the gates below decide.
-	provider := branch.GitProviderKey()
-	telemetry.RecordGitBranchInfo(branch.Namespace, branch.Name, provider.Namespace, provider.Name,
-		branch.Spec.Branch)
 	if err := r.countGitTargets(ctx, &branch); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -389,7 +384,6 @@ func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutler
 	r.proofsMu.Unlock()
 	r.remotePublications.forget(gitBranchRef(branch))
 	telemetry.ForgetResourceConditions(conditionKindGitBranch, branch.Namespace, branch.Name)
-	telemetry.ForgetGitBranchInfo(branch.Namespace, branch.Name)
 
 	update := branch.DeepCopy()
 	controllerutil.RemoveFinalizer(update, GitBranchFinalizer)

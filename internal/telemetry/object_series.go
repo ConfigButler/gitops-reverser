@@ -9,16 +9,16 @@ import (
 )
 
 // objectSeries holds always-1 gauge series keyed by one configuration object, read at scrape time:
-// the shape git_branch_targets and git_branch_info share. Each object publishes one series, its own
-// identity followed by what is recorded for it.
+// the shape of git_branch_targets. Each object publishes one series, its own identity followed by
+// what is recorded for it.
 //
 // Observable rather than pushed for the reason resource_condition is: these families need series
 // that STOP. A pushed gauge latches its last value, so a deleted object would stay published for
 // the life of the process. Reading a map at scrape time makes the delete a map delete.
 type objectSeries struct {
 	// namespaceKey and nameKey are the label keys the object's identity is published under. Always
-	// prefixed, never a bare namespace/name: a Prometheus pod scrape with honor_labels=false
-	// overwrites those with the scraped pod's own.
+	// prefixed, never a bare namespace/name: a Prometheus pod scrape with honor_labels=false renames
+	// those to exported_* and puts the scraped pod's own in their place.
 	namespaceKey string
 	nameKey      string
 

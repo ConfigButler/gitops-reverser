@@ -878,14 +878,16 @@ func (d *Dispatcher) count(ctx context.Context, req git.ApplyRequest, outcome st
 	)...))
 }
 
-// applyAttrs is the identity an apply attempt is counted under: the GitBranch whose worker asked,
-// as every other branch-worker series names it, and the applier claim it asked, as
-// claimed_resource_reconciled_total names it. Neither invents an owner: one worker decides the
+// applyAttrs is the identity an apply attempt is counted under: the GitBranch whose worker asked and
+// its GitProvider, as every branch-worker series names them, and the applier claim it asked, as
+// apply_claimed_resource_reconciled_total names it. Neither invents an owner: one worker decides the
 // attempt and one claim holds the applier, so the pair adds no series beyond the claims.
 func applyAttrs(req git.ApplyRequest, extra ...attribute.KeyValue) []attribute.KeyValue {
 	return append([]attribute.KeyValue{
 		attribute.String("gitbranch_namespace", req.GitBranch.Namespace),
 		attribute.String("gitbranch_name", req.GitBranch.Name),
+		attribute.String("provider_namespace", req.Provider.Namespace),
+		attribute.String("provider_name", req.Provider.Name),
 		attribute.String("applier_kind", applierKindOf(req)),
 		attribute.String("claim_namespace", req.Applier.ApplierClaim.Namespace),
 		attribute.String("claim_name", req.Applier.ApplierClaim.Name),

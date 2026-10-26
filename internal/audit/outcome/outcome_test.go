@@ -52,7 +52,7 @@ func TestRecordNilGuard(t *testing.T) {
 	// This test must stay ahead of the tests below: InitTestExporter wires the global
 	// instrument permanently, so the nil branch is only reachable before the first call.
 	assert.NotPanics(t, func() {
-		Record(context.Background(), nil, Queued)
+		Record(context.Background(), nil, Queued, RouteNone)
 	})
 }
 
@@ -165,7 +165,7 @@ func TestVerb_NilEventAndPassthrough(t *testing.T) {
 }
 
 // TestRecord_EmitsLabelledSample covers the recording branch of Record (telemetry
-// initialized) and pins the six labels it stamps, including that category is derived from
+// initialized) and pins the seven labels it stamps, including that category is derived from
 // the outcome rather than passed in — an alert on category="error" depends on that.
 func TestRecord_EmitsLabelledSample(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
@@ -175,15 +175,16 @@ func TestRecord_EmitsLabelledSample(t *testing.T) {
 	Record(ctx, &auditv1.Event{
 		Verb:      "update",
 		ObjectRef: &auditv1.ObjectReference{APIGroup: "apps", APIVersion: "apps/v1", Resource: "deployments"},
-	}, WriteError)
+	}, WriteError, "team-a.prod")
 
 	count, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
-		"outcome":  string(WriteError),
-		"category": string(Error),
-		"group":    "apps",
-		"version":  "v1",
-		"resource": "deployments",
-		"verb":     "update",
+		"audit_route": "team-a.prod",
+		"outcome":     string(WriteError),
+		"category":    string(Error),
+		"group":       "apps",
+		"version":     "v1",
+		"resource":    "deployments",
+		"verb":        "update",
 	})
 	require.True(t, ok, "expected a sample for the recorded write_error outcome")
 	assert.Equal(t, int64(1), count)
@@ -196,7 +197,7 @@ func TestRecord_NilEventStillRecords(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	Record(context.Background(), nil, NilEvent)
+	Record(context.Background(), nil, NilEvent, RouteNone)
 
 	count, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
 		"outcome":  string(NilEvent),

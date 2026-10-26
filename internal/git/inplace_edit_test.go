@@ -173,7 +173,7 @@ func TestPlanFlush_AppliesChangeToCanonicalFile(t *testing.T) {
 
 	// Seed with the canonical rendering of a *different* value, so the update is a
 	// real change against an operator-canonical file.
-	seedCanonical, err := writer.buildContentForWrite(context.Background(), inplaceCMEvent("blue"))
+	seedCanonical, err := writer.buildContentForWrite(context.Background(), placementTarget{}, inplaceCMEvent("blue"))
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, seedCanonical, 0o600))
@@ -199,7 +199,7 @@ func TestPlanFlush_IdenticalUpdateIsNoOp(t *testing.T) {
 	relPath := writer.filePathForIdentifier(event.Identifier)
 	full := filepath.Join(root, relPath)
 
-	seed, err := writer.buildContentForWrite(context.Background(), event)
+	seed, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, seed, 0o600))

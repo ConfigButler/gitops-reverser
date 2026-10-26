@@ -104,7 +104,7 @@ func TestPlanFlush_NoOpInMultiDocReportsNoChange(t *testing.T) {
 	full := filepath.Join(root, placedManifestPath)
 
 	// The target document, byte-for-byte as the operator would render it.
-	targetDoc, err := writer.buildContentForWrite(context.Background(), event)
+	targetDoc, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 
 	// An unrelated, editable resource as the first document of the file.

@@ -191,20 +191,15 @@ func TestGitFetchesTotal_ProbeThenResetWhenTheRemoteDidMove(t *testing.T) {
 		"the probe confirmed movement, so the reset that follows is contention")
 }
 
-// TestGitFetchesTotal_ForcedRecheckAndBootstrap covers the two reasons that must keep counting
-// after the flip: a worker's first contact with the repository, and somebody asking it to look at
-// Git now.
-func TestGitFetchesTotal_ForcedRecheckAndBootstrap(t *testing.T) {
+// TestGitFetchesTotal_ForcedRecheck covers the reason that must keep counting after the flip:
+// somebody asking the worker to look at Git now.
+func TestGitFetchesTotal_ForcedRecheck(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	f := newLedgerFixture(t, "metric-recheck", true)
 	f.createLedgerTarget("team-a", nil)
-
-	require.NoError(t, f.worker.EnsurePathBootstrapped("team-a", "target-a", "default"))
-	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonBootstrap),
-		"the bootstrap is instrumented at prepareBootstrapRepository. NOTE: its only caller is\n"+
-			"EnsurePathBootstrapped, which has no production caller, so this series is test-only today")
+	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
 
 	err = f.worker.syncWithRemote(f.worker.ctx, fetchReasonForcedRecheck)
 	require.NoError(t, err)
@@ -238,7 +233,6 @@ func TestGitFetchesTotal_IdleTargetNeverFetches(t *testing.T) {
 	}
 
 	for _, reason := range []string{
-		fetchReasonBootstrap,
 		fetchReasonPublication,
 		fetchReasonRecovery,
 		fetchReasonContention,
@@ -259,9 +253,8 @@ func TestGitFetchesTotal_IdleTargetNeverFetches(t *testing.T) {
 // list docs/interpreting-metrics.md publishes.
 func TestGitFetchesTotal_ReasonSetMatchesTheDocumentedOne(t *testing.T) {
 	assert.Equal(t,
-		[]string{"bootstrap", "publication", "recovery", "contention", "push_failure_probe", "forced_recheck"},
+		[]string{"publication", "recovery", "contention", "push_failure_probe", "forced_recheck"},
 		[]string{
-			fetchReasonBootstrap,
 			fetchReasonPublication,
 			fetchReasonRecovery,
 			fetchReasonContention,

@@ -367,7 +367,7 @@ Three rules keep this from holding a resync forever:
 
 Only the worker's own appliers count: other `GitProvider`s writing the same
 repository and branch are not consulted. Both outcomes are counted in
-`stale_snapshots_total` (`discarded`, and `used` for the 5-minute bound). Design:
+`apply_stale_snapshots_total` (`discarded`, and `used` for the 5-minute bound). Design:
 [applier echoes, F3](../design/applier-echoes.md#f3-a-resync-never-decides-from-a-snapshot-collected-while-git-was-ahead-or-across-an-apply).
 
 ## Lazy Materialization Synergy

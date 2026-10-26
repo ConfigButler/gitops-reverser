@@ -20,7 +20,7 @@ Nothing open. The 0.54.0 release PR's changelog was checked against what ships o
   discard or race an open commit window or pending live edits
   ([render-fidelity.md](design/support-boundary/render-fidelity.md) §6b).
 - [ ] **Watch the held applier**, so a switch-on or a `flux resume` is undone at once instead of
-  within the one-minute `heldClaimSteadyInterval`. Also makes `claimed_resource_reconciled_total`
+  within the one-minute `heldClaimSteadyInterval`. Also makes `apply_claimed_resource_reconciled_total`
   (ask #31) count at the moment of the resume.
   [applier-claim-held-applier-watch.md](design/applier-claim-held-applier-watch.md).
 - [ ] **F3: a Flux fetch is made before the hold is checked**, so a `Kustomization` resumed by hand

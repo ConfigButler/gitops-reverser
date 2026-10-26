@@ -65,7 +65,7 @@ func newExecutorSecretEvent(path string) Event {
 func seedEventContent(t *testing.T, repoPath string, worktree *git.Worktree, writer *contentWriter, event Event) {
 	t.Helper()
 
-	content, err := writer.buildContentForWrite(context.Background(), event)
+	content, err := writer.buildContentForWrite(context.Background(), placementTarget{}, event)
 	require.NoError(t, err)
 
 	gitPath := generateFilePath(event.Identifier, types.SensitiveResourcePolicy{})

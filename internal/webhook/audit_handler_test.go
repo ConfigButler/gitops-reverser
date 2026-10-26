@@ -29,7 +29,7 @@ import (
 // the steady-state code paths exercised. Per-test value assertions use a fresh
 // telemetry.InitTestExporter() reader.
 func TestMain(m *testing.M) {
-	if _, err := telemetry.InitOTLPExporter(context.Background()); err != nil {
+	if _, err := telemetry.InitPrometheusExporter(context.Background()); err != nil {
 		panic("Failed to initialize metrics: " + err.Error())
 	}
 	os.Exit(m.Run())

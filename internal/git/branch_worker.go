@@ -154,7 +154,7 @@ type BranchWorker struct {
 	// loop last published it, for the apply_operations_unresolved gauge.
 	unresolvedOperations atomic.Int64
 	// heldAppliers is how many of this branch's appliers the barrier holds a reason back for, as the
-	// loop last published it, for the appliers_held gauge (barrier.go).
+	// loop last published it, for the apply_appliers_held gauge (barrier.go).
 	heldAppliers atomic.Int64
 	// applyEpoch, appliersAhead and hasAppliers are the loop's ApplyState for the watch side, which
 	// reads it when a snapshot's collection starts (apply_epoch.go).
@@ -1004,136 +1004,6 @@ func (w *BranchWorker) queueDepth() int64 {
 		depth++
 	}
 	return depth
-}
-
-// EnsurePathBootstrapped prepares bootstrap templates locally for a path.
-// Existing files are preserved, and only missing template files are added.
-// The files are staged in the local worktree but never committed or pushed here.
-func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace string) error {
-	w.repoMu.Lock()
-	defer w.repoMu.Unlock()
-
-	ctx := w.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	normalizedPath, err := normalizeBootstrapPath(path)
-	if err != nil {
-		return err
-	}
-	if err := validateBootstrapTarget(targetName, targetNamespace); err != nil {
-		return err
-	}
-
-	bootstrapOptions, err := w.resolveBootstrapOptions(ctx, targetName, targetNamespace)
-	if err != nil {
-		return err
-	}
-
-	repoPath, err := w.prepareBootstrapRepository(ctx)
-	if err != nil {
-		return err
-	}
-
-	if err := w.bootstrapPathIfNeeded(repoPath, normalizedPath, bootstrapOptions); err != nil {
-		return err
-	}
-
-	w.Log.Info("Prepared bootstrap files in worktree", "path", normalizedPath)
-	return nil
-}
-
-func normalizeBootstrapPath(path string) (string, error) {
-	normalizedPath := sanitizePath(path)
-	if strings.TrimSpace(path) != "" && normalizedPath == "" {
-		return "", fmt.Errorf("invalid path %q", path)
-	}
-	return normalizedPath, nil
-}
-
-func validateBootstrapTarget(targetName, targetNamespace string) error {
-	if strings.TrimSpace(targetName) == "" || strings.TrimSpace(targetNamespace) == "" {
-		return errors.New("target name and namespace must be set for path bootstrap")
-	}
-	return nil
-}
-
-func (w *BranchWorker) resolveBootstrapOptions(
-	ctx context.Context,
-	targetName string,
-	targetNamespace string,
-) (pathBootstrapOptions, error) {
-	targetKey := types.NamespacedName{Name: targetName, Namespace: targetNamespace}
-	var target configv1alpha3.GitTarget
-	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
-		return pathBootstrapOptions{}, fmt.Errorf("failed to get GitTarget %s: %w", targetKey.String(), err)
-	}
-
-	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
-	if err != nil {
-		w.Log.Error(err, "Skipping SOPS bootstrap due to invalid target encryption configuration",
-			"target", targetKey.String())
-		return pathBootstrapOptions{Enabled: true}, nil
-	}
-	if encryptionConfig == nil {
-		return pathBootstrapOptions{Enabled: true}, nil
-	}
-
-	if len(encryptionConfig.AgeRecipients) == 0 {
-		w.Log.Info("Skipping SOPS bootstrap due to missing resolved age recipients",
-			"target", targetKey.String())
-		return pathBootstrapOptions{Enabled: true}, nil
-	}
-
-	return pathBootstrapOptions{
-		Enabled:           true,
-		IncludeSOPSConfig: true,
-		TemplateData: bootstrapTemplateData{
-			AgeRecipients: encryptionConfig.AgeRecipients,
-		},
-	}, nil
-}
-
-func (w *BranchWorker) prepareBootstrapRepository(
-	ctx context.Context,
-) (string, error) {
-	provider, err := w.getGitProvider(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get GitProvider: %w", err)
-	}
-
-	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
-	if err != nil {
-		return "", fmt.Errorf("failed to get auth: %w", err)
-	}
-
-	repoPath := w.repoPath()
-	w.recordFetch(fetchReasonBootstrap)
-	pullReport, err := w.prepareBranch(ctx, repoPath, auth)
-	if err != nil {
-		return "", fmt.Errorf("failed to prepare repository: %w", err)
-	}
-	w.updateBranchMetadataFromPullReport(pullReport)
-
-	return repoPath, nil
-}
-
-func (w *BranchWorker) bootstrapPathIfNeeded(
-	repoPath string,
-	normalizedPath string,
-	options pathBootstrapOptions,
-) error {
-	repo, err := gogit.PlainOpen(repoPath)
-	if err != nil {
-		return fmt.Errorf("failed to open repository: %w", err)
-	}
-
-	if err := ensureBootstrapTemplateInPath(repo, normalizedPath, options); err != nil {
-		return fmt.Errorf("failed to bootstrap path %q: %w", normalizedPath, err)
-	}
-
-	return nil
 }
 
 // processEvents is the main event processing loop.
@@ -2843,8 +2713,6 @@ const (
 // of commitPendingWrites, and keeping them apart is what lets the steady-state claim be asserted
 // at zero without the assertion failing the first time a push fails.
 const (
-	// fetchReasonBootstrap is the worker's first contact with the repository.
-	fetchReasonBootstrap = "bootstrap"
 	// fetchReasonPublication is the fetch at the head of a publication cycle.
 	fetchReasonPublication = "publication"
 	// fetchReasonRecovery is a cycle that had to re-establish a base it could not trust.
@@ -2988,17 +2856,21 @@ func (w *BranchWorker) recordFetch(reason string) {
 		metric.WithAttributes(w.gitBranchAttrs(attribute.String("reason", reason))...))
 }
 
-// gitBranchAttrs is the {gitbranch_namespace, gitbranch_name} identity every Git-side metric this
-// worker records is labelled by: the GitBranch it writes for, so a series matches that object's
-// conditions and `kubectl get gitbranch` directly. Its GitProvider and spec.branch are not labels
-// here: both are immutable on the GitBranch, and git_branch_info carries them for a join. The keys
-// are prefixed, never bare namespace/name: a Prometheus pod scrape with honor_labels=false
-// overwrites a bare `namespace` attribute with the scraped pod's own, which silently breaks every
-// per-branch selector.
+// gitBranchAttrs is the {gitbranch_namespace, gitbranch_name, provider_namespace, provider_name}
+// identity every Git-side metric this worker records is labelled by. The GitBranch it writes for
+// matches a series to that object's conditions and `kubectl get gitbranch`; its GitProvider groups
+// the branches one credential writes, which is how an expired credential shows. The provider adds
+// no series: it is immutable on the GitBranch, and a worker serves one GitBranch. spec.branch is
+// left off for the same reason and because the GitBranch already names it. The keys are prefixed,
+// never bare namespace/name: a Prometheus pod scrape with honor_labels=false renames a bare
+// `namespace` to exported_namespace and puts the scraped pod's own in its place, which silently
+// breaks every per-branch selector.
 func (w *BranchWorker) gitBranchAttrs(extra ...attribute.KeyValue) []attribute.KeyValue {
 	return append([]attribute.KeyValue{
 		attribute.String("gitbranch_namespace", w.GitBranch.Namespace),
 		attribute.String("gitbranch_name", w.GitBranch.Name),
+		attribute.String("provider_namespace", w.GitProviderNamespace),
+		attribute.String("provider_name", w.GitProviderRef),
 	}, extra...)
 }
 
@@ -3284,47 +3156,6 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context, reason string) error 
 	}
 
 	return nil
-}
-
-// ensureRepositoryInitialized ensures the worker's repository is cloned and ready.
-func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
-	provider, err := w.getGitProvider(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get GitProvider: %w", err)
-	}
-
-	repoPath := w.repoPath()
-	if w.shouldReadRetainedLocalRepository(repoPath) {
-		return nil
-	}
-
-	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
-	if err != nil {
-		return fmt.Errorf("failed to get auth: %w", err)
-	}
-
-	// Use new PrepareBranch abstraction
-	pullReport, err := w.prepareBranch(ctx, repoPath, auth)
-	if err != nil {
-		return fmt.Errorf("failed to prepare repository: %w", err)
-	}
-
-	// Update metadata from pull report
-	w.updateBranchMetadataFromPullReport(pullReport)
-
-	return nil
-}
-
-func (w *BranchWorker) shouldReadRetainedLocalRepository(repoPath string) bool {
-	if !w.hasUnpushedWork.Load() && w.inflightItems.Load() == 0 {
-		return false
-	}
-
-	if _, err := gogit.PlainOpen(repoPath); err != nil {
-		return false
-	}
-
-	return true
 }
 
 // updateBranchMetadataFromPullReport updates metadata from a PullReport.

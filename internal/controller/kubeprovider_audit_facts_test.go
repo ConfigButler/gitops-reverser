@@ -360,3 +360,19 @@ func TestKubeProviderAuditFacts_RouteChangeStartsTheLatchOver(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue,
 		findCondition(got.Status.Conditions, KubeProviderConditionAuditFactsReceived).Status)
 }
+
+// TestKubeProviderAuditFacts_DeclaresItsRouteUntilDeleted: the reconcile publishes the route the
+// provider carries, which is what lets the audit census name it, and the NotFound reconcile after
+// a delete takes it back.
+func TestKubeProviderAuditFacts_DeclaresItsRouteUntilDeleted(t *testing.T) {
+	provider := inClusterKubeProvider("srcns-delegating")
+	health := &attribution.RouteHealth{}
+
+	r, got := reconcileKubeProviderOnce(t, provider, health)
+	assert.True(t, health.RouteDeclared("team-a.srcns-delegating"))
+
+	require.NoError(t, r.Delete(context.Background(), &got))
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: provider.Key()})
+	require.NoError(t, err)
+	assert.False(t, health.RouteDeclared("team-a.srcns-delegating"), "a deleted provider declares nothing")
+}

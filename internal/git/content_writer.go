@@ -44,7 +44,7 @@ type contentWriter struct {
 }
 
 type eventContentWriter interface {
-	buildContentForWrite(ctx context.Context, event Event) ([]byte, error)
+	buildContentForWrite(ctx context.Context, target placementTarget, event Event) ([]byte, error)
 	filePathForIdentifier(id types.ResourceIdentifier) string
 	isSensitiveIdentifier(id types.ResourceIdentifier) bool
 }
@@ -65,8 +65,11 @@ func (w *contentWriter) setEncryptor(encryptor Encryptor, scope string) {
 }
 
 // buildContentForWrite renders event content to stable ordered YAML and applies
-// sensitive-resource encryption when configured.
-func (w *contentWriter) buildContentForWrite(ctx context.Context, event Event) ([]byte, error) {
+// sensitive-resource encryption when configured. target is the GitTarget the write is for, which
+// secret_encryptions_total is labelled by.
+func (w *contentWriter) buildContentForWrite(
+	ctx context.Context, target placementTarget, event Event,
+) ([]byte, error) {
 	content, err := sanitize.MarshalToOrderedYAML(event.Object)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal object to YAML: %w", err)
@@ -76,7 +79,7 @@ func (w *contentWriter) buildContentForWrite(ctx context.Context, event Event) (
 		return content, nil
 	}
 
-	return w.encryptSensitiveContent(ctx, event, content)
+	return w.encryptSensitiveContent(ctx, target, event, content)
 }
 
 func (w *contentWriter) filePathForIdentifier(id types.ResourceIdentifier) string {
@@ -87,7 +90,9 @@ func (w *contentWriter) isSensitiveIdentifier(id types.ResourceIdentifier) bool 
 	return w.sensitiveResources.IsSensitive(id.Group, id.Resource)
 }
 
-func (w *contentWriter) encryptSensitiveContent(ctx context.Context, event Event, plain []byte) ([]byte, error) {
+func (w *contentWriter) encryptSensitiveContent(
+	ctx context.Context, target placementTarget, event Event, plain []byte,
+) ([]byte, error) {
 	meta := buildResourceMeta(event)
 	identityKey := meta.Identifier.Key()
 	digest := sha256.Sum256(plain)
@@ -110,7 +115,7 @@ func (w *contentWriter) encryptSensitiveContent(ctx context.Context, event Event
 	cacheKey := fmt.Sprintf("%s:%x", scopedIdentityKey, digest)
 
 	w.mu.RLock()
-	cached, ok := w.cachedEncryptedContent(ctx, scopedIdentityKey, cacheKey, currentMarker)
+	cached, ok := w.cachedEncryptedContent(ctx, target, scopedIdentityKey, cacheKey, currentMarker)
 	w.mu.RUnlock()
 	if ok {
 		return cached, nil
@@ -122,10 +127,10 @@ func (w *contentWriter) encryptSensitiveContent(ctx context.Context, event Event
 
 	encrypted, err := encryptor.Encrypt(ctx, plain, ResourceMeta(meta))
 	if err != nil {
-		recordSecretEncryption(ctx, secretEncryptionFailed)
+		recordSecretEncryption(ctx, target, secretEncryptionFailed)
 		return nil, fmt.Errorf("secret encryption failed: %w", err)
 	}
-	recordSecretEncryption(ctx, secretEncryptionEncrypted)
+	recordSecretEncryption(ctx, target, secretEncryptionEncrypted)
 
 	w.mu.Lock()
 	w.encryptedCache[cacheKey] = append([]byte(nil), encrypted...)
@@ -137,6 +142,7 @@ func (w *contentWriter) encryptSensitiveContent(ctx context.Context, event Event
 
 func (w *contentWriter) cachedEncryptedContent(
 	ctx context.Context,
+	target placementTarget,
 	identityKey, cacheKey string,
 	currentMarker sensitiveMarker,
 ) ([]byte, bool) {
@@ -148,7 +154,7 @@ func (w *contentWriter) cachedEncryptedContent(
 	if !ok {
 		return nil, false
 	}
-	recordSecretEncryption(ctx, secretEncryptionCached)
+	recordSecretEncryption(ctx, target, secretEncryptionCached)
 	return append([]byte(nil), cached...), true
 }
 
@@ -181,9 +187,13 @@ const (
 // `cache_hits` and `marker_skips` were incremented on consecutive lines of one branch and could
 // never differ. A share of one total is also the ratio the old "cache effectiveness" query was
 // reaching for, which divided two counters over disjoint populations.
-func recordSecretEncryption(ctx context.Context, outcome string) {
+//
+// It names the GitTarget, so "whose Secrets are being rejected" is a selector rather than a log
+// search. A batch built by a test carries no target and publishes the empty pair.
+func recordSecretEncryption(ctx context.Context, target placementTarget, outcome string) {
 	if telemetry.SecretEncryptionsTotal == nil {
 		return
 	}
-	telemetry.SecretEncryptionsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+	telemetry.SecretEncryptionsTotal.Add(ctx, 1,
+		metric.WithAttributes(append(target.attrs(), attribute.String("outcome", outcome))...))
 }
