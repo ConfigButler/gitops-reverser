@@ -277,7 +277,7 @@ var _ = Describe("CRD Lifecycle", Label("crd-lifecycle"), Serial, Ordered, func(
 		// is the file-existence assertion below. gitopsreverser_git_commits_total counts
 		// both commit paths (per-event and backfill resync), so this single metric
 		// replaces the prior Or() of two operator-log substrings, and the
-		// provider_namespace label scopes it to this suite's GitProvider.
+		// gitbranch_namespace label scopes it to this suite's GitBranch.
 		waitForCommitInNamespace(testNs)
 
 		By("verifying CRD instance YAML file exists in Gitea repository")

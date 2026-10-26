@@ -114,7 +114,7 @@ func (w *BranchWorker) recordMaterializationFailure(err error) {
 		reason = "parent_unavailable"
 	}
 	telemetry.GitMaterializationFailuresTotal.Add(context.Background(), 1,
-		metric.WithAttributes(w.providerAttrs(attribute.String("reason", reason))...))
+		metric.WithAttributes(w.gitBranchAttrs(attribute.String("reason", reason))...))
 }
 
 // setPublicationGaugeSources installs the scrape-time sources of the publication gauges: one
@@ -125,7 +125,7 @@ func (m *WorkerManager) setPublicationGaugeSources() {
 			var samples []telemetry.GaugeSample
 			for _, worker := range m.liveWorkers() {
 				if value, ok := read(worker); ok {
-					samples = append(samples, telemetry.GaugeSample{Value: value, Attrs: worker.providerAttrs()})
+					samples = append(samples, telemetry.GaugeSample{Value: value, Attrs: worker.gitBranchAttrs()})
 				}
 			}
 			return samples

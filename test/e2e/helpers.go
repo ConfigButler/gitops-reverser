@@ -131,22 +131,22 @@ func ensurePrometheusClient() {
 }
 
 // waitForCommitInNamespace blocks until gitopsreverser_git_commits_total reports at least
-// one commit for a BranchWorker whose GitProvider lives in providerNamespace. Because
-// each e2e suite creates its GitProvider in a unique namespace (testNamespaceFor), this
+// one commit for a BranchWorker whose GitBranch lives in namespace. Because each e2e
+// suite creates its GitBranches in a unique namespace (testNamespaceFor), this
 // isolates the calling spec's commits from any other spec committing in parallel — the
 // robust replacement for scraping operator logs for "git commit created". The metric
 // helper's Eventually poll absorbs the ~5s Prometheus scrape interval, and the per-event
 // and backfill-resync commit paths both feed this one counter.
-func waitForCommitInNamespace(providerNamespace string) {
+func waitForCommitInNamespace(namespace string) {
 	ensurePrometheusClient()
 	query := fmt.Sprintf(
-		`sum(gitopsreverser_git_commits_total{provider_namespace=%q}) or vector(0)`,
-		providerNamespace,
+		`sum(gitopsreverser_git_commits_total{gitbranch_namespace=%q}) or vector(0)`,
+		namespace,
 	)
 	waitForMetricWithTimeout(
 		query,
 		func(v float64) bool { return v > 0 },
-		fmt.Sprintf("a commit was created for GitProvider namespace %q", providerNamespace),
+		fmt.Sprintf("a commit was created for a GitBranch in namespace %q", namespace),
 		45*time.Second, //nolint:mnd // matches the prior log-scrape Eventually budget
 	)
 }

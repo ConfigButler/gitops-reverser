@@ -187,8 +187,28 @@ A `WatchRule` or `ClusterWatchRule` no longer reads the GitProvider and no longe
 Deleting a `GitBranch` stops its branch worker after it has pushed or refused every pending write and
 settled every `CommitRequest` it held. It never deletes the branch on the remote.
 
-The metrics keep their `provider_namespace` and `provider_name` labels, which name the `GitProvider`
-of the `GitBranch` holding the branch. Log lines name a branch as `repository@branch`.
+**The branch worker's metrics are labeled by the `GitBranch`.** Every series a branch worker
+records carries `gitbranch_namespace` and `gitbranch_name` where it carried `provider_namespace`,
+`provider_name` and `branch`: the `git_commits_total`, `git_pushes_total`,
+`git_push_retries_total`, `git_push_duration_seconds`, `git_fetches_total`,
+`git_queue_refusals_total`, `git_commit_failures_total`, `git_writes_dropped_total` and
+`git_materialization_failures_total` counters; the `git_queue_depth`, `git_retained_bytes`,
+`git_retained_writes`, `git_intake_paused`, `git_oldest_retained_write_timestamp_seconds` and
+`git_next_retry_timestamp_seconds` gauges; and `apply_window_collisions_total`,
+`apply_echoes_total`, `apply_ownership_conflicts_total`, `stale_snapshots_total`,
+`apply_operations_unresolved` and `appliers_held`. `git_branch_targets` maps each `GitTarget` to
+its `GitBranch` the same way. The provider and branch name are on `git_branch_info`, one series per
+`GitBranch`, for a query that groups by provider:
+
+```promql
+# 0.53.0: sum by (provider_namespace, provider_name, branch) (...git_pushes_total...)
+sum by (gitbranch_namespace, gitbranch_name) (rate(gitopsreverser_git_pushes_total[5m]))
+```
+
+`apply_requests_total` and `apply_revision_mismatches_total` gain the same two labels plus
+`claim_namespace` and `claim_name`, and `watch_sessions_ended_total`,
+`watch_replay_duration_seconds` and `watch_event_handling_seconds` gain `source_cluster`; a query
+that sums over them reads as before. Log lines name a branch as `repository@branch`.
 
 ## Grants say who may use a provider or a branch; `allowedBranches` is `allowedGitBranches`
 

@@ -104,5 +104,5 @@ func (l *branchWorkerEventLoop) recordWriteDropped(kind, reason string) {
 		ctx = context.Background()
 	}
 	telemetry.GitWritesDroppedTotal.Add(ctx, 1, metric.WithAttributes(
-		l.w.providerAttrs(attribute.String("kind", kind), attribute.String("reason", reason))...))
+		l.w.gitBranchAttrs(attribute.String("kind", kind), attribute.String("reason", reason))...))
 }

@@ -316,7 +316,7 @@ func (l *branchWorkerEventLoop) recordApplyEcho(outcome string) {
 		return
 	}
 	telemetry.ApplyEchoesTotal.Add(context.WithoutCancel(l.w.ctx), 1,
-		metric.WithAttributes(l.w.providerAttrs(attribute.String("outcome", outcome))...))
+		metric.WithAttributes(l.w.gitBranchAttrs(attribute.String("outcome", outcome))...))
 }
 
 // reportApplyWindow logs, once, how many of the applier's writes its window kept out of Git: what it
@@ -372,5 +372,5 @@ func (l *branchWorkerEventLoop) recordApplyWindowCollision(
 		return
 	}
 	telemetry.ApplyWindowCollisionsTotal.Add(context.WithoutCancel(w.ctx), 1,
-		metric.WithAttributes(w.providerAttrs(attribute.String("outcome", outcome))...))
+		metric.WithAttributes(w.gitBranchAttrs(attribute.String("outcome", outcome))...))
 }

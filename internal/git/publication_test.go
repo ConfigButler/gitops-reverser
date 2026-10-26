@@ -85,13 +85,17 @@ func TestPublication_MetricsDescribeTheBacklog(t *testing.T) {
 			telemetry.SetGaugeSource(name, nil)
 		}
 	})
-	branch := map[string]string{"branch": "main"}
+	require.NotEmpty(t, f.worker.GitBranch.Name, "precondition: the fixture's worker writes for a GitBranch")
+	branch := map[string]string{
+		"gitbranch_namespace": f.worker.GitBranch.Namespace,
+		"gitbranch_name":      f.worker.GitBranch.Name,
+	}
 	gauge := func(name string) (int64, bool) {
 		return telemetry.CollectInt64Sum(reader, "gitopsreverser_"+name, branch)
 	}
 
 	failures, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_git_materialization_failures_total",
-		map[string]string{"branch": "main", "reason": "unreachable"})
+		map[string]string{"gitbranch_name": f.worker.GitBranch.Name, "reason": "unreachable"})
 	require.True(t, ok, "a decided write the remote could not take is counted")
 	assert.Positive(t, failures)
 

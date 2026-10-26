@@ -179,7 +179,7 @@ const ownershipLogLimit = 1024
 func (l *branchWorkerEventLoop) recordOwnershipConflict(target, object string, applier ApplierRef, owner AppliedBy) {
 	if telemetry.ApplyOwnershipConflictsTotal != nil {
 		telemetry.ApplyOwnershipConflictsTotal.Add(context.WithoutCancel(l.w.ctx), 1,
-			metric.WithAttributes(l.w.providerAttrs()...))
+			metric.WithAttributes(l.w.gitBranchAttrs()...))
 	}
 	key := target + "|" + object
 	if _, logged := l.ownershipLogged[key]; logged {

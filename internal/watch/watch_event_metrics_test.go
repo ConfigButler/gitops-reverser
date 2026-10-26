@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,4 +116,37 @@ func TestRecordWatchRecovery_CarriesNoVersionLabel(t *testing.T) {
 	_, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_watch_recovery_total",
 		map[string]string{"version": "v1"})
 	assert.False(t, ok, "the recovery counter must not carry a version label")
+}
+
+// The per-type stream instruments name the source cluster, because the API server that closes,
+// expires and replays a watch is that cluster's: two KubeProviders serving one type are two
+// streams, and an expiry storm on one must not read as the other's.
+func TestStreamInstruments_AreSplitBySourceCluster(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	started := time.Now()
+	recordWatchSessionEnded(t.Context(), "team-a/eu", gvr, sessionEndedExpired)
+	recordWatchSessionEnded(t.Context(), "team-a/eu", gvr, sessionEndedExpired)
+	recordWatchSessionEnded(t.Context(), "team-a/us", gvr, sessionEndedClosed)
+	recordWatchReplayDuration(t.Context(), "team-a/eu", gvr, started)
+	recordWatchEventHandling(t.Context(), "team-a/us", gvr, started)
+
+	expired, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_watch_sessions_ended_total",
+		map[string]string{"source_cluster": "team-a/eu", "resource": "configmaps", "reason": sessionEndedExpired})
+	require.True(t, ok)
+	assert.Equal(t, int64(2), expired)
+	_, ok = telemetry.CollectInt64Sum(reader, "gitopsreverser_watch_sessions_ended_total",
+		map[string]string{"source_cluster": "team-a/us", "reason": sessionEndedExpired})
+	assert.False(t, ok, "the other cluster's sessions did not expire")
+
+	replays, ok := telemetry.CollectHistogramCount(reader, "gitopsreverser_watch_replay_duration_seconds",
+		map[string]string{"source_cluster": "team-a/eu", "resource": "configmaps"})
+	require.True(t, ok)
+	assert.Equal(t, uint64(1), replays)
+	handled, ok := telemetry.CollectHistogramCount(reader, "gitopsreverser_watch_event_handling_seconds",
+		map[string]string{"source_cluster": "team-a/us", "resource": "configmaps"})
+	require.True(t, ok)
+	assert.Equal(t, uint64(1), handled)
 }

@@ -2928,10 +2928,10 @@ func (w *BranchWorker) publishCommitsForPush(pendingWrites []PendingWrite) {
 		}]++
 	}
 	for labels, count := range counts {
-		// Label by the recording BranchWorker's own identity {provider_namespace,
-		// provider_name, branch} plus author_kind and message_source. The prefixed key names
-		// avoid the reserved Prometheus pod-scrape labels `namespace`/`name`.
-		telemetry.GitCommitsTotal.Add(ctx, count, metric.WithAttributes(w.providerAttrs(
+		// Label by the recording BranchWorker's GitBranch {gitbranch_namespace, gitbranch_name}
+		// plus author_kind and message_source. The prefixed key names avoid the reserved
+		// Prometheus pod-scrape labels `namespace`/`name`.
+		telemetry.GitCommitsTotal.Add(ctx, count, metric.WithAttributes(w.gitBranchAttrs(
 			attribute.String("author_kind", labels.authorKind),
 			attribute.String("message_source", labels.messageSource),
 		)...))
@@ -2950,11 +2950,11 @@ func (w *BranchWorker) recordPushOutcome(outcome string, started time.Time) {
 	}
 	if telemetry.GitPushesTotal != nil {
 		telemetry.GitPushesTotal.Add(ctx, 1,
-			metric.WithAttributes(w.providerAttrs(attribute.String("outcome", outcome))...))
+			metric.WithAttributes(w.gitBranchAttrs(attribute.String("outcome", outcome))...))
 	}
 	if telemetry.GitPushDurationSeconds != nil {
 		telemetry.GitPushDurationSeconds.Record(ctx, time.Since(started).Seconds(),
-			metric.WithAttributes(w.providerAttrs()...))
+			metric.WithAttributes(w.gitBranchAttrs()...))
 	}
 }
 
@@ -2968,7 +2968,7 @@ func (w *BranchWorker) recordPushRetry(reason string) {
 		ctx = context.Background()
 	}
 	telemetry.GitPushRetriesTotal.Add(ctx, 1,
-		metric.WithAttributes(w.providerAttrs(attribute.String("reason", reason))...))
+		metric.WithAttributes(w.gitBranchAttrs(attribute.String("reason", reason))...))
 }
 
 // recordFetch counts one call that reaches the remote through SmartFetch.
@@ -2985,18 +2985,20 @@ func (w *BranchWorker) recordFetch(reason string) {
 		ctx = context.Background()
 	}
 	telemetry.GitFetchesTotal.Add(ctx, 1,
-		metric.WithAttributes(w.providerAttrs(attribute.String("reason", reason))...))
+		metric.WithAttributes(w.gitBranchAttrs(attribute.String("reason", reason))...))
 }
 
-// providerAttrs is the {provider_namespace, provider_name, branch} identity every Git-side metric
-// this worker records is labelled by. The keys are prefixed, never bare namespace/name: a
-// Prometheus pod scrape with honor_labels=false overwrites a bare `namespace` attribute with the
-// scraped pod's own, which silently breaks every per-provider selector.
-func (w *BranchWorker) providerAttrs(extra ...attribute.KeyValue) []attribute.KeyValue {
+// gitBranchAttrs is the {gitbranch_namespace, gitbranch_name} identity every Git-side metric this
+// worker records is labelled by: the GitBranch it writes for, so a series matches that object's
+// conditions and `kubectl get gitbranch` directly. Its GitProvider and spec.branch are not labels
+// here: both are immutable on the GitBranch, and git_branch_info carries them for a join. The keys
+// are prefixed, never bare namespace/name: a Prometheus pod scrape with honor_labels=false
+// overwrites a bare `namespace` attribute with the scraped pod's own, which silently breaks every
+// per-branch selector.
+func (w *BranchWorker) gitBranchAttrs(extra ...attribute.KeyValue) []attribute.KeyValue {
 	return append([]attribute.KeyValue{
-		attribute.String("provider_namespace", w.GitProviderNamespace),
-		attribute.String("provider_name", w.GitProviderRef),
-		attribute.String("branch", w.Branch),
+		attribute.String("gitbranch_namespace", w.GitBranch.Namespace),
+		attribute.String("gitbranch_name", w.GitBranch.Name),
 	}, extra...)
 }
 
@@ -3014,7 +3016,7 @@ func (w *BranchWorker) recordCommitFailure(kind, reason string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	telemetry.GitCommitFailuresTotal.Add(ctx, 1, metric.WithAttributes(w.providerAttrs(
+	telemetry.GitCommitFailuresTotal.Add(ctx, 1, metric.WithAttributes(w.gitBranchAttrs(
 		attribute.String("kind", kind),
 		attribute.String("reason", reason),
 	)...))
@@ -3099,7 +3101,7 @@ func (w *BranchWorker) recordQueueRefusal(kind string) {
 		ctx = context.Background()
 	}
 	telemetry.GitQueueRefusalsTotal.Add(ctx, 1,
-		metric.WithAttributes(w.providerAttrs(attribute.String("kind", kind))...))
+		metric.WithAttributes(w.gitBranchAttrs(attribute.String("kind", kind))...))
 }
 
 // getGitProvider fetches the GitProvider for this worker.

@@ -234,5 +234,5 @@ func (l *branchWorkerEventLoop) recordStaleSnapshot(outcome string) {
 		return
 	}
 	telemetry.StaleSnapshotsTotal.Add(context.WithoutCancel(l.w.ctx), 1,
-		metric.WithAttributes(l.w.providerAttrs(attribute.String("outcome", outcome))...))
+		metric.WithAttributes(l.w.gitBranchAttrs(attribute.String("outcome", outcome))...))
 }

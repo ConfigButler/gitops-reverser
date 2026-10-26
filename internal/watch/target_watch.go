@@ -574,7 +574,7 @@ func (m *Manager) runTargetWatch(
 	stream.changes = newDesiredStateChangeFilter()
 	for ctx.Err() == nil {
 		err := m.targetWatchReplayAndStream(ctx, log, gitDest, stream, stream.hasReplayed())
-		recordWatchSessionEnded(ctx, stream.key.GVR, sessionEndReason(ctx, err))
+		recordWatchSessionEnded(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, sessionEndReason(ctx, err))
 		if ctx.Err() != nil {
 			return
 		}
@@ -709,7 +709,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		// HERE because the wrapper swallows the sentinel and falls through to a fresh replay, so
 		// the outer session-end recording never sees it — and `expired` is the reason that matters
 		// most, since it is the one that forces a full rebuild of the type.
-		recordWatchSessionEnded(ctx, stream.key.GVR, sessionEndedExpired)
+		recordWatchSessionEnded(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, sessionEndedExpired)
 		m.markTargetStreamState(
 			gitDest,
 			stream.key.Collection(),
@@ -808,7 +808,7 @@ func (m *Manager) pumpTargetWatchSession(
 			if replaying && !nextReplaying {
 				// initial-events-end. This is what a 410 storm charges: the cost of every rebuild
 				// it forces, which no other instrument can see.
-				recordWatchReplayDuration(ctx, stream.key.GVR, replayStarted)
+				recordWatchReplayDuration(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, replayStarted)
 				m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeReplay)
 			}
 			replaying = nextReplaying
@@ -1158,7 +1158,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	// reported no occupancy at all. A stream is single-threaded, so time spent in this function is
 	// time nothing else on that stream is being read, which is the whole signal.
 	defer func(started time.Time) {
-		recordWatchEventHandling(ctx, stream.key.GVR, started)
+		recordWatchEventHandling(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, started)
 	}(time.Now())
 
 	rv := targetWatchEventResourceVersion(ev)

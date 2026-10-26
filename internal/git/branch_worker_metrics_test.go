@@ -12,6 +12,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -33,6 +34,7 @@ const testRepoURL = "https://example.com/test"
 
 func newMetricsTestWorker() *BranchWorker {
 	return &BranchWorker{
+		GitBranch:            k8stypes.NamespacedName{Namespace: "test-ns", Name: "test-branch"},
 		GitProviderRef:       "test-provider",
 		GitProviderNamespace: "test-ns",
 		Branch:               "main",
@@ -46,9 +48,8 @@ func newMetricsTestWorker() *BranchWorker {
 
 func workerLabels() map[string]string {
 	return map[string]string{
-		"provider_namespace": "test-ns",
-		"provider_name":      "test-provider",
-		"branch":             "main",
+		"gitbranch_namespace": "test-ns",
+		"gitbranch_name":      "test-branch",
 	}
 }
 
@@ -59,10 +60,10 @@ func commitAndPush(w *BranchWorker, writes []PendingWrite, _ int) {
 	w.publishCommitsForPush(writes)
 }
 
-// commits_total must be labelled with the recording worker's identity
-// {provider_namespace, provider_name, branch}. Without labels the counter is a single global
+// commits_total must be labelled with the recording worker's GitBranch
+// {gitbranch_namespace, gitbranch_name}. Without labels the counter is a single global
 // series; with them, concurrent workers (and parallel e2e specs, isolated by their per-suite
-// GitProvider namespace) count separately.
+// GitBranch namespace) count separately.
 func TestRecordPendingWritesMetrics_LabelsCommitsByWorkerIdentity(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -75,10 +76,10 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByWorkerIdentity(t *testing.T) 
 	assert.Equal(t, int64(2), commits)
 }
 
-// A query scoped to a different provider_namespace must not see this worker's
+// A query scoped to a different gitbranch_namespace must not see this worker's
 // commits — this is the property that lets parallel e2e specs each assert on only
-// their own commits (each suite mints its GitProvider in a unique namespace).
-func TestRecordPendingWritesMetrics_CommitsIsolatedByProviderNamespace(t *testing.T) {
+// their own commits (each suite mints its GitBranch in a unique namespace).
+func TestRecordPendingWritesMetrics_CommitsIsolatedByGitBranchNamespace(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
@@ -86,9 +87,9 @@ func TestRecordPendingWritesMetrics_CommitsIsolatedByProviderNamespace(t *testin
 	commitAndPush(w, committerWrites(1), 1)
 
 	otherNamespace := workerLabels()
-	otherNamespace["provider_namespace"] = "other-suite-ns"
+	otherNamespace["gitbranch_namespace"] = "other-suite-ns"
 	_, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, otherNamespace)
-	assert.False(t, ok, "a different provider_namespace must not match this worker's commits")
+	assert.False(t, ok, "a different gitbranch_namespace must not match this worker's commits")
 }
 
 func TestRecordPendingWritesMetrics_LabelsCommitsByAuthorKind(t *testing.T) {

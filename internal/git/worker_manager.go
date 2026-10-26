@@ -887,7 +887,7 @@ func (m *WorkerManager) queueDepthSamples() []telemetry.GaugeSample {
 	for _, worker := range workers {
 		samples = append(samples, telemetry.GaugeSample{
 			Value: worker.queueDepth(),
-			Attrs: worker.providerAttrs(),
+			Attrs: worker.gitBranchAttrs(),
 		})
 	}
 	return samples

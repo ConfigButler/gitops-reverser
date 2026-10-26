@@ -33,10 +33,9 @@ const fetchesTotalMetric = "gitopsreverser_git_fetches_total"
 // fetchLabels is the identity a ledger fixture's worker records under, narrowed to one reason.
 func fetchLabels(worker *BranchWorker, reason string) map[string]string {
 	return map[string]string{
-		"provider_namespace": worker.GitProviderNamespace,
-		"provider_name":      worker.GitProviderRef,
-		"branch":             worker.Branch,
-		"reason":             reason,
+		"gitbranch_namespace": worker.GitBranch.Namespace,
+		"gitbranch_name":      worker.GitBranch.Name,
+		"reason":              reason,
 	}
 }
 

@@ -1291,9 +1291,10 @@ like an empty API surface, and a group/version that vanishes from a complete sca
 rather than being pruned. Both protect against accidental Git deletions on a discovery blink (see
 [typeset-owns-discovery-grace.md](spec/typeset-owns-discovery-grace.md)). Every active source context has
 its own catalog and registry, so a CRD served only by `prod-eu-1` is never resolved for a target mirroring
-`prod-us-1`. Catalogs refresh at startup and on the 30-second reconciliation cadence. CRD/APIService
-informers run only in the **control plane**, where the operator's own CRDs live; a remote source's
-API-surface change is discovered on that periodic refresh. A target's plan pass never calls discovery
+`prod-us-1`. Catalogs refresh at startup and on the 30-second reconciliation cadence. The
+`CustomResourceDefinition` and `APIService` informers run only in the **control plane**, where the
+operator's own CRDs live; a remote source's API-surface change is discovered on that periodic
+refresh. A target's plan pass never calls discovery
 itself; for a source nothing has observed yet, it asks for a refresh at once.
 
 ### TypeRegistry and followability
@@ -1342,8 +1343,8 @@ The watch manager is a controller runtime `Runnable` (`NeedLeaderElection`). It 
 discovery, the per-GitTarget watch sets, and the watched type tables for GitTargets. Its object-state
 intake is the watches themselves. Every active `KubeProvider` has an independent source context; its
 catalog, registry, dynamic client, and reachability can fail or recover without borrowing facts from another
-source. Discovery informers (CRDs / APIServices) run only in the control plane and accelerate its
-catalog refresh; remote source catalogs use the periodic refresh.
+source. Discovery informers (on `CustomResourceDefinition` and `APIService`) run only in the control
+plane and accelerate its catalog refresh; remote source catalogs use the periodic refresh.
 
 On `Start` it bootstraps the RuleStore, refreshes the API catalog and TypeRegistry, resolves rule
 selection, and builds the collection watch plan.
@@ -1377,11 +1378,11 @@ next plan pass resolves its claimed `(GVR, scope)` set against the source's curr
 a new rule starts watching gets a new watch opened (with a
 `sendInitialEvents` replay) and a type no longer claimed has its watch closed.
 
-A **control-plane** CRD / APIService change reaches the same re-resolution through the watch manager
-instead. Its informers wake a catalog refresh, which re-resolves the watched type tables and
-brings the running watches into line. The GitTarget controller does not watch those objects. A remote
-CRD / APIService change has no informer at all; the next periodic source-catalog refresh
-performs the same re-resolution.
+A **control-plane** `CustomResourceDefinition` or `APIService` change reaches the same
+re-resolution through the watch manager instead. Its informers wake a catalog refresh, which
+re-resolves the watched type tables and brings the running watches into line. The GitTarget
+controller does not watch those objects. A remote `CustomResourceDefinition` or `APIService` change
+has no informer at all; the next periodic source-catalog refresh performs the same re-resolution.
 
 ### Mark and sweep resync
 
@@ -1817,7 +1818,7 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   It proves the credential with a push session, keeps the branch claim, and publishes the worker's
   `status.remote` (see [Git write architecture](#git-write-architecture)).
 - `GitReceiverReconciler` watches only its own objects and publishes `status.webhookPath` once the
-  token Secret holds a token.
+  token `Secret` holds a token.
 - `KubeProviderReconciler` validates source-connection inputs, decides whether the provider may be used
   at all (the installation's `inCluster` consent, and which namespace holds its audit route), and
   projects its readiness to dependent targets. A provider created, deleted or moved to another route
@@ -1915,20 +1916,22 @@ Six rules hold across all of them, and a new instrument follows them too:
   loss paths (`git_commit_failures_total`, `git_writes_dropped_total`,
   `placement_refusals_total`, `git_documents_total{outcome="refused"}`) as one selector.
 - **Two identities, and one join between them.** Watch and document families are labeled by the
-  `GitTarget` (`gittarget_namespace`, `gittarget_name`); branch-worker families by the branch the
-  worker writes (`provider_namespace`, `provider_name`, `branch`), because one worker serves every
-  `GitTarget` on it. `git_branch_targets` maps one to the other. `source_cluster` is the
-  `KubeProvider` as `<namespace>/<name>`. Keys are prefixed because a pod scrape with
-  `honor_labels=false` overwrites a bare `namespace`.
-- **Object names are labels in one family only.** `resource_condition` carries the names of
-  configuration objects, which are bounded by how many someone wrote; a mirrored resource is data
-  and is never a label. A family that grows past its per-instrument cap (15000 points) collapses
-  into one `otel_metric_overflow="true"` series.
+  `GitTarget` (`gittarget_namespace`, `gittarget_name`); branch-worker families by the `GitBranch`
+  the worker writes for (`gitbranch_namespace`, `gitbranch_name`), because one worker serves every
+  `GitTarget` on it. `git_branch_targets` maps one to the other, and `git_branch_info` names each
+  `GitBranch`'s provider and branch. `source_cluster` is the `KubeProvider` as
+  `<namespace>/<name>`. Keys are prefixed because a pod scrape with `honor_labels=false` renames a
+  bare `namespace` to `exported_namespace` and puts the scraped pod's own in its place.
+- **Configuration objects are labels; mirrored resources never are.** A `GitTarget`, `GitBranch`,
+  applier claim or `GitReceiver` name is bounded by how many someone wrote, so it may be a label; a
+  mirrored resource is data and is never one, nor is a name a client supplies before it resolves.
+  A family that grows past its per-instrument cap (15000 points) collapses into one
+  `otel_metric_overflow="true"` series.
 - **A gauge about a work loop is read at scrape time.** One published from inside the loop reports
   its last healthy moment for as long as the loop is stuck, so the queue, backlog, watch-plane and
   apply gauges are observable. "How long has this been waiting" is a timestamp, read as
-  `time() - <gauge>`. The few set where they change (`api_catalog_*`, the fact index size, the
-  attribution follower's last success, the transport) record a step that completed.
+  `time() - <gauge>`. The few recorded at the step they describe (`api_catalog_*`, the fact index
+  size, the attribution follower's last success, the transport) record a step that completed.
 - **A metric needs an interpretation.** A new instrument lands with its recording site and its row
   in the guide in the same change ([adding a metric](interpreting-metrics.md#adding-a-metric)).
 
