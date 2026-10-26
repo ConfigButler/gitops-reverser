@@ -136,6 +136,10 @@ type AttachSaveRequest struct {
 	// GitTargetName / GitTargetNamespace scope the finalize to one GitTarget.
 	GitTargetName      string
 	GitTargetNamespace string
+	// GitTargetUID is the UID of the GitTarget that admitted the request. A GitTarget of that name
+	// with another UID replaced it and admitted nothing, so it is never asked to take the request.
+	// Empty matches any.
+	GitTargetUID string
 
 	// Message is the verbatim commit message to attach to the window. Empty keeps
 	// the generated grouped-commit message.

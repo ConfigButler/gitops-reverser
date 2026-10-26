@@ -316,7 +316,8 @@ func (s *RemoteSaveRequestServer) consider(
 }
 
 // remoteSaveRequestFinished reports whether a request has an outcome that changes no more, and since when:
-// Ready decided, and, for one that asked to catch up and committed, Applied decided too.
+// Ready decided, and, for one that asked to catch up and committed, Applied decided too. An apply
+// reported Lost is decided: no worker will ever say more of it.
 func remoteSaveRequestFinished(request *sourcev1alpha1.RemoteSaveRequest) (time.Time, bool) {
 	ready := apimeta.FindStatusCondition(request.Status.Conditions, "Ready")
 	if ready == nil || ready.Status == metav1.ConditionUnknown {
@@ -325,7 +326,7 @@ func remoteSaveRequestFinished(request *sourcev1alpha1.RemoteSaveRequest) (time.
 	finishedAt := ready.LastTransitionTime.Time
 	if request.Spec.CatchUp == sourcev1alpha1.CatchUpAfterPush && ready.Reason == saveReasonCommitted {
 		applied := apimeta.FindStatusCondition(request.Status.Conditions, "Applied")
-		if applied == nil || applied.Status == metav1.ConditionUnknown {
+		if applied == nil || (applied.Status == metav1.ConditionUnknown && applied.Reason != saveReasonLost) {
 			return time.Time{}, false
 		}
 		finishedAt = applied.LastTransitionTime.Time
@@ -372,7 +373,7 @@ func (s *RemoteSaveRequestServer) serve(
 		return
 	}
 	status.Author = author
-	reason, message, err := s.admit(ctx, watcher, request)
+	reason, message, targetUID, err := s.admit(ctx, watcher, request)
 	if err != nil {
 		log.Info("Cannot read the RemoteSaveRequest's GitTarget; it is served again on the next listing",
 			"err", err.Error())
@@ -386,11 +387,13 @@ func (s *RemoteSaveRequestServer) serve(
 	}
 
 	attach := remoteSaveRequestAttach(request, author, attribution)
+	attach.GitTargetUID = targetUID
 	setSaveCondition(request, status, "Ready", metav1.ConditionUnknown, saveReasonSaving,
 		"waiting for the edits to reach a commit window")
 	write()
 
-	if !s.finalize(ctx, request, status, attach) {
+	readmit := func() (string, string, string, error) { return s.admit(ctx, watcher, request) }
+	if !s.finalize(ctx, request, status, attach, readmit) {
 		return
 	}
 	write()
@@ -447,12 +450,12 @@ func (s *RemoteSaveRequestServer) sentAuditFacts(ctx context.Context, provider k
 
 // admit decides whether the GitTarget the request names takes it: it exists, mirrors the cluster the
 // request was served from, and admits the request's namespace and labels in
-// spec.allowedRemoteSaveRequests. A refusal is a reason and a message; err is a read to retry. A
-// GitTarget that does not exist is waited for up to the request's attachTimeout, since it may be
-// created alongside the request.
+// spec.allowedRemoteSaveRequests. A refusal is a reason and a message; otherwise it returns the UID of
+// the GitTarget that admitted the request, and err is a read to retry. A GitTarget that does not exist
+// is waited for up to the request's attachTimeout, since it may be created alongside the request.
 func (s *RemoteSaveRequestServer) admit(
 	ctx context.Context, watcher *remoteSaveRequestWatcher, request *sourcev1alpha1.RemoteSaveRequest,
-) (string, string, error) {
+) (string, string, string, error) {
 	ref := request.Spec.GitTargetRef
 	key := k8stypes.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
 	deadline := time.Now().Add(remoteSaveRequestAttach(request, "", "").AttachTimeout)
@@ -463,19 +466,19 @@ func (s *RemoteSaveRequestServer) admit(
 			break
 		}
 		if err != nil && !apierrors.IsNotFound(err) {
-			return "", "", err
+			return "", "", "", err
 		}
 		if !time.Now().Before(deadline) {
-			return saveReasonGitTargetNotFound, fmt.Sprintf("GitTarget %s does not exist", key), nil
+			return saveReasonGitTargetNotFound, fmt.Sprintf("GitTarget %s does not exist", key), "", nil
 		}
 		select {
 		case <-ctx.Done():
-			return "", "", ctx.Err()
+			return "", "", "", ctx.Err()
 		case <-time.After(remoteSaveRequestPoll):
 		}
 	}
 	if target.KubeProviderKey() != watcher.provider {
-		return saveReasonNotAllowed, fmt.Sprintf("GitTarget %s mirrors another cluster than this one", key), nil
+		return saveReasonNotAllowed, fmt.Sprintf("GitTarget %s mirrors another cluster than this one", key), "", nil
 	}
 	admitted, err := target.AdmitsRemoteSaveRequest(request.Namespace, request.Labels)
 	if !admitted {
@@ -484,9 +487,9 @@ func (s *RemoteSaveRequestServer) admit(
 		if err != nil {
 			message += fmt.Sprintf(" (a grant's requestSelector is invalid: %v)", err)
 		}
-		return saveReasonNotAllowed, message, nil
+		return saveReasonNotAllowed, message, "", nil
 	}
-	return "", "", nil
+	return "", "", string(target.UID), nil
 }
 
 // remoteSaveRequestAttach is the attach of a request to its GitTarget's window.
@@ -524,9 +527,13 @@ func remoteSaveRequestAttach(
 
 // finalize polls the outcome until the worker resolved the request, withdrawing it once it is past its
 // bound and still unheld, and records it on status. It reports false when ctx ended first.
+//
+// The GitTarget that admitted the request may be deleted while no worker holds it yet. Whatever has
+// its name then is asked by readmit, as admit does, before the request is attached to it: a
+// replacement admitted nothing, and its grants may not admit the request.
 func (s *RemoteSaveRequestServer) finalize(
 	ctx context.Context, request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
-	attach git.AttachSaveRequest,
+	attach git.AttachSaveRequest, readmit func() (string, string, string, error),
 ) bool {
 	bound := time.Now().Add(attach.AttachTimeout + attach.MaxDuration + remoteSaveRequestPushAllowance)
 	for {
@@ -534,9 +541,20 @@ func (s *RemoteSaveRequestServer) finalize(
 		if time.Now().After(bound) {
 			ask = s.Finalizer.WithdrawSaveRequest
 		}
-		if result, done, err := ask(ctx, attach); err == nil && done {
+		result, done, err := ask(ctx, attach)
+		if err == nil && done {
 			recordSaveOutcome(request, status, result)
 			return true
+		}
+		if errors.Is(err, errGitTargetGone) {
+			reason, message, uid, admitErr := readmit()
+			if reason != "" {
+				failSave(request, status, reason, message)
+				return true
+			}
+			if admitErr == nil {
+				attach.GitTargetUID = uid
+			}
 		}
 		select {
 		case <-ctx.Done():

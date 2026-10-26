@@ -234,7 +234,7 @@ func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// decision is final — there is no wait and no requeue for the author.
 	author, attribution := r.attributeAuthor(ctx, saveRequest)
 
-	claim, admitted, err := r.admitAtFirstSight(ctx, log, saveRequest, attribution)
+	claim, admitted, refusal, err := r.admitAtFirstSight(ctx, log, saveRequest, attribution)
 	if err != nil || admitted == saveRequestRefused {
 		return ctrl.Result{}, err
 	}
@@ -266,6 +266,7 @@ func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		Attribution:        attribution.gitOutcome(),
 		GitTargetName:      saveRequest.GitTargetKey().Name,
 		GitTargetNamespace: saveRequest.GitTargetKey().Namespace,
+		GitTargetUID:       saveRequest.Status.GitTargetUID,
 		Message:            saveRequest.Spec.Message,
 		Attach:             window.attach,
 		AttachTimeout:      window.attachTimeout,
@@ -274,6 +275,9 @@ func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		CommitEmpty:        saveRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
 		CatchUpNow:         saveRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
 		Unattributed:       claim,
+	}
+	if admitted == saveRequestReplaced {
+		return r.refuseOnceUnheld(ctx, log, req, saveRequest, attribution, attach, refusal)
 	}
 	return r.sendSaveRequest(ctx, log, req, saveRequest, attribution, attach,
 		time.Since(saveRequest.CreationTimestamp.Time) >= window.resolveTimeout(),
@@ -313,48 +317,84 @@ const (
 	saveRequestTargetMissing
 	// saveRequestRefused is a request now failed.
 	saveRequestRefused
+	// saveRequestReplaced is a request a GitTarget refuses that replaced the one that admitted it. An
+	// attach may have been sent before, so it is refused only once no worker holds it.
+	saveRequestReplaced
 )
 
 // admitAtFirstSight runs admitSaveRequest, records the GitTarget that admitted the request, and fails
 // a request it refuses. A refusal is final unless that same GitTarget, by UID, admitted the request
 // before: then its grants were lowered after an attach may have been sent, and the worker, which may
 // hold the request, keeps what it was first sent. A GitTarget that did not exist when the request was
-// first seen, or was recreated since, admitted nothing, so its refusal stands. err is a read or write
-// to retry.
+// first seen admitted nothing, so its refusal stands. One that was recreated since admitted nothing
+// either, but the GitTarget it replaced did: its refusal is saveRequestReplaced, returned with the
+// refusal, and waits for the worker that may hold the request. err is a read or write to retry.
 func (r *SaveRequestReconciler) admitAtFirstSight(
 	ctx context.Context,
 	log logr.Logger,
 	saveRequest *configbutleraiv1alpha3.SaveRequest,
 	attribution saveRequestAttribution,
-) (git.UnattributedClaim, saveRequestAdmission, error) {
+) (git.UnattributedClaim, saveRequestAdmission, error, error) {
 	claim, targetUID, err := r.admitSaveRequest(ctx, saveRequest)
 	recorded := saveRequest.Status.GitTargetUID
 	switch {
 	case err == nil && targetUID == "":
 		if recorded != "" {
 			// Its GitTarget is gone since it admitted the request: the attach path reports that.
-			return claim, saveRequestAdmitted, nil
+			return claim, saveRequestAdmitted, nil, nil
 		}
-		return claim, saveRequestTargetMissing, r.stampFirstSightConditions(ctx, saveRequest, attribution)
+		return claim, saveRequestTargetMissing, nil, r.stampFirstSightConditions(ctx, saveRequest, attribution)
 	case err == nil:
 		if recorded == targetUID {
-			return claim, saveRequestAdmitted, nil
+			return claim, saveRequestAdmitted, nil, nil
 		}
 		// Recorded before any attach is sent for this GitTarget, so a later refusal can tell the two
 		// apart. At first sight the in-progress stamp that follows writes it.
 		saveRequest.Status.GitTargetUID = targetUID
 		if findCondition(saveRequest.Status.Conditions, ConditionTypeReady) == nil {
-			return claim, saveRequestAdmitted, nil
+			return claim, saveRequestAdmitted, nil, nil
 		}
-		return claim, saveRequestAdmitted, r.Status().Update(ctx, saveRequest)
+		return claim, saveRequestAdmitted, nil, r.Status().Update(ctx, saveRequest)
 	case !errors.Is(err, errSaveRequestNotAllowed) && !errors.Is(err, errTakeOverNotAllowed):
-		return claim, saveRequestAdmitted, err
+		return claim, saveRequestAdmitted, nil, err
 	case recorded == targetUID:
-		return git.UnattributedClaimNone, saveRequestAdmitted, nil
+		return git.UnattributedClaimNone, saveRequestAdmitted, nil, nil
+	case recorded != "":
+		return git.UnattributedClaimNone, saveRequestReplaced, err, nil
 	}
 	r.writeTerminalStatus(ctx, log, saveRequest, git.FinalizeResult{}, err, attribution,
 		resolvedSaveRequestTarget(saveRequest))
-	return claim, saveRequestRefused, nil
+	return claim, saveRequestRefused, nil, nil
+}
+
+// refuseOnceUnheld fails a request that a replacement of its GitTarget refuses. The GitTarget it
+// replaced admitted the request, so an attach may have been sent, and the worker holding it may have
+// committed it. That worker answers first: its outcome is reported, and a request it holds is waited
+// for. The refusal is written only once the request is withdrawn, or nothing held it.
+func (r *SaveRequestReconciler) refuseOnceUnheld(
+	ctx context.Context,
+	log logr.Logger,
+	req ctrl.Request,
+	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	attribution saveRequestAttribution,
+	attach git.AttachSaveRequest,
+	refusal error,
+) (ctrl.Result, error) {
+	result, resolved, withdrawErr := r.Finalizer.WithdrawSaveRequest(ctx, attach)
+	if withdrawErr != nil || !resolved {
+		if withdrawErr != nil {
+			log.V(1).Info("SaveRequest withdraw not yet serviceable; will retry",
+				"name", req.NamespacedName, "err", withdrawErr.Error())
+		}
+		return r.pollSaveRequest(ctx, saveRequest, attribution, result.Phase, result.Held)
+	}
+	finalizeErr := result.Err
+	if errors.Is(finalizeErr, git.ErrSaveRequestWithdrawn) {
+		result, finalizeErr = git.FinalizeResult{}, refusal
+	}
+	r.writeTerminalStatus(ctx, log, saveRequest, result, finalizeErr, attribution,
+		resolvedSaveRequestTarget(saveRequest))
+	return ctrl.Result{}, nil
 }
 
 // errTakeOverNotAllowed is a request that asks to claim more of a window whose writes name no author

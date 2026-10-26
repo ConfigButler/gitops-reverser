@@ -193,7 +193,9 @@ func heldBecause(worker *git.BranchWorker, phase git.SaveRequestPhase) string {
 // The worker that holds the request comes first, whatever its GitTarget says now: a shared worker
 // outlives a deleted target, and a retired one finishes its last push after the manager stopped
 // listing it. Only a request no worker holds falls back to the GitTarget's current worker, which is
-// nil while that worker has not started. A GitTarget that is gone is errGitTargetGone.
+// nil while that worker has not started. A GitTarget that is gone is errGitTargetGone, and so is one
+// that replaced the GitTarget that admitted the request (attach.GitTargetUID): the replacement admitted
+// nothing.
 func (r *EventRouter) saveRequestWorker(
 	ctx context.Context,
 	attach git.AttachSaveRequest,
@@ -212,6 +214,10 @@ func (r *EventRouter) saveRequestWorker(
 		}
 		return nil, "", fmt.Errorf("get GitTarget %s/%s: %w",
 			attach.GitTargetNamespace, attach.GitTargetName, err)
+	}
+	if attach.GitTargetUID != "" && string(gitTarget.UID) != attach.GitTargetUID {
+		return nil, "", fmt.Errorf("%w: %s/%s was replaced", errGitTargetGone,
+			attach.GitTargetNamespace, attach.GitTargetName)
 	}
 
 	worker, exists := r.WorkerManager.WorkerForTarget(&gitTarget)

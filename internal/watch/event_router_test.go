@@ -314,6 +314,41 @@ func TestGitPathRefusalReason(t *testing.T) {
 	}
 }
 
+// A GitTarget of the name an attach carries, but with another UID than the GitTarget that admitted
+// the request, replaced it and admitted nothing: no worker of it is asked to take the request.
+func TestServiceSaveRequest_AReplacedGitTargetIsGone(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	gitTarget := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a", UID: "uid-second"},
+		Spec: configv1alpha3.GitTargetSpec{
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget, testGitBranchObject()).Build()
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+
+	attach := saveAttach("team-a-config", "team-a")
+	attach.GitTargetUID = "uid-first"
+	_, resolved, err := router.ServiceSaveRequest(context.Background(), attach)
+	require.ErrorIs(t, err, errGitTargetGone)
+	assert.False(t, resolved)
+
+	result, resolved, err := router.WithdrawSaveRequest(context.Background(), attach)
+	require.NoError(t, err)
+	assert.True(t, resolved, "nothing holds it, and the replacement can never take it")
+	require.ErrorIs(t, result.Err, git.ErrSaveRequestWithdrawn)
+
+	attach.GitTargetUID = "uid-second"
+	_, _, err = router.ServiceSaveRequest(context.Background(), attach)
+	require.NoError(t, err, "the GitTarget that admitted it is asked")
+}
+
 // TestServiceSaveRequest_NoWorkerKeepsTheRequestPending pins that a missing worker is not an
 // outcome. At startup a SaveRequest can reach the controller before its GitTarget's worker exists;
 // resolving it then would end the save before anything could collect its writes or record its

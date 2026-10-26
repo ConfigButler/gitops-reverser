@@ -1141,6 +1141,7 @@ func TestSaveRequestAttach_ALoweredGrantKeepsARequestItAdmitted(t *testing.T) {
 
 	reconcileSaveRequest(t, r, "save")
 	require.Len(t, f.calls, 1)
+	assert.Equal(t, string(target.UID), f.calls[0].GitTargetUID, "the attach is bound to the admitting GitTarget")
 	got := fetchSaveRequest(t, c, "save")
 	assert.Equal(t, string(target.UID), got.Status.GitTargetUID)
 
@@ -1154,4 +1155,74 @@ func TestSaveRequestAttach_ALoweredGrantKeepsARequestItAdmitted(t *testing.T) {
 	ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
 	require.NotNil(t, ready)
 	assert.NotEqual(t, crReasonNotAllowed, ready.Reason)
+}
+
+// A GitTarget recreated with grants that refuse a request does not fail it while the worker the
+// GitTarget it replaced sent it to may hold it: that worker answers first. A save it committed is
+// reported as committed; one nothing held is refused; one it holds is waited for.
+func TestSaveRequestAttach_ARefusingReplacementAsksTheWorkerFirst(t *testing.T) {
+	tests := []struct {
+		name       string
+		withdraw   git.FinalizeResult
+		resolved   bool
+		wantReason string
+		wantCommit string
+	}{
+		{
+			name:       "the worker committed it",
+			withdraw:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"},
+			resolved:   true,
+			wantReason: crReasonCommitted,
+			wantCommit: "c0ffee",
+		},
+		{
+			name:       "nothing held it",
+			withdraw:   git.FinalizeResult{Err: git.ErrSaveRequestWithdrawn},
+			resolved:   true,
+			wantReason: crReasonNotAllowed,
+		},
+		{
+			name:     "the worker holds it",
+			withdraw: git.FinalizeResult{Phase: git.PhaseWaitingForPush},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := newSaveRequest("save")
+			target := &configv1alpha3.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default", UID: "uid-first"},
+			}
+			c := newSaveRequestClient(t, nil, cr, target)
+			f := &fakeFinalizer{}
+			r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+			reconcileSaveRequest(t, r, "save")
+			require.Len(t, f.calls, 1)
+
+			require.NoError(t, c.Delete(context.Background(), target))
+			refusing := configv1alpha3.GitTargetSpec{AllowedSaveRequests: []configv1alpha3.GitTargetSaveRequestGrant{}}
+			require.NoError(t, c.Create(context.Background(), &configv1alpha3.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default", UID: "uid-second"},
+				Spec:       refusing,
+			}))
+			f.withdrawResult, f.withdrawResolved, f.withdrawPending = tc.withdraw, tc.resolved, true
+			res := reconcileSaveRequest(t, r, "save")
+
+			assert.Len(t, f.calls, 1, "nothing is attached through the replacement")
+			require.Len(t, f.withdrawCalls, 1)
+			assert.Equal(t, "uid-first", f.withdrawCalls[0].GitTargetUID, "the worker is asked about the first one")
+			got := fetchSaveRequest(t, c, "save")
+			assert.Equal(t, "uid-first", got.Status.GitTargetUID)
+			ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+			require.NotNil(t, ready)
+			if tc.wantReason == "" {
+				assert.Positive(t, res.RequeueAfter, "a held request is waited for")
+				assert.NotEqual(t, metav1.ConditionTrue, ready.Status)
+				assert.NotEqual(t, crReasonNotAllowed, ready.Reason)
+				return
+			}
+			assert.Equal(t, tc.wantReason, ready.Reason)
+			assert.Equal(t, tc.wantCommit, got.Status.Commit)
+		})
+	}
 }

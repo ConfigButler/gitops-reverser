@@ -117,7 +117,7 @@ func saveServer(
 			providerName = "workspace"
 		}
 		objects = append(objects, &configv1alpha3.GitTarget{
-			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"},
+			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a", UID: "uid-app"},
 			Spec: configv1alpha3.GitTargetSpec{
 				KubeProviderRef:           meta.NamespacedObjectReference{Name: providerName, Namespace: "providers"},
 				AllowedRemoteSaveRequests: setup.grants,
@@ -323,6 +323,86 @@ func TestRemoteSaveRequest_TheGitTargetMustAdmitIt(t *testing.T) {
 	}
 }
 
+// replacingFinalizer recreates the GitTarget team-a/app as replacement the first time a save is sent,
+// before any worker holds it, and then answers as the router does: an attach bound to the GitTarget
+// that was replaced finds it gone.
+type replacingFinalizer struct {
+	saveFinalizer
+
+	client      client.Client
+	replacement *configv1alpha3.GitTarget
+}
+
+func (f *replacingFinalizer) ServiceSaveRequest(
+	ctx context.Context, attach git.AttachSaveRequest,
+) (git.FinalizeResult, bool, error) {
+	var current configv1alpha3.GitTarget
+	if err := f.client.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "app"}, &current); err != nil {
+		return git.FinalizeResult{}, false, err
+	}
+	if attach.GitTargetUID != string(current.UID) {
+		return git.FinalizeResult{}, false, errGitTargetGone
+	}
+	if f.replacement != nil {
+		if err := f.client.Delete(ctx, &current); err != nil {
+			return git.FinalizeResult{}, false, err
+		}
+		if err := f.client.Create(ctx, f.replacement); err != nil {
+			return git.FinalizeResult{}, false, err
+		}
+		f.replacement = nil
+		return git.FinalizeResult{Phase: git.PhaseWaitingForWorker}, false, nil
+	}
+	return f.saveFinalizer.ServiceSaveRequest(ctx, attach)
+}
+
+// A GitTarget recreated while a save waits for its worker admitted nothing: the save is attached to it
+// only once its own grants admit the request, and is refused when they do not.
+func TestRemoteSaveRequest_AReplacedGitTargetMustAdmitItAgain(t *testing.T) {
+	tests := map[string]struct {
+		grants []configv1alpha3.GitTargetRemoteSaveRequestGrant
+		reason string
+	}{
+		"the replacement admits it": {
+			grants: []configv1alpha3.GitTargetRemoteSaveRequestGrant{grantFrom("shop")},
+			reason: saveReasonCommitted,
+		},
+		"the replacement admits nobody": {reason: saveReasonNotAllowed},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			finalizer := &replacingFinalizer{
+				saveFinalizer: saveFinalizer{
+					result: git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee"},
+				},
+				replacement: &configv1alpha3.GitTarget{
+					ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a", UID: "uid-replacement"},
+					Spec: configv1alpha3.GitTargetSpec{
+						KubeProviderRef: meta.NamespacedObjectReference{
+							Name: "workspace", Namespace: "providers",
+						},
+						AllowedRemoteSaveRequests: tt.grants,
+					},
+				},
+			}
+			request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
+			server, resource := saveServer(t, request, shopSetup("", nil), &finalizer.saveFinalizer)
+			finalizer.client = server.Client
+			server.Finalizer = finalizer
+
+			status := serveOnce(t, server, resource, request)
+
+			assert.Equal(t, tt.reason, condition(status, "Ready").Reason)
+			if tt.reason == saveReasonNotAllowed {
+				assert.Empty(t, finalizer.attaches, "nothing is attached through the replacement")
+				return
+			}
+			require.Len(t, finalizer.attaches, 1)
+			assert.Equal(t, "uid-replacement", finalizer.attaches[0].GitTargetUID)
+		})
+	}
+}
+
 // A save that failed fails the request, and says why.
 func TestRemoteSaveRequest_AFailureFailsTheRequest(t *testing.T) {
 	finalizer := &saveFinalizer{result: git.FinalizeResult{Err: errors.New("the GitTarget is suspended")}}
@@ -413,6 +493,19 @@ func TestRemoteSaveRequest_Finished(t *testing.T) {
 	)
 	finishedAt, finished := remoteSaveRequestFinished(request)
 	assert.True(t, finished)
+	assert.Equal(t, at.Time, finishedAt)
+
+	applied := func(reason string) []metav1.Condition {
+		return []metav1.Condition{ready(metav1.ConditionTrue, saveReasonCommitted), {
+			Type: "Applied", Status: metav1.ConditionUnknown, Reason: reason, LastTransitionTime: at,
+		}}
+	}
+	request.Status.Conditions = applied(saveReasonApplying)
+	_, finished = remoteSaveRequestFinished(request)
+	assert.False(t, finished, "its apply is still followed")
+	request.Status.Conditions = applied(saveReasonLost)
+	finishedAt, finished = remoteSaveRequestFinished(request)
+	assert.True(t, finished, "an apply no worker knows of any more is decided")
 	assert.Equal(t, at.Time, finishedAt)
 
 	request.Spec.CatchUp = sourcev1alpha1.CatchUpAsDefinedOnClaim
