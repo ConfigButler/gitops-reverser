@@ -4,6 +4,7 @@ package git
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -98,11 +99,15 @@ func (l *branchWorkerEventLoop) awaitApplyBarrier(state *applierState, now time.
 	for _, target := range state.targets {
 		targets = append(targets, target.ref)
 	}
-	ctx := w.ctx
-	if ctx == nil {
-		ctx = context.Background()
+	base := w.ctx
+	if base == nil {
+		base = context.Background()
 	}
+	until := window.barrier.until
 	go func() {
+		// Taking the barrier lists the source clusters; past the window's limit nothing waits for it.
+		ctx, cancel := context.WithDeadline(base, until)
+		defer cancel()
 		expected := 0
 		for _, target := range targets {
 			n, err := w.applyBarrier(ctx, target, func() {
@@ -118,19 +123,22 @@ func (l *branchWorkerEventLoop) awaitApplyBarrier(state *applierState, now time.
 	}()
 }
 
-// handleApplyBarrier counts one answer to the barrier its window waits for. An answer to a barrier
-// the window no longer waits for (met, replaced by a newer attempt's window, or timed out) is dropped.
+// handleApplyBarrier counts one answer to a barrier the window waits for: its own, or one it carries
+// from the window it replaced. An answer to a barrier nothing waits for any more (met, or timed out)
+// is dropped.
 func (l *branchWorkerEventLoop) handleApplyBarrier(answer *ApplyBarrier) {
 	state := l.appliers[answer.Applier]
-	if state == nil || state.window == nil || state.window.barrier == nil ||
-		state.window.barrier.token != answer.Token {
+	if state == nil || state.window == nil {
 		return
 	}
 	window := state.window
-	wait := window.barrier
+	wait := window.waitFor(answer.Token)
+	if wait == nil {
+		return
+	}
 	switch {
 	case answer.Err != nil:
-		window.barrier = nil
+		window.dropWait(wait)
 		l.w.Log.Info("Could not take the apply window's barrier; the window closes after its grace alone",
 			"branch", l.w.Branch, "applier", state.ref.String(), "commit", window.commit, "err", answer.Err.Error())
 		l.recordApplyBarrier(barrierFailed)
@@ -143,27 +151,44 @@ func (l *branchWorkerEventLoop) handleApplyBarrier(answer *ApplyBarrier) {
 	if wait.expected < 0 || wait.passed < wait.expected {
 		return
 	}
-	window.barrier = nil
+	window.dropWait(wait)
 	l.w.Log.V(1).Info("The watch delivered every write made before the apply completed",
 		"branch", l.w.Branch, "applier", state.ref.String(), "commit", window.commit,
 		"waited", time.Since(wait.completedAt).Round(time.Millisecond).String(), "streams", wait.expected)
 	l.recordApplyBarrier(barrierMet)
 }
 
-// barrierTimedOut logs and counts a window closing while it still waited for the watch.
-func (l *branchWorkerEventLoop) barrierTimedOut(state *applierState) {
-	window := state.window
-	wait := window.barrier
-	if wait == nil {
+// waitFor is the barrier with token that the window waits for, nil when none.
+func (a *applyWindow) waitFor(token uint64) *applyBarrierWait {
+	for _, wait := range a.pendingWaits() {
+		if wait.token == token {
+			return wait
+		}
+	}
+	return nil
+}
+
+// dropWait stops the window waiting for a barrier.
+func (a *applyWindow) dropWait(wait *applyBarrierWait) {
+	if a.barrier == wait {
+		a.barrier = nil
 		return
 	}
-	window.barrier = nil
-	l.w.Log.Info("The apply window closed before the watch delivered every write made before the apply "+
-		"completed: a write of the applier's arriving later is mirrored as an edit",
-		"branch", l.w.Branch, "applier", state.ref.String(), "commit", window.commit,
-		"waited", time.Since(wait.completedAt).Round(time.Second).String(),
-		"streams", wait.expected, "delivered", wait.passed)
-	l.recordApplyBarrier(barrierTimedOut)
+	a.carriedWaits = slices.DeleteFunc(a.carriedWaits, func(w *applyBarrierWait) bool { return w == wait })
+}
+
+// barrierTimedOut logs and counts the barriers a window still waited for when it closed.
+func (l *branchWorkerEventLoop) barrierTimedOut(state *applierState) {
+	window := state.window
+	for _, wait := range window.pendingWaits() {
+		window.dropWait(wait)
+		l.w.Log.Info("The apply window closed before the watch delivered every write made before the apply "+
+			"completed: a write of the applier's arriving later is mirrored as an edit",
+			"branch", l.w.Branch, "applier", state.ref.String(), "commit", window.commit,
+			"waited", time.Since(wait.completedAt).Round(time.Second).String(),
+			"streams", wait.expected, "delivered", wait.passed)
+		l.recordApplyBarrier(barrierTimedOut)
+	}
 }
 
 // recordApplyBarrier counts one apply window barrier, by outcome.

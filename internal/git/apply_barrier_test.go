@@ -146,3 +146,32 @@ func TestApplyBarrier_AnAnswerForAnotherBarrierIsDropped(t *testing.T) {
 	assert.Same(t, wait, state.window.barrier)
 	assert.Zero(t, wait.passed)
 }
+
+// A window opened while the one before still waits for the watch carries that wait as a wait, not as
+// its limit: the earlier apply's writes are judged until its barrier is met, and once it is, the new
+// window closes after its own grace. The carried barrier's answers still count after the replacement.
+func TestApplyBarrier_ANewerWindowCarriesThePendingWaitNotItsLimit(t *testing.T) {
+	barrier := &fakeBarrier{}
+	loop, state := completedWithBarrier(t, barrier)
+	before := state.window
+	wait := before.barrier
+	require.NotNil(t, wait)
+
+	now := time.Now()
+	state.openApplyWindow(before.attempt+1, "ccc", now)
+	next := state.window
+	require.Len(t, next.carriedWaits, 1, "the pending barrier is carried")
+	assert.Same(t, wait, next.carriedWaits[0])
+	assert.True(t, next.carriedUntil.Before(wait.until), "the limit is not carried as a close time")
+
+	state.settleApplyWindow(next.attempt, true, now)
+	next.closesAt = now.Add(-time.Millisecond)
+	assert.True(t, next.open(time.Now()), "the earlier apply's writes can still arrive")
+	assert.True(t, loop.withholdLateApply(windowEvent("alpha", "2", FluxFieldManager)),
+		"the earlier apply's write is still judged inside the window")
+
+	barrier.deliverAll()
+	dispatchQueued(loop)
+	assert.Empty(t, next.carriedWaits, "the carried barrier is met")
+	assert.False(t, next.open(time.Now()), "and the window closes after its own grace")
+}
