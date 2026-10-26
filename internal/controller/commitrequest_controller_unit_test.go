@@ -46,7 +46,7 @@ type fakeFinalizer struct {
 	withdrawPending  bool
 	withdrawCalls    []git.AttachCommitRequest
 
-	// The apply a request with catchUp: ImmediatelyAfterPush asked for, and the lookups made.
+	// The apply a request with catchUp: AfterPush asked for, and the lookups made.
 	apply        git.SaveApply
 	applyKnown   bool
 	applyErr     error

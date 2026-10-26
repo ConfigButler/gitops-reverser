@@ -251,9 +251,9 @@ type applierState struct {
 	// lag is whether the converge pending is only scheduleConverges': nothing else asks for the tip,
 	// so its attempt yields to an edit (convergeHolds).
 	lag bool
-	// waitingSaves is the CommitRequests waiting for this applier's next apply that succeeds
-	// (save_apply.go); the attempt sent next carries them.
-	waitingSaves map[commitRequestID]bool
+	// waitingSaves is the CommitRequests waiting for this applier's next apply that succeeds, each
+	// with the commit it pushed (save_apply.go); the attempt sent next carries them.
+	waitingSaves map[commitRequestID]string
 	// appliedRevision is the revision the last operation that succeeded applied, as the applier
 	// reported it, recovered on restart from the applier claim's status.operation. A converge of the commit
 	// it names asks nothing.
@@ -324,8 +324,9 @@ type inflightAttempt struct {
 	refusals map[refusalKey]unsentRefusal
 	// lag is whether it carries only scheduleConverges' converge.
 	lag bool
-	// saves is the CommitRequests whose apply it carries (save_apply.go).
-	saves map[commitRequestID]bool
+	// saves is the CommitRequests whose apply it carries, each with the commit it pushed
+	// (save_apply.go).
+	saves map[commitRequestID]string
 	// phase is the last report of its operation, empty before the first.
 	phase ApplyOutcome
 	// previous is the operation recorded before this attempt's, with the attempt it belonged to,
@@ -455,7 +456,12 @@ func (l *branchWorkerEventLoop) scheduleConverges(now time.Time) time.Time {
 		}
 		state.catchUpAfter = l.w.catchUpAfterOf(state)
 		if state.catchUpAfter <= 0 {
+			// Off: a converge only this schedule left pending, waiting on the barrier or a backoff,
+			// goes with it. Anything else that asks for the tip keeps it.
 			state.behindSince = time.Time{}
+			if state.lag {
+				state.converge, state.lag = false, false
+			}
 			continue
 		}
 		if state.behindSince.IsZero() {
@@ -542,8 +548,9 @@ func (l *branchWorkerEventLoop) dueAppliers(now time.Time) ([]*applierState, tim
 		refusals := l.unsentRefusalsFor(state)
 		if l.alreadyConverged(state, refusals, tip) {
 			state.converge, state.lag = false, false
-			l.settleSaves(state.waitingSaves, state.appliedRevision)
+			saves := state.waitingSaves
 			state.waitingSaves = nil
+			l.settleSaves(state, saves, state.appliedRevision)
 			l.w.Log.V(1).Info("The applier already applied the tip; the converge asks nothing",
 				"branch", l.w.Branch, "applier", state.ref.String(), "commit", tip)
 		}
@@ -908,7 +915,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 			if state.appliedRevision == "" && state.operation != nil {
 				state.appliedRevision = state.operation.Commit
 			}
-			l.settleSaves(attempt.saves, state.appliedRevision)
+			l.settleSaves(state, attempt.saves, state.appliedRevision)
 			continue
 		case ApplyStale:
 			if attempt.lag {
@@ -1120,8 +1127,8 @@ func (l *branchWorkerEventLoop) restoreAttempt(state *applierState, attempt *inf
 	state.restoreLag(attempt)
 	state.converge = state.converge || attempt.converge
 	state.repair = state.repair || attempt.repair
-	for id := range attempt.saves {
-		state.waitSave(id)
+	for id, commit := range attempt.saves {
+		state.waitSave(id, commit)
 	}
 	for key, refusal := range attempt.refusals {
 		if !l.w.refusalStands(key) {

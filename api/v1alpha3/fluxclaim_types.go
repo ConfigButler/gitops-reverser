@@ -53,14 +53,17 @@ type FluxClaimSpec struct {
 	// state (its applied revision, its source artifact) would stay at the last foreign commit until
 	// someone else pushed. One apply per interval keeps that level and batches a burst of saves.
 
-	// CatchUpAfter is how long the Kustomization may stay behind the
-	// branch after a push of GitOps Reverser's own, as a Go duration ("1m",
-	// "90s"). Such a push changes nothing on the cluster, which already holds
-	// the edit, but leaves status.lastAppliedRevision and the GitRepository's
-	// artifact at the commit before it. Once the interval has passed, the tip is
-	// applied: a burst of saves costs one apply, and a Kustomization at the tip
-	// costs none. "0s" never applies for this reason. Otherwise at least "10s"
-	// and at most "24h". Defaults to "1m".
+	// CatchUpAfter is how long the Kustomization stays behind the branch after
+	// a push of GitOps Reverser's own before an apply of the tip is asked for,
+	// as a Go duration ("1m", "90s"). Such a push changes nothing on the
+	// cluster, which already holds the edit, but leaves
+	// status.lastAppliedRevision and the GitRepository's artifact at the commit
+	// before it. The interval starts when the Kustomization is first seen
+	// behind, so a burst of saves costs one apply, and one at the tip costs
+	// none. The apply can still wait for startup, a retry backoff or edits
+	// being published. "0s" never asks for this reason, and drops an apply it
+	// asked for that has not started. Otherwise at least "10s" and at most
+	// "24h". Defaults to "1m".
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
@@ -187,7 +190,9 @@ type FluxClaimSource struct {
 //   - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
 //   - after an apply reverted an edit made through the API;
 //   - after objects were created through the API in its folders;
-//   - once at startup, and when a GitTarget first names this FluxClaim.
+//   - once at startup, and when a GitTarget first names this FluxClaim;
+//   - once spec.catchUpAfter passed since a push of GitOps Reverser's own;
+//   - after a CommitRequest with spec.catchUp "AfterPush" pushed a commit.
 //
 // GitTargets name it with spec.applierClaimRef.
 type FluxClaim struct {

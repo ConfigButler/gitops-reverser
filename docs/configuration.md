@@ -159,7 +159,7 @@ The references are immutable: to hold another `Kustomization`, delete the applie
 |---|---|---|
 | `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Kustomization`: the applier claim's own namespace, or `namespace` names another. Its `allowedApplierClaims` must admit this namespace |
 | `kustomizationRef` | **required** | The `Kustomization` that applies the folders of the `GitTarget`s naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref) |
-| `catchUpAfter` | `1m` | How long the `Kustomization` may stay behind the branch after a push of GitOps Reverser's own. Such a push needs no apply for the cluster, but leaves `status.lastAppliedRevision` and the `GitRepository`'s artifact at the commit before it; once the interval has passed, the tip is applied. A burst of saves costs one apply, and an edit arriving before the resume defers it by an interval. `0s` never applies for this reason; otherwise `10s` to `24h` |
+| `catchUpAfter` | `1m` | How long the `Kustomization` stays behind the branch after a push of GitOps Reverser's own before an apply of the tip is asked for. Such a push needs no apply for the cluster, but leaves `status.lastAppliedRevision` and the `GitRepository`'s artifact at the commit before it. The interval starts when the `Kustomization` is first seen behind, so a burst of saves costs one apply; the apply can still wait for startup, a retry backoff or edits being published, and an edit arriving before the resume defers it by an interval. `0s` never asks for this reason, and drops an apply it asked for that has not started; otherwise `10s` to `24h` |
 
 ### `ArgoCDClaim` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync
 
@@ -169,7 +169,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 |---|---|---|
 | `kubeProviderRef` | **required** | The `KubeProvider` whose cluster holds the `Application`: the applier claim's own namespace, or `namespace` names another. Its `allowedApplierClaims` must admit this namespace |
 | `applicationRef` | **required** | The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref) |
-| `catchUpAfter` | `0s` | As a `FluxClaim`'s: how long the `Application`'s last sync may stay behind the branch after a push of GitOps Reverser's own. Off by default, since a sync runs the `Application`'s hooks and Argo CD's refresh already compares the live state against the tip. Otherwise `10s` to `24h` |
+| `catchUpAfter` | `0s` | As a `FluxClaim`'s: how long the `Application`'s last sync stays behind the branch after a push of GitOps Reverser's own before a sync of the tip is asked for. Off by default, since a sync runs the `Application`'s hooks and Argo CD's refresh already compares the live state against the tip. Otherwise `10s` to `24h` |
 
 ### `CommitRequest` (namespaced): save now
 
@@ -182,7 +182,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 | `window.idleTimeout` | no idle close | Close the attached window after this much silence |
 | `window.maxDuration` | `2s` | Close the attached window this long after the attach |
 | `whenNothingToCommit` | `Resolve` | `CommitEmpty` records the message in an empty commit when nothing changed |
-| `catchUp` | `AsDefinedOnClaim` | `ImmediatelyAfterPush` asks the `GitTarget`'s applier to apply the commit as soon as it is pushed, one apply per request, instead of after the applier claim's `catchUpAfter` |
+| `catchUp` | `AsDefinedOnClaim` | `AfterPush` asks the `GitTarget`'s applier to apply the branch tip right after the commit is pushed, instead of after the applier claim's `catchUpAfter`. The tip may hold later commits, and saves pushed close together can share one apply; the `Applied` condition reports it |
 
 <!-- END GENERATED: settings-index -->
 
@@ -1895,10 +1895,11 @@ for a `Kustomization` and an `Application`.
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. The pending writes are replayed onto it and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per applier |
 | `Refusal` | An eligible refused edit, with `spec.onRefusal: Reapply` | This target's applier |
 | `Repair` | An apply reverted an API edit made after the flush; Git kept the edit | That applier |
-| `CatchUp` | To adopt: the API created an object in the folder, or a resync added an object to Git. To converge: once when the operator starts, and once when a `GitTarget` first names the applier claim | To adopt, that folder's applier; to converge, every applier declared on the branch at start, and the newly named one |
+| `CatchUp` | To adopt: the API created an object in the folder, or a resync added an object to Git. To converge: once when the operator starts, once when a `GitTarget` first names the applier claim, once the applier claim's `catchUpAfter` has passed since a push of GitOps Reverser's own, and after a `CommitRequest` with [`catchUp: AfterPush`](#applying-a-save-at-once) pushed a commit | To adopt, that folder's applier; to converge, every applier declared on the branch at start, the newly named one, the one left behind, or the requesting `GitTarget`'s |
 
-An API edit asks for no apply, and neither does a push of GitOps Reverser's own: the cluster already
-runs what they hold. A create is different, because an applier prunes only what it applied: an
+An API edit asks for no apply, and neither does a push of GitOps Reverser's own, at once: the cluster
+already runs what they hold. Only the applier's own state is left behind, which `catchUpAfter`
+catches up later. A create is different, because an applier prunes only what it applied: an
 object the API created (an `ADDED` event whose newest field managers are not an applier's) carries
 neither Flux's owner labels nor Argo CD's tracking annotation, so a later Git-side delete of its
 file would leave it running. An adopt is therefore applied even at the commit the applier last
@@ -3121,24 +3122,28 @@ request produced a pushed commit:
   watch window, whose Git author remains either the configured committer or the explicit unresolved author
   according to the watch attribution outcome.
 - **Pushed**: `True` once the commit, empty or not, is in the remote repository.
-- **Applied**: only with [`catchUp: ImmediatelyAfterPush`](#applying-a-save-at-once), once `Ready=True`.
-  It never changes `Ready`.
+- **Applied**: only with [`catchUp: AfterPush`](#applying-a-save-at-once), once `Ready=True`:
+  whether the applier caught up with the commit. It never changes `Ready`, so `Ready=True` alone
+  does not mean the commit was applied.
 
 ### Applying a save at once
 
 A save is in Git once it is pushed, and the cluster already runs it, so by default nothing applies
 it: the applier claim's `catchUpAfter` brings the applier's own state (a `Kustomization`'s
 `status.lastAppliedRevision`, its `GitRepository`'s artifact) level later. A request that needs that
-state at once, to publish what was applied, sets `spec.catchUp: ImmediatelyAfterPush`. Its
-`GitTarget`'s applier is then asked to apply the tip as soon as the commit is pushed, one apply per
-such request, and the request reports the apply in its `Applied` condition:
+state at once, to publish what was applied, sets `spec.catchUp: AfterPush`. Its
+`GitTarget`'s applier is then asked to apply the branch tip right after the commit is pushed. The
+tip may hold later commits, saves pushed close together can share one apply, and an applier
+already at the tip needs none. The request reports the outcome in its `Applied` condition:
 
 | `Applied` | Reason | Means |
 | --- | --- | --- |
 | `Unknown` | `Applying` | the apply is asked for or runs |
 | `Unknown` | `Retrying` | it did not complete and is asked again; the message says why |
-| `True` | `Applied` | applied; `status.appliedRevision` names the revision, as the applier reported it |
-| `False` | `NothingPushed`, `NoApplierClaim`, `ApplierGone` | nothing to apply, or no applier to ask |
+| `True` | `Applied` | the applier applied a revision that holds the commit; `status.appliedRevision` names it, as the applier reported it |
+| `True` | `NoApplierClaim`, `ApplierGone` | the `GitTarget` names no applier claim, or stopped naming the one asked: nothing applies the branch, and the cluster already holds what was saved |
+| `False` | `NothingPushed` | the request pushed no commit, so there is nothing to apply |
+| `False` | `CommitDropped` | the branch no longer holds the commit: its history was rewritten after the push |
 | `Unknown` | `Lost` | GitOps Reverser restarted before it learnt how the apply went |
 
 Wait for `Applied=True` for "saved and applied"; `Ready=True` stays "saved". A finished request is

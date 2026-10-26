@@ -3,12 +3,17 @@
 package git
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -193,7 +198,7 @@ func TestCatchUpAfter_AChangedIntervalAppliesFromTheNextWake(t *testing.T) {
 	assert.Equal(t, "bbb", requests[0].Commit)
 }
 
-// TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce: a CommitRequest with catchUp: ImmediatelyAfterPush
+// TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce: a CommitRequest with catchUp: AfterPush
 // leaves a converge pending for its GitTarget's applier once its commit is pushed, without waiting
 // for catchUpAfter; one that pushed no commit asks nothing. It does not yield to an edit: it was
 // asked for.
@@ -227,8 +232,8 @@ func TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce(t *testing.T) {
 
 // TestSaveApply_FollowsTheAttemptThatCarriesIt: a save that asked to catch up waits on its applier,
 // is carried by the attempt sent next, is retried when that attempt does not succeed, and is
-// settled applied by the one that does. One that pushed nothing, or whose GitTarget names no
-// applier, is settled at once as not applied.
+// settled applied by the one that does. One that pushed nothing is settled at once as not applied,
+// and one whose GitTarget names no applier as applied: nothing applies the branch.
 func TestSaveApply_FollowsTheAttemptThatCarriesIt(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("loner", false))
 	convergedAt(t, loop, requester)
@@ -257,6 +262,7 @@ func TestSaveApply_FollowsTheAttemptThatCarriesIt(t *testing.T) {
 	assert.Equal(t, SaveApplyApplying, lookup(pushed).Reason)
 	loop.serviceAppliers()
 	assert.True(t, lookup(alone).Done)
+	assert.True(t, lookup(alone).Applied, "no applier applies the branch; the cluster holds the save")
 	assert.Equal(t, SaveApplyNoApplier, lookup(alone).Reason)
 
 	first := requester.taken()
@@ -298,4 +304,128 @@ func TestSaveApply_AnApplierAlreadyAtTheTipSettlesIt(t *testing.T) {
 	apply, known := loop.w.LookupSaveApply(id.Namespace, id.Name, id.UID)
 	require.True(t, known)
 	assert.True(t, apply.Applied)
+}
+
+// TestCatchUpAfter_TurningItOffCancelsAPendingConverge: a converge only catchUpAfter left pending,
+// waiting out the backoff of an attempt that failed, goes when catchUpAfter becomes "0s". A save that
+// asks to catch up still goes: catchUpAfter does not decide it.
+func TestCatchUpAfter_TurningItOffCancelsAPendingConverge(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true), fluxClaim("alpha", catchUpEvery(30*time.Second)))
+	convergedAt(t, loop, requester)
+	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
+	loop.serviceAppliers()
+	intervalPassed(t, loop)
+	loop.serviceAppliers()
+	sent := requester.taken()
+	require.Len(t, sent, 1)
+	report(sent[0], ApplyFailed)
+	loop.serviceAppliers()
+	state := loop.appliers[applierRef("alpha")]
+	require.True(t, state.converge, "given back, waiting out its backoff")
+
+	claim := &configv1alpha3.FluxClaim{}
+	require.NoError(t, loop.w.Client.Get(t.Context(), client.ObjectKey{Namespace: "team-a", Name: "alpha"}, claim))
+	catchUpEvery(0)(claim)
+	require.NoError(t, loop.w.Client.Update(t.Context(), claim))
+	dueNow(loop)
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken(), "off: the timed converge is gone")
+	assert.False(t, state.converge)
+
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+	id := commitRequestID{Namespace: "team-a", Name: "asks", UID: "uid-asks"}
+	loop.pendingCRs[id] = &pendingCommitRequest{
+		id: id, gitTargetName: "alpha", gitTargetNamespace: "team-a", catchUpNow: true,
+	}
+	loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: "bbb"})
+	loop.serviceAppliers()
+	asked := requester.taken()
+	require.Len(t, asked, 1, "a save that asks is no timed converge")
+	assert.Equal(t, "bbb", asked[0].Commit)
+}
+
+// saveHistory makes the worker's checkout hold base, saved on it, later on saved, and rewritten on base
+// beside saved: the history a force-push that drops saved leaves. It returns them in that order.
+func saveHistory(t *testing.T, w *BranchWorker) (string, string, string, string) {
+	t.Helper()
+	w.GitBranchUID = k8stypes.UID("uid-" + strings.ToLower(t.Name()))
+	dir := w.repoPath()
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	repo, err := gogit.PlainInit(dir, false)
+	require.NoError(t, err)
+	require.NoError(t, PinExplicitSigningPolicy(repo))
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+	// In the folder of applierTestTarget("alpha"), which an apply waits for.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "apps", "alpha"), 0o750))
+	file := filepath.Join("apps", "alpha", "a.yaml")
+	baseHash := commitFileChange(t, worktree, dir, file, "base")
+	savedHash := commitFileChange(t, worktree, dir, file, "saved")
+	laterHash := commitFileChange(t, worktree, dir, file, "later")
+	require.NoError(t, worktree.Checkout(&gogit.CheckoutOptions{Hash: baseHash, Force: true}))
+	rewrittenHash := commitFileChange(t, worktree, dir, file, "rewritten")
+	return baseHash.String(), savedHash.String(), laterHash.String(), rewrittenHash.String()
+}
+
+// TestSaveApply_AppliedOnlyWhenTheRevisionHoldsItsCommit: an apply that succeeds settles a save as
+// applied only when the applied revision holds the save's commit. One whose commit a force-push
+// dropped from the branch is settled as not applied; one the checkout cannot tell about waits.
+func TestSaveApply_AppliedOnlyWhenTheRevisionHoldsItsCommit(t *testing.T) {
+	cases := map[string]struct {
+		tip     func(base, saved, later, rewritten string) (string, ObservationSource)
+		applied func(tip string) string
+		want    SaveApply
+	}{
+		"a later commit holds it": {
+			tip:     func(_, _, later, _ string) (string, ObservationSource) { return later, ObservedByPush },
+			applied: func(tip string) string { return "main@sha1:" + tip },
+			want:    SaveApply{Done: true, Applied: true, Reason: SaveApplyApplied},
+		},
+		"a force-push dropped it": {
+			tip:     func(_, _, _, rewritten string) (string, ObservationSource) { return rewritten, ObservedByFetch },
+			applied: func(tip string) string { return "main@sha1:" + tip },
+			want:    SaveApply{Done: true, Reason: SaveApplyCommitDropped},
+		},
+		"the checkout lacks the applied commit": {
+			tip:     func(_, _, later, _ string) (string, ObservationSource) { return later, ObservedByPush },
+			applied: func(string) string { return "main@sha1:" + strings.Repeat("f", 40) },
+			want:    SaveApply{Reason: SaveApplyRetrying},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+			base, saved, later, rewritten := saveHistory(t, loop.w)
+			loop.w.inbox.observe(RemoteObservation{Commit: base, By: ObservedByFetch})
+			loop.serviceAppliers()
+			startup := requester.taken()
+			require.Len(t, startup, 1)
+			startup[0].Report(ApplyResult{ID: startup[0].ID, Outcome: ApplySucceeded, AppliedRevision: base})
+			loop.serviceAppliers()
+
+			loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+			id := commitRequestID{Namespace: "team-a", Name: "save", UID: "uid-save"}
+			loop.pendingCRs[id] = &pendingCommitRequest{
+				id: id, gitTargetName: "alpha", gitTargetNamespace: "team-a", catchUpNow: true,
+			}
+			loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: saved})
+			tip, by := tc.tip(base, saved, later, rewritten)
+			loop.w.inbox.observe(RemoteObservation{Commit: tip, By: by})
+			loop.serviceAppliers()
+			sent := requester.taken()
+			require.Len(t, sent, 1)
+			require.Equal(t, tip, sent[0].Commit)
+			sent[0].Report(ApplyResult{ID: sent[0].ID, Outcome: ApplySucceeded, AppliedRevision: tc.applied(tip)})
+			loop.serviceAppliers()
+
+			got, known := loop.w.LookupSaveApply(id.Namespace, id.Name, id.UID)
+			require.True(t, known)
+			assert.Equal(t, tc.want.Done, got.Done, got.Message)
+			assert.Equal(t, tc.want.Applied, got.Applied, got.Message)
+			assert.Equal(t, tc.want.Reason, got.Reason, got.Message)
+			if !got.Done {
+				assert.Contains(t, loop.appliers[applierRef("alpha")].waitingSaves, id, "it waits on")
+			}
+		})
+	}
 }

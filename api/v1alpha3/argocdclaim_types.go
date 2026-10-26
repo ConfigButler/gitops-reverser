@@ -60,14 +60,16 @@ type ArgoCDClaimSpec struct {
 	// cost more than a no-op apply, and Argo CD's own refresh already compares the live state
 	// against the tip without a sync. Only the last sync's revision lags.
 
-	// CatchUpAfter is how long the Application may stay behind the branch
-	// after a push of GitOps Reverser's own, as a Go duration ("5m"). Such a
-	// push changes nothing on the cluster, which already holds the edit, but
-	// leaves the Application's last sync at the commit before it. Once the
-	// interval has passed, the tip is synced, hooks included: a burst of saves
-	// costs one sync, and an Application at the tip costs none. "0s" never
-	// syncs for this reason. Otherwise at least "10s" and at most "24h".
-	// Defaults to "0s".
+	// CatchUpAfter is how long the Application stays behind the branch after
+	// a push of GitOps Reverser's own before a sync of the tip is asked for,
+	// as a Go duration ("5m"). Such a push changes nothing on the cluster,
+	// which already holds the edit, but leaves the Application's last sync at
+	// the commit before it. The interval starts when the Application is first
+	// seen behind, so a burst of saves costs one sync, hooks included, and one
+	// at the tip costs none. The sync can still wait for startup, a retry
+	// backoff or edits being published. "0s" never asks for this reason, and
+	// drops a sync it asked for that has not started. Otherwise at least "10s"
+	// and at most "24h". Defaults to "0s".
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
@@ -182,7 +184,9 @@ type ArgoCDClaimSource struct {
 //   - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
 //   - after a sync reverted an edit made through the API;
 //   - after objects were created through the API in its folders;
-//   - once at startup, and when a GitTarget first names this ArgoCDClaim.
+//   - once at startup, and when a GitTarget first names this ArgoCDClaim;
+//   - once spec.catchUpAfter passed since a push of GitOps Reverser's own;
+//   - after a CommitRequest with spec.catchUp "AfterPush" pushed a commit.
 //
 // GitTargets name it with spec.applierClaimRef.
 type ArgoCDClaim struct {

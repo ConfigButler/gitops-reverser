@@ -17,12 +17,12 @@ import (
 )
 
 func catchingUp(cr *configv1alpha3.CommitRequest) *configv1alpha3.CommitRequest {
-	cr.Spec.CatchUp = configv1alpha3.CatchUpImmediatelyAfterPush
+	cr.Spec.CatchUp = configv1alpha3.CatchUpAfterPush
 	return cr
 }
 
 // TestCommitRequestReconcile_ReportsTheApplyItAskedFor: once the save is Ready, a request with
-// catchUp: ImmediatelyAfterPush is reconciled on, and Applied follows the worker's report until it
+// catchUp: AfterPush is reconciled on, and Applied follows the worker's report until it
 // is settled. Ready stays the save's.
 func TestCommitRequestReconcile_ReportsTheApplyItAskedFor(t *testing.T) {
 	c := newCommitRequestClient(t, nil, catchingUp(newCommitRequest("save-1")))
@@ -55,19 +55,31 @@ func TestCommitRequestReconcile_ReportsTheApplyItAskedFor(t *testing.T) {
 	assert.Equal(t, lookups, f.applyLookups, "settled: not looked up again")
 }
 
-// TestCommitRequestReconcile_NothingToApplyIsFalse: a settled apply that applied nothing is
-// Applied=False, and does not touch Ready.
-func TestCommitRequestReconcile_NothingToApplyIsFalse(t *testing.T) {
-	c := newCommitRequestClient(t, nil, catchingUp(newCommitRequest("save-1")))
-	f := committedFinalizer()
-	f.apply, f.applyKnown = git.SaveApply{Done: true, Reason: git.SaveApplyNoApplier}, true
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+// TestCommitRequestReconcile_ASettledApplyWithoutAnApplier: a request that pushed nothing is
+// Applied=False; one whose GitTarget names no applier is Applied=True, since the cluster already holds
+// what it saved and nothing applies the branch. Neither touches Ready.
+func TestCommitRequestReconcile_ASettledApplyWithoutAnApplier(t *testing.T) {
+	for _, tc := range []struct {
+		apply git.SaveApply
+		want  metav1.ConditionStatus
+	}{
+		{git.SaveApply{Done: true, Reason: git.SaveApplyNothingPushed}, metav1.ConditionFalse},
+		{git.SaveApply{Done: true, Applied: true, Reason: git.SaveApplyNoApplier}, metav1.ConditionTrue},
+	} {
+		t.Run(tc.apply.Reason, func(t *testing.T) {
+			c := newCommitRequestClient(t, nil, catchingUp(newCommitRequest("save-1")))
+			f := committedFinalizer()
+			f.apply, f.applyKnown = tc.apply, true
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
-	reconcileCommitRequest(t, r, "save-1")
-	reconcileCommitRequest(t, r, "save-1")
-	got := fetchCommitRequest(t, c, "save-1")
-	requireCondition(t, got, ConditionTypeApplied, metav1.ConditionFalse, git.SaveApplyNoApplier)
-	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
+			reconcileCommitRequest(t, r, "save-1")
+			reconcileCommitRequest(t, r, "save-1")
+			got := fetchCommitRequest(t, c, "save-1")
+			requireCondition(t, got, ConditionTypeApplied, tc.want, tc.apply.Reason)
+			requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
+			assert.Empty(t, got.Status.AppliedRevision)
+		})
+	}
 }
 
 // TestCommitRequestReconcile_AnApplyNobodyKnowsIsLost: a worker that knows nothing of the apply

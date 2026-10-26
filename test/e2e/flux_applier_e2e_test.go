@@ -364,7 +364,7 @@ data:
 		const configMap, request = "applier-converge-edit", "applier-save-catch-up"
 		setFluxClaimCatchUpAfter(testNs, fluxName, "0s")
 
-		By("saving an API edit with catchUp: ImmediatelyAfterPush")
+		By("saving an API edit with catchUp: AfterPush")
 		_, err := kubectlRunWithStdin(testNs, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
@@ -374,7 +374,7 @@ spec:
   gitTargetRef:
     name: %s
   message: "e2e: save and apply"
-  catchUp: ImmediatelyAfterPush
+  catchUp: AfterPush
   window:
     attachTimeout: "4s"
     maxDuration: "4s"

@@ -1048,9 +1048,9 @@ type branchWorkerEventLoop struct {
 	// Loop-goroutine only.
 	pendingCRs map[commitRequestID]*pendingCommitRequest
 	// savedCatchUps is the CommitRequests, by GitTarget, whose pushed commit asked their applier to
-	// catch up at once (catchUp: ImmediatelyAfterPush), until the appliers are next listed
+	// catch up at once (catchUp: AfterPush), with that commit, until the appliers are next listed
 	// (takeReasons, save_apply.go).
-	savedCatchUps map[itypes.ResourceReference][]commitRequestID
+	savedCatchUps map[itypes.ResourceReference]map[commitRequestID]string
 	// crSeq numbers registrations, so competing requests attach first come, first served.
 	crSeq uint64
 	// refusalTimer fires at the earliest deadline in refusalPending. See refusal_reapply.go.

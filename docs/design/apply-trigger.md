@@ -267,7 +267,9 @@ deletes its file the applier leaves it on the cluster, and a later resync writes
   clock starts on the first pass that finds it behind and again on every send, so a burst of saves
   inside one interval costs one apply, and an applier at the tip costs nothing. A `FluxClaim`
   defaults to `1m`; an `ArgoCDClaim` to `0s`, never, since a sync runs the `Application`'s hooks
-  and Argo CD's refresh already compares the live state against the tip.
+  and Argo CD's refresh already compares the live state against the tip. Setting `0s` also drops
+  an interval converge still pending, behind the barrier or a backoff; a converge something else
+  asked for stays.
 - **An interval converge yields to an edit.** Its fetch writes nothing to the cluster; its apply
   puts the fetched tip there, and an edit mirrored after the send is not in that tip, so the apply
   would revert it and a `Repair` would put it back. Such a converge's decision stops holding once a
@@ -275,13 +277,16 @@ deletes its file the applier leaves it on the cluster, and a later resync writes
   fresh interval rather than going again after the next flush. While a burst of edits lasts, it
   lands in the first quiet moment. Every other reason applies regardless, as the flush guarantees
   ([above](#flush-then-apply)).
-- **A save can ask to catch up at once.** A `CommitRequest` with `catchUp: ImmediatelyAfterPush`
+- **A save can ask to catch up at once.** A `CommitRequest` with `catchUp: AfterPush`
   leaves a converge pending for its `GitTarget`'s applier as soon as its commit is pushed, without
   waiting for `catchUpAfter`. It was asked for, so it does not yield to an edit. A save that pushed
-  no commit asks nothing. The save waits on its applier until an attempt that carries it succeeds
-  (any apply sent after its push holds its commit), and the request's `Applied` condition reports
-  it: retried with the applier's backoff, settled applied, or settled not applied when there is no
-  applier, nothing was pushed, or the applier stops being named (`save_apply.go`).
+  no commit asks nothing. The save waits on its applier, with its commit, until an attempt that
+  carries it succeeds, and is settled applied only when the applied revision holds that commit: a
+  force-push that dropped it settles it not applied, and a revision the checkout does not hold yet
+  keeps it waiting while the remote is looked at. The request's `Applied` condition reports it:
+  retried with the applier's backoff, settled applied, settled applied when no applier is named
+  (the cluster already holds the save), or settled not applied when nothing was pushed
+  (`save_apply.go`).
 - **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
   reason, until every collection of every `GitTarget` it covers has a settled snapshot (applied,
   refused or failed; tracked per collection on the watch side) and the worker has published every

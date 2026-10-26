@@ -17,7 +17,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// A CommitRequest with catchUp: ImmediatelyAfterPush keeps being reconciled once it is Ready, to
+// A CommitRequest with catchUp: AfterPush keeps being reconciled once it is Ready, to
 // report in its Applied condition how the apply it asked for went (git.SaveApply). Ready is the
 // save's alone and never changes here.
 
@@ -33,7 +33,7 @@ const applyLostAfter = time.Minute
 // followsApply reports whether a finished request still reports its apply: it asked for one, its
 // save ended Ready, and Applied is not settled yet.
 func followsApply(cr *configbutleraiv1alpha3.CommitRequest) bool {
-	return cr.Spec.CatchUp == configbutleraiv1alpha3.CatchUpImmediatelyAfterPush &&
+	return cr.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush &&
 		conditionIsTrue(cr.Status.Conditions, ConditionTypeReady) && !applyReported(cr)
 }
 

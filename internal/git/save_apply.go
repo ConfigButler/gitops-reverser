@@ -3,21 +3,26 @@
 package git
 
 import (
+	"maps"
+	"strings"
 	"time"
+
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// A CommitRequest with catchUp: ImmediatelyAfterPush asks its GitTarget's applier to apply the tip
-// as soon as its commit is pushed, and the controller reports how that went in its Applied
-// condition. The save's own outcome is decided by the push alone; this is reported beside it and
-// never changes it.
+// A CommitRequest with catchUp: AfterPush asks its GitTarget's applier to apply the tip as soon as its
+// commit is pushed, and the controller reports how that went in its Applied condition. The save's own
+// outcome is decided by the push alone; this is reported beside it and never changes it.
 //
-// The worker keeps, per applier, the saves waiting for an apply. The attempt that goes out carries
-// them, so the one that succeeds settles them: any apply sent after a save's push applies a tip
-// that holds the save's commit. An attempt that does not succeed gives them back, and the next
-// carries them again. A save whose GitTarget names no applier, or that pushed no commit, or whose
-// applier stops being named, is settled as not applied.
+// The worker keeps, per applier, the saves waiting for an apply, each with the commit it pushed. The
+// attempt that goes out carries them, and the one that succeeds settles each save whose commit the
+// applied revision holds (settleSaves). An attempt that does not succeed gives them back, and the next
+// carries them again. A save that pushed no commit is settled as not applied. One whose GitTarget names
+// no applier, or whose applier stops being named, is settled as applied: nothing applies the branch,
+// and the cluster, where the saved objects came from, already holds them.
 
 // Why a save's apply was settled, or why it still waits: the Applied condition's reasons.
 const (
@@ -27,13 +32,15 @@ const (
 	SaveApplyNothingPushed = "NothingPushed"
 	SaveApplyNoApplier     = "NoApplierClaim"
 	SaveApplyApplierGone   = "ApplierGone"
+	SaveApplyCommitDropped = "CommitDropped"
 )
 
 // SaveApply is how the apply a CommitRequest asked for stands.
 type SaveApply struct {
 	// Done is whether it is settled: it changes no more.
 	Done bool
-	// Applied is whether the applier applied a commit that holds the save's.
+	// Applied is whether the applier applied a commit that holds the save's, or no applier applies
+	// the branch.
 	Applied bool
 	// Reason is one of the SaveApply* reasons, and Message says more.
 	Reason  string
@@ -86,10 +93,13 @@ func (l *branchWorkerEventLoop) catchUpAfterSave(pcr *pendingCommitRequest, comm
 		return
 	}
 	if l.savedCatchUps == nil {
-		l.savedCatchUps = map[itypes.ResourceReference][]commitRequestID{}
+		l.savedCatchUps = map[itypes.ResourceReference]map[commitRequestID]string{}
 	}
 	ref := itypes.NewResourceReference(pcr.gitTargetName, pcr.gitTargetNamespace)
-	l.savedCatchUps[ref] = append(l.savedCatchUps[ref], pcr.id)
+	if l.savedCatchUps[ref] == nil {
+		l.savedCatchUps[ref] = map[commitRequestID]string{}
+	}
+	l.savedCatchUps[ref][pcr.id] = commit
 	l.w.recordSaveApply(pcr.id, SaveApply{Reason: SaveApplyApplying,
 		Message: "commit " + commit + " is pushed; its applier is asked to apply it"})
 }
@@ -98,21 +108,22 @@ func (l *branchWorkerEventLoop) catchUpAfterSave(pcr *pendingCommitRequest, comm
 // up, and records the request as waiting on it. It was asked for, so it is no lag converge: it does
 // not yield to an edit (convergeHolds). A request whose GitTarget names no applier is settled.
 func (l *branchWorkerEventLoop) takeSavedCatchUps() {
-	for ref, ids := range l.savedCatchUps {
+	for ref, saves := range l.savedCatchUps {
 		state := l.applierNaming(ref)
 		if state == nil {
-			for _, id := range ids {
-				l.w.recordSaveApply(id, SaveApply{Done: true, Reason: SaveApplyNoApplier,
-					Message: "GitTarget " + ref.String() + " names no applier claim that may be asked"})
+			for id := range saves {
+				l.w.recordSaveApply(id, SaveApply{Done: true, Applied: true, Reason: SaveApplyNoApplier,
+					Message: "GitTarget " + ref.String() + " names no applier claim, so nothing applies the " +
+						"branch; the cluster already holds the saved objects"})
 			}
 			continue
 		}
 		state.converge, state.lag = true, false
-		for _, id := range ids {
-			state.waitSave(id)
+		for id, commit := range saves {
+			state.waitSave(id, commit)
 		}
 		l.w.Log.Info("A CommitRequest asked its applier to catch up with the pushed commit",
-			"branch", l.w.Branch, "applier", state.ref.String(), "gitTarget", ref.String(), "requests", len(ids))
+			"branch", l.w.Branch, "applier", state.ref.String(), "gitTarget", ref.String(), "requests", len(saves))
 	}
 	l.savedCatchUps = nil
 }
@@ -129,43 +140,121 @@ func (l *branchWorkerEventLoop) applierNaming(ref itypes.ResourceReference) *app
 	return nil
 }
 
-// waitSave records a CommitRequest as waiting for the applier's next apply that succeeds.
-func (s *applierState) waitSave(id commitRequestID) {
+// waitSave records a CommitRequest, which pushed commit, as waiting for the applier's next apply that
+// succeeds.
+func (s *applierState) waitSave(id commitRequestID, commit string) {
 	if s.waitingSaves == nil {
-		s.waitingSaves = map[commitRequestID]bool{}
+		s.waitingSaves = map[commitRequestID]string{}
 	}
-	s.waitingSaves[id] = true
+	s.waitingSaves[id] = commit
 }
 
-// settleSaves settles every save in saves as applied at revision.
-func (l *branchWorkerEventLoop) settleSaves(saves map[commitRequestID]bool, revision string) {
-	for id := range saves {
-		l.w.recordSaveApply(id, SaveApply{Done: true, Applied: true, Reason: SaveApplyApplied,
-			AppliedRevision: revision, Message: "the applier applied " + revision})
+// settleSaves settles the saves an apply of revision answered, by what revision holds:
+//
+//   - a save whose commit revision names or descends from is applied;
+//   - one whose commit the branch no longer holds either is not, and never will be: the branch's
+//     history was rewritten after the push;
+//   - one whose commit the branch holds and revision does not waits for the converge left pending;
+//   - one the checkout cannot tell about, because it lacks a commit, waits as well, and the remote is
+//     looked at: revision is a commit pushed elsewhere, and its fetch brings the apply that settles it.
+func (l *branchWorkerEventLoop) settleSaves(state *applierState, saves map[commitRequestID]string, revision string) {
+	if len(saves) == 0 {
+		return
 	}
+	repo, err := gogit.PlainOpen(l.w.repoPath())
+	if err != nil {
+		repo = nil
+	}
+	applied, tip := revisionCommit(revision), l.w.inbox.lastTip()
+	look := false
+	for id, commit := range saves {
+		held, known := commitHolds(repo, applied, commit)
+		if held {
+			l.w.recordSaveApply(id, SaveApply{Done: true, Applied: true, Reason: SaveApplyApplied,
+				AppliedRevision: revision, Message: "the applier applied " + revision})
+			continue
+		}
+		onBranch, branchKnown := commitHolds(repo, tip, commit)
+		switch {
+		case known && branchKnown && !onBranch:
+			l.w.recordSaveApply(id, SaveApply{Done: true, Reason: SaveApplyCommitDropped, Message: "the applier " +
+				"applied " + revision + ", and the branch no longer holds commit " + commit + ": its history was " +
+				"rewritten after the push"})
+			continue
+		case known:
+			state.converge, state.lag = true, false
+			l.w.recordSaveApply(id, SaveApply{
+				Reason:  SaveApplyRetrying,
+				Message: "the applier applied " + revision + ", which does not hold commit " + commit + "; asking again",
+			})
+		default:
+			look = look || applied != ""
+			l.w.recordSaveApply(id, SaveApply{Reason: SaveApplyRetrying, Message: "the applier applied " + revision +
+				", and whether it holds commit " + commit + " is not known here yet; looking at the remote"})
+		}
+		state.waitSave(id, commit)
+	}
+	if look {
+		l.w.EnqueuePushNotification(applied)
+	}
+}
+
+// commitHolds reports whether descendant is commit or descends from it, and whether the checkout could
+// tell: it holds both commits.
+func commitHolds(repo *gogit.Repository, descendant, commit string) (bool, bool) {
+	if descendant == "" || commit == "" {
+		return false, false
+	}
+	if strings.EqualFold(descendant, commit) {
+		return true, true
+	}
+	if repo == nil {
+		return false, false
+	}
+	descendantID, ok := plumbing.FromHex(descendant)
+	if !ok {
+		return false, false
+	}
+	commitID, ok := plumbing.FromHex(commit)
+	if !ok {
+		return false, false
+	}
+	later, err := repo.CommitObject(descendantID)
+	if err != nil {
+		return false, false
+	}
+	earlier, err := repo.CommitObject(commitID)
+	if err != nil {
+		return false, false
+	}
+	held, err := earlier.IsAncestor(later)
+	if err != nil {
+		return false, false
+	}
+	return held, true
 }
 
 // retrySaves records the saves an attempt that did not succeed gave back as waiting again, with why.
-func (l *branchWorkerEventLoop) retrySaves(saves map[commitRequestID]bool, why string) {
+func (l *branchWorkerEventLoop) retrySaves(saves map[commitRequestID]string, why string) {
 	for id := range saves {
 		l.w.recordSaveApply(id, SaveApply{Reason: SaveApplyRetrying,
 			Message: "the apply did not complete, and is asked again: " + why})
 	}
 }
 
-// dropSaves settles the saves of an applier no GitTarget names any more: nobody asks it for anything.
+// dropSaves settles the saves of an applier no GitTarget names any more as applied: nothing applies the
+// branch for them now, and the cluster already holds the saved objects.
 func (l *branchWorkerEventLoop) dropSaves(state *applierState) {
-	saves := state.waitingSaves
+	saves := maps.Clone(state.waitingSaves)
 	if state.inflight != nil {
-		for id := range state.inflight.saves {
-			if saves == nil {
-				saves = map[commitRequestID]bool{}
-			}
-			saves[id] = true
+		if saves == nil {
+			saves = map[commitRequestID]string{}
 		}
+		maps.Copy(saves, state.inflight.saves)
 	}
 	for id := range saves {
-		l.w.recordSaveApply(id, SaveApply{Done: true, Reason: SaveApplyApplierGone,
-			Message: "applier " + state.ref.String() + " is no longer named on this branch"})
+		l.w.recordSaveApply(id, SaveApply{Done: true, Applied: true, Reason: SaveApplyApplierGone,
+			Message: "applier " + state.ref.String() + " is no longer named on this branch, so nothing applies " +
+				"it; the cluster already holds the saved objects"})
 	}
 }

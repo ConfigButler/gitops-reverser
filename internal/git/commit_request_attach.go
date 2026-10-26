@@ -147,7 +147,7 @@ type AttachCommitRequest struct {
 	// commit: whenNothingToCommit: CommitEmpty.
 	CommitEmpty bool
 	// CatchUpNow asks the GitTarget's applier to apply the tip as soon as the request's commit is
-	// pushed: catchUp: ImmediatelyAfterPush.
+	// pushed: catchUp: AfterPush.
 	CatchUpNow bool
 }
 

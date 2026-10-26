@@ -98,7 +98,7 @@ const (
 	// ConditionTypePushed indicates whether a CommitRequest's commit reached the
 	// remote repository.
 	ConditionTypePushed = "Pushed"
-	// ConditionTypeApplied reports, for a CommitRequest with catchUp: ImmediatelyAfterPush, whether
+	// ConditionTypeApplied reports, for a CommitRequest with catchUp: AfterPush, whether
 	// its GitTarget's applier applied a commit that holds the request's: Unknown while it applies or
 	// retries, True once applied, False when there was nothing to apply. It never affects Ready.
 	ConditionTypeApplied = "Applied"

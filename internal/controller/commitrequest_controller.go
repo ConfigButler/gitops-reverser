@@ -38,7 +38,7 @@ type CommitRequestFinalizer interface {
 	// when the worker got there first, or resolved=false with the worker's phase while it decides.
 	WithdrawCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
 	// LookupCommitRequestApply reports where the apply a request with catchUp:
-	// ImmediatelyAfterPush asked for stands, and false while the worker knows nothing of it.
+	// AfterPush asked for stands, and false while the worker knows nothing of it.
 	LookupCommitRequestApply(ctx context.Context, attach git.AttachCommitRequest) (git.SaveApply, bool, error)
 }
 
@@ -261,7 +261,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		IdleTimeout:        window.idleTimeout,
 		MaxDuration:        window.maxDuration,
 		CommitEmpty:        commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
-		CatchUpNow:         commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpImmediatelyAfterPush,
+		CatchUpNow:         commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
 	}
 	if time.Since(commitRequest.CreationTimestamp.Time) >= window.resolveTimeout() {
 		// Past the bound the controller only withdraws: an attach sent now would sit behind the

@@ -11,12 +11,12 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 
 A push of GitOps Reverser's own asks no apply at once, and in 0.54.0 asked none at all, so a
 `Kustomization`'s `status.lastAppliedRevision` and its `GitRepository`'s artifact stayed at the last
-commit somebody else pushed. `spec.catchUpAfter` bounds that lag: once the applier has stayed
-behind the tip that long, the tip is applied, one apply for a whole burst of saves. A `FluxClaim`
-defaults to `1m`; set `0s` to keep 0.54.0's behaviour. An `ArgoCDClaim` defaults to `0s`.
-A `CommitRequest` that sets `catchUp: ImmediatelyAfterPush` has its commit applied as soon as it is
-pushed, whatever the claim's interval, and reports the apply in its `Applied` condition and
-`status.appliedRevision`.
+commit somebody else pushed. `spec.catchUpAfter` sets when that lag is caught up: once the applier
+has stayed behind the tip that long, an apply of the tip is asked for, one for a whole burst of
+saves. A `FluxClaim` defaults to `1m`; set `0s` to keep 0.54.0's behaviour. An `ArgoCDClaim`
+defaults to `0s`. A `CommitRequest` that sets `catchUp: AfterPush` has the tip applied right after
+its commit is pushed, whatever the claim's interval, and reports the outcome in its `Applied`
+condition and `status.appliedRevision`.
 
 ## `kube-root-ca.crt` is not mirrored
 

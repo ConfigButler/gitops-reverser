@@ -72,16 +72,16 @@ type CommitRequestSpec struct {
 	// +kubebuilder:default=Resolve
 	WhenNothingToCommit NothingToCommitAction `json:"whenNothingToCommit,omitempty"`
 
-	// CatchUp decides when the GitTarget's applier is asked to apply the commit
-	// this request pushes. "AsDefinedOnClaim" leaves it to the applier claim's
-	// spec.catchUpAfter. "ImmediatelyAfterPush" asks as soon as the commit is
-	// pushed, which costs one apply per request. The cluster already holds the
-	// saved objects; the apply brings the applier's own state, such as a
-	// Kustomization's status.lastAppliedRevision, to the commit. A request that
-	// pushes no commit, or whose GitTarget names no applier claim, asks for
-	// nothing. Defaults to "AsDefinedOnClaim".
+	// CatchUp decides when the GitTarget's applier is asked to apply the branch
+	// after this request pushes a commit. "AsDefinedOnClaim" leaves it to the
+	// applier claim's spec.catchUpAfter. "AfterPush" asks right after the push.
+	// The apply takes the latest branch tip, which may hold later commits, and
+	// saves pushed close together can share one apply; the Applied condition
+	// reports how it went. The cluster already holds the saved objects:
+	// the apply brings the applier's own state, such as a Kustomization's
+	// status.lastAppliedRevision, to the tip. Defaults to "AsDefinedOnClaim".
 	// +optional
-	// +kubebuilder:validation:Enum=AsDefinedOnClaim;ImmediatelyAfterPush
+	// +kubebuilder:validation:Enum=AsDefinedOnClaim;AfterPush
 	// +kubebuilder:default=AsDefinedOnClaim
 	CatchUp CatchUpPolicy `json:"catchUp,omitempty"`
 }
@@ -93,8 +93,8 @@ type CatchUpPolicy string
 const (
 	// CatchUpAsDefinedOnClaim leaves the apply to the applier claim's spec.catchUpAfter.
 	CatchUpAsDefinedOnClaim CatchUpPolicy = "AsDefinedOnClaim"
-	// CatchUpImmediatelyAfterPush asks the applier to apply the tip as soon as the commit is pushed.
-	CatchUpImmediatelyAfterPush CatchUpPolicy = "ImmediatelyAfterPush"
+	// CatchUpAfterPush asks the applier to apply the tip right after the commit is pushed.
+	CatchUpAfterPush CatchUpPolicy = "AfterPush"
 )
 
 // NothingToCommitAction is what a CommitRequest does when it ends with nothing
@@ -193,30 +193,38 @@ type CommitRequestWindow struct {
 //     not a failure and does not affect Ready; the final Git author remains
 //     the matching watch window's author.
 //   - Pushed (domain): True once the commit is in the remote repository.
+//   - Applied (domain): with spec.catchUp "AfterPush", whether the applier
+//     caught up with the commit. It never affects Ready.
 type CommitRequestStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are the latest observations of this CommitRequest's state. Ready,
-	// Reconciling and Stalled follow kstatus: Ready is True once the request ended
-	// without error, with a pushed commit or with nothing to save. Pushed is True
-	// once the commit is on the remote. AuthorAttributed says whether the
-	// request's creator, recorded at admission, names the commit author; False is
-	// not a failure and does not affect Ready.
+	// Conditions are the latest observations of this CommitRequest's state.
+	// Reconciling and Stalled follow kstatus. AuthorAttributed says whether the
+	// request's creator, recorded at admission, names the commit author; False
+	// is not a failure and does not affect Ready.
 	//
-	// Applied is set only with spec.catchUp "ImmediatelyAfterPush", once Ready is
-	// True. It says whether the GitTarget's applier applied a commit holding this
-	// request's:
+	// Three conditions say how far the save got:
 	//
-	// - Unknown, reason Applying or Retrying: the apply runs, or failed and is
-	//   asked again; the message says why.
-	// - True, reason Applied: status.appliedRevision names what was applied.
-	// - False, reason NothingPushed, NoApplierClaim or ApplierGone: there was
-	//   nothing to apply, or no applier to ask.
+	// - Ready (kstatus): True once the request ended without error, with a
+	//   pushed commit or with nothing to save. It never waits for an apply.
+	// - Pushed: True once the commit is on the remote.
+	// - Applied: set only with spec.catchUp "AfterPush", once Ready is True.
+	//
+	// Applied says whether the cluster's applier caught up with the commit:
+	//
+	// - Unknown, reason Applying or Retrying: the apply runs, or did not
+	//   complete and is asked again; the message says why.
+	// - True, reason Applied: the applier applied a revision that holds the
+	//   commit, named in status.appliedRevision.
+	// - True, reason NoApplierClaim or ApplierGone: the GitTarget names no
+	//   applier claim, or stopped naming the one asked, and the cluster
+	//   already holds the saved objects.
+	// - False, reason NothingPushed: there is no commit to apply.
+	// - False, reason CommitDropped: the branch no longer holds the commit;
+	//   its history was rewritten after the push.
 	// - Unknown, reason Lost: GitOps Reverser restarted before it knew.
-	//
-	// It never affects Ready: the save is done once it is pushed.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -233,8 +241,9 @@ type CommitRequestStatus struct {
 	Commit string `json:"commit,omitempty"`
 
 	// AppliedRevision is the revision the GitTarget's applier reported applying
-	// for this request, as in a Kustomization's status.lastAppliedRevision. Set
-	// once Applied is True.
+	// for this request, as in a Kustomization's status.lastAppliedRevision. It
+	// holds the request's commit, and may be a later one. Set once Applied is
+	// True with reason Applied.
 	// +optional
 	AppliedRevision string `json:"appliedRevision,omitempty"`
 }
