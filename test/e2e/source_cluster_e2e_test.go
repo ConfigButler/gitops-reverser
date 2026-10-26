@@ -19,7 +19,7 @@ import (
 // the provider's OWN namespace, or spec.inCluster where the installation allows it), for which
 // other namespaces may use it (spec.allowedGitTargets), and for its audit route.
 //
-// Three kinds of spec live here:
+// Four kinds of spec live here:
 //   - Input-validation specs (Scenario 1) assert the KubeProvider reconciler's Validated verdict on
 //     bad kubeconfigs and on an inCluster provider the installation does not list, without a
 //     remote cluster and without a dial.
@@ -31,6 +31,12 @@ import (
 //     Scenario 8 holds the SAME namespace + resource with different content in three workspaces,
 //     proving state is keyed by source cluster, not (namespace, GVR); Scenario 9 gives two
 //     providers ONE name in two namespaces, and recreates one of them.
+//   - The applier spec (Scenario 10) is an applier in this cluster applying into a remote one, as
+//     gitops-api runs: Flux applies a folder into a workspace through Kustomization.spec.kubeConfig,
+//     the GitTarget mirrors that workspace, and its FluxClaim holds the Kustomization through the
+//     install's own provider. It shows the startup converge landing in the workspace, an edit made
+//     there during an apply withheld from the apply's revert by the REMOTE object's managedFields,
+//     and two saves that ask to catch up reporting the apply.
 //
 // The whole suite is gated by skipUnlessSourceClusterEnabled() (env E2E_ENABLE_SOURCE_CLUSTER),
 // and the kcp specs additionally Skip when kcp is not installed — so a default `task test-e2e`
@@ -635,4 +641,254 @@ spec:
 			expectMirroredValue(g, repo.CheckoutDir, "clusters/twin-a", "twin", "alpha")
 		}).WithTimeout(420 * time.Second).WithPolling(5 * time.Second).Should(Succeed())
 	})
+
+	// Scenario 10 — an applier in this cluster applying into the remote one: Flux applies a folder
+	// into a workspace through Kustomization.spec.kubeConfig, the GitTarget mirrors that workspace
+	// through a secretRef KubeProvider, and the FluxClaim holds the Kustomization through the
+	// install's own provider. So the apply window judges the managedFields of the REMOTE object. It
+	// has its own repository, so no GitTarget of the scenarios above shares its branch.
+	//
+	// The e2e kcp has no audit stream, so no write in the workspace names its author: everything is
+	// mirrored from the watch, and every event waits out the attribution grace first.
+	Describe("Flux applying into a workspace the GitTarget mirrors", Ordered, func() {
+		const ws = "sc-flux"
+		var (
+			p      *timingPipeline
+			r      *echoRun
+			ksName string
+		)
+
+		BeforeAll(func() {
+			if kcp == nil {
+				Skip("kcp is not installed; run this corner via `task test-e2e-source-cluster`")
+			}
+			grantAppliersInAnyNamespace()
+			ensurePrometheusClient()
+			fluxRepo := SetupRepo(resolveE2EContext(), testNs,
+				fmt.Sprintf("e2e-source-cluster-flux-%d", GinkgoRandomSeed()))
+			p = newTimingPipeline(testNs, ws, fluxRepo)
+			ksName = ws + "-" + testNs
+			_, err := kubectlRunInNamespace(testNs, "apply", "-f", fluxRepo.SecretsYAML)
+			Expect(err).NotTo(HaveOccurred(), "failed to apply repo secrets")
+			configureRepoOriginWithCredentials(fluxRepo, testNs)
+
+			By("provisioning the workspace, and the namespace the folder holds inside it")
+			DeferCleanup(kcp.deleteWorkspace, ws)
+			hash := kcp.createWorkspace(ws)
+			_, err = kcp.wsKubectl(hash, "create", "namespace", testNs)
+			Expect(err).NotTo(HaveOccurred(), "create the folder's namespace in %s", ws)
+
+			By("mirroring the workspace: KubeProvider, GitProvider with a receiver, GitTarget, WatchRule")
+			DeferCleanup(func() {
+				deleteKubeProvider(testNs, ws)
+				cleanupNamespacedResource(testNs, "secret", ws+"-kubeconfig")
+			})
+			writeKubeConfigSecret(testNs, ws+"-kubeconfig", "value", kcp.operatorKubeConfig(hash))
+			_, err = applyKubeProvider(testNs, ws, ws+"-kubeconfig", "")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(p.cleanup)
+			createReadyGitProvider(p.providerName, testNs, fluxRepo.GitSecretHTTP, fluxRepo.RepoURLHTTP)
+			p.hookID = registerOperatorReceiver(testNs, p.receiverName, fluxRepo.RepoName)
+			_, err = applyGitTargetWithKubeProvider(testNs, p.targetName, p.providerName, "", p.gitPath, testNs, ws)
+			Expect(err).NotTo(HaveOccurred())
+			verifyResourceCondition("gittarget", p.targetName, testNs, "SourceClusterReachable", "True", "", "", "180s")
+			p.applyWatchRule()
+			waitForStreamsRunning(p.targetName, testNs)
+
+			r = &echoRun{
+				timingPipeline: p,
+				applier: echoApplier{
+					name: "Flux",
+					owns: func(g Gomega, ns, configMap string) bool {
+						out, err := kcp.wsKubectl(hash, "-n", ns, "get", "configmap", configMap,
+							`-o=jsonpath={.metadata.labels.kustomize\.toolkit\.fluxcd\.io/name}`)
+						g.Expect(err).NotTo(HaveOccurred())
+						return strings.TrimSpace(out) == ksName
+					},
+					operation: func(g Gomega) claimOperation {
+						return readClaimOperation(g, testNs, fluxClaimResource, ksName)
+					},
+				},
+				kubectl: func(args ...string) (string, error) {
+					return kcp.wsKubectl(hash, append([]string{"-n", testNs}, args...)...)
+				},
+			}
+
+			By("creating a ConfigMap in the workspace, and waiting until the GitTarget mirrored it")
+			_, err = r.liveKubectl("create", "configmap", timingConfigMap, "--from-literal=value=seed")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.liveKubectl("label", "configmap", timingConfigMap, timingLabelKey+"=true")
+			Expect(err).NotTo(HaveOccurred())
+			r.eventuallyEverywhere(timingConfigMap, "seed", echoApplyBudget)
+
+			By("creating the Kustomization, which applies the folder into the workspace once")
+			DeferCleanup(func() {
+				cleanupNamespacedResource("flux-system", "kustomization", ksName)
+				cleanupNamespacedResource("flux-system", "gitrepository", ksName)
+				cleanupNamespacedResource("flux-system", "secret", ksName+"-git")
+				cleanupNamespacedResource("flux-system", "secret", ksName+"-kubeconfig")
+			})
+			applyFluxIntoWorkspace(testNs, fluxRepo, ksName, kcp.operatorKubeConfig(hash), "./"+p.gitPath)
+
+			By("pushing a Git-side change the Kustomization has not fetched, then holding it with a FluxClaim")
+			r.pushFromOutside("converged", "c1")
+			DeferCleanup(cleanupNamespacedResource, testNs, fluxClaimResource, ksName)
+			createFluxClaim(testNs, ksName, ksName)
+			nameApplierClaim(testNs, p.targetName, "FluxClaim", ksName, "")
+		})
+
+		// Naming the FluxClaim converges it once: a CatchUp of the tip, which holds a ConfigMap only
+		// Git has, since the GitRepository's 24h interval never fetched it. So the ConfigMap reaches
+		// the workspace through the FluxClaim's apply alone, and Flux's labels on it say who applied it.
+		It("applies its startup converge into the workspace, and mirrors what it applied", func() {
+			verifyResourceCondition(fluxClaimResource, ksName, testNs, "Configured", "True", "", "")
+			verifyResourceCondition(fluxClaimResource, ksName, testNs, "Ready", "True", "Succeeded", "")
+			verifyResourceCondition("gittarget", p.targetName, testNs, "ApplierClaimReady", "True", "Succeeded", "")
+			Eventually(func(g Gomega) {
+				head := p.remoteBranchHead(g)
+				g.Expect(fluxLastAppliedRevision(g, ksName)).To(ContainSubstring(head))
+				done := r.applier.operation(g)
+				g.Expect(done.Reason).To(Equal("CatchUp"))
+				g.Expect(done.Commit).To(Equal(head))
+				g.Expect(done.Phase).To(Equal("Succeeded"))
+				live, exists := r.liveValue(g, "converged")
+				g.Expect(exists).To(BeTrue(), "the converge applies the Git-side change into the workspace")
+				g.Expect(live).To(Equal("c1"))
+				g.Expect(r.applier.owns(g, testNs, "converged")).To(BeTrue(), "Flux applied it")
+				g.Expect(r.applier.owns(g, testNs, timingConfigMap)).To(BeTrue(), "Flux adopted the mirrored one")
+			}, echoApplyBudget, 2*time.Second).Should(Succeed())
+			verifyResourceCondition(fluxClaimResource, ksName, testNs, "InControl", "True", "Suspended", "")
+			r.consistentlyEverywhere("converged", "c1")
+			r.consistentlyEverywhere(timingConfigMap, "seed")
+		})
+
+		// The collision the apply window exists for, as E5 provokes it: an edit through the workspace's
+		// API while an apply runs. The apply reverts it in the workspace; the window withholds that
+		// write, because the object's managedFields name kustomize-controller alone, after the edit.
+		It("withholds an apply that reverts an edit made in the workspace during it", func() {
+			withheld := fmt.Sprintf(`sum(gitopsreverser_apply_window_collisions_total{gitbranch_namespace=%q,`+
+				`gitbranch_name=%q,outcome="withheld"}) or vector(0)`, testNs, gitBranchName(p.providerName, "main"))
+			before, err := queryPrometheus(withheld)
+			Expect(err).NotTo(HaveOccurred())
+
+			r.editDuringApply()
+			waitForMetricWithTimeout(withheld, func(v float64) bool { return v > before },
+				"the apply over the workspace edit is counted as a withheld collision", time.Minute)
+		})
+
+		// A save on the workspace's GitTarget that asks to catch up is applied once it is pushed, and
+		// each request reports the apply: Applied=True, with the revision Flux applied. Two saves made
+		// together may share one apply.
+		//
+		// The saves record empty commits (whenNothingToCommit: CommitEmpty). A request's author is
+		// captured at admission in this cluster, and with no audit stream from kcp a write in the
+		// workspace names no author, so a request never attaches to that write's window.
+		It("applies two saves that ask to catch up, and reports the apply on each", func() {
+			names := []string{"sc-flux-save-1", "sc-flux-save-2"}
+			for _, name := range names {
+				applyCatchUpSave(testNs, name, p.targetName)
+			}
+			commits := map[string]string{}
+			for _, name := range names {
+				Eventually(func(g Gomega) {
+					g.Expect(commitRequestCondition(g, testNs, name, "Ready")).To(Equal("True"))
+					g.Expect(commitRequestField(g, testNs, name, `{.status.conditions[?(@.type=="Ready")].reason}`)).
+						To(Equal("NoWindow"))
+					g.Expect(commitRequestCondition(g, testNs, name, "Pushed")).To(Equal("True"))
+					commits[name] = commitRequestField(g, testNs, name, "{.status.commit}")
+					g.Expect(commits[name]).NotTo(BeEmpty())
+				}, 2*time.Minute, 2*time.Second).Should(Succeed())
+			}
+
+			last := commits[names[len(names)-1]]
+			Eventually(func(g Gomega) {
+				for _, name := range names {
+					applied := commitRequestCondition(g, testNs, name, "Applied")
+					reason := commitRequestField(g, testNs, name, `{.status.conditions[?(@.type=="Applied")].reason}`)
+					if applied == "False" {
+						StopTrying(fmt.Sprintf("CommitRequest %s is Applied=False (%s): only a commit the branch "+
+							"lost may be", name, reason)).Now()
+					}
+					g.Expect(applied).To(Equal("True"), "CommitRequest %s Applied (%s)", name, reason)
+					g.Expect(reason).To(Equal("Applied"))
+					// A later save's commit holds the earlier one's, so one apply may settle both.
+					g.Expect(commitRequestField(g, testNs, name, "{.status.appliedRevision}")).
+						To(Or(ContainSubstring(commits[name]), ContainSubstring(last)))
+				}
+				g.Expect(commitRequestField(g, testNs, names[len(names)-1], "{.status.appliedRevision}")).
+					To(ContainSubstring(last))
+				g.Expect(fluxLastAppliedRevision(g, ksName)).To(ContainSubstring(last))
+			}, echoApplyBudget, 2*time.Second).Should(Succeed())
+		})
+	})
 })
+
+// applyFluxIntoWorkspace creates, in flux-system, a GitRepository following main and a Kustomization
+// applying path from it into a kcp workspace: its spec.kubeConfig names a Secret holding kubeconfig
+// under the key "value", which kustomize-controller, in this cluster, dials. Both are on a 24h
+// interval, so a later commit is applied only when the FluxClaim asks. It waits for the first apply,
+// made before any applier claim holds the Kustomization.
+func applyFluxIntoWorkspace(testNs string, repo *RepoArtifacts, name, kubeconfig, path string) {
+	GinkgoHelper()
+	writeKubeConfigSecret("flux-system", name+"-kubeconfig", "value", kubeconfig)
+	fields := struct {
+		Namespace, SecretName, Name, RepoURL, Branch, Interval, Username, Password string
+	}{
+		Namespace: "flux-system", SecretName: name + "-git", Name: name, RepoURL: repo.RepoURLHTTP,
+		Branch: "main", Interval: "24h",
+	}
+	checkout := gitCheckout{secretNamespace: testNs, gitSecretName: repo.GitSecretHTTP}
+	fields.Username, fields.Password = checkout.readGitCredentialSecretDataBase64()
+	Expect(applyFromTemplate("test/e2e/templates/bi-directional/flux-gitrepository-http.tmpl", fields,
+		"flux-system")).To(Succeed(), "failed to apply the Flux GitRepository")
+	_, err := kubectlRunWithStdin("flux-system", fmt.Sprintf(`apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: %s
+  namespace: flux-system
+spec:
+  interval: 24h
+  timeout: 2m
+  path: %s
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: %s
+  kubeConfig:
+    secretRef:
+      name: %s-kubeconfig
+      key: value
+`, name, path, name, name), "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "failed to apply the Flux Kustomization")
+	// Ready's message is where an unreachable workspace shows: a TLS or DNS failure to the front-proxy.
+	Eventually(func(g Gomega) {
+		out, err := kubectlRunInNamespace("flux-system", "get", "kustomization", name, "-o",
+			`jsonpath={.status.conditions[?(@.type=="Ready")].status}|`+
+				`{.status.conditions[?(@.type=="Ready")].message}`)
+		g.Expect(err).NotTo(HaveOccurred())
+		status, message, _ := strings.Cut(strings.TrimSpace(out), "|")
+		g.Expect(status).To(Equal("True"), "Kustomization %s is not Ready: %s", name, message)
+	}, 3*time.Minute, 2*time.Second).Should(Succeed(), "the Kustomization must apply its folder into the workspace")
+}
+
+// applyCatchUpSave creates the CommitRequest name on gitTarget, asking its applier to catch up once
+// it is pushed. It attaches only to a window already open, and records its message in an empty
+// commit when there is none.
+func applyCatchUpSave(namespace, name, gitTarget string) {
+	GinkgoHelper()
+	_, err := kubectlRunWithStdin(namespace, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: CommitRequest
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  gitTargetRef:
+    name: %s
+  message: "e2e: save %s and apply it"
+  catchUp: AfterPush
+  whenNothingToCommit: CommitEmpty
+  window:
+    attachTimeout: "0s"
+`, name, namespace, gitTarget, name), "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "failed to create CommitRequest %s", name)
+}
