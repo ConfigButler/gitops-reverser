@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -229,6 +230,15 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// decision is final — there is no wait and no requeue for the author.
 	author, attribution := r.attributeAuthor(ctx, commitRequest)
 
+	// Refused only at first sight, before any attach was sent: a GitTarget's policy lowered later
+	// does not fail a request the worker may already hold, which keeps what it was first sent.
+	claim, claimErr := r.unattributedClaim(ctx, commitRequest)
+	if claimErr != nil && findCondition(commitRequest.Status.Conditions, ConditionTypeReady) == nil {
+		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, claimErr, attribution,
+			resolvedCommitRequestTarget(commitRequest))
+		return ctrl.Result{}, nil
+	}
+
 	if err := r.stampFirstSightConditions(ctx, commitRequest, attribution); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -249,21 +259,21 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// and poll the outcome.
 	window := resolveRequestWindow(commitRequest.Spec)
 	attach := git.AttachCommitRequest{
-		Namespace:            commitRequest.Namespace,
-		Name:                 commitRequest.Name,
-		UID:                  string(commitRequest.UID),
-		Author:               author.Author,
-		Attribution:          attribution.gitOutcome(),
-		GitTargetName:        commitRequest.Spec.GitTargetRef.Name,
-		GitTargetNamespace:   commitRequest.Namespace,
-		Message:              commitRequest.Spec.Message,
-		Attach:               window.attach,
-		AttachTimeout:        window.attachTimeout,
-		IdleTimeout:          window.idleTimeout,
-		MaxDuration:          window.maxDuration,
-		CommitEmpty:          commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
-		CatchUpNow:           commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
-		TakeOverUnattributed: r.sourceSendsNoAuditFacts(ctx, commitRequest),
+		Namespace:          commitRequest.Namespace,
+		Name:               commitRequest.Name,
+		UID:                string(commitRequest.UID),
+		Author:             author.Author,
+		Attribution:        attribution.gitOutcome(),
+		GitTargetName:      commitRequest.Spec.GitTargetRef.Name,
+		GitTargetNamespace: commitRequest.Namespace,
+		Message:            commitRequest.Spec.Message,
+		Attach:             window.attach,
+		AttachTimeout:      window.attachTimeout,
+		IdleTimeout:        window.idleTimeout,
+		MaxDuration:        window.maxDuration,
+		CommitEmpty:        commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
+		CatchUpNow:         commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
+		Unattributed:       claim,
 	}
 	if time.Since(commitRequest.CreationTimestamp.Time) >= window.resolveTimeout() {
 		// Past the bound the controller only withdraws: an attach sent now would sit behind the
@@ -273,30 +283,58 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return r.attachCommitRequest(ctx, log, req, commitRequest, attribution, attach)
 }
 
-// sourceSendsNoAuditFacts reports whether the KubeProvider of the request's GitTarget has never
-// received an audit fact: its AuditFactsReceived condition is not True. No write watched on that
-// cluster can then name its author, so the request may take over a window whose writes name none
-// (git.AttachCommitRequest.TakeOverUnattributed). A read that fails says no, and the request attaches
-// by author alone.
-func (r *CommitRequestReconciler) sourceSendsNoAuditFacts(
+// errTakeOverNotAllowed is a request that asks to claim more of a window whose writes name no author
+// than its GitTarget's spec.commit.unattributedWindows allows. It is terminal: the spec is immutable.
+var errTakeOverNotAllowed = errors.New("spec.window.author asks for more than the GitTarget allows")
+
+// unattributedClaim decides what the request may claim of a window on its GitTarget whose writes
+// name no author (git.AttachCommitRequest.Unattributed). It claims what spec.window.author asks for,
+// and only while the GitTarget's KubeProvider has never received an audit fact: its
+// AuditFactsReceived condition is not True, so no write watched on that cluster can name its author.
+// On a cluster that has sent one, a write naming no author means its fact went missing, and nothing
+// is claimed. A request that asks for more than the GitTarget's spec.commit.unattributedWindows
+// allows is errTakeOverNotAllowed. A GitTarget or KubeProvider that cannot be read claims nothing,
+// and the request attaches by author alone.
+func (r *CommitRequestReconciler) unattributedClaim(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-) bool {
+) (git.UnattributedClaim, error) {
+	ask := configbutleraiv1alpha3.WindowAuthorOwn
+	if window := commitRequest.Spec.Window; window != nil && window.Author != "" {
+		ask = window.Author
+	}
+	if ask == configbutleraiv1alpha3.WindowAuthorOwn {
+		return git.UnattributedClaimNone, nil
+	}
 	var target configbutleraiv1alpha3.GitTarget
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: commitRequest.Namespace, Name: commitRequest.Spec.GitTargetRef.Name,
 	}, &target); err != nil {
-		return false
+		return git.UnattributedClaimNone, nil //nolint:nilerr // a missing GitTarget is the attach path's to report
+	}
+	policy := configbutleraiv1alpha3.UnattributedWindowsKeep
+	if target.Spec.Commit != nil && target.Spec.Commit.UnattributedWindows != "" {
+		policy = target.Spec.Commit.UnattributedWindows
+	}
+	if !policy.Allows(ask) {
+		return git.UnattributedClaimNone, fmt.Errorf("%w: spec.window.author is %q, and GitTarget %s has "+
+			"spec.commit.unattributedWindows %q", errTakeOverNotAllowed, ask, target.Name, policy)
 	}
 	key := target.KubeProviderKey()
 	if key.Name == "" {
-		return false
+		return git.UnattributedClaimNone, nil
 	}
 	var provider configbutleraiv1alpha3.KubeProvider
 	if err := r.Get(ctx, key, &provider); err != nil {
-		return false
+		return git.UnattributedClaimNone, nil //nolint:nilerr // an unread provider claims nothing
 	}
-	return !apimeta.IsStatusConditionTrue(provider.Status.Conditions, KubeProviderConditionAuditFactsReceived)
+	if apimeta.IsStatusConditionTrue(provider.Status.Conditions, KubeProviderConditionAuditFactsReceived) {
+		return git.UnattributedClaimNone, nil
+	}
+	if ask == configbutleraiv1alpha3.WindowAuthorTakeOver {
+		return git.UnattributedClaimTakeOver, nil
+	}
+	return git.UnattributedClaimSavedBy, nil
 }
 
 // attachCommitRequest sends the attach and reports the outcome once the worker has one. Until then

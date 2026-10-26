@@ -191,6 +191,31 @@ spec:
                           one that fails at commit time commits the message as written.
                         type: string
                     type: object
+                  unattributedWindows:
+                    default: Keep
+                    description: |-
+                      UnattributedWindows says how much a CommitRequest on this GitTarget may
+                      claim of a commit window whose writes name no author. It acts only while
+                      the GitTarget's KubeProvider has never received an audit fact; on a
+                      cluster that has, a write naming no author is never claimed. Defaults to
+                      "Keep".
+
+                      - "Keep": a request attaches only to its creator's own window.
+                      - "SavedBy": a request that asks may give such a window its message. The
+                        commit names no author, and its message ends with a Saved-By line
+                        naming the request's creator.
+                      - "TakeOver": a request that asks may also take such a window over. Its
+                        creator authors the commit, and the message ends with an Author-Source
+                        line.
+
+                      Every write that names no author shares one window, whoever made it, so
+                      a takeover names the creator as the author of all of them. Allow it only
+                      where one person edits the mirrored namespaces at a time.
+                    enum:
+                    - Keep
+                    - SavedBy
+                    - TakeOver
+                    type: string
                   window:
                     description: |-
                       Window sets when this GitTarget's commit windows close. A window opens on an

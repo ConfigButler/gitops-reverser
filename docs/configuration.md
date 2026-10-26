@@ -118,6 +118,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
 | `commit.window.maxDuration` | `1m` | Close a commit window this long after it opened, however much keeps arriving |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
+| `commit.unattributedWindows` | `Keep` | How much a `CommitRequest` may claim of a window whose writes name no author, on a cluster that never sent an audit fact: `Keep`, `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author) |
 | `placement.byType` | the built-in path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
 | `placement.default` | the built-in path | Catch-all path template for types with no `byType` entry |
 | `placement.useKustomize` | off | Keep the folder a kustomize folder. See [keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize) |
@@ -178,6 +179,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 | `gitTargetRef` | **required** | The target whose commit window the request attaches to |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
 | `window.attach` | `CurrentOrNext` | Which window to attach to: the author's current or next one, or only the next. See [the request window](#the-request-window-specwindow) |
+| `window.author` | `Own` | Whose window to attach to: `Own`, or also claim a window whose writes name no author with `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author) |
 | `window.attachTimeout` | `2s` | How long to wait for a window to attach to |
 | `window.idleTimeout` | no idle close | Close the attached window after this much silence |
 | `window.maxDuration` | `2s` | Close the attached window this long after the attach |
@@ -3002,6 +3004,7 @@ replaces that window's timers with its own, shorter or longer:
 | Field | Meaning | Default |
 |---|---|---|
 | `attach` | `CurrentOrNext` attaches to the author's window if one is open when the worker registers the request, and otherwise to the next one a write opens. `Next` first closes the author's open window, under the message it already carries, and attaches to the next one | `CurrentOrNext` |
+| `author` | `Own` attaches only to the author's window. `SavedBy` and `TakeOver` may also claim a window whose writes name no author; see [saving where writes name no author](#saving-where-writes-name-no-author) | `Own` |
 | `attachTimeout` | stop waiting for a window this long after the worker registers the request | `2s` |
 | `idleTimeout` | close the attached window after this much silence; every write restarts it | no idle close |
 | `maxDuration` | close the attached window this long after the attach, however much keeps arriving | `2s` |
@@ -3050,7 +3053,40 @@ push follows, with its cooldown and any retries.
 
 Do not size either against `--author-attribution-grace`. When that grace expires with no fact the
 write still ships, as a window that names no actor, and a request naming a submitter can never
-attach to it: the outcome is `WindowMismatch` no matter how long the request waits.
+attach to it: the outcome is `WindowMismatch` no matter how long the request waits. On a cluster
+that sends no audit events at all, see
+[saving where writes name no author](#saving-where-writes-name-no-author).
+
+### Saving where writes name no author
+
+On a source cluster that sends no audit events, no write names its author, so every write lands in
+a window that names no actor. A request whose submitter was captured at admission cannot attach to
+such a window, and its save ends `WindowMismatch`. Two settings let it claim one, and both default to
+claiming nothing:
+
+- the `GitTarget`'s `spec.commit.unattributedWindows` says how much a request on it may claim:
+  `Keep` (the default), `SavedBy`, or `TakeOver`;
+- the request's `spec.window.author` says what this save asks for: `Own` (the default), `SavedBy`,
+  or `TakeOver`.
+
+| `spec.window.author` | What the request does with a window whose writes name no author |
+|---|---|
+| `Own` | nothing: it attaches only to its submitter's own window |
+| `SavedBy` | gives the window its message; the commit names no author, and its message ends with `Saved-By: <submitter>` |
+| `TakeOver` | takes the window over; the submitter authors the commit, and its message ends with `Author-Source: CommitRequest <namespace>/<name>; no audit record names who made these changes` |
+
+`TakeOver` on the `GitTarget` allows both claims, and `SavedBy` allows only `SavedBy`. A request that
+asks for more than its `GitTarget` allows fails when it is first seen, before it attaches:
+`Ready=False`, `Stalled=True`, reason `TakeOverNotAllowed`.
+
+Both claims act only while the `GitTarget`'s `KubeProvider` has never received an audit fact: its
+`AuditFactsReceived` condition is not `True`. On a cluster that has sent one, a write that names no
+author means its fact went missing, so no request claims it, and a request that asked attaches to
+its own windows only.
+
+Every write that names no author shares one window, whoever made it. A takeover therefore names the
+submitter as the author of all of them, and `SavedBy` gives all of them the submitter's message.
+Allow `TakeOver` only where one person edits the `GitTarget`'s namespaces at a time.
 
 The two directions are not symmetric. Overshooting costs a few seconds of latency on the commit;
 undershooting `attachTimeout` resolves the request `Ready=True` with reason `NoWindow` while the

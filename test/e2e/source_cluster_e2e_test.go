@@ -784,12 +784,16 @@ spec:
 		// is made as soon as the first is pushed, so the two may share one apply.
 		//
 		// No write in the workspace names its author, since kcp sends no audit facts, and the request's
-		// submitter is captured at admission in this cluster. The workspace's KubeProvider has never
-		// received a fact, so each request takes over the window of its edit, its submitter authors the
-		// commit, and the message ends with a note that says so. Every event from the workspace waits
-		// out the attribution grace first, so the requests wait longer than that for their window.
+		// submitter is captured at admission in this cluster. The GitTarget allows a takeover, each
+		// request asks for one, and the workspace's KubeProvider has never received a fact, so each
+		// request takes over the window of its edit: its submitter authors the commit, and the message
+		// ends with a trailer that says so. Every event from the workspace waits out the attribution
+		// grace first, so the requests wait longer than that for their window.
 		It("takes over the window of an edit in the workspace, and reports the apply on each of two saves", func() {
 			verifyResourceCondition("kubeprovider", ws, testNs, "AuditFactsReceived", "Unknown", "", "")
+			_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", p.targetName, "--type=merge", "-p",
+				`{"spec":{"commit":{"unattributedWindows":"TakeOver"}}}`)
+			Expect(err).NotTo(HaveOccurred())
 			names := []string{"sc-flux-save-1", "sc-flux-save-2"}
 			commits := map[string]string{}
 			for i, name := range names {
@@ -900,6 +904,7 @@ spec:
   message: "e2e: save %s and apply it"
   catchUp: AfterPush
   window:
+    author: TakeOver
     attachTimeout: "45s"
     maxDuration: "4s"
 `, name, namespace, gitTarget, name), "apply", "-f", "-")

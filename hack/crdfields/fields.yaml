@@ -154,6 +154,11 @@ kinds:
       - path: commit.message
         default: the built-in templates
         doc: How commits are phrased. See [commit messages](commit-messages.md)
+      - path: commit.unattributedWindows
+        doc: >-
+          How much a `CommitRequest` may claim of a window whose writes name no author, on a cluster
+          that never sent an audit fact: `Keep`, `SavedBy` or `TakeOver`. See
+          [saving where writes name no author](#saving-where-writes-name-no-author)
       - path: placement.byType
         default: the built-in path
         doc: >-
@@ -299,6 +304,10 @@ kinds:
         doc: >-
           Which window to attach to: the author's current or next one, or only the next. See
           [the request window](#the-request-window-specwindow)
+      - path: window.author
+        doc: >-
+          Whose window to attach to: `Own`, or also claim a window whose writes name no author with
+          `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author)
       - path: window.attachTimeout
         doc: How long to wait for a window to attach to
       - path: window.idleTimeout

@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -27,6 +28,7 @@ const (
 	crReasonCommitterFallback       = "CommitterFallback"
 	crReasonAuthorCaptureDisabled   = "AuthorCaptureDisabled"
 	crReasonGitTargetRefPruned      = "GitTargetRefPruned"
+	crReasonTakeOverNotAllowed      = "TakeOverNotAllowed"
 )
 
 // The bounded `outcome` values on gitopsreverser_commit_requests_total.
@@ -279,7 +281,11 @@ func applyFinalizeResultToStatus(
 	setCommitRequestAttributed(cr, attribution)
 
 	if finalizeErr != nil {
-		failCommitRequest(cr, crReasonFinalizeFailed, finalizeErr.Error())
+		reason := crReasonFinalizeFailed
+		if errors.Is(finalizeErr, errTakeOverNotAllowed) {
+			reason = crReasonTakeOverNotAllowed
+		}
+		failCommitRequest(cr, reason, finalizeErr.Error())
 		return
 	}
 

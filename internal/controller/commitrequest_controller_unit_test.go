@@ -879,14 +879,18 @@ func TestCommitRequestReconciler_LiteralValidation(t *testing.T) {
 	}
 }
 
-// A request may take over a window whose writes name no author only when the GitTarget's
-// KubeProvider has never received an audit fact. Any read that fails keeps the author rule.
-func TestCommitRequestAttach_TakesOverUnattributedWindowsOnlyFromASourceWithNoAuditFacts(t *testing.T) {
-	target := &configv1alpha3.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
-		Spec: configv1alpha3.GitTargetSpec{
-			KubeProviderRef: meta.NamespacedObjectReference{Name: "workspace", Namespace: "providers"},
-		},
+// A request claims a window whose writes name no author only when it asked, its GitTarget allows
+// what it asked, and the GitTarget's KubeProvider has never received an audit fact. A request that
+// asks for more than its GitTarget allows fails at once, before anything is attached.
+func TestCommitRequestAttach_ClaimsUnattributedWindowsOnlyWhenAskedAllowedAndUnaudited(t *testing.T) {
+	target := func(policy configv1alpha3.UnattributedWindowPolicy) *configv1alpha3.GitTarget {
+		return &configv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
+			Spec: configv1alpha3.GitTargetSpec{
+				KubeProviderRef: meta.NamespacedObjectReference{Name: "workspace", Namespace: "providers"},
+				Commit:          &configv1alpha3.GitTargetCommitSpec{UnattributedWindows: policy},
+			},
+		}
 	}
 	provider := func(facts metav1.ConditionStatus) *configv1alpha3.KubeProvider {
 		p := &configv1alpha3.KubeProvider{ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: "providers"}}
@@ -897,28 +901,100 @@ func TestCommitRequestAttach_TakesOverUnattributedWindowsOnlyFromASourceWithNoAu
 		}
 		return p
 	}
+	unaudited := provider(metav1.ConditionUnknown)
 	cases := []struct {
 		name    string
+		ask     configv1alpha3.WindowAuthor
 		objects []client.Object
-		want    bool
+		want    git.UnattributedClaim
+		refused bool
 	}{
-		{"audit facts received", []client.Object{target, provider(metav1.ConditionTrue)}, false},
-		{"no audit fact yet", []client.Object{target, provider(metav1.ConditionUnknown)}, true},
-		{"author attribution off", []client.Object{target, provider("")}, true},
-		{"KubeProvider missing", []client.Object{target}, false},
-		{"GitTarget missing", nil, false},
+		{
+			"own asks nothing",
+			configv1alpha3.WindowAuthorOwn,
+			[]client.Object{
+				target(configv1alpha3.UnattributedWindowsTakeOver),
+				unaudited,
+			},
+			git.UnattributedClaimNone,
+			false,
+		},
+		{
+			"takeover allowed",
+			configv1alpha3.WindowAuthorTakeOver,
+			[]client.Object{
+				target(configv1alpha3.UnattributedWindowsTakeOver),
+				unaudited,
+			},
+			git.UnattributedClaimTakeOver,
+			false,
+		},
+		{
+			"saved-by under a takeover policy",
+			configv1alpha3.WindowAuthorSavedBy,
+			[]client.Object{
+				target(configv1alpha3.UnattributedWindowsTakeOver),
+				unaudited,
+			},
+			git.UnattributedClaimSavedBy,
+			false,
+		},
+		{
+			"saved-by allowed",
+			configv1alpha3.WindowAuthorSavedBy,
+			[]client.Object{
+				target(configv1alpha3.UnattributedWindowsSavedBy),
+				unaudited,
+			},
+			git.UnattributedClaimSavedBy,
+			false,
+		},
+		{
+			"author attribution off",
+			configv1alpha3.WindowAuthorTakeOver,
+			[]client.Object{
+				target(configv1alpha3.UnattributedWindowsTakeOver),
+				provider(""),
+			},
+			git.UnattributedClaimTakeOver,
+			false,
+		},
+		{"audit facts received", configv1alpha3.WindowAuthorTakeOver,
+			[]client.Object{target(configv1alpha3.UnattributedWindowsTakeOver), provider(metav1.ConditionTrue)},
+			git.UnattributedClaimNone, false},
+		{"KubeProvider missing", configv1alpha3.WindowAuthorTakeOver,
+			[]client.Object{target(configv1alpha3.UnattributedWindowsTakeOver)}, git.UnattributedClaimNone, false},
+		{"takeover under a saved-by policy", configv1alpha3.WindowAuthorTakeOver,
+			[]client.Object{target(configv1alpha3.UnattributedWindowsSavedBy), unaudited}, "", true},
+		{"saved-by under the default policy", configv1alpha3.WindowAuthorSavedBy,
+			[]client.Object{target(""), unaudited}, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			objects := append([]client.Object{newCommitRequest("save")}, tc.objects...)
-			c := newCommitRequestClient(t, nil, objects...)
+			cr := newCommitRequest("save")
+			cr.Spec.Window = &configv1alpha3.CommitRequestWindow{Author: tc.ask}
+			c := newCommitRequestClient(t, nil, append([]client.Object{cr}, tc.objects...)...)
 			f := &fakeFinalizer{}
 			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 			reconcileCommitRequest(t, r, "save")
 
+			if tc.refused {
+				assert.Empty(t, f.calls, "a refused request is never attached")
+				var got configv1alpha3.CommitRequest
+				require.NoError(
+					t,
+					c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "save"}, &got),
+				)
+				ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+				require.NotNil(t, ready)
+				assert.Equal(t, metav1.ConditionFalse, ready.Status)
+				assert.Equal(t, crReasonTakeOverNotAllowed, ready.Reason)
+				assert.True(t, apimeta.IsStatusConditionTrue(got.Status.Conditions, ConditionTypeStalled))
+				return
+			}
 			require.NotEmpty(t, f.calls, "the request must be attached")
-			assert.Equal(t, tc.want, f.calls[0].TakeOverUnattributed)
+			assert.Equal(t, tc.want, f.calls[0].Unattributed)
 		})
 	}
 }

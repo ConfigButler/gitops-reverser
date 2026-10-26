@@ -757,8 +757,9 @@ flowchart TD
 
 The important boundary is the open window: it accepts only the same author and `GitTarget`. A
 `CommitRequest` from another author never closes someone else's window; it resolves as a benign no-commit
-instead. The one exception is a cluster that has never sent an audit fact: there no write can name its
-author, so a request takes over a window whose writes name none (step 2 of the `CommitRequest` flow).
+instead. The one exception is opt-in, on a cluster that has never sent an audit fact: there no write
+can name its author, and a request may claim a window whose writes name none (step 2 of the
+`CommitRequest` flow).
 
 ### Remote moved while we were writing
 
@@ -1779,11 +1780,15 @@ immediately. That is not a failure:
    waits for a window until `registration + attachTimeout`. The worker binds it to an open window only
    when the author state and GitTarget match, first come first served, and replaces the window's timers
    with the request's own, so time spent waiting never shortens the collection. A request that names its
-   submitter also takes over a window on its `GitTarget` whose writes name no author, when the
-   `GitTarget`'s `KubeProvider` has never received an audit fact (`AuditFactsReceived` is not `True`):
-   no write from that cluster can name one. The submitter then authors the commit, and its message ends
-   with an `Author-Source: CommitRequest <namespace>/<name>` line. Once the provider has received a
-   fact, a write that names no author means its fact went missing, and its window stays another's. It **never finalizes
+   submitter may also claim a window on its `GitTarget` whose writes name no author, when it asks
+   (`spec.window.author`), the `GitTarget` allows it (`spec.commit.unattributedWindows`), and the
+   `GitTarget`'s `KubeProvider` has never received an audit fact (`AuditFactsReceived` is not `True`).
+   With `SavedBy` the window takes the request's message, the commit names no author, and the message
+   ends with a `Saved-By` trailer; with `TakeOver` the submitter authors the commit, and the message ends
+   with an `Author-Source: CommitRequest <namespace>/<name>` trailer. Once the provider has received a
+   fact, a write that names no author means its fact went missing, and its window stays another's. A
+   request that asks for more than its `GitTarget` allows fails at first sight with
+   `TakeOverNotAllowed`. It **never finalizes
    another author's window**; a window carries at most one request. The controller reports the phase the
    worker reports: `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`.
 3. The window finalizes when the request's timers close it (or when it closes for any other reason).

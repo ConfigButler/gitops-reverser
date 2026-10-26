@@ -258,33 +258,36 @@ func TestRenderEventCommitMessage_UnresolvedUsernameStaysEmptyInTemplates(t *tes
 	assert.Equal(t, UnresolvedAuthorDisplayName, options.Author.Name)
 }
 
-// A request that names its submitter takes over a window whose writes name no author only when it
-// is allowed to, and never a window whose writes name an actor, nor one on another GitTarget.
-func TestPendingCommitRequest_TakesOverOnlyAnUnattributedWindowWhenAllowed(t *testing.T) {
+// A request that names its submitter claims a window whose writes name no author only when it was
+// allowed to, and never a window whose writes name an actor, nor one on another GitTarget.
+func TestPendingCommitRequest_ClaimsOnlyAnUnattributedWindowWhenAllowed(t *testing.T) {
 	unattributed := newOpenWindow(attributedEvent("", AttributionUnresolved), nil)
 	named := newOpenWindow(attributedEvent("bob@acme.com", AttributionResolved), nil)
-	request := func(allowed bool, target string) *pendingCommitRequest {
+	request := func(claim UnattributedClaim, target string) *pendingCommitRequest {
 		return &pendingCommitRequest{
-			author:               "jane@acme.com",
-			attribution:          AttributionResolved,
-			gitTargetName:        target,
-			gitTargetNamespace:   "default",
-			takeOverUnattributed: allowed,
+			author:             "jane@acme.com",
+			attribution:        AttributionResolved,
+			gitTargetName:      target,
+			gitTargetNamespace: "default",
+			unattributed:       claim,
 		}
 	}
 
-	assert.False(t, request(false, "target").matchesWindow(unattributed),
-		"without the allowance a named request keeps the author rule")
-	assert.True(t, request(true, "target").matchesWindow(unattributed))
-	assert.True(t, request(true, "target").takesOver(unattributed))
-	assert.False(t, request(true, "target").matchesWindow(named),
-		"a window whose writes name an actor is never taken over")
-	assert.False(t, request(true, "other-target").matchesWindow(unattributed),
-		"the allowance does not widen attachment across GitTargets")
+	assert.False(t, request(UnattributedClaimNone, "target").matchesWindow(unattributed),
+		"without a claim a named request keeps the author rule")
+	for _, claim := range []UnattributedClaim{UnattributedClaimSavedBy, UnattributedClaimTakeOver} {
+		assert.True(t, request(claim, "target").matchesWindow(unattributed), string(claim))
+		assert.True(t, request(claim, "target").claims(unattributed), string(claim))
+		assert.False(t, request(claim, "target").matchesWindow(named),
+			"a window whose writes name an actor is never claimed: %s", claim)
+		assert.False(t, request(claim, "other-target").matchesWindow(unattributed),
+			"a claim does not widen attachment across GitTargets: %s", claim)
+	}
 
 	own := newOpenWindow(attributedEvent("jane@acme.com", AttributionResolved), nil)
-	assert.True(t, request(true, "target").matchesWindow(own))
-	assert.False(t, request(true, "target").takesOver(own), "the submitter's own window is not a takeover")
+	assert.True(t, request(UnattributedClaimTakeOver, "target").matchesWindow(own))
+	assert.False(t, request(UnattributedClaimTakeOver, "target").claims(own),
+		"the submitter's own window is not a claim")
 }
 
 func TestWithTakeOverNote_EndsTheMessageWithATrailer(t *testing.T) {
@@ -295,4 +298,11 @@ func TestWithTakeOverNote_EndsTheMessageWithATrailer(t *testing.T) {
 	assert.Equal(t,
 		"save: edit\n\nAuthor-Source: CommitRequest team-a/save-1; no audit record names who made these changes",
 		withTakeOverNote("save: edit", id))
+}
+
+func TestWithSavedByNote_NamesTheSubmitterLikeACoAuthor(t *testing.T) {
+	assert.Equal(t, "save: edit\n\nSaved-By: jane@acme.com <jane@acme.com>",
+		withSavedByNote("save: edit", UserInfo{Username: "jane@acme.com"}))
+	assert.Equal(t, "save: edit\n\nSaved-By: Jane Doe <jane@acme.com>\n",
+		withSavedByNote("save: edit\n", UserInfo{Username: "jane", DisplayName: "Jane Doe", Email: "jane@acme.com"}))
 }

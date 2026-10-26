@@ -56,12 +56,10 @@ spec:
         description: |-
           CommitRequest asks for a save: it attaches to its author's current or next
           commit window on a GitTarget, closes that window on its own timers, and
-          gives the commit its message. When the GitTarget's KubeProvider has never
-          received an audit fact (AuditFactsReceived is not True), it also takes
-          over a window whose writes name no author: its creator, recorded at
-          admission, authors the commit, and the message ends with an Author-Source
-          line. Its spec is immutable, and status.commit reports the commit once it
-          is on the remote.
+          gives the commit its message. With spec.window.author, and where the
+          GitTarget allows it, it may also claim a window whose writes name no
+          author. Its spec is immutable, and status.commit reports the commit once
+          it is on the remote.
         properties:
           apiVersion:
             description: |-
@@ -151,6 +149,7 @@ spec:
                 default:
                   attach: CurrentOrNext
                   attachTimeout: 2s
+                  author: Own
                   maxDuration: 2s
                 description: |-
                   Window says which commit window this request attaches to, how long it waits
@@ -184,6 +183,20 @@ spec:
                     x-kubernetes-validations:
                     - message: spec.window.attachTimeout must not exceed 5m
                       rule: duration(self) <= duration('5m')
+                  author:
+                    default: Own
+                    description: |-
+                      Author says whose window the request may attach to. "Own" attaches only
+                      to the creator's own window. "SavedBy" may also give its message to a
+                      window whose writes name no author, naming no author. "TakeOver" may
+                      also take such a window over, and the creator authors the commit. The
+                      GitTarget's spec.commit.unattributedWindows must allow what is asked, or
+                      the request fails with reason TakeOverNotAllowed. Defaults to "Own".
+                    enum:
+                    - Own
+                    - SavedBy
+                    - TakeOver
+                    type: string
                   idleTimeout:
                     description: |-
                       IdleTimeout closes the attached window this long after its last write, as a
@@ -208,10 +221,11 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: CommitRequest spec is immutable after creation
-                  rule: self.attach == oldSelf.attach && duration(self.attachTimeout)
-                    == duration(oldSelf.attachTimeout) && duration(self.maxDuration)
-                    == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout)
-                    && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))
+                  rule: self.attach == oldSelf.attach && self.author == oldSelf.author
+                    && duration(self.attachTimeout) == duration(oldSelf.attachTimeout)
+                    && duration(self.maxDuration) == duration(oldSelf.maxDuration)
+                    && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout)
+                    || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))
                 - message: spec.window.idleTimeout must not exceed maxDuration
                   rule: '!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)'
                 - message: 'attach: Next needs a positive attachTimeout; with 0s it
