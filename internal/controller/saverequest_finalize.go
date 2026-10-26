@@ -30,6 +30,7 @@ const (
 	crReasonGitTargetRefPruned      = "GitTargetRefPruned"
 	crReasonTakeOverNotAllowed      = "TakeOverNotAllowed"
 	crReasonNotAllowed              = "NotAllowed"
+	crReasonSaveInProgress          = "SaveInProgress"
 )
 
 // The bounded `outcome` values on gitopsreverser_save_requests_total.
@@ -43,6 +44,7 @@ const (
 	crOutcomeNoWindow       = "no_window"
 	crOutcomeWindowMismatch = "window_mismatch"
 	crOutcomeAlreadyPresent = "already_present"
+	crOutcomeSaveInProgress = "save_in_progress"
 	crOutcomeFailed         = "failed"
 )
 
@@ -65,6 +67,8 @@ func saveRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
 		return crOutcomeWindowMismatch
 	case git.FinalizeAlreadyPresent:
 		return crOutcomeAlreadyPresent
+	case git.FinalizeSaveInProgress:
+		return crOutcomeSaveInProgress
 	default:
 		return crOutcomeFailed
 	}
@@ -313,6 +317,10 @@ func applyFinalizeResultToStatus(
 	case git.FinalizeAlreadyPresent:
 		// The change already matches the remote, so the commit was dropped.
 		resolveNothingToCommit(cr, result, crReasonAlreadyPresent, alreadyPresentMessage)
+	case git.FinalizeSaveInProgress:
+		// Refused, not failed by the worker: the spec is immutable, so the caller saves again with a
+		// new request once the earlier one resolved.
+		failSaveRequest(cr, crReasonSaveInProgress, saveInProgressMessage)
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; fail it so it is not silently hidden.

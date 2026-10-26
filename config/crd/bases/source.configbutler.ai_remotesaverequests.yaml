@@ -21,8 +21,15 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
+    - jsonPath: .spec.gitTargetRef.name
+      name: GitTarget
+      type: string
     - jsonPath: .status.author
       name: Author
+      type: string
+    - jsonPath: .status.commit
+      name: Commit
+      priority: 1
       type: string
     - jsonPath: .status.conditions[?(@.type=="Applied")].status
       name: Applied
@@ -35,15 +42,14 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          RemoteSaveRequest asks GitOps Reverser to save its creator's edits: the
-          commit window of each GitTarget that mirrors this namespace and admits the
-          request, in spec.allowedRemoteSaveRequests, gets its message and closes on
-          its timers. The window holds the creator's edits anywhere that GitTarget
-          mirrors, not only in this namespace. Create it on the cluster the edits
-          were made on, as JSON. Its creator is found from this cluster's audit
-          events, as the edits' authors are, so it saves only its creator's edits; on
-          a cluster with no audit it names nobody, and saves edits that name nobody.
-          Its spec is immutable, and status reports each GitTarget's commit.
+          RemoteSaveRequest asks GitOps Reverser to save its creator's edits in the
+          GitTarget spec.gitTargetRef names: the creator's commit window there gets
+          its message and closes on its timers. The window holds the creator's edits
+          anywhere that GitTarget mirrors. Create it on the cluster the edits were
+          made on, as JSON. Its creator is found from this cluster's audit events, as
+          the edits' authors are, so it saves only its creator's edits; on a cluster
+          with no audit it names nobody, and saves edits that name nobody. Its spec is
+          immutable, and status reports the commit.
         properties:
           apiVersion:
             description: |-
@@ -70,22 +76,45 @@ spec:
               catchUp:
                 default: AsDefinedOnClaim
                 description: |-
-                  CatchUp decides when the applier of each GitTarget is asked to apply
-                  the branch after this request pushes a commit. "AsDefinedOnClaim"
-                  leaves it to the applier claim's spec.catchUpAfter. "AfterPush" asks
-                  right after the push, and status.targets reports how it went. The
-                  cluster already holds the saved objects. Defaults to
-                  "AsDefinedOnClaim".
+                  CatchUp decides when the GitTarget's applier is asked to apply the
+                  branch after this request pushes a commit. "AsDefinedOnClaim" leaves it
+                  to the applier claim's spec.catchUpAfter. "AfterPush" asks right after
+                  the push, and the Applied condition reports how it went. The cluster
+                  already holds the saved objects. Defaults to "AsDefinedOnClaim".
                 enum:
                 - AsDefinedOnClaim
                 - AfterPush
                 type: string
+              gitTargetRef:
+                description: |-
+                  GitTargetRef names the GitTarget whose commit window this request
+                  attaches to, on the cluster GitOps Reverser runs in. Its namespace is a
+                  namespace of that cluster, not of this one. The GitTarget must mirror
+                  this cluster, and admit this request in spec.allowedRemoteSaveRequests,
+                  or the request fails with reason "NotAllowed".
+                properties:
+                  name:
+                    description: Name is the GitTarget's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the GitTarget's namespace, on the cluster GitOps Reverser
+                      runs in.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
               message:
                 description: |-
-                  Message is the commit message this request asks for. Omitted, each
+                  Message is the commit message this request asks for. Omitted, the
                   GitTarget's spec.commit.message.liveTemplate words the commit.
 
-                  The text is never evaluated as a template. If a GitTarget sets
+                  The text is never evaluated as a template. If the GitTarget sets
                   spec.commit.message.requestTemplate, that template wraps this text;
                   otherwise the text is committed as written.
 
@@ -150,37 +179,53 @@ spec:
                     || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))
                 - message: spec.window.idleTimeout must not exceed maxDuration
                   rule: '!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)'
+            required:
+            - gitTargetRef
             type: object
             x-kubernetes-validations:
             - message: RemoteSaveRequest spec is immutable after creation
-              rule: has(self.message) == has(oldSelf.message) && (!has(self.message)
-                || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window)
-                && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp)
-                || self.catchUp == oldSelf.catchUp)
+              rule: self.gitTargetRef == oldSelf.gitTargetRef && has(self.message)
+                == has(oldSelf.message) && (!has(self.message) || self.message ==
+                oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.catchUp)
+                == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp ==
+                oldSelf.catchUp)
           status:
             description: status defines the observed state of RemoteSaveRequest.
             properties:
+              appliedRevision:
+                description: |-
+                  AppliedRevision is the revision the applier applied, with spec.catchUp
+                  "AfterPush". It holds the commit, and may be a later one.
+                type: string
               author:
                 description: |-
                   Author is who created this request, as this cluster's audit events name
                   them. Empty when they name nobody: then the request saves only edits
                   that name nobody either.
                 type: string
+              branch:
+                description: Branch is the branch the save was committed on.
+                type: string
+              commit:
+                description: Commit is the commit the save made, once it is on the
+                  remote.
+                type: string
               conditions:
                 description: |-
                   Conditions are the latest observations of this RemoteSaveRequest's state.
-                  Ready is True once the request ended without error in every GitTarget,
-                  with reason "Committed" when one of them committed, and otherwise the
-                  reason of the first: "NoWindow", "AlreadyPresent", "WindowMismatch",
-                  "NoGitTarget" when no GitTarget mirrors this namespace, or
-                  "AuthorUnresolved" when this cluster sends audit events and none named
-                  the request's creator. Ready=False with Stalled=True is a
-                  failure, with reason "NotAllowed" when GitTargets mirror this namespace
-                  and none admits the request.
 
-                  Applied, with spec.catchUp "AfterPush", is True once every GitTarget's
-                  applier applied a revision that holds its commit, or needed none, and
-                  False only when a branch lost the commit. It never changes Ready.
+                  Ready is True once the request ended without error: reason "Committed",
+                  or, with nothing committed, "NoWindow", "AlreadyPresent",
+                  "WindowMismatch", or "AuthorUnresolved" when this cluster sends audit
+                  events and none named the request's creator. Ready=False with
+                  Stalled=True is a failure: "NotAllowed" when the GitTarget does not
+                  admit the request or mirrors another cluster, "GitTargetNotFound",
+                  "SaveInProgress" when an earlier save of the same author on the
+                  GitTarget was still in progress, or "Failed".
+
+                  Applied, with spec.catchUp "AfterPush", is True once the applier applied
+                  a revision that holds the commit, or needed none, and False only when
+                  the branch lost the commit. It never changes Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -238,55 +283,6 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - type
-                x-kubernetes-list-type: map
-              gitTargets:
-                description: GitTargets is the save in each GitTarget that admitted
-                  this request.
-                items:
-                  description: RemoteSaveRequestGitTarget is the save in one GitTarget.
-                  properties:
-                    applied:
-                      description: |-
-                        Applied is how the apply the save asked for went, with spec.catchUp
-                        "AfterPush": "Applying", "Retrying", "Applied", "NothingToApply",
-                        "NoApplierClaim", "ApplierGone", "CommitDropped" or "Lost".
-                      type: string
-                    appliedRevision:
-                      description: AppliedRevision is the revision the applier applied.
-                      type: string
-                    branch:
-                      description: Branch is the branch the save was committed on.
-                      type: string
-                    commit:
-                      description: Commit is the commit the save made, once it is
-                        on the remote.
-                      type: string
-                    message:
-                      description: Message says more about the reason.
-                      type: string
-                    name:
-                      description: Name is the GitTarget's name.
-                      type: string
-                    namespace:
-                      description: |-
-                        Namespace is the GitTarget's namespace, on the cluster GitOps Reverser
-                        runs in.
-                      type: string
-                    reason:
-                      description: |-
-                        Reason is how the save ended in this GitTarget, as the Ready reasons
-                        above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch", or
-                        "Failed". Empty while it runs.
-                      type: string
-                  required:
-                  - name
-                  - namespace
-                  type: object
-                maxItems: 64
-                type: array
-                x-kubernetes-list-map-keys:
-                - namespace
-                - name
                 x-kubernetes-list-type: map
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed

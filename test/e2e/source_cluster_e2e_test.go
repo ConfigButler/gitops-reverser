@@ -870,10 +870,9 @@ spec:
 		})
 
 		// A save made in the workspace itself: a RemoteSaveRequest, served because the workspace's
-		// KubeProvider enables them, and saving only for a GitTarget that admits it. It names no
-		// GitTarget; it saves the window of every admitting GitTarget that mirrors its namespace, first
-		// refused while the GitTarget admits none. kcp sends no audit facts, so the request names nobody, like the edit,
-		// and attaches to the edit's window under the ordinary rule, with no takeover. Its own author is
+		// KubeProvider enables them. It names the GitTarget, which must admit it: one is refused while
+		// the GitTarget admits none. kcp sends no audit facts, so the request names nobody, like the
+		// edit, and attaches to the edit's window under the ordinary rule, with no takeover. Its own author is
 		// looked for first, for the whole attribution grace, so the edit is made once the request is
 		// waiting for a window.
 		It("saves an edit made in the workspace with a RemoteSaveRequest created there", func() {
@@ -908,7 +907,7 @@ spec:
 
 			By("refusing a RemoteSaveRequest while the GitTarget admits none")
 			const refused = "sc-flux-workspace-save-refused"
-			createWorkspaceRemoteSaveRequest(kcp, hash, testNs, refused, "e2e: not admitted")
+			createWorkspaceRemoteSaveRequest(kcp, hash, testNs, refused, "e2e: not admitted", testNs, p.targetName)
 			Eventually(func(g Gomega) {
 				g.Expect(requestField(g, refused, `{.status.conditions[?(@.type=="Ready")].status}`)).To(Equal("False"))
 				g.Expect(requestField(g, refused, `{.status.conditions[?(@.type=="Ready")].reason}`)).
@@ -922,7 +921,7 @@ spec:
 
 			By("creating a RemoteSaveRequest in the workspace, and editing once it waits for a window")
 			const name, message = "sc-flux-workspace-save", "e2e: save from the workspace"
-			createWorkspaceRemoteSaveRequest(kcp, hash, testNs, name, message)
+			createWorkspaceRemoteSaveRequest(kcp, hash, testNs, name, message, testNs, p.targetName)
 			saveField := func(g Gomega, jsonPath string) string { return requestField(g, name, jsonPath) }
 			Eventually(func(g Gomega) {
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].reason}`)).To(Equal("Saving"))
@@ -934,9 +933,7 @@ spec:
 			Eventually(func(g Gomega) {
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].status}`)).To(Equal("True"))
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].reason}`)).To(Equal("Committed"))
-				g.Expect(saveField(g, "{.status.gitTargets[0].namespace}")).To(Equal(testNs))
-				g.Expect(saveField(g, "{.status.gitTargets[0].name}")).To(Equal(p.targetName))
-				commit = saveField(g, "{.status.gitTargets[0].commit}")
+				commit = saveField(g, "{.status.commit}")
 				g.Expect(commit).NotTo(BeEmpty())
 				g.Expect(saveField(g, "{.status.author}")).To(BeEmpty(), "kcp sends no audit facts")
 			}, 2*time.Minute, 2*time.Second).Should(Succeed())
@@ -949,8 +946,8 @@ spec:
 
 			Eventually(func(g Gomega) {
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Applied")].status}`)).To(Equal("True"))
-				g.Expect(saveField(g, "{.status.gitTargets[0].applied}")).To(Equal("Applied"))
-				g.Expect(saveField(g, "{.status.gitTargets[0].appliedRevision}")).To(ContainSubstring(commit))
+				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Applied")].reason}`)).To(Equal("Applied"))
+				g.Expect(saveField(g, "{.status.appliedRevision}")).To(ContainSubstring(commit))
 				g.Expect(fluxLastAppliedRevision(g, ksName)).To(ContainSubstring(commit))
 			}, echoApplyBudget, 2*time.Second).Should(Succeed())
 			r.consistentlyEverywhere(timingConfigMap, "saved-3")
@@ -958,10 +955,10 @@ spec:
 	})
 })
 
-// createWorkspaceRemoteSaveRequest creates the RemoteSaveRequest name in namespace of a workspace, asking to catch
-// up. It waits up to 30s for a window: an edit from a cluster with no audit stream reaches its window
+// createWorkspaceRemoteSaveRequest creates the RemoteSaveRequest name in namespace of a workspace, saving the
+// GitTarget targetNS/target and asking to catch up. It waits up to 30s for a window: an edit from a cluster with no audit stream reaches its window
 // only after the attribution grace.
-func createWorkspaceRemoteSaveRequest(kcp *kcpTunnel, hash, namespace, name, message string) {
+func createWorkspaceRemoteSaveRequest(kcp *kcpTunnel, hash, namespace, name, message, targetNS, target string) {
 	GinkgoHelper()
 	f, err := os.CreateTemp("", "e2e-remotesaverequest-*.yaml")
 	Expect(err).NotTo(HaveOccurred())
@@ -972,12 +969,15 @@ metadata:
   name: %s
   namespace: %s
 spec:
+  gitTargetRef:
+    namespace: %s
+    name: %s
   message: %q
   catchUp: AfterPush
   window:
     attachTimeout: "30s"
     maxDuration: "4s"
-`, name, namespace, message)
+`, name, namespace, targetNS, target, message)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(f.Close()).To(Succeed())
 	_, err = kcp.wsKubectl(hash, "create", "-f", f.Name())

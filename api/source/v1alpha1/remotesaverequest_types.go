@@ -8,21 +8,29 @@ import (
 
 // A RemoteSaveRequest is the source-cluster twin of a configbutler.ai SaveRequest, for the people who edit
 // a source cluster and cannot reach the cluster GitOps Reverser runs in. It is its own kind, in its own
-// group, rather than a SaveRequest with another schema: it names no GitTarget, because its creator
-// cannot see them, its author comes from the source cluster's audit events rather than from admission,
-// and it is installed alone. docs/future/source-side-save-plan.md has the reasoning.
+// group, rather than a SaveRequest with another schema: its GitTarget is on another cluster than the
+// request, its author comes from the source cluster's audit events rather than from admission, and it
+// is installed alone. docs/future/source-side-save-plan.md has the reasoning.
 //
 // The spec is immutable, compared as SaveRequestSpec compares it: durations as durations, so a typed
 // client's re-spelling of "1m" as "1m0s" is not a change.
 
 // RemoteSaveRequestSpec defines the desired state of RemoteSaveRequest. It
 // is immutable.
-// +kubebuilder:validation:XValidation:rule="has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="RemoteSaveRequest spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="RemoteSaveRequest spec is immutable after creation"
 type RemoteSaveRequestSpec struct {
-	// Message is the commit message this request asks for. Omitted, each
+	// GitTargetRef names the GitTarget whose commit window this request
+	// attaches to, on the cluster GitOps Reverser runs in. Its namespace is a
+	// namespace of that cluster, not of this one. The GitTarget must mirror
+	// this cluster, and admit this request in spec.allowedRemoteSaveRequests,
+	// or the request fails with reason "NotAllowed".
+	// +required
+	GitTargetRef GitTargetReference `json:"gitTargetRef"`
+
+	// Message is the commit message this request asks for. Omitted, the
 	// GitTarget's spec.commit.message.liveTemplate words the commit.
 	//
-	// The text is never evaluated as a template. If a GitTarget sets
+	// The text is never evaluated as a template. If the GitTarget sets
 	// spec.commit.message.requestTemplate, that template wraps this text;
 	// otherwise the text is committed as written.
 	//
@@ -46,16 +54,32 @@ type RemoteSaveRequestSpec struct {
 	// +kubebuilder:default={attachTimeout: "5s", maxDuration: "2s"}
 	Window *RemoteSaveRequestWindow `json:"window,omitempty"`
 
-	// CatchUp decides when the applier of each GitTarget is asked to apply
-	// the branch after this request pushes a commit. "AsDefinedOnClaim"
-	// leaves it to the applier claim's spec.catchUpAfter. "AfterPush" asks
-	// right after the push, and status.targets reports how it went. The
-	// cluster already holds the saved objects. Defaults to
-	// "AsDefinedOnClaim".
+	// CatchUp decides when the GitTarget's applier is asked to apply the
+	// branch after this request pushes a commit. "AsDefinedOnClaim" leaves it
+	// to the applier claim's spec.catchUpAfter. "AfterPush" asks right after
+	// the push, and the Applied condition reports how it went. The cluster
+	// already holds the saved objects. Defaults to "AsDefinedOnClaim".
 	// +optional
 	// +kubebuilder:validation:Enum=AsDefinedOnClaim;AfterPush
 	// +kubebuilder:default=AsDefinedOnClaim
 	CatchUp CatchUpPolicy `json:"catchUp,omitempty"`
+}
+
+// GitTargetReference names a GitTarget on the cluster GitOps Reverser runs
+// in.
+type GitTargetReference struct {
+	// Namespace is the GitTarget's namespace, on the cluster GitOps Reverser
+	// runs in.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace"`
+
+	// Name is the GitTarget's name.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
 }
 
 // CatchUpPolicy is when a RemoteSaveRequest's commit is applied by a
@@ -118,55 +142,26 @@ type RemoteSaveRequestStatus struct {
 	// +optional
 	Author string `json:"author,omitempty"`
 
-	// GitTargets is the save in each GitTarget that admitted this request.
-	// +optional
-	// +listType=map
-	// +listMapKey=namespace
-	// +listMapKey=name
-	// +kubebuilder:validation:MaxItems=64
-	GitTargets []RemoteSaveRequestGitTarget `json:"gitTargets,omitempty"`
-
 	// Conditions are the latest observations of this RemoteSaveRequest's state.
-	// Ready is True once the request ended without error in every GitTarget,
-	// with reason "Committed" when one of them committed, and otherwise the
-	// reason of the first: "NoWindow", "AlreadyPresent", "WindowMismatch",
-	// "NoGitTarget" when no GitTarget mirrors this namespace, or
-	// "AuthorUnresolved" when this cluster sends audit events and none named
-	// the request's creator. Ready=False with Stalled=True is a
-	// failure, with reason "NotAllowed" when GitTargets mirror this namespace
-	// and none admits the request.
 	//
-	// Applied, with spec.catchUp "AfterPush", is True once every GitTarget's
-	// applier applied a revision that holds its commit, or needed none, and
-	// False only when a branch lost the commit. It never changes Ready.
+	// Ready is True once the request ended without error: reason "Committed",
+	// or, with nothing committed, "NoWindow", "AlreadyPresent",
+	// "WindowMismatch", or "AuthorUnresolved" when this cluster sends audit
+	// events and none named the request's creator. Ready=False with
+	// Stalled=True is a failure: "NotAllowed" when the GitTarget does not
+	// admit the request or mirrors another cluster, "GitTargetNotFound",
+	// "SaveInProgress" when an earlier save of the same author on the
+	// GitTarget was still in progress, or "Failed".
+	//
+	// Applied, with spec.catchUp "AfterPush", is True once the applier applied
+	// a revision that holds the commit, or needed none, and False only when
+	// the branch lost the commit. It never changes Ready.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
-}
-
-// RemoteSaveRequestGitTarget is the save in one GitTarget.
-type RemoteSaveRequestGitTarget struct {
-	// Namespace is the GitTarget's namespace, on the cluster GitOps Reverser
-	// runs in.
-	// +required
-	Namespace string `json:"namespace"`
-
-	// Name is the GitTarget's name.
-	// +required
-	Name string `json:"name"`
-
-	// Reason is how the save ended in this GitTarget, as the Ready reasons
-	// above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch", or
-	// "Failed". Empty while it runs.
-	// +optional
-	Reason string `json:"reason,omitempty"`
-
-	// Message says more about the reason.
-	// +optional
-	Message string `json:"message,omitempty"`
 
 	// Branch is the branch the save was committed on.
 	// +optional
@@ -176,13 +171,8 @@ type RemoteSaveRequestGitTarget struct {
 	// +optional
 	Commit string `json:"commit,omitempty"`
 
-	// Applied is how the apply the save asked for went, with spec.catchUp
-	// "AfterPush": "Applying", "Retrying", "Applied", "NothingToApply",
-	// "NoApplierClaim", "ApplierGone", "CommitDropped" or "Lost".
-	// +optional
-	Applied string `json:"applied,omitempty"`
-
-	// AppliedRevision is the revision the applier applied.
+	// AppliedRevision is the revision the applier applied, with spec.catchUp
+	// "AfterPush". It holds the commit, and may be a later one.
 	// +optional
 	AppliedRevision string `json:"appliedRevision,omitempty"`
 }
@@ -191,19 +181,20 @@ type RemoteSaveRequestGitTarget struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Author",type=string,JSONPath=`.status.author`
+// +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.commit`,priority=1
 // +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// RemoteSaveRequest asks GitOps Reverser to save its creator's edits: the
-// commit window of each GitTarget that mirrors this namespace and admits the
-// request, in spec.allowedRemoteSaveRequests, gets its message and closes on
-// its timers. The window holds the creator's edits anywhere that GitTarget
-// mirrors, not only in this namespace. Create it on the cluster the edits
-// were made on, as JSON. Its creator is found from this cluster's audit
-// events, as the edits' authors are, so it saves only its creator's edits; on
-// a cluster with no audit it names nobody, and saves edits that name nobody.
-// Its spec is immutable, and status reports each GitTarget's commit.
+// RemoteSaveRequest asks GitOps Reverser to save its creator's edits in the
+// GitTarget spec.gitTargetRef names: the creator's commit window there gets
+// its message and closes on its timers. The window holds the creator's edits
+// anywhere that GitTarget mirrors. Create it on the cluster the edits were
+// made on, as JSON. Its creator is found from this cluster's audit events, as
+// the edits' authors are, so it saves only its creator's edits; on a cluster
+// with no audit it names nobody, and saves edits that name nobody. Its spec is
+// immutable, and status reports the commit.
 type RemoteSaveRequest struct {
 	metav1.TypeMeta `json:",inline"`
 

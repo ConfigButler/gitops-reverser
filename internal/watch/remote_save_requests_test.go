@@ -5,7 +5,6 @@ package watch
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -23,12 +22,12 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	sourcev1alpha1 "github.com/ConfigButler/gitops-reverser/api/source/v1alpha1"
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // saveFinalizer answers every attach and apply lookup the way the test sets, and records them.
@@ -72,25 +71,16 @@ func (a fixedAuthor) ResolveAuthor(context.Context, AuthorQuery) (git.UserInfo, 
 
 var saveProvider = k8stypes.NamespacedName{Namespace: "providers", Name: "workspace"}
 
-// saveSetup is what a save is served against: the GitTarget team-a/app of the KubeProvider
-// providers/workspace, the type it mirrors, the grants it holds, and what the source cluster's audit
-// says.
+// saveSetup is what a save is served against: the GitTarget team-a/app, when it exists, its
+// KubeProvider and the grants it holds, and what the source cluster's audit says.
 type saveSetup struct {
-	// mirrors is the type the GitTarget mirrors; nil mirrors nothing.
-	mirrors    *WatchedType
+	// noTarget leaves team-a/app out.
+	noTarget bool
+	// provider is the GitTarget's KubeProvider; empty is providers/workspace, the one serving the request.
+	provider   string
 	grants     []configv1alpha3.GitTargetRemoteSaveRequestGrant
 	auditFacts metav1.ConditionStatus
 	author     AuthorResolver
-}
-
-// configMapsIn is ConfigMaps watched in namespace, or in every namespace for "".
-func configMapsIn(namespace string) *WatchedType {
-	return &WatchedType{
-		GVR:             schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
-		Namespaced:      true,
-		Scope:           configv1alpha3.ResourceScopeNamespaced,
-		NamespaceScopes: map[string]string{namespace: ""},
-	}
 }
 
 // grantFrom admits the RemoteSaveRequests of namespaces.
@@ -98,10 +88,9 @@ func grantFrom(namespaces ...configv1alpha3.SourceNamespace) configv1alpha3.GitT
 	return configv1alpha3.GitTargetRemoteSaveRequestGrant{SourceNamespaces: namespaces}
 }
 
-// shopSetup is a GitTarget that mirrors ConfigMaps in "shop" and admits that namespace's requests.
+// shopSetup is a GitTarget that admits the requests of the namespace "shop".
 func shopSetup(auditFacts metav1.ConditionStatus, author AuthorResolver) saveSetup {
 	return saveSetup{
-		mirrors:    configMapsIn("shop"),
 		grants:     []configv1alpha3.GitTargetRemoteSaveRequestGrant{grantFrom("shop")},
 		auditFacts: auditFacts,
 		author:     author,
@@ -121,24 +110,24 @@ func saveServer(
 			{Type: "AuditFactsReceived", Status: setup.auditFacts, Reason: "Test"},
 		}
 	}
-	target := &configv1alpha3.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"},
-		Spec: configv1alpha3.GitTargetSpec{
-			KubeProviderRef:           meta.NamespacedObjectReference{Name: "workspace", Namespace: "providers"},
-			AllowedRemoteSaveRequests: setup.grants,
-		},
+	objects := []client.Object{provider}
+	if !setup.noTarget {
+		providerName := setup.provider
+		if providerName == "" {
+			providerName = "workspace"
+		}
+		objects = append(objects, &configv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"},
+			Spec: configv1alpha3.GitTargetSpec{
+				KubeProviderRef:           meta.NamespacedObjectReference{Name: providerName, Namespace: "providers"},
+				AllowedRemoteSaveRequests: setup.grants,
+			},
+		})
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, target).
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
 		WithStatusSubresource(&configv1alpha3.KubeProvider{}).Build()
 
 	manager := &Manager{AuthorResolver: setup.author}
-	if setup.mirrors != nil {
-		gitDest := types.NewResourceReference("app", "team-a")
-		manager.ensureWatchedTypeStore()
-		manager.watchedTypes.tables = map[string]WatchedTypeTable{
-			gitDest.Key(): {GitDest: gitDest, Types: []WatchedType{*setup.mirrors}},
-		}
-	}
 	fields, err := runtime.DefaultUnstructuredConverter.ToUnstructured(request)
 	require.NoError(t, err)
 	obj := &unstructured.Unstructured{Object: fields}
@@ -157,8 +146,9 @@ func newRemoteSaveRequest(catchUp sourcev1alpha1.CatchUpPolicy) *sourcev1alpha1.
 	return &sourcev1alpha1.RemoteSaveRequest{
 		ObjectMeta: metav1.ObjectMeta{Name: "save", Namespace: "shop", UID: "uid-save", Generation: 1},
 		Spec: sourcev1alpha1.RemoteSaveRequestSpec{
-			Message: "save: from the editor",
-			CatchUp: catchUp,
+			GitTargetRef: sourcev1alpha1.GitTargetReference{Namespace: "team-a", Name: "app"},
+			Message:      "save: from the editor",
+			CatchUp:      catchUp,
 			Window: &sourcev1alpha1.RemoteSaveRequestWindow{
 				AttachTimeout: &metav1.Duration{Duration: 3 * time.Second},
 				MaxDuration:   &metav1.Duration{Duration: time.Second},
@@ -188,9 +178,9 @@ func condition(status sourcev1alpha1.RemoteSaveRequestStatus, conditionType stri
 	return apimeta.FindStatusCondition(status.Conditions, conditionType)
 }
 
-// A save attaches to the window of every GitTarget that mirrors its namespace, as its author found
-// from the source cluster's audit, and reports each commit and the apply it asked for.
-func TestRemoteSaveRequest_SavesEachMirroringGitTargetAndReportsTheApply(t *testing.T) {
+// A save attaches to its creator's window on the GitTarget it names, as its author found from the
+// source cluster's audit, and reports the commit and the apply it asked for.
+func TestRemoteSaveRequest_SavesTheNamedGitTargetAndReportsTheApply(t *testing.T) {
 	finalizer := &saveFinalizer{
 		result: git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"},
 		apply: git.SaveApply{
@@ -215,19 +205,17 @@ func TestRemoteSaveRequest_SavesEachMirroringGitTargetAndReportsTheApply(t *test
 	assert.Equal(t, "save: from the editor", attach.Message)
 	assert.Equal(t, 3*time.Second, attach.AttachTimeout)
 	assert.True(t, attach.CatchUpNow)
-	assert.Equal(t, "uid-save@team-a/app", attach.UID, "one identity per GitTarget")
 
 	assert.Equal(t, "alice@example.com", status.Author)
-	require.Len(t, status.GitTargets, 1)
-	assert.Equal(t, sourcev1alpha1.RemoteSaveRequestGitTarget{
-		Namespace: "team-a", Name: "app", Reason: saveReasonCommitted, Message: "the edits were committed and pushed",
-		Branch: "main", Commit: "c0ffee", Applied: git.SaveApplyApplied, AppliedRevision: "main@sha1:c0ffee",
-	}, status.GitTargets[0])
+	assert.Equal(t, "main", status.Branch)
+	assert.Equal(t, "c0ffee", status.Commit)
+	assert.Equal(t, "main@sha1:c0ffee", status.AppliedRevision)
 	require.NotNil(t, condition(status, "Ready"))
 	assert.Equal(t, metav1.ConditionTrue, condition(status, "Ready").Status)
 	assert.Equal(t, saveReasonCommitted, condition(status, "Ready").Reason)
 	require.NotNil(t, condition(status, "Applied"))
 	assert.Equal(t, metav1.ConditionTrue, condition(status, "Applied").Status)
+	assert.Equal(t, git.SaveApplyApplied, condition(status, "Applied").Reason)
 }
 
 // On a cluster with no audit stream a save names nobody, and attaches as such: to a window whose
@@ -262,40 +250,9 @@ func TestRemoteSaveRequest_AnUnresolvedSaveOnAnAuditedClusterIsRefused(t *testin
 	assert.Equal(t, saveReasonAuthorUnresolved, condition(status, "Ready").Reason)
 }
 
-// A save in a namespace no GitTarget mirrors has nothing to save. A cluster-scoped type is in no
-// namespace, so a GitTarget mirroring only one mirrors none, whatever its grant admits.
-func TestRemoteSaveRequest_NoGitTargetMirrorsTheNamespace(t *testing.T) {
-	clusterRoles := &WatchedType{
-		GVR: schema.GroupVersionResource{
-			Group:    "rbac.authorization.k8s.io",
-			Version:  "v1",
-			Resource: "clusterroles",
-		},
-		Scope:           configv1alpha3.ResourceScopeCluster,
-		NamespaceScopes: map[string]string{"": ""},
-	}
-	everything := []configv1alpha3.GitTargetRemoteSaveRequestGrant{grantFrom("*")}
-	for name, setup := range map[string]saveSetup{
-		"nothing mirrored":           {grants: everything},
-		"another namespace":          {mirrors: configMapsIn("billing"), grants: everything},
-		"only a cluster-scoped type": {mirrors: clusterRoles, grants: everything},
-	} {
-		t.Run(name, func(t *testing.T) {
-			finalizer := &saveFinalizer{}
-			request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
-			server, resource := saveServer(t, request, setup, finalizer)
-
-			status := serveOnce(t, server, resource, request)
-
-			assert.Empty(t, finalizer.attaches)
-			assert.Equal(t, metav1.ConditionTrue, condition(status, "Ready").Status)
-			assert.Equal(t, saveReasonNoGitTarget, condition(status, "Ready").Reason)
-		})
-	}
-}
-
-// A GitTarget that mirrors the namespace saves a request only when one of its grants admits both the
-// request's namespace and its labels; nothing is admitted by default.
+// The GitTarget the request names takes it only when it exists, mirrors the cluster the request came
+// from, and has a grant admitting both the request's namespace and its labels; nothing is admitted by
+// default.
 func TestRemoteSaveRequest_TheGitTargetMustAdmitIt(t *testing.T) {
 	selector := func(labels map[string]string) *metav1.LabelSelector {
 		return &metav1.LabelSelector{MatchLabels: labels}
@@ -305,79 +262,68 @@ func TestRemoteSaveRequest_TheGitTargetMustAdmitIt(t *testing.T) {
 		grant.RequestSelector = selector(labels)
 		return grant
 	}
+	grants := func(g ...configv1alpha3.GitTargetRemoteSaveRequestGrant) []configv1alpha3.GitTargetRemoteSaveRequestGrant {
+		return g
+	}
 	tests := map[string]struct {
-		grants   []configv1alpha3.GitTargetRemoteSaveRequestGrant
-		admitted bool
+		setup  saveSetup
+		reason string
 	}{
-		"no grant":          {},
-		"another namespace": {grants: []configv1alpha3.GitTargetRemoteSaveRequestGrant{grantFrom("billing")}},
-		"its namespace": {
-			grants:   []configv1alpha3.GitTargetRemoteSaveRequestGrant{grantFrom("shop")},
-			admitted: true,
+		"no grant": {setup: saveSetup{}, reason: saveReasonNotAllowed},
+		"another namespace": {
+			setup:  saveSetup{grants: grants(grantFrom("billing"))},
+			reason: saveReasonNotAllowed,
 		},
-		"every namespace": {
-			grants:   []configv1alpha3.GitTargetRemoteSaveRequestGrant{grantFrom("*")},
-			admitted: true,
-		},
+		"its namespace":   {setup: saveSetup{grants: grants(grantFrom("shop"))}},
+		"every namespace": {setup: saveSetup{grants: grants(grantFrom("*"))}},
 		"its namespace and labels": {
-			grants:   []configv1alpha3.GitTargetRemoteSaveRequestGrant{shopLabelled(map[string]string{"app": "cart"})},
-			admitted: true,
+			setup: saveSetup{grants: grants(shopLabelled(map[string]string{"app": "cart"}))},
 		},
 		"its namespace, other labels": {
-			grants: []configv1alpha3.GitTargetRemoteSaveRequestGrant{shopLabelled(map[string]string{"app": "admin"})},
+			setup:  saveSetup{grants: grants(shopLabelled(map[string]string{"app": "admin"}))},
+			reason: saveReasonNotAllowed,
 		},
-		"one complete grant of two": {grants: []configv1alpha3.GitTargetRemoteSaveRequestGrant{
-			{SourceNamespaces: []configv1alpha3.SourceNamespace{"billing"}},
-			shopLabelled(map[string]string{"app": "cart"}),
-		}, admitted: true},
-		"a selector that does not convert admits nothing": {grants: []configv1alpha3.GitTargetRemoteSaveRequestGrant{{
-			SourceNamespaces: []configv1alpha3.SourceNamespace{"shop"},
-			RequestSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-				{Key: "app", Operator: "Near", Values: []string{"cart"}},
-			}},
-		}}},
+		"one complete grant of two": {setup: saveSetup{grants: grants(
+			grantFrom("billing"), shopLabelled(map[string]string{"app": "cart"}),
+		)}},
+		"a selector that does not convert admits nothing": {setup: saveSetup{grants: grants(
+			configv1alpha3.GitTargetRemoteSaveRequestGrant{
+				SourceNamespaces: []configv1alpha3.SourceNamespace{"shop"},
+				RequestSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+					{Key: "app", Operator: "Near", Values: []string{"cart"}},
+				}},
+			},
+		)}, reason: saveReasonNotAllowed},
+		"a GitTarget that mirrors another cluster": {
+			setup: saveSetup{provider: "elsewhere", grants: grants(grantFrom("*"))}, reason: saveReasonNotAllowed,
+		},
+		"no such GitTarget": {setup: saveSetup{noTarget: true}, reason: saveReasonGitTargetNotFound},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			finalizer := &saveFinalizer{result: git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee"}}
 			request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
 			request.Labels = map[string]string{"app": "cart"}
-			setup := shopSetup("", nil)
-			setup.grants = tt.grants
-			server, resource := saveServer(t, request, setup, finalizer)
+			request.Spec.Window.AttachTimeout = &metav1.Duration{}
+			server, resource := saveServer(t, request, tt.setup, finalizer)
 
 			status := serveOnce(t, server, resource, request)
 
-			if tt.admitted {
+			if tt.reason == "" {
 				assert.Len(t, finalizer.attaches, 1)
 				assert.Equal(t, saveReasonCommitted, condition(status, "Ready").Reason)
 				return
 			}
 			assert.Empty(t, finalizer.attaches, "nothing is attached")
-			assert.Empty(t, status.GitTargets)
 			assert.Equal(t, metav1.ConditionFalse, condition(status, "Ready").Status)
-			assert.Equal(t, saveReasonNotAllowed, condition(status, "Ready").Reason)
-			assert.Contains(t, condition(status, "Ready").Message, "spec.allowedRemoteSaveRequests")
+			assert.Equal(t, tt.reason, condition(status, "Ready").Reason)
+			assert.Contains(t, condition(status, "Ready").Message, "team-a/app")
 			assert.Equal(t, metav1.ConditionTrue, condition(status, "Stalled").Status)
 		})
 	}
 }
 
-// A GitTarget that watches a type across every namespace mirrors the request's.
-func TestRemoteSaveRequest_AWatchOfEveryNamespaceMirrorsIt(t *testing.T) {
-	finalizer := &saveFinalizer{result: git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee"}}
-	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
-	setup := shopSetup("", nil)
-	setup.mirrors = configMapsIn("")
-	server, resource := saveServer(t, request, setup, finalizer)
-
-	status := serveOnce(t, server, resource, request)
-
-	assert.Len(t, finalizer.attaches, 1)
-	assert.Equal(t, saveReasonCommitted, condition(status, "Ready").Reason)
-}
-
-// A save that failed in a GitTarget fails, and says where.
+// A save that failed fails the request, and says why.
 func TestRemoteSaveRequest_AFailureFailsTheRequest(t *testing.T) {
 	finalizer := &saveFinalizer{result: git.FinalizeResult{Err: errors.New("the GitTarget is suspended")}}
 	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
@@ -387,9 +333,54 @@ func TestRemoteSaveRequest_AFailureFailsTheRequest(t *testing.T) {
 
 	assert.Equal(t, metav1.ConditionFalse, condition(status, "Ready").Status)
 	assert.Equal(t, saveReasonFailed, condition(status, "Ready").Reason)
-	assert.Contains(t, condition(status, "Ready").Message, "team-a/app: the GitTarget is suspended")
+	assert.Contains(t, condition(status, "Ready").Message, "the GitTarget is suspended")
 	assert.Equal(t, metav1.ConditionTrue, condition(status, "Stalled").Status)
 	assert.Nil(t, condition(status, "Applied"), "nothing was committed to apply")
+}
+
+// A request served again, after a restart or a dropped watch, keeps what the first serving decided.
+// One being saved keeps its author: its status writes moved its resourceVersion, so its audit fact can
+// no longer be found. One already committed keeps its commit, and only its apply is followed.
+func TestRemoteSaveRequest_ServedAgainKeepsWhatItDecided(t *testing.T) {
+	t.Run("one being saved keeps its author", func(t *testing.T) {
+		finalizer := &saveFinalizer{result: git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee"}}
+		request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
+		request.Status.Author = "alice@example.com"
+		request.Status.Conditions = []metav1.Condition{
+			{Type: "Ready", Status: metav1.ConditionUnknown, Reason: saveReasonSaving},
+		}
+		server, resource := saveServer(t, request,
+			shopSetup(metav1.ConditionTrue, fixedAuthor{outcome: git.AttributionUnresolved}), finalizer)
+
+		status := serveOnce(t, server, resource, request)
+
+		require.Len(t, finalizer.attaches, 1, "it is not refused for a fact it can no longer match")
+		assert.Equal(t, "alice@example.com", finalizer.attaches[0].Author)
+		assert.Equal(t, git.AttributionResolved, finalizer.attaches[0].Attribution)
+		assert.Equal(t, saveReasonCommitted, condition(status, "Ready").Reason)
+	})
+
+	t.Run("one committed keeps its commit and follows its apply", func(t *testing.T) {
+		finalizer := &saveFinalizer{
+			result: git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow},
+			apply:  git.SaveApply{Done: true, Reason: git.SaveApplyNothingToApply},
+		}
+		request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
+		request.Status.Commit = "c0ffee"
+		request.Status.Conditions = []metav1.Condition{
+			{Type: "Ready", Status: metav1.ConditionTrue, Reason: saveReasonCommitted},
+			{Type: "Applied", Status: metav1.ConditionUnknown, Reason: saveReasonApplying},
+		}
+		server, resource := saveServer(t, request, shopSetup("", nil), finalizer)
+
+		status := serveOnce(t, server, resource, request)
+
+		assert.Empty(t, finalizer.attaches, "a decided save is never attached again")
+		assert.Equal(t, "c0ffee", status.Commit)
+		assert.Equal(t, saveReasonCommitted, condition(status, "Ready").Reason)
+		assert.Equal(t, metav1.ConditionTrue, condition(status, "Applied").Status)
+		assert.Equal(t, git.SaveApplyNothingToApply, condition(status, "Applied").Reason)
+	})
 }
 
 // A request is finished once Ready is decided, and, when it committed and asked to catch up, once
@@ -416,7 +407,7 @@ func TestRemoteSaveRequest_Finished(t *testing.T) {
 		metav1.Condition{
 			Type:               "Applied",
 			Status:             metav1.ConditionTrue,
-			Reason:             saveReasonApplied,
+			Reason:             git.SaveApplyApplied,
 			LastTransitionTime: at,
 		},
 	)
@@ -538,51 +529,46 @@ func TestRemoteSaveRequest_AFinishedRequestIsDeletedAfterTheTTL(t *testing.T) {
 	}
 }
 
-// Each worker outcome is recorded on its GitTarget's status with the reason the API documents.
+// Each worker outcome is recorded with the reason the API documents, and the refusals and failures
+// are Ready=False, Stalled=True.
 func TestRemoteSaveRequest_RecordsEachOutcome(t *testing.T) {
-	for result, want := range map[*git.FinalizeResult]string{
-		{Outcome: git.FinalizeCommitted, Commit: "c0ffee"}: saveReasonCommitted,
-		{Outcome: git.FinalizeNoOpenWindow}:                saveReasonNoWindow,
-		{Outcome: git.FinalizeWindowMismatch}:              saveReasonWindowMismatch,
-		{Outcome: git.FinalizeAlreadyPresent}:              saveReasonAlreadyPresent,
-		{Outcome: "Unknown"}:                               saveReasonFailed,
-		{Err: errors.New("boom")}:                          saveReasonFailed,
-		{Err: git.ErrSaveRequestWithdrawn}:                 saveReasonFailed,
+	for result, want := range map[*git.FinalizeResult]struct {
+		reason string
+		ready  metav1.ConditionStatus
+	}{
+		{Outcome: git.FinalizeCommitted, Commit: "c0ffee"}: {saveReasonCommitted, metav1.ConditionTrue},
+		{Outcome: git.FinalizeNoOpenWindow}:                {saveReasonNoWindow, metav1.ConditionTrue},
+		{Outcome: git.FinalizeWindowMismatch}:              {saveReasonWindowMismatch, metav1.ConditionTrue},
+		{Outcome: git.FinalizeAlreadyPresent}:              {saveReasonAlreadyPresent, metav1.ConditionTrue},
+		{Outcome: git.FinalizeSaveInProgress}:              {saveReasonSaveInProgress, metav1.ConditionFalse},
+		{Outcome: "Unknown"}:                               {saveReasonFailed, metav1.ConditionFalse},
+		{Err: errors.New("boom")}:                          {saveReasonFailed, metav1.ConditionFalse},
+		{Err: git.ErrSaveRequestWithdrawn}:                 {saveReasonFailed, metav1.ConditionFalse},
 	} {
-		var target sourcev1alpha1.RemoteSaveRequestGitTarget
-		recordSaveOutcome(&target, *result)
-		assert.Equal(t, want, target.Reason, "%+v", *result)
-		assert.NotEmpty(t, target.Message)
+		request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
+		status := &sourcev1alpha1.RemoteSaveRequestStatus{}
+		recordSaveOutcome(request, status, *result)
+		ready := condition(*status, "Ready")
+		require.NotNil(t, ready)
+		assert.Equal(t, want.reason, ready.Reason, "%+v", *result)
+		assert.Equal(t, want.ready, ready.Status, "%+v", *result)
+		assert.NotEmpty(t, ready.Message)
+		assert.Equal(t, want.ready == metav1.ConditionFalse, condition(*status, "Stalled") != nil, "%+v", *result)
 	}
 }
 
-// Applied is False only for a commit a branch lost, Unknown when an apply was lost track of, and True
-// otherwise.
-func TestRemoteSaveRequest_AppliedSummarizesTheTargets(t *testing.T) {
-	for name, tt := range map[string]struct {
-		applied []string
-		status  metav1.ConditionStatus
-		reason  string
-	}{
-		"all applied":        {[]string{git.SaveApplyApplied, git.SaveApplyNothingToApply}, metav1.ConditionTrue, saveReasonApplied},
-		"one lost":           {[]string{git.SaveApplyApplied, "Lost"}, metav1.ConditionUnknown, "Lost"},
-		"one commit dropped": {[]string{"Lost", git.SaveApplyCommitDropped}, metav1.ConditionFalse, git.SaveApplyCommitDropped},
+// Applied is False only for a commit the branch lost, and True for every other settled apply.
+func TestRemoteSaveRequest_AppliedIsFalseOnlyForADroppedCommit(t *testing.T) {
+	for reason, want := range map[string]metav1.ConditionStatus{
+		git.SaveApplyApplied:        metav1.ConditionTrue,
+		git.SaveApplyNothingToApply: metav1.ConditionTrue,
+		git.SaveApplyNoApplier:      metav1.ConditionTrue,
+		git.SaveApplyCommitDropped:  metav1.ConditionFalse,
 	} {
-		t.Run(name, func(t *testing.T) {
-			request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
-			status := &sourcev1alpha1.RemoteSaveRequestStatus{}
-			for i, applied := range tt.applied {
-				status.GitTargets = append(status.GitTargets, sourcev1alpha1.RemoteSaveRequestGitTarget{
-					Namespace: "team-a", Name: fmt.Sprintf("app-%d", i), Reason: saveReasonCommitted, Applied: applied,
-				})
-			}
-			setSaveApplied(request, status)
-			got := condition(*status, "Applied")
-			require.NotNil(t, got)
-			assert.Equal(t, tt.status, got.Status)
-			assert.Equal(t, tt.reason, got.Reason)
-			assert.True(t, saveApplySettled(tt.applied[0]))
-		})
+		request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
+		status := &sourcev1alpha1.RemoteSaveRequestStatus{}
+		setSaveApplied(request, status, reason)
+		assert.Equal(t, want, condition(*status, "Applied").Status, reason)
+		assert.Equal(t, reason, condition(*status, "Applied").Reason)
 	}
-	assert.False(t, saveApplySettled("Applying"))
 }

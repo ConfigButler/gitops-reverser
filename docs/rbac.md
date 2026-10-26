@@ -96,7 +96,7 @@ status back there. Its credential then needs, in the `source.configbutler.ai` gr
 `remotesaverequests/status`. Nothing else on a source cluster is written. The manager role carries
 the same rules for the cluster the operator runs in, for an `inCluster` provider.
 
-Whoever may create a `RemoteSaveRequest` in a namespace may save their own commit window on every
+Whoever may create a `RemoteSaveRequest` in a namespace may save their own commit window on any
 `GitTarget` whose `spec.allowedRemoteSaveRequests` admits it. That grant, not the provider's switch,
 is the `GitTarget` owner's consent. On the cluster GitOps Reverser runs in, whoever may create a
 `SaveRequest` in a namespace may save on every `GitTarget` whose `spec.allowedSaveRequests` admits

@@ -166,8 +166,8 @@ kinds:
       - path: allowedRemoteSaveRequests
         default: none admitted
         doc: >-
-          The `RemoteSaveRequest`s, by source namespace and labels, that may save this target's
-          windows. See [`RemoteSaveRequest`](#remotesaverequest)
+          The `RemoteSaveRequest`s, by source namespace and labels, that may name this target and
+          save its windows. See [`RemoteSaveRequest`](#remotesaverequest)
       - path: placement.byType
         default: the built-in path
         doc: >-
@@ -337,8 +337,12 @@ kinds:
   - kind: RemoteSaveRequest
     title: "`RemoteSaveRequest` (namespaced, on a source cluster): save the edits made here"
     fields:
+      - path: gitTargetRef
+        doc: >-
+          The `GitTarget` to save, by `namespace` and `name` on the cluster GitOps Reverser runs in.
+          Its `allowedRemoteSaveRequests` must admit this request
       - path: message
-        default: each target's templates
+        default: the target's templates
         doc: Commit message, committed verbatim unless `requestTemplate` frames it
       - path: window.attachTimeout
         doc: How long to wait for a window with the edits it saves. See [`RemoteSaveRequest`](#remotesaverequest)
@@ -349,5 +353,5 @@ kinds:
         doc: Close the attached window this long after the attach
       - path: catchUp
         doc: >-
-          `AfterPush` asks each `GitTarget`'s applier to apply the branch tip right after the commit
-          is pushed; `status.gitTargets` reports it
+          `AfterPush` asks the `GitTarget`'s applier to apply the branch tip right after the commit
+          is pushed; the `Applied` condition reports it

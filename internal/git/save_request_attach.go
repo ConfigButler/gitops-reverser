@@ -53,6 +53,11 @@ const (
 	// produced no diff — the change already matches the remote, so no commit was
 	// made (loop prevention). Resolved at finalize, never waiting on a push.
 	FinalizeAlreadyPresent FinalizeOutcome = "AlreadyPresent"
+	// FinalizeSaveInProgress means an earlier request of the same author on the same GitTarget was
+	// still waiting for a window, or collecting the open one, when this one was registered. Both
+	// would race for one window, which carries one message, so this one is refused at once rather
+	// than left to lose its message to the first, or its edits to the first's commit.
+	FinalizeSaveInProgress FinalizeOutcome = "SaveInProgress"
 )
 
 // SaveRequestPhase is where an unresolved SaveRequest stands on the worker. It is what the
@@ -278,6 +283,13 @@ func (p *pendingSaveRequest) matchesWindow(w *openWindow) bool {
 		return false
 	}
 	return p.author == w.Author && p.attribution.NamesActor() == w.Attribution.NamesActor() || p.claims(w)
+}
+
+// sameSaver reports whether two requests would save one window: the same GitTarget and the same
+// author, by the comparison matchesWindow makes.
+func (p *pendingSaveRequest) sameSaver(other *pendingSaveRequest) bool {
+	return p.gitTargetName == other.gitTargetName && p.gitTargetNamespace == other.gitTargetNamespace &&
+		p.author == other.author && p.attribution.NamesActor() == other.attribution.NamesActor()
 }
 
 // claims reports whether the request matches a window on its GitTarget whose writes name no author

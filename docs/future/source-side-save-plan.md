@@ -12,15 +12,14 @@ put its author's name on the commit.
 Status: implemented on `feat/gitops-api-asks-converge-root-ca`. The two request kinds are a pair:
 `SaveRequest` (`configbutler.ai/v1alpha3`, formerly `CommitRequest`) on the control cluster, and
 `RemoteSaveRequest` (`source.configbutler.ai/v1alpha1`, `internal/watch/remote_save_requests.go`) on
-the source cluster. Each `GitTarget` admits them in a grant list: `spec.allowedSaveRequests` (by
-control-cluster namespace; omitted, its own namespace) and `spec.allowedRemoteSaveRequests` (by source
-namespace and labels; omitted, none). A KubeProvider also serves its cluster's remote requests only
-with `spec.remoteSaveRequests: Enabled`. The takeover is opt-in, as described below, with one change:
-the `GitTarget`'s bound moved from `spec.commit.unattributedWindows` into each `allowedSaveRequests`
-grant, so a request from another namespace claims only what its own grant allows. The open questions
-are answered as proposed: its own group, a default `attachTimeout` of `5s`, the reason
-`AuthorUnresolved`, and no extra queue for a second save on a GitTarget beyond the worker's own (a
-window carries one request at a time).
+the source cluster. Each names its GitTarget, which admits it in a grant list:
+`spec.allowedSaveRequests` (by control-cluster namespace; omitted, its own namespace) and
+`spec.allowedRemoteSaveRequests` (by source namespace and labels; omitted, none). A KubeProvider
+also serves its cluster's remote requests only with `spec.remoteSaveRequests: Enabled`, and the
+GitTarget must mirror that cluster. The takeover is opt-in, as described below, bounded per grant.
+The open questions are answered: its own group, a default `attachTimeout` of `5s`, the reason
+`AuthorUnresolved`, and a second save of one author on one GitTarget is refused while the first is in
+progress (`SaveInProgress`).
 
 This revision takes in gitops-api's review of the first draft, and a later API review of the
 implementation: see [After the API review](#after-the-api-review).
@@ -100,7 +99,7 @@ wait on an extra hop, and add a second status to keep in step.
 
 Reusing `SaveRequest` with a different schema would be worse than a separate kind:
 
-- **Another shape.** It names no GitTarget, and its status lists one or more of them.
+- **Another shape.** It names a GitTarget on another cluster than the one it is created on.
 - **Another trust model.** Its author comes from audit; a `SaveRequest`'s comes from admission.
 - **One name for two things** invites the confusion that `tenant-<account>` already costs gitops-api.
 - **Installed alone.** A workspace gets one small CRD instead of the whole `configbutler.ai` set, so
@@ -111,10 +110,11 @@ Reusing `SaveRequest` with a different schema would be worse than a separate kin
 
 ### Which GitTarget it saves
 
-The people creating it cannot see GitTargets, so it names none. It saves for the GitTargets that
-mirror its own namespace from that KubeProvider. Usually that is one: in gitops-api, each
-`repo-<name>` namespace maps to exactly one GitTarget. When several mirror the namespace, into
-several folders, it saves each one's window, and its status lists each GitTarget with its outcome.
+It names one, in a required `spec.gitTargetRef` of `namespace` and `name` on the control cluster.
+The people creating it need no access to GitTargets: their tooling supplies the address. This draft
+had it name none and save every GitTarget mirroring its namespace; review showed that an unchanged
+request then does more whenever another GitTarget is added, and that its caller cannot say "this one
+only". See [After the API review](#after-the-api-review).
 
 ### When its wait starts
 
@@ -155,10 +155,14 @@ turns it on, and the KubeProvider's docs say what it adds.
 - **Create it as JSON.** gitops-api found that kcp drops audit events whose request body is YAML. A
   save sent as YAML would lose its author without any error. A browser sends JSON anyway; the docs
   must say it for everyone else.
-- **One save at a time per GitTarget.** gitops-api queues saves in its server (`commitGate`). If the
-  browser creates them directly, that queue is gone. The worker already lets a window carry at most
-  one request, and a second waits for the next window (`attachWaitingSaveRequests`). Whether that
-  is enough, or the operator should hold a save until the one before it has resolved, is open.
+- **One save at a time per GitTarget and author.** gitops-api queues saves in its server
+  (`commitGate`). If the browser creates them directly, that queue is gone. A window carries one
+  message, so a second save of the same author on the same GitTarget, made while the first still
+  waits for a window or collects one, is refused at once with `SaveInProgress`, rather than losing
+  its message to the first in silence. The client saves again once the first resolved. A second
+  person's edit that lands while a window is open still closes that window early: windows are one at
+  a time per branch worker, whoever writes. That is
+  [a design question of its own](../design/concurrent-author-windows.md).
 
 ## The takeover
 
@@ -192,8 +196,11 @@ do. Only the GitTarget's owner knows which it is, so the GitTarget decides.
 
 ### What the GitTarget allows
 
-One field on the GitTarget, an enum, because there are two levels of trust worth offering. Proposed:
-`spec.commit.unattributedWindows`.
+An enum, because there are two levels of trust worth offering: `unattributedWindows`, on each grant
+in the GitTarget's `spec.allowedSaveRequests`. A request claims only what the grant admitting its
+namespace allows; admitted by several, it may claim the most any of them allows. (The first version
+was one field, `spec.commit.unattributedWindows`, for requests in the GitTarget's own namespace;
+it moved into the grants when a `SaveRequest` could name a GitTarget in another namespace.)
 
 - **`"Keep"`** (the default): a save attaches only to its author's window, as today. On a cluster
   with no audit, a save from the control cluster finds no window of its own.
@@ -213,10 +220,8 @@ One field on the GitTarget, an enum, because there are two levels of trust worth
   Author-Source: SaveRequest team-a/save-1; no audit record names who made these changes
   ```
 
-A request's `spec.gitTargetRef` is a local reference, so the request is always in its GitTarget's
-namespace, and a plain field is enough. A grant on the KubeProvider was considered and set aside:
-the provider's owner usually does not know who edits which namespace, and the grant convention's
-default ("omitted means this namespace") is the wrong one here.
+A grant on the KubeProvider was considered and set aside: the provider's owner usually does not know
+who edits which namespace. The GitTarget's owner does, and grants it per consuming namespace.
 
 ### Three conditions, all required
 
@@ -224,7 +229,7 @@ default ("omitted means this namespace") is the wrong one here.
 flowchart TB
     Start["A save finds an open window on its GitTarget<br/>whose writes name no author"] --> Q1{"1. Did the save ask<br/>for more than its own window?"}
     Q1 -->|no| Own["Its own windows only"]
-    Q1 -->|yes| Q2{"2. Does the GitTarget's<br/>unattributedWindows allow what it asked?"}
+    Q1 -->|yes| Q2{"2. Does the grant admitting it<br/>allow what it asked (unattributedWindows)?"}
     Q2 -->|no| Refuse["Refused: Ready=False, Stalled=True<br/>reason TakeOverNotAllowed"]
     Q2 -->|yes| Q3{"3. Has the KubeProvider ever<br/>received an audit fact?"}
     Q3 -->|yes| Own
@@ -233,9 +238,10 @@ flowchart TB
 
 1. **The save asks for it.** An enum under `spec.window` beside `attach`, matching the GitTarget's:
    `spec.window.author`, `"Own"` (the default), `"SavedBy"` or `"TakeOver"`. A save asks for what it
-   wants each time, and the GitTarget bounds it: `"TakeOver"` allows a save that asks for
-   `"SavedBy"`, and not the other way round.
-2. **The GitTarget allows it.** A save that asks for more than the GitTarget allows fails at once,
+   wants each time, and the grant bounds it: `"TakeOver"` allows a save that asks for `"SavedBy"`,
+   and not the other way round.
+2. **The GitTarget's grant allows it.** A save that asks for more than the grants admitting it allow
+   fails at once,
    when it is first reconciled: `Ready=False`, `Stalled=True`, reason `TakeOverNotAllowed`. The spec
    is immutable, so it cannot recover by itself.
 3. **The KubeProvider has never received an audit fact** (`AuditFactsReceived` is not `True`). On a
@@ -303,7 +309,18 @@ A review of the implementation found three things:
    cluster's) and an optional `requestSelector`. Omitted, it admits none: `NotAllowed`. Labels pick
    requests and prove nothing about who made them.
 
-The status list became `status.gitTargets`, keyed by `namespace` and `name`, and the names became the
-`SaveRequest`/`RemoteSaveRequest` pair. A `SaveRequest` then gained a cross-namespace
-`spec.gitTargetRef`, and with it `GitTarget.spec.allowedSaveRequests`: a grant list like the others,
-defaulting to one `from: Same` grant, whose grants also carry the `unattributedWindows` bound.
+A second review then found that implicit target selection still made a save broader than its caller
+may intend: a request reached every admitting GitTarget mirroring its namespace, so adding a
+GitTarget changed what an unchanged request did. A `RemoteSaveRequest` now names its GitTarget in a
+required `spec.gitTargetRef`, saves that one, and reports a flat status (`status.commit`,
+`status.appliedRevision`, `Ready`, `Applied`). The request's namespace decides only admission. That
+also removed a cold-start failure: with no named target, discovery that had not caught up reported
+`NoGitTarget`. The same review fixed two recovery paths: a request served again after a restart
+keeps the author found when it was first served (its status writes moved its resourceVersion, so its
+audit fact no longer matches), and keeps an outcome already decided, following only its apply.
+
+A `SaveRequest` gained a cross-namespace `spec.gitTargetRef`, and with it
+`GitTarget.spec.allowedSaveRequests`: a grant list like the others, defaulting to one `from: Same`
+grant, whose grants also carry the `unattributedWindows` bound. The GitTarget that admitted a request
+is recorded by UID (`status.gitTargetUID`), so a GitTarget created after the request under the same
+name must admit it before anything is attached.

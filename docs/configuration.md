@@ -120,7 +120,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `commit.window.maxDuration` | `1m` | Close a commit window this long after it opened, however much keeps arriving |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
 | `allowedSaveRequests` | `[{"consumerNamespaces":{"from":"Same"},"unattributedWindows":"Keep"}]` | The namespaces whose `SaveRequest`s may save this target's windows, and how much each may claim of a window whose writes name no author. See [who may save](#who-may-save-specallowedsaverequests) |
-| `allowedRemoteSaveRequests` | none admitted | The `RemoteSaveRequest`s, by source namespace and labels, that may save this target's windows. See [`RemoteSaveRequest`](#remotesaverequest) |
+| `allowedRemoteSaveRequests` | none admitted | The `RemoteSaveRequest`s, by source namespace and labels, that may name this target and save its windows. See [`RemoteSaveRequest`](#remotesaverequest) |
 | `placement.byType` | the built-in path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
 | `placement.default` | the built-in path | Catch-all path template for types with no `byType` entry |
 | `placement.useKustomize` | off | Keep the folder a kustomize folder. See [keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize) |
@@ -192,11 +192,12 @@ The references are immutable: to hold another `Application`, delete the applier 
 
 | Field | Default | What it does |
 |---|---|---|
-| `message` | each target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
+| `gitTargetRef` | **required** | The `GitTarget` to save, by `namespace` and `name` on the cluster GitOps Reverser runs in. Its `allowedRemoteSaveRequests` must admit this request |
+| `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
 | `window.attachTimeout` | `5s` | How long to wait for a window with the edits it saves. See [`RemoteSaveRequest`](#remotesaverequest) |
 | `window.idleTimeout` | no idle close | Close the attached window after this much silence |
 | `window.maxDuration` | `2s` | Close the attached window this long after the attach |
-| `catchUp` | `AsDefinedOnClaim` | `AfterPush` asks each `GitTarget`'s applier to apply the branch tip right after the commit is pushed; `status.gitTargets` reports it |
+| `catchUp` | `AsDefinedOnClaim` | `AfterPush` asks the `GitTarget`'s applier to apply the branch tip right after the commit is pushed; the `Applied` condition reports it |
 
 <!-- END GENERATED: settings-index -->
 
@@ -3161,6 +3162,7 @@ reason, without changing Git.
 | The writes already matched Git | no commit, `AlreadyPresent` | empty commit, `AlreadyPresent` |
 | No eligible window before `attachTimeout` | no commit, `NoWindow` | empty commit, `NoWindow` |
 | Only another author's window was open | no commit, `WindowMismatch` | no commit, `WindowMismatch` |
+| An earlier save of the same author on the `GitTarget` was still in progress | `SaveInProgress`, at once | `SaveInProgress`, at once |
 | The target is suspended, or its render fidelity is not established | `FinalizeFailed`, the cause | `FinalizeFailed`, the cause |
 | The commit or the empty commit failed | `FinalizeFailed` | `FinalizeFailed` |
 | The push failed | `WaitingForPush`, with the cause, until a push lands; `FinalizeFailed` if the worker stops first | the same |
@@ -3185,6 +3187,14 @@ request produced a pushed commit:
   or an outcome with nothing to commit: `NoWindow`, `WindowMismatch`, or `AlreadyPresent`. With
   [`CommitEmpty`](#when-there-is-nothing-to-commit), `NoWindow` and `AlreadyPresent` can come with a
   recorded empty commit. A failed finalize is `Ready=False` with reason `FinalizeFailed`.
+
+  `Ready=False` with reason `SaveInProgress` means an earlier request of the same author on the same
+  `GitTarget` was still waiting for a commit window, or collecting one, when this one arrived. A
+  window carries one message, so the two would race for it and one message would be lost without a
+  word; the later request is refused at once instead. Save again with a new request once the earlier
+  one is `Ready`. A request for the `Next` window is not refused by one that is collecting: it closes
+  that window under the earlier request's message first. Saves by different authors never race,
+  since each author has windows of its own.
 
   `AlreadyPresent` means **the remote confirmed there was nothing to add**, so it is reported after
   the push rather than when the local plan found no difference. That costs a few seconds and buys a
@@ -3258,20 +3268,26 @@ never deleted.
 
 A `RemoteSaveRequest` (`source.configbutler.ai/v1alpha1`) is a save made on a **source cluster**, next
 to the edits it saves, by someone who may have no access to the cluster GitOps Reverser runs in. It
-names no `GitTarget`: it saves its creator's commit window in every `GitTarget` that mirrors its
-namespace from that cluster and allows it. Each window gets its message
-and closes on its timers, as with a [`SaveRequest`](#saverequest).
+names one `GitTarget` on the cluster GitOps Reverser runs in, and saves its creator's commit window
+there: the window gets its message and closes on its timers, as with a [`SaveRequest`](#saverequest).
 
 ```yaml
 apiVersion: source.configbutler.ai/v1alpha1
 kind: RemoteSaveRequest
 metadata:
-  name: save-now
+  name: save-cart
   namespace: shop
 spec:
+  gitTargetRef:
+    namespace: platform
+    name: shop
   message: "fix(shop): raise the cart limit"
   catchUp: AfterPush
 ```
+
+`spec.gitTargetRef` is required, and both its fields are: `namespace` is a namespace of the cluster
+GitOps Reverser runs in, not of the source cluster. The people creating requests need no access to
+`GitTarget`s; their tooling supplies the address.
 
 ### Serving the `RemoteSaveRequest`s of a cluster
 
@@ -3287,9 +3303,10 @@ Three things turn it on, each on purpose:
    `list`, `watch` and `delete` on `remotesaverequests`, and `update` on `remotesaverequests/status`,
    in the `source.configbutler.ai` group. A `RemoteSaveRequest` is never mirrored, whatever a
    `WatchRule` selects.
-3. **Grant it on each `GitTarget`, in `spec.allowedRemoteSaveRequests`.** The provider switch makes
+3. **Grant it on the `GitTarget`, in `spec.allowedRemoteSaveRequests`.** The provider switch makes
    the requests reachable; the `GitTarget`'s owner decides which of them may save its windows. An
-   omitted or empty list admits none.
+   omitted or empty list admits none. The `GitTarget` must also mirror the cluster the request was
+   made on: its `spec.kubeProviderRef` names the `KubeProvider` that served the request.
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -3304,18 +3321,20 @@ spec:
 ```
 
 A request is admitted when one grant admits both its namespace and its labels. `sourceNamespaces` are
-namespaces of the cluster `spec.kubeProviderRef` names, by exact name, or `"*"` for every namespace the
-`GitTarget` mirrors. `requestSelector` is optional, and narrows the grant to the requests whose labels
-match: use it to pick which of several `GitTarget`s a request saves. Whoever creates a request picks
-its labels, so a selector proves nothing about who made it.
+namespaces of the cluster `spec.kubeProviderRef` names, by exact name, or `"*"` for every namespace.
+`requestSelector` is optional, and narrows the grant to the requests whose labels match. Whoever
+creates a request picks its labels, so a selector proves nothing about who made it.
 
 ### What a save holds
 
 A commit window holds one author's edits to one `GitTarget`, wherever that `GitTarget` mirrors them.
 An admitted `RemoteSaveRequest` therefore saves its creator's whole window, edits outside the
 request's own namespace included: a grant in `allowedRemoteSaveRequests` authorizes exactly that. The
-request's namespace only decides which `GitTarget`s it reaches. A `GitTarget` that mirrors only
-cluster-scoped types mirrors no namespace, so no `RemoteSaveRequest` reaches it.
+request's namespace decides only whether a grant admits it.
+
+As with a `SaveRequest`, a second request of the same author on the same `GitTarget`, made while the
+first still waits for a window or collects one, is refused at once with `SaveInProgress`: a window
+carries one message, and the two would race for it.
 
 ### Who the save is from
 
@@ -3337,18 +3356,21 @@ window as for a `SaveRequest`.
 
 ### Its status
 
-`status.gitTargets` lists each `GitTarget` the save was admitted to, by `namespace` and `name` on the
-cluster GitOps Reverser runs in, with the save's `reason` there (`Committed`, `NoWindow`,
-`AlreadyPresent`, `WindowMismatch` or `Failed`), its `branch` and `commit`,
-and, with `catchUp: AfterPush`, its `applied` reason and `appliedRevision`.
+`status.author`, `status.branch` and `status.commit` say who saved and what was pushed, and, with
+`catchUp: AfterPush`, `status.appliedRevision` what the applier applied.
 
-- **Ready** is `True` once the save ended without error in every `GitTarget`, with reason `Committed`
-  when one of them committed, and otherwise the first one's reason, `NoGitTarget` when no `GitTarget`
-  mirrors the namespace, or `AuthorUnresolved`. `Ready=False` with `Stalled=True` is a failure,
-  reason `NotAllowed` when `GitTarget`s mirror the namespace but none of them admits the request.
-- **Applied**, with `catchUp: AfterPush`, is `True` once every applier applied a revision that holds
-  the commit, or needed none, `False` only when a branch lost the commit, and `Unknown` with reason
-  `Lost` when GitOps Reverser restarted before it learned how an apply went.
+- **Ready** is `True` once the save ended without error: reason `Committed`, or, with nothing
+  committed, `NoWindow`, `AlreadyPresent`, `WindowMismatch` or `AuthorUnresolved`. `Ready=False` with
+  `Stalled=True` is a failure: `NotAllowed` when the `GitTarget` does not admit the request or
+  mirrors another cluster, `GitTargetNotFound` when it did not exist within `attachTimeout`,
+  `SaveInProgress`, or `Failed`.
+- **Applied**, with `catchUp: AfterPush`, is `True` once the applier applied a revision that holds
+  the commit, or needed none, `False` only when the branch lost the commit, and `Unknown` with reason
+  `Lost` when GitOps Reverser restarted before it learned how the apply went.
+
+A request is served again after GitOps Reverser restarts. It keeps what its status already says: the
+author found when it was first served, and an outcome already decided, in which case only its apply,
+if it asked for one, is followed.
 
 A finished `RemoteSaveRequest` is deleted `--save-request-ttl` (default `48h`) after it finished;
 `0` keeps it.

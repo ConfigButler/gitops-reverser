@@ -57,6 +57,9 @@ type CommandAuthorLookup interface {
 
 // windowMismatchMessage explains the author-bound refusal: an open window
 // existed but was not this requester's, so it was deliberately left alone.
+const saveInProgressMessage = "an earlier save of the same author on this GitTarget was still waiting for " +
+	"or collecting a commit window, which carries one message; save again once it resolved"
+
 const windowMismatchMessage = "the open commit window belongs to a different author or GitTarget; " +
 	"nothing was committed for this request"
 
@@ -231,8 +234,8 @@ func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// decision is final — there is no wait and no requeue for the author.
 	author, attribution := r.attributeAuthor(ctx, saveRequest)
 
-	claim, refused, err := r.admitAtFirstSight(ctx, log, saveRequest, attribution)
-	if err != nil || refused {
+	claim, admitted, err := r.admitAtFirstSight(ctx, log, saveRequest, attribution)
+	if err != nil || admitted == saveRequestRefused {
 		return ctrl.Result{}, err
 	}
 
@@ -272,37 +275,86 @@ func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		CatchUpNow:         saveRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
 		Unattributed:       claim,
 	}
-	if time.Since(saveRequest.CreationTimestamp.Time) >= window.resolveTimeout() {
+	return r.sendSaveRequest(ctx, log, req, saveRequest, attribution, attach,
+		time.Since(saveRequest.CreationTimestamp.Time) >= window.resolveTimeout(),
+		admitted == saveRequestTargetMissing)
+}
+
+// sendSaveRequest sends the attach, or the withdraw once the request is past its bound, or, while
+// its GitTarget does not exist and never admitted it, neither: nothing is attached before a GitTarget
+// admitted the request, so one created later is asked first, on a later poll.
+func (r *SaveRequestReconciler) sendSaveRequest(
+	ctx context.Context,
+	log logr.Logger,
+	req ctrl.Request,
+	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	attribution saveRequestAttribution,
+	attach git.AttachSaveRequest,
+	pastTheBound, targetMissing bool,
+) (ctrl.Result, error) {
+	switch {
+	case pastTheBound:
 		// Past the bound the controller only withdraws: an attach sent now would sit behind the
 		// withdraw on the worker's FIFO and could register the request after it was cancelled.
 		return r.withdrawSaveRequest(ctx, log, req, saveRequest, attribution, attach)
+	case targetMissing:
+		return r.pollSaveRequest(ctx, saveRequest, attribution, git.PhaseWaitingForWorker, "")
 	}
 	return r.attachSaveRequest(ctx, log, req, saveRequest, attribution, attach)
 }
 
-// admitAtFirstSight runs admitSaveRequest, and fails a request it refuses, but only at first sight,
-// before any attach was sent: a GitTarget's grants lowered later do not fail a request the worker
-// may already hold, which keeps what it was first sent. refused reports a request now failed; err is
-// a read to retry.
+// saveRequestAdmission is how admitAtFirstSight left a request.
+type saveRequestAdmission int
+
+const (
+	// saveRequestAdmitted is a request its GitTarget admitted, now or before.
+	saveRequestAdmitted saveRequestAdmission = iota
+	// saveRequestTargetMissing is a request whose GitTarget does not exist and never admitted it.
+	saveRequestTargetMissing
+	// saveRequestRefused is a request now failed.
+	saveRequestRefused
+)
+
+// admitAtFirstSight runs admitSaveRequest, records the GitTarget that admitted the request, and fails
+// a request it refuses. A refusal is final unless that same GitTarget, by UID, admitted the request
+// before: then its grants were lowered after an attach may have been sent, and the worker, which may
+// hold the request, keeps what it was first sent. A GitTarget that did not exist when the request was
+// first seen, or was recreated since, admitted nothing, so its refusal stands. err is a read or write
+// to retry.
 func (r *SaveRequestReconciler) admitAtFirstSight(
 	ctx context.Context,
 	log logr.Logger,
 	saveRequest *configbutleraiv1alpha3.SaveRequest,
 	attribution saveRequestAttribution,
-) (git.UnattributedClaim, bool, error) {
-	claim, err := r.admitSaveRequest(ctx, saveRequest)
-	if err == nil {
-		return claim, false, nil
-	}
-	if !errors.Is(err, errSaveRequestNotAllowed) && !errors.Is(err, errTakeOverNotAllowed) {
-		return claim, false, err
-	}
-	if findCondition(saveRequest.Status.Conditions, ConditionTypeReady) != nil {
-		return claim, false, nil
+) (git.UnattributedClaim, saveRequestAdmission, error) {
+	claim, targetUID, err := r.admitSaveRequest(ctx, saveRequest)
+	recorded := saveRequest.Status.GitTargetUID
+	switch {
+	case err == nil && targetUID == "":
+		if recorded != "" {
+			// Its GitTarget is gone since it admitted the request: the attach path reports that.
+			return claim, saveRequestAdmitted, nil
+		}
+		return claim, saveRequestTargetMissing, r.stampFirstSightConditions(ctx, saveRequest, attribution)
+	case err == nil:
+		if recorded == targetUID {
+			return claim, saveRequestAdmitted, nil
+		}
+		// Recorded before any attach is sent for this GitTarget, so a later refusal can tell the two
+		// apart. At first sight the in-progress stamp that follows writes it.
+		saveRequest.Status.GitTargetUID = targetUID
+		if findCondition(saveRequest.Status.Conditions, ConditionTypeReady) == nil {
+			return claim, saveRequestAdmitted, nil
+		}
+		return claim, saveRequestAdmitted, r.Status().Update(ctx, saveRequest)
+	case !errors.Is(err, errSaveRequestNotAllowed) && !errors.Is(err, errTakeOverNotAllowed):
+		return claim, saveRequestAdmitted, err
+	case recorded == targetUID:
+		return git.UnattributedClaimNone, saveRequestAdmitted, nil
 	}
 	r.writeTerminalStatus(ctx, log, saveRequest, git.FinalizeResult{}, err, attribution,
 		resolvedSaveRequestTarget(saveRequest))
-	return claim, true, nil
+	return claim, saveRequestRefused, nil
 }
 
 // errTakeOverNotAllowed is a request that asks to claim more of a window whose writes name no author
@@ -323,20 +375,31 @@ var errSaveRequestNotAllowed = errors.New("the GitTarget does not admit SaveRequ
 // write naming no author means its fact went missing, and nothing is claimed. A request that asks for
 // more than the admitting grants' unattributedWindows allow is errTakeOverNotAllowed.
 //
-// A GitTarget that does not exist decides nothing here: the attach path reports it. Any other read
-// error is returned as is, so the request is retried rather than refused.
+// A GitTarget that does not exist admits nothing yet, and is reported with an empty UID. Any other
+// read error is returned as is, so the request is retried rather than refused.
 func (r *SaveRequestReconciler) admitSaveRequest(
 	ctx context.Context,
 	saveRequest *configbutleraiv1alpha3.SaveRequest,
-) (git.UnattributedClaim, error) {
+) (git.UnattributedClaim, string, error) {
 	var target configbutleraiv1alpha3.GitTarget
 	if err := r.Get(ctx, saveRequest.GitTargetKey(), &target); err != nil {
 		if apierrors.IsNotFound(err) {
-			return git.UnattributedClaimNone, nil
+			return git.UnattributedClaimNone, "", nil
 		}
-		return git.UnattributedClaimNone, fmt.Errorf("read GitTarget %s: %w", saveRequest.GitTargetKey(), err)
+		return git.UnattributedClaimNone, "", fmt.Errorf("read GitTarget %s: %w", saveRequest.GitTargetKey(), err)
 	}
-	decision, admission, err := authz.SaveRequestAdmitted(ctx, r.Client, saveRequest, &target)
+	uid := string(target.UID)
+	claim, err := r.claimOn(ctx, saveRequest, &target)
+	return claim, uid, err
+}
+
+// claimOn is admitSaveRequest for a GitTarget that exists.
+func (r *SaveRequestReconciler) claimOn(
+	ctx context.Context,
+	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	target *configbutleraiv1alpha3.GitTarget,
+) (git.UnattributedClaim, error) {
+	decision, admission, err := authz.SaveRequestAdmitted(ctx, r.Client, saveRequest, target)
 	if err != nil {
 		return git.UnattributedClaimNone, err
 	}

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -26,21 +25,19 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
-	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // A RemoteSaveRequest is a save made on a source cluster, next to the edits it saves
 // (docs/future/source-side-save-plan.md). The server watches them on every KubeProvider whose
 // spec.remoteSaveRequests is "Enabled", through that provider's identity, and serves each one the way
-// the SaveRequest controller serves a SaveRequest: it attaches the request to the commit window of
-// every GitTarget that mirrors the request's namespace from that cluster and admits it in
-// spec.allowedRemoteSaveRequests, polls the branch workers for the outcomes, and writes them back to
-// the request's status on the source cluster. The provider's switch makes the requests reachable;
-// the GitTarget's grant is its owner's consent to being steered by them.
+// the SaveRequest controller serves a SaveRequest: it attaches the request to its creator's commit
+// window on the GitTarget its spec.gitTargetRef names, polls the branch worker for the outcome, and
+// writes it back to the request's status on the source cluster.
 //
-// A commit window groups by author and GitTarget, not by namespace, so an admitted request saves its
-// author's whole window on that GitTarget, edits outside the request's namespace included. The
-// GitTarget's grant is what authorizes that.
+// Each party decides one thing. The request names the GitTarget; the KubeProvider it was served
+// through says which cluster it came from, and the GitTarget must mirror that one; the GitTarget's
+// spec.allowedRemoteSaveRequests admits the request's namespace and labels; and the window, which
+// groups by author and GitTarget, decides which edits are saved, wherever that GitTarget mirrors them.
 //
 // The request's author is found as the edits' authors are, from the source cluster's audit facts, so
 // a save attaches only to its creator's windows by the ordinary author rule. On a cluster that sends
@@ -48,6 +45,10 @@ import (
 // whose KubeProvider has received an audit fact, a request that names nobody means its fact went
 // missing; it is refused rather than attached, so it cannot claim the window that should stay
 // unattributed.
+//
+// A request is served again after a restart or a dropped watch. Its status then carries what the
+// first serving decided: its author, found once against the resourceVersion it was created with,
+// which its status writes have moved since; and its outcome, which the worker may no longer know.
 
 // +kubebuilder:rbac:groups=source.configbutler.ai,resources=remotesaverequests,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=source.configbutler.ai,resources=remotesaverequests/status,verbs=get;update
@@ -77,19 +78,20 @@ const (
 	defaultSaveMaxDuration   = 2 * time.Second
 )
 
-// RemoteSaveRequest reasons, on the Ready condition and each target.
+// RemoteSaveRequest reasons, on the Ready and Applied conditions.
 const (
-	saveReasonCommitted        = "Committed"
-	saveReasonNoWindow         = "NoWindow"
-	saveReasonWindowMismatch   = "WindowMismatch"
-	saveReasonAlreadyPresent   = "AlreadyPresent"
-	saveReasonFailed           = "Failed"
-	saveReasonNoGitTarget      = "NoGitTarget"
-	saveReasonNotAllowed       = "NotAllowed"
-	saveReasonAuthorUnresolved = "AuthorUnresolved"
-	saveReasonSaving           = "Saving"
-	saveReasonApplying         = "Applying"
-	saveReasonApplied          = "Applied"
+	saveReasonCommitted         = "Committed"
+	saveReasonNoWindow          = "NoWindow"
+	saveReasonWindowMismatch    = "WindowMismatch"
+	saveReasonAlreadyPresent    = "AlreadyPresent"
+	saveReasonSaveInProgress    = "SaveInProgress"
+	saveReasonFailed            = "Failed"
+	saveReasonNotAllowed        = "NotAllowed"
+	saveReasonGitTargetNotFound = "GitTargetNotFound"
+	saveReasonAuthorUnresolved  = "AuthorUnresolved"
+	saveReasonSaving            = "Saving"
+	saveReasonApplying          = "Applying"
+	saveReasonLost              = "Lost"
 )
 
 // SaveFinalizer is what serves a save once it is attached: the SaveRequest service of the event
@@ -332,29 +334,36 @@ func remoteSaveRequestFinished(request *sourcev1alpha1.RemoteSaveRequest) (time.
 }
 
 // serve takes one request from attribution to its outcome, and to its apply when it asked to catch
-// up, writing each step to its status.
+// up, writing each step to its status. A request whose Ready is already decided, served again after a
+// restart, only has its apply left to follow.
 func (s *RemoteSaveRequestServer) serve(
 	ctx context.Context, log logr.Logger, watcher *remoteSaveRequestWatcher, resource dynamic.ResourceInterface,
 	request *sourcev1alpha1.RemoteSaveRequest,
 ) {
-	log = log.WithValues("remoteSaveRequest", request.Namespace+"/"+request.Name)
+	ref := request.Spec.GitTargetRef
+	log = log.WithValues("remoteSaveRequest", request.Namespace+"/"+request.Name,
+		"gitTarget", ref.Namespace+"/"+ref.Name)
 	status := request.Status.DeepCopy()
 	write := func() {
 		if err := writeRemoteSaveRequestStatus(ctx, resource, request, status); err != nil {
 			log.Info("Cannot write the RemoteSaveRequest's status", "err", err.Error())
 		}
 	}
+	if ready := apimeta.FindStatusCondition(status.Conditions, "Ready"); ready != nil &&
+		ready.Status != metav1.ConditionUnknown {
+		if request.Spec.CatchUp == sourcev1alpha1.CatchUpAfterPush && ready.Reason == saveReasonCommitted {
+			s.followApply(ctx, request, status, remoteSaveRequestAttach(request, status.Author, ""), write)
+		}
+		return
+	}
 	if err := git.ValidateLiteralCommitMessage(request.Spec.Message); err != nil {
-		setSaveCondition(request, status, "Ready", metav1.ConditionFalse, saveReasonFailed, err.Error())
-		setSaveCondition(request, status, "Stalled", metav1.ConditionTrue, saveReasonFailed, err.Error())
+		failSave(request, status, saveReasonFailed, err.Error())
 		write()
 		return
 	}
 
-	author, attribution := s.resolveSaveAuthor(ctx, watcher.route, request)
-	status.Author = author.Username
-	if !attribution.NamesActor() && attribution != git.AttributionNotAttempted &&
-		s.sentAuditFacts(ctx, watcher.provider) {
+	author, attribution, refused := s.saveAuthor(ctx, watcher, request, status)
+	if refused {
 		setSaveCondition(request, status, "Ready", metav1.ConditionTrue, saveReasonAuthorUnresolved,
 			"no audit event of this cluster names who created this request, though the cluster sends audit "+
 				"events: its event went missing, so it saves nothing. Save again")
@@ -362,57 +371,57 @@ func (s *RemoteSaveRequestServer) serve(
 		log.Info("Refused a RemoteSaveRequest whose author no audit event names, on a cluster that sends them")
 		return
 	}
-
-	targets, mirrored, err := s.admittingTargets(ctx, watcher.provider, request)
+	status.Author = author
+	reason, message, err := s.admit(ctx, watcher, request)
 	if err != nil {
-		log.Info("Cannot find the GitTargets that admit a RemoteSaveRequest; will retry", "err", err.Error())
+		log.Info("Cannot read the RemoteSaveRequest's GitTarget; it is served again on the next listing",
+			"err", err.Error())
 		return
 	}
-	if len(targets) == 0 {
-		if mirrored {
-			message := "a GitTarget mirrors this namespace from this cluster, but none admits this request " +
-				"in spec.allowedRemoteSaveRequests"
-			setSaveCondition(request, status, "Ready", metav1.ConditionFalse, saveReasonNotAllowed, message)
-			setSaveCondition(request, status, "Stalled", metav1.ConditionTrue, saveReasonNotAllowed, message)
-			write()
-			log.Info("Refused a RemoteSaveRequest no GitTarget admits")
-			return
-		}
-		setSaveCondition(request, status, "Ready", metav1.ConditionTrue, saveReasonNoGitTarget,
-			"no GitTarget mirrors this namespace from this cluster, so there is nothing to save")
+	if reason != "" {
+		failSave(request, status, reason, message)
 		write()
+		log.Info("Refused a RemoteSaveRequest", "reason", reason)
 		return
 	}
-	status.GitTargets = make([]sourcev1alpha1.RemoteSaveRequestGitTarget, len(targets))
-	attaches := make([]git.AttachSaveRequest, len(targets))
-	for i, target := range targets {
-		status.GitTargets[i] = sourcev1alpha1.RemoteSaveRequestGitTarget{Namespace: target.Namespace, Name: target.Name}
-		attaches[i] = remoteSaveRequestAttach(request, target, author.Username, attribution)
-	}
+
+	attach := remoteSaveRequestAttach(request, author, attribution)
 	setSaveCondition(request, status, "Ready", metav1.ConditionUnknown, saveReasonSaving,
 		"waiting for the edits to reach a commit window")
 	write()
 
-	s.finalize(ctx, request, status, attaches)
+	if !s.finalize(ctx, request, status, attach) {
+		return
+	}
 	write()
-	log.Info("RemoteSaveRequest saved", "reason", apimeta.FindStatusCondition(status.Conditions, "Ready").Reason,
-		"author", status.Author)
+	log.Info("RemoteSaveRequest saved", "reason", readyReason(status), "author", status.Author)
 
 	if request.Spec.CatchUp == sourcev1alpha1.CatchUpAfterPush && readyReason(status) == saveReasonCommitted {
-		s.followApplies(ctx, request, status, attaches, write)
+		s.followApply(ctx, request, status, attach, write)
 	}
 }
 
-// resolveSaveAuthor finds the request's creator from the source cluster's audit facts, as a watched
-// edit's author is found.
-func (s *RemoteSaveRequestServer) resolveSaveAuthor(
-	ctx context.Context, route string, request *sourcev1alpha1.RemoteSaveRequest,
-) (git.UserInfo, git.AttributionOutcome) {
-	if s.Manager == nil || s.Manager.AuthorResolver == nil {
-		return git.UserInfo{}, git.AttributionNotAttempted
+// saveAuthor is the request's creator, found from the source cluster's audit facts as a watched edit's
+// author is. refused reports a request no fact names on a provider that has received audit facts.
+//
+// A request already being saved was attributed when it was first served, and its status records the
+// answer. It is not looked up again: the status writes since have moved its resourceVersion, so its
+// audit fact would no longer match, and on an audited cluster it would be refused for that.
+func (s *RemoteSaveRequestServer) saveAuthor(
+	ctx context.Context, watcher *remoteSaveRequestWatcher, request *sourcev1alpha1.RemoteSaveRequest,
+	status *sourcev1alpha1.RemoteSaveRequestStatus,
+) (string, git.AttributionOutcome, bool) {
+	if apimeta.FindStatusCondition(status.Conditions, "Ready") != nil {
+		if status.Author != "" {
+			return status.Author, git.AttributionResolved, false
+		}
+		return "", git.AttributionUnresolved, false
 	}
-	return s.Manager.AuthorResolver.ResolveAuthor(ctx, AuthorQuery{
-		AuditRoute:      route,
+	if s.Manager == nil || s.Manager.AuthorResolver == nil {
+		return "", git.AttributionNotAttempted, false
+	}
+	user, attribution := s.Manager.AuthorResolver.ResolveAuthor(ctx, AuthorQuery{
+		AuditRoute:      watcher.route,
 		GVR:             remoteSaveRequestGVR(),
 		UID:             request.UID,
 		ResourceVersion: request.ResourceVersion,
@@ -421,6 +430,9 @@ func (s *RemoteSaveRequestServer) resolveSaveAuthor(
 		Name:            request.Name,
 		ExactCapable:    true,
 	})
+	refused := !attribution.NamesActor() && attribution != git.AttributionNotAttempted &&
+		s.sentAuditFacts(ctx, watcher.provider)
+	return user.Username, attribution, refused
 }
 
 // sentAuditFacts reports whether the KubeProvider has ever received an audit fact: its
@@ -433,72 +445,62 @@ func (s *RemoteSaveRequestServer) sentAuditFacts(ctx context.Context, provider k
 	return apimeta.IsStatusConditionTrue(kp.Status.Conditions, "AuditFactsReceived")
 }
 
-// admittingTargets are the GitTargets a request saves: they name the KubeProvider, mirror the
-// request's namespace, and admit the request in spec.allowedRemoteSaveRequests. mirrored reports
-// whether any GitTarget mirrors the namespace, admitting or not.
-func (s *RemoteSaveRequestServer) admittingTargets(
-	ctx context.Context, provider k8stypes.NamespacedName, request *sourcev1alpha1.RemoteSaveRequest,
-) ([]types.ResourceReference, bool, error) {
-	var targets configv1alpha3.GitTargetList
-	if err := s.Client.List(ctx, &targets); err != nil {
-		return nil, false, err
+// admit decides whether the GitTarget the request names takes it: it exists, mirrors the cluster the
+// request was served from, and admits the request's namespace and labels in
+// spec.allowedRemoteSaveRequests. A refusal is a reason and a message; err is a read to retry. A
+// GitTarget that does not exist is waited for up to the request's attachTimeout, since it may be
+// created alongside the request.
+func (s *RemoteSaveRequestServer) admit(
+	ctx context.Context, watcher *remoteSaveRequestWatcher, request *sourcev1alpha1.RemoteSaveRequest,
+) (string, string, error) {
+	ref := request.Spec.GitTargetRef
+	key := k8stypes.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
+	deadline := time.Now().Add(remoteSaveRequestAttach(request, "", "").AttachTimeout)
+	var target configv1alpha3.GitTarget
+	for {
+		err := s.Client.Get(ctx, key, &target)
+		if err == nil && target.DeletionTimestamp == nil {
+			break
+		}
+		if err != nil && !apierrors.IsNotFound(err) {
+			return "", "", err
+		}
+		if !time.Now().Before(deadline) {
+			return saveReasonGitTargetNotFound, fmt.Sprintf("GitTarget %s does not exist", key), nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(remoteSaveRequestPoll):
+		}
 	}
-	var out []types.ResourceReference
-	mirrored := false
-	for i := range targets.Items {
-		target := &targets.Items[i]
-		if target.DeletionTimestamp != nil || target.KubeProviderKey() != provider {
-			continue
-		}
-		ref := types.NewResourceReference(target.Name, target.Namespace)
-		if !s.Manager.mirrorsNamespace(ref, request.Namespace) {
-			continue
-		}
-		mirrored = true
-		admitted, err := target.AdmitsRemoteSaveRequest(request.Namespace, request.Labels)
+	if target.KubeProviderKey() != watcher.provider {
+		return saveReasonNotAllowed, fmt.Sprintf("GitTarget %s mirrors another cluster than this one", key), nil
+	}
+	admitted, err := target.AdmitsRemoteSaveRequest(request.Namespace, request.Labels)
+	if !admitted {
+		message := fmt.Sprintf("GitTarget %s does not admit RemoteSaveRequests from namespace %q, with these "+
+			"labels, in spec.allowedRemoteSaveRequests", key, request.Namespace)
 		if err != nil {
-			s.Log.Info("A GitTarget's spec.allowedRemoteSaveRequests cannot be read; it admits nothing",
-				"gitTarget", ref.String(), "err", err.Error())
+			message += fmt.Sprintf(" (a grant's requestSelector is invalid: %v)", err)
 		}
-		if admitted {
-			out = append(out, ref)
-		}
+		return saveReasonNotAllowed, message, nil
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
-	return out, mirrored, nil
+	return "", "", nil
 }
 
-// mirrorsNamespace reports whether gitDest mirrors a namespaced type in namespace: a WatchRule
-// watches the type there, or a rule watches it across every namespace. A cluster-scoped type is in
-// no namespace, so a GitTarget that mirrors only those mirrors none.
-func (m *Manager) mirrorsNamespace(gitDest types.ResourceReference, namespace string) bool {
-	for _, wt := range m.residentWatchedTypeTable(gitDest).Types {
-		if !wt.Namespaced {
-			continue
-		}
-		_, named := wt.NamespaceScopes[namespace]
-		_, everywhere := wt.NamespaceScopes[""]
-		if named || everywhere {
-			return true
-		}
-	}
-	return false
-}
-
-// remoteSaveRequestAttach is the attach of a request to one GitTarget's window. Its identity carries the GitTarget,
-// so one request saving several GitTargets on one branch worker is several requests there.
+// remoteSaveRequestAttach is the attach of a request to its GitTarget's window.
 func remoteSaveRequestAttach(
-	request *sourcev1alpha1.RemoteSaveRequest, target types.ResourceReference, author string,
-	attribution git.AttributionOutcome,
+	request *sourcev1alpha1.RemoteSaveRequest, author string, attribution git.AttributionOutcome,
 ) git.AttachSaveRequest {
 	attach := git.AttachSaveRequest{
 		Namespace:          request.Namespace,
 		Name:               request.Name,
-		UID:                string(request.UID) + "@" + target.String(),
+		UID:                string(request.UID),
 		Author:             author,
 		Attribution:        attribution,
-		GitTargetName:      target.Name,
-		GitTargetNamespace: target.Namespace,
+		GitTargetName:      request.Spec.GitTargetRef.Name,
+		GitTargetNamespace: request.Spec.GitTargetRef.Namespace,
 		Message:            request.Spec.Message,
 		Attach:             configv1alpha3.AttachCurrentOrNext,
 		AttachTimeout:      defaultSaveAttachTimeout,
@@ -520,170 +522,119 @@ func remoteSaveRequestAttach(
 	return attach
 }
 
-// finalize polls every GitTarget's outcome until each one resolved, withdrawing those still unheld past
-// the request's bound, and records them on status.
+// finalize polls the outcome until the worker resolved the request, withdrawing it once it is past its
+// bound and still unheld, and records it on status. It reports false when ctx ended first.
 func (s *RemoteSaveRequestServer) finalize(
 	ctx context.Context, request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
-	attaches []git.AttachSaveRequest,
-) {
-	bound := time.Now().Add(attaches[0].AttachTimeout + attaches[0].MaxDuration + remoteSaveRequestPushAllowance)
-	resolved := make([]bool, len(attaches))
-	for remaining := len(attaches); remaining > 0; {
-		for i := range attaches {
-			if resolved[i] {
-				continue
-			}
-			ask := s.Finalizer.ServiceSaveRequest
-			if time.Now().After(bound) {
-				ask = s.Finalizer.WithdrawSaveRequest
-			}
-			result, done, err := ask(ctx, attaches[i])
-			if err != nil || !done {
-				continue
-			}
-			resolved[i] = true
-			remaining--
-			recordSaveOutcome(&status.GitTargets[i], result)
+	attach git.AttachSaveRequest,
+) bool {
+	bound := time.Now().Add(attach.AttachTimeout + attach.MaxDuration + remoteSaveRequestPushAllowance)
+	for {
+		ask := s.Finalizer.ServiceSaveRequest
+		if time.Now().After(bound) {
+			ask = s.Finalizer.WithdrawSaveRequest
 		}
-		if remaining == 0 {
-			break
+		if result, done, err := ask(ctx, attach); err == nil && done {
+			recordSaveOutcome(request, status, result)
+			return true
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-time.After(remoteSaveRequestPoll):
 		}
 	}
-	setSaveReady(request, status)
 }
 
-// recordSaveOutcome records one GitTarget's outcome on its target status.
-func recordSaveOutcome(target *sourcev1alpha1.RemoteSaveRequestGitTarget, result git.FinalizeResult) {
-	target.Branch = result.Branch
+// recordSaveOutcome records the worker's outcome: Ready, the branch and the commit.
+func recordSaveOutcome(
+	request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
+	result git.FinalizeResult,
+) {
+	status.Branch = result.Branch
 	if result.Err != nil {
-		target.Reason, target.Message = saveReasonFailed, result.Err.Error()
+		message := result.Err.Error()
 		if errors.Is(result.Err, git.ErrSaveRequestWithdrawn) {
-			target.Message = "the save was not served in time and was withdrawn"
+			message = "the save was not served in time and was withdrawn"
 		}
+		failSave(request, status, saveReasonFailed, message)
 		return
+	}
+	ready := func(reason, message string) {
+		setSaveCondition(request, status, "Ready", metav1.ConditionTrue, reason, message)
 	}
 	switch result.Outcome {
 	case git.FinalizeCommitted:
-		target.Reason, target.Commit = saveReasonCommitted, result.Commit
-		target.Message = "the edits were committed and pushed"
+		status.Commit = result.Commit
+		ready(saveReasonCommitted, "the edits were committed and pushed")
 	case git.FinalizeNoOpenWindow:
-		target.Reason = saveReasonNoWindow
-		target.Message = "no edit of this request's author reached a commit window before attachTimeout"
+		ready(saveReasonNoWindow, "no edit of this request's author reached a commit window before attachTimeout")
 	case git.FinalizeWindowMismatch:
-		target.Reason = saveReasonWindowMismatch
-		target.Message = "only another author's commit window was open"
+		ready(saveReasonWindowMismatch, "only another author's commit window was open")
 	case git.FinalizeAlreadyPresent:
-		target.Reason = saveReasonAlreadyPresent
-		target.Message = "the edits were in Git already"
+		ready(saveReasonAlreadyPresent, "the edits were in Git already")
+	case git.FinalizeSaveInProgress:
+		failSave(request, status, saveReasonSaveInProgress, "an earlier save of the same author on this GitTarget "+
+			"was still waiting for or collecting a commit window, which carries one message; save again once it "+
+			"resolved")
 	default:
-		target.Reason, target.Message = saveReasonFailed, "unexpected outcome: "+string(result.Outcome)
+		failSave(request, status, saveReasonFailed, "unexpected outcome: "+string(result.Outcome))
 	}
 }
 
-// setSaveReady sets Ready from the targets' outcomes: a failure in any fails the request, a commit in
-// any is Committed, and otherwise the first target's reason says why nothing was committed.
-func setSaveReady(request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus) {
-	for _, target := range status.GitTargets {
-		if target.Reason == saveReasonFailed {
-			message := gitTargetName(target) + ": " + target.Message
-			setSaveCondition(request, status, "Ready", metav1.ConditionFalse, saveReasonFailed, message)
-			setSaveCondition(request, status, "Stalled", metav1.ConditionTrue, saveReasonFailed, message)
-			return
-		}
-	}
-	for _, target := range status.GitTargets {
-		if target.Reason == saveReasonCommitted {
-			setSaveCondition(request, status, "Ready", metav1.ConditionTrue, saveReasonCommitted, target.Message)
-			return
-		}
-	}
-	first := status.GitTargets[0]
-	setSaveCondition(request, status, "Ready", metav1.ConditionTrue, first.Reason, first.Message)
-}
-
-// followApplies polls the apply each committed save asked for until every one is settled, and records
-// them; a save its worker knows nothing of for remoteSaveRequestApplyLost is lost.
-func (s *RemoteSaveRequestServer) followApplies(
-	ctx context.Context, request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
-	attaches []git.AttachSaveRequest, write func(),
+// failSave records a request that ends without saving and cannot recover: Ready=False, Stalled=True.
+func failSave(
+	request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus, reason, message string,
 ) {
-	setSaveCondition(request, status, "Applied", metav1.ConditionUnknown, saveReasonApplying,
-		"waiting for the appliers to apply the commit")
-	write()
+	setSaveCondition(request, status, "Ready", metav1.ConditionFalse, reason, message)
+	setSaveCondition(request, status, "Stalled", metav1.ConditionTrue, reason, message)
+}
+
+// followApply polls the apply the committed save asked for until it is settled, and records it on the
+// Applied condition; a save its worker knows nothing of for remoteSaveRequestApplyLost is Lost.
+func (s *RemoteSaveRequestServer) followApply(
+	ctx context.Context, request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
+	attach git.AttachSaveRequest, write func(),
+) {
+	if apimeta.FindStatusCondition(status.Conditions, "Applied") == nil {
+		setSaveCondition(request, status, "Applied", metav1.ConditionUnknown, saveReasonApplying,
+			"waiting for the applier to apply the commit")
+		write()
+	}
 	started := time.Now()
-	for s.pollApplies(ctx, status, attaches, time.Since(started) > remoteSaveRequestApplyLost) {
+	for {
+		apply, known, err := s.Finalizer.LookupSaveRequestApply(ctx, attach)
+		switch {
+		case err == nil && known && (apply.Done || apply.Applied):
+			status.AppliedRevision = apply.AppliedRevision
+			setSaveApplied(request, status, apply.Reason)
+			write()
+			return
+		case err == nil && !known && time.Since(started) > remoteSaveRequestApplyLost:
+			setSaveCondition(request, status, "Applied", metav1.ConditionUnknown, saveReasonLost,
+				"GitOps Reverser does not know how the apply went")
+			write()
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(remoteSaveRequestPoll):
 		}
 	}
-	setSaveApplied(request, status)
-	write()
 }
 
-// pollApplies asks once for the apply of every committed target not settled yet, records it, and
-// reports whether one is still pending. Once lost, a save its worker knows nothing of is lost.
-func (s *RemoteSaveRequestServer) pollApplies(
-	ctx context.Context, status *sourcev1alpha1.RemoteSaveRequestStatus, attaches []git.AttachSaveRequest, lost bool,
-) bool {
-	pending := false
-	for i := range attaches {
-		target := &status.GitTargets[i]
-		if target.Reason != saveReasonCommitted || saveApplySettled(target.Applied) {
-			continue
-		}
-		apply, known, err := s.Finalizer.LookupSaveRequestApply(ctx, attaches[i])
-		switch {
-		case err == nil && known:
-			target.Applied, target.AppliedRevision = apply.Reason, apply.AppliedRevision
-			pending = pending || !apply.Done && !apply.Applied
-		case err == nil && lost:
-			target.Applied = "Lost"
-		default:
-			pending = true
-		}
+// setSaveApplied records a settled apply: False only for a commit the branch lost, True otherwise.
+func setSaveApplied(
+	request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus, reason string,
+) {
+	if reason == git.SaveApplyCommitDropped {
+		setSaveCondition(request, status, "Applied", metav1.ConditionFalse, reason,
+			"the branch no longer holds the commit")
+		return
 	}
-	return pending
-}
-
-// saveApplySettled reports whether a target's apply reason changes no more.
-func saveApplySettled(reason string) bool {
-	switch reason {
-	case git.SaveApplyApplied, git.SaveApplyNothingToApply, git.SaveApplyNoApplier, git.SaveApplyApplierGone,
-		git.SaveApplyCommitDropped, "Lost":
-		return true
-	}
-	return false
-}
-
-// setSaveApplied sets Applied from the committed targets' applies: False only for a commit a branch
-// lost, Unknown when one was lost track of, and True otherwise.
-func setSaveApplied(request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus) {
-	reason, condition := saveReasonApplied, metav1.ConditionTrue
-	message := "every applier applied a revision that holds the commit, or needed no apply"
-	for _, target := range status.GitTargets {
-		switch target.Applied {
-		case git.SaveApplyCommitDropped:
-			setSaveCondition(request, status, "Applied", metav1.ConditionFalse, target.Applied,
-				gitTargetName(target)+": the branch no longer holds the commit")
-			return
-		case "Lost":
-			reason, condition = "Lost", metav1.ConditionUnknown
-			message = gitTargetName(target) + ": GitOps Reverser does not know how the apply went"
-		}
-	}
-	setSaveCondition(request, status, "Applied", condition, reason, message)
-}
-
-// gitTargetName is a target status's GitTarget as namespace/name, for a message.
-func gitTargetName(target sourcev1alpha1.RemoteSaveRequestGitTarget) string {
-	return target.Namespace + "/" + target.Name
+	setSaveCondition(request, status, "Applied", metav1.ConditionTrue, reason,
+		"the applier applied a revision that holds the commit, or needed no apply")
 }
 
 func readyReason(status *sourcev1alpha1.RemoteSaveRequestStatus) string {

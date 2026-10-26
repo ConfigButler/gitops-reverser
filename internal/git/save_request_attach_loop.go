@@ -218,6 +218,13 @@ func (l *branchWorkerEventLoop) handleAttachSaveRequest(req *AttachSaveRequest) 
 
 		unattributed: req.Unattributed,
 	}
+	if earlier := l.saveInProgress(pcr, req.Attach); earlier != nil {
+		l.w.recordSaveRequestOutcome(id, FinalizeResult{Branch: l.w.Branch, Outcome: FinalizeSaveInProgress})
+		l.w.Log.Info("SaveRequest refused: an earlier save of the same author on the GitTarget is in progress",
+			"request", id.Namespace+"/"+id.Name, "earlier", earlier.id.Namespace+"/"+earlier.id.Name,
+			"author", req.Author, "target", req.GitTargetNamespace+"/"+req.GitTargetName)
+		return
+	}
 	l.pendingCRs[id] = pcr
 	l.w.setSaveRequestPhase(id, PhaseWaitingForWindow)
 	l.w.Log.Info("SaveRequest registered with worker",
@@ -250,6 +257,31 @@ func (l *branchWorkerEventLoop) handleAttachSaveRequest(req *AttachSaveRequest) 
 		// consulted, which is what lets attachTimeout: 0s attach at all.
 		l.attachToOpenWindow(pcr)
 	}
+}
+
+// saveInProgress returns the earlier request a newly registered one would race for one window, or nil.
+// That is one of the same author on the same GitTarget (sameSaver) that is still waiting for a window,
+// or that is collecting the open one. A request that asks for the Next window does not race one that
+// is collecting: it closes that window under the earlier request's message first. A request already
+// waiting for its push holds no window, so it races nothing.
+func (l *branchWorkerEventLoop) saveInProgress(
+	pcr *pendingSaveRequest, attach v1alpha3.AttachPolicy,
+) *pendingSaveRequest {
+	now := time.Now()
+	for _, earlier := range l.pendingCRs {
+		if !earlier.sameSaver(pcr) {
+			continue
+		}
+		if earlier.waiting(now) {
+			return earlier
+		}
+		collecting := earlier.attached && l.openWindow != nil && l.openWindow.pendingCR != nil &&
+			*l.openWindow.pendingCR == earlier.id
+		if collecting && attach != v1alpha3.AttachNext {
+			return earlier
+		}
+	}
+	return nil
 }
 
 // serviceSaveRequests runs after every loop wake: note foreign windows, resolve waiting requests

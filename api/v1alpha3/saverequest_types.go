@@ -262,6 +262,12 @@ type SaveRequestStatus struct {
 	// +patchMergeKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
+	// GitTargetUID is the UID of the GitTarget whose spec.allowedSaveRequests
+	// admitted this request. A GitTarget with another UID, such as one created
+	// after the request under the same name, must admit it again.
+	// +optional
+	GitTargetUID string `json:"gitTargetUID,omitempty"`
+
 	// Branch is the branch the commit is made on. Set once the request ends.
 	// +optional
 	Branch string `json:"branch,omitempty"`

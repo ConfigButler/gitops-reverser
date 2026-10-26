@@ -141,11 +141,15 @@ func withInProgress(cr *configv1alpha3.SaveRequest) *configv1alpha3.SaveRequest 
 		Type: ConditionTypeReconciling, Status: metav1.ConditionTrue,
 		Reason: string(git.PhaseWaitingForWindow), Message: "in progress",
 	})
+	// Admitted when it was first seen, by the GitTarget withGitTargets gives it.
+	key := cr.GitTargetKey()
+	cr.Status.GitTargetUID = "uid-" + key.Namespace + "-" + key.Name
 	return cr
 }
 
 func newSaveRequestClient(t *testing.T, fns *interceptor.Funcs, objects ...client.Object) client.WithWatch {
 	t.Helper()
+	objects = withGitTargets(objects)
 	scheme := runtime.NewScheme()
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -157,6 +161,36 @@ func newSaveRequestClient(t *testing.T, fns *interceptor.Funcs, objects ...clien
 		builder = builder.WithInterceptorFuncs(*fns)
 	}
 	return builder.Build()
+}
+
+// withGitTargets gives each GitTarget a UID, as the API server would, and, when objects hold no
+// GitTarget at all, adds the one each SaveRequest names: a request is only attached once a GitTarget
+// admitted it. A test that passes GitTargets of its own gets only those.
+func withGitTargets(objects []client.Object) []client.Object {
+	present := map[client.ObjectKey]bool{}
+	for _, obj := range objects {
+		if target, ok := obj.(*configv1alpha3.GitTarget); ok {
+			present[client.ObjectKeyFromObject(target)] = true
+			if target.UID == "" {
+				target.UID = types.UID("uid-" + target.Namespace + "-" + target.Name)
+			}
+		}
+	}
+	if len(present) > 0 {
+		return objects
+	}
+	for _, obj := range objects {
+		request, ok := obj.(*configv1alpha3.SaveRequest)
+		if !ok || request.Spec.GitTargetRef.Name == "" || present[request.GitTargetKey()] {
+			continue
+		}
+		key := request.GitTargetKey()
+		present[key] = true
+		objects = append(objects, &configv1alpha3.GitTarget{ObjectMeta: metav1.ObjectMeta{
+			Name: key.Name, Namespace: key.Namespace, UID: types.UID("uid-" + key.Namespace + "-" + key.Name),
+		}})
+	}
+	return objects
 }
 
 func reconcileSaveRequest(t *testing.T, r *SaveRequestReconciler, name string) ctrl.Result {
@@ -1062,4 +1096,62 @@ func TestSaveRequestAttach_AGitTargetElsewhereMustAdmitTheRequest(t *testing.T) 
 			assert.True(t, apimeta.IsStatusConditionTrue(got.Status.Conditions, ConditionTypeStalled))
 		})
 	}
+}
+
+// A request whose GitTarget does not exist is not attached: it waits, and once a GitTarget by that
+// name appears it must admit the request first. Its earlier in-progress conditions grant nothing.
+func TestSaveRequestAttach_AGitTargetCreatedLaterMustAdmitTheRequest(t *testing.T) {
+	cr := newSaveRequest("save")
+	cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "later", Namespace: "platform"}
+	c := newSaveRequestClient(t, nil, cr, &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "platform"},
+	})
+	f := &fakeFinalizer{resolved: true, result: git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee"}}
+	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+	res := reconcileSaveRequest(t, r, "save")
+	assert.Empty(t, f.calls, "nothing is attached before a GitTarget admitted the request")
+	assert.Positive(t, res.RequeueAfter, "it waits for the GitTarget")
+	got := fetchSaveRequest(t, c, "save")
+	require.NotNil(t, apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady), "it reports progress")
+	assert.Empty(t, got.Status.GitTargetUID)
+
+	require.NoError(t, c.Create(context.Background(), &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "later", Namespace: "platform", UID: "uid-later"},
+		Spec:       configv1alpha3.GitTargetSpec{AllowedSaveRequests: []configv1alpha3.GitTargetSaveRequestGrant{}},
+	}))
+	reconcileSaveRequest(t, r, "save")
+
+	assert.Empty(t, f.calls, "the GitTarget that appeared admits nobody")
+	got = fetchSaveRequest(t, c, "save")
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, crReasonNotAllowed, ready.Reason)
+}
+
+// The GitTarget that admitted a request is recorded by UID, and a refusal by that same GitTarget
+// afterwards, once its grants were lowered, does not fail a request an attach may already have reached.
+func TestSaveRequestAttach_ALoweredGrantKeepsARequestItAdmitted(t *testing.T) {
+	cr := newSaveRequest("save")
+	target := &configv1alpha3.GitTarget{ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"}}
+	c := newSaveRequestClient(t, nil, cr, target)
+	f := &fakeFinalizer{}
+	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+	reconcileSaveRequest(t, r, "save")
+	require.Len(t, f.calls, 1)
+	got := fetchSaveRequest(t, c, "save")
+	assert.Equal(t, string(target.UID), got.Status.GitTargetUID)
+
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(target), target))
+	target.Spec.AllowedSaveRequests = []configv1alpha3.GitTargetSaveRequestGrant{}
+	require.NoError(t, c.Update(context.Background(), target))
+	reconcileSaveRequest(t, r, "save")
+
+	assert.Len(t, f.calls, 2, "the attach is sent again, as before the grant was lowered")
+	got = fetchSaveRequest(t, c, "save")
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.NotEqual(t, crReasonNotAllowed, ready.Reason)
 }
