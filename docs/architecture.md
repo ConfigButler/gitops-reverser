@@ -1570,6 +1570,14 @@ another URL keeps the `GitBranch`, so its replacement worker reuses the director
 has removed the clone in it. A worker never trusts a checkout it finds on disk: its first cycle repoints
 `origin`, fetches and resets.
 
+A retiring worker removes its own directory. The worker sweep, which runs every minute and after
+every `GitTarget` delete, also removes every directory that no live worker uses and no existing
+`GitBranch` names. That covers a `GitBranch` deleted while no worker ran for it, which happens across
+a restart that keeps the disk. The root is an `emptyDir` by default, so the checkouts survive a
+container restart but not a new pod. The
+[chart README](../charts/gitops-reverser/README.md#keeping-git-checkouts-across-pod-restarts) shows how to
+mount a volume there instead.
+
 [PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the
 remote diverged it smart fetches the latest tip, hard resets the local clone, replays the retained pending
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid

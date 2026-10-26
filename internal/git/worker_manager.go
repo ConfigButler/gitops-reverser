@@ -6,6 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -737,7 +740,8 @@ func (m *WorkerManager) CommitRequestOwner(namespace, name, uid string) (*Branch
 //nolint:gochecknoglobals // a test seam, like pushAtomicFn
 var afterOrphanSelection func()
 
-// ReconcileWorkers stops every worker no live GitTarget still needs.
+// ReconcileWorkers stops every worker no live GitTarget still needs, then deletes the checkouts
+// no GitBranch names (reclaimOrphanedCheckoutsLocked).
 //
 // It is the ONLY thing that removes a worker before shutdown, and it is driven from the GitTarget
 // reconcile's deleted-object path: that reconcile is what the delete watch event produces, so the
@@ -809,6 +813,50 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 		"neededWorkers", len(needed),
 		"stopped", len(orphans))
 
+	return m.reclaimOrphanedCheckoutsLocked(ctx)
+}
+
+// reclaimOrphanedCheckoutsLocked deletes every directory under the worker state root that no
+// GitBranch names: one whose GitBranch was deleted while no worker ran for it, which no retiring
+// worker was there to remove. That happens across a restart that keeps the disk, such as a
+// container restart inside its pod, and for a GitBranch deleted after its last GitTarget.
+//
+// A directory is kept while a live worker uses it or a GitBranch with its UID exists, so a
+// GitBranch whose worker has not started yet keeps its checkout for when it does. Called with
+// lifecycleMu held, so no worker starts while the directories are read: one that starts later
+// creates its directory after the sweep. It fails safe like the worker sweep: a List that errors
+// deletes nothing.
+func (m *WorkerManager) reclaimOrphanedCheckoutsLocked(ctx context.Context) error {
+	var branches configv1alpha3.GitBranchList
+	if err := m.Client.List(ctx, &branches); err != nil {
+		return fmt.Errorf("failed to list GitBranches: %w", err)
+	}
+	kept := make(map[string]bool, len(branches.Items))
+	for i := range branches.Items {
+		kept[string(branches.Items[i].UID)] = true
+	}
+	for _, worker := range m.liveWorkers() {
+		kept[worker.stateComponent()] = true
+	}
+
+	entries, err := os.ReadDir(workerStateRoot)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to read the worker state root: %w", err)
+	}
+	for _, entry := range entries {
+		if kept[entry.Name()] {
+			continue
+		}
+		path := filepath.Join(workerStateRoot, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			m.Log.Error(err, "Could not remove an orphaned checkout", "path", path)
+			continue
+		}
+		m.Log.Info("Removed an orphaned checkout: no GitBranch names it", "path", path)
+	}
 	return nil
 }
 
@@ -873,7 +921,7 @@ func (m *WorkerManager) sweepPeriodically(ctx context.Context) {
 			if err := m.ReconcileWorkers(ctx); err != nil {
 				// Failing safe: a List that errors stops nothing, so the only cost is that the
 				// sweep is late.
-				m.Log.V(1).Info("Periodic worker sweep could not read the GitTargets",
+				m.Log.V(1).Info("Periodic worker sweep could not read the cluster",
 					"error", err.Error())
 			}
 		}

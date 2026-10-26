@@ -461,6 +461,13 @@ func NewBranchWorker(
 //nolint:gochecknoglobals // a test seam, like pushAtomicFn above
 var workerStateRoot = filepath.Join("/tmp", "gitops-reverser-workers")
 
+// SetWorkerStateRoot points every worker's on-disk state at dir, for the whole process. The
+// operator never calls it. A test binary that runs a WorkerManager calls it from TestMain, before
+// any worker exists: the manager's sweep deletes every directory under the root that its own
+// GitBranches do not name, so under the shared default it would delete the checkouts of every
+// other process using that root.
+func SetWorkerStateRoot(dir string) { workerStateRoot = dir }
+
 // repoRootPath is where this worker keeps its checkout: one directory, named by the UID of the
 // GitBranch it writes for.
 //

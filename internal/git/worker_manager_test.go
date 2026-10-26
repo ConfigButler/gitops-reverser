@@ -14,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -524,11 +525,11 @@ func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
 
 	// Three directories under that root: this worker's, and those of two other GitBranches — one
 	// writing another branch of the same repository, one writing the same branch name elsewhere.
+	// Both GitBranches exist, so the sweep of orphaned checkouts keeps their directories too.
 	require.NoError(t, os.MkdirAll(worker.repoPath(), 0o750))
-	sibling := filepath.Join(root, "uid-gitops-system-repo1-release")
-	neighbour := filepath.Join(root, "uid-other-repo2-main")
+	sibling := createGitBranchCheckout(ctx, t, manager, "gitops-system", "repo1-release")
+	neighbour := createGitBranchCheckout(ctx, t, manager, "other", "repo2-main")
 	for _, dir := range []string{sibling, neighbour} {
-		require.NoError(t, os.MkdirAll(dir, 0o750))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
 	}
 
@@ -545,6 +546,73 @@ func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
 	require.NoError(t, err, "least of all the root every worker's state lives under")
 	_, stillThere := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	assert.False(t, stillThere)
+}
+
+// createGitBranchCheckout creates a GitBranch and the directory its worker would keep, and returns
+// that directory.
+func createGitBranchCheckout(ctx context.Context, t *testing.T, m *WorkerManager, namespace, name string) string {
+	t.Helper()
+	uid := k8stypes.UID("uid-" + namespace + "-" + name)
+	require.NoError(t, m.Client.Create(ctx, &configv1alpha3.GitBranch{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, UID: uid},
+	}))
+	dir := filepath.Join(workerStateRoot, string(uid))
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	return dir
+}
+
+// TestReconcileWorkers_ReclaimsCheckoutsNoGitBranchNames. A retiring worker removes its own
+// checkout, but a GitBranch deleted while no worker ran for it, across a restart that kept the
+// disk, has nobody to do that. The sweep removes every directory no GitBranch names, and keeps
+// the checkout of a GitBranch whose worker has not started yet, and that of any live worker.
+func TestReconcileWorkers_ReclaimsCheckoutsNoGitBranchNames(t *testing.T) {
+	manager, ctx := startedManager(t)
+	root := workerStateRoot
+
+	waiting := createGitBranchCheckout(ctx, t, manager, "team-a", "waiting")
+	require.NoError(t, manager.EnsureWorker(ctx, claimForTest(manager, "repo1", "team-b", "main",
+		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"})))
+	live, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "team-b", "main"))
+	require.True(t, ok)
+	require.NoError(t, os.MkdirAll(live.repoPath(), 0o750))
+	deleted := filepath.Join(root, "uid-of-a-deleted-gitbranch")
+	previousLayout := filepath.Join(root, "uid-of-a-provider", "main-0123456789abcdef")
+	for _, dir := range []string{deleted, previousLayout} {
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+	}
+
+	manager.lifecycleMu.Lock()
+	err := manager.reclaimOrphanedCheckoutsLocked(ctx)
+	manager.lifecycleMu.Unlock()
+	require.NoError(t, err)
+
+	for _, kept := range []string{waiting, live.repoPath()} {
+		_, err := os.Stat(kept)
+		require.NoError(t, err, "%s belongs to a GitBranch or a live worker", kept)
+	}
+	for _, gone := range []string{deleted, filepath.Dir(previousLayout)} {
+		_, err := os.Stat(gone)
+		assert.True(t, os.IsNotExist(err), "%s is named by no GitBranch", gone)
+	}
+}
+
+// TestReconcileWorkers_ReclaimsNothingWhenTheGitBranchesCannotBeRead. Reading "I could not list
+// the GitBranches" as "there are none" would delete every checkout the operator keeps.
+func TestReconcileWorkers_ReclaimsNothingWhenTheGitBranchesCannotBeRead(t *testing.T) {
+	root := withTemporaryWorkerStateRoot(t)
+	orphan := filepath.Join(root, "uid-of-a-deleted-gitbranch")
+	require.NoError(t, os.MkdirAll(orphan, 0o750))
+	k8sClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errors.New("the API server is unreachable")
+		},
+	}).Build()
+	manager := NewWorkerManager(k8sClient, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+
+	require.Error(t, manager.reclaimOrphanedCheckoutsLocked(context.Background()))
+
+	_, err := os.Stat(orphan)
+	require.NoError(t, err, "a failed List deletes nothing")
 }
 
 // TestWorkerLifecycle_AReplacementStartsFromAnEmptyCheckout is the same rule across a repoint.

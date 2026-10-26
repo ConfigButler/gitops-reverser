@@ -48,12 +48,21 @@ func skipIfPublicNetworkUnavailable(t *testing.T, err error) {
 
 // TestMain initializes the controller-runtime logger before running tests.
 // This prevents "log.SetLogger(...) was never called" warnings when code uses log.FromContext().
+// It also gives this binary its own worker state root (SetWorkerStateRoot).
 func TestMain(m *testing.M) {
 	// Initialize controller-runtime logger for all tests
 	logf.SetLogger(zap.New(zap.UseDevMode(true)))
 
+	root, err := os.MkdirTemp("", "gitops-reverser-workers-")
+	if err != nil {
+		panic(err)
+	}
+	SetWorkerStateRoot(root)
+
 	// Run all tests
-	os.Exit(m.Run())
+	code := m.Run()
+	_ = os.RemoveAll(root)
+	os.Exit(code)
 }
 
 func TestCheckRepo_ConnectivityAndMetadata(t *testing.T) {
