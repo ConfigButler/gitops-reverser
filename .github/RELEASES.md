@@ -32,9 +32,9 @@ git push origin main
 
 Expected outcome:
 
-1. CI runs (lint, unit tests, e2e)
-2. If tests pass → Release PR created for v0.2.0
-3. Merge PR → GitHub Release + Docker images published
+1. Release PR created or refreshed for v0.2.0 within a minute, without waiting for CI
+2. CI runs (lint, unit tests, e2e)
+3. Merge PR → once CI passes on the merge, GitHub Release + Docker images published
 
 ---
 
@@ -44,20 +44,16 @@ Expected outcome:
 
 ```text
 Push to main
-    ↓
-[CI: Build & Test + E2E]
-    ↓ (tests pass)
-[release-please analyzes commits]
-    ↓ (version bump needed)
-[Create/Update Release PR]
-    ↓ (human reviews & merges)
-[Create GitHub Release + Tag (draft)]
-    ↓
-[Retag CI-built images to semver + latest, sign, attest → publish the release]
+    ├─→ [release-please analyzes commits → Create/Update Release PR]   (release-pr.yml, at once)
+    └─→ [CI: Build & Test + E2E]                                        (release.yml)
+            ↓ (tests pass, and this push merged the Release PR)
+        [Create GitHub Release + Tag (draft)]
+            ↓
+        [Retag CI-built images to semver + latest, sign, attest → publish the release]
 ```
 
-> The next Release PR is opened/refreshed by a **second release-please pass** that runs
-> *after* a release is published, so it never sees the still-draft release. See
+> Right after a release, the next Release PR is opened by a **second release-please pass** that
+> runs *after* the release is published, so it never sees the still-draft release. See
 > [What Happens When You Push](#what-happens-when-you-push).
 
 ### What Happens When You Push
@@ -70,15 +66,20 @@ Push to main
    - Unit tests: `task test` (with the coverage ratchet)
    - E2E tests: the Ginkgo suite in a k3d cluster, plus the project image scan
 
-2. **Release handling** (if tests pass) — release-please runs as **two separate passes**:
-   - **Cut pass** (`release-please` job): if the previous Release PR was merged, cut its
-     GitHub Release (created as a *draft* — see step 4). This pass uses
-     `skip-github-pull-request`, so it does **not** open the next PR.
-   - **PR pass** (`release-please-pr` job): analyze commits since the last release, determine
-     the version bump, and create/update the next Release PR (`skip-github-release`). It runs
-     **after** the release is published, so it sees the just-published release instead of the
-     draft. Without this split, the run that cut a draft would open a PR computed against the
-     whole history and propose a bogus "release everything" version.
+2. **Release handling** — release-please runs as **separate passes**:
+   - **PR pass, at once** (`.github/workflows/release-pr.yml`): analyze commits since the last
+     release, determine the version bump, and create/update the Release PR
+     (`skip-github-release`). It does not wait for CI: it only rewrites the PR, and the release
+     itself still waits for CI on the commit that merges it. It is skipped while a draft
+     release exists, and release-please aborts it on its own while a merged Release PR is
+     not yet tagged.
+   - **Cut pass** (`release-please` job in `release.yml`, if tests pass): if the previous
+     Release PR was merged, cut its GitHub Release (created as a *draft* — see step 4). This
+     pass uses `skip-github-pull-request`, so it does **not** open the next PR.
+   - **PR pass after a release** (`release-please-pr` job in `release.yml`): open the next
+     Release PR **after** the release is published, so it sees the just-published release
+     instead of the draft. Without this split, the run that cut a draft would open a PR
+     computed against the whole history and propose a bogus "release everything" version.
 
 3. **Release PR Contents**:
    - Auto-generated CHANGELOG.md updates

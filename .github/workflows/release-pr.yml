@@ -1,0 +1,65 @@
+# Refresh the open release PR as soon as a commit lands on main, instead of after release.yml's
+# CI (about 30 minutes, longer when an earlier push's run is still queued in front of it).
+#
+# This is safe to run before the tests because it only rewrites the release PR. Nothing is
+# tagged or published here (skip-github-release). A release is still cut only by release.yml,
+# after CI has passed on the commit that merges the release PR, and that commit's tree holds
+# every change the release contains.
+#
+# It is a workflow of its own because release.yml's workflow-level concurrency group queues a
+# whole run behind the run before it: a job there would wait just as long.
+#
+# Two states in which the PR pass must not compute a PR, and what covers each:
+# - The release PR is merged but release.yml has not cut its release yet. release-please sees
+#   the merged, untagged release PR and aborts on its own ("untagged, merged release PRs
+#   outstanding").
+# - The release is cut but still a draft (release.yml attaches its assets before publishing).
+#   A draft is invisible to release-please's "latest release" lookup, so it would compute the
+#   PR against the whole history. The check below skips the pass while any draft exists;
+#   release.yml's release-please-pr job opens the next PR once publish-release has run.
+name: Release PR
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Shared with release.yml's release-please-pr job, so the two never rewrite the PR branch at
+# the same time. A newer push replaces a pending run; a running one finishes first.
+concurrency:
+  group: release-pr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please-pr:
+    name: Release Please (PR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # contents: write also makes draft releases visible to the check below; a read-only
+      # token lists only published releases.
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check for an unpublished draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          drafts=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName,isDraft \
+            --jq '[.[] | select(.isDraft) | .tagName] | join(" ")')
+          if [[ -n "$drafts" ]]; then
+            echo "::notice::Draft release(s) not yet published: $drafts. release.yml refreshes the release PR after publish-release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or refresh the release PR
+        if: steps.draft.outputs.skip != 'true'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true

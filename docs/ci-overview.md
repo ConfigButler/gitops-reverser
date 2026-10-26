@@ -16,6 +16,7 @@ so local and CI results cannot drift apart.
 | --- | --- | --- | --- | --- | --- |
 | Untrusted validation | [ci.yml](../.github/workflows/ci.yml) | `pull_request` | none | none | Full contributor validation: containers, lint, unit, e2e, image scan |
 | Trusted validation | [release.yml](../.github/workflows/release.yml) → calls `ci.yml` | `push` to `main` | `GITHUB_TOKEN` | `packages` (CI base container + release-grade image digests) | The *same* jobs, plus building the release-grade multi-arch digests (per-arch, by digest) the release tail retags. The instrumented test image stays artifact-only. |
+| Release PR | [release-pr.yml](../.github/workflows/release-pr.yml) | `push` to `main`, without waiting for CI | `GITHUB_TOKEN` | the release PR's branch and body | Refresh the open release PR at once; never tags or releases |
 | Release & publish | [release.yml](../.github/workflows/release.yml) tail jobs | after trusted validation is green | `GITHUB_TOKEN` + OIDC | packages, releases, attestations | Version (release-please), **retag** the CI-built multi-arch digests to semver + `latest` (zero rebuilds), publish chart, sign, attest |
 | Hygiene | [scorecard.yml](../.github/workflows/scorecard.yml) | weekly + `main` | none | security-events | OpenSSF Scorecard supply-chain checks |
 | Hygiene | [pr-title.yml](../.github/workflows/pr-title.yml) | `pull_request` (including `edited`) | none | none | The PR title is a Conventional Commit, since it becomes the squash-merge subject release-please classifies |
@@ -41,9 +42,16 @@ Three properties are worth calling out:
   invocation that cut the draft also opened the *next* release PR, that PR would be computed
   against the whole history and propose a bogus "release everything" version. `release.yml`
   therefore splits the action: the `release-please` job cuts the release with
-  `skip-github-pull-request`, and a separate `release-please-pr` job opens/refreshes the next
-  PR with `skip-github-release` **after** `publish-release` has made the release public and
-  visible. Same guarantee, correct changelog.
+  `skip-github-pull-request`, and a separate `release-please-pr` job opens the next PR with
+  `skip-github-release` **after** `publish-release` has made the release public and visible.
+  Same guarantee, correct changelog.
+- **The release PR is refreshed without waiting for CI.** On every other push,
+  [release-pr.yml](../.github/workflows/release-pr.yml) runs the PR pass at once, so the PR
+  lists a merged change minutes after the merge instead of after `release.yml`'s CI. This does
+  not weaken the guarantee above: the release is still cut only after CI passes on the commit
+  that merges the release PR, and that commit holds every change the release contains. The
+  pass is skipped while a draft release exists. release-please aborts on its own while a merged
+  release PR is untagged.
 
 ## How fork PRs work
 
@@ -155,6 +163,6 @@ GitHub's OIDC identity and logged in the public Rekor transparency log.
 | What gets checked (lint, unit, e2e, packaging) | [Taskfile-build.yml](../Taskfile-build.yml), [test/e2e/Taskfile-e2e.yml](../test/e2e/Taskfile-e2e.yml) — see [tasks-overview.md](tasks-overview.md) |
 | Tool versions | [.devcontainer/Dockerfile](../.devcontainer/Dockerfile) (single source for devcontainer *and* CI) |
 | Validation pipeline | [.github/workflows/ci.yml](../.github/workflows/ci.yml) |
-| Release pipeline | [.github/workflows/release.yml](../.github/workflows/release.yml) |
+| Release pipeline | [.github/workflows/release.yml](../.github/workflows/release.yml), [.github/workflows/release-pr.yml](../.github/workflows/release-pr.yml) |
 | Hygiene | [.github/workflows/scorecard.yml](../.github/workflows/scorecard.yml), [.github/dependabot.yml](../.github/dependabot.yml) |
 | Release process details | [.github/RELEASES.md](../.github/RELEASES.md) |
