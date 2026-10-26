@@ -462,7 +462,9 @@ func buildStore(
 		renderInputs:           reachedResourceFiles(kusts),
 		renderedDocuments:      renderedDocumentsOf(ovAssignments),
 		GeneratorInputs:        pathSet(scan.InputFiles),
-		generated:              generatedObjects(generated, kusts),
+		// A generator input is out of the YAML files, so the values files it may be are looked
+		// for among the render's.
+		generated: generatedObjects(generated, kusts, helmValueFileRefs(scan.RenderFiles())),
 	}
 
 	store.resolveGeneratedResources(ctx, lookup, settings.declaredNamespace)

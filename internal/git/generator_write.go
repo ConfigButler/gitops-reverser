@@ -69,6 +69,7 @@ func (wb *writeBatch) writeGenerated(
 		SourcePath: gen.GeneratedIn,
 		Kind:       desired.GetKind(),
 		Name:       desired.GetName(),
+		Namespace:  gen.Rendered.GetNamespace(),
 		Desired:    desired,
 		Governed:   true,
 	})
@@ -139,6 +140,7 @@ func (wb *writeBatch) removeGenerated(
 		SourcePath: gen.GeneratedIn,
 		Kind:       obj.GetKind(),
 		Name:       obj.GetName(),
+		Namespace:  gen.Rendered.GetNamespace(),
 		Removed:    true,
 	})
 	wb.putToKustomize = true

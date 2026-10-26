@@ -482,33 +482,32 @@ type LiteralEdit struct {
 	Remove bool
 }
 
-// EditConfigMapGeneratorLiterals applies literal edits to configMapGenerator[entryIndex], which
-// must be named entryName, preserving comments and key order. An item is edited in place, so its
-// position in the list and every other item keep their bytes. All-or-nothing like its siblings:
-// a drifted entry skips the whole call with a diagnostic.
+// GeneratorEntryID names a configMapGenerator entry by its own name and namespace fields, as
+// kustomize names what it generates: two entries may share a name in different namespaces.
+type GeneratorEntryID struct {
+	Name, Namespace string
+}
+
+// EditConfigMapGeneratorLiterals applies literal edits to the configMapGenerator entry id names,
+// preserving comments and key order. An item is edited in place, so its position in the list and
+// every other item keep their bytes. All-or-nothing like its siblings: an entry the file does not
+// hold exactly once skips the whole call with a diagnostic.
 func EditConfigMapGeneratorLiterals(
 	path string,
 	content []byte,
-	entryIndex int,
-	entryName string,
+	id GeneratorEntryID,
 	edits []LiteralEdit,
 ) (EditResult, []Diagnostic) {
-	return editGeneratorEntry(path, content, entryIndex, entryName, func(_, entry *yaml.Node) error {
-		return applyLiteralEdits(entry, edits)
+	return editGeneratorEntry(path, content, id, func(_, seq *yaml.Node, index int) error {
+		return applyLiteralEdits(seq.Content[index], edits)
 	})
 }
 
-// RemoveConfigMapGeneratorEntry drops configMapGenerator[entryIndex], which must be named
-// entryName. An emptied configMapGenerator: drops the key, as an emptied patches: does.
-func RemoveConfigMapGeneratorEntry(
-	path string,
-	content []byte,
-	entryIndex int,
-	entryName string,
-) (EditResult, []Diagnostic) {
-	return editGeneratorEntry(path, content, entryIndex, entryName, func(root, _ *yaml.Node) error {
-		seq := nodeMapGet(root, configMapGeneratorKey)
-		seq.Content = append(seq.Content[:entryIndex], seq.Content[entryIndex+1:]...)
+// RemoveConfigMapGeneratorEntry drops the configMapGenerator entry id names. An emptied
+// configMapGenerator: drops the key, as an emptied patches: does.
+func RemoveConfigMapGeneratorEntry(path string, content []byte, id GeneratorEntryID) (EditResult, []Diagnostic) {
+	return editGeneratorEntry(path, content, id, func(root, seq *yaml.Node, index int) error {
+		seq.Content = append(seq.Content[:index], seq.Content[index+1:]...)
 		if len(seq.Content) == 0 {
 			nodeMapDelete(root, configMapGeneratorKey)
 		}
@@ -518,14 +517,14 @@ func RemoveConfigMapGeneratorEntry(
 
 const configMapGeneratorKey = "configMapGenerator"
 
-// editGeneratorEntry locates configMapGenerator[entryIndex], verifies its name, runs edit on it,
-// and re-encodes the kustomization.
+// editGeneratorEntry finds the one configMapGenerator entry id names in content as it stands, runs
+// edit on it, and re-encodes the kustomization. The entry is found by identity, not by position, so
+// an earlier edit of the same file, such as a removed entry before it, cannot point it elsewhere.
 func editGeneratorEntry(
 	path string,
 	content []byte,
-	entryIndex int,
-	entryName string,
-	edit func(root, entry *yaml.Node) error,
+	id GeneratorEntryID,
+	edit func(root, seq *yaml.Node, index int) error,
 ) (EditResult, []Diagnostic) {
 	skip := func(format string, args ...interface{}) (EditResult, []Diagnostic) {
 		return EditResult{Content: content, Mode: EditSkipped},
@@ -537,17 +536,24 @@ func editGeneratorEntry(
 	}
 	target := docs[idx].body
 	seq := nodeMapGet(root, configMapGeneratorKey)
-	if seq == nil || seq.Kind != yaml.SequenceNode || entryIndex < 0 || entryIndex >= len(seq.Content) {
-		return skip("kustomization %s has no configMapGenerator entry %d", path, entryIndex)
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return skip("kustomization %s has no configMapGenerator", path)
 	}
-	entry := seq.Content[entryIndex]
-	if entry.Kind != yaml.MappingNode {
-		return skip("kustomization %s: configMapGenerator entry %d is not a mapping", path, entryIndex)
+	index := -1
+	for i, entry := range seq.Content {
+		if entry.Kind != yaml.MappingNode || scalarField(entry, "name") != id.Name ||
+			scalarField(entry, "namespace") != id.Namespace {
+			continue
+		}
+		if index >= 0 {
+			return skip("kustomization %s holds more than one configMapGenerator entry %s", path, id)
+		}
+		index = i
 	}
-	if name := nodeMapGet(entry, "name"); name == nil || name.Value != entryName {
-		return skip("kustomization %s: configMapGenerator entry %d is not named %q", path, entryIndex, entryName)
+	if index < 0 {
+		return skip("kustomization %s holds no configMapGenerator entry %s", path, id)
 	}
-	if err := edit(root, entry); err != nil {
+	if err := edit(root, seq, index); err != nil {
 		return skip("kustomization %s: %v", path, err)
 	}
 	encoded, err := encodeNode(root)
@@ -560,6 +566,22 @@ func editGeneratorEntry(
 	}
 	docs[idx].body = body
 	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
+}
+
+// String names the entry in a diagnostic, with its namespace when it has one.
+func (id GeneratorEntryID) String() string {
+	if id.Namespace == "" {
+		return fmt.Sprintf("named %q", id.Name)
+	}
+	return fmt.Sprintf("named %q in namespace %q", id.Name, id.Namespace)
+}
+
+// scalarField is the value of a mapping's scalar field, "" when it has none.
+func scalarField(mapping *yaml.Node, key string) string {
+	if v := nodeMapGet(mapping, key); v != nil && v.Kind == yaml.ScalarNode {
+		return v.Value
+	}
+	return ""
 }
 
 // applyLiteralEdits edits an entry's literals: items, creating the list for a first literal.

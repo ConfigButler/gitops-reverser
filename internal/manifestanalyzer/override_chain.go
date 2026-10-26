@@ -29,12 +29,18 @@ import (
 const reasonRenderFailed manifestedit.DiagReason = "kustomize-build-failed"
 
 // chainKey identifies a rendered document: the source file kustomize says produced
-// it, plus its kind and name. Namespace is deliberately absent — a namespace
-// transformer rewrites it, and the source document may not carry one at all.
+// it, plus its kind and name. Namespace is deliberately absent for a document — a
+// namespace transformer rewrites it, and the source document may not carry one at all.
+//
+// A generated object is the exception. Its origin is the kustomization whose generator
+// made it, and one kustomization can generate two objects of one name in different
+// namespaces (entries with their own namespace:), so namespace, as rendered, tells
+// them apart. It is empty for everything else.
 type chainKey struct {
 	originPath string
 	kind       string
 	name       string
+	namespace  string
 }
 
 // renderRoots returns the kustomization directories no other kustomization in the

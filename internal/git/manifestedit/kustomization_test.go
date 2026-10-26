@@ -365,22 +365,52 @@ func TestAppendKustomizationResource_RefusalsLeaveContentUntouched(t *testing.T)
 	}
 }
 
-// A configMapGenerator edit pins the entry by index AND name, so a drifted file is skipped rather
-// than mis-edited, exactly as an images: edit is.
-func TestConfigMapGeneratorEdits_SkipADriftedEntry(t *testing.T) {
+// A configMapGenerator edit finds its entry by name and namespace in the bytes as they stand, so an
+// entry the file does not hold, or holds twice, is skipped rather than mis-edited.
+func TestConfigMapGeneratorEdits_SkipAnEntryNotHeldOnce(t *testing.T) {
 	content := []byte("configMapGenerator:\n  - name: menu\n    literals:\n      - A=1\n")
 
-	res, _ := EditConfigMapGeneratorLiterals("kustomization.yaml", content, 0, "flags",
+	res, _ := EditConfigMapGeneratorLiterals("kustomization.yaml", content, GeneratorEntryID{Name: "flags"},
 		[]LiteralEdit{{Key: "A", Value: "2"}})
 	require.Equal(t, EditSkipped, res.Mode)
-	res, _ = RemoveConfigMapGeneratorEntry("kustomization.yaml", content, 1, "menu")
+	res, _ = RemoveConfigMapGeneratorEntry("kustomization.yaml", content,
+		GeneratorEntryID{Name: "menu", Namespace: "eu"})
+	require.Equal(t, EditSkipped, res.Mode, "the entry has no namespace")
+	twice := []byte("configMapGenerator:\n  - name: menu\n  - name: menu\n")
+	res, _ = RemoveConfigMapGeneratorEntry("kustomization.yaml", twice, GeneratorEntryID{Name: "menu"})
 	require.Equal(t, EditSkipped, res.Mode)
 
-	res, _ = EditConfigMapGeneratorLiterals("kustomization.yaml", content, 0, "menu",
+	res, _ = EditConfigMapGeneratorLiterals("kustomization.yaml", content, GeneratorEntryID{Name: "menu"},
 		[]LiteralEdit{{Key: "A", Remove: true}, {Key: "Z", Remove: true}})
 	require.Equal(t, EditPatched, res.Mode)
 	require.Equal(t, "configMapGenerator:\n  - name: menu\n", string(res.Content),
 		"an emptied literals: goes, and removing an absent key is a no-op")
+}
+
+// TestConfigMapGeneratorEdits_FollowAnEarlierEditOfTheFile: removing the first of two entries moves
+// the second up, and the edits that follow still find it; entries of one name in two namespaces are
+// told apart.
+func TestConfigMapGeneratorEdits_FollowAnEarlierEditOfTheFile(t *testing.T) {
+	content := []byte(`configMapGenerator:
+  - name: menu
+    namespace: eu
+    literals: [A=1]
+  - name: menu
+    namespace: us
+    literals: [A=1]
+  - name: flags
+    literals: [B=1]
+`)
+	res, diags := RemoveConfigMapGeneratorEntry("kustomization.yaml", content,
+		GeneratorEntryID{Name: "menu", Namespace: "eu"})
+	require.Equal(t, EditPatched, res.Mode, "%v", diags)
+	res, diags = EditConfigMapGeneratorLiterals("kustomization.yaml", res.Content, GeneratorEntryID{Name: "flags"},
+		[]LiteralEdit{{Key: "B", Value: "2"}})
+	require.Equal(t, EditPatched, res.Mode, "%v", diags)
+	res, diags = RemoveConfigMapGeneratorEntry("kustomization.yaml", res.Content,
+		GeneratorEntryID{Name: "menu", Namespace: "us"})
+	require.Equal(t, EditPatched, res.Mode, "%v", diags)
+	require.Equal(t, "configMapGenerator:\n  - name: flags\n    literals: [B=2]\n", string(res.Content))
 }
 
 // Comments in a literals: list are the author's, and an edit keeps them: an edited item keeps its
@@ -442,8 +472,12 @@ func TestEditConfigMapGeneratorLiterals_KeepsComments(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			res, diags := EditConfigMapGeneratorLiterals("kustomization.yaml", []byte(in), 0, "branding",
-				[]LiteralEdit{tc.edit})
+			res, diags := EditConfigMapGeneratorLiterals(
+				"kustomization.yaml",
+				[]byte(in),
+				GeneratorEntryID{Name: "branding"},
+				[]LiteralEdit{tc.edit},
+			)
 			require.Equal(t, EditPatched, res.Mode, "%v", diags)
 			require.Equal(t, tc.want, string(res.Content))
 		})

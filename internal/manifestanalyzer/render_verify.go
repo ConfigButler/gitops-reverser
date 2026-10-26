@@ -49,6 +49,10 @@ type WriteIntent struct {
 	SourcePath string
 	// Kind and Name identify the document within that file.
 	Kind, Name string
+	// Namespace is set only for a generated object, whose SourcePath is the kustomization that
+	// generated it: the namespace the render gives it, which tells apart two objects of one name
+	// that kustomization generates (see chainKey).
+	Namespace string
 	// Desired is the live object the document must render to. It is the whole point of
 	// the check, and it is nil only when Removed or Unchecked says there is nothing to
 	// check against.
@@ -72,7 +76,7 @@ type WriteIntent struct {
 }
 
 func (w WriteIntent) key() chainKey {
-	return chainKey{originPath: filepathToSlash(w.SourcePath), kind: w.Kind, name: w.Name}
+	return chainKey{originPath: filepathToSlash(w.SourcePath), kind: w.Kind, name: w.Name, namespace: w.Namespace}
 }
 
 // RenderRefusedError is the oracle's verdict: the bytes the flush was about to commit do
@@ -314,11 +318,15 @@ func sameObject(a, b *unstructured.Unstructured) bool {
 // renderedByKey indexes a render by the document each object came from. The key carries the
 // ORIGIN FILE, not just kind/name, so two same-named objects rendered from different source
 // files stay distinct. A generated object is keyed by the kustomization that generated it, which
-// is also the SourcePath its write intent names.
+// is also the SourcePath its write intent names, and by its namespace.
 func renderedByKey(objects []renderedObject) map[chainKey]renderedObject {
 	out := make(map[chainKey]renderedObject, len(objects))
 	for _, o := range objects {
-		out[chainKey{originPath: o.sourceKey(), kind: o.Object.GetKind(), name: o.Object.GetName()}] = o
+		key := chainKey{originPath: o.sourceKey(), kind: o.Object.GetKind(), name: o.Object.GetName()}
+		if o.OriginPath == "" {
+			key.namespace = o.Object.GetNamespace()
+		}
+		out[key] = o
 	}
 	return out
 }
