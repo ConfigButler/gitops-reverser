@@ -61,6 +61,27 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 	require.ErrorIs(t, err, errGitTargetGone)
 }
 
+// A save whose GitTarget is gone needs no apply: Applied=True with ApplierGone. Only a commit the
+// branch lost is ever Applied=False.
+func TestLookupCommitRequestApply_GitTargetGoneIsApplied(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+
+	apply, known, err := router.LookupCommitRequestApply(context.Background(), saveAttach("missing", "team-a"))
+	require.NoError(t, err)
+	require.True(t, known)
+	assert.True(t, apply.Done)
+	assert.True(t, apply.Applied, "a save whose GitTarget is gone needs no apply; it is not Applied=False")
+	assert.Equal(t, git.SaveApplyApplierGone, apply.Reason)
+}
+
 func TestGitTargetEventStreamRegistry(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()

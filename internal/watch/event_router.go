@@ -169,7 +169,7 @@ func (r *EventRouter) LookupCommitRequestApply(
 ) (git.SaveApply, bool, error) {
 	worker, _, err := r.commitRequestWorker(ctx, attach)
 	if errors.Is(err, errGitTargetGone) {
-		return git.SaveApply{Done: true, Reason: git.SaveApplyApplierGone,
+		return git.SaveApply{Done: true, Applied: true, Reason: git.SaveApplyApplierGone,
 			Message: "the GitTarget is gone, so its applier is asked for nothing"}, true, nil
 	}
 	if err != nil || worker == nil {
