@@ -52,7 +52,7 @@ func (r *SaveRequestReconciler) followApply(
 	log := logf.FromContext(ctx).WithName("SaveRequestReconciler")
 	attach := git.AttachSaveRequest{
 		Namespace: cr.Namespace, Name: cr.Name, UID: string(cr.UID),
-		GitTargetName: cr.Spec.GitTargetRef.Name, GitTargetNamespace: cr.Namespace,
+		GitTargetName: cr.GitTargetKey().Name, GitTargetNamespace: cr.GitTargetKey().Namespace,
 	}
 	apply, known, err := r.Finalizer.LookupSaveRequestApply(ctx, attach)
 	if err != nil {

@@ -38,10 +38,9 @@ import (
 // the request's status on the source cluster. The provider's switch makes the requests reachable;
 // the GitTarget's grant is its owner's consent to being steered by them.
 //
-// A request saves only the edits made in its own namespace: the worker attaches it only to a window
-// whose writes are all there, and keeps every other write out of that window once it has
-// (git.AttachSaveRequest.SourceNamespace). A window groups by author and GitTarget, not by
-// namespace, so without that a save in one namespace would commit edits made in another.
+// A commit window groups by author and GitTarget, not by namespace, so an admitted request saves its
+// author's whole window on that GitTarget, edits outside the request's namespace included. The
+// GitTarget's grant is what authorizes that.
 //
 // The request's author is found as the edits' authors are, from the source cluster's audit facts, so
 // a save attaches only to its creator's windows by the ordinary author rule. On a cluster that sends
@@ -83,7 +82,6 @@ const (
 	saveReasonCommitted        = "Committed"
 	saveReasonNoWindow         = "NoWindow"
 	saveReasonWindowMismatch   = "WindowMismatch"
-	saveReasonOutsideNamespace = "WindowOutsideNamespace"
 	saveReasonAlreadyPresent   = "AlreadyPresent"
 	saveReasonFailed           = "Failed"
 	saveReasonNoGitTarget      = "NoGitTarget"
@@ -506,7 +504,6 @@ func remoteSaveRequestAttach(
 		AttachTimeout:      defaultSaveAttachTimeout,
 		MaxDuration:        defaultSaveMaxDuration,
 		CatchUpNow:         request.Spec.CatchUp == sourcev1alpha1.CatchUpAfterPush,
-		SourceNamespace:    request.Namespace,
 	}
 	if window := request.Spec.Window; window != nil {
 		if window.AttachTimeout != nil {
@@ -580,9 +577,6 @@ func recordSaveOutcome(target *sourcev1alpha1.RemoteSaveRequestGitTarget, result
 	case git.FinalizeWindowMismatch:
 		target.Reason = saveReasonWindowMismatch
 		target.Message = "only another author's commit window was open"
-	case git.FinalizeWindowOutsideNamespace:
-		target.Reason = saveReasonOutsideNamespace
-		target.Message = "the open commit window held edits made outside this namespace, so it was left alone"
 	case git.FinalizeAlreadyPresent:
 		target.Reason = saveReasonAlreadyPresent
 		target.Message = "the edits were in Git already"

@@ -102,4 +102,29 @@ func TestGrantLists_APIServerDefaultsOmittedAndKeepsEmpty(t *testing.T) {
 		require.NotNil(t, obj.Spec.AllowedApplierClaims)
 		assert.Empty(t, obj.Spec.AllowedApplierClaims)
 	})
+
+	target := func(name string, grants []configbutleraiv1alpha3.GitTargetSaveRequestGrant) *configbutleraiv1alpha3.GitTarget {
+		gt := &configbutleraiv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name},
+			Spec:       configbutleraiv1alpha3.GitTargetSpec{Path: "apps", AllowedSaveRequests: grants},
+		}
+		gt.Spec.GitBranchRef.Name = "main"
+		gt.Spec.KubeProviderRef.Name = "local"
+		return gt
+	}
+
+	t.Run("an omitted GitTarget allowedSaveRequests reads back as the default", func(t *testing.T) {
+		obj := target("omitted", nil)
+		require.NoError(t, c.Create(ctx, obj))
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), obj))
+		assert.Equal(t, configbutleraiv1alpha3.DefaultGitTargetSaveRequestGrants(), obj.Spec.AllowedSaveRequests)
+	})
+
+	t.Run("an empty GitTarget allowedSaveRequests stays empty through an update", func(t *testing.T) {
+		obj := target("deny-all", []configbutleraiv1alpha3.GitTargetSaveRequestGrant{})
+		require.NoError(t, c.Create(ctx, obj))
+		relabel(t, obj)
+		require.NotNil(t, obj.Spec.AllowedSaveRequests, "an update must not turn [] into the default")
+		assert.Empty(t, obj.Spec.AllowedSaveRequests)
+	})
 }

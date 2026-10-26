@@ -116,7 +116,8 @@ spec:
                   mirror but none admits reports "NotAllowed". The KubeProvider must also
                   set spec.remoteSaveRequests "Enabled".
 
-                  An admitted request saves only the edits made in its own namespace.
+                  An admitted request saves its creator's whole commit window on this
+                  GitTarget, edits outside the request's namespace included.
                 items:
                   description: |-
                     GitTargetRemoteSaveRequestGrant admits the RemoteSaveRequests of some
@@ -196,6 +197,173 @@ spec:
                   - sourceNamespaces
                   type: object
                 maxItems: 16
+                type: array
+                x-kubernetes-list-type: atomic
+              allowedSaveRequests:
+                default:
+                - consumerNamespaces:
+                    from: Same
+                  unattributedWindows: Keep
+                description: |-
+                  AllowedSaveRequests says which SaveRequests may save this GitTarget's
+                  commit windows, by the namespace they are in, and how much each may
+                  claim of a window whose writes name no author:
+
+                  - Omitted: the SaveRequests in this GitTarget's namespace, as one grant
+                    with from: "Same" that claims nothing.
+                  - Empty list ([]): no SaveRequest.
+                  - A list of grants: the SaveRequests that at least one grant allows.
+
+                  A list replaces the default: the SaveRequests in this namespace keep
+                  access only if at least one grant allows them. A request no grant allows
+                  fails with reason "NotAllowed".
+                items:
+                  description: |-
+                    GitTargetSaveRequestGrant admits the SaveRequests of some namespaces to save
+                    a GitTarget's commit windows, and bounds what they may claim of a window
+                    whose writes name no author.
+                  properties:
+                    consumerNamespaces:
+                      description: |-
+                        ConsumerNamespaces are the namespaces whose SaveRequests this grant
+                        admits. from: "Same" is this GitTarget's namespace.
+                      properties:
+                        from:
+                          description: |-
+                            From selects which namespaces this grant allows consumers from:
+
+                            - "Same": the namespace of the object that holds the grant.
+                            - "Names": the namespaces listed in names.
+                            - "Selector": the namespaces whose labels match selector.
+                            - "All": every namespace.
+                          enum:
+                          - Same
+                          - Names
+                          - Selector
+                          - All
+                          type: string
+                        names:
+                          description: 'Names are the namespaces allowed with from:
+                            "Names", by exact name.'
+                          items:
+                            description: |-
+                              GrantNamespace is a namespace a grant admits, by exact name. A variable and
+                              "*" are refused.
+                            maxLength: 63
+                            type: string
+                            x-kubernetes-validations:
+                            - message: 'names: a variable is refused, because names
+                                are matched against the consumer''s namespace and
+                                ''{consumer.namespace}'' would admit every consumer;
+                                use from: All to admit every namespace, or from: Same
+                                for the namespace of the object holding the grant'
+                              rule: self != '{consumer.namespace}' && self != '{consumer.name}'
+                            - message: 'names: ''*'' is refused; use from: All to
+                                admit every namespace'
+                              rule: self != '*'
+                            - message: names holds namespace names (DNS labels)
+                              rule: self == '{consumer.namespace}' || self == '{consumer.name}'
+                                || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                          maxItems: 64
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        selector:
+                          description: |-
+                            Selector matches the labels of the namespaces allowed with from:
+                            "Selector". It must not be empty: to allow every namespace, use from:
+                            "All".
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                      required:
+                      - from
+                      type: object
+                      x-kubernetes-validations:
+                      - message: 'from: Names needs names'
+                        rule: self.from != 'Names' || has(self.names)
+                      - message: 'names goes only with from: Names'
+                        rule: '!has(self.names) || self.from == ''Names'''
+                      - message: 'from: Selector needs a selector; to admit every
+                          namespace, use from: All'
+                        rule: self.from != 'Selector' || has(self.selector)
+                      - message: 'selector goes only with from: Selector'
+                        rule: '!has(self.selector) || self.from == ''Selector'''
+                      - message: 'selector: {} is refused; to admit every namespace,
+                          use from: All'
+                        rule: '!has(self.selector) || (has(self.selector.matchLabels)
+                          && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
+                          && size(self.selector.matchExpressions) > 0)'
+                    unattributedWindows:
+                      default: Keep
+                      description: |-
+                        UnattributedWindows says how much an admitted SaveRequest may claim of a
+                        commit window whose writes name no author, when it asks in
+                        spec.window.author. It acts only while the GitTarget's KubeProvider has
+                        never received an audit fact; on a cluster that has, a write naming no
+                        author is never claimed. Defaults to "Keep".
+
+                        - "Keep": a request attaches only to its creator's own window.
+                        - "SavedBy": a request may give such a window its message. The commit
+                          names no author, and its message ends with a Saved-By line naming the
+                          request's creator.
+                        - "TakeOver": a request may also take such a window over. Its creator
+                          authors the commit, and the message ends with an Author-Source line.
+
+                        Every write that names no author shares one window, whoever made it, so
+                        a takeover names the creator as the author of all of them. Allow it only
+                        where one person edits the mirrored namespaces at a time. A request
+                        admitted by several grants may claim the most any of them allows.
+                      enum:
+                      - Keep
+                      - SavedBy
+                      - TakeOver
+                      type: string
+                  required:
+                  - consumerNamespaces
+                  type: object
+                maxItems: 64
                 type: array
                 x-kubernetes-list-type: atomic
               applierClaimRef:
@@ -282,31 +450,6 @@ spec:
                           one that fails at commit time commits the message as written.
                         type: string
                     type: object
-                  unattributedWindows:
-                    default: Keep
-                    description: |-
-                      UnattributedWindows says how much a SaveRequest on this GitTarget may
-                      claim of a commit window whose writes name no author. It acts only while
-                      the GitTarget's KubeProvider has never received an audit fact; on a
-                      cluster that has, a write naming no author is never claimed. Defaults to
-                      "Keep".
-
-                      - "Keep": a request attaches only to its creator's own window.
-                      - "SavedBy": a request that asks may give such a window its message. The
-                        commit names no author, and its message ends with a Saved-By line
-                        naming the request's creator.
-                      - "TakeOver": a request that asks may also take such a window over. Its
-                        creator authors the commit, and the message ends with an Author-Source
-                        line.
-
-                      Every write that names no author shares one window, whoever made it, so
-                      a takeover names the creator as the author of all of them. Allow it only
-                      where one person edits the mirrored namespaces at a time.
-                    enum:
-                    - Keep
-                    - SavedBy
-                    - TakeOver
-                    type: string
                   window:
                     description: |-
                       Window sets when this GitTarget's commit windows close. A window opens on an

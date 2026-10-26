@@ -198,7 +198,7 @@ var _ = Describe("Duration fields", func() {
 		omitted := &configbutleraiv1alpha3.SaveRequest{
 			ObjectMeta: metav1.ObjectMeta{Name: "window-omitted", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.SaveRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "any-target"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, omitted)).To(Succeed())
@@ -215,7 +215,7 @@ var _ = Describe("Duration fields", func() {
 		zero := &configbutleraiv1alpha3.SaveRequest{
 			ObjectMeta: metav1.ObjectMeta{Name: "window-zeros", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.SaveRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "any-target"},
 				Window: &configbutleraiv1alpha3.SaveRequestWindow{
 					AttachTimeout: &metav1.Duration{},
 					IdleTimeout:   &metav1.Duration{},
@@ -309,7 +309,7 @@ var _ = Describe("Duration fields", func() {
 			request := &configbutleraiv1alpha3.SaveRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 				Spec: configbutleraiv1alpha3.SaveRequestSpec{
-					GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
+					GitTargetRef: meta.NamespacedObjectReference{Name: "any-target"},
 					Message:      "save",
 					Window: &configbutleraiv1alpha3.SaveRequestWindow{
 						MaxDuration: &metav1.Duration{Duration: time.Minute},

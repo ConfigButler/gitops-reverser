@@ -219,6 +219,72 @@ type KubeProviderApplierClaimGrant struct {
 	ApplierNamespaces []ScopeNamespace `json:"applierNamespaces"`
 }
 
+// GitTargetSaveRequestGrant admits the SaveRequests of some namespaces to save
+// a GitTarget's commit windows, and bounds what they may claim of a window
+// whose writes name no author.
+type GitTargetSaveRequestGrant struct {
+	// ConsumerNamespaces are the namespaces whose SaveRequests this grant
+	// admits. from: "Same" is this GitTarget's namespace.
+	// +required
+	ConsumerNamespaces ConsumerNamespaces `json:"consumerNamespaces"`
+
+	// UnattributedWindows says how much an admitted SaveRequest may claim of a
+	// commit window whose writes name no author, when it asks in
+	// spec.window.author. It acts only while the GitTarget's KubeProvider has
+	// never received an audit fact; on a cluster that has, a write naming no
+	// author is never claimed. Defaults to "Keep".
+	//
+	// - "Keep": a request attaches only to its creator's own window.
+	// - "SavedBy": a request may give such a window its message. The commit
+	//   names no author, and its message ends with a Saved-By line naming the
+	//   request's creator.
+	// - "TakeOver": a request may also take such a window over. Its creator
+	//   authors the commit, and the message ends with an Author-Source line.
+	//
+	// Every write that names no author shares one window, whoever made it, so
+	// a takeover names the creator as the author of all of them. Allow it only
+	// where one person edits the mirrored namespaces at a time. A request
+	// admitted by several grants may claim the most any of them allows.
+	// +optional
+	// +kubebuilder:validation:Enum=Keep;SavedBy;TakeOver
+	// +kubebuilder:default=Keep
+	UnattributedWindows UnattributedWindowPolicy `json:"unattributedWindows,omitempty"`
+}
+
+// SaveRequestAdmission is what a GitTarget's allowedSaveRequests give a
+// SaveRequest.
+// +kubebuilder:object:generate=false
+type SaveRequestAdmission struct {
+	// Admitted reports whether some grant admits the request's namespace.
+	Admitted bool
+	// UnattributedWindows is the most the admitting grants allow the request to
+	// claim of a window whose writes name no author.
+	UnattributedWindows UnattributedWindowPolicy
+}
+
+// AdmitsSaveRequest reports what spec.allowedSaveRequests gives a SaveRequest in namespace, by the
+// labels that namespace carries in the control cluster.
+func (t *GitTarget) AdmitsSaveRequest(namespace string, nsLabels map[string]string) (SaveRequestAdmission, error) {
+	grants := t.saveRequestGrants()
+	admitting, err := admitAll(consumersOf(grants), t.Namespace, namespace, nsLabels)
+	if err != nil || len(admitting) == 0 {
+		return SaveRequestAdmission{}, err
+	}
+	out := SaveRequestAdmission{Admitted: true, UnattributedWindows: UnattributedWindowsKeep}
+	for _, i := range admitting {
+		policy := grants[i].UnattributedWindows
+		if policy != "" && !out.UnattributedWindows.Allows(WindowAuthor(policy)) {
+			out.UnattributedWindows = policy
+		}
+	}
+	return out, nil
+}
+
+// DescribeAllowedSaveRequests names the namespaces spec.allowedSaveRequests admits.
+func (t *GitTarget) DescribeAllowedSaveRequests() string {
+	return describeAdmitted(consumersOf(t.saveRequestGrants()), t.Namespace)
+}
+
 // SourceNamespace is a namespace of a source cluster, by exact name, or "*"
 // for every namespace.
 // +kubebuilder:validation:MaxLength=63
@@ -273,7 +339,7 @@ func (t *GitTarget) AdmitsRemoteSaveRequest(namespace string, requestLabels map[
 	return false, errors.Join(errs...)
 }
 
-// The API server defaults an omitted grant list on GitBranch and KubeProvider (the
+// The API server defaults an omitted grant list on GitBranch, KubeProvider and GitTarget (the
 // +kubebuilder:default markers on their fields), so a list read from it is never nil. These mirror
 // those markers for an object that did not come from the API server, such as one built in memory or
 // read through a fake client: nil is the default, and only a non-nil empty list admits nobody.
@@ -303,6 +369,15 @@ func DefaultKubeProviderApplierClaimGrants() []KubeProviderApplierClaimGrant {
 	}}
 }
 
+// DefaultGitTargetSaveRequestGrants is GitTarget.spec.allowedSaveRequests when it is omitted:
+// SaveRequests in the GitTarget's own namespace, claiming nothing of an unattributed window.
+func DefaultGitTargetSaveRequestGrants() []GitTargetSaveRequestGrant {
+	return []GitTargetSaveRequestGrant{{
+		ConsumerNamespaces:  ConsumerNamespaces{From: GrantFromSame},
+		UnattributedWindows: UnattributedWindowsKeep,
+	}}
+}
+
 // orDefault is grants, or def when grants is nil (omitted rather than empty).
 func orDefault[G any](grants []G, def func() []G) []G {
 	if grants == nil {
@@ -325,6 +400,14 @@ func (p *KubeProvider) gitTargetGrants() []KubeProviderGitTargetGrant {
 func (p *KubeProvider) applierClaimGrants() []KubeProviderApplierClaimGrant {
 	return orDefault(p.Spec.AllowedApplierClaims, DefaultKubeProviderApplierClaimGrants)
 }
+
+// saveRequestGrants is spec.allowedSaveRequests as the API server serves it.
+func (t *GitTarget) saveRequestGrants() []GitTargetSaveRequestGrant {
+	return orDefault(t.Spec.AllowedSaveRequests, DefaultGitTargetSaveRequestGrants)
+}
+
+// consumers is the admitting half of a GitTargetSaveRequestGrant.
+func (g *GitTargetSaveRequestGrant) consumers() ConsumerNamespaces { return g.ConsumerNamespaces }
 
 // consumers is the admitting half of a GitProviderGitBranchGrant.
 func (g *GitProviderGitBranchGrant) consumers() ConsumerNamespaces { return g.ConsumerNamespaces }

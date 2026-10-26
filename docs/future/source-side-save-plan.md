@@ -12,13 +12,15 @@ put its author's name on the commit.
 Status: implemented on `feat/gitops-api-asks-converge-root-ca`. The two request kinds are a pair:
 `SaveRequest` (`configbutler.ai/v1alpha3`, formerly `CommitRequest`) on the control cluster, and
 `RemoteSaveRequest` (`source.configbutler.ai/v1alpha1`, `internal/watch/remote_save_requests.go`) on
-the source cluster. A KubeProvider serves its cluster's requests with `spec.remoteSaveRequests:
-Enabled`, and each GitTarget admits them in `spec.allowedRemoteSaveRequests` (none by default). A
-`RemoteSaveRequest` saves only the edits made in its own namespace. The takeover is opt-in, as
-described below: the GitTarget's `spec.commit.unattributedWindows` and the `SaveRequest`'s
-`spec.window.author`, each `SavedBy` or `TakeOver`. The open questions are answered as proposed: its
-own group, a default `attachTimeout` of `5s`, the reason `AuthorUnresolved`, and no extra queue for a
-second save on a GitTarget beyond the worker's own (a window carries one request at a time).
+the source cluster. Each `GitTarget` admits them in a grant list: `spec.allowedSaveRequests` (by
+control-cluster namespace; omitted, its own namespace) and `spec.allowedRemoteSaveRequests` (by source
+namespace and labels; omitted, none). A KubeProvider also serves its cluster's remote requests only
+with `spec.remoteSaveRequests: Enabled`. The takeover is opt-in, as described below, with one change:
+the `GitTarget`'s bound moved from `spec.commit.unattributedWindows` into each `allowedSaveRequests`
+grant, so a request from another namespace claims only what its own grant allows. The open questions
+are answered as proposed: its own group, a default `attachTimeout` of `5s`, the reason
+`AuthorUnresolved`, and no extra queue for a second save on a GitTarget beyond the worker's own (a
+window carries one request at a time).
 
 This revision takes in gitops-api's review of the first draft, and a later API review of the
 implementation: see [After the API review](#after-the-api-review).
@@ -282,14 +284,15 @@ ways forward before the branch merges:
 
 ## After the API review
 
-A review of the implementation found three things, all changed:
+A review of the implementation found three things:
 
-1. **A save was not confined to its namespace.** A window groups by GitTarget and author, not by
-   namespace, so a save from `shop` could commit the same author's edits in `billing`, or, with no
-   audit, anyone's. A `RemoteSaveRequest` now attaches only to a window whose writes are all in its
-   namespace, and once attached, a write anywhere else opens a window of its own. A window that
-   already holds writes from elsewhere is left alone: `WindowOutsideNamespace`. Grouping every window
-   by namespace stays rejected; the confinement applies only to the window a remote save holds.
+1. **A remote save is not confined to its namespace.** A window groups by GitTarget and author, not by
+   namespace, so a save from `shop` commits the same author's edits in `billing` too, or, with no
+   audit, anyone's. The review offered two answers: confine the save, or let the GitTarget's grant
+   authorize the whole window. The grant is the answer: an admitted `RemoteSaveRequest` saves its
+   creator's whole window on that GitTarget, and the docs say so. Confining it was built and taken out
+   again: a namespace-shaped exception to windows that are not namespace-shaped, with an outcome of its
+   own (`WindowOutsideNamespace`) that the person saving could do nothing about.
 2. **A cluster-scoped watch matched every namespace.** A collection with no namespace is either
    cluster-scoped or every namespace, and the match did not tell them apart. It now reads the
    GitTarget's watched types and counts only namespaced ones.
@@ -301,6 +304,6 @@ A review of the implementation found three things, all changed:
    requests and prove nothing about who made them.
 
 The status list became `status.gitTargets`, keyed by `namespace` and `name`, and the names became the
-`SaveRequest`/`RemoteSaveRequest` pair. A `SaveRequest` on the control cluster gets no grant list: its
-`spec.gitTargetRef` is a local reference, so the namespace's RBAC already decides who may save, and
-`spec.commit.unattributedWindows` bounds what it may claim.
+`SaveRequest`/`RemoteSaveRequest` pair. A `SaveRequest` then gained a cross-namespace
+`spec.gitTargetRef`, and with it `GitTarget.spec.allowedSaveRequests`: a grant list like the others,
+defaulting to one `from: Same` grant, whose grants also carry the `unattributedWindows` bound.

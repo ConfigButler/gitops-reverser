@@ -1781,7 +1781,8 @@ immediately. That is not a failure:
    when the author state and GitTarget match, first come first served, and replaces the window's timers
    with the request's own, so time spent waiting never shortens the collection. A request that names its
    submitter may also claim a window on its `GitTarget` whose writes name no author, when it asks
-   (`spec.window.author`), the `GitTarget` allows it (`spec.commit.unattributedWindows`), and the
+   (`spec.window.author`), the grant admitting it allows it (`unattributedWindows` in the `GitTarget`'s
+   `spec.allowedSaveRequests`), and the
    `GitTarget`'s `KubeProvider` has never received an audit fact (`AuditFactsReceived` is not `True`).
    With `SavedBy` the window takes the request's message, the commit names no author, and the message
    ends with a `Saved-By` trailer; with `TakeOver` the submitter authors the commit, and the message ends

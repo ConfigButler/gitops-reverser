@@ -60,7 +60,7 @@ func TestSaveRequestMetric_TwoTargetsAreDistinguishable(t *testing.T) {
 
 	for _, target := range []string{"team-a-config", "team-b-config"} {
 		cr := newSaveRequest("save-" + target)
-		cr.Spec.GitTargetRef = meta.LocalObjectReference{Name: target}
+		cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target}
 		c := newSaveRequestClient(t, nil, cr)
 		f := &fakeFinalizer{
 			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
@@ -108,7 +108,7 @@ func TestSaveRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
 	require.NoError(t, err)
 
 	cr := newSaveRequest("save-bogus")
-	cr.Spec.GitTargetRef = meta.LocalObjectReference{Name: "no-such-target"}
+	cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "no-such-target"}
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
 	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(cr.Spec).resolveTimeout()))
 	c := newSaveRequestClient(t, nil, cr)
@@ -296,7 +296,7 @@ func TestSaveRequestMetric_PrunedGitTargetRefCountsFailed(t *testing.T) {
 	pruned := &configv1alpha3.SaveRequest{
 		ObjectMeta: metav1.ObjectMeta{Name: "save-pruned", Namespace: "default", UID: types.UID("uid-save-pruned")},
 		Spec: configv1alpha3.SaveRequestSpec{
-			GitTargetRef: meta.LocalObjectReference{Name: ""},
+			GitTargetRef: meta.NamespacedObjectReference{Name: ""},
 			Message:      "save: pruned",
 		},
 	}
@@ -361,10 +361,10 @@ func TestSaveRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 		},
 	}
 	fresh := newSaveRequest("save-fresh")
-	fresh.Spec.GitTargetRef = meta.LocalObjectReference{Name: target.Name}
+	fresh.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target.Name}
 	fresh.CreationTimestamp = metav1.Now()
 	stale := newSaveRequest("save-stale")
-	stale.Spec.GitTargetRef = meta.LocalObjectReference{Name: target.Name}
+	stale.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target.Name}
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
 	stale.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(stale.Spec).resolveTimeout()))
 	c := newSaveRequestClient(t, nil, fresh, stale, target, gitBranchOn("team-a-provider", "default", "main"))

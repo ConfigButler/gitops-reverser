@@ -12,6 +12,7 @@ import (
 	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -108,7 +109,7 @@ func newSaveRequest(name string) *configv1alpha3.SaveRequest {
 			CreationTimestamp: metav1.Now(),
 		},
 		Spec: configv1alpha3.SaveRequestSpec{
-			GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
+			GitTargetRef: meta.NamespacedObjectReference{Name: "team-a-config"},
 			Message:      "save: " + name,
 		},
 	}
@@ -147,6 +148,7 @@ func newSaveRequestClient(t *testing.T, fns *interceptor.Funcs, objects ...clien
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 	builder := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).
@@ -813,7 +815,7 @@ func TestSaveRequestReconciler_PrunedGitTargetRefIsTerminal(t *testing.T) {
 			UID:       "cr-uid",
 		},
 		Spec: configv1alpha3.SaveRequestSpec{
-			GitTargetRef: meta.LocalObjectReference{Name: ""},
+			GitTargetRef: meta.NamespacedObjectReference{Name: ""},
 		},
 	}
 
@@ -884,13 +886,19 @@ func TestSaveRequestReconciler_LiteralValidation(t *testing.T) {
 // asks for more than its GitTarget allows fails at once, before anything is attached.
 func TestSaveRequestAttach_ClaimsUnattributedWindowsOnlyWhenAskedAllowedAndUnaudited(t *testing.T) {
 	target := func(policy configv1alpha3.UnattributedWindowPolicy) *configv1alpha3.GitTarget {
-		return &configv1alpha3.GitTarget{
+		gt := &configv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
 			Spec: configv1alpha3.GitTargetSpec{
 				KubeProviderRef: meta.NamespacedObjectReference{Name: "workspace", Namespace: "providers"},
-				Commit:          &configv1alpha3.GitTargetCommitSpec{UnattributedWindows: policy},
 			},
 		}
+		if policy != "" {
+			gt.Spec.AllowedSaveRequests = []configv1alpha3.GitTargetSaveRequestGrant{{
+				ConsumerNamespaces:  configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromSame},
+				UnattributedWindows: policy,
+			}}
+		}
+		return gt
 	}
 	provider := func(facts metav1.ConditionStatus) *configv1alpha3.KubeProvider {
 		p := &configv1alpha3.KubeProvider{ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: "providers"}}
@@ -995,6 +1003,63 @@ func TestSaveRequestAttach_ClaimsUnattributedWindowsOnlyWhenAskedAllowedAndUnaud
 			}
 			require.NotEmpty(t, f.calls, "the request must be attached")
 			assert.Equal(t, tc.want, f.calls[0].Unattributed)
+		})
+	}
+}
+
+// A SaveRequest may name a GitTarget in another namespace, which saves for it only when a grant in its
+// spec.allowedSaveRequests admits the request's namespace. Omitted, the list admits the GitTarget's own
+// namespace alone; a refused request fails at once, before anything is attached.
+func TestSaveRequestAttach_AGitTargetElsewhereMustAdmitTheRequest(t *testing.T) {
+	platformTarget := func(grants []configv1alpha3.GitTargetSaveRequestGrant) *configv1alpha3.GitTarget {
+		return &configv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "platform"},
+			Spec:       configv1alpha3.GitTargetSpec{AllowedSaveRequests: grants},
+		}
+	}
+	fromNames := func(names ...configv1alpha3.GrantNamespace) []configv1alpha3.GitTargetSaveRequestGrant {
+		return []configv1alpha3.GitTargetSaveRequestGrant{{
+			ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromNames, Names: names},
+		}}
+	}
+	cases := []struct {
+		name     string
+		grants   []configv1alpha3.GitTargetSaveRequestGrant
+		admitted bool
+	}{
+		{"the default admits only the GitTarget's own namespace", nil, false},
+		{"a grant for another namespace", fromNames("team-b"), false},
+		{"a grant for the request's namespace", fromNames("default"), true},
+		{"every namespace", []configv1alpha3.GitTargetSaveRequestGrant{{
+			ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromAll},
+		}}, true},
+		{"an empty list admits nobody", []configv1alpha3.GitTargetSaveRequestGrant{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := newSaveRequest("save")
+			cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "shared", Namespace: "platform"}
+			c := newSaveRequestClient(t, nil, cr, platformTarget(tc.grants))
+			f := &fakeFinalizer{}
+			r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+			reconcileSaveRequest(t, r, "save")
+
+			if tc.admitted {
+				require.NotEmpty(t, f.calls, "the request must be attached")
+				assert.Equal(t, "platform", f.calls[0].GitTargetNamespace)
+				assert.Equal(t, "shared", f.calls[0].GitTargetName)
+				return
+			}
+			assert.Empty(t, f.calls, "a refused request is never attached")
+			var got configv1alpha3.SaveRequest
+			require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "save"}, &got))
+			ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+			require.NotNil(t, ready)
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			assert.Equal(t, crReasonNotAllowed, ready.Reason)
+			assert.Contains(t, ready.Message, "spec.allowedSaveRequests")
+			assert.True(t, apimeta.IsStatusConditionTrue(got.Status.Conditions, ConditionTypeStalled))
 		})
 	}
 }

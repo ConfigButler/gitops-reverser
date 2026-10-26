@@ -35,15 +35,15 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          RemoteSaveRequest asks GitOps Reverser to save the edits made in its
-          namespace: the commit window of each GitTarget that mirrors this namespace
-          and admits the request, in spec.allowedRemoteSaveRequests, gets its message
-          and closes on its timers. Edits made elsewhere are never part of its save.
-          Create it on the cluster the edits were made on, as JSON. Its creator is
-          found from this cluster's audit events, as the edits' authors are, so it
-          saves only its creator's edits; on a cluster with no audit it names
-          nobody, and saves edits that name nobody. Its spec is immutable, and
-          status reports each GitTarget's commit.
+          RemoteSaveRequest asks GitOps Reverser to save its creator's edits: the
+          commit window of each GitTarget that mirrors this namespace and admits the
+          request, in spec.allowedRemoteSaveRequests, gets its message and closes on
+          its timers. The window holds the creator's edits anywhere that GitTarget
+          mirrors, not only in this namespace. Create it on the cluster the edits
+          were made on, as JSON. Its creator is found from this cluster's audit
+          events, as the edits' authors are, so it saves only its creator's edits; on
+          a cluster with no audit it names nobody, and saves edits that name nobody.
+          Its spec is immutable, and status reports each GitTarget's commit.
         properties:
           apiVersion:
             description: |-
@@ -172,9 +172,9 @@ spec:
                   Ready is True once the request ended without error in every GitTarget,
                   with reason "Committed" when one of them committed, and otherwise the
                   reason of the first: "NoWindow", "AlreadyPresent", "WindowMismatch",
-                  "WindowOutsideNamespace", "NoGitTarget" when no GitTarget mirrors this
-                  namespace, or "AuthorUnresolved" when this cluster sends audit events
-                  and none named the request's creator. Ready=False with Stalled=True is a
+                  "NoGitTarget" when no GitTarget mirrors this namespace, or
+                  "AuthorUnresolved" when this cluster sends audit events and none named
+                  the request's creator. Ready=False with Stalled=True is a
                   failure, with reason "NotAllowed" when GitTargets mirror this namespace
                   and none admits the request.
 
@@ -275,9 +275,8 @@ spec:
                     reason:
                       description: |-
                         Reason is how the save ended in this GitTarget, as the Ready reasons
-                        above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch",
-                        "WindowOutsideNamespace" when the open window held edits made outside
-                        this namespace, or "Failed". Empty while it runs.
+                        above: "Committed", "NoWindow", "AlreadyPresent", "WindowMismatch", or
+                        "Failed". Empty while it runs.
                       type: string
                   required:
                   - name

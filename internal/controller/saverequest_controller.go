@@ -19,6 +19,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
@@ -230,13 +231,9 @@ func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// decision is final — there is no wait and no requeue for the author.
 	author, attribution := r.attributeAuthor(ctx, saveRequest)
 
-	// Refused only at first sight, before any attach was sent: a GitTarget's policy lowered later
-	// does not fail a request the worker may already hold, which keeps what it was first sent.
-	claim, claimErr := r.unattributedClaim(ctx, saveRequest)
-	if claimErr != nil && findCondition(saveRequest.Status.Conditions, ConditionTypeReady) == nil {
-		r.writeTerminalStatus(ctx, log, saveRequest, git.FinalizeResult{}, claimErr, attribution,
-			resolvedSaveRequestTarget(saveRequest))
-		return ctrl.Result{}, nil
+	claim, refused, err := r.admitAtFirstSight(ctx, log, saveRequest, attribution)
+	if err != nil || refused {
+		return ctrl.Result{}, err
 	}
 
 	if err := r.stampFirstSightConditions(ctx, saveRequest, attribution); err != nil {
@@ -264,8 +261,8 @@ func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		UID:                string(saveRequest.UID),
 		Author:             author.Author,
 		Attribution:        attribution.gitOutcome(),
-		GitTargetName:      saveRequest.Spec.GitTargetRef.Name,
-		GitTargetNamespace: saveRequest.Namespace,
+		GitTargetName:      saveRequest.GitTargetKey().Name,
+		GitTargetNamespace: saveRequest.GitTargetKey().Namespace,
 		Message:            saveRequest.Spec.Message,
 		Attach:             window.attach,
 		AttachTimeout:      window.attachTimeout,
@@ -283,22 +280,69 @@ func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return r.attachSaveRequest(ctx, log, req, saveRequest, attribution, attach)
 }
 
+// admitAtFirstSight runs admitSaveRequest, and fails a request it refuses, but only at first sight,
+// before any attach was sent: a GitTarget's grants lowered later do not fail a request the worker
+// may already hold, which keeps what it was first sent. refused reports a request now failed; err is
+// a read to retry.
+func (r *SaveRequestReconciler) admitAtFirstSight(
+	ctx context.Context,
+	log logr.Logger,
+	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	attribution saveRequestAttribution,
+) (git.UnattributedClaim, bool, error) {
+	claim, err := r.admitSaveRequest(ctx, saveRequest)
+	if err == nil {
+		return claim, false, nil
+	}
+	if !errors.Is(err, errSaveRequestNotAllowed) && !errors.Is(err, errTakeOverNotAllowed) {
+		return claim, false, err
+	}
+	if findCondition(saveRequest.Status.Conditions, ConditionTypeReady) != nil {
+		return claim, false, nil
+	}
+	r.writeTerminalStatus(ctx, log, saveRequest, git.FinalizeResult{}, err, attribution,
+		resolvedSaveRequestTarget(saveRequest))
+	return claim, true, nil
+}
+
 // errTakeOverNotAllowed is a request that asks to claim more of a window whose writes name no author
-// than its GitTarget's spec.commit.unattributedWindows allows. It is terminal: the spec is immutable.
+// than the grants admitting it allow. It is terminal: the spec is immutable.
 var errTakeOverNotAllowed = errors.New("spec.window.author asks for more than the GitTarget allows")
 
-// unattributedClaim decides what the request may claim of a window on its GitTarget whose writes
-// name no author (git.AttachSaveRequest.Unattributed). It claims what spec.window.author asks for,
-// and only while the GitTarget's KubeProvider has never received an audit fact: its
-// AuditFactsReceived condition is not True, so no write watched on that cluster can name its author.
-// On a cluster that has sent one, a write naming no author means its fact went missing, and nothing
-// is claimed. A request that asks for more than the GitTarget's spec.commit.unattributedWindows
-// allows is errTakeOverNotAllowed. A GitTarget or KubeProvider that cannot be read claims nothing,
-// and the request attaches by author alone.
-func (r *SaveRequestReconciler) unattributedClaim(
+// errSaveRequestNotAllowed is a request whose GitTarget's spec.allowedSaveRequests admits no grant for
+// its namespace. It is terminal: the spec is immutable, so a later grant reaches only a new request.
+var errSaveRequestNotAllowed = errors.New("the GitTarget does not admit SaveRequests from this namespace")
+
+// admitSaveRequest decides whether the request may save its GitTarget's windows, and what it may claim
+// of a window whose writes name no author (git.AttachSaveRequest.Unattributed).
+//
+// A grant in the GitTarget's spec.allowedSaveRequests must admit the request's namespace, or the
+// request is errSaveRequestNotAllowed. It then claims what spec.window.author asks for, and only while
+// the GitTarget's KubeProvider has never received an audit fact: its AuditFactsReceived condition is
+// not True, so no write watched on that cluster can name its author. On a cluster that has sent one, a
+// write naming no author means its fact went missing, and nothing is claimed. A request that asks for
+// more than the admitting grants' unattributedWindows allow is errTakeOverNotAllowed.
+//
+// A GitTarget that does not exist decides nothing here: the attach path reports it. Any other read
+// error is returned as is, so the request is retried rather than refused.
+func (r *SaveRequestReconciler) admitSaveRequest(
 	ctx context.Context,
 	saveRequest *configbutleraiv1alpha3.SaveRequest,
 ) (git.UnattributedClaim, error) {
+	var target configbutleraiv1alpha3.GitTarget
+	if err := r.Get(ctx, saveRequest.GitTargetKey(), &target); err != nil {
+		if apierrors.IsNotFound(err) {
+			return git.UnattributedClaimNone, nil
+		}
+		return git.UnattributedClaimNone, fmt.Errorf("read GitTarget %s: %w", saveRequest.GitTargetKey(), err)
+	}
+	decision, admission, err := authz.SaveRequestAdmitted(ctx, r.Client, saveRequest, &target)
+	if err != nil {
+		return git.UnattributedClaimNone, err
+	}
+	if !decision.Allowed {
+		return git.UnattributedClaimNone, fmt.Errorf("%w: %s", errSaveRequestNotAllowed, decision.Message)
+	}
 	ask := configbutleraiv1alpha3.WindowAuthorOwn
 	if window := saveRequest.Spec.Window; window != nil && window.Author != "" {
 		ask = window.Author
@@ -306,19 +350,10 @@ func (r *SaveRequestReconciler) unattributedClaim(
 	if ask == configbutleraiv1alpha3.WindowAuthorOwn {
 		return git.UnattributedClaimNone, nil
 	}
-	var target configbutleraiv1alpha3.GitTarget
-	if err := r.Get(ctx, client.ObjectKey{
-		Namespace: saveRequest.Namespace, Name: saveRequest.Spec.GitTargetRef.Name,
-	}, &target); err != nil {
-		return git.UnattributedClaimNone, nil //nolint:nilerr // a missing GitTarget is the attach path's to report
-	}
-	policy := configbutleraiv1alpha3.UnattributedWindowsKeep
-	if target.Spec.Commit != nil && target.Spec.Commit.UnattributedWindows != "" {
-		policy = target.Spec.Commit.UnattributedWindows
-	}
-	if !policy.Allows(ask) {
-		return git.UnattributedClaimNone, fmt.Errorf("%w: spec.window.author is %q, and GitTarget %s has "+
-			"spec.commit.unattributedWindows %q", errTakeOverNotAllowed, ask, target.Name, policy)
+	if !admission.UnattributedWindows.Allows(ask) {
+		return git.UnattributedClaimNone, fmt.Errorf("%w: spec.window.author is %q, and the grants of GitTarget %s "+
+			"that admit namespace %q allow unattributedWindows %q", errTakeOverNotAllowed, ask,
+			saveRequest.GitTargetKey(), saveRequest.Namespace, admission.UnattributedWindows)
 	}
 	key := target.KubeProviderKey()
 	if key.Name == "" {
@@ -359,7 +394,7 @@ func (r *SaveRequestReconciler) attachSaveRequest(
 
 	if result.Err != nil {
 		log.Error(result.Err, "SaveRequest finalize failed",
-			"gitTarget", saveRequest.Spec.GitTargetRef.Name, "name", req.NamespacedName)
+			"gitTarget", saveRequest.GitTargetKey().String(), "name", req.NamespacedName)
 	}
 	r.writeTerminalStatus(ctx, log, saveRequest, result, result.Err, attribution,
 		resolvedSaveRequestTarget(saveRequest))
@@ -739,7 +774,7 @@ func (r *SaveRequestReconciler) writeTerminalStatus(
 				"commit", current.Status.Commit,
 				"outcome", result.Outcome,
 				"finalizeError", finalizeError,
-				"gitTarget", current.Spec.GitTargetRef.Name,
+				"gitTarget", current.GitTargetKey().String(),
 				"age", time.Since(current.CreationTimestamp.Time).String())
 			return
 		}

@@ -29,6 +29,7 @@ const (
 	crReasonAuthorCaptureDisabled   = "AuthorCaptureDisabled"
 	crReasonGitTargetRefPruned      = "GitTargetRefPruned"
 	crReasonTakeOverNotAllowed      = "TakeOverNotAllowed"
+	crReasonNotAllowed              = "NotAllowed"
 )
 
 // The bounded `outcome` values on gitopsreverser_save_requests_total.
@@ -64,9 +65,6 @@ func saveRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
 		return crOutcomeWindowMismatch
 	case git.FinalizeAlreadyPresent:
 		return crOutcomeAlreadyPresent
-	case git.FinalizeWindowOutsideNamespace:
-		// Only a RemoteSaveRequest is confined to a namespace, so a SaveRequest never ends this way.
-		return crOutcomeFailed
 	default:
 		return crOutcomeFailed
 	}
@@ -93,10 +91,11 @@ type saveRequestTarget struct {
 // needed to bound the label — the plan's rule that metric recording must not block terminal status
 // on another failing call.
 //
-// The namespace is the REQUEST's, not a field: a SaveRequest names a same-namespace GitTarget,
-// which is the same assumption ServiceSaveRequest makes when it builds the object key.
+// The key is SaveRequest.GitTargetKey, the GitTarget the attach names, which is the key
+// ServiceSaveRequest gets.
 func resolvedSaveRequestTarget(cr *configv1alpha3.SaveRequest) saveRequestTarget {
-	return saveRequestTarget{namespace: cr.Namespace, name: cr.Spec.GitTargetRef.Name}
+	key := cr.GitTargetKey()
+	return saveRequestTarget{namespace: key.Namespace, name: key.Name}
 }
 
 // recordSaveRequestOutcome increments the terminal-outcome counter once.
@@ -285,8 +284,11 @@ func applyFinalizeResultToStatus(
 
 	if finalizeErr != nil {
 		reason := crReasonFinalizeFailed
-		if errors.Is(finalizeErr, errTakeOverNotAllowed) {
+		switch {
+		case errors.Is(finalizeErr, errTakeOverNotAllowed):
 			reason = crReasonTakeOverNotAllowed
+		case errors.Is(finalizeErr, errSaveRequestNotAllowed):
+			reason = crReasonNotAllowed
 		}
 		failSaveRequest(cr, reason, finalizeErr.Error())
 		return
@@ -311,10 +313,6 @@ func applyFinalizeResultToStatus(
 	case git.FinalizeAlreadyPresent:
 		// The change already matches the remote, so the commit was dropped.
 		resolveNothingToCommit(cr, result, crReasonAlreadyPresent, alreadyPresentMessage)
-	case git.FinalizeWindowOutsideNamespace:
-		// Only a RemoteSaveRequest is confined to a namespace (AttachSaveRequest.SourceNamespace), so
-		// this outcome is a bug here, as an unknown one is.
-		failSaveRequest(cr, crReasonUnexpectedOutcome, "unexpected finalize outcome: "+string(result.Outcome))
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; fail it so it is not silently hidden.

@@ -30,7 +30,7 @@ var _ = Describe("SaveRequest controller", func() {
 				Namespace:    namespace,
 			},
 			Spec: configbutleraiv1alpha3.SaveRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{
+				GitTargetRef: meta.NamespacedObjectReference{
 					Name: "team-a-config",
 				},
 				Message: "increase checkout API memory",
@@ -58,7 +58,7 @@ var _ = Describe("SaveRequest controller", func() {
 				Namespace:    namespace,
 			},
 			Spec: configbutleraiv1alpha3.SaveRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{
+				GitTargetRef: meta.NamespacedObjectReference{
 					Name: "team-a-config",
 				},
 			},
@@ -114,7 +114,7 @@ var _ = Describe("SaveRequest message schema", func() {
 				Namespace:    namespace,
 			},
 			Spec: configbutleraiv1alpha3.SaveRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "team-a-config"},
 				Message:      message,
 			},
 		}

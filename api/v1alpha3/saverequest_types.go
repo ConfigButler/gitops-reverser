@@ -5,6 +5,7 @@ package v1alpha3
 import (
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // SaveRequestSpec defines the desired state of SaveRequest. The spec is
@@ -25,11 +26,13 @@ import (
 // +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="SaveRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.whenNothingToCommit) || self.whenNothingToCommit != 'CommitEmpty' || has(self.message)",message="whenNothingToCommit: CommitEmpty requires spec.message, because a message is all an empty commit records"
 type SaveRequestSpec struct {
-	// GitTargetRef names the GitTarget, in this namespace, whose commit window
-	// this request attaches to.
+	// GitTargetRef names the GitTarget whose commit window this request
+	// attaches to: in this namespace, or namespace names another. The
+	// GitTarget's spec.allowedSaveRequests must admit this namespace, or the
+	// request fails with reason "NotAllowed".
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
-	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
+	GitTargetRef meta.NamespacedObjectReference `json:"gitTargetRef"`
 
 	// Message is the commit message this request asks for. Omitted, the
 	// GitTarget's spec.commit.message.liveTemplate words the commit.
@@ -160,8 +163,9 @@ type SaveRequestWindow struct {
 	// to the creator's own window. "SavedBy" may also give its message to a
 	// window whose writes name no author, naming no author. "TakeOver" may
 	// also take such a window over, and the creator authors the commit. The
-	// GitTarget's spec.commit.unattributedWindows must allow what is asked, or
-	// the request fails with reason TakeOverNotAllowed. Defaults to "Own".
+	// unattributedWindows of a grant in the GitTarget's spec.allowedSaveRequests
+	// that admits this namespace must allow what is asked, or the request fails
+	// with reason TakeOverNotAllowed. Defaults to "Own".
 	// +optional
 	// +kubebuilder:validation:Enum=Own;SavedBy;TakeOver
 	// +kubebuilder:default=Own
@@ -318,6 +322,16 @@ type SaveRequestList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []SaveRequest `json:"items"`
+}
+
+// GitTargetKey is the GitTarget spec.gitTargetRef names: in the request's namespace unless the ref
+// names another.
+func (s *SaveRequest) GitTargetKey() types.NamespacedName {
+	namespace := s.Spec.GitTargetRef.Namespace
+	if namespace == "" {
+		namespace = s.Namespace
+	}
+	return types.NamespacedName{Namespace: namespace, Name: s.Spec.GitTargetRef.Name}
 }
 
 func init() {

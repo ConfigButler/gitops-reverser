@@ -119,7 +119,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
 | `commit.window.maxDuration` | `1m` | Close a commit window this long after it opened, however much keeps arriving |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
-| `commit.unattributedWindows` | `Keep` | How much a `SaveRequest` may claim of a window whose writes name no author, on a cluster that never sent an audit fact: `Keep`, `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author) |
+| `allowedSaveRequests` | `[{"consumerNamespaces":{"from":"Same"},"unattributedWindows":"Keep"}]` | The namespaces whose `SaveRequest`s may save this target's windows, and how much each may claim of a window whose writes name no author. See [who may save](#who-may-save-specallowedsaverequests) |
 | `allowedRemoteSaveRequests` | none admitted | The `RemoteSaveRequest`s, by source namespace and labels, that may save this target's windows. See [`RemoteSaveRequest`](#remotesaverequest) |
 | `placement.byType` | the built-in path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
 | `placement.default` | the built-in path | Catch-all path template for types with no `byType` entry |
@@ -178,7 +178,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 
 | Field | Default | What it does |
 |---|---|---|
-| `gitTargetRef` | **required** | The target whose commit window the request attaches to |
+| `gitTargetRef` | **required** | The target whose commit window the request attaches to: in this namespace, or `namespace` names another, whose `allowedSaveRequests` must admit this one |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
 | `window.attach` | `CurrentOrNext` | Which window to attach to: the author's current or next one, or only the next. See [the request window](#the-request-window-specwindow) |
 | `window.author` | `Own` | Whose window to attach to: `Own`, or also claim a window whose writes name no author with `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author) |
@@ -2964,13 +2964,14 @@ Use it sparingly.
 
 ## `SaveRequest`
 
-`SaveRequest` is a one-shot "save" signal for a same-namespace `GitTarget`. It does not create or
-change watch rules. It attaches to its author's commit window, gives that window its message, and
-decides when the window closes, instead of the target's timers.
+`SaveRequest` is a one-shot "save" signal for a `GitTarget`. It does not create or change watch
+rules. It attaches to its author's commit window, gives that window its message, and decides when
+the window closes, instead of the target's timers.
 
 The important fields are:
 
-- `spec.gitTargetRef.name`: the target whose window to attach to
+- `spec.gitTargetRef`: the target whose window to attach to, by `name`, in the request's own
+  namespace unless `namespace` names another; see [who may save](#who-may-save-specallowedsaverequests)
 - `spec.message`: optional literal commit message, preserved verbatim
 - `spec.window`: which window to attach to and when it closes; see
   [the request window](#the-request-window-specwindow)
@@ -3069,6 +3070,38 @@ attach to it: the outcome is `WindowMismatch` no matter how long the request wai
 that sends no audit events at all, see
 [saving where writes name no author](#saving-where-writes-name-no-author).
 
+### Who may save: `spec.allowedSaveRequests`
+
+A `GitTarget` says which namespaces' `SaveRequest`s may save its windows in
+`spec.allowedSaveRequests`, a grant list like the others (see [the grants](#the-grants)):
+
+- **Omitted:** the `SaveRequest`s in the `GitTarget`'s own namespace, as one grant with
+  `from: Same` that claims nothing of a window whose writes name no author.
+- **`[]`:** no `SaveRequest`.
+- **A list:** the `SaveRequest`s at least one grant admits. The list replaces the default, so the
+  own namespace keeps access only if a grant admits it.
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: shared
+  namespace: platform
+spec:
+  allowedSaveRequests:
+    - consumerNamespaces: {from: Same}
+    - consumerNamespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            platform.example.com/tenant: "true"
+      unattributedWindows: SavedBy
+```
+
+A request no grant admits fails when it is first seen, before it attaches: `Ready=False`,
+`Stalled=True`, reason `NotAllowed`. Each grant also sets `unattributedWindows` for the requests it
+admits, described below; a request admitted by several grants may claim the most any of them allows.
+
 ### Saving where writes name no author
 
 On a source cluster that sends no audit events, no write names its author, so every write lands in
@@ -3076,8 +3109,8 @@ a window that names no actor. A request whose submitter was captured at admissio
 such a window, and its save ends `WindowMismatch`. Two settings let it claim one, and both default to
 claiming nothing:
 
-- the `GitTarget`'s `spec.commit.unattributedWindows` says how much a request on it may claim:
-  `Keep` (the default), `SavedBy`, or `TakeOver`;
+- the `unattributedWindows` of the grant in the `GitTarget`'s `spec.allowedSaveRequests` that admits
+  the request's namespace says how much it may claim: `Keep` (the default), `SavedBy`, or `TakeOver`;
 - the request's `spec.window.author` says what this save asks for: `Own` (the default), `SavedBy`,
   or `TakeOver`.
 
@@ -3087,8 +3120,8 @@ claiming nothing:
 | `SavedBy` | gives the window its message; the commit names no author, and its message ends with `Saved-By: <submitter>` |
 | `TakeOver` | takes the window over; the submitter authors the commit, and its message ends with `Author-Source: SaveRequest <namespace>/<name>; no audit record names who made these changes` |
 
-`TakeOver` on the `GitTarget` allows both claims, and `SavedBy` allows only `SavedBy`. A request that
-asks for more than its `GitTarget` allows fails when it is first seen, before it attaches:
+A grant's `TakeOver` allows both claims, and `SavedBy` allows only `SavedBy`. A request that asks for
+more than the grants admitting it allow fails when it is first seen, before it attaches:
 `Ready=False`, `Stalled=True`, reason `TakeOverNotAllowed`.
 
 Both claims act only while the `GitTarget`'s `KubeProvider` has never received an audit fact: its
@@ -3225,8 +3258,8 @@ never deleted.
 
 A `RemoteSaveRequest` (`source.configbutler.ai/v1alpha1`) is a save made on a **source cluster**, next
 to the edits it saves, by someone who may have no access to the cluster GitOps Reverser runs in. It
-names no `GitTarget`: it saves the edits made in its own namespace, in the commit window of every
-`GitTarget` that mirrors that namespace from that cluster and allows it. Each window gets its message
+names no `GitTarget`: it saves its creator's commit window in every `GitTarget` that mirrors its
+namespace from that cluster and allows it. Each window gets its message
 and closes on its timers, as with a [`SaveRequest`](#saverequest).
 
 ```yaml
@@ -3278,14 +3311,11 @@ its labels, so a selector proves nothing about who made it.
 
 ### What a save holds
 
-A `RemoteSaveRequest` saves only the edits made in its own namespace. It attaches to a window whose
-writes are all in that namespace; while it is attached, a write anywhere else, including a
-cluster-scoped one, does not join the window and opens one of its own. A window that already holds
-writes from elsewhere is left alone, and the save ends `WindowOutsideNamespace`. Save from a
-`SaveRequest` on the cluster GitOps Reverser runs in to commit such a window under one message.
-
-A `GitTarget` that mirrors only cluster-scoped types mirrors no namespace, so no `RemoteSaveRequest`
-saves it.
+A commit window holds one author's edits to one `GitTarget`, wherever that `GitTarget` mirrors them.
+An admitted `RemoteSaveRequest` therefore saves its creator's whole window, edits outside the
+request's own namespace included: a grant in `allowedRemoteSaveRequests` authorizes exactly that. The
+request's namespace only decides which `GitTarget`s it reaches. A `GitTarget` that mirrors only
+cluster-scoped types mirrors no namespace, so no `RemoteSaveRequest` reaches it.
 
 ### Who the save is from
 
@@ -3297,7 +3327,7 @@ loses the save's author without an error.
 | The source cluster | The save |
 | --- | --- |
 | sends audit events, and one names the creator | attaches to the creator's windows; `status.author` names them |
-| sends no audit events at all (its `KubeProvider` never received one) | names nobody, and attaches to a window in its namespace whose edits name nobody; the commit's author stays unresolved |
+| sends no audit events at all (its `KubeProvider` never received one) | names nobody, and attaches to a window whose edits name nobody; the commit's author stays unresolved |
 | sends audit events, but none names the creator | is refused, `Ready=True` with reason `AuthorUnresolved`: its event went missing, and attaching it would claim the window that should stay unattributed. Save again |
 
 `spec.window.attachTimeout` (default `5s`) counts from when GitOps Reverser picks the request up,
@@ -3309,7 +3339,7 @@ window as for a `SaveRequest`.
 
 `status.gitTargets` lists each `GitTarget` the save was admitted to, by `namespace` and `name` on the
 cluster GitOps Reverser runs in, with the save's `reason` there (`Committed`, `NoWindow`,
-`AlreadyPresent`, `WindowMismatch`, `WindowOutsideNamespace` or `Failed`), its `branch` and `commit`,
+`AlreadyPresent`, `WindowMismatch` or `Failed`), its `branch` and `commit`,
 and, with `catchUp: AfterPush`, its `applied` reason and `appliedRevision`.
 
 - **Ready** is `True` once the save ended without error in every `GitTarget`, with reason `Committed`

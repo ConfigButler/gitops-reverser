@@ -186,6 +186,24 @@ type GitTargetSpec struct {
 	// +optional
 	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 
+	// AllowedSaveRequests says which SaveRequests may save this GitTarget's
+	// commit windows, by the namespace they are in, and how much each may
+	// claim of a window whose writes name no author:
+	//
+	// - Omitted: the SaveRequests in this GitTarget's namespace, as one grant
+	//   with from: "Same" that claims nothing.
+	// - Empty list ([]): no SaveRequest.
+	// - A list of grants: the SaveRequests that at least one grant allows.
+	//
+	// A list replaces the default: the SaveRequests in this namespace keep
+	// access only if at least one grant allows them. A request no grant allows
+	// fails with reason "NotAllowed".
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:default={{consumerNamespaces: {from: Same}, unattributedWindows: Keep}}
+	AllowedSaveRequests []GitTargetSaveRequestGrant `json:"allowedSaveRequests"`
+
 	// Consent lives on the GitTarget, not on the KubeProvider that serves the requests: the provider's
 	// owner lends a cluster, and whether a save made on it may steer this folder's commits, with its
 	// message, its timers and an apply, is the folder's owner's decision. Nothing is admitted by
@@ -199,7 +217,8 @@ type GitTargetSpec struct {
 	// mirror but none admits reports "NotAllowed". The KubeProvider must also
 	// set spec.remoteSaveRequests "Enabled".
 	//
-	// An admitted request saves only the edits made in its own namespace.
+	// An admitted request saves its creator's whole commit window on this
+	// GitTarget, edits outside the request's namespace included.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=16
@@ -256,28 +275,6 @@ type GitTargetCommitSpec struct {
 	// built-in one.
 	// +optional
 	Message *CommitMessageSpec `json:"message,omitempty"`
-
-	// UnattributedWindows says how much a SaveRequest on this GitTarget may
-	// claim of a commit window whose writes name no author. It acts only while
-	// the GitTarget's KubeProvider has never received an audit fact; on a
-	// cluster that has, a write naming no author is never claimed. Defaults to
-	// "Keep".
-	//
-	// - "Keep": a request attaches only to its creator's own window.
-	// - "SavedBy": a request that asks may give such a window its message. The
-	//   commit names no author, and its message ends with a Saved-By line
-	//   naming the request's creator.
-	// - "TakeOver": a request that asks may also take such a window over. Its
-	//   creator authors the commit, and the message ends with an Author-Source
-	//   line.
-	//
-	// Every write that names no author shares one window, whoever made it, so
-	// a takeover names the creator as the author of all of them. Allow it only
-	// where one person edits the mirrored namespaces at a time.
-	// +optional
-	// +kubebuilder:validation:Enum=Keep;SavedBy;TakeOver
-	// +kubebuilder:default=Keep
-	UnattributedWindows UnattributedWindowPolicy `json:"unattributedWindows,omitempty"`
 }
 
 // UnattributedWindowPolicy is how much a SaveRequest may claim of a commit

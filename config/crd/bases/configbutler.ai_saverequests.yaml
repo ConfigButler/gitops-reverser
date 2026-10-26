@@ -100,11 +100,17 @@ spec:
                 type: string
               gitTargetRef:
                 description: |-
-                  GitTargetRef names the GitTarget, in this namespace, whose commit window
-                  this request attaches to.
+                  GitTargetRef names the GitTarget whose commit window this request
+                  attaches to: in this namespace, or namespace names another. The
+                  GitTarget's spec.allowedSaveRequests must admit this namespace, or the
+                  request fails with reason "NotAllowed".
                 properties:
                   name:
                     description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
                     type: string
                 required:
                 - name
@@ -190,8 +196,9 @@ spec:
                       to the creator's own window. "SavedBy" may also give its message to a
                       window whose writes name no author, naming no author. "TakeOver" may
                       also take such a window over, and the creator authors the commit. The
-                      GitTarget's spec.commit.unattributedWindows must allow what is asked, or
-                      the request fails with reason TakeOverNotAllowed. Defaults to "Own".
+                      unattributedWindows of a grant in the GitTarget's spec.allowedSaveRequests
+                      that admits this namespace must allow what is asked, or the request fails
+                      with reason TakeOverNotAllowed. Defaults to "Own".
                     enum:
                     - Own
                     - SavedBy

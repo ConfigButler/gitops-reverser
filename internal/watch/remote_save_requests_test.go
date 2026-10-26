@@ -5,6 +5,7 @@ package watch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -215,7 +216,6 @@ func TestRemoteSaveRequest_SavesEachMirroringGitTargetAndReportsTheApply(t *test
 	assert.Equal(t, 3*time.Second, attach.AttachTimeout)
 	assert.True(t, attach.CatchUpNow)
 	assert.Equal(t, "uid-save@team-a/app", attach.UID, "one identity per GitTarget")
-	assert.Equal(t, "shop", attach.SourceNamespace, "it saves only the edits made in its namespace")
 
 	assert.Equal(t, "alice@example.com", status.Author)
 	require.Len(t, status.GitTargets, 1)
@@ -377,20 +377,6 @@ func TestRemoteSaveRequest_AWatchOfEveryNamespaceMirrorsIt(t *testing.T) {
 	assert.Equal(t, saveReasonCommitted, condition(status, "Ready").Reason)
 }
 
-// A window holding edits from elsewhere is left alone, and the save says why.
-func TestRemoteSaveRequest_AWindowOutsideTheNamespaceIsReported(t *testing.T) {
-	finalizer := &saveFinalizer{result: git.FinalizeResult{Outcome: git.FinalizeWindowOutsideNamespace}}
-	request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
-	server, resource := saveServer(t, request, shopSetup("", nil), finalizer)
-
-	status := serveOnce(t, server, resource, request)
-
-	assert.Equal(t, metav1.ConditionTrue, condition(status, "Ready").Status)
-	assert.Equal(t, saveReasonOutsideNamespace, condition(status, "Ready").Reason)
-	assert.Contains(t, condition(status, "Ready").Message, "outside this namespace")
-	assert.Nil(t, condition(status, "Applied"), "nothing was committed to apply")
-}
-
 // A save that failed in a GitTarget fails, and says where.
 func TestRemoteSaveRequest_AFailureFailsTheRequest(t *testing.T) {
 	finalizer := &saveFinalizer{result: git.FinalizeResult{Err: errors.New("the GitTarget is suspended")}}
@@ -550,4 +536,53 @@ func TestRemoteSaveRequest_AFinishedRequestIsDeletedAfterTheTTL(t *testing.T) {
 			assert.Empty(t, finalizer.attaches, "a finished request is never served again")
 		})
 	}
+}
+
+// Each worker outcome is recorded on its GitTarget's status with the reason the API documents.
+func TestRemoteSaveRequest_RecordsEachOutcome(t *testing.T) {
+	for result, want := range map[*git.FinalizeResult]string{
+		{Outcome: git.FinalizeCommitted, Commit: "c0ffee"}: saveReasonCommitted,
+		{Outcome: git.FinalizeNoOpenWindow}:                saveReasonNoWindow,
+		{Outcome: git.FinalizeWindowMismatch}:              saveReasonWindowMismatch,
+		{Outcome: git.FinalizeAlreadyPresent}:              saveReasonAlreadyPresent,
+		{Outcome: "Unknown"}:                               saveReasonFailed,
+		{Err: errors.New("boom")}:                          saveReasonFailed,
+		{Err: git.ErrSaveRequestWithdrawn}:                 saveReasonFailed,
+	} {
+		var target sourcev1alpha1.RemoteSaveRequestGitTarget
+		recordSaveOutcome(&target, *result)
+		assert.Equal(t, want, target.Reason, "%+v", *result)
+		assert.NotEmpty(t, target.Message)
+	}
+}
+
+// Applied is False only for a commit a branch lost, Unknown when an apply was lost track of, and True
+// otherwise.
+func TestRemoteSaveRequest_AppliedSummarizesTheTargets(t *testing.T) {
+	for name, tt := range map[string]struct {
+		applied []string
+		status  metav1.ConditionStatus
+		reason  string
+	}{
+		"all applied":        {[]string{git.SaveApplyApplied, git.SaveApplyNothingToApply}, metav1.ConditionTrue, saveReasonApplied},
+		"one lost":           {[]string{git.SaveApplyApplied, "Lost"}, metav1.ConditionUnknown, "Lost"},
+		"one commit dropped": {[]string{"Lost", git.SaveApplyCommitDropped}, metav1.ConditionFalse, git.SaveApplyCommitDropped},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAfterPush)
+			status := &sourcev1alpha1.RemoteSaveRequestStatus{}
+			for i, applied := range tt.applied {
+				status.GitTargets = append(status.GitTargets, sourcev1alpha1.RemoteSaveRequestGitTarget{
+					Namespace: "team-a", Name: fmt.Sprintf("app-%d", i), Reason: saveReasonCommitted, Applied: applied,
+				})
+			}
+			setSaveApplied(request, status)
+			got := condition(*status, "Applied")
+			require.NotNil(t, got)
+			assert.Equal(t, tt.status, got.Status)
+			assert.Equal(t, tt.reason, got.Reason)
+			assert.True(t, saveApplySettled(tt.applied[0]))
+		})
+	}
+	assert.False(t, saveApplySettled("Applying"))
 }

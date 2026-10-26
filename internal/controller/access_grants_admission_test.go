@@ -159,6 +159,14 @@ var _ = Describe("Access grants at admission", func() {
 		{"KubeProvider allowedApplierClaims",
 			func(g map[string]any) *unstructured.Unstructured { return kubeProvider("allowedApplierClaims", g) },
 			map[string]any{"applierNamespaces": []any{"flux-system"}}},
+		{"GitTarget allowedSaveRequests",
+			func(g map[string]any) *unstructured.Unstructured {
+				return object("GitTarget", map[string]any{
+					"gitBranchRef": map[string]any{"name": "b"}, "path": "apps",
+					"kubeProviderRef": map[string]any{"name": "k"}, "allowedSaveRequests": []any{g},
+				})
+			},
+			map[string]any{"unattributedWindows": "SavedBy"}},
 	} {
 		It("refuses a "+list.name+" grant without a complete consumerNamespaces block", func() {
 			refused(list.build(maps.Clone(list.scope)), "consumerNamespaces: Required value")

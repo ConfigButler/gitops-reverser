@@ -158,11 +158,11 @@ kinds:
       - path: commit.message
         default: the built-in templates
         doc: How commits are phrased. See [commit messages](commit-messages.md)
-      - path: commit.unattributedWindows
+      - path: allowedSaveRequests
         doc: >-
-          How much a `SaveRequest` may claim of a window whose writes name no author, on a cluster
-          that never sent an audit fact: `Keep`, `SavedBy` or `TakeOver`. See
-          [saving where writes name no author](#saving-where-writes-name-no-author)
+          The namespaces whose `SaveRequest`s may save this target's windows, and how much each may
+          claim of a window whose writes name no author. See
+          [who may save](#who-may-save-specallowedsaverequests)
       - path: allowedRemoteSaveRequests
         default: none admitted
         doc: >-
@@ -305,7 +305,9 @@ kinds:
     title: "`SaveRequest` (namespaced): save now"
     fields:
       - path: gitTargetRef
-        doc: The target whose commit window the request attaches to
+        doc: >-
+          The target whose commit window the request attaches to: in this namespace, or `namespace`
+          names another, whose `allowedSaveRequests` must admit this one
       - path: message
         default: the target's templates
         doc: Commit message, committed verbatim unless `requestTemplate` frames it
