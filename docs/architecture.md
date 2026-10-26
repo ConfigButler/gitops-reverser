@@ -757,7 +757,8 @@ flowchart TD
 
 The important boundary is the open window: it accepts only the same author and `GitTarget`. A
 `CommitRequest` from another author never closes someone else's window; it resolves as a benign no-commit
-instead.
+instead. The one exception is a cluster that has never sent an audit fact: there no write can name its
+author, so a request takes over a window whose writes name none (step 2 of the `CommitRequest` flow).
 
 ### Remote moved while we were writing
 
@@ -1777,7 +1778,12 @@ immediately. That is not a failure:
 2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), which
    waits for a window until `registration + attachTimeout`. The worker binds it to an open window only
    when the author state and GitTarget match, first come first served, and replaces the window's timers
-   with the request's own, so time spent waiting never shortens the collection. It **never finalizes
+   with the request's own, so time spent waiting never shortens the collection. A request that names its
+   submitter also takes over a window on its `GitTarget` whose writes name no author, when the
+   `GitTarget`'s `KubeProvider` has never received an audit fact (`AuditFactsReceived` is not `True`):
+   no write from that cluster can name one. The submitter then authors the commit, and its message ends
+   with an `Author-Source: CommitRequest <namespace>/<name>` line. Once the provider has received a
+   fact, a write that names no author means its fact went missing, and its window stays another's. It **never finalizes
    another author's window**; a window carries at most one request. The controller reports the phase the
    worker reports: `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`.
 3. The window finalizes when the request's timers close it (or when it closes for any other reason).

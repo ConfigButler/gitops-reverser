@@ -257,3 +257,42 @@ func TestRenderEventCommitMessage_UnresolvedUsernameStaysEmptyInTemplates(t *tes
 	require.NotNil(t, options.Author)
 	assert.Equal(t, UnresolvedAuthorDisplayName, options.Author.Name)
 }
+
+// A request that names its submitter takes over a window whose writes name no author only when it
+// is allowed to, and never a window whose writes name an actor, nor one on another GitTarget.
+func TestPendingCommitRequest_TakesOverOnlyAnUnattributedWindowWhenAllowed(t *testing.T) {
+	unattributed := newOpenWindow(attributedEvent("", AttributionUnresolved), nil)
+	named := newOpenWindow(attributedEvent("bob@acme.com", AttributionResolved), nil)
+	request := func(allowed bool, target string) *pendingCommitRequest {
+		return &pendingCommitRequest{
+			author:               "jane@acme.com",
+			attribution:          AttributionResolved,
+			gitTargetName:        target,
+			gitTargetNamespace:   "default",
+			takeOverUnattributed: allowed,
+		}
+	}
+
+	assert.False(t, request(false, "target").matchesWindow(unattributed),
+		"without the allowance a named request keeps the author rule")
+	assert.True(t, request(true, "target").matchesWindow(unattributed))
+	assert.True(t, request(true, "target").takesOver(unattributed))
+	assert.False(t, request(true, "target").matchesWindow(named),
+		"a window whose writes name an actor is never taken over")
+	assert.False(t, request(true, "other-target").matchesWindow(unattributed),
+		"the allowance does not widen attachment across GitTargets")
+
+	own := newOpenWindow(attributedEvent("jane@acme.com", AttributionResolved), nil)
+	assert.True(t, request(true, "target").matchesWindow(own))
+	assert.False(t, request(true, "target").takesOver(own), "the submitter's own window is not a takeover")
+}
+
+func TestWithTakeOverNote_EndsTheMessageWithATrailer(t *testing.T) {
+	id := &commitRequestID{Namespace: "team-a", Name: "save-1"}
+	assert.Equal(t,
+		"save: edit\n\nAuthor-Source: CommitRequest team-a/save-1; no audit record names who made these changes\n",
+		withTakeOverNote("save: edit\n", id), "the message's trailing newline is kept")
+	assert.Equal(t,
+		"save: edit\n\nAuthor-Source: CommitRequest team-a/save-1; no audit record names who made these changes",
+		withTakeOverNote("save: edit", id))
+}

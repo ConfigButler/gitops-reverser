@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -248,20 +249,21 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// and poll the outcome.
 	window := resolveRequestWindow(commitRequest.Spec)
 	attach := git.AttachCommitRequest{
-		Namespace:          commitRequest.Namespace,
-		Name:               commitRequest.Name,
-		UID:                string(commitRequest.UID),
-		Author:             author.Author,
-		Attribution:        attribution.gitOutcome(),
-		GitTargetName:      commitRequest.Spec.GitTargetRef.Name,
-		GitTargetNamespace: commitRequest.Namespace,
-		Message:            commitRequest.Spec.Message,
-		Attach:             window.attach,
-		AttachTimeout:      window.attachTimeout,
-		IdleTimeout:        window.idleTimeout,
-		MaxDuration:        window.maxDuration,
-		CommitEmpty:        commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
-		CatchUpNow:         commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
+		Namespace:            commitRequest.Namespace,
+		Name:                 commitRequest.Name,
+		UID:                  string(commitRequest.UID),
+		Author:               author.Author,
+		Attribution:          attribution.gitOutcome(),
+		GitTargetName:        commitRequest.Spec.GitTargetRef.Name,
+		GitTargetNamespace:   commitRequest.Namespace,
+		Message:              commitRequest.Spec.Message,
+		Attach:               window.attach,
+		AttachTimeout:        window.attachTimeout,
+		IdleTimeout:          window.idleTimeout,
+		MaxDuration:          window.maxDuration,
+		CommitEmpty:          commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
+		CatchUpNow:           commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
+		TakeOverUnattributed: r.sourceSendsNoAuditFacts(ctx, commitRequest),
 	}
 	if time.Since(commitRequest.CreationTimestamp.Time) >= window.resolveTimeout() {
 		// Past the bound the controller only withdraws: an attach sent now would sit behind the
@@ -269,6 +271,32 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.withdrawCommitRequest(ctx, log, req, commitRequest, attribution, attach)
 	}
 	return r.attachCommitRequest(ctx, log, req, commitRequest, attribution, attach)
+}
+
+// sourceSendsNoAuditFacts reports whether the KubeProvider of the request's GitTarget has never
+// received an audit fact: its AuditFactsReceived condition is not True. No write watched on that
+// cluster can then name its author, so the request may take over a window whose writes name none
+// (git.AttachCommitRequest.TakeOverUnattributed). A read that fails says no, and the request attaches
+// by author alone.
+func (r *CommitRequestReconciler) sourceSendsNoAuditFacts(
+	ctx context.Context,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+) bool {
+	var target configbutleraiv1alpha3.GitTarget
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: commitRequest.Namespace, Name: commitRequest.Spec.GitTargetRef.Name,
+	}, &target); err != nil {
+		return false
+	}
+	key := target.KubeProviderKey()
+	if key.Name == "" {
+		return false
+	}
+	var provider configbutleraiv1alpha3.KubeProvider
+	if err := r.Get(ctx, key, &provider); err != nil {
+		return false
+	}
+	return !apimeta.IsStatusConditionTrue(provider.Status.Conditions, KubeProviderConditionAuditFactsReceived)
 }
 
 // attachCommitRequest sends the attach and reports the outcome once the worker has one. Until then

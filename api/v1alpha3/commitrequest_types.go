@@ -191,7 +191,8 @@ type CommitRequestWindow struct {
 //     admission record exists, or False (AuthorCaptureDisabled) when capture
 //     is disabled. In either False case the request claims no actor. False is
 //     not a failure and does not affect Ready; the final Git author remains
-//     the matching watch window's author.
+//     the matching watch window's author, unless the request took over a
+//     window whose writes name no author.
 //   - Pushed (domain): True once the commit is in the remote repository.
 //   - Applied (domain): with spec.catchUp "AfterPush", whether the applier
 //     caught up with the commit. It never affects Ready.
@@ -263,8 +264,12 @@ type CommitRequestStatus struct {
 
 // CommitRequest asks for a save: it attaches to its author's current or next
 // commit window on a GitTarget, closes that window on its own timers, and
-// gives the commit its message. Its spec is immutable, and status.commit
-// reports the commit once it is on the remote.
+// gives the commit its message. When the GitTarget's KubeProvider has never
+// received an audit fact (AuditFactsReceived is not True), it also takes
+// over a window whose writes name no author: its creator, recorded at
+// admission, authors the commit, and the message ends with an Author-Source
+// line. Its spec is immutable, and status.commit reports the commit once it
+// is on the remote.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 

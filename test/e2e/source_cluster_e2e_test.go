@@ -36,7 +36,8 @@ import (
 //     the GitTarget mirrors that workspace, and its FluxClaim holds the Kustomization through the
 //     install's own provider. It shows the startup converge landing in the workspace, an edit made
 //     there during an apply withheld from the apply's revert by the REMOTE object's managedFields,
-//     and two saves that ask to catch up reporting the apply.
+//     and two saves that take over their edits' windows (the workspace sends no audit facts) and
+//     report the apply.
 //
 // The whole suite is gated by skipUnlessSourceClusterEnabled() (env E2E_ENABLE_SOURCE_CLUSTER),
 // and the kcp specs additionally Skip when kcp is not installed — so a default `task test-e2e`
@@ -737,9 +738,11 @@ spec:
 			nameApplierClaim(testNs, p.targetName, "FluxClaim", ksName, "")
 		})
 
-		// Naming the FluxClaim converges it once: a CatchUp of the tip, which holds a ConfigMap only
-		// Git has, since the GitRepository's 24h interval never fetched it. So the ConfigMap reaches
-		// the workspace through the FluxClaim's apply alone, and Flux's labels on it say who applied it.
+		// Naming the FluxClaim applies the tip, which holds a ConfigMap only Git has, since the
+		// GitRepository's 24h interval never fetched it. The reason is the ForeignCommit the receiver
+		// reported, which the worker kept while no applier was named, or the startup CatchUp. So the
+		// ConfigMap reaches the workspace through the FluxClaim's apply alone, and Flux's labels on it
+		// say who applied it.
 		It("applies its startup converge into the workspace, and mirrors what it applied", func() {
 			verifyResourceCondition(fluxClaimResource, ksName, testNs, "Configured", "True", "", "")
 			verifyResourceCondition(fluxClaimResource, ksName, testNs, "Ready", "True", "Succeeded", "")
@@ -748,7 +751,7 @@ spec:
 				head := p.remoteBranchHead(g)
 				g.Expect(fluxLastAppliedRevision(g, ksName)).To(ContainSubstring(head))
 				done := r.applier.operation(g)
-				g.Expect(done.Reason).To(Equal("CatchUp"))
+				g.Expect(done.Reason).To(BeElementOf("ForeignCommit", "CatchUp"))
 				g.Expect(done.Commit).To(Equal(head))
 				g.Expect(done.Phase).To(Equal("Succeeded"))
 				live, exists := r.liveValue(g, "converged")
@@ -777,27 +780,36 @@ spec:
 		})
 
 		// A save on the workspace's GitTarget that asks to catch up is applied once it is pushed, and
-		// each request reports the apply: Applied=True, with the revision Flux applied. Two saves made
-		// together may share one apply.
+		// each request reports the apply: Applied=True, with the revision Flux applied. The second save
+		// is made as soon as the first is pushed, so the two may share one apply.
 		//
-		// The saves record empty commits (whenNothingToCommit: CommitEmpty). A request's author is
-		// captured at admission in this cluster, and with no audit stream from kcp a write in the
-		// workspace names no author, so a request never attaches to that write's window.
-		It("applies two saves that ask to catch up, and reports the apply on each", func() {
+		// No write in the workspace names its author, since kcp sends no audit facts, and the request's
+		// submitter is captured at admission in this cluster. The workspace's KubeProvider has never
+		// received a fact, so each request takes over the window of its edit, its submitter authors the
+		// commit, and the message ends with a note that says so. Every event from the workspace waits
+		// out the attribution grace first, so the requests wait longer than that for their window.
+		It("takes over the window of an edit in the workspace, and reports the apply on each of two saves", func() {
+			verifyResourceCondition("kubeprovider", ws, testNs, "AuditFactsReceived", "Unknown", "", "")
 			names := []string{"sc-flux-save-1", "sc-flux-save-2"}
-			for _, name := range names {
-				applyCatchUpSave(testNs, name, p.targetName)
-			}
 			commits := map[string]string{}
-			for _, name := range names {
+			for i, name := range names {
+				value := fmt.Sprintf("saved-%d", i+1)
+				applyCatchUpSave(testNs, name, p.targetName)
+				r.editThroughAPI(timingConfigMap, value)
 				Eventually(func(g Gomega) {
 					g.Expect(commitRequestCondition(g, testNs, name, "Ready")).To(Equal("True"))
 					g.Expect(commitRequestField(g, testNs, name, `{.status.conditions[?(@.type=="Ready")].reason}`)).
-						To(Equal("NoWindow"))
-					g.Expect(commitRequestCondition(g, testNs, name, "Pushed")).To(Equal("True"))
+						To(Equal(commitRequestReasonCommitted))
 					commits[name] = commitRequestField(g, testNs, name, "{.status.commit}")
 					g.Expect(commits[name]).NotTo(BeEmpty())
 				}, 2*time.Minute, 2*time.Second).Should(Succeed())
+				committed, inGit := r.committedValue(Default, timingConfigMap)
+				Expect(inGit).To(BeTrue())
+				Expect(committed).To(Equal(value), "the save's commit holds its edit")
+				message, err := gitRun(p.repo.CheckoutDir, "show", "-s", "--format=%B", commits[name])
+				Expect(err).NotTo(HaveOccurred())
+				Expect(message).To(ContainSubstring("Author-Source: CommitRequest "+testNs+"/"+name),
+					"the commit says its author is the request's submitter")
 			}
 
 			last := commits[names[len(names)-1]]
@@ -819,6 +831,7 @@ spec:
 					To(ContainSubstring(last))
 				g.Expect(fluxLastAppliedRevision(g, ksName)).To(ContainSubstring(last))
 			}, echoApplyBudget, 2*time.Second).Should(Succeed())
+			r.eventuallyEverywhere(timingConfigMap, "saved-2", echoApplyBudget)
 		})
 	})
 })
@@ -872,8 +885,8 @@ spec:
 }
 
 // applyCatchUpSave creates the CommitRequest name on gitTarget, asking its applier to catch up once
-// it is pushed. It attaches only to a window already open, and records its message in an empty
-// commit when there is none.
+// it is pushed. It waits 45s for its window: a write from a cluster with no audit stream reaches the
+// window only after the attribution grace.
 func applyCatchUpSave(namespace, name, gitTarget string) {
 	GinkgoHelper()
 	_, err := kubectlRunWithStdin(namespace, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
@@ -886,9 +899,9 @@ spec:
     name: %s
   message: "e2e: save %s and apply it"
   catchUp: AfterPush
-  whenNothingToCommit: CommitEmpty
   window:
-    attachTimeout: "0s"
+    attachTimeout: "45s"
+    maxDuration: "4s"
 `, name, namespace, gitTarget, name), "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to create CommitRequest %s", name)
 }

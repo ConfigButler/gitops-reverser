@@ -149,6 +149,11 @@ type AttachCommitRequest struct {
 	// CatchUpNow asks the GitTarget's applier to apply the tip as soon as the request's commit is
 	// pushed: catchUp: AfterPush.
 	CatchUpNow bool
+	// TakeOverUnattributed lets a request that names its submitter take over a window on its
+	// GitTarget whose writes name no author, and author its commit. It is set when the GitTarget's
+	// KubeProvider has never received an audit fact, so no write from its cluster can name one. Once
+	// it has, a write naming no author means its fact went missing, and that window stays another's.
+	TakeOverUnattributed bool
 }
 
 // commitRequestID is the worker-local key for a CommitRequest: its namespaced
@@ -189,6 +194,9 @@ type pendingCommitRequest struct {
 	commitEmpty bool
 	// catchUpNow asks the GitTarget's applier for a converge once the request's commit is pushed.
 	catchUpNow bool
+	// takeOverUnattributed lets the request take over a window whose writes name no author
+	// (AttachCommitRequest.TakeOverUnattributed).
+	takeOverUnattributed bool
 	// attached is true once this request is bound to a write: its message to the open window, or
 	// its own empty-commit record. From then on only that write's outcome settles it, and it stays
 	// set while the write is pending, waiting for the push.
@@ -251,10 +259,17 @@ func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false
 	}
-	return p.author == w.Author &&
-		p.attribution.NamesActor() == w.Attribution.NamesActor() &&
-		p.gitTargetName == w.GitTarget &&
-		p.gitTargetNamespace == w.GitTargetNamespace
+	if p.gitTargetName != w.GitTarget || p.gitTargetNamespace != w.GitTargetNamespace {
+		return false
+	}
+	return p.author == w.Author && p.attribution.NamesActor() == w.Attribution.NamesActor() || p.takesOver(w)
+}
+
+// takesOver reports whether the request matches a window on its GitTarget whose writes name no
+// author only because it may take such a window over: it names its submitter, who then authors the
+// commit (AttachCommitRequest.TakeOverUnattributed).
+func (p *pendingCommitRequest) takesOver(w *openWindow) bool {
+	return p.takeOverUnattributed && p.attribution.NamesActor() && !w.Attribution.NamesActor()
 }
 
 // commitRequestOutcomeEntry is a resolved outcome retained for the controller to

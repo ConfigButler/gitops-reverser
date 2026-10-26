@@ -46,6 +46,9 @@ type openWindow struct {
 	// pendingCR identifies the CommitRequest attached to this window; at most one. On
 	// finalize its outcome is resolved (Committed once the carrying write pushes).
 	pendingCR *commitRequestID
+	// takenOverBy is the submitter of the attached CommitRequest when it took the window over: its
+	// writes name no author, so the submitter authors the commit (pendingCommitRequest.takesOver).
+	takenOverBy *UserInfo
 
 	// timers decide when the window closes. They are the GitTarget's, snapshotted when the window
 	// opened, until a CommitRequest attaches and replaces them with its own.

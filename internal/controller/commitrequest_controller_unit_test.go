@@ -878,3 +878,47 @@ func TestCommitRequestReconciler_LiteralValidation(t *testing.T) {
 		})
 	}
 }
+
+// A request may take over a window whose writes name no author only when the GitTarget's
+// KubeProvider has never received an audit fact. Any read that fails keeps the author rule.
+func TestCommitRequestAttach_TakesOverUnattributedWindowsOnlyFromASourceWithNoAuditFacts(t *testing.T) {
+	target := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
+		Spec: configv1alpha3.GitTargetSpec{
+			KubeProviderRef: meta.NamespacedObjectReference{Name: "workspace", Namespace: "providers"},
+		},
+	}
+	provider := func(facts metav1.ConditionStatus) *configv1alpha3.KubeProvider {
+		p := &configv1alpha3.KubeProvider{ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: "providers"}}
+		if facts != "" {
+			p.Status.Conditions = []metav1.Condition{{
+				Type: KubeProviderConditionAuditFactsReceived, Status: facts, Reason: "Test",
+			}}
+		}
+		return p
+	}
+	cases := []struct {
+		name    string
+		objects []client.Object
+		want    bool
+	}{
+		{"audit facts received", []client.Object{target, provider(metav1.ConditionTrue)}, false},
+		{"no audit fact yet", []client.Object{target, provider(metav1.ConditionUnknown)}, true},
+		{"author attribution off", []client.Object{target, provider("")}, true},
+		{"KubeProvider missing", []client.Object{target}, false},
+		{"GitTarget missing", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := append([]client.Object{newCommitRequest("save")}, tc.objects...)
+			c := newCommitRequestClient(t, nil, objects...)
+			f := &fakeFinalizer{}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+			reconcileCommitRequest(t, r, "save")
+
+			require.NotEmpty(t, f.calls, "the request must be attached")
+			assert.Equal(t, tc.want, f.calls[0].TakeOverUnattributed)
+		})
+	}
+}

@@ -56,8 +56,12 @@ spec:
         description: |-
           CommitRequest asks for a save: it attaches to its author's current or next
           commit window on a GitTarget, closes that window on its own timers, and
-          gives the commit its message. Its spec is immutable, and status.commit
-          reports the commit once it is on the remote.
+          gives the commit its message. When the GitTarget's KubeProvider has never
+          received an audit fact (AuditFactsReceived is not True), it also takes
+          over a window whose writes name no author: its creator, recorded at
+          admission, authors the commit, and the message ends with an Author-Source
+          line. Its spec is immutable, and status.commit reports the commit once it
+          is on the remote.
         properties:
           apiVersion:
             description: |-

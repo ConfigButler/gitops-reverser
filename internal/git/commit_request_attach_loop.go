@@ -215,6 +215,8 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		maxDuration:        req.MaxDuration,
 		commitEmpty:        req.CommitEmpty,
 		catchUpNow:         req.CatchUpNow,
+
+		takeOverUnattributed: req.TakeOverUnattributed,
 	}
 	l.pendingCRs[id] = pcr
 	l.w.setCommitRequestPhase(id, PhaseWaitingForWindow)
@@ -345,6 +347,12 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 	}
 	l.openWindow.timers = timers
 	l.openWindow.lastWriteAt = now
+	if pcr.takesOver(l.openWindow) {
+		l.openWindow.takenOverBy = &UserInfo{Username: pcr.author}
+		l.w.Log.Info("CommitRequest took over a window whose writes name no author; its submitter authors the commit",
+			"request", id.Namespace+"/"+id.Name, "author", pcr.author,
+			"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName)
+	}
 	l.w.setCommitRequestPhase(id, PhaseCollectingWindow)
 	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,

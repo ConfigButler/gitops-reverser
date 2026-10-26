@@ -1538,6 +1538,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		return
 	}
 	pendingWrite.CommitMessage = effectiveMessage
+	if takenOverBy := l.openWindow.takenOverBy; takenOverBy != nil {
+		pendingWrite.RequestAuthor, pendingWrite.RequestAttribution = *takenOverBy, AttributionResolved
+		pendingWrite.TakenOver = true
+	}
 	pendingCR, proceed := l.gateBuiltWindow(pendingCR, pendingWrite.Target(), reason)
 	if !proceed {
 		return
