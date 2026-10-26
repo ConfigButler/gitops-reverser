@@ -3141,9 +3141,8 @@ already at the tip needs none. The request reports the outcome in its `Applied` 
 | `Unknown` | `Applying` | the apply is asked for or runs |
 | `Unknown` | `Retrying` | it did not complete and is asked again; the message says why |
 | `True` | `Applied` | the applier applied a revision that holds the commit; `status.appliedRevision` names it, as the applier reported it |
-| `True` | `NoApplierClaim`, `ApplierGone` | the `GitTarget` names no applier claim, or stopped naming the one asked: nothing applies the branch, and the cluster already holds what was saved |
-| `False` | `NothingPushed` | the request pushed no commit, so there is nothing to apply |
-| `False` | `CommitDropped` | the branch no longer holds the commit: its history was rewritten after the push |
+| `True` | `NothingToApply`, `NoApplierClaim`, `ApplierGone` | no apply was needed: the request pushed no commit, or the `GitTarget` names no applier claim, or stopped naming the one asked. The cluster already holds what was saved |
+| `False` | `CommitDropped` | the branch no longer holds the commit: its history was rewritten after the push. The only `False` |
 | `Unknown` | `Lost` | GitOps Reverser restarted before it learnt how the apply went |
 
 Wait for `Applied=True` for "saved and applied"; `Ready=True` stays "saved". A finished request is

@@ -284,8 +284,9 @@ deletes its file the applier leaves it on the cluster, and a later resync writes
   carries it succeeds, and is settled applied only when the applied revision holds that commit: a
   force-push that dropped it settles it not applied, and a revision the checkout does not hold yet
   keeps it waiting while the remote is looked at. The request's `Applied` condition reports it:
-  retried with the applier's backoff, settled applied, settled applied when no applier is named
-  (the cluster already holds the save), or settled not applied when nothing was pushed
+  retried with the applier's backoff, or settled applied, also when no apply was needed (nothing
+  was pushed, or no applier is named: the cluster already holds the save). `False` is kept for
+  something wrong, a dropped commit, so a client never sees it for a save that went fine
   (`save_apply.go`).
 - **No apply before every initial snapshot is published.** An applier is asked for nothing, for any
   reason, until every collection of every `GitTarget` it covers has a settled snapshot (applied,

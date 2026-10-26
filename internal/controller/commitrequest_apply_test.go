@@ -55,15 +55,16 @@ func TestCommitRequestReconcile_ReportsTheApplyItAskedFor(t *testing.T) {
 	assert.Equal(t, lookups, f.applyLookups, "settled: not looked up again")
 }
 
-// TestCommitRequestReconcile_ASettledApplyWithoutAnApplier: a request that pushed nothing is
-// Applied=False; one whose GitTarget names no applier is Applied=True, since the cluster already holds
-// what it saved and nothing applies the branch. Neither touches Ready.
-func TestCommitRequestReconcile_ASettledApplyWithoutAnApplier(t *testing.T) {
+// TestCommitRequestReconcile_ASettledApplyWithoutAnApply: a request that pushed nothing, or whose
+// GitTarget names no applier, is Applied=True: no apply was needed, and the cluster already holds what
+// it saved. One whose commit the branch lost is Applied=False. None touches Ready.
+func TestCommitRequestReconcile_ASettledApplyWithoutAnApply(t *testing.T) {
 	for _, tc := range []struct {
 		apply git.SaveApply
 		want  metav1.ConditionStatus
 	}{
-		{git.SaveApply{Done: true, Reason: git.SaveApplyNothingPushed}, metav1.ConditionFalse},
+		{git.SaveApply{Done: true, Applied: true, Reason: git.SaveApplyNothingToApply}, metav1.ConditionTrue},
+		{git.SaveApply{Done: true, Reason: git.SaveApplyCommitDropped}, metav1.ConditionFalse},
 		{git.SaveApply{Done: true, Applied: true, Reason: git.SaveApplyNoApplier}, metav1.ConditionTrue},
 	} {
 		t.Run(tc.apply.Reason, func(t *testing.T) {

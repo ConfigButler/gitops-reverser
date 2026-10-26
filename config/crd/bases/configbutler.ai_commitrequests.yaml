@@ -267,12 +267,12 @@ spec:
                     complete and is asked again; the message says why.
                   - True, reason Applied: the applier applied a revision that holds the
                     commit, named in status.appliedRevision.
-                  - True, reason NoApplierClaim or ApplierGone: the GitTarget names no
-                    applier claim, or stopped naming the one asked, and the cluster
-                    already holds the saved objects.
-                  - False, reason NothingPushed: there is no commit to apply.
+                  - True, reason NothingToApply, NoApplierClaim or ApplierGone: no apply
+                    was needed. The request pushed no commit, or the GitTarget names no
+                    applier claim, or stopped naming the one asked; the cluster already
+                    holds the saved objects.
                   - False, reason CommitDropped: the branch no longer holds the commit;
-                    its history was rewritten after the push.
+                    its history was rewritten after the push. Only this is False.
                   - Unknown, reason Lost: GitOps Reverser restarted before it knew.
                 items:
                   description: Condition contains details for one aspect of the current

@@ -232,8 +232,8 @@ func TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce(t *testing.T) {
 
 // TestSaveApply_FollowsTheAttemptThatCarriesIt: a save that asked to catch up waits on its applier,
 // is carried by the attempt sent next, is retried when that attempt does not succeed, and is
-// settled applied by the one that does. One that pushed nothing is settled at once as not applied,
-// and one whose GitTarget names no applier as applied: nothing applies the branch.
+// settled applied by the one that does. One that pushed nothing, or whose GitTarget names no applier,
+// is settled at once as applied: no apply is needed.
 func TestSaveApply_FollowsTheAttemptThatCarriesIt(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("loner", false))
 	convergedAt(t, loop, requester)
@@ -253,8 +253,8 @@ func TestSaveApply_FollowsTheAttemptThatCarriesIt(t *testing.T) {
 	}
 
 	nothing := save("nothing", "alpha", "")
-	assert.Equal(t, SaveApply{Done: true, Reason: SaveApplyNothingPushed, Message: lookup(nothing).Message},
-		lookup(nothing))
+	assert.Equal(t, SaveApply{Done: true, Applied: true, Reason: SaveApplyNothingToApply,
+		Message: lookup(nothing).Message}, lookup(nothing))
 
 	loop.w.inbox.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
 	pushed := save("pushed", "alpha", "bbb")

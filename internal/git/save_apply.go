@@ -20,19 +20,19 @@ import (
 // The worker keeps, per applier, the saves waiting for an apply, each with the commit it pushed. The
 // attempt that goes out carries them, and the one that succeeds settles each save whose commit the
 // applied revision holds (settleSaves). An attempt that does not succeed gives them back, and the next
-// carries them again. A save that pushed no commit is settled as not applied. One whose GitTarget names
-// no applier, or whose applier stops being named, is settled as applied: nothing applies the branch,
-// and the cluster, where the saved objects came from, already holds them.
+// carries them again. A save that pushed no commit, whose GitTarget names no applier, or whose applier
+// stops being named is settled as applied: no apply is needed, and the cluster, where the saved objects
+// came from, already holds them. Only a save whose commit the branch lost is settled as not applied.
 
 // Why a save's apply was settled, or why it still waits: the Applied condition's reasons.
 const (
-	SaveApplyApplying      = "Applying"
-	SaveApplyRetrying      = "Retrying"
-	SaveApplyApplied       = "Applied"
-	SaveApplyNothingPushed = "NothingPushed"
-	SaveApplyNoApplier     = "NoApplierClaim"
-	SaveApplyApplierGone   = "ApplierGone"
-	SaveApplyCommitDropped = "CommitDropped"
+	SaveApplyApplying       = "Applying"
+	SaveApplyRetrying       = "Retrying"
+	SaveApplyApplied        = "Applied"
+	SaveApplyNothingToApply = "NothingToApply"
+	SaveApplyNoApplier      = "NoApplierClaim"
+	SaveApplyApplierGone    = "ApplierGone"
+	SaveApplyCommitDropped  = "CommitDropped"
 )
 
 // SaveApply is how the apply a CommitRequest asked for stands.
@@ -88,8 +88,8 @@ func (w *BranchWorker) collectSaveApplies(now time.Time) {
 // this wake (takeSavedCatchUps); with none, there is nothing to apply.
 func (l *branchWorkerEventLoop) catchUpAfterSave(pcr *pendingCommitRequest, commit string) {
 	if commit == "" {
-		l.w.recordSaveApply(pcr.id, SaveApply{Done: true, Reason: SaveApplyNothingPushed,
-			Message: "the request pushed no commit, so there is nothing to apply"})
+		l.w.recordSaveApply(pcr.id, SaveApply{Done: true, Applied: true, Reason: SaveApplyNothingToApply,
+			Message: "the request pushed no commit: what it saved was in Git already, and the cluster holds it"})
 		return
 	}
 	if l.savedCatchUps == nil {
