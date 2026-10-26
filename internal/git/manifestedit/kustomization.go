@@ -576,7 +576,7 @@ func applyLiteralEdits(entry *yaml.Node, edits []LiteralEdit) error {
 		i := literalIndex(seq, e.Key)
 		switch {
 		case e.Remove && i >= 0:
-			seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
+			removeSequenceItem(seq, i)
 		case e.Remove:
 		case i >= 0:
 			item := seq.Content[i]
@@ -586,7 +586,7 @@ func applyLiteralEdits(entry *yaml.Node, edits []LiteralEdit) error {
 				item.Style = 0
 			}
 		default:
-			seq.Content = append(seq.Content,
+			appendSequenceItem(seq,
 				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: e.Key + "=" + LiteralValue(e.Value)})
 		}
 	}
@@ -594,6 +594,36 @@ func applyLiteralEdits(entry *yaml.Node, edits []LiteralEdit) error {
 		nodeMapDelete(entry, "literals")
 	}
 	return nil
+}
+
+// appendSequenceItem appends item to seq. A comment below the list belongs to its last item as
+// the decoder reads it (a foot comment), so the comment moves to the new last item: otherwise the
+// item would land after it, past a blank line.
+func appendSequenceItem(seq, item *yaml.Node) {
+	if n := len(seq.Content); n > 0 {
+		last := seq.Content[n-1]
+		item.FootComment, last.FootComment = last.FootComment, ""
+	}
+	seq.Content = append(seq.Content, item)
+}
+
+// removeSequenceItem removes seq.Content[i]. Its own head and line comments go with it; a foot
+// comment, which describes what follows the item rather than the item itself, moves to the item
+// before it so a comment below the list survives the removal of its last item.
+func removeSequenceItem(seq *yaml.Node, i int) {
+	removed := seq.Content[i]
+	if removed.FootComment != "" && i > 0 {
+		prev := seq.Content[i-1]
+		prev.FootComment = joinComments(prev.FootComment, removed.FootComment)
+	}
+	seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
+}
+
+func joinComments(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + "\n" + b
 }
 
 // literalIndex is the position of the KEY=... item for key, or -1.
