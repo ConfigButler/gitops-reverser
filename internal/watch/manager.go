@@ -172,6 +172,11 @@ type Manager struct {
 	openWatchesMu sync.Mutex
 	openWatches   map[openWatchKey]int
 
+	// streamProgress is how far each running target stream has got, by GitTarget key and
+	// collection, for the barriers apply windows take (apply_barrier.go).
+	streamProgressMu sync.Mutex
+	streamProgress   map[string]map[types.CollectionKey]*streamProgress
+
 	// targetWatches is the data plane: one raw watch per (GitTarget, GVR, namespace scope), and
 	// the only source of live object state. Its initial desired set comes from the replay, or from
 	// the buffered LIST fallback when sendInitialEvents is unsupported.

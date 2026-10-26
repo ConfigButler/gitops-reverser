@@ -136,6 +136,10 @@ type applyWindow struct {
 	// object. reported is set once that count was logged (reportApplyWindows).
 	echoes   int
 	reported bool
+	// barrier is what the window waits for once its operation completed: the watch delivering every
+	// write the GitTargets' source clusters held by then (apply_barrier.go). Nil when it waits for
+	// none, or once it was met.
+	barrier *applyBarrierWait
 }
 
 // earliestSend is the lower bound of the applier's own writes at now: the earliest send of this
@@ -148,9 +152,19 @@ func (a *applyWindow) earliestSend(now time.Time) time.Time {
 	return a.sentAt
 }
 
-// open reports whether the window is open at now.
+// open reports whether the window is open at now: until its grace has passed, and for as long as
+// it still waits for the watch (barrier).
 func (a *applyWindow) open(now time.Time) bool {
-	return a != nil && (a.closesAt.IsZero() || now.Before(a.closesAt))
+	return a != nil && (a.closesAt.IsZero() || now.Before(a.closesAt) || a.barrier.holds(now))
+}
+
+// closesBy is when the window closes at the latest: zero while the attempt is out, and past the
+// grace while it waits for the watch.
+func (a *applyWindow) closesBy() time.Time {
+	if a.closesAt.IsZero() || a.barrier == nil {
+		return a.closesAt
+	}
+	return latest(a.closesAt, a.barrier.until)
 }
 
 // objectKey is an event's object without its API version: a preferred-version bump during the
@@ -190,7 +204,7 @@ func (state *applierState) openApplyWindow(attempt uint64, commit string, now ti
 		if now.Before(before.carriedUntil) {
 			maps.Copy(next.carried, before.carried)
 		}
-		next.carriedUntil = before.closesAt
+		next.carriedUntil = before.closesBy()
 		next.carriedSentAt = before.earliestSend(now)
 	}
 	state.window = next
@@ -341,9 +355,10 @@ func (l *branchWorkerEventLoop) reportApplyWindows(now time.Time) time.Time {
 		switch {
 		case window == nil || window.reported:
 		case !window.open(now):
+			l.barrierTimedOut(state)
 			l.reportApplyWindow(state)
-		case !window.closesAt.IsZero() && (next.IsZero() || window.closesAt.Before(next)):
-			next = window.closesAt
+		case !window.closesAt.IsZero() && (next.IsZero() || window.closesBy().Before(next)):
+			next = window.closesBy()
 		}
 	}
 	return next

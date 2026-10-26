@@ -466,6 +466,9 @@ type WorkItem struct {
 	// Withdraw cancels a CommitRequest the worker has not acted on yet. It rides the same FIFO as
 	// the attach, so it is always handled after every attach sent before it.
 	Withdraw *AttachCommitRequest
+	// ApplyBarrier is one answer to the barrier an apply window took (apply_barrier.go). A stream's
+	// answer rides the FIFO behind every event that stream routed before it.
+	ApplyBarrier *ApplyBarrier
 
 	// charge is what a write or an attach was charged against the intake budget at enqueue, and is
 	// released once the loop has handled it. A resync's is on its marker, because coalescing can

@@ -882,6 +882,22 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 	})
 }
 
+// settleWindowOf ends a completed attempt's part in its applier's apply window: a window whose
+// operation ran stays open for its grace, and until the watch delivered the applier's writes
+// (apply_barrier.go).
+func (l *branchWorkerEventLoop) settleWindowOf(
+	state *applierState, attempt *inflightAttempt, outcome ApplyOutcome, now time.Time,
+) {
+	state.settleApplyWindow(attempt.id, outcome.Operated(), now)
+	if outcome.Operated() {
+		l.awaitApplyBarrier(state, now)
+	}
+	if attempt.phase == ApplyUnresolved {
+		l.w.Log.Info("An unresolved apply completed; its apply window closes after the grace",
+			"branch", l.w.Branch, "applier", state.ref.String(), "outcome", string(outcome))
+	}
+}
+
 // settleApplyResults reads the reports that came back. A report of an operation still out records
 // where it stands, and holds the attempt. An operation that succeeded is done. Any other ending
 // gives back what the attempt carried and, unless it was only stale, waits out its applier's
@@ -903,11 +919,7 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 		state.inflight = nil
 		attempt.abandon()
 		l.w.raiseApplyEpoch()
-		state.settleApplyWindow(attempt.id, res.Outcome.Operated(), now)
-		if attempt.phase == ApplyUnresolved {
-			l.w.Log.Info("An unresolved apply completed; its apply window closes after the grace",
-				"branch", l.w.Branch, "applier", state.ref.String(), "outcome", string(res.Outcome))
-		}
+		l.settleWindowOf(state, attempt, res.Outcome, now)
 		switch res.Outcome {
 		case ApplySucceeded:
 			state.failures, state.retryAt = 0, time.Time{}

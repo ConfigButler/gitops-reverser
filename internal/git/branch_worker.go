@@ -176,6 +176,10 @@ type BranchWorker struct {
 	// admits every GitTarget.
 	applierAdmitted ApplierAdmission
 	resyncRecheck   func(target itypes.ResourceReference)
+	// applyBarrier lets an apply window wait for the watch after its operation completed
+	// (apply_barrier.go). Set by the WorkerManager; nil in the CLI and in tests, where a window closes
+	// after its grace alone.
+	applyBarrier ApplyBarrierFunc
 	// replacementPending reports whether this worker replaced one whose GitTargets have not been told
 	// yet (WorkerManager.ReplacementPending): until they are, their snapshot record is the old
 	// worker's, and no applier is asked for anything. Nil in the CLI and in tests.
@@ -1006,6 +1010,9 @@ func (w *BranchWorker) processEvents() {
 type branchWorkerEventLoop struct {
 	w *BranchWorker
 
+	// barrierSeq numbers the barriers this loop's apply windows take (apply_barrier.go).
+	barrierSeq uint64
+
 	// defaultWindow is the operator-level default for a GitTarget's commit window timers, used
 	// for any target that declares no spec.commit.window field and for one that cannot be read.
 	defaultWindow commitWindowDefaults
@@ -1255,6 +1262,8 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 		l.handleAttachCommitRequest(item.Attach)
 	case item.Withdraw != nil:
 		l.handleWithdrawCommitRequest(item.Withdraw)
+	case item.ApplyBarrier != nil:
+		l.handleApplyBarrier(item.ApplyBarrier)
 	case item.Resync != nil:
 		// Take the CURRENT request for this scope: a newer one may have replaced it while this
 		// marker waited in the FIFO. Running it here keeps the original queue position, so a resync

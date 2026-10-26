@@ -622,6 +622,7 @@ func registerCounters() error {
 		{"gitopsreverser_apply_claimed_resource_reconciled_total", &ClaimedResourceReconciledTotal},
 		{"gitopsreverser_apply_window_collisions_total", &ApplyWindowCollisionsTotal},
 		{"gitopsreverser_apply_echoes_total", &ApplyEchoesTotal},
+		{"gitopsreverser_apply_window_barriers_total", &ApplyWindowBarriersTotal},
 		{"gitopsreverser_apply_stale_snapshots_total", &StaleSnapshotsTotal},
 		{"gitopsreverser_apply_ownership_conflicts_total", &ApplyOwnershipConflictsTotal},
 		{"gitopsreverser_receiver_deliveries_total", &ReceiverDeliveriesTotal},

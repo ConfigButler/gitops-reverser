@@ -184,6 +184,9 @@ func main() {
 	// A worker discards a snapshot an apply made stale and asks for a fresh one, and asks no applier
 	// for anything before a GitTarget's initial snapshots are in Git: both read the streams.
 	workerManager.SetSnapshotHooks(watchMgr.InitialSnapshotsSettled, watchMgr.RequestRecheckForGitTarget)
+	// An apply window waits, after its operation completed, until the streams delivered every write
+	// made before then, however far behind attribution held them.
+	workerManager.SetApplyBarrier(watchMgr.ApplyBarrier)
 	// The branch workers decide when a GitTarget's applier may apply; the dispatcher delivers it,
 	// off their queues, to the applier its applier claim holds, in the applier claim's cluster. The status
 	// writer records each operation on the applier claim, also off their queues.

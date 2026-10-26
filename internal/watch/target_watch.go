@@ -572,6 +572,8 @@ func (m *Manager) runTargetWatch(
 	// sweep, and leave the scope pending all the same.
 	stream.replayed = &atomic.Bool{}
 	stream.changes = newDesiredStateChangeFilter()
+	progress := m.trackStreamProgress(gitDest, stream.key)
+	defer m.untrackStreamProgress(gitDest, stream.key, progress)
 	for ctx.Err() == nil {
 		err := m.targetWatchReplayAndStream(ctx, log, gitDest, stream, stream.hasReplayed())
 		recordWatchSessionEnded(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, sessionEndReason(ctx, err))
@@ -1474,6 +1476,9 @@ func (m *Manager) recordTargetWatchCursor(
 	key targetWatchKey,
 	rv string,
 ) error {
+	// Every event the stream handled, routed or not, and every bookmark passes through here after it
+	// was routed, which makes it where an apply window's barrier learns how far the stream has got.
+	m.advanceStreamProgress(gitDest, key, rv)
 	uid := m.resolveGitTargetUID(gitDest)
 	if m.WatchCursorStore == nil || rv == "" || uid == "" {
 		return nil
