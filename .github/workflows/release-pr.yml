@@ -15,8 +15,8 @@
 #   outstanding").
 # - The release is cut but still a draft (release.yml attaches its assets before publishing).
 #   A draft is invisible to release-please's "latest release" lookup, so it would compute the
-#   PR against the whole history. The check below skips the pass while any draft exists;
-#   release.yml's release-please-pr job opens the next PR once publish-release has run.
+#   PR against the whole history. The check below skips the pass while a recent release is a
+#   draft; release.yml's release-please-pr job opens the next PR once publish-release has run.
 name: Release PR
 
 on:
@@ -48,6 +48,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Only the draft release.yml has just cut misleads release-please, and it is the
+          # newest release, so the newest 20 always include it. Not paginated on purpose: a
+          # draft older than those cannot be that one, and would only block every refresh.
           drafts=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName,isDraft \
             --jq '[.[] | select(.isDraft) | .tagName] | join(" ")')
           if [[ -n "$drafts" ]]; then

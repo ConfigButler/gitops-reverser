@@ -66,7 +66,7 @@ Push to main
    - Unit tests: `task test` (with the coverage ratchet)
    - E2E tests: the Ginkgo suite in a k3d cluster, plus the project image scan
 
-2. **Release handling** — release-please runs as **separate passes**:
+2. **Release handling**: release-please runs as **separate passes**:
    - **PR pass, at once** (`.github/workflows/release-pr.yml`): analyze commits since the last
      release, determine the version bump, and create/update the Release PR
      (`skip-github-release`). It does not wait for CI: it only rewrites the PR, and the release
@@ -74,7 +74,7 @@ Push to main
      release exists, and release-please aborts it on its own while a merged Release PR is
      not yet tagged.
    - **Cut pass** (`release-please` job in `release.yml`, if tests pass): if the previous
-     Release PR was merged, cut its GitHub Release (created as a *draft* — see step 4). This
+     Release PR was merged, cut its GitHub Release (created as a *draft*, see step 4). This
      pass uses `skip-github-pull-request`, so it does **not** open the next PR.
    - **PR pass after a release** (`release-please-pr` job in `release.yml`): open the next
      Release PR **after** the release is published, so it sees the just-published release
@@ -173,7 +173,10 @@ See [Prerequisites Setup](#prerequisites-setup) above.
 
 **Check:**
 
-- ✅ CI tests passed (green checkmark in Actions tab)
+- ✅ The `Release PR` workflow (`release-pr.yml`) ran for the push and its PR step did not skip.
+  It skips while a draft release exists (see its run notice), and release-please logs
+  "untagged, merged release PRs outstanding" while a merged Release PR waits for its release.
+  Passing CI is not needed: this pass does not wait for it.
 - ✅ Commit used conventional format (`feat:`, `fix:`, etc.)
 - ✅ Pushed to `main` branch
 - ✅ GitHub Actions has PR creation permissions
