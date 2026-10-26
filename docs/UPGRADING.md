@@ -223,6 +223,9 @@ gitopsreverser_git_pushes_total{gitbranch_namespace="platform", gitbranch_name="
   land; `refused` and `deferred` are counted too, and lose nothing. Alert on
   `reason=~"error|timeout"`.
 - `git_fetches_total` no longer has `reason="bootstrap"`, which never emitted.
+- `git_commit_failures_total` and `git_writes_dropped_total` no longer carry `kind`, and
+  `git_commit_windows_total` no longer has `close_reason="atomic_before_apply"`: the atomic write
+  path they described had no producer, and is gone.
 - `attribution_resolution_wait_seconds` carries only `tier` and `event_kind`; the type is on
   `attribution_resolutions_total`.
 - `apply_requests_total` and `apply_revision_mismatches_total` gain `gitbranch_namespace`,

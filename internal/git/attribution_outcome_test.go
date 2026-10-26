@@ -113,8 +113,8 @@ func TestAuthorKind_ClassifiesAllFourKinds(t *testing.T) {
 			want:  authorKindUnresolved,
 		},
 		{
-			name:  "an atomic write never attempts attribution",
-			write: PendingWrite{Kind: PendingWriteAtomic},
+			name:  "an empty write never attempts attribution",
+			write: PendingWrite{Kind: PendingWriteCommit},
 			want:  authorKindCommitter,
 		},
 	} {

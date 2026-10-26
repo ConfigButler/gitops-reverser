@@ -3,7 +3,7 @@
 Every instrument GitOps Reverser exports was read at its recording site. For each one, this review
 asks whether it answers a question an operator has, and whether its labels let that operator find
 the object to fix. This release breaks the API anyway, so a label change costs the least now. Every
-finding below was acted on in the same branch, except R8.
+finding below was acted on in the same branch.
 
 ## Scope
 
@@ -53,9 +53,13 @@ in that case.
 | R5 | `secret_encryptions_total{outcome="failed"}` named no `GitTarget`. | It gains `gittarget_namespace` and `gittarget_name`, from the write batch's own target, which every path sets. |
 | R6 | `InitOTLPExporter` set up a Prometheus exporter and printed to stdout. Nothing is pushed over OTLP. | Renamed `InitPrometheusExporter`; the prints are gone, and the no-op shutdown says why it is one. |
 | R7 | `appliers_held`, `stale_snapshots_total` and `claimed_resource_reconciled_total` had no `apply_` prefix. | Renamed `apply_appliers_held`, `apply_stale_snapshots_total` and `apply_claimed_resource_reconciled_total`. |
-| R8 | New, found tracing R3: nothing in production sends an atomic write request (`CommitModeAtomic`), so `kind="atomic"` on `git_commit_failures_total` and `git_writes_dropped_total`, and `close_reason="atomic_before_apply"`, never emit. The commit-failure doc also called `atomic` "a snapshot/resync request", which it is not. | The docs now say so. Deleting the atomic write path is a change to `internal/git/`'s write path, not to the metrics, and is left for its own change. |
+| R8 | New, found tracing R3: nothing in production sent an atomic write request (`CommitModeAtomic`), so `kind="atomic"` on `git_commit_failures_total` and `git_writes_dropped_total`, and `close_reason="atomic_before_apply"`, never emitted. The commit-failure doc also called `atomic` "a snapshot/resync request", which it was not. | The atomic write path is deleted: `handleAtomicRequest`, `buildAtomicPendingWrite`, `PendingWriteAtomic`, `CommitMode`, and every `WriteRequest` field but `Events`. With one value left, `kind` comes off both counters. Its enqueue logs now name the event's GitTarget; they printed an always-empty request field. Tests of shared behavior were moved onto live writes. |
 
 Other changes in the same pass:
+
+- `deadcode -test -tags e2e ./...` found four functions nothing calls, in tests or any binary:
+  `git.AuthFromSecretData`, `git.GetCommitSigner`, `giteaclient.Client.RegisterUserKeyAsUser` and
+  `test/utils.UncommentCode`. They are deleted, and the sweep now reports nothing.
 
 - `apply_requests_total` and `apply_revision_mismatches_total` had no identity at all. They carry
   the `GitBranch` and provider that asked and the claim that was asked.

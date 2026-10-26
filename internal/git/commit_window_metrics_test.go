@@ -82,8 +82,7 @@ func TestCommitWindowMetrics_EachCloseReasonIsCountedUnderItsOwnName(t *testing.
 	// identity_change: another author's write arrives while alice's window is open.
 	writeTo(loop, "b")
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("c", "bob", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("c", "bob", "team-a")},
 	}})
 
 	// shutdown: bob's window is open when the worker stops.

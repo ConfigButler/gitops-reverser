@@ -164,23 +164,6 @@ func (c Credential) Options() []gitclient.Option {
 	}
 }
 
-// AuthFromSecretData resolves go-git transport options from an already-fetched Git credentials
-// Secret. It is the thin wrapper over CredentialFromSecretData; callers that need to know what kind
-// of credential was produced should use that instead.
-func AuthFromSecretData(
-	ctx context.Context,
-	k8sClient client.Client,
-	provider *v1alpha3.GitProvider,
-	secret *corev1.Secret,
-	hostKeys SSHHostKeyConfig,
-) ([]gitclient.Option, error) {
-	cred, err := CredentialFromSecretData(ctx, k8sClient, provider, secret, hostKeys)
-	if err != nil {
-		return nil, err
-	}
-	return CredentialOptionsForProvider(provider, cred, CredentialTransportPolicy{})
-}
-
 // CredentialFromSecretData resolves a credential from an already-fetched Git credentials Secret,
 // accepting the Kubernetes-native, Flux, and Argo CD key dialects (the credentials Secret is the
 // one portable artifact across those ecosystems). provider supplies the namespace and the optional

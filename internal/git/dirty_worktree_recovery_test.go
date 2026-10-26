@@ -81,56 +81,6 @@ func headTreeContains(t *testing.T, repoPath, path string) bool {
 	return true
 }
 
-// TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers is the §3.1 interleaving driven through the
-// ATOMIC path, which had no recovery at all.
-//
-// handleAtomicRequest finalizes the open window first, and that finalize is where recovery used to
-// be reached — but finalizeOpenWindowWithReason returns at its first line when no window is open,
-// which is the ordinary case for an atomic write. So the atomic planned on a worktree still
-// holding the failed write's staged file and committed it under its own author.
-func TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers(t *testing.T) {
-	worker, _, _ := setupCommitPushSplitWorker(t)
-	createPlainGitTarget(t, worker, "team-a", "team-a")
-
-	_, err := worker.getGitProvider(worker.ctx)
-	require.NoError(t, err)
-	repoPath := worker.repoPath()
-
-	// The cooldown is held, so write A commits locally and stays retained. That retention is what
-	// makes commitPendingWrites' own reset unavailable.
-	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
-	defer loop.stopTimers()
-
-	// 1. Write A commits and is retained.
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("write-a", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
-	}})
-	require.True(t, loop.finalizeOpenWindow())
-	require.Len(t, loop.pendingWrites, 1)
-
-	// 2. Write B fails part-way through its batch, leaving its file staged.
-	stageLeftoverFromAFailedWrite(t, worker)
-
-	// 3. An atomic write C arrives with no window open.
-	require.Nil(t, loop.openWindow)
-	loop.handleAtomicRequest(&WriteRequest{
-		Events:             []Event{configMapEvent("write-c", "carol", "")},
-		CommitMode:         CommitModeAtomic,
-		GitTargetName:      "team-a",
-		GitTargetNamespace: "default",
-	})
-	loop.endWake(0)
-
-	require.Len(t, loop.pendingWrites, 2, "C committed: A is retained alongside it")
-	assert.False(t, headTreeContains(t, repoPath, leftoverPath),
-		"C's commit must not carry the file a failed write left staged")
-	assert.True(t, headTreeContains(t, repoPath, "team-a/default/configmaps/write-a.yaml"),
-		"the replay must rebuild A: a recovery resets, and re-plans rather than discarding work")
-	assert.False(t, worker.worktreeDirty(), "the reset inside the recovery clears the flag")
-}
-
 // TestEveryLoopCommitPathRecoversADirtyWorktree enumerates the loop's commit entry points against
 // one dirty fixture.
 //
@@ -147,23 +97,9 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 			commit: func(t *testing.T, loop *branchWorkerEventLoop) {
 				t.Helper()
 				loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-					Events:     []Event{configMapTargetEvent("from-window", "bob", "team-a")},
-					CommitMode: CommitModePerEvent,
+					Events: []Event{configMapTargetEvent("from-window", "bob", "team-a")},
 				}})
 				require.True(t, loop.finalizeOpenWindow())
-			},
-		},
-		{
-			name: "atomic request",
-			commit: func(t *testing.T, loop *branchWorkerEventLoop) {
-				t.Helper()
-				loop.handleAtomicRequest(&WriteRequest{
-					Events:             []Event{configMapEvent("from-atomic", "carol", "")},
-					CommitMode:         CommitModeAtomic,
-					GitTargetName:      "team-a",
-					GitTargetNamespace: "default",
-				})
-				loop.endWake(0)
 			},
 		},
 		{
@@ -210,8 +146,7 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 
 			// Retained work, so commitPendingWrites cannot reset for us.
 			loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-				Events:     []Event{configMapTargetEvent("retained", "alice", "team-a")},
-				CommitMode: CommitModePerEvent,
+				Events: []Event{configMapTargetEvent("retained", "alice", "team-a")},
 			}})
 			require.True(t, loop.finalizeOpenWindow())
 			require.Len(t, loop.pendingWrites, 1)

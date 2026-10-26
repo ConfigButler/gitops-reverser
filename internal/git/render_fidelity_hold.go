@@ -127,7 +127,7 @@ func (l *branchWorkerEventLoop) serviceHeld(target itypes.ResourceReference) {
 	case status.State == RenderFidelityFalse:
 		l.takeHeld(target)
 		for _, h := range held.events {
-			l.dropAtRenderFidelity(target, status, writeDroppedEvent, h.event.Identifier.String())
+			l.dropAtRenderFidelity(target, status, h.event.Identifier.String())
 		}
 	case l.w.now().Sub(held.since) >= renderFidelityHoldLimit:
 		l.giveUpHold(target, "the GitTarget's render fidelity has been pending for "+
@@ -158,7 +158,7 @@ func (l *branchWorkerEventLoop) giveUpHold(target itypes.ResourceReference, why 
 		return
 	}
 	for range held.events {
-		l.recordWriteDropped(writeDroppedEvent, writeDropRenderFidelityPending)
+		l.recordWriteDropped(writeDropRenderFidelityPending)
 	}
 	l.w.Log.Info("Dropped the live writes held for a GitTarget, and asked for a fresh snapshot of it, which "+
 		"commits the current state as the operator. A deletion comes back only under prune mode Always",

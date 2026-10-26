@@ -196,8 +196,8 @@ func TestQueueDepthGauge_ReportsWorkTheLoopHasNotReachedYet(t *testing.T) {
 
 	// Work is accepted. The loop is not running at all, which is the worst case of "has not got to
 	// it yet", and no metric call is made anywhere on this path.
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
 
 	depth, ok := telemetry.CollectInt64Sum(reader, queueDepthMetric, workerLabels())
 	require.True(t, ok, "the scrape must observe the queue even with the loop stopped")
@@ -212,8 +212,8 @@ func TestEnqueueRequest_FullQueueCountsTheDrop(t *testing.T) {
 
 	w := newMetricsTestWorker()
 	w.eventQueue = make(chan WorkItem, 1)
-	require.True(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent}))
-	require.False(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent}),
+	require.True(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}}))
+	require.False(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}}),
 		"the second request must be refused by the full queue")
 
 	labels := workerLabels()
@@ -230,8 +230,8 @@ func TestEnqueueRequest_FullQueueCountsTheDrop(t *testing.T) {
 func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
 	w := newMetricsTestWorker()
 	// Two write requests accepted onto the queue but never handled by the loop.
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
 	require.Equal(t, int64(2), w.inflightItems.Load())
 
 	loop := newBranchWorkerEventLoop(w, time.Second)
@@ -470,11 +470,10 @@ func TestRecordCommitFailure_SeparatesRefusalFromWriteFault(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
-	w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
+	w.recordCommitFailure(commitFailureRefused)
+	w.recordCommitFailure(commitFailureError)
 
 	refused := workerLabels()
-	refused["kind"] = commitFailureKindWindow
 	refused["reason"] = commitFailureRefused
 	count, ok := telemetry.CollectInt64Sum(reader, commitFailuresMetric, refused)
 	require.True(t, ok, "a refused window must be counted")
@@ -483,7 +482,6 @@ func TestRecordCommitFailure_SeparatesRefusalFromWriteFault(t *testing.T) {
 	// The two reasons need different people: a refusal is a Git path a human has to fix and will
 	// not clear on its own, while an error may be transient. Folding them would hide that.
 	faulted := workerLabels()
-	faulted["kind"] = commitFailureKindAtomic
 	faulted["reason"] = commitFailureError
 	count, ok = telemetry.CollectInt64Sum(reader, commitFailuresMetric, faulted)
 	require.True(t, ok)

@@ -33,8 +33,7 @@ func outageLoop(t *testing.T, slug string) (*ledgerFixture, *branchWorkerEventLo
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
 	t.Cleanup(loop.stopTimers)
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("held-during-the-outage", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("held-during-the-outage", "alice", ledgerTargetName)},
 	}})
 	loop.finalizeOpenWindow()
 	loop.publishLoopState(0)
@@ -230,7 +229,7 @@ func TestIntake_AWindowChargesAReplacedEventOnce(t *testing.T) {
 	_, loop, _ := outageLoop(t, "intake-window-replaced")
 	edit := func() {
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-			Events: []Event{deleteEvent("edited-twice")}, CommitMode: CommitModePerEvent,
+			Events: []Event{deleteEvent("edited-twice")},
 		}})
 	}
 	edit()

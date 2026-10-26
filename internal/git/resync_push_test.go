@@ -326,8 +326,7 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 
 	// A live ConfigMap edit opens a window (commitWindow is an hour, so it stays open).
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow, "the edit must open a window")
 

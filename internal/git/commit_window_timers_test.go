@@ -21,8 +21,7 @@ import (
 // names another.
 func writeTo(loop *branchWorkerEventLoop, name string) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent(name, "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent(name, "alice", "team-a")},
 	}})
 }
 

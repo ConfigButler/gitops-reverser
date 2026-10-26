@@ -124,7 +124,7 @@ func TestApplyWindow_OnlyAWithheldWriteIsKeptFromTheCommitWindow(t *testing.T) {
 	loop.handleLiveEvents(&WriteRequest{Events: []Event{
 		windowEvent("alpha", "3", "kubectl-edit"),
 		windowEvent("alpha", "2", FluxFieldManager),
-	}, CommitMode: CommitModePerEvent})
+	}})
 
 	require.NotNil(t, loop.openWindow)
 	require.Len(t, loop.openWindow.pathToEvent, 1)

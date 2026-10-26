@@ -17,15 +17,9 @@ import (
 //
 // The gate is per GitTarget and its scopes are per collection: one scope that has not reported
 // under its current revision closes normal writes for every collection of the target. A live
-// event or atomic write that meets a closed gate is DROPPED, and nothing replays it: the watch
+// event that meets a closed gate is DROPPED, and nothing replays it: the watch
 // cursor has already moved past it. So the drop is counted (git_writes_dropped_total) and the first
 // one under each gate status is logged at Info, naming the scopes the gate waits for.
-
-// The kind label of git_writes_dropped_total.
-const (
-	writeDroppedEvent  = "event"
-	writeDroppedAtomic = "atomic"
-)
 
 // The reason label of git_writes_dropped_total.
 const (
@@ -64,21 +58,18 @@ func (l *branchWorkerEventLoop) recordReplayClean(req *ResyncRequest) {
 // dropAtRenderFidelity counts one write the closed gate dropped, and logs it: at Info for the first
 // drop of target under this gate status, at V(1) for the rest, so a target whose gate stays closed
 // through a burst of edits says so once without logging every edit. resource names the dropped
-// object, empty for an atomic write.
+// object.
 func (l *branchWorkerEventLoop) dropAtRenderFidelity(
 	target itypes.ResourceReference,
 	status RenderFidelityStatus,
-	kind, resource string,
+	resource string,
 ) {
 	reason := writeDropRenderFidelityPending
 	if status.State == RenderFidelityFalse {
 		reason = writeDropRenderFidelityDiverged
 	}
-	log := l.w.Log.WithValues("gitTarget", target.String(), "kind", kind, "reason", reason,
+	log := l.w.Log.WithValues("gitTarget", target.String(), "resource", resource, "reason", reason,
 		"renderFidelity", status.Message)
-	if resource != "" {
-		log = log.WithValues("resource", resource)
-	}
 	mark := renderFidelityDropMark{revision: status.Revision, state: status.State}
 	if l.fidelityDropsLogged[target.Key()] != mark {
 		if l.fidelityDropsLogged == nil {
@@ -91,11 +82,11 @@ func (l *branchWorkerEventLoop) dropAtRenderFidelity(
 	} else {
 		log.V(1).Info("Dropped a write because the GitTarget's render fidelity is not established")
 	}
-	l.recordWriteDropped(kind, reason)
+	l.recordWriteDropped(reason)
 }
 
 // recordWriteDropped counts one write dropped at the render-fidelity gate.
-func (l *branchWorkerEventLoop) recordWriteDropped(kind, reason string) {
+func (l *branchWorkerEventLoop) recordWriteDropped(reason string) {
 	if telemetry.GitWritesDroppedTotal == nil {
 		return
 	}
@@ -104,5 +95,5 @@ func (l *branchWorkerEventLoop) recordWriteDropped(kind, reason string) {
 		ctx = context.Background()
 	}
 	telemetry.GitWritesDroppedTotal.Add(ctx, 1, metric.WithAttributes(
-		l.w.gitBranchAttrs(attribute.String("kind", kind), attribute.String("reason", reason))...))
+		l.w.gitBranchAttrs(attribute.String("reason", reason))...))
 }

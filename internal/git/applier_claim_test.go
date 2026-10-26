@@ -368,8 +368,7 @@ func TestCloseWindowForPushHint_PublishesTheOpenWindowNow(t *testing.T) {
 	t.Cleanup(loop.stopTimers)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("edited", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("edited", "alice", "team-a")},
 	}})
 	require.NotNil(t, loop.openWindow, "an hour-long window is still open")
 

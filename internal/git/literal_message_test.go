@@ -37,17 +37,14 @@ func TestValidateLiteralCommitMessage_Contract(t *testing.T) {
 }
 
 func TestCommitMetadata_LiteralPrecedenceAndPreservation(t *testing.T) {
-	for _, kind := range []PendingWriteKind{PendingWriteCommit, PendingWriteAtomic} {
-		for _, message := range []string{"  fix: {{.Author}}\n\nbody  ", strings.Repeat("ü", 1024)} {
-			p := PendingWrite{Kind: kind, Events: []Event{makeEvent("alice", "api")}, CommitMessage: message,
-				CommitConfig: ResolveCommitConfig(nil)}
-			p.CommitConfig.Message.LiveTemplate = "{{ invalid"
-			p.CommitConfig.Message.ReconcileTemplate = "{{ invalid"
-			actual, options, _, err := p.commitMetadata()
-			require.NoError(t, err)
-			assert.Equal(t, message, actual)
-			assert.Equal(t, DefaultCommitterName, options.Committer.Name)
-		}
+	for _, message := range []string{"  fix: {{.Author}}\n\nbody  ", strings.Repeat("ü", 1024)} {
+		p := PendingWrite{Kind: PendingWriteCommit, Events: []Event{makeEvent("api")}, CommitMessage: message,
+			CommitConfig: ResolveCommitConfig(nil)}
+		p.CommitConfig.Message.LiveTemplate = "{{ invalid"
+		actual, options, _, err := p.commitMetadata()
+		require.NoError(t, err)
+		assert.Equal(t, message, actual)
+		assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 	}
 	p := PendingWrite{Kind: PendingWriteCommit, CommitMessage: " \n ", CommitConfig: ResolveCommitConfig(nil)}
 	_, _, _, err := p.commitMetadata()

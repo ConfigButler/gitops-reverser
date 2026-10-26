@@ -632,8 +632,7 @@ func TestRefresh_ANewBranchDoesNotDependOnARecentRefresh(t *testing.T) {
 	loop := newBranchWorkerEventLoop(h.worker, 0)
 	defer loop.stopTimers()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("cm1", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("cm1", "alice", ledgerTargetName)},
 	}})
 	require.Empty(t, loop.pendingWrites, "the write was published")
 

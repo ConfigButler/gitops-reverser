@@ -231,12 +231,11 @@ var (
 	// restart-reconcile e2e spec; treat the name and labels as a public observability contract.
 	WatchRecoveryTotal metric.Int64Counter
 
-	// GitCommitFailuresTotal counts work that was routed to a worker and then died before it
-	// could ever be pushed, labelled by {gitbranch_*, provider_*, kind, reason}.
-	// kind is `window` (an ordinary live commit window) or `atomic` (an atomic write request, which
-	// nothing in production sends today); a resync's failure is git_resync_failures_total instead;
-	// reason is `refused` (the acceptance gate or a write-boundary precondition rejected the plan,
-	// which needs a human to fix the Git path) or `error` (a write fault).
+	// GitCommitFailuresTotal counts live commit windows that were routed to a worker and then died
+	// before they could ever be pushed, labelled by {gitbranch_*, provider_*, reason}. A resync's
+	// failure is git_resync_failures_total instead. reason is `refused` (the acceptance gate or a
+	// write-boundary precondition rejected the plan, which needs a human to fix the Git path) or
+	// `error` (a write fault).
 	//
 	// This was the largest remaining hole. A commit failure drops the whole window — the events are
 	// already lost to the failed flush — and it happens AFTER routing and BEFORE pushing, so
@@ -244,18 +243,17 @@ var (
 	// every object in that window until the next resync re-derives them, and until now the only
 	// trace was a log line (or, for a refusal, a GitTarget condition nobody is alerting on).
 	GitCommitFailuresTotal metric.Int64Counter
-	// GitWritesDroppedTotal counts the live events and atomic writes a branch worker dropped
-	// because their GitTarget's render fidelity was not established, labelled by
-	// {gitbranch_*, provider_*, kind, reason}. kind is `event` (one live event) or `atomic` (an
-	// atomic write request, which nothing in production sends today); reason is
+	// GitWritesDroppedTotal counts the live events a branch worker dropped because their GitTarget's
+	// render fidelity was not established, labelled by {gitbranch_*, provider_*, reason}. reason is
 	// `render_fidelity_pending` (a scope of the GitTarget has not reported under its current
-	// revision yet) or `render_fidelity_diverged` (a rendered value does not match the live object). A dropped write is not retried: the edit is
-	// missing from Git until the object changes again or its collection replays.
+	// revision yet) or `render_fidelity_diverged` (a rendered value does not match the live
+	// object). A dropped write is not retried: the edit is missing from Git until the object
+	// changes again or its collection replays.
 	GitWritesDroppedTotal metric.Int64Counter
 	// GitCommitWindowsTotal counts closed commit windows, labelled by {gittarget_namespace,
 	// gittarget_name, close_reason, timer_source}. close_reason says what ended the window
 	// (idle_timeout, max_duration, attach_next, identity_change, buffer_limit, resync_before_apply,
-	// atomic_before_apply, shutdown, foreign_commit for a Git host's push notice, apply_due for the
+	// shutdown, foreign_commit for a Git host's push notice, apply_due for the
 	// flush before an apply); timer_source says whose timers were in effect: the GitTarget's,
 	// or a CommitRequest's that attached and replaced them. Every window is counted exactly once, at
 	// the start of its finalize, so a window that then produces no diff or fails to commit is counted
@@ -342,7 +340,7 @@ var (
 	// intake, also git_queue_refusals_total{kind="resync"}, and the stream gathers it again) or
 	// `deferred` (the remote could not be reached; it stays pending, also
 	// git_materialization_failures_total). A resync's commit failure is not
-	// git_commit_failures_total, which counts windows and atomic writes only. A sustained
+	// git_commit_failures_total, which counts live windows only. A sustained
 	// error or timeout rate means snapshots are not committing and the folder is relying on
 	// steady-state events to catch up.
 	GitResyncFailuresTotal metric.Int64Counter

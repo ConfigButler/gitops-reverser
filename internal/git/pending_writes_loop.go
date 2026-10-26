@@ -14,8 +14,8 @@ import (
 // This file is the branch worker's ordered pending writes, and the one driver that turns them into
 // commits and publications. See docs/design/gittarget-branch-worker-pending-writes.md.
 //
-// Every write the loop makes, whatever produced it (a closed window, an atomic batch, a resync, a
-// save's empty record), takes one path:
+// Every write the loop makes, whatever produced it (a closed window, a resync, a save's empty
+// record), takes one path:
 //
 //   - decide appends it to the pending writes. The write gates and building the write have passed, so the
 //     decision stands from here on. Deciding does nothing else: no commit, no push, no settlement.
@@ -45,12 +45,10 @@ func (e writeFailedError) Error() string        { return e.err.Error() }
 func (e writeFailedError) Unwrap() error        { return e.err }
 func (e writeFailedError) Is(target error) bool { return target == errWriteFailed }
 
-// writeOrigin is what a write's outcome is settled against: the caller waiting on a resync, or the
-// atomic request. They are process objects, kept beside
-// the write's data rather than in it.
+// writeOrigin is what a write's outcome is settled against: the caller waiting on a resync. It is a
+// process object, kept beside the write's data rather than in it.
 type writeOrigin struct {
 	resync *ResyncRequest
-	atomic *WriteRequest
 	// answered records that the resync's caller was answered already: the remote held it back,
 	// and it is applied later with nobody waiting.
 	answered bool
@@ -440,29 +438,20 @@ func (l *branchWorkerEventLoop) settleDropped(pendingWrite PendingWrite, err err
 	}
 }
 
-// settleFailedChange settles a window or an atomic batch whose commit failed for good.
+// settleFailedChange settles a window whose commit failed for good.
 func (l *branchWorkerEventLoop) settleFailedChange(pendingWrite PendingWrite, err error) {
-	kind, name, namespace, collection := changeIdentity(pendingWrite)
+	name, namespace := pendingWrite.windowTarget()
+	collection := sourceCollectionForEvents(pendingWrite.Events)
 	if isRefusal, refused := l.w.reportPathRefusal(err, name, namespace, collection); isRefusal {
-		l.w.recordCommitFailure(kind, commitFailureRefused)
+		l.w.recordCommitFailure(commitFailureRefused)
 		l.reapplyForRefusal(name, namespace, err.Error(), refused,
 			refusalObservationForEvents(pendingWrite.Events, refused), collection)
 	} else {
-		l.w.recordCommitFailure(kind, commitFailureError)
+		l.w.recordCommitFailure(commitFailureError)
 		l.w.Log.Error(err, "Commit failed; dropping the write",
-			"kind", kind, "gitTarget", namespace+"/"+name, "events", len(pendingWrite.Events))
+			"gitTarget", namespace+"/"+name, "events", len(pendingWrite.Events))
 	}
 	l.failDecidedRequest(pendingWrite, fmt.Errorf("commit failed: %w", err))
-}
-
-// changeIdentity is a window's or an atomic batch's metric kind, GitTarget, and source collection.
-func changeIdentity(pendingWrite PendingWrite) (string, string, string, itypes.CollectionKey) {
-	if request := pendingWrite.origin.atomic; request != nil {
-		name, namespace := atomicRefusalTarget(request)
-		return commitFailureKindAtomic, name, namespace, request.sourceCollection()
-	}
-	name, namespace := pendingWrite.windowTarget()
-	return commitFailureKindWindow, name, namespace, sourceCollectionForEvents(pendingWrite.Events)
 }
 
 // replyToDeferredResyncs answers the callers of the resyncs among the writes not committed yet, when

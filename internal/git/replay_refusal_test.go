@@ -51,8 +51,7 @@ func newReplayRefusalFixture(t *testing.T, slug string) (*ledgerFixture, *branch
 func retainTwoWrites(t *testing.T, loop *branchWorkerEventLoop) {
 	t.Helper()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("refused-on-replay", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("refused-on-replay", "alice", ledgerTargetName)},
 	}})
 	require.NotNil(t, loop.openWindow)
 	req := attachReq("alice", 0)
@@ -63,8 +62,7 @@ func retainTwoWrites(t *testing.T, loop *branchWorkerEventLoop) {
 	require.NotNil(t, loop.pendingWrites[0].CommitRequest)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("kept-behind-it", "bob", replayRefusalTargetB)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("kept-behind-it", "bob", replayRefusalTargetB)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 2)
@@ -173,8 +171,7 @@ func TestReplayRefusal_AResyncAnsweredEarlierIsReportedNotAnsweredAgain(t *testi
 	require.Len(t, loop.pendingWrites, 1, "the resync is retained as a local commit")
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("kept-behind-it", "bob", replayRefusalTargetB)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("kept-behind-it", "bob", replayRefusalTargetB)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 2)

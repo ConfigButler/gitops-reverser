@@ -152,7 +152,7 @@ func TestBranchWorker_AnEmptyRepositoryThatGainsABranchKeepsANoOpAbsent(t *testi
 	deleted := configMapTargetEvent("never-written", "alice", newBranchTarget)
 	deleted.Operation = "DELETE"
 	deleted.Object = nil
-	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{deleted}, CommitMode: CommitModePerEvent}})
+	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{deleted}}})
 	require.Empty(t, f.loop.pendingWrites, "settled at once, even in the cooldown")
 
 	simulateClientCommitOnDisk(t, f.repoDir, "main", "README.md", "main appeared\n")
@@ -276,7 +276,7 @@ func noOpWrite(loop *branchWorkerEventLoop) {
 	deleted := configMapTargetEvent("never-written", "alice", newBranchTarget)
 	deleted.Operation = "DELETE"
 	deleted.Object = nil
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{deleted}, CommitMode: CommitModePerEvent}})
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{deleted}}})
 }
 
 // §4.7 R5. With spec.parentBranch omitted the parent is the default branch as last discovered. A

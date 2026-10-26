@@ -16,15 +16,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// GetCommitSigner fetches commit signing material from the specified secret.
-func GetCommitSigner(
-	ctx context.Context,
-	k8sClient client.Client,
-	provider *v1alpha3.GitProvider,
-) (gogit.Signer, error) {
-	return getCommitSigner(ctx, k8sClient, provider)
-}
-
 func getCommitSigner(
 	ctx context.Context,
 	k8sClient client.Client,

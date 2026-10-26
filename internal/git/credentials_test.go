@@ -47,9 +47,9 @@ func credTestClient(t *testing.T, objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 }
 
-// AuthFromSecretData must read the SSH private key under any of the three ecosystem dialects
+// CredentialFromSecretData must read the SSH private key under any of the three ecosystem dialects
 // (Kubernetes-native ssh-privatekey, Flux identity, Argo CD sshPrivateKey).
-func TestAuthFromSecretData_SSHKeyDialects(t *testing.T) {
+func TestCredentialFromSecretData_SSHKeyDialects(t *testing.T) {
 	privateKey, knownHosts := credTestSSHKey(t)
 	c := credTestClient(t)
 	for _, keyName := range []string{"ssh-privatekey", "identity", "sshPrivateKey"} {
@@ -68,7 +68,7 @@ func TestAuthFromSecretData_SSHKeyDialects(t *testing.T) {
 
 // A password presented alongside an SSH key is its passphrase (Flux's shared-key convention), not
 // HTTP basic auth — so the result is still SSH public-key auth, never BasicAuth.
-func TestAuthFromSecretData_PasswordIsSSHPassphraseWhenKeyPresent(t *testing.T) {
+func TestCredentialFromSecretData_PasswordIsSSHPassphraseWhenKeyPresent(t *testing.T) {
 	privateKey, knownHosts := credTestSSHKey(t)
 	c := credTestClient(t)
 	secret := &corev1.Secret{Data: map[string][]byte{
@@ -82,7 +82,7 @@ func TestAuthFromSecretData_PasswordIsSSHPassphraseWhenKeyPresent(t *testing.T) 
 	assert.NotNil(t, auth.SSH)
 }
 
-func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
+func TestCredentialFromSecretData_HTTPBasicAndBearer(t *testing.T) {
 	c := credTestClient(t)
 
 	t.Run("basic", func(t *testing.T) {

@@ -147,7 +147,7 @@ func TestParentRecovery_WritesDecidedWhileTheParentIsMissingAreKept(t *testing.T
 
 	write := func(target, name string) {
 		event := configMapTargetEvent(name, "alice", target)
-		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
 	}
 	write(newBranchTarget, "a1")
 	write("other-target", "b1")
@@ -234,7 +234,7 @@ func TestParentRecovery_ProbeBudgetIsPerWorker(t *testing.T) {
 					})
 					event := configMapTargetEvent("cm-"+target, "alice", target)
 					f.loop.handleQueueItem(
-						WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}},
+						WorkItem{Request: &WriteRequest{Events: []Event{event}}},
 					)
 				}
 			}

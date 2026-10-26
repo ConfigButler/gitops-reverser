@@ -48,10 +48,8 @@ func sourceCollectionForLog(c types.CollectionKey) string {
 	return c.String()
 }
 
-// sourceCollection is the write request's source collection: the one its events agree on, or the zero collection
-// when they do not. The live path wraps exactly one event, which is the path that carries a
-// collection; an atomic reconcile carries many events and speaks for no single collection, so it reads
-// unclaimed, which is what it is.
+// sourceCollection is the write request's source collection: the one its events agree on, or the
+// zero collection when they do not. The live path wraps exactly one event.
 func (r *WriteRequest) sourceCollection() types.CollectionKey {
 	if r == nil || len(r.Events) == 0 {
 		return types.CollectionKey{}

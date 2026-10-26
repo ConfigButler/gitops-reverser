@@ -78,8 +78,7 @@ func TestReplayFailure_DoesNotLetThePushSettleWorkThatWasReset(t *testing.T) {
 
 	// One retained write, committed locally and waiting out the push cooldown.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("will-be-lost", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("will-be-lost", "alice", ledgerTargetName)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 1)
@@ -127,8 +126,7 @@ func TestReplayFailure_DoesNotResolveACommitRequestThatNeverLanded(t *testing.T)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("saved-by-hand", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("saved-by-hand", "alice", ledgerTargetName)},
 	}})
 	require.NotNil(t, loop.openWindow)
 	req := attachReq("alice", 0)
@@ -191,8 +189,7 @@ func TestReplayFailure_HoldsAWholeBatchNotJustItsFirstWrite(t *testing.T) {
 	// Two retained writes, each its own local commit.
 	for _, name := range []string{"first-of-two", "second-of-two"} {
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-			Events:     []Event{configMapTargetEvent(name, "alice", ledgerTargetName)},
-			CommitMode: CommitModePerEvent,
+			Events: []Event{configMapTargetEvent(name, "alice", ledgerTargetName)},
 		}})
 		require.True(t, loop.finalizeOpenWindow())
 	}
@@ -228,8 +225,7 @@ func TestReplayFailure_RecoveryRunsBeforeEveryCommitPathToo(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("retained-across-replay", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("retained-across-replay", "alice", ledgerTargetName)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 
@@ -241,8 +237,7 @@ func TestReplayFailure_RecoveryRunsBeforeEveryCommitPathToo(t *testing.T) {
 
 	// A second write arrives. Finalizing it recovers first, so both writes are real commits again.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("arrived-after-replay", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("arrived-after-replay", "alice", ledgerTargetName)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	assert.True(t, loop.checkoutCurrent(), "the commit path rebuilt the stranded write")
@@ -270,8 +265,7 @@ func TestReplayFailure_OnTheContentionPathIsAlsoHeld(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("lost-to-contention", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("lost-to-contention", "alice", ledgerTargetName)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 1)
@@ -323,8 +317,7 @@ func TestReplayFailure_AResetThatDiesHalfwayIsAlsoHeld(t *testing.T) {
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent("must-survive", "alice", ledgerTargetName)},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapTargetEvent("must-survive", "alice", ledgerTargetName)},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 1)

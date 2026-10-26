@@ -287,8 +287,7 @@ func TestGitFetchesTotal_ResyncWithRetainedWritesStillReadsTheRemote(t *testing.
 	loop.lastPushAt = time.Now()
 	defer loop.stopTimers()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("retained", "alice", "live")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapEvent("retained", "alice", "live")},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 1, "the resync must arrive with work retained")
@@ -332,8 +331,7 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 
 	// Retained work, so the loop's replay path is the one that recovers.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("retained", "alice", "team-a")},
-		CommitMode: CommitModePerEvent,
+		Events: []Event{configMapEvent("retained", "alice", "team-a")},
 	}})
 	require.True(t, loop.finalizeOpenWindow())
 	require.Len(t, loop.pendingWrites, 1)

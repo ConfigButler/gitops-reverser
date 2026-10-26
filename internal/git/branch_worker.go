@@ -407,7 +407,6 @@ const (
 	windowFinalizeReasonMaxDuration       windowFinalizeReason = "max-duration"
 	windowFinalizeReasonAttachNext        windowFinalizeReason = "attach-next"
 	windowFinalizeReasonResyncBeforeApply windowFinalizeReason = "resync-before-apply"
-	windowFinalizeReasonAtomicBeforeApply windowFinalizeReason = "atomic-before-apply"
 	windowFinalizeReasonIdentityChange    windowFinalizeReason = "author-or-target-change"
 	windowFinalizeReasonBufferLimit       windowFinalizeReason = "buffer-limit"
 	windowFinalizeReasonShutdown          windowFinalizeReason = "shutdown"
@@ -604,11 +603,7 @@ func (w *BranchWorker) Stop() {
 // dropped, so a caller advancing a durable watch cursor past this event must not treat
 // the drop as success (see reconcile.GitTargetEventStream.OnWatchEvent).
 func (w *BranchWorker) Enqueue(event Event) bool {
-	return w.enqueueRequest(&WriteRequest{
-		Events:        []Event{event},
-		CommitMode:    CommitModePerEvent,
-		CommitMessage: "",
-	})
+	return w.enqueueRequest(&WriteRequest{Events: []Event{event}})
 }
 
 // EnqueueWithdraw asks the loop to cancel a CommitRequest it has not acted on. It never blocks: a
@@ -840,7 +835,7 @@ func (w *BranchWorker) markResyncTailForWriteLocked(request *WriteRequest) {
 			continue
 		}
 		for i := range request.Events {
-			namespace, name := writeEventTarget(request, i)
+			namespace, name := request.Events[i].GitTargetNamespace, request.Events[i].GitTargetName
 			if key.namespace != namespace || key.name != name {
 				continue
 			}
@@ -870,16 +865,6 @@ func (w *BranchWorker) markResyncTailForResyncLocked(request *ResyncRequest, key
 			pending.tailPassed = true
 		}
 	}
-}
-
-// writeEventTarget resolves the GitTarget one event of a write belongs to: the event's
-// own fields when set, falling back to the request's for the atomic paths that carry the
-// target once for the whole request.
-func writeEventTarget(request *WriteRequest, i int) (string, string) {
-	if request.Events[i].GitTargetName != "" {
-		return request.Events[i].GitTargetNamespace, request.Events[i].GitTargetName
-	}
-	return request.GitTargetNamespace, request.GitTargetName
 }
 
 // markResyncTailForTargetLocked records the same boundary for every pending resync of one
@@ -951,7 +936,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.recordQueueRefusal(queueRefusalWrite)
 		w.Log.V(1).Info("Worker is stopping, request refused; the producer keeps it to redeliver",
 			"events", len(request.Events),
-			"gitTarget", request.GitTargetName)
+			"gitTarget", request.gitTarget())
 		return false
 	}
 	if !w.admitPayload(item.charge) {
@@ -959,7 +944,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalWrite)
 		w.Log.V(1).Info("Write refused while the branch has paused intake; "+
-			"the producer keeps it to redeliver", "events", len(request.Events), "gitTarget", request.GitTargetName)
+			"the producer keeps it to redeliver", "events", len(request.Events), "gitTarget", request.gitTarget())
 		return false
 	}
 	w.markResyncTailForWriteLocked(request)
@@ -968,8 +953,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.pendingResyncsMu.Unlock()
 		w.Log.V(1).Info("Write request enqueued",
 			"events", len(request.Events),
-			"mode", request.CommitMode,
-			"gitTarget", request.GitTargetName,
+			"gitTarget", request.gitTarget(),
 			"sourceCollection", sourceCollectionForLog(request.sourceCollection()))
 		// Nothing publishes depth here: the gauge reads inflightItems at scrape
 		// time, so an enqueue is visible to the next scrape whether or not the
@@ -985,8 +969,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		// one may be one COLLECTION of one GitTarget.
 		w.Log.Error(nil, "Event queue full, request refused; its producer offers it again",
 			"events", len(request.Events),
-			"mode", request.CommitMode,
-			"gitTarget", request.GitTargetName,
+			"gitTarget", request.gitTarget(),
 			"sourceCollection", sourceCollectionForLog(request.sourceCollection()))
 		return false
 	}
@@ -1042,7 +1025,7 @@ type branchWorkerEventLoop struct {
 	defaultWindow commitWindowDefaults
 
 	// openWindow holds the one live commit-shaped event window. It is finalized when its idle or
-	// max-duration timer runs out, and eagerly on author/target changes, atomic arrivals, byte-cap
+	// max-duration timer runs out, and eagerly on author/target changes, resync arrivals, byte-cap
 	// trips, an attach: Next, and shutdown.
 	openWindow  *openWindow
 	windowBytes int64
@@ -1300,14 +1283,6 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 		}
 		l.handleRefreshRequest(item.Refresh)
 	case item.Request == nil:
-	case item.Request.CommitMode == CommitModeAtomic:
-		targetName, targetNamespace := atomicRefusalTarget(item.Request)
-		if status, closed := l.w.renderFidelityClosed(targetName, targetNamespace); closed {
-			l.dropAtRenderFidelity(itypes.NewResourceReference(targetName, targetNamespace), status,
-				writeDroppedAtomic, "")
-			break
-		}
-		l.handleAtomicRequest(item.Request)
 	default:
 		l.handleLiveEvents(item.Request)
 	}
@@ -1406,7 +1381,7 @@ func (l *branchWorkerEventLoop) mirrors(event Event) bool {
 	l.serviceHeld(target)
 	status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace)
 	if closed && status.State == RenderFidelityFalse {
-		l.dropAtRenderFidelity(target, status, writeDroppedEvent, event.Identifier.String())
+		l.dropAtRenderFidelity(target, status, event.Identifier.String())
 		return false
 	}
 	if l.ownedElsewhere(event.GitTargetName, event.GitTargetNamespace, event.Identifier.String(),
@@ -1444,22 +1419,6 @@ func (l *branchWorkerEventLoop) closeOrArmWindow() {
 		return
 	}
 	l.resetCommitTimer(delay)
-}
-
-// handleAtomicRequest decides one atomic write request. Atomic batches bypass the commit window, but
-// not the pending writes: any open live work is finalized first so arrival order is preserved, then
-// the atomic write joins the pending writes behind it.
-func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
-	l.finalizeOpenWindowWithReason(windowFinalizeReasonAtomicBeforeApply)
-
-	pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, request)
-	if err != nil {
-		l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
-		l.w.Log.Error(err, "Failed to build atomic pending write", "events", len(request.Events))
-		return
-	}
-	pendingWrite.origin.atomic = request
-	l.decide(*pendingWrite)
 }
 
 func (l *branchWorkerEventLoop) handleShutdown() {
@@ -1578,7 +1537,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 
 	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
 	if err != nil {
-		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
+		l.w.recordCommitFailure(commitFailureError)
 		l.w.Log.Error(err, "Failed to build pending write; dropping open window",
 			"reason", string(reason),
 			"windowAuthor", windowAuthor,
@@ -2742,13 +2701,10 @@ const (
 	fetchReasonForcedRecheck = "forced_recheck"
 )
 
-// Commit-failure kinds and reasons. A failure here is work that was accepted, routed, and then
-// died before it could reach the remote: the window is dropped and its events are gone until the
-// next resync re-derives them.
+// Commit-failure reasons. A failure here is a window that was accepted, routed, and then died before
+// it could reach the remote: the window is dropped and its events are gone until the next resync
+// re-derives them.
 const (
-	commitFailureKindWindow = "window"
-	commitFailureKindAtomic = "atomic"
-
 	// commitFailureRefused is a plan the acceptance gate or a write-boundary precondition
 	// rejected. It is also surfaced as a GitTarget condition, but a condition is not a rate.
 	commitFailureRefused = "refused"
@@ -2874,13 +2830,13 @@ func (w *BranchWorker) gitBranchAttrs(extra ...attribute.KeyValue) []attribute.K
 	}, extra...)
 }
 
-// recordCommitFailure counts one window or request that died between routing and pushing: its
+// recordCommitFailure counts one window that died between routing and pushing: its
 // events are lost until the next resync re-derives them. An unreachable remote is not one: the
 // decided write stays pending for the publication retry.
 //
 // `refused` and `error` need different people. A refusal is a Git path a human has to fix and will
 // not clear on its own; an error may be transient.
-func (w *BranchWorker) recordCommitFailure(kind, reason string) {
+func (w *BranchWorker) recordCommitFailure(reason string) {
 	if telemetry.GitCommitFailuresTotal == nil {
 		return
 	}
@@ -2888,10 +2844,8 @@ func (w *BranchWorker) recordCommitFailure(kind, reason string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	telemetry.GitCommitFailuresTotal.Add(ctx, 1, metric.WithAttributes(w.gitBranchAttrs(
-		attribute.String("kind", kind),
-		attribute.String("reason", reason),
-	)...))
+	telemetry.GitCommitFailuresTotal.Add(ctx, 1,
+		metric.WithAttributes(w.gitBranchAttrs(attribute.String("reason", reason))...))
 }
 
 // Commit window timer sources, reported as the commit_windows_total `timer_source` label.
@@ -2916,8 +2870,6 @@ func (r windowFinalizeReason) metricLabel() string {
 		return "buffer_limit"
 	case windowFinalizeReasonResyncBeforeApply:
 		return "resync_before_apply"
-	case windowFinalizeReasonAtomicBeforeApply:
-		return "atomic_before_apply"
 	case windowFinalizeReasonShutdown:
 		return "shutdown"
 	case windowFinalizeReasonForeignCommit:
