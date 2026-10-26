@@ -303,9 +303,11 @@ func (s *applierState) restoreLag(attempt *inflightAttempt) {
 }
 
 // onlyLag reports whether scheduleConverges' converge is all that is pending for the applier, given its
-// unsent refusals: an attempt carrying nothing else yields to an edit (convergeHolds).
+// unsent refusals: an attempt carrying nothing else yields to an edit (convergeHolds). One that carries
+// a save is never only a lag, whatever lag says: a save asked for its apply, and a lag-only attempt that
+// went stale would not give it back.
 func (s *applierState) onlyLag(refusals map[refusalKey]unsentRefusal) bool {
-	return s.lag && !s.foreign && !s.adopt && !s.repair && len(refusals) == 0
+	return s.lag && !s.foreign && !s.adopt && !s.repair && len(refusals) == 0 && len(s.waitingSaves) == 0
 }
 
 // repairPending reports whether a Repair is pending: not yet carried, or carried by the attempt out.

@@ -429,3 +429,12 @@ func TestSaveApply_AppliedOnlyWhenTheRevisionHoldsItsCommit(t *testing.T) {
 		})
 	}
 }
+
+// An attempt that carries a save is never a lag-only converge, so it never yields to an edit and a
+// stale one gives its saves back.
+func TestApplierState_ASaveIsNeverOnlyALag(t *testing.T) {
+	state := &applierState{lag: true}
+	assert.True(t, state.onlyLag(nil))
+	state.waitSave(commitRequestID{Namespace: "team-a", Name: "save", UID: "uid"}, "ccc")
+	assert.False(t, state.onlyLag(nil))
+}
