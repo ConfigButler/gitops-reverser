@@ -66,8 +66,9 @@ jobs:
           # publish-helm), and a draft is invisible to release-please's own
           # "latest release" lookup. Opening the next PR in this same invocation
           # would compute it against the whole history and propose a bogus
-          # "release everything" version. The release-please-pr job opens/refreshes
-          # the PR *after* publish-release makes the release visible.
+          # "release everything" version. The release-please-pr job opens the next
+          # PR *after* publish-release makes the release visible; release-pr.yml
+          # refreshes it on every other push, without waiting for CI.
           skip-github-pull-request: true
 
   # Merge the per-arch release-grade digests — already built and pushed by the
@@ -523,23 +524,21 @@ jobs:
   # created. skip-github-release: true means it only opens/refreshes the next
   # release PR — it never tags or releases.
   #
-  # Gating: this must run AFTER publish-release when a release was cut (so the
-  # release is published and visible), but also on ordinary pushes that cut no
-  # release (so the pending release PR keeps tracking new commits). The `if`
-  # therefore runs whenever CI + release-please succeeded and EITHER no release
-  # was created (publish-release was skipped) OR publish-release succeeded — so a
-  # failed publish (release still a draft) will NOT open a PR against the draft.
+  # Gating: only after a release was published. On every other push,
+  # release-pr.yml has already refreshed the release PR without waiting for CI.
+  # That workflow skips while a draft exists, so this job opens the next PR.
+  # A failed publish leaves the draft in place, so this job skips too and no PR
+  # is computed against the draft.
   release-please-pr:
     name: Release Please (PR)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [ci, release-please, publish-release]
-    if: >-
-      ${{ !cancelled()
-          && needs.ci.result == 'success'
-          && needs.release-please.result == 'success'
-          && (needs.publish-release.result == 'success'
-              || needs.release-please.outputs.release_created != 'true') }}
+    needs: [publish-release]
+    if: needs.publish-release.result == 'success'
+    # Shared with release-pr.yml, so the two never rewrite the PR branch at once.
+    concurrency:
+      group: release-pr-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
