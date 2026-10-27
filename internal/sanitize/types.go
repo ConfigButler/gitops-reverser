@@ -108,11 +108,18 @@ func isOperationalLabel(key string) bool {
 // travel with it into every other. Sibling `kcp.io/` keys are not assumed to be
 // bookkeeping too, so this is not a prefix strip either.
 //
+// `config.kubernetes.io/origin` and `alpha.config.kubernetes.io/transformations` are kustomize's
+// build provenance, written by a build whose buildMetadata asks for them: the file and the
+// transformers that produced the object. Flux asks for originAnnotations on its own whenever a
+// kustomization.yaml has no resources: (fluxcd/pkg/kustomize, kustomize_generator.go), so a
+// generator-only folder's objects carry one live. They describe the build, never the source.
+//
 // Exercised end-to-end against a real Argo CD in
 // test/e2e/argocd_bi_directional_e2e_test.go.
 func isOperationalAnnotation(key string) bool {
 	switch key {
-	case "argocd.argoproj.io/tracking-id", "argocd.argoproj.io/installation-id", "kcp.io/cluster":
+	case "argocd.argoproj.io/tracking-id", "argocd.argoproj.io/installation-id", "kcp.io/cluster",
+		"config.kubernetes.io/origin", "alpha.config.kubernetes.io/transformations":
 		return true
 	}
 

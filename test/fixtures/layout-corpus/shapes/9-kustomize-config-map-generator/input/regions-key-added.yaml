@@ -1,0 +1,13 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# A new key, and two env files it could go to.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-regions
+  namespace: coffee
+data:
+  OPENING: "08:00"
+  OPENING_US: "07:00"
+  TIPPING: "true"
+  CLOSING: "18:00"

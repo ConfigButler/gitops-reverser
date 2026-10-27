@@ -1,0 +1,12 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# A new key, SHOW_TIPS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-flags
+  namespace: coffee
+data:
+  ENABLE_VOUCHERS: "true"
+  SHOW_BANNER: "true"
+  SHOW_TIPS: "true"

@@ -3,6 +3,7 @@
 package manifestedit
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -470,5 +471,187 @@ func setOverrideScalar(n *yaml.Node, e KustomizationEdit) {
 	n.Tag = "!!str"
 	if n.Style != yaml.SingleQuotedStyle && n.Style != yaml.DoubleQuotedStyle {
 		n.Style = 0
+	}
+}
+
+// LiteralEdit is one change to a configMapGenerator entry's literals: list. Remove drops the
+// KEY=... item; otherwise the item is set to Value, appended when the entry has none for Key.
+type LiteralEdit struct {
+	Key    string
+	Value  string
+	Remove bool
+}
+
+// EditConfigMapGeneratorLiterals applies literal edits to configMapGenerator[entryIndex], which
+// must be named entryName, preserving comments and key order. An item is edited in place, so its
+// position in the list and every other item keep their bytes. All-or-nothing like its siblings:
+// a drifted entry skips the whole call with a diagnostic.
+func EditConfigMapGeneratorLiterals(
+	path string,
+	content []byte,
+	entryIndex int,
+	entryName string,
+	edits []LiteralEdit,
+) (EditResult, []Diagnostic) {
+	return editGeneratorEntry(path, content, entryIndex, entryName, func(_, entry *yaml.Node) error {
+		return applyLiteralEdits(entry, edits)
+	})
+}
+
+// RemoveConfigMapGeneratorEntry drops configMapGenerator[entryIndex], which must be named
+// entryName. An emptied configMapGenerator: drops the key, as an emptied patches: does.
+func RemoveConfigMapGeneratorEntry(
+	path string,
+	content []byte,
+	entryIndex int,
+	entryName string,
+) (EditResult, []Diagnostic) {
+	return editGeneratorEntry(path, content, entryIndex, entryName, func(root, _ *yaml.Node) error {
+		seq := nodeMapGet(root, configMapGeneratorKey)
+		seq.Content = append(seq.Content[:entryIndex], seq.Content[entryIndex+1:]...)
+		if len(seq.Content) == 0 {
+			nodeMapDelete(root, configMapGeneratorKey)
+		}
+		return nil
+	})
+}
+
+const configMapGeneratorKey = "configMapGenerator"
+
+// editGeneratorEntry locates configMapGenerator[entryIndex], verifies its name, runs edit on it,
+// and re-encodes the kustomization.
+func editGeneratorEntry(
+	path string,
+	content []byte,
+	entryIndex int,
+	entryName string,
+	edit func(root, entry *yaml.Node) error,
+) (EditResult, []Diagnostic) {
+	skip := func(format string, args ...interface{}) (EditResult, []Diagnostic) {
+		return EditResult{Content: content, Mode: EditSkipped},
+			[]Diagnostic{diag(DiagWarning, Location{Path: path}, format, args...)}
+	}
+	docs, idx, root, reason, ok := locateKustomizationDocument(path, content)
+	if !ok {
+		return skip("%s", reason)
+	}
+	target := docs[idx].body
+	seq := nodeMapGet(root, configMapGeneratorKey)
+	if seq == nil || seq.Kind != yaml.SequenceNode || entryIndex < 0 || entryIndex >= len(seq.Content) {
+		return skip("kustomization %s has no configMapGenerator entry %d", path, entryIndex)
+	}
+	entry := seq.Content[entryIndex]
+	if entry.Kind != yaml.MappingNode {
+		return skip("kustomization %s: configMapGenerator entry %d is not a mapping", path, entryIndex)
+	}
+	if name := nodeMapGet(entry, "name"); name == nil || name.Value != entryName {
+		return skip("kustomization %s: configMapGenerator entry %d is not named %q", path, entryIndex, entryName)
+	}
+	if err := edit(root, entry); err != nil {
+		return skip("kustomization %s: %v", path, err)
+	}
+	encoded, err := encodeNode(root)
+	if err != nil {
+		return skip("kustomization %s: re-encode failed: %v", path, err)
+	}
+	body := reskinDocument(target, string(encoded))
+	if body == target {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	docs[idx].body = body
+	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
+}
+
+// applyLiteralEdits edits an entry's literals: items, creating the list for a first literal.
+func applyLiteralEdits(entry *yaml.Node, edits []LiteralEdit) error {
+	seq := nodeMapGet(entry, "literals")
+	if seq == nil {
+		seq = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		entry.Content = append(entry.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "literals"}, seq)
+	}
+	if seq.Kind != yaml.SequenceNode {
+		return errors.New("literals is not a sequence")
+	}
+	for _, e := range edits {
+		i := literalIndex(seq, e.Key)
+		switch {
+		case e.Remove && i >= 0:
+			removeSequenceItem(seq, i)
+		case e.Remove:
+		case i >= 0:
+			item := seq.Content[i]
+			item.Value = e.Key + "=" + LiteralValue(e.Value)
+			item.Tag = "!!str"
+			if item.Style != yaml.SingleQuotedStyle && item.Style != yaml.DoubleQuotedStyle {
+				item.Style = 0
+			}
+		default:
+			appendSequenceItem(seq,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: e.Key + "=" + LiteralValue(e.Value)})
+		}
+	}
+	if len(seq.Content) == 0 {
+		nodeMapDelete(entry, "literals")
+	}
+	return nil
+}
+
+// appendSequenceItem appends item to seq. A comment below the list belongs to its last item as
+// the decoder reads it (a foot comment), so the comment moves to the new last item: otherwise the
+// item would land after it, past a blank line.
+func appendSequenceItem(seq, item *yaml.Node) {
+	if n := len(seq.Content); n > 0 {
+		last := seq.Content[n-1]
+		item.FootComment, last.FootComment = last.FootComment, ""
+	}
+	seq.Content = append(seq.Content, item)
+}
+
+// removeSequenceItem removes seq.Content[i]. Its own head and line comments go with it; a foot
+// comment, which describes what follows the item rather than the item itself, moves to the item
+// before it so a comment below the list survives the removal of its last item.
+func removeSequenceItem(seq *yaml.Node, i int) {
+	removed := seq.Content[i]
+	if removed.FootComment != "" && i > 0 {
+		prev := seq.Content[i-1]
+		prev.FootComment = joinComments(prev.FootComment, removed.FootComment)
+	}
+	seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
+}
+
+func joinComments(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + "\n" + b
+}
+
+// literalIndex is the position of the KEY=... item for key, or -1.
+func literalIndex(seq *yaml.Node, key string) int {
+	for i, item := range seq.Content {
+		if item.Kind != yaml.ScalarNode {
+			continue
+		}
+		if k, _, found := strings.Cut(item.Value, "="); found && k == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// LiteralValue is the text after "KEY=" that kustomize reads back as value. kustomize removes one
+// pair of matching surrounding quotes from a literal (kv.removeQuotes), so a value that is itself
+// quoted is wrapped in the other quote to survive that.
+func LiteralValue(value string) string {
+	if len(value) < 2 || value[0] != value[len(value)-1] {
+		return value
+	}
+	switch value[0] {
+	case '"':
+		return "'" + value + "'"
+	case '\'':
+		return `"` + value + `"`
+	default:
+		return value
 	}
 }

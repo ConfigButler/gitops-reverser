@@ -102,7 +102,7 @@ func seedSharedEntryWorktree(t *testing.T, root string) (string, string, string)
 
 // sharedImageEvent is the live Deployment as the cluster holds it: the rendered form,
 // which is what the source file plus the overlay's entry must reproduce.
-func sharedImageEvent(name, image string) Event { //nolint:unparam // image varies by intent, not by call today
+func sharedImageEvent(name, image string) Event {
 	return Event{
 		Object: &unstructured.Unstructured{Object: map[string]interface{}{
 			"apiVersion": "apps/v1",

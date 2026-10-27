@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: coffee
+# No disableNameSuffixHash: the generated name carries a content hash, so the
+# object someone edits is replaced by a differently named one on the next render.
+configMapGenerator:
+  - name: hashed-menu
+    files:
+      - menu.yaml

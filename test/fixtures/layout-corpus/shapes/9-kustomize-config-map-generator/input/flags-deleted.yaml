@@ -1,0 +1,9 @@
+# Abridged live object, as last seen: kubectl delete configmap coffee-flags -n coffee.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-flags
+  namespace: coffee
+data:
+  ENABLE_VOUCHERS: "true"
+  SHOW_BANNER: "true"

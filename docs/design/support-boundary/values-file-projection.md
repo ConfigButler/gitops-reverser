@@ -40,11 +40,11 @@ The same Helm values, expressed six ways in the corpus, get five different verdi
 | `HelmRelease.spec.values` inline, `valuesFrom` → a hand-written `ConfigMap` | `flux-helmrelease/infrastructure/controllers/ingress-nginx/` | **Editable** |
 | a `values.yaml` alone in a `values/` directory | `argocd-external-helm/values/**` | **Not seen at all** — no KRM in the dir, so never a candidate |
 | a `values.yaml` **next to** KRM | `argocd-external-helm/platform/cert-manager/values.yaml` | **Refused** — and it takes the folder with it |
-| a `values.yaml` wrapped by a `configMapGenerator` | `flux-helmrelease/apps/frontend/` | **Refused** — the generator is on the deny-list |
+| a `values.yaml` wrapped by a `configMapGenerator` | `flux-helmrelease/apps/frontend/` | **Editable** — with `disableNameSuffixHash: true`, the file is the generator's input |
 
-Read that column again. Values are editable when a human wraps them in a `ConfigMap`, and
-refused when `configMapGenerator` does the identical wrapping — with
-`disableNameSuffixHash: true`, so the result is deterministic. They are editable as a *string*
+Read that column again. Values are editable when a human wraps them in a `ConfigMap`, and, since
+the generator write-through, when a `configMapGenerator` with `disableNameSuffixHash: true` does
+the identical wrapping: the live edit lands in the file. They are editable as a *string*
 inside an Application, and refused as a *file* on disk. They are invisible when alone and
 fatal when adjacent.
 

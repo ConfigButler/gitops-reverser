@@ -217,6 +217,10 @@ type writeBatch struct {
 	// (ADDED then MODIFIED, or back and gone again) read the pre-batch render and was wrong about
 	// it. See rendersInBatch.
 	rendered map[renderKey]bool
+	// removedGenerated records the generated objects this batch already took out of the folder, so
+	// a second removal of one (a live delete and a sweep, or a replay) is a no-op rather than an
+	// edit of an entry that is gone. See removeGenerated.
+	removedGenerated map[*manifestanalyzer.GeneratedObject]bool
 	// touched records, while one event is applied, each file it touched with that file's bytes
 	// before the event. Nil when nothing is recorded. See beginEvent.
 	touched map[string]touchedFile
@@ -310,8 +314,10 @@ func newWriteBatch(
 	// this line the live path would leave no trace of why. The analyzer CLI and
 	// scan mode show the same diagnostics offline.
 	logStoreDiagnostics(ctx, store.Diagnostics)
-	contentByPath := make(map[string][]byte, len(scan.YAMLFiles))
-	for _, f := range scan.YAMLFiles {
+	// The generator inputs are hydrated beside the YAML files: a generated ConfigMap's edit is
+	// written into one of them, and the oracle renders both.
+	contentByPath := make(map[string][]byte, len(scan.YAMLFiles)+len(scan.InputFiles))
+	for _, f := range scan.RenderFiles() {
 		contentByPath[f.Path] = f.Content
 	}
 	batch := &writeBatch{
@@ -514,12 +520,30 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 // is coming back into.
 func (wb *writeBatch) stagedRender(ctx context.Context) func() {
 	scan := wb.scan
-	scan.YAMLFiles = wb.files()
+	scan.YAMLFiles, scan.InputFiles = wb.stagedFiles()
 	staged := manifestanalyzer.BuildStoreFromScan(ctx, scan, wb.mapper, manifestanalyzer.WriterAllowlist(),
 		manifestanalyzer.WithDeclaredNamespace(wb.namespaces.declaredNamespace()))
 	store, docLoc := wb.store, wb.docLoc
 	wb.store, wb.docLoc = staged, staged.DocumentLocations()
 	return func() { wb.store, wb.docLoc = store, docLoc }
+}
+
+// stagedFiles splits the batch's tree into the scan's two views: the YAML files the store models,
+// and the generator inputs it only renders.
+func (wb *writeBatch) stagedFiles() ([]manifestedit.FileContent, []manifestedit.FileContent) {
+	inputs := make(map[string]struct{}, len(wb.scan.InputFiles))
+	for _, f := range wb.scan.InputFiles {
+		inputs[f.Path] = struct{}{}
+	}
+	var yamlFiles, inputFiles []manifestedit.FileContent
+	for _, f := range wb.files() {
+		if _, input := inputs[f.Path]; input {
+			inputFiles = append(inputFiles, f)
+			continue
+		}
+		yamlFiles = append(yamlFiles, f)
+	}
+	return yamlFiles, inputFiles
 }
 
 // intendsObject reports whether one of intents is about obj.
@@ -540,6 +564,11 @@ func (wb *writeBatch) upsert(ctx context.Context, event Event) (upsertOutcome, e
 	}
 	dm := wb.store.ByManifestIdentity[id]
 	if dm == nil {
+		// No document holds it, but a configMapGenerator may render it: then the edit belongs
+		// in the generator's inputs, and a new document beside it would collide in the build.
+		if generated := wb.store.GeneratedObjectsFor(event.Object); len(generated) > 0 {
+			return wb.writeGenerated(ctx, event, generated)
+		}
 		return wb.createNew(ctx, event)
 	}
 	filePath := wb.docLoc[dm].FilePath
@@ -1471,7 +1500,8 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) error {
 	}
 	target, found := wb.resolveDelete(event)
 	if !found {
-		return nil
+		// No document holds it, but a configMapGenerator may render it.
+		return wb.deleteGenerated(ctx, event)
 	}
 	_, err := wb.removeDocument(ctx, event.Identifier, target, documentDeletedLive)
 	return err

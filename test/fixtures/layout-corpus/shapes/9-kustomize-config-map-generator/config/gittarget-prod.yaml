@@ -1,0 +1,25 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitBranch
+metadata:
+  name: app-repository-main
+  namespace: shop-prod
+spec:
+  gitProviderRef:
+    name: app-repository
+  branch: main
+  allowedGitTargets:
+    - consumerNamespaces: {from: Same}
+---
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: shop
+  namespace: shop-prod
+spec:
+  gitBranchRef:
+    name: app-repository-main
+  kubeProviderRef:
+    name: local
+    namespace: gitops-reverser
+  path: apps/shop/overlays/prod
+  # The generator lives in ../../base, which this target reads and never writes.

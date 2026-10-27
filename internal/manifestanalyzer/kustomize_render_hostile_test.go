@@ -125,7 +125,7 @@ func TestRenderChains_CycleIsBuiltAndRefused(t *testing.T) {
 	kusts := parseKustomizations(files)
 	require.Empty(t, renderRoots(kusts), "a cycle has no render root; that is the whole problem")
 
-	chains, _, failed := renderChains(files, kusts)
+	chains, _, failed, _ := renderChains(files, kusts)
 
 	require.Empty(t, chains)
 	require.Len(t, failed, 1, "the cycle must produce exactly one refusal, not one per member")

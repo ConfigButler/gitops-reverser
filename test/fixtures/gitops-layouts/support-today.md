@@ -35,12 +35,12 @@ Reading rules:
 | 2-rendered/helm-chart | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/helm-environment-values | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/kustomize-overlay-minimal | 0 | All reported candidates accepted | 2 | 0 | kustomize-overlay=2 | - | None |
-| 2-rendered/kustomize-overlays | 0 | Partial | 1 | 3 | kustomize-single=1, refused-structural=3 | configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator | refused-structural [not solvable]: kustomization uses unsupported feature(s): remote-base<br>refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator, nameSuffix, secretGenerator<br>refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator, namePrefix |
+| 2-rendered/kustomize-overlays | 0 | Partial | 1 | 3 | kustomize-single=1, refused-structural=3 | configMapGenerator-name-hash, namePrefix, nameSuffix, remote-base, secretGenerator | refused-structural [not solvable]: kustomization uses unsupported feature(s): remote-base<br>refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator-name-hash, nameSuffix, secretGenerator (set disableNameSuffixHash: true in generatorOptions or on the entry)<br>refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator-name-hash, namePrefix (set disableNameSuffixHash: true in generatorOptions or on the entry) |
 | 2-rendered/rendered-manifests | 0 | Partial | 3 | 2 | plain=3, refused-structural=2 | namePrefix | refused-structural [not solvable]: kustomization uses unsupported feature(s): namePrefix<br>refused-structural [not solvable]: kustomization uses unsupported feature(s): namePrefix |
 | 3-expanded/argocd-applicationset-directories | 0 | All reported candidates accepted | 5 | 0 | plain=5 | - | None |
 | 3-expanded/argocd-applicationset-files | 0 | No reported candidates accepted | 0 | 1 | plain=1 | - | non-krm-yaml [solvable]: chart/Chart.yaml: YAML is not a Kubernetes manifest<br>foreign-file [solvable]: chart/templates/_helpers.tpl: foreign file chart/templates/_helpers.tpl is not a managed manifest; remove it or name it in .gittargetignore<br>non-krm-yaml [solvable]: chart/templates/deployment.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml [solvable]: chart/templates/service.yaml: YAML is not a Kubernetes manifest<br>+5 more |
 | 3-expanded/argocd-multicluster-matrix | 0 | All reported candidates accepted | 4 | 0 | plain=4 | - | None |
-| 3-expanded/flux-helmrelease | 0 | Partial | 3 | 1 | kustomize-single=3, refused-structural=1 | configMapGenerator | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator |
+| 3-expanded/flux-helmrelease | 0 | All reported candidates accepted | 4 | 0 | kustomize-single=4 | - | None |
 | 3-expanded/flux-resourceset-inline | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 3-expanded/flux-resourceset-pull-requests | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 4-machine-written/flux-image-automation | 0 | All reported candidates accepted | 3 | 0 | kustomize-single=3 | - | None |
@@ -152,7 +152,7 @@ Read graph:
 ## 2-rendered/kustomize-overlays
 
 Reported rc `0`. Accepted `1`, refused `3`.
-Unsupported constructs: `configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator`.
+Unsupported constructs: `configMapGenerator-name-hash, namePrefix, nameSuffix, remote-base, secretGenerator`.
 
 Read graph:
 
@@ -163,8 +163,8 @@ Read graph:
 |---|---|---|---|---|---|
 | `apps/backend/base` | `kustomize-single` | true | `-` | 2/2/0 | none |
 | `apps/backend/overlays/production` | `refused-structural` | false | `backend-production` | 0/0/0 | refused-structural [not solvable]: kustomization uses unsupported feature(s): remote-base |
-| `apps/frontend/overlays/production` | `refused-structural` | false | `frontend-production` | 2/0/3 | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator, nameSuffix, secretGenerator |
-| `apps/frontend/overlays/staging` | `refused-structural` | false | `frontend-staging` | 2/0/1 | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator, namePrefix |
+| `apps/frontend/overlays/production` | `refused-structural` | false | `frontend-production` | 2/0/2 | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator-name-hash, nameSuffix, secretGenerator (set disableNameSuffixHash: true in generatorOptions or on the entry) |
+| `apps/frontend/overlays/staging` | `refused-structural` | false | `frontend-staging` | 2/0/0 | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator-name-hash, namePrefix (set disableNameSuffixHash: true in generatorOptions or on the entry) |
 
 ## 2-rendered/rendered-manifests
 
@@ -220,12 +220,12 @@ Unsupported constructs: `none`.
 
 ## 3-expanded/flux-helmrelease
 
-Reported rc `0`. Accepted `3`, refused `1`.
-Unsupported constructs: `configMapGenerator`.
+Reported rc `0`. Accepted `4`, refused `0`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `apps/frontend` | `refused-structural` | false | `-` | 1/1/1 | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator |
+| `apps/frontend` | `kustomize-single` | true | `-` | 1/1/0 | none |
 | `clusters/production` | `kustomize-single` | true | `flux-system` | 7/7/0 | none |
 | `infrastructure/controllers/ingress-nginx` | `kustomize-single` | true | `flux-system` | 3/3/0 | none |
 | `infrastructure/sources` | `kustomize-single` | true | `flux-system` | 3/3/0 | none |

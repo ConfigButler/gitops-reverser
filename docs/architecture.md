@@ -1391,7 +1391,8 @@ write side is shared with live writes):
 
 - before anything is planned, a **structure-only acceptance gate** runs over the scanned subtree; if it
   finds content the operator cannot safely manage: a kustomization using an unsupported feature
-  (generators / inline or JSON6902 patches / components / helm / replacements / transformers /
+  (`secretGenerator` or a hash-suffixed or merging `configMapGenerator` / inline or JSON6902 patches /
+  components / helm / replacements / transformers /
   name(pre|suf)fix / remote bases) or malformed `images:`/`replicas:` overrides, a duplicate manifest
   identity, an impure managed file, or a standalone non-KRM / invalid YAML;
   (a path-based strategic-merge `patches:` entry is tolerated as read-only build context, and an

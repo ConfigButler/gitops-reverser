@@ -103,6 +103,9 @@ type PlanAction struct {
 	// Desired is the clean object Git should contain, set for create/patch/replace
 	// and nil for removals and skips.
 	Desired *unstructured.Unstructured
+	// Generated marks a PlanDropOrphan of an object a configMapGenerator renders rather than
+	// of a document: Ref names its kustomization, and the drop removes the generator entry.
+	Generated bool
 	// Reason is a human-readable explanation, carried so renderers and status need
 	// no recomputation.
 	Reason string
@@ -237,7 +240,9 @@ func BuildScopedPlan(
 		collided:      collidedIdentities(store),
 		matched:       map[*DocumentModel]bool{},
 		inScope:       inScope,
-		sweep:         policy.Sweep,
+
+		matchedGenerated: map[*GeneratedObject]bool{},
+		sweep:            policy.Sweep,
 	}
 
 	// Desired side: create / patch / replace / skip for every cluster object, and
@@ -263,6 +268,11 @@ func BuildScopedPlan(
 			b.planGitOnly(dm)
 		}
 	}
+	// The render's other members: what a configMapGenerator renders is as much the folder's
+	// content as a document is, so an object the cluster no longer has is swept the same way.
+	for _, g := range store.generated {
+		b.planGeneratedOnly(g)
+	}
 
 	sortActions(b.actions)
 	return Plan{
@@ -286,8 +296,10 @@ type planBuilder struct {
 	collided      map[manifestedit.Identity]bool
 
 	matched map[*DocumentModel]bool
-	actions []PlanAction
-	diags   []manifestedit.Diagnostic
+	// matchedGenerated is the generated objects a desired object matched, the sweep's other half.
+	matchedGenerated map[*GeneratedObject]bool
+	actions          []PlanAction
+	diags            []manifestedit.Diagnostic
 	// inScope gates the Git-only sweep to a subset of resolved resource identities. For the
 	// whole-folder BuildPlan it is allInScope (always true); for a per-type reconcile/sweep
 	// it matches one type's (group, resource), so out-of-scope documents are never dropped.
@@ -321,6 +333,15 @@ func (b *planBuilder) planDesired(dr DesiredResource) {
 		// Git-only sweep emits, rather than report a contradictory create. Only a
 		// truly absent resource is a create.
 		if b.nonClaiming[id] {
+			return
+		}
+		// A configMapGenerator renders it: there is nothing to create, and its write goes into the
+		// generator's inputs, which only the writer plans (PlanGeneratedWrite). It is matched, so
+		// the sweep keeps its entry.
+		if generated := b.store.GeneratedObjectsFor(obj); len(generated) > 0 {
+			for _, g := range generated {
+				b.matchedGenerated[g] = true
+			}
 			return
 		}
 		b.actions = append(b.actions, PlanAction{
@@ -384,6 +405,11 @@ func (b *planBuilder) protectFromSweep(dr DesiredResource) {
 			"desired snapshot entry for %s has no object; protected from sweep (malformed entry, not a delete)",
 			dr.Resource.Key()),
 	}
+	for _, g := range b.store.generated {
+		if g.Resource != nil && *g.Resource == dr.Resource {
+			b.matchedGenerated[g] = true
+		}
+	}
 	if dm := b.store.ByResourceIdentity[dr.Resource]; dm != nil {
 		b.matched[dm] = true
 		ref := b.docLoc[dm]
@@ -430,19 +456,47 @@ func (b *planBuilder) planGitOnly(dm *DocumentModel) {
 		// The target's prune policy keeps inferred deletions off. The drop is not planned
 		// at all — not planned and then filtered — so it cannot reach the plan's action
 		// list, its ordering, or the commit. Counting it is the only trace it leaves.
-		b.retained++
-		if b.retainedByType == nil {
-			b.retainedByType = map[schema.GroupVersionResource]int{}
-		}
-		id := resourceOf(dm)
-		b.retainedByType[schema.GroupVersionResource{
-			Group: id.Group, Version: id.Version, Resource: id.Resource,
-		}]++
+		b.retain(resourceOf(dm))
 		return
 	}
 	b.actions = append(b.actions, PlanAction{
 		Kind: PlanDropOrphan, Ref: ref, Identity: dm.ManifestIdentity, Resource: resourceOf(dm),
 		Reason: "watched resource absent from the cluster: managed drop",
+	})
+}
+
+// retain counts one drop the prune policy suppressed.
+func (b *planBuilder) retain(id types.ResourceIdentifier) {
+	b.retained++
+	if b.retainedByType == nil {
+		b.retainedByType = map[schema.GroupVersionResource]int{}
+	}
+	b.retainedByType[schema.GroupVersionResource{
+		Group: id.Group, Version: id.Version, Resource: id.Resource,
+	}]++
+}
+
+// planGeneratedOnly classifies one generated object that no desired object matched, as
+// planGitOnly does a document: only one the registry names as a followable resource, in scope,
+// is dropped, and only under a prune policy that drops orphans.
+func (b *planBuilder) planGeneratedOnly(g *GeneratedObject) {
+	if b.matchedGenerated[g] || g.Resource == nil {
+		return
+	}
+	if b.inScope != nil && !b.inScope(*g.Resource) {
+		return
+	}
+	if !b.sweep.DropsOrphans() {
+		b.retain(*g.Resource)
+		return
+	}
+	b.actions = append(b.actions, PlanAction{
+		Kind:      PlanDropOrphan,
+		Ref:       RecordRef{FilePath: g.GeneratedIn},
+		Identity:  g.Identity(),
+		Resource:  *g.Resource,
+		Generated: true,
+		Reason:    "generated resource absent from the cluster: its configMapGenerator entry is dropped",
 	})
 }
 

@@ -1,0 +1,14 @@
+# behavior: merge rewrites the ConfigMap the base generates, so the object is shared with
+# the base and no one file owns it. Refused whatever the hash setting.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: UnsupportedContent
+      message: >-
+        overlays/staging/kustomization.yaml: kustomization uses unsupported feature(s):
+        configMapGenerator-behavior; the operator will not write into this folder (a
+        kustomize-build-failed diagnostic on this path carries the build error)

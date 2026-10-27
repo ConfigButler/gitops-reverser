@@ -1,0 +1,12 @@
+diff --git a/apps/coffee/kustomization.yaml b/apps/coffee/kustomization.yaml
+--- a/apps/coffee/kustomization.yaml
++++ b/apps/coffee/kustomization.yaml
+@@ -23,7 +23,7 @@     files:
+       - tagline=branding/tagline.txt
+       - logo=branding/logo.bin
+     literals:
+-      - THEME=dark
++      - THEME=light
+     options:
+       labels:
+         team: baristas

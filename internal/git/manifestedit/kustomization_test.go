@@ -5,6 +5,8 @@ package manifestedit
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 const kustomizationFixture = `# pin the app image here
@@ -359,6 +361,91 @@ func TestAppendKustomizationResource_RefusalsLeaveContentUntouched(t *testing.T)
 			if len(diags) == 0 {
 				t.Errorf("a refusal must carry a diagnostic")
 			}
+		})
+	}
+}
+
+// A configMapGenerator edit pins the entry by index AND name, so a drifted file is skipped rather
+// than mis-edited, exactly as an images: edit is.
+func TestConfigMapGeneratorEdits_SkipADriftedEntry(t *testing.T) {
+	content := []byte("configMapGenerator:\n  - name: menu\n    literals:\n      - A=1\n")
+
+	res, _ := EditConfigMapGeneratorLiterals("kustomization.yaml", content, 0, "flags",
+		[]LiteralEdit{{Key: "A", Value: "2"}})
+	require.Equal(t, EditSkipped, res.Mode)
+	res, _ = RemoveConfigMapGeneratorEntry("kustomization.yaml", content, 1, "menu")
+	require.Equal(t, EditSkipped, res.Mode)
+
+	res, _ = EditConfigMapGeneratorLiterals("kustomization.yaml", content, 0, "menu",
+		[]LiteralEdit{{Key: "A", Remove: true}, {Key: "Z", Remove: true}})
+	require.Equal(t, EditPatched, res.Mode)
+	require.Equal(t, "configMapGenerator:\n  - name: menu\n", string(res.Content),
+		"an emptied literals: goes, and removing an absent key is a no-op")
+}
+
+// Comments in a literals: list are the author's, and an edit keeps them: an edited item keeps its
+// head and line comments, a removed item takes only its own, and a comment below the list stays
+// below it whichever item ends up last.
+func TestEditConfigMapGeneratorLiterals_KeepsComments(t *testing.T) {
+	const in = `configMapGenerator:
+  - name: branding
+    literals:
+      # The colour scheme of the shop front.
+      - THEME=dark # light or dark
+      # Shown under the logo.
+      - SLOGAN=Coffee first.
+      - TIPS=on # off during the rush
+    # Ask the barista before changing the branding.
+`
+	cases := map[string]struct {
+		edit LiteralEdit
+		want string
+	}{
+		"edit an item": {LiteralEdit{Key: "THEME", Value: "light"}, `configMapGenerator:
+  - name: branding
+    literals:
+      # The colour scheme of the shop front.
+      - THEME=light # light or dark
+      # Shown under the logo.
+      - SLOGAN=Coffee first.
+      - TIPS=on # off during the rush
+    # Ask the barista before changing the branding.
+`},
+		"remove an item": {LiteralEdit{Key: "SLOGAN", Remove: true}, `configMapGenerator:
+  - name: branding
+    literals:
+      # The colour scheme of the shop front.
+      - THEME=dark # light or dark
+      - TIPS=on # off during the rush
+    # Ask the barista before changing the branding.
+`},
+		"remove the last item": {LiteralEdit{Key: "TIPS", Remove: true}, `configMapGenerator:
+  - name: branding
+    literals:
+      # The colour scheme of the shop front.
+      - THEME=dark # light or dark
+      # Shown under the logo.
+      - SLOGAN=Coffee first.
+    # Ask the barista before changing the branding.
+`},
+		"append an item": {LiteralEdit{Key: "OPEN", Value: "08:00"}, `configMapGenerator:
+  - name: branding
+    literals:
+      # The colour scheme of the shop front.
+      - THEME=dark # light or dark
+      # Shown under the logo.
+      - SLOGAN=Coffee first.
+      - TIPS=on # off during the rush
+      - OPEN=08:00
+    # Ask the barista before changing the branding.
+`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			res, diags := EditConfigMapGeneratorLiterals("kustomization.yaml", []byte(in), 0, "branding",
+				[]LiteralEdit{tc.edit})
+			require.Equal(t, EditPatched, res.Mode, "%v", diags)
+			require.Equal(t, tc.want, string(res.Content))
 		})
 	}
 }

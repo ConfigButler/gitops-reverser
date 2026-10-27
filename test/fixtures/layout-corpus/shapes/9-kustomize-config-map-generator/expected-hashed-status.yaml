@@ -1,0 +1,16 @@
+# The name hash couples the name to the content: the object someone edits is replaced by a
+# differently named one on the next render. The folder is refused, and the message names the
+# setting that makes it adoptable.
+#
+# No patch: the flush is refused before a byte moves. GitPathAccepted's message is the writer's
+# own and is asserted by the corpus.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: UnsupportedContent
+      message: >-
+        kustomization.yaml: kustomization uses a setting that can be changed in the repository:
+        configMapGenerator-name-hash (set disableNameSuffixHash: true in generatorOptions or on
+        the entry); the operator will not write into this folder (a kustomize-build-failed
+        diagnostic on this path carries the build error)

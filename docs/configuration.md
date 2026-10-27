@@ -2650,6 +2650,17 @@ A target path may contain `kustomization.yaml` files. The operator retains them 
   keeps its bytes. Only fields the entry already declares are updated; the operator never adds or
   removes entries. Note that one entry is a shared knob, exactly as in kustomize itself: updating it
   affects every resource in the build whose image matches.
+- **`configMapGenerator` with `disableNameSuffixHash: true`** (in `generatorOptions:` or on the
+  entry): a live change to the generated ConfigMap is written into the generator's inputs. A
+  `files:` key's file gets the live value as its content; an `envs:` key's line and a `literals:`
+  key's `KEY=value` item are edited in place, and a removed key's line or item is removed. A new key
+  is appended to the entry's `envs:` file when it has exactly one, and otherwise to its `literals:`
+  when it has some. Deleting the ConfigMap removes the entry from `configMapGenerator:`, and the
+  input files no other entry, resource or patch reads; under `spec.prune.mode: Always` a resync
+  sweeps the entry of a generated ConfigMap the cluster no longer has, as it sweeps a document. A
+  change with no single input to land in is refused per object: `binaryData`, a label or annotation,
+  a new key with several `envs:` files or only `files:` sources, a removed `files:` key, and a
+  generator in a read-only base. The input files are build inputs, never foreign content.
 
 Two kustomize shapes beyond that subset are **supported without being authored**:
 
@@ -2662,7 +2673,9 @@ Two kustomize shapes beyond that subset are **supported without being authored**
 
 Everything else outside the modeled subset **refuses the whole target path before anything is
 written**: inline or JSON6902 patches and the deprecated `patchesStrategicMerge`/`patchesJson6902`
-spellings, generators, `components`, Helm fields, `replacements`, `transformers`,
+spellings, `secretGenerator`, a `configMapGenerator` whose name hash is not disabled (the message
+says to set `disableNameSuffixHash: true`) or whose `behavior:` is `merge` or `replace`,
+`components`, Helm fields, `replacements`, `transformers`,
 `namePrefix`/`nameSuffix`, remote bases, and `images:`/`replicas:` values that do not parse (those
 would fail `kustomize build` too). A refusal is loud: the target reports `GitPathAccepted=False`,
 `Stalled=True`, and `Ready=False` with reason `UnsupportedContent` until the path is cleaned up.

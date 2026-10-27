@@ -530,21 +530,14 @@ func (wb *writeBatch) applyResyncPlan(
 		if action.Kind != manifestanalyzer.PlanDropOrphan {
 			continue
 		}
-		// The planner names the document by its EFFECTIVE identity; its bytes may carry no
-		// namespace (one a kustomization supplies), so it is located by the raw identity, exactly
-		// as the live path's resolveDelete does.
-		target := deleteTarget{
-			filePath: action.Ref.FilePath,
-			id:       rawManifestIDForCurrentBytes(action.Identity, wb.store.ByManifestIdentity[action.Identity]),
-		}
-		removed, err := wb.removeDocument(ctx, action.Resource, target, documentDeletedSweep)
+		removed, err := wb.sweepDrop(ctx, action)
 		if err != nil {
 			return ResyncStats{}, nil, err
 		}
 		if removed {
 			stats.Deleted++
 			actions.deletes = append(actions.deletes,
-				resyncDelete{resource: action.Resource, identity: action.Identity})
+				resyncDelete{resource: action.Resource, identity: action.Identity, generated: action.Generated})
 		}
 	}
 	// Skipped stays a plan view (documents present but not editable in place); it is
@@ -556,6 +549,22 @@ func (wb *writeBatch) applyResyncPlan(
 	stats.Retained = plan.RetainedOrphans
 	wb.tallyPruneRetention(plan)
 	return stats, actions, nil
+}
+
+// sweepDrop applies one planned drop, of a document or of an object a configMapGenerator renders,
+// and reports whether it removed anything.
+func (wb *writeBatch) sweepDrop(ctx context.Context, action manifestanalyzer.PlanAction) (bool, error) {
+	if action.Generated {
+		return wb.removeGenerated(ctx, action.Resource, objectNamed(action.Identity), documentDeletedSweep)
+	}
+	// The planner names the document by its EFFECTIVE identity; its bytes may carry no
+	// namespace (one a kustomization supplies), so it is located by the raw identity, exactly
+	// as the live path's resolveDelete does.
+	target := deleteTarget{
+		filePath: action.Ref.FilePath,
+		id:       rawManifestIDForCurrentBytes(action.Identity, wb.store.ByManifestIdentity[action.Identity]),
+	}
+	return wb.removeDocument(ctx, action.Resource, target, documentDeletedSweep)
 }
 
 // resyncActions is what a resync decided on the tree it was first committed on
@@ -575,6 +584,8 @@ type resyncActions struct {
 type resyncDelete struct {
 	resource itypes.ResourceIdentifier
 	identity manifestedit.Identity
+	// generated marks an object a configMapGenerator rendered: the sweep removed its entry.
+	generated bool
 }
 
 // empty reports whether the resync decided nothing: it changed nothing in Git, so it does not exist.
@@ -615,11 +626,7 @@ func (wb *writeBatch) applyResyncActions(
 		return stats, nil
 	}
 	for _, deleted := range actions.deletes {
-		target, found := wb.resolveResyncDelete(deleted)
-		if !found {
-			continue
-		}
-		removed, err := wb.removeDocument(ctx, deleted.resource, target, documentDeletedSweep)
+		removed, err := wb.replayDelete(ctx, deleted)
 		if err != nil {
 			return ResyncStats{}, err
 		}
@@ -628,6 +635,19 @@ func (wb *writeBatch) applyResyncActions(
 		}
 	}
 	return stats, nil
+}
+
+// replayDelete removes, from this batch's tree, what a resync's sweep removed, if the tree still
+// holds it, and reports whether it did.
+func (wb *writeBatch) replayDelete(ctx context.Context, deleted resyncDelete) (bool, error) {
+	if deleted.generated {
+		return wb.removeGenerated(ctx, deleted.resource, objectNamed(deleted.identity), documentDeletedSweep)
+	}
+	target, found := wb.resolveResyncDelete(deleted)
+	if !found {
+		return false, nil
+	}
+	return wb.removeDocument(ctx, deleted.resource, target, documentDeletedSweep)
 }
 
 // resolveResyncDelete locates, in this batch's tree, the document a resync's sweep removed.

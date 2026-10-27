@@ -1,0 +1,17 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# A new key, and only files: and literals: to put it in.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-branding
+  namespace: coffee
+  labels:
+    team: baristas
+data:
+  tagline: |
+    Fresh every morning.
+  THEME: dark
+  SLOGAN: Coffee first.
+binaryData:
+  logo: iVBORw0KGgo=

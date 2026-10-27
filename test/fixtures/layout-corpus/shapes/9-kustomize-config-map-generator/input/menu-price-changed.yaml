@@ -1,0 +1,16 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# The espresso is now 300 cents.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coffee-menu
+  namespace: coffee
+data:
+  menu.yaml: |
+    # Prices in cents. Keep espresso the cheapest item.
+    products:
+      - sku: espresso
+        priceCents: 300
+      - sku: flat-white
+        priceCents: 395

@@ -292,6 +292,19 @@ func TestCleanAnnotations(t *testing.T) {
 			},
 		},
 		{
+			// kustomize's build provenance, which Flux requests for a kustomization.yaml with no
+			// resources:, so a generator-only folder's live objects carry it.
+			name: "remove kustomize build provenance",
+			input: map[string]string{
+				"config.kubernetes.io/origin":                "configuredIn: kustomization.yaml\n",
+				"alpha.config.kubernetes.io/transformations": "- configuredIn: kustomization.yaml\n",
+				"config.kubernetes.io/local-config":          "kept",
+			},
+			expected: map[string]string{
+				"config.kubernetes.io/local-config": "kept",
+			},
+		},
+		{
 			// The exact-key set exists precisely so these survive. A blanket
 			// `argocd.argoproj.io/` prefix strip would silently drop a user's sync
 			// ordering and hook declarations.

@@ -1,0 +1,6 @@
+# Prices in cents. Keep espresso the cheapest item.
+products:
+  - sku: espresso
+    priceCents: 275
+  - sku: flat-white
+    priceCents: 395

@@ -97,8 +97,11 @@ type renderedObject struct {
 	// Object is the rendered result: what the GitOps controller will apply.
 	Object *unstructured.Unstructured
 	// OriginPath is the source file that produced it, relative to the scan root.
-	// Empty for a generated resource (which the acceptance gate refuses anyway).
+	// Empty for a generated resource.
 	OriginPath string
+	// GeneratedIn is the kustomization whose configMapGenerator produced it, relative to the
+	// scan root. Empty for every object with an OriginPath, and for one another generator made.
+	GeneratedIn string
 	// TransformedBy lists the kustomizations whose transformers touched it, in
 	// build order (innermost base first) — the override chain, from kustomize.
 	TransformedBy []transformation
@@ -327,6 +330,7 @@ func collectRendered(resMap resmap.ResMap, rootDir string) ([]renderedObject, er
 		ro := renderedObject{
 			Object:        obj,
 			OriginPath:    originOf(obj, rootDir),
+			GeneratedIn:   configMapGeneratedIn(obj, rootDir),
 			TransformedBy: transformationsOf(obj, rootDir),
 		}
 		unstructured.RemoveNestedField(obj.Object, "metadata", "annotations", originAnnotation)
@@ -353,6 +357,44 @@ func originOf(obj *unstructured.Unstructured, rootDir string) string {
 		return ""
 	}
 	return path.Clean(path.Join(rootDir, origin.Path))
+}
+
+// configMapGeneratedIn reads the kustomization a ConfigMapGenerator ran in, normalised to
+// scan-root-relative. kustomize records a generated object's origin as the kustomization and the
+// builtin that produced it, not as a file:
+//
+//	config.kubernetes.io/origin: |
+//	  configuredIn: ../base/kustomization.yaml
+//	  configuredBy: {apiVersion: builtin, kind: ConfigMapGenerator}
+func configMapGeneratedIn(obj *unstructured.Unstructured, rootDir string) string {
+	raw := obj.GetAnnotations()[originAnnotation]
+	if raw == "" {
+		return ""
+	}
+	var origin struct {
+		ConfiguredIn string `json:"configuredIn"`
+		ConfiguredBy struct {
+			Kind string `json:"kind"`
+		} `json:"configuredBy"`
+	}
+	if err := yaml.Unmarshal([]byte(raw), &origin); err != nil ||
+		origin.ConfiguredIn == "" || origin.ConfiguredBy.Kind != configMapGeneratorKind {
+		return ""
+	}
+	return path.Clean(path.Join(rootDir, origin.ConfiguredIn))
+}
+
+// configMapGeneratorKind is the builtin behind configMapGenerator:, as kustomize names it in a
+// generated object's origin.
+const configMapGeneratorKind = "ConfigMapGenerator"
+
+// sourceKey is the file the object is attributed to: its origin file, or the kustomization whose
+// generator produced it. A kustomization is never a resource's origin, so the two cannot collide.
+func (ro renderedObject) sourceKey() string {
+	if ro.OriginPath != "" {
+		return ro.OriginPath
+	}
+	return ro.GeneratedIn
 }
 
 // transformationsOf reads the ordered transformer chain kustomize applied, so the

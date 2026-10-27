@@ -266,3 +266,45 @@ func TestFolderReport_JSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &decoded))
 	require.Equal(t, report, decoded)
 }
+
+// The two configMapGenerator shapes of the generator write-through, a settings file and an env
+// file, are accepted with the name hash disabled, and refused with it on, naming the setting.
+func TestScanFolder_ConfigMapGenerator(t *testing.T) {
+	t.Parallel()
+
+	const hashOff = "generatorOptions:\n  disableNameSuffixHash: true\n"
+	const kustomization = `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: coffee
+configMapGenerator:
+  - name: coffee-menu
+    files:
+      - menu.yaml
+  - name: coffee-flags
+    envs:
+      - flags.env
+`
+	write := func(t *testing.T, kust string) string {
+		t.Helper()
+		root := t.TempDir()
+		files := map[string]string{
+			"kustomization.yaml": kust,
+			"menu.yaml":          "# Prices in cents.\nproducts:\n  - sku: espresso\n    priceCents: 275\n",
+			"flags.env":          "# Turn off during the rush.\nENABLE_VOUCHERS=true\n",
+		}
+		for name, body := range files {
+			require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(body), 0o600))
+		}
+		return root
+	}
+
+	report, err := manifestanalyzer.ScanFolder(context.Background(), write(t, kustomization+hashOff))
+	require.NoError(t, err)
+	require.True(t, report.Status.Accepted, "issues: %+v", report.Status.Issues)
+
+	report, err = manifestanalyzer.ScanFolder(context.Background(), write(t, kustomization))
+	require.NoError(t, err)
+	require.False(t, report.Status.Accepted)
+	require.Len(t, report.Status.Issues, 1)
+	require.Contains(t, report.Status.Issues[0].Message, "set disableNameSuffixHash: true")
+}

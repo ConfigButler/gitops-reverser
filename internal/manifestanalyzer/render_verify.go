@@ -313,11 +313,12 @@ func sameObject(a, b *unstructured.Unstructured) bool {
 
 // renderedByKey indexes a render by the document each object came from. The key carries the
 // ORIGIN FILE, not just kind/name, so two same-named objects rendered from different source
-// files stay distinct.
+// files stay distinct. A generated object is keyed by the kustomization that generated it, which
+// is also the SourcePath its write intent names.
 func renderedByKey(objects []renderedObject) map[chainKey]renderedObject {
 	out := make(map[chainKey]renderedObject, len(objects))
 	for _, o := range objects {
-		out[chainKey{originPath: o.OriginPath, kind: o.Object.GetKind(), name: o.Object.GetName()}] = o
+		out[chainKey{originPath: o.sourceKey(), kind: o.Object.GetKind(), name: o.Object.GetName()}] = o
 	}
 	return out
 }

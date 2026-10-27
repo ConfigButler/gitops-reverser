@@ -1,0 +1,11 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# creationTimestamp and managedFields, none of which reach Git.
+# Any edit: the folder itself is refused.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hashed-menu-7b8f9g2k4c
+  namespace: coffee
+data:
+  menu.yaml: |
+    products: []

@@ -96,6 +96,9 @@ type corpusScenario struct {
 	// TestGitTargetReadiness_StalledFollowsGitPathAccepted), so the whole file is covered even
 	// though no single test covers all of it.
 	status string
+	// operation is the event's operation; empty is "CREATE". "DELETE" folds the input in as the
+	// object's removal.
+	operation string
 	// emptyRepository seeds NOTHING, for a scenario whose whole subject is a folder that does not
 	// exist yet. It is a flag rather than an empty `repository-empty/` fixture directory because
 	// Git cannot hold an empty directory, and a .gitkeep inside one would show up in the diff the
@@ -228,6 +231,99 @@ func layoutCorpus() []corpusScenario {
 			status: "expected-env-change-status.yaml",
 		},
 		{
+			// A settings file wrapped by a configMapGenerator: the live value replaces the file's
+			// bytes, so the comment survives as part of the value and the diff is one line.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "menu-price-changed.yaml",
+			patch: "expected-menu-price-changed.patch",
+		},
+		{
+			// An envs: file: the changed key's line is edited in place.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "flags-value-changed.yaml",
+			patch: "expected-flags-value-changed.patch",
+		},
+		{
+			// A new key, and exactly one env file to append it to.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "flags-key-added.yaml",
+			patch: "expected-flags-key-added.patch",
+		},
+		{
+			// A removed key: its line goes, and every other line keeps its bytes.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "flags-key-removed.yaml",
+			patch: "expected-flags-key-removed.patch",
+		},
+		{
+			// A literals: key: its KEY=value item in kustomization.yaml is edited in place.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "branding-literal-changed.yaml",
+			patch: "expected-branding-literal-changed.patch",
+		},
+		{
+			// A new key on an entry with literals: and no env file joins its literals:.
+			dir:   "shapes/9-kustomize-config-map-generator",
+			input: "branding-key-added.yaml",
+			patch: "expected-branding-key-added.patch",
+		},
+		{
+			// A deleted ConfigMap: its entry leaves configMapGenerator:, and the env file only that
+			// entry reads goes with it, so the next render does not bring the object back.
+			dir:       "shapes/9-kustomize-config-map-generator",
+			input:     "flags-deleted.yaml",
+			operation: "DELETE",
+			patch:     "expected-flags-deleted.patch",
+		},
+		{
+			// The refusal halves of shape 9. Each change has no single input to land in, and a
+			// ConfigMap document beside the generator would collide with it in the build.
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "menu-key-removed.yaml",
+			status: "expected-menu-key-removed-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "menu-key-added.yaml",
+			status: "expected-menu-key-added-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "regions-key-added.yaml",
+			status: "expected-regions-key-added-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "branding-binary-changed.yaml",
+			status: "expected-branding-binary-changed-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			input:  "branding-label-changed.yaml",
+			status: "expected-branding-label-changed-status.yaml",
+		},
+		{
+			// The name hash is the one generator refusal the author can clear: the message names
+			// the setting.
+			dir:    "shapes/9-kustomize-config-map-generator",
+			config: "gittarget-hashed.yaml",
+			input:  "hashed-menu-changed.yaml",
+			status: "expected-hashed-status.yaml",
+		},
+		{
+			// The generator lives in the base the overlay reads: base-owned, as any base document.
+			dir:    "shapes/9-kustomize-config-map-generator",
+			config: "gittarget-prod.yaml",
+			input:  "shop-menu-changed.yaml",
+			status: "expected-base-owned-status.yaml",
+		},
+		{
+			dir:    "shapes/9-kustomize-config-map-generator",
+			config: "gittarget-staging.yaml",
+			input:  "shop-staging-menu-changed.yaml",
+			status: "expected-behavior-merge-status.yaml",
+		},
+		{
 			dir:   "specific-examples/homelab-argocd",
 			input: "paperless.yaml",
 			patch: "expected-paperless.patch",
@@ -299,6 +395,9 @@ func runCorpusScenario(t *testing.T, sc corpusScenario) {
 
 	worktree, seeded := seedCorpusWorktree(t, folder, sc)
 	event := corpusEvent(t, obj, target)
+	if sc.operation != "" {
+		event.Operation = sc.operation
+	}
 
 	sources, wildcard := readCorpusSourceNamespaces(t, folder, sc.configFile(), target)
 

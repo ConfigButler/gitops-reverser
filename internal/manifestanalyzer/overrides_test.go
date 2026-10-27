@@ -276,7 +276,7 @@ spec:
 		{Path: "kustomization.yaml", Content: []byte("resources:\n  - deployment.yaml\n")},
 	}
 
-	assignments, _, failed := renderChains(files, parseKustomizations(files))
+	assignments, _, failed, _ := renderChains(files, parseKustomizations(files))
 	require.Empty(t, failed)
 
 	a := assignments[chainKey{originPath: "deployment.yaml", kind: "Deployment", name: "web"}]
