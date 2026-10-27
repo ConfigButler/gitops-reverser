@@ -119,6 +119,31 @@ func TestCommitRequestReconcile_AnApplyNobodyKnowsIsLost(t *testing.T) {
 	assert.False(t, followsApply(&got), "lost is settled")
 }
 
+// TestCommitRequestReconcile_AnApplyThatDoesNotSettleTimesOut: an apply still running when
+// git.SaveApplyTimeout has passed since Ready stops being followed, and Applied says why.
+func TestCommitRequestReconcile_AnApplyThatDoesNotSettleTimesOut(t *testing.T) {
+	c := newCommitRequestClient(t, nil, catchingUp(newCommitRequest("save-1")))
+	f := committedFinalizer()
+	f.apply, f.applyKnown = git.SaveApply{Reason: git.SaveApplyRetrying, Message: "the apply failed"}, true
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+	reconcileCommitRequest(t, r, "save-1")
+
+	reconcileCommitRequest(t, r, "save-1")
+	got := fetchCommitRequest(t, c, "save-1")
+	requireCondition(t, got, ConditionTypeApplied, metav1.ConditionUnknown, git.SaveApplyRetrying)
+
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+	ready.LastTransitionTime = metav1.NewTime(time.Now().Add(-git.SaveApplyTimeout))
+	require.NoError(t, c.Status().Update(context.Background(), &got))
+	reconcileCommitRequest(t, r, "save-1")
+	got = fetchCommitRequest(t, c, "save-1")
+	requireCondition(t, got, ConditionTypeApplied, metav1.ConditionUnknown, crReasonApplyTimedOut)
+	applied := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeApplied)
+	assert.Contains(t, applied.Message, "within 10m0s")
+	assert.Contains(t, applied.Message, "the apply failed", "it says where the apply last stood")
+	assert.False(t, followsApply(&got), "a timeout is settled")
+}
+
 // TestCommitRequestReconcile_NoCatchUpReportsNoApply: the default asks no apply, and has no Applied.
 func TestCommitRequestReconcile_NoCatchUpReportsNoApply(t *testing.T) {
 	c := newCommitRequestClient(t, nil, newCommitRequest("save-1"))

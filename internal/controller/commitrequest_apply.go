@@ -21,12 +21,16 @@ import (
 // save's alone and never changes here.
 
 // crReasonApplyLost is the Applied reason for an apply the worker knows nothing of: GitOps Reverser
-// restarted before it learnt how it went, or the record aged out.
+// restarted before it learnt how it went.
 const crReasonApplyLost = "Lost"
 
+// crReasonApplyTimedOut is the Applied reason for an apply that did not settle within
+// git.SaveApplyTimeout of Ready: the request stops following it.
+const crReasonApplyTimedOut = "TimedOut"
+
 // applyLostAfter is how long, from Ready, a request may find its worker knowing nothing of its apply
-// before Applied says it is lost. The worker records the apply as the request resolves, so only a
-// restart, or a record past its TTL, leaves it unknown.
+// before Applied says it is lost. The worker records the apply as the request resolves, and keeps
+// it past git.SaveApplyTimeout, so only a restart leaves it unknown.
 const applyLostAfter = time.Minute
 
 // followsApply reports whether a finished request still reports its apply: it asked for one, its
@@ -36,10 +40,12 @@ func followsApply(cr *configbutleraiv1alpha3.CommitRequest) bool {
 		conditionIsTrue(cr.Status.Conditions, ConditionTypeReady) && !applyReported(cr)
 }
 
-// applyReported reports whether Applied is settled: True, False, or Unknown because it was lost.
+// applyReported reports whether Applied is settled: True, False, or Unknown because it was lost or
+// timed out.
 func applyReported(cr *configbutleraiv1alpha3.CommitRequest) bool {
 	c := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeApplied)
-	return c != nil && (c.Status != metav1.ConditionUnknown || c.Reason == crReasonApplyLost)
+	return c != nil && (c.Status != metav1.ConditionUnknown ||
+		c.Reason == crReasonApplyLost || c.Reason == crReasonApplyTimedOut)
 }
 
 // followApply reads where the request's apply stands, writes it to Applied, and comes back until it
@@ -48,7 +54,7 @@ func applyReported(cr *configbutleraiv1alpha3.CommitRequest) bool {
 //
 // A request that pushed no commit is settled here, without asking its worker: one that ended before
 // it reached a worker, such as AuthorUnresolved, is one its worker never hears of, and would
-// otherwise be reported lost.
+// otherwise be reported lost. One not settled git.SaveApplyTimeout after Ready times out.
 func (c *commitRequestCore) followApply(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 ) (time.Duration, error) {
@@ -66,8 +72,11 @@ func (c *commitRequestCore) followApply(
 				"name", client.ObjectKeyFromObject(cr), "err", err.Error())
 			return commitRequestPollInterval, nil
 		}
-		if !known {
+		switch {
+		case !known:
 			apply = unknownApply(cr)
+		case !apply.Done && readyFor(cr) >= git.SaveApplyTimeout:
+			apply = timedOutApply(cr, apply)
 		}
 	}
 	before := cr.Status.DeepCopy()
@@ -97,12 +106,29 @@ func nothingToApply() git.SaveApply {
 // unknownApply is the apply of a request its worker knows nothing of: still being taken on, shortly
 // after Ready, and lost after applyLostAfter.
 func unknownApply(cr *configbutleraiv1alpha3.CommitRequest) git.SaveApply {
-	if ready := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady); ready != nil &&
-		time.Since(ready.LastTransitionTime.Time) < applyLostAfter {
+	if readyFor(cr) < applyLostAfter {
 		return git.SaveApply{Reason: git.SaveApplyApplying, Message: "waiting for the branch worker to take the apply"}
 	}
 	return git.SaveApply{Reason: crReasonApplyLost,
-		Message: "GitOps Reverser does not know how the apply went: it restarted before it learnt, or kept no record"}
+		Message: "GitOps Reverser does not know how the apply went: it restarted before it learnt"}
+}
+
+// timedOutApply is the apply of a request whose applier did not apply its commit within
+// git.SaveApplyTimeout of Ready, last standing at apply.
+func timedOutApply(cr *configbutleraiv1alpha3.CommitRequest, apply git.SaveApply) git.SaveApply {
+	return git.SaveApply{Reason: crReasonApplyTimedOut,
+		Message: "the applier did not apply commit " + cr.Status.Commit + " within " + git.SaveApplyTimeout.String() +
+			" of the push, so this request stopped following it; the commit stays pushed, and the GitTarget's " +
+			"applier claim reports its applies. Last seen: " + apply.Message}
+}
+
+// readyFor is how long the request has been Ready, zero while it is not.
+func readyFor(cr *configbutleraiv1alpha3.CommitRequest) time.Duration {
+	ready := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		return 0
+	}
+	return time.Since(ready.LastTransitionTime.Time)
 }
 
 // setAppliedCondition writes apply to Applied and status.appliedRevision.

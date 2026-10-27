@@ -3275,10 +3275,12 @@ already at the tip needs none. The request reports the outcome in its `Applied` 
 | `True` | `Applied` | the applier applied a revision that holds the commit; `status.appliedRevision` names it, as the applier reported it |
 | `True` | `NothingToApply`, `NoApplierClaim`, `ApplierGone` | no apply was needed: the request pushed no commit, or the `GitTarget` names no applier claim, or stopped naming the one asked. The cluster already holds what was saved |
 | `False` | `CommitDropped` | the branch no longer holds the commit: its history was rewritten after the push. The only `False` |
+| `Unknown` | `TimedOut` | the apply did not settle within 10 minutes of `Ready`, so the request stopped following it. The commit stays pushed, and the applier may still apply it; the message says where the apply last stood, and the applier claim's status reports later applies |
 | `Unknown` | `Lost` | GitOps Reverser restarted before it learnt how the apply went |
 
-Wait for `Applied=True` for "saved and applied"; `Ready=True` stays "saved". A finished request is
-deleted only after its `Applied` condition is settled.
+Wait for `Applied=True` for "saved and applied"; `Ready=True` stays "saved". A request follows its
+apply for 10 minutes at most: an applier that cannot catch up does not keep it open. A finished
+request is deleted only after its `Applied` condition is settled.
 
 ### Finished requests are deleted after 48 hours
 

@@ -30,6 +30,7 @@ import (
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
 
 // fakeDiscovery serves resources, and fails with err when it is set.
@@ -398,3 +399,18 @@ func (f *fixedCommitRequestsReporter) CommitRequestsReport(types.NamespacedName)
 }
 
 func (f *fixedCommitRequestsReporter) CommitRequestsEvents() <-chan event.GenericEvent { return nil }
+
+// Requests are served concurrently, and each step reads the server's fact streams: they are set
+// once, never rewritten under a lock the readers do not take. Run with -race.
+func TestCommitRequestServer_StepsShareTheFactStreams(t *testing.T) {
+	s := &CommitRequestServer{FactStreams: queue.NewFactStreamSet()}
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			s.core().streams.ensure([]string{"route-a", "route-b"}[i%2])
+		})
+	}
+	wg.Wait()
+	first := s.core().streams
+	assert.Same(t, first, s.core().streams, "every step shares one set of streams")
+}

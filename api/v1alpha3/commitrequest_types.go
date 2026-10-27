@@ -228,6 +228,9 @@ type CommitRequestStatus struct {
 	//   holds the saved objects.
 	// - False, reason CommitDropped: the branch no longer holds the commit;
 	//   its history was rewritten after the push. Only this is False.
+	// - Unknown, reason TimedOut: the apply did not settle within 10 minutes
+	//   of Ready, so the request stopped following it. The commit stays
+	//   pushed; the message says where the apply last stood.
 	// - Unknown, reason Lost: GitOps Reverser restarted before it knew.
 	// +optional
 	// +listType=map
