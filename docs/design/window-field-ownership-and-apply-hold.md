@@ -58,8 +58,9 @@ answer for two authors on one object.
 
 ### The rule
 
-- **A window records the fields its writes changed**, as a field set per object, next to the latest
-  event. The set comes from comparing each event's object with the object's **baseline**: the last
+- **A window owns the fields its writes changed**, per object, next to the latest event, until a
+  write of its own sets one back ([a field set back is released](#a-field-set-back-is-released)).
+  A write's changes come from comparing its object with the object's **baseline**: the last
   live object the worker saw for it, across every window (see
   [the baseline lifecycle](#the-baseline-lifecycle)). It must not be compared with Git, which lacks
   the other windows' unpublished edits, so the comparison would credit them to this write.
@@ -68,7 +69,9 @@ answer for two authors on one object.
   one write changed.
 - **Every commit of a field-owned window sets only the fields that window owns**, and leaves every
   other field of the document as Git holds it, including when it is the last window to close on that
-  object. The values come from the window's own latest event. The editing primitive exists:
+  object. The values are the ones the window's own writes set
+  ([what a window stores](#what-a-window-stores)), not read back from its latest event. The editing
+  primitive exists:
   `manifestedit.PartialDesired` and `manifestedit.OwnsAssignedPaths`
   (`internal/git/manifestedit/fieldpatch.go`) do this for subresource audit patches, and keep the
   drift guard and the formatting preservation of the whole-object merge.
@@ -104,6 +107,89 @@ A last whole-object write would be wrong here. Alice's retained event is her sna
 `data.a = 1, data.b = 0`: written whole after Bob's commit, it restores `data.b = 0` and undoes his
 work. Writing the latest live snapshot instead fixes that case but overwrites any field an incoming
 Git commit changed meanwhile. So no field-owned commit ever writes a field it does not own.
+
+### What a window stores
+
+A window keeps no log of its writes. For each object it holds:
+
+| Kept | What it is | Used for |
+| --- | --- | --- |
+| **The latest event** | the whole object at the window's last write, as today (`openWindow.pathToEvent`) | the cases that [stay whole-object](#what-stays-whole-object) |
+| **The owned fields** | for each field the window owns, its **start value** (the baseline's value when the window took the field) and its **own value** (what the window's latest write to that field set; a removal counts as a value) | the commit, `field_conflict`, and [releasing a field set back](#a-field-set-back-is-released) |
+
+A log of every write would add nothing. While a window owns a field, `field_conflict` keeps every
+other write off it, so the window's last value for each field is all its commit needs. A window
+commit records where the window ended, never the steps, as it does today. A log would only matter
+for merging two windows' edits to one field, and part 1 never does that: it closes one of them.
+
+The own value is kept per field, rather than read back from the latest event, because the latest
+event is the whole live object at the window's last write, and it can hold a value nobody in the
+window chose:
+
+1. Alice sets `data.a = 1`. Her window owns `data.a`, start value `0`, own value `1`.
+2. A late apply sets the live `data.a` back to `0`. The apply window withholds it, and the observed
+   baseline becomes `data.a = 0`.
+3. Alice edits `data.b`. Her latest event holds `data.a = 0`, but compared with the baseline her
+   write changed only `data.b`, so `data.a` keeps its own value `1`.
+4. Her commit sets `data.a = 1` and `data.b`. Read from the latest event, it would have set
+   `data.a = 0` under her name.
+
+The commit carries the owned fields as a field patch: an `Event` already holds either a whole
+`Object` or a `FieldPatch`, and `manifestedit.PartialDesired` builds the patch from the
+assignments. So the pending write holds the window's **change**, not the whole object, which is what
+lets a replay onto a newer tip leave the newer tip's fields alone
+([replays stop reverting Git](#side-effect-replays-stop-reverting-git)).
+
+### A field set back is released
+
+A window owns a field for the change it made, not for having touched it. When a window's write sets
+an owned field back to its start value, the window **releases** the field: it no longer owns it, its
+commit does not write it, and another author's later write to it is not a `field_conflict`.
+
+```mermaid
+sequenceDiagram
+    participant A as Alice
+    participant B as Bob
+    participant W as Branch worker
+    Note over W: live and Git: cm/x data.a = 0, data.c = 0
+    A->>W: cm/x data.a = 1
+    Note over W: Alice's window owns data.a (start 0, own 1)
+    A->>W: cm/x data.c = 3
+    Note over W: Alice's window owns data.a and data.c
+    A->>W: cm/x data.a = 0
+    Note over W: data.a is back at its start value
+    Note over W: Alice's window releases data.a and keeps data.c
+    B->>W: cm/x data.a = 5
+    Note over W: no field in common with Alice's window
+    Note over W: Bob's window opens and owns data.a (start 0, own 5)
+    Note over W: Bob's window closes (idle_timeout)
+    Note over W: commit 1 by Bob sets data.a = 5 only
+    Note over W: Alice's window closes
+    Note over W: commit 2 by Alice sets data.c = 3 only
+    Note over W: Git: data.a = 5, data.c = 3, equal to live
+```
+
+If a window owned every field it ever changed, Bob's write would close Alice's window
+(`field_conflict`): a forced split for a change that no longer exists, and her commit would set
+`data.a = 0`, a value Git already holds.
+
+Releasing is safe because it leaves the field exactly as if the window had never written it. While
+Alice owned `data.a`, no other write changed it, so the start value is still the value the field
+held before her window, and her commit writing nothing for it keeps that value.
+
+Two rules keep the release honest:
+
+- **Only the window's own write releases a field**, and only a field that write changed compared
+  with the baseline. Comparing the latest event with the start value instead would read the withheld
+  apply in [the example above](#what-a-window-stores) as Alice undoing her edit.
+- **The release is per owned path.** Adding a label (`kubectl label cm/x tmp=1`, start value
+  absent) and removing it again (`kubectl label cm/x tmp-`) releases `metadata.labels.tmp`. An
+  object whose owned fields are all released leaves the window; a window left with nothing commits
+  nothing, and a save attached to it settles as a save with nothing to commit does today
+  (`whenNothingToCommit`).
+
+A whole-object entry (a create, a delete, a write with no baseline) has no start value per field and
+is never released.
 
 ### Convergence is a separate operation
 
@@ -289,8 +375,11 @@ must already exist.
 
 - **Part 1** adds field sets, the baseline table, the observed and desired views, and the repair
   operation to the model. On every commit: a field-owned commit changes only fields its window owns,
-  every changed field is credited to the window that owns it, and an older accepted write to a field
-  never lands after a newer one to the same field (an undo is a newer write). The repair is checked
+  every changed field is credited to the window that owns it, an older accepted write to a field
+  never lands after a newer one to the same field, and a field a window set back to its start value
+  is released: no commit of that window writes it, and Git holds the value from before the window.
+  A field-owned commit writes the window's own values, never a value from its latest event that its
+  writes did not set. The repair is checked
   as its own commit, with its own attribution: it never writes a value only a withheld write
   produced, never runs while a covering `Repair` is pending, and never touches a field an unapplied
   incoming commit changed.
@@ -370,9 +459,12 @@ author, and nothing reports an error.
 1. **A text merge of the files (`git merge-file`) instead of field ownership.** Line-based, so it
    knows nothing about YAML structure, list keys or the formatting `manifestedit` preserves. A
    conflict-free text merge can still produce a wrong object.
-2. **A last whole-object write instead of a separate repair.** Undoes another author's work or an
+2. **A log of every write instead of the owned fields.** Adds nothing while `field_conflict` keeps
+   one window per field ([what a window stores](#what-a-window-stores)); it would only be needed to
+   merge two windows' edits to one field.
+3. **A last whole-object write instead of a separate repair.** Undoes another author's work or an
    unapplied Git edit, as [the rule](#the-rule) shows.
-3. **Holding the apply until the windows' own timers end.** Unbounded under attaches (H3).
+4. **Holding the apply until the windows' own timers end.** Unbounded under attaches (H3).
 
 ## Open questions
 
