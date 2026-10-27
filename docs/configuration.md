@@ -3299,14 +3299,20 @@ Three things turn it on, each on purpose:
    install it there too, for the clusters the operator mirrors with its own identity.
 2. **Set `spec.remoteSaveRequests: Enabled` on the `KubeProvider`.** GitOps Reverser then watches the
    cluster's `RemoteSaveRequest`s through that provider, and writes each one's status back. It is the
-   one write GitOps Reverser makes on a source cluster: the provider's credential needs `get`,
-   `list`, `watch` and `delete` on `remotesaverequests`, and `update` on `remotesaverequests/status`,
-   in the `source.configbutler.ai` group. A `RemoteSaveRequest` is never mirrored, whatever a
-   `WatchRule` selects.
+   one write GitOps Reverser makes on a source cluster. A `RemoteSaveRequest` is never mirrored,
+   whatever a `WatchRule` selects.
 3. **Grant it on the `GitTarget`, in `spec.allowedRemoteSaveRequests`.** The provider switch makes
    the requests reachable; the `GitTarget`'s owner decides which of them may save its windows. An
    omitted or empty list admits none. The `GitTarget` must also mirror the cluster the request was
    made on: its `spec.kubeProviderRef` names the `KubeProvider` that served the request.
+
+What each value of `spec.remoteSaveRequests` does on the source cluster, and what the provider's
+credential needs there, in the `source.configbutler.ai` group:
+
+| Value | What GitOps Reverser does | The credential needs |
+| --- | --- | --- |
+| `Disabled` (default) | nothing | nothing |
+| `Enabled` | serves the requests and writes their status, and deletes a finished request `--save-request-ttl` after it finished (`0` keeps it) | `get`, `list`, `watch` and `delete` on `remotesaverequests`; `update` on `remotesaverequests/status` |
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
