@@ -138,7 +138,7 @@ func (r *quickstartFrameworkRun) helmInstallReadmeQuickstart() {
 		chart = "charts/gitops-reverser"
 	}
 
-	// ONE apply, exactly as the README's step 4 does it. This works because the chart installs no
+	// ONE apply, exactly as the quickstart's install step does it. This works because the chart installs no
 	// admission webhook — the starter GitTarget is gated by nothing, so it is admitted while the
 	// Deployment it rolls is still coming up. Namespace authorization is enforced at
 	// reconcile instead (checkSourceAuthorization, inside the Validated gate), which does not need

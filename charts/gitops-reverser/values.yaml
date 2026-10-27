@@ -139,6 +139,9 @@ applierAccess:
 # backs them all, so the issuer is genuinely cross-cutting and lives here; each server
 # opts into a cert via servers.<name>.tls.certManager. (Deliberately NOT duplicated per
 # server — that one shared resource is the exception to the "servers as peers" rule.)
+# The issuer renders only when some certificate does: the audit ingress certificates
+# with attribution.enabled, or the metrics certificate with servers.metrics.tls.enabled.
+# The default install renders neither, so it needs no cert-manager.
 certManager:
   enabled: true
   issuer:

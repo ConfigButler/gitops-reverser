@@ -53,7 +53,7 @@ rules:
     - deletecollection
     # No resources listed = Matches everything else (including CRDs).
     # This also captures `commitrequests.configbutler.ai` create events, which
-    # drive the "finalize the open commit window now" path. If this catch-all
-    # is ever narrowed, keep at least Metadata-level capture for
-    # `commitrequests` create events — the consumer reads the object body from
-    # the apiserver, so Metadata is sufficient.
+    # name a CommitRequest's author, as a write's event names its author. If this
+    # catch-all is ever narrowed, keep at least Metadata-level capture for
+    # `commitrequests` create events — the author is joined by uid and
+    # resourceVersion, which Metadata carries.

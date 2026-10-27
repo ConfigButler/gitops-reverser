@@ -42,7 +42,8 @@ without a side, or "namespace" without a direction. Fix the side first and the r
 vocabulary follows.
 
 **Control cluster.** The cluster the operator runs in, and where its own ten kinds live. When a
-document says "a namespace" with no qualifier, it means a control-cluster namespace.
+document says "a namespace" with no qualifier, it means a control-cluster namespace. `CommitRequest`
+is the one operator kind that can also live on a source cluster, next to the edits it saves.
 
 **Source cluster.** The cluster whose objects are mirrored into Git. A `GitTarget` names it through
 its `KubeProvider`. It is the same cluster as the control cluster on a single-cluster install,
@@ -179,7 +180,7 @@ its `maxDuration` after opening, whichever comes first, or earlier for a flush, 
 `CommitRequest` holds it. Windows do not merge across authors, which is why attribution can be
 per-commit.
 
-**Attach.** What a `CommitRequest`, or a `RemoteSaveRequest` made on a source cluster, does to a commit
+**Attach.** What a `CommitRequest`, on the control cluster or on a source cluster, does to a commit
 window: it gives the window its message and
 replaces the window's timers with its own. A request attaches to at most one window and never opens
 one. One word for the act, in the API (`window.attach`, `attachTimeout`), the code and the docs: not

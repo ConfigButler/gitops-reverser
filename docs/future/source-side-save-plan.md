@@ -9,17 +9,13 @@ It also plans the second step: letting a save take over a window whose writes na
 opt-in, for a source cluster that cannot send audit events at all. There it is the only way a save can
 put its author's name on the commit.
 
-Status: implemented on `feat/gitops-api-asks-converge-root-ca`. The two request kinds are a pair:
-`CommitRequest` (`configbutler.ai/v1alpha3`, formerly `CommitRequest`) on the control cluster, and
-`RemoteSaveRequest` (`source.configbutler.ai/v1alpha1`, `internal/watch/remote_save_requests.go`) on
-the source cluster. Each names its GitTarget, which admits it in a grant list:
-`spec.allowedCommitRequests` (by control-cluster namespace; omitted, its own namespace) and
-`spec.allowedRemoteSaveRequests` (by source namespace and labels; omitted, none). A KubeProvider
-also serves its cluster's remote requests only with `spec.remoteSaveRequests: Enabled`, and the
-GitTarget must mirror that cluster. The takeover is opt-in, as described below, bounded per grant.
-The open questions are answered: its own group, a default `attachTimeout` of `5s`, the reason
-`AuthorUnresolved`, and a second save of one author on one GitTarget is refused while the first is in
-progress (`SaveInProgress`).
+Status: superseded. It was built on `feat/gitops-api-asks-converge-root-ca` as a second kind,
+`RemoteSaveRequest` in `source.configbutler.ai/v1alpha1`, with a takeover for clusters that send no
+audit events. The [review that replaced it](../review/20261027-save-request-simplification.md) folded
+both kinds into one `CommitRequest`, served on the control cluster and on a source cluster through one
+core, and removed the takeover with the admission webhook. The
+[configuration reference](../configuration.md#serving-the-commitrequests-of-a-source-cluster) describes
+what shipped; this page keeps the reasoning that led there.
 
 This revision takes in gitops-api's review of the first draft, and a later API review of the
 implementation: see [After the API review](#after-the-api-review).

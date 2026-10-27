@@ -1,5 +1,9 @@
+{{- /*
+The self-signed Issuer renders only when some certificate needs it, so an install that mints none, the
+default with attribution off, needs no cert-manager CRDs at all.
+*/ -}}
 {{- if .Values.certManager.enabled }}
-{{- if .Values.certManager.issuer.create }}
+{{- if and .Values.certManager.issuer.create (or (include "gitops-reverser.auditCertificates" .) (include "gitops-reverser.metricsCertificate" .)) }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
@@ -11,7 +15,7 @@ metadata:
 spec:
   selfSigned: {}
 {{- end }}
-{{- if and .Values.servers.metrics.tls.enabled .Values.servers.metrics.tls.certManager }}
+{{- if include "gitops-reverser.metricsCertificate" . }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

@@ -96,9 +96,9 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
 
 ### Webhook Code (`internal/webhook/`)
 
-- Implement admission webhook interface correctly
-- Add proper validation/mutation logic
-- Update webhook configuration in `config/webhook/`
+- It is the audit ingress and the push receiver: HTTP handlers for what kube-apiserver and Git
+  hosts post. GitOps Reverser ships no admission webhook; validation lives in the schema, CEL and
+  the reconciler (`docs/spec/where-validation-lives.md`)
 
 ### API Changes (`api/v1alpha3/`)
 

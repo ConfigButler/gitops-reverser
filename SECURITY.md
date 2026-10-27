@@ -58,7 +58,7 @@ Security reports are especially relevant for areas such as:
 - queue and Valkey/Redis handling
 - Git credential handling
 - SOPS and Secret processing
-- admission webhook validation
+- `CommitRequest` admission and serving, including on source clusters
 
 ## Supported versions
 

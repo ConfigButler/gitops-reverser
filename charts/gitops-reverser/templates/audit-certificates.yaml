@@ -1,4 +1,4 @@
-{{- if and .Values.attribution.enabled .Values.certManager.enabled .Values.servers.audit.tls.certManager .Values.servers.audit.tls.enabled }}
+{{- if include "gitops-reverser.auditCertificates" . }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

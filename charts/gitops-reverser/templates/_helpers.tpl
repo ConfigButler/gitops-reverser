@@ -123,3 +123,21 @@ The audit route of the KubeProvider the chart renders: <release namespace>.<name
 {{- define "gitops-reverser.kubeProviderAuditRoute" -}}
 {{- printf "%s.%s" .Release.Namespace .Values.kubeProvider.name -}}
 {{- end }}
+
+{{/*
+"true" when cert-manager mints the audit ingress certificates: attribution is on, with audit TLS.
+*/}}
+{{- define "gitops-reverser.auditCertificates" -}}
+{{- if and .Values.attribution.enabled .Values.certManager.enabled .Values.servers.audit.tls.certManager .Values.servers.audit.tls.enabled -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+"true" when cert-manager mints the metrics serving certificate.
+*/}}
+{{- define "gitops-reverser.metricsCertificate" -}}
+{{- if and .Values.certManager.enabled .Values.servers.metrics.tls.enabled .Values.servers.metrics.tls.certManager -}}
+true
+{{- end -}}
+{{- end }}
