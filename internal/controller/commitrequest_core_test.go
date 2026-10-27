@@ -377,7 +377,9 @@ func TestCommitRequestCore_TheAuthorComesFromAuditAndIsClaimedFirst(t *testing.T
 	query := authors.queries[0]
 	assert.Equal(t, "default.local", query.AuditRoute, "the route of the GitTarget's KubeProvider")
 	assert.Equal(t, commitRequestGVR(), query.GVR)
-	assert.Equal(t, stored.ResourceVersion, query.ResourceVersion, "the version the request was created with")
+	assert.Equal(t, stored.UID, query.UID)
+	assert.True(t, query.Creation, "only the fact that created the request names its author")
+	assert.Empty(t, query.ResourceVersion, "a later write to the request moves it, and must not name the author")
 	assert.True(t, query.ExactCapable)
 	assert.Equal(t, 1, streams.Len(), "the stream of commitrequests on the route is followed")
 	assert.True(t, claimedFirst, "the author is written before the attach")
@@ -443,6 +445,32 @@ func TestCommitRequestCore_ARequestNoFactNames(t *testing.T) {
 		assert.Empty(t, f.calls[0].Author)
 		assert.Equal(t, git.AttributionUnresolved, f.calls[0].Attribution)
 	})
+}
+
+// TestCommitRequestCore_ARefusedRequestHasNothingToApply: a request that asked to catch up and was
+// refused before any worker heard of it, as AuthorUnresolved is, settles Applied=True, NothingToApply,
+// without asking the worker, which would know nothing of it and report it lost.
+func TestCommitRequestCore_ARefusedRequestHasNothingToApply(t *testing.T) {
+	provider := &configv1alpha3.KubeProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: localProvider, Namespace: "default"},
+		Spec:       configv1alpha3.KubeProviderSpec{InCluster: &configv1alpha3.KubeProviderInCluster{}},
+		Status: configv1alpha3.KubeProviderStatus{Conditions: []metav1.Condition{{
+			Type: KubeProviderConditionAuditFactsReceived, Status: metav1.ConditionTrue, Reason: "Received",
+		}}},
+	}
+	cr := newCommitRequest("save")
+	cr.Spec.CatchUp = configv1alpha3.CatchUpAfterPush
+	c := newCommitRequestClient(t, nil, cr, mirroringTarget(localProvider), provider)
+	f := committed()
+	core := &commitRequestCore{reader: c, finalizer: f, authors: &fakeAuthors{outcome: git.AttributionUnresolved}}
+	serveStep(t, core, controlPath(c), "save")
+	serveStep(t, core, controlPath(c), "save")
+
+	got := fetchCommitRequest(t, c, "save")
+	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonAuthorUnresolved)
+	requireCondition(t, got, ConditionTypeApplied, metav1.ConditionTrue, git.SaveApplyNothingToApply)
+	assert.Zero(t, f.applyLookups, "no worker heard of it")
+	assert.False(t, followsApply(&got), "settled")
 }
 
 // factsArriveDuringTheWait names nobody, and while it waits the provider's first audit facts arrive:

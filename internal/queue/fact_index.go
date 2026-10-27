@@ -97,6 +97,10 @@ type FactQuery struct {
 	// the write that took the object out of view (a label exit), and for a terminating one it can be
 	// the finalizer PATCH, which says who cleared a finalizer, not who asked for the deletion.
 	Terminating bool
+	// Creation asks who CREATED the object, and nothing else: only a fact marked Created with the
+	// object's uid answers it, whatever its resourceVersion. A request whose author decides what it
+	// may do asks this, so a later write to it, such as a label patch, never names its writer.
+	Creation bool
 }
 
 // FactIndexConfig configures the index. Every zero field falls back to its Default… constant, so
@@ -255,7 +259,8 @@ func isRemovalVerb(verb string) bool {
 	return strings.EqualFold(verb, "delete") || strings.EqualFold(verb, deleteCollectionVerb)
 }
 
-// Lookup reads the index once. A write (an ADDED or MODIFIED event) tries, strongest first:
+// Lookup reads the index once. A creation query reads only the object's creating fact, by uid
+// (lookupCreation). A write (an ADDED or MODIFIED event) tries, strongest first:
 //
 //  1. the exact (uid, rv) fact;
 //  2. the rv-only escape hatch;
@@ -275,6 +280,12 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	defer i.mu.Unlock()
 	facts, ok := i.scopes[query.scope()]
 	if !ok {
+		return AuthorResolution{Result: AttributionAbsent}
+	}
+	if query.Creation {
+		if fact, found := facts.lookupCreation(query.UID, cutoff); found {
+			return AuthorResolution{Fact: fact, Result: AttributionExact}
+		}
 		return AuthorResolution{Result: AttributionAbsent}
 	}
 	if !query.ExactCapable {
@@ -637,6 +648,10 @@ func (q FactQuery) scope() factScope {
 // wakes it for nothing.
 func (q FactQuery) waiterKeys() []factWaiterKey {
 	scope := q.scope()
+	if q.Creation {
+		// A creating fact carries the uid, so it always fills the latest tier's key.
+		return []factWaiterKey{{scope: scope, kind: factKindLatest, value: q.UID}}
+	}
 	var keys []factWaiterKey
 	if q.UID != "" && q.ResourceVersion != "" {
 		keys = append(keys, factWaiterKey{scope: scope, kind: factKindExact,

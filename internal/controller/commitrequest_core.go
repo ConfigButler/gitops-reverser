@@ -316,8 +316,9 @@ func (c *commitRequestCore) claim(
 // attribution is on. refused reports a request no fact names on a provider that has received audit
 // facts: its fact went missing, and it must not take the window that stays unattributed.
 //
-// The lookup matches the request's resourceVersion, which every status write moves, so it is made
-// only before the claim, and the claim records the answer.
+// The lookup asks for the fact that created the request, by its uid: a later write to it, such as a
+// label patch, names who wrote that, not who asked for the save, and must not take that actor's
+// window. It is made only before the claim, and the claim records the answer.
 //
 // Whether the provider has received audit facts is read after the wait, not from provider: the first
 // facts may arrive during it, and a request whose own fact is still missing then must be refused
@@ -330,14 +331,13 @@ func (c *commitRequestCore) creator(
 	}
 	c.streams.ensure(provider.AuditRoute())
 	user, outcome := c.authors.ResolveAuthor(ctx, watch.AuthorQuery{
-		AuditRoute:      provider.AuditRoute(),
-		GVR:             commitRequestGVR(),
-		UID:             cr.UID,
-		ResourceVersion: cr.ResourceVersion,
-		Namespace:       cr.Namespace,
-		Labels:          cr.Labels,
-		Name:            cr.Name,
-		ExactCapable:    true,
+		AuditRoute:   provider.AuditRoute(),
+		GVR:          commitRequestGVR(),
+		UID:          cr.UID,
+		Namespace:    cr.Namespace,
+		Name:         cr.Name,
+		ExactCapable: true,
+		Creation:     true,
 	})
 	if outcome.NamesActor() {
 		return user.Username, false, nil

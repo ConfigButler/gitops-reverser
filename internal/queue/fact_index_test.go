@@ -157,6 +157,49 @@ func TestFactIndex_JoinPolicyDependsOnTheEventKind(t *testing.T) {
 	harness.absent(objectQuery("prod-eu-1", "uid-1", "999", false))
 }
 
+// TestFactIndex_CreationQueryReadsOnlyTheCreatingFact: a creation query is answered by the fact that
+// created the object, by uid, and never by a later write to it, though that write's fact is at the
+// object's current resourceVersion. A uid with no creating fact is absent, whatever else was written.
+func TestFactIndex_CreationQueryReadsOnlyTheCreatingFact(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	created := objectFact("alice", "101")
+	created.Verb, created.Created = "create", true
+	harness.publish(factIndexTestStream("prod-eu-1"), created, objectFact("label-controller", "102"))
+	harness.waitForFacts(3)
+
+	creation := FactQuery{AuditRoute: "prod-eu-1", GroupResource: deploymentsGroupResource(),
+		UID: factIndexTestUID, Namespace: "team-a", ExactCapable: true, Creation: true}
+	resolution := harness.resolve(creation)
+	require.Equal(t, AttributionExact, resolution.Result)
+	require.Equal(t, "alice", resolution.Fact.Author, "the creator, not the later writer")
+	require.Equal(t, "label-controller",
+		harness.resolve(objectQuery("prod-eu-1", factIndexTestUID, "102", true)).Fact.Author,
+		"the write itself still joins its own version")
+
+	creation.UID = "uid-written-only"
+	written := objectFact("label-controller", "201")
+	written.UID = creation.UID
+	harness.publish(factIndexTestStream("prod-eu-1"), written)
+	harness.absent(creation)
+}
+
+// TestFactIndex_CreationQueryWaitsForTheCreatingFact: a creation query parked before the fact arrives
+// is woken by it.
+func TestFactIndex_CreationQueryWaitsForTheCreatingFact(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	key := factIndexTestStream("prod-eu-1")
+	harness.index.Streams().Acquire(key)
+	created := objectFact("alice", "101")
+	created.Verb, created.Created = "create", true
+	go func() {
+		time.Sleep(factIndexTestSettle / 4)
+		_ = harness.transport.PublishFacts(t.Context(), key, []AuthorFact{created})
+	}()
+	resolution := harness.resolve(FactQuery{AuditRoute: "prod-eu-1", GroupResource: deploymentsGroupResource(),
+		UID: factIndexTestUID, ExactCapable: true, Creation: true})
+	require.Equal(t, "alice", resolution.Fact.Author)
+}
+
 func TestFactIndex_RouteIsolatesOtherwiseIdenticalFacts(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
 	// The same type, uid, and resourceVersion on two clusters. A resourceVersion is opaque and not

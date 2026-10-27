@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -149,6 +150,10 @@ type AuthorFact struct {
 	DisplayName string `json:"displayName,omitempty"`
 	Email       string `json:"email,omitempty"`
 	Verb        string `json:"verb,omitempty"`
+	// Created marks the write that created the object: a create, or a patch the API server answered
+	// 201 Created, which is server-side apply making an object that did not exist. A creation query
+	// reads only facts carrying it, so a later write to the same object never answers who created it.
+	Created bool `json:"created,omitempty"`
 	// AuditID is the one field the join never reads and is kept anyway. It is what ties a commit
 	// authored by the wrong person back to the audit event that named them, which is the single
 	// question a mis-attribution investigation asks and the one thing nothing else in the system
@@ -277,6 +282,7 @@ func AuthorFactFromEvent(
 		DisplayName:     user.DisplayName,
 		Email:           user.Email,
 		Verb:            event.Verb,
+		Created:         createdObject(event),
 		AuditID:         string(event.AuditID),
 		ResourceVersion: resourceVersionFromEvent(event),
 	}
@@ -388,6 +394,15 @@ func deleteCollectionItems(obj *runtime.Unknown) []deleteCollectionItem {
 // object's metadata.resourceVersion; requestObject.resourceVersion is the pre-write RV on
 // update-style requests, so it is intentionally ignored. objectRef.resourceVersion is usually the
 // empty precondition RV on writes, so it is only the last resort.
+// createdObject reports whether the event's write created its object: a create, or any write the
+// API server answered 201 Created.
+func createdObject(event auditv1.Event) bool {
+	if strings.EqualFold(event.Verb, "create") {
+		return true
+	}
+	return event.ResponseStatus != nil && event.ResponseStatus.Code == http.StatusCreated
+}
+
 func resourceVersionFromEvent(event auditv1.Event) string {
 	if rv := rvFromRawObject(event.ResponseObject); rv != "" {
 		return rv

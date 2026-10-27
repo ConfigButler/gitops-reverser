@@ -239,7 +239,7 @@ optional and only add *who* did something:
 |---|---|---|---|
 | **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface: served GVRs, scope, preferred version, subresources; rules resolve against it |
 | **Watch** (per claimed `(GVR, scope)`) | *what changed* | yes | the object body, ordered per type; the only object-state source, with deletes reconciled via `sendInitialEvents` replay + mark-and-sweep |
-| **Audit webhook** (`/audit-webhook/<audit-route>`) | *who changed mirrored state, and who created a `CommitRequest`* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event, or to the `CommitRequest`, by resourceVersion ([Optional Attribution](#optional-attribution)) |
+| **Audit webhook** (`/audit-webhook/<audit-route>`) | *who changed mirrored state, and who created a `CommitRequest`* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion, or to the `CommitRequest` by the UID it was created with ([Optional Attribution](#optional-attribution)) |
 
 With the optional source off, the product still mirrors state correctly, and every commit is authored
 by the committer.
@@ -262,11 +262,11 @@ the write reaches etcd**:
 Audit avoids both: kube-apiserver posts a `ResponseComplete` event *after* the write persisted, carrying
 the resourceVersion that joins it to the watch event.
 
-A `CommitRequest`'s author comes from audit too, for the same reasons: its own `ResponseComplete` event,
-joined by the UID and resourceVersion it was created with, from the same index and with the same grace
-as the edits it saves. So the request and its edits are attributed by one pipeline, on the cluster both
-were made on, and a request on a source cluster needs nothing from the control cluster. A
-`CommitRequest` is never mirrored, whatever a `WatchRule` selects. See
+A `CommitRequest`'s author comes from audit too, for the same reasons: the `ResponseComplete` event that
+created it, joined by its UID, from the same index and with the same grace as the edits it saves. A later
+write to the request, such as a label patch, never names its author. So the request and its edits are
+attributed by one pipeline, on the cluster both were made on, and a request on a source cluster needs
+nothing from the control cluster. A `CommitRequest` is never mirrored, whatever a `WatchRule` selects. See
 [CommitRequest Finalize](#commitrequest-finalize).
 
 ### Proving it on new Kubernetes versions

@@ -83,6 +83,21 @@ func TestCommitRequestReconcile_ASettledApplyWithoutAnApply(t *testing.T) {
 	}
 }
 
+// TestCommitRequestReconcile_ARequestThatPushedNothingHasNothingToApply: a request that ended with no
+// commit settles Applied=True, NothingToApply, without asking the worker.
+func TestCommitRequestReconcile_ARequestThatPushedNothingHasNothingToApply(t *testing.T) {
+	c := newCommitRequestClient(t, nil, catchingUp(newCommitRequest("save-1")))
+	f := &fakeFinalizer{resolved: true, result: git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+	reconcileCommitRequest(t, r, "save-1")
+	reconcileCommitRequest(t, r, "save-1")
+	got := fetchCommitRequest(t, c, "save-1")
+	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindow)
+	requireCondition(t, got, ConditionTypeApplied, metav1.ConditionTrue, git.SaveApplyNothingToApply)
+	assert.Zero(t, f.applyLookups)
+}
+
 // TestCommitRequestReconcile_AnApplyNobodyKnowsIsLost: a worker that knows nothing of the apply
 // shortly after Ready is still taking it on; long after, it restarted, and Applied says it is lost.
 func TestCommitRequestReconcile_AnApplyNobodyKnowsIsLost(t *testing.T) {
