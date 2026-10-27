@@ -21,8 +21,9 @@ else once:
   whose `spec.commitRequests` is `Reconcile` or `ReconcileAndDeleteFinished`, through that provider's
   credential, in the namespaces it lends its `GitTarget`s in `spec.allowedGitTargets`. It writes
   status, and with `ReconcileAndDeleteFinished` deletes finished requests, through the same
-  credential. It never writes the CRD, and reports its state in the `KubeProvider`'s
-  `CommitRequestsServed` condition.
+  credential. A rotated kubeconfig restarts the watch on a client built from the new credential, so
+  watches and status writes never keep the old one. It never writes the CRD, and reports its state in
+  the `KubeProvider`'s `CommitRequestsServed` condition.
 
 The core takes one step at a time, each decided again from the object as it is stored. Its
 responsibilities, in order: admission by `spec.allowedCommitRequests`; the request's author; the
@@ -280,6 +281,12 @@ already there is never replaced. A request that asked to catch up is deleted onl
 settled. On the control cluster this always applies. On a source cluster only
 `commitRequests: ReconcileAndDeleteFinished` stamps and deletes; with `Reconcile` nothing is stamped,
 and an annotation stamped before a switch back to `Reconcile` stays without effect.
+
+Retention belongs to the path that owns the request, or that refused it because no path serves its
+`GitTarget`. Another path that deletes finished requests, such as a second provider watching the same
+namespace, or the control cluster under a kubeconfig that points back at it, leaves the request
+alone, whatever `delete-after` it carries. Once the `GitTarget` is gone no path owns the request,
+and any path that deletes finished requests may.
 
 ### Capacity, replay, and restart limits
 

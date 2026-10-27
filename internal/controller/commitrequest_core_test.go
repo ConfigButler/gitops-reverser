@@ -445,6 +445,88 @@ func TestCommitRequestCore_ARequestNoFactNames(t *testing.T) {
 	})
 }
 
+// factsArriveDuringTheWait names nobody, and while it waits the provider's first audit facts arrive:
+// its AuditFactsReceived turns True.
+type factsArriveDuringTheWait struct {
+	c        client.Client
+	provider types.NamespacedName
+}
+
+func (f factsArriveDuringTheWait) ResolveAuthor(ctx context.Context, _ watch.AuthorQuery) (
+	git.UserInfo, git.AttributionOutcome,
+) {
+	var provider configv1alpha3.KubeProvider
+	if err := f.c.Get(ctx, f.provider, &provider); err == nil {
+		apimeta.SetStatusCondition(&provider.Status.Conditions, metav1.Condition{
+			Type: KubeProviderConditionAuditFactsReceived, Status: metav1.ConditionTrue, Reason: "Received",
+		})
+		_ = f.c.Update(ctx, &provider)
+	}
+	return git.UserInfo{}, git.AttributionUnresolved
+}
+
+// A provider whose first audit facts arrive while a request waits for its own is one that sends them:
+// the request whose fact is still missing is refused, never attached to the unnamed window.
+func TestCommitRequestCore_FactsArrivingDuringTheWaitRefuseAnUnnamedRequest(t *testing.T) {
+	c := newCommitRequestClient(t, nil, newCommitRequest("save"))
+	f := committed()
+	authors := factsArriveDuringTheWait{c: c, provider: types.NamespacedName{Namespace: "default", Name: localProvider}}
+	serveStep(t, &commitRequestCore{reader: c, finalizer: f, authors: authors}, controlPath(c), "save")
+
+	assert.Empty(t, f.calls, "nothing is attached")
+	ready := commitRequestReady(t, c, "save")
+	require.NotNil(t, ready)
+	assert.Equal(t, crReasonAuthorUnresolved, ready.Reason)
+}
+
+// A finished request is kept, its apply followed and its delete-after honored, only by the path that
+// keeps it: the GitTarget's own, or the one that refused it because no path serves it. Another path that
+// deletes finished requests leaves it alone, whatever delete-after it carries. Once its GitTarget is
+// gone, no path owns it any more, and any path that deletes may.
+func TestCommitRequestCore_RetentionIsTheKeepersAlone(t *testing.T) {
+	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	for _, tc := range []struct {
+		name        string
+		target      *configv1alpha3.GitTarget
+		providers   []client.Object
+		path        func(client.Client) commitRequestPath
+		goneTarget  bool
+		wantDeleted bool
+	}{
+		{name: "another provider's watcher that deletes", target: mirroringTarget("team-a"),
+			providers: []client.Object{kubeconfigProvider("team-a", true), kubeconfigProvider("team-b", true)},
+			path:      func(c client.Client) commitRequestPath { return watcherPath(c, "team-b", true) }},
+		{name: "the control cluster, under a watcher pointing back at it", target: mirroringTarget("team-a"),
+			providers: []client.Object{kubeconfigProvider("team-a", true)}, path: controlPath},
+		{name: "the owner that deletes", target: mirroringTarget("team-a"),
+			providers:   []client.Object{kubeconfigProvider("team-a", true)},
+			path:        func(c client.Client) commitRequestPath { return watcherPath(c, "team-a", true) },
+			wantDeleted: true},
+		{name: "the control cluster that refused it", target: mirroringTarget("team-a"),
+			providers: []client.Object{kubeconfigProvider("team-a", false)}, path: controlPath, wantDeleted: true},
+		{name: "any path that deletes, once the GitTarget is gone", target: mirroringTarget("team-a"),
+			providers:  []client.Object{kubeconfigProvider("team-a", true), kubeconfigProvider("team-b", true)},
+			path:       func(c client.Client) commitRequestPath { return watcherPath(c, "team-b", true) },
+			goneTarget: true, wantDeleted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := finishedWithDeleteAfter("save", past)
+			cr.Spec.GitTargetRef.Namespace = "default"
+			c := newCommitRequestClient(t, nil, append([]client.Object{cr, tc.target}, tc.providers...)...)
+			if tc.goneTarget {
+				require.NoError(t, c.Delete(context.Background(), tc.target))
+			}
+			core := &commitRequestCore{reader: c, finalizer: committed(), ttl: time.Hour}
+			after := serveStep(t, core, tc.path(c), "save")
+
+			assert.Equal(t, !tc.wantDeleted, commitRequestExists(t, c, "save"))
+			if !tc.wantDeleted {
+				assert.Equal(t, commitRequestUnownedRecheck, after, "looked at again, in case its owner changes")
+			}
+		})
+	}
+}
+
 // A finished request is stamped with delete-after and deleted once it has passed on a path that
 // deletes finished requests, and left as it is on one that does not. Removing the annotation keeps it.
 func TestCommitRequestCore_Retention(t *testing.T) {

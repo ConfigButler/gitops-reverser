@@ -143,29 +143,50 @@ func (c *commitRequestCore) writeOutcome(
 	}
 }
 
-// serveFinished is the step of a request whose save ended: following the apply it asked for, as its
-// owner, and then its retention.
+// serveFinished is the step of a request whose save ended: following the apply it asked for, and then
+// its retention, both only on a path that keeps the request.
 func (c *commitRequestCore) serveFinished(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 ) (time.Duration, error) {
-	if !followsApply(cr) {
-		return c.expireFinished(ctx, p, cr)
+	if !followsApply(cr) && !expires(p, cr) {
+		return 0, nil
 	}
-	// A GitTarget that is gone is asked for nothing, which is true for every observer.
-	target, found, err := c.gitTarget(ctx, cr.GitTargetKey())
+	keeps, err := c.keeps(ctx, p, cr)
 	if err != nil {
 		return 0, err
 	}
-	if found {
-		_, owner, _, err := c.owns(ctx, p, target)
-		if err != nil {
-			return 0, err
-		}
-		if !owner {
-			return commitRequestUnownedRecheck, nil
-		}
+	if !keeps {
+		return commitRequestUnownedRecheck, nil
 	}
-	return c.followApply(ctx, p, cr)
+	if followsApply(cr) {
+		return c.followApply(ctx, p, cr)
+	}
+	return c.expireFinished(ctx, p, cr)
+}
+
+// keeps decides whether path p keeps a finished request: follows its apply and deletes it once its
+// delete-after time has passed. That is the owner, or the path that refused the request because no path
+// serves its GitTarget. A request whose GitTarget is gone, or that names none, has no owner left, and
+// what is asked of it is true for every observer, so any path keeps it.
+//
+// Without this, a path that deletes finished requests would delete one that another path owns and
+// keeps, whenever it carries a delete-after annotation: set by a person, or by an earlier mode.
+func (c *commitRequestCore) keeps(
+	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
+) (bool, error) {
+	if cr.Spec.GitTargetRef.Name == "" {
+		return true, nil
+	}
+	key, named := p.gitTargetKey(cr)
+	if !named {
+		return false, nil
+	}
+	target, found, err := c.gitTarget(ctx, key)
+	if err != nil || !found {
+		return !found, err
+	}
+	_, owner, refusal, err := c.owns(ctx, p, target)
+	return owner || refusal != "", err
 }
 
 // stampDeleteAfter writes the delete-after annotation onto a request that has just finished, on a path
@@ -218,10 +239,10 @@ func (c *commitRequestCore) stampDeleteAfter(
 func (c *commitRequestCore) expireFinished(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 ) (time.Duration, error) {
-	value, ok := cr.Annotations[CommitRequestDeleteAfterAnnotation]
-	if !p.deletes || !ok || !cr.DeletionTimestamp.IsZero() {
+	if !expires(p, cr) {
 		return 0, nil
 	}
+	value := cr.Annotations[CommitRequestDeleteAfterAnnotation]
 	deleteAfter, parsed := parseDeleteAfter(value)
 	if !parsed {
 		// Kept rather than guessed at: an annotation a person mistyped is not consent to delete.
@@ -241,6 +262,13 @@ func (c *commitRequestCore) expireFinished(
 	p.log.Info("Deleted finished CommitRequest past its delete-after time",
 		"name", client.ObjectKeyFromObject(cr), "deleteAfter", value)
 	return 0, nil
+}
+
+// expires reports whether path p may delete cr at all: a path that deletes finished requests, and a
+// request that carries a delete-after annotation and is not already being deleted.
+func expires(p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest) bool {
+	_, ok := cr.Annotations[CommitRequestDeleteAfterAnnotation]
+	return p.deletes && ok && cr.DeletionTimestamp.IsZero()
 }
 
 // parseDeleteAfter reads the annotation's RFC 3339 time, reporting false for anything else.

@@ -5,6 +5,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -194,18 +196,56 @@ func TestCommitRequestCore_AdmissionBySide(t *testing.T) {
 	})
 }
 
-// fakeClusters serves one source cluster: its dynamic client, and its discovery.
+// fakeClusters serves one source cluster: its dynamic client, and its discovery, under one credential.
 type fakeClusters struct {
 	dynamic   dynamic.Interface
 	discovery discovery.DiscoveryInterface
 }
 
-func (f fakeClusters) ApplierDynamicClient(context.Context, string) (dynamic.Interface, error) {
-	return f.dynamic, nil
+func (f fakeClusters) SourceDynamicClient(context.Context, string) (dynamic.Interface, string, error) {
+	return f.dynamic, "v1", nil
 }
 
-func (f fakeClusters) SourceDiscovery(context.Context, string) (discovery.DiscoveryInterface, error) {
-	return f.discovery, nil
+func (f fakeClusters) SourceDiscovery(context.Context, string) (discovery.DiscoveryInterface, string, error) {
+	return f.discovery, "v1", nil
+}
+
+// rotatingClusters serves one source cluster whose credential the test rotates. Each credential reaches
+// the cluster through a client of its own, so a client built from an old one sees none of what the new
+// one does.
+type rotatingClusters struct {
+	discovery discovery.DiscoveryInterface
+
+	mu         sync.Mutex
+	credential string
+	clients    map[string]dynamic.Interface
+	// built are the credentials a client was built from, in order.
+	built []string
+}
+
+func (r *rotatingClusters) rotate(credential string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.credential = credential
+}
+
+func (r *rotatingClusters) SourceDynamicClient(context.Context, string) (dynamic.Interface, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.built = append(r.built, r.credential)
+	return r.clients[r.credential], r.credential, nil
+}
+
+func (r *rotatingClusters) builtFrom() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.built)
+}
+
+func (r *rotatingClusters) SourceDiscovery(context.Context, string) (discovery.DiscoveryInterface, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.discovery, r.credential, nil
 }
 
 // sourceCommitRequest is a CommitRequest as it is stored on a source cluster.
@@ -278,6 +318,50 @@ func TestCommitRequestServer_ServesARequestOnASourceCluster(t *testing.T) {
 	s.syncProviders(ctx)
 	_, ok = s.CommitRequestsReport(provider.Key())
 	assert.False(t, ok, "a provider that ignores CommitRequests reports nothing")
+}
+
+// A rotated kubeconfig moves a provider's watcher to the new credential: its watches, and the status it
+// writes, run on a client built from it, rather than on the one the watcher started with.
+func TestCommitRequestServer_ARotatedCredentialMovesTheWatcher(t *testing.T) {
+	provider := kubeconfigProvider("edge", true)
+	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider)
+	gvr := commitRequestGVR()
+	listKinds := map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}
+	before := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
+	after := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds,
+		sourceCommitRequest("default", "save"))
+	clusters := &rotatingClusters{
+		discovery:  fakeDiscovery(nil, commitRequestResources("configbutler.ai/v1alpha3", "commitrequests")),
+		credential: "v1",
+		clients:    map[string]dynamic.Interface{"v1": before, "v2": after},
+	}
+	f := committed()
+	s := &CommitRequestServer{Client: c, Finalizer: f, Clusters: clusters, Log: logr.Discard()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.syncProviders(ctx)
+	report, ok := s.CommitRequestsReport(provider.Key())
+	require.True(t, ok)
+	require.Equal(t, ReasonCommitRequestsWatching, report.Reason)
+	require.Eventually(t, func() bool { return len(clusters.builtFrom()) > 0 }, 10*time.Second,
+		10*time.Millisecond, "the watcher runs on the first credential")
+
+	clusters.rotate("v2")
+	s.syncProviders(ctx)
+
+	require.Eventually(t, func() bool {
+		u, err := after.Resource(gvr).Namespace("default").Get(ctx, "save", metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		cr, convErr := commitRequestFromUnstructured(u)
+		if convErr != nil {
+			return false
+		}
+		ready := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady)
+		return ready != nil && ready.Reason == crReasonCommitted
+	}, 10*time.Second, 50*time.Millisecond, "the request is seen, and served, through the new credential")
+	assert.Equal(t, []string{"v1", "v2"}, clusters.builtFrom())
 }
 
 // A KubeProvider carries CommitRequestsServed and status.commitRequests only while it serves its

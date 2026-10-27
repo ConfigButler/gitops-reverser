@@ -71,11 +71,12 @@ const (
 const commitRequestCRDFix = "apply it with kubectl apply --server-side -f commitrequest-crd.yaml, from the " +
 	"release of GitOps Reverser this cluster is served by"
 
-// CommitRequestClusters reaches a source cluster through a KubeProvider's identity. *watch.Manager
-// satisfies it.
+// CommitRequestClusters reaches a source cluster through a KubeProvider's identity, with clients built
+// for the call, and says which version of the credential each was built from. *watch.Manager satisfies
+// it.
 type CommitRequestClusters interface {
-	ApplierDynamicClient(ctx context.Context, clusterID string) (dynamic.Interface, error)
-	SourceDiscovery(ctx context.Context, clusterID string) (discovery.DiscoveryInterface, error)
+	SourceDynamicClient(ctx context.Context, clusterID string) (dynamic.Interface, string, error)
+	SourceDiscovery(ctx context.Context, clusterID string) (discovery.DiscoveryInterface, string, error)
 }
 
 // CommitRequestsReport is what the server last found of one KubeProvider's CommitRequests: the
@@ -216,9 +217,9 @@ func (s *CommitRequestServer) syncProvider(
 			"err", err.Error())
 		return
 	}
-	report := s.probeCRD(ctx, key)
+	report, credential := s.probeCRD(ctx, key)
 	if report.Reason == "" {
-		report = s.runWatcher(ctx, provider, namespaces)
+		report = s.runWatcher(ctx, provider, namespaces, credential)
 	} else {
 		s.stopWatcher(key)
 	}
@@ -264,13 +265,16 @@ func (s *CommitRequestServer) lentNamespaces(
 }
 
 // probeCRD reports, by discovery, a cluster that serves no CommitRequest CRD in v1alpha3, or that
-// could not be read; an empty reason means the CRD is there.
-func (s *CommitRequestServer) probeCRD(ctx context.Context, provider k8stypes.NamespacedName) CommitRequestsReport {
-	dc, err := s.Clusters.SourceDiscovery(ctx, watch.SourceClusterID(provider))
+// could not be read; an empty reason means the CRD is there. It also returns the version of the
+// credential it was read with.
+func (s *CommitRequestServer) probeCRD(
+	ctx context.Context, provider k8stypes.NamespacedName,
+) (CommitRequestsReport, string) {
+	dc, credential, err := s.Clusters.SourceDiscovery(ctx, watch.SourceClusterID(provider))
 	if err != nil {
-		return unreachableCommitRequests(err)
+		return unreachableCommitRequests(err), ""
 	}
-	return commitRequestCRDReport(dc)
+	return commitRequestCRDReport(dc), credential
 }
 
 // commitRequestCRDReport reads, through dc, whether its cluster serves commitrequests in
@@ -319,9 +323,11 @@ func unreachableCommitRequests(err error) CommitRequestsReport {
 		Message: "the cluster's API could not be read: " + err.Error()}
 }
 
-// runWatcher starts, restarts or keeps provider's watcher for namespaces, and reports how it goes.
+// runWatcher starts, restarts or keeps provider's watcher for namespaces, and reports how it goes. A
+// changed credential restarts it, so its watches and the status it writes move to the new credential
+// together, rather than keep the client it started with.
 func (s *CommitRequestServer) runWatcher(
-	ctx context.Context, provider *configbutleraiv1alpha3.KubeProvider, namespaces []string,
+	ctx context.Context, provider *configbutleraiv1alpha3.KubeProvider, namespaces []string, credential string,
 ) CommitRequestsReport {
 	key := provider.Key()
 	if len(namespaces) == 0 {
@@ -330,7 +336,7 @@ func (s *CommitRequestServer) runWatcher(
 			Message: "no GitTarget mirroring through this KubeProvider is lent a namespace in spec.allowedGitTargets"}
 	}
 	deletes := provider.DeletesFinishedCommitRequests()
-	config := fmt.Sprintf("%s|%t|%s", provider.AuditRoute(), deletes, strings.Join(namespaces, ","))
+	config := fmt.Sprintf("%s|%t|%s|%s", provider.AuditRoute(), deletes, strings.Join(namespaces, ","), credential)
 	s.mu.Lock()
 	if s.watchers == nil {
 		s.watchers = map[k8stypes.NamespacedName]*commitRequestWatcher{}
@@ -464,7 +470,7 @@ func (s *CommitRequestServer) clusterClient(
 	ctx context.Context, log logr.Logger, watcher *commitRequestWatcher,
 ) (dynamic.Interface, error) {
 	for {
-		dc, err := s.Clusters.ApplierDynamicClient(ctx, watch.SourceClusterID(watcher.provider))
+		dc, _, err := s.Clusters.SourceDynamicClient(ctx, watch.SourceClusterID(watcher.provider))
 		watcher.mu.Lock()
 		watcher.unreachable = err
 		watcher.mu.Unlock()

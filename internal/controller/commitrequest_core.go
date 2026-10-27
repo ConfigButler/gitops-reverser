@@ -294,7 +294,10 @@ func (c *commitRequestCore) claim(
 	if !admitted {
 		return c.decide(ctx, p, cr, commitRequestOutcome{err: refusal}, false)
 	}
-	author, refused := c.creator(ctx, cr, provider)
+	author, refused, err := c.creator(ctx, cr, provider)
+	if err != nil {
+		return 0, err
+	}
 	if refused {
 		return c.decide(ctx, p, cr, commitRequestOutcome{authorUnresolved: true}, false)
 	}
@@ -315,11 +318,15 @@ func (c *commitRequestCore) claim(
 //
 // The lookup matches the request's resourceVersion, which every status write moves, so it is made
 // only before the claim, and the claim records the answer.
+//
+// Whether the provider has received audit facts is read after the wait, not from provider: the first
+// facts may arrive during it, and a request whose own fact is still missing then must be refused
+// rather than take the unnamed window. A provider that cannot be read then is an error, retried.
 func (c *commitRequestCore) creator(
 	ctx context.Context, cr *configbutleraiv1alpha3.CommitRequest, provider *configbutleraiv1alpha3.KubeProvider,
-) (string, bool) {
+) (string, bool, error) {
 	if c.authors == nil {
-		return "", false
+		return "", false, nil
 	}
 	c.streams.ensure(provider.AuditRoute())
 	user, outcome := c.authors.ResolveAuthor(ctx, watch.AuthorQuery{
@@ -333,11 +340,16 @@ func (c *commitRequestCore) creator(
 		ExactCapable:    true,
 	})
 	if outcome.NamesActor() {
-		return user.Username, false
+		return user.Username, false, nil
 	}
-	refused := outcome != git.AttributionNotAttempted &&
-		apimeta.IsStatusConditionTrue(provider.Status.Conditions, KubeProviderConditionAuditFactsReceived)
-	return "", refused
+	if outcome == git.AttributionNotAttempted {
+		return "", false, nil
+	}
+	var current configbutleraiv1alpha3.KubeProvider
+	if err := c.reader.Get(ctx, provider.Key(), &current); err != nil {
+		return "", false, fmt.Errorf("read KubeProvider %s after the author wait: %w", provider.Key(), err)
+	}
+	return "", apimeta.IsStatusConditionTrue(current.Status.Conditions, KubeProviderConditionAuditFactsReceived), nil
 }
 
 // writeClaim writes the first status of a request: its author, the GitTarget that admitted it, and
