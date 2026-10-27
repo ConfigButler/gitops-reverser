@@ -5,7 +5,7 @@
 > Status: **implementation explainer**
 > Checked: 2026-10-20
 > Related: [Kubernetes watch options](../facts/kubernetes-watch-options.md),
-> [Watch-first ingestion architecture](../finished/watch-first-ingestion-architecture.md),
+> [Architecture](../architecture.md),
 > [Attribution contract](attribution.md),
 > [Label-selection design](../design/watches-labels-simplification.md)
 

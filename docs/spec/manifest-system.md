@@ -145,7 +145,7 @@ dropped, and flapping types are coalesced by a settle window
 ([`type-lifecycle-events-and-wobble-settling.md`](type-lifecycle-events-and-wobble-settling.md)).
 
 Full model: [`type-followability.md`](type-followability.md). The GVK/GVR contract
-underneath it: [`gvk-gvr-mapping-layer.md`](gvk-gvr-mapping-layer.md).
+underneath it: [`type-followability.md`](type-followability.md).
 
 ## Known gap: external Git drift
 

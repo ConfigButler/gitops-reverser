@@ -4,19 +4,13 @@
 > and the deletion the diff unlocks has not been made.
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-08-26.
-> Related: [`watch-and-catalog-architecture.md`](watch-and-catalog-architecture.md),
-> [`data-plane-triggering.md`](data-plane-triggering.md),
+> Related: [`watch-manager-ownership.md`](watch-manager-ownership.md),
 > [`../spec/type-lifecycle-events-and-wobble-settling.md`](../spec/type-lifecycle-events-and-wobble-settling.md)
 
 **The short version.** A GitTarget's watch set is replaced wholesale today, so
 changing one rule replays all of them. This plan diffs the set instead and acts
 only on the collections that changed. It applies that decision by starting and
 canceling streams, and deliberately leaves the branch worker's queue alone.
-
-New to this area? Read
-[Watch and catalog architecture](watch-and-catalog-architecture.md) for the
-model and [Data-plane triggering](data-plane-triggering.md) for the failure that
-prompted this, then come back here.
 
 ## The problem
 
@@ -324,7 +318,7 @@ would be destroying a tenant's manifests during an outage.
 ### What this deletes from the plan
 
 - The managed projection, and the dependency on
-  [Watch and catalog architecture](watch-and-catalog-architecture.md) building it
+  Watch and catalog architecture building it
   first.
 - The held-out set for withdrawn types, and with it the need to resolve a Git
   file back to a type whose mapping discovery may no longer offer.

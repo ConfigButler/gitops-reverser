@@ -7,8 +7,7 @@
 > Related:
 > [../layout/new-file-placement-rules.md](../layout/new-file-placement-rules.md),
 > [../layout/contextual-namespace.md](../layout/contextual-namespace.md),
-> [../finished/sops-repo-bootstrap-and-key-management-architecture.md](../finished/sops-repo-bootstrap-and-key-management-architecture.md),
-> [../finished/sops-repo-bootstrap-out-of-scope.md](../finished/sops-repo-bootstrap-out-of-scope.md)
+> [../sops-age-guide.md](../sops-age-guide.md)
 
 ## Decision
 

@@ -515,6 +515,5 @@ lab-only behavior to the Helm chart.
 
 - [Issue #168: Watch mode](https://github.com/ConfigButler/gitops-reverser/issues/168)
 - [Audit Ingestion Decision Record](../architecture.md)
-- [Watch & Catalog Architecture](../design/watch-and-catalog-architecture.md)
 - [Architecture](../architecture.md)
 - `test/mutationlab/README.md` — the scenario index (Row → test → corpus dir → sources)

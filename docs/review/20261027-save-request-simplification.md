@@ -594,7 +594,7 @@ The design history, in the steps that matter here:
 4. **The race admission created** (#367, September). The request took the fast path (admission) and
    its edit the slow one (audit join). Saves were "finalized before the write it exists to publish
    reached the worker", so `attachTimeout` got a 2s default to cover the gap
-   ([wait-options](../design/commitrequest-save-wait-options.md), l.16-43, 97-114).
+   (wait-options, l.16-43, 97-114).
 5. **"Works without audit" was never true on its own.** A named request on an audit-less cluster
    meets windows that name nobody: `WindowMismatch`, "every time, permanently"
    (wait-options l.277-281). It became true only on 2026-10-26, with `SavedBy`/`TakeOver`
@@ -602,7 +602,7 @@ The design history, in the steps that matter here:
 6. **`RemoteSaveRequest`** (`beddcdef` to `70d07d91`). It is authored from source audit. It was
    built so that "a customer's only API surface is their kcp workspace" holds with no exceptions:
    no tenant grant into the control cluster, and no `/editor/commit` on the save path
-   ([source-side-save-plan](../future/source-side-save-plan.md), l.46-59).
+   (source-side-save-plan, l.46-59).
 
 In short: admission was the right answer to a pipeline that no longer exists. Every argument for it
 since then has been about either takeover or gitops-api's current save path, and the source-side
