@@ -741,19 +741,53 @@ func (m *Manager) ApplierDynamicClient(ctx context.Context, clusterID string) (d
 	if m.sourceClusterDeclared(clusterID) {
 		return m.clusterDynamicClient(ctx, clusterID)
 	}
-	cfg, _, inCluster, err := m.resolveSourceConfig(ctx, clusterID)
+	dc, _, err := m.SourceDynamicClient(ctx, clusterID)
+	return dc, err
+}
+
+// SourceDynamicClient returns a dynamic client for the cluster clusterID names, with that KubeProvider's
+// identity, built for this call from the provider as it resolves now, and the version of the credential
+// it was built from. Never the cached client of a declared cluster: that one is rebuilt only on the
+// credential refresh's own cadence, so a caller that restarts on a new version could still be handed the
+// old credential. It is what the CommitRequest server watches a cluster's requests through.
+func (m *Manager) SourceDynamicClient(ctx context.Context, clusterID string) (dynamic.Interface, string, error) {
+	if clusterID == configPlaneClusterID {
+		return nil, "", errors.New("no cluster named: the config plane is not a KubeProvider")
+	}
+	cfg, version, inCluster, err := m.resolveSourceConfig(ctx, clusterID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// Tests inject a fake client for the local cluster without a REST config at all.
 	if inCluster && m.dynamicClient != nil {
-		return m.dynamicClient, nil
+		return m.dynamicClient, version, nil
 	}
 	dc, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("build dynamic client for cluster %q: %w", describeCluster(clusterID), err)
+		return nil, "", fmt.Errorf("build dynamic client for cluster %q: %w", describeCluster(clusterID), err)
 	}
-	return dc, nil
+	return dc, version, nil
+}
+
+// SourceDiscovery returns a discovery client for the cluster clusterID names, with that KubeProvider's
+// identity, built for this call, and the version of the credential it was built from: what the
+// CommitRequest server asks whether the cluster serves the CommitRequest CRD, and whether the credential
+// its watch runs on changed. It carries the dial timeout every discovery client here does.
+func (m *Manager) SourceDiscovery(
+	ctx context.Context, clusterID string,
+) (discovery.DiscoveryInterface, string, error) {
+	if clusterID == configPlaneClusterID {
+		return nil, "", errors.New("no cluster named: the config plane is not a KubeProvider")
+	}
+	cfg, version, _, err := m.resolveSourceConfig(ctx, clusterID)
+	if err != nil {
+		return nil, "", err
+	}
+	dc, err := discovery.NewDiscoveryClientForConfig(discoveryRESTConfig(cfg))
+	if err != nil {
+		return nil, "", fmt.Errorf("build discovery client for cluster %q: %w", describeCluster(clusterID), err)
+	}
+	return dc, version, nil
 }
 
 // sourceClusterDeclared reports whether any GitTarget's Declare captured this cluster id.

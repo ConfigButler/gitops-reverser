@@ -28,6 +28,10 @@ import (
 // mirroring through it, so the credential is immutable, including switching
 // arms. A rotated kubeconfig is a change to the Secret, which stays allowed.
 // +kubebuilder:validation:XValidation:rule="has(self.inCluster) == has(oldSelf.inCluster) && (!has(self.secretRef) || self.secretRef == oldSelf.secretRef)",message="spec.secretRef and spec.inCluster are immutable; delete and recreate the KubeProvider to point it at a different cluster"
+//
+// The cluster GitOps Reverser runs in has no switch: its CommitRequests are
+// always served, by the operator itself.
+// +kubebuilder:validation:XValidation:rule="!has(self.inCluster) || !has(self.commitRequests) || self.commitRequests == 'Ignore'",message="spec.commitRequests must be Ignore beside spec.inCluster: the CommitRequests of the cluster GitOps Reverser runs in are always served"
 type KubeProviderSpec struct {
 	// SecretRef names the Secret, in this namespace, that holds a kubeconfig for
 	// the cluster. With no key, the kubeconfig is read from "value", then
@@ -99,7 +103,45 @@ type KubeProviderSpec struct {
 	// audit events.
 	// +optional
 	Attribution *KubeProviderAttribution `json:"attribution,omitempty"`
+
+	// CommitRequests says whether GitOps Reverser serves the CommitRequests
+	// created on this cluster, for the GitTargets that mirror through this
+	// KubeProvider:
+	//
+	// - "Ignore": they are left alone.
+	// - "Reconcile": the requests in the namespaces this KubeProvider lends
+	//   its GitTargets in spec.allowedGitTargets are served, and their status
+	//   is written. A finished request stays.
+	// - "ReconcileAndDeleteFinished": as "Reconcile", and a finished request
+	//   is annotated configbutler.ai/delete-after and deleted once that time
+	//   has passed.
+	//
+	// Defaults to "Ignore". Only "Ignore" goes with inCluster: the
+	// CommitRequests of the cluster GitOps Reverser runs in are always served.
+	//
+	// The credential needs get, list and watch on commitrequests, and update
+	// on commitrequests/status, in the configbutler.ai group, in each lent
+	// namespace; "ReconcileAndDeleteFinished" also needs patch and delete on
+	// commitrequests. The CommitRequest CRD must be installed on the cluster.
+	// The CommitRequestsServed condition reports how it goes.
+	// +optional
+	// +kubebuilder:validation:Enum=Ignore;Reconcile;ReconcileAndDeleteFinished
+	// +kubebuilder:default=Ignore
+	CommitRequests CommitRequestsPolicy `json:"commitRequests,omitempty"`
 }
+
+// CommitRequestsPolicy is whether a KubeProvider's CommitRequests are served,
+// and whether finished ones are deleted.
+type CommitRequestsPolicy string
+
+const (
+	// CommitRequestsIgnore leaves the cluster's CommitRequests alone.
+	CommitRequestsIgnore CommitRequestsPolicy = "Ignore"
+	// CommitRequestsReconcile serves the cluster's CommitRequests and keeps finished ones.
+	CommitRequestsReconcile CommitRequestsPolicy = "Reconcile"
+	// CommitRequestsReconcileAndDeleteFinished serves them and deletes finished ones.
+	CommitRequestsReconcileAndDeleteFinished CommitRequestsPolicy = "ReconcileAndDeleteFinished"
+)
 
 // KubeProviderInCluster selects the operator's own identity. It has no fields:
 // the arm being set is the whole statement.
@@ -169,6 +211,11 @@ type KubeProviderStatus struct {
 	// +optional
 	AuditRoute string `json:"auditRoute,omitempty"`
 
+	// CommitRequests is what this KubeProvider serves of its cluster's
+	// CommitRequests. Absent while spec.commitRequests is "Ignore".
+	// +optional
+	CommitRequests *KubeProviderCommitRequestsStatus `json:"commitRequests,omitempty"`
+
 	// Conditions are the latest observations of this KubeProvider's state. Ready,
 	// Reconciling and Stalled follow kstatus; Stalled=True with reason
 	// InClusterNotAuthorized or AuditRouteConflict means the KubeProvider is not
@@ -182,12 +229,36 @@ type KubeProviderStatus struct {
 	// NoAuditDelivery (no audit events arrive at all), or RouteUnused (audit
 	// events arrive, but never on this route). It is absent when author
 	// attribution is off.
+	//
+	// CommitRequestsServed, which is not part of Ready either, says whether
+	// this cluster's CommitRequests are served. It is absent while
+	// spec.commitRequests is "Ignore". Each reason that is not True ends with
+	// its fix:
+	//
+	// - True, Watching: watched in status.commitRequests.namespaces.
+	// - True, NothingToWatch: no GitTarget mirroring through this KubeProvider
+	//   is lent a namespace.
+	// - False, CRDNotInstalled: the cluster serves no CommitRequest CRD.
+	// - False, VersionNotServed: the CRD does not serve v1alpha3.
+	// - False, Forbidden: the credential may not list or watch them.
+	// - Unknown, Unreachable: the cluster's API could not be read.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+}
+
+// KubeProviderCommitRequestsStatus is what a KubeProvider serves of its
+// cluster's CommitRequests.
+type KubeProviderCommitRequestsStatus struct {
+	// Namespaces are the namespaces whose CommitRequests are watched: the ones
+	// this KubeProvider lends the GitTargets that mirror through it. "*" is
+	// every namespace, in one watch.
+	// +optional
+	// +listType=set
+	Namespaces []string `json:"namespaces,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -197,6 +268,7 @@ type KubeProviderStatus struct {
 // +kubebuilder:printcolumn:name="FactsReceived",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
 // +kubebuilder:printcolumn:name="Route",type=string,JSONPath=`.status.auditRoute`,priority=1
 // +kubebuilder:printcolumn:name="Validated",type=string,JSONPath=`.status.conditions[?(@.type=="Validated")].status`,priority=1
+// +kubebuilder:printcolumn:name="Saves",type=string,JSONPath=`.status.conditions[?(@.type=="CommitRequestsServed")].reason`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
@@ -235,6 +307,20 @@ type KubeProviderList struct {
 // cluster on.
 func (p *KubeProvider) Key() types.NamespacedName {
 	return types.NamespacedName{Namespace: p.Namespace, Name: p.Name}
+}
+
+// ServesCommitRequests reports whether GitOps Reverser serves the CommitRequests created on this
+// provider's cluster, through its own watch of it: spec.commitRequests is one of the two Reconcile
+// values, and the provider names a kubeconfig.
+func (p *KubeProvider) ServesCommitRequests() bool {
+	return !p.IsInCluster() && (p.Spec.CommitRequests == CommitRequestsReconcile ||
+		p.Spec.CommitRequests == CommitRequestsReconcileAndDeleteFinished)
+}
+
+// DeletesFinishedCommitRequests reports whether finished CommitRequests on this provider's cluster
+// are deleted.
+func (p *KubeProvider) DeletesFinishedCommitRequests() bool {
+	return p.ServesCommitRequests() && p.Spec.CommitRequests == CommitRequestsReconcileAndDeleteFinished
 }
 
 // IsInCluster reports whether this provider asks for the operator's own identity (spec.inCluster).

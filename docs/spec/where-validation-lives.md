@@ -18,7 +18,7 @@ Validate at the **first** rung that can express the rule:
 
 **A validating admission webhook is not a rung on this ladder.** It is only correct when the
 information being validated *exists only at admission time* and is nowhere on the persisted
-object. That is a narrow case, and we ship exactly one instance of it (below).
+object. That is a narrow case, and GitOps Reverser ships no webhook at all (below).
 
 ## Why cross-object checks go to the reconciler, not a webhook
 
@@ -48,23 +48,16 @@ the same rule: which namespace holds a route depends on every other provider car
 provider that loses it reports `Stalled=True` (`AuditRouteConflict`) on reconcile rather than
 being refused at admission.
 
-## The one webhook we ship, and why it is not an exception to the rule
+## No webhook ships
 
-[`/validate-operator-types`](../../internal/webhook/validate_operator_types_handler.go#L27)
-is **not a validation gate**. It captures the *submitter's identity* on a command kind
-(`CommitRequest`) so a commit can be authored by a real Kubernetes user, and for a command it
-**always allows**. Identity is the textbook case for admission: it exists in the `AdmissionRequest`
-and on no persisted field, so no reconciler could recover it later. See
-[`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md).
-
-The same endpoint carries one rejection, and it is feedback, not a gate: a `WatchRule` that would
-bring a second source namespace to a `GitTarget` declaring `spec.serializeNamespace: false` is
-rejected at the moment the mistake is made. The writer refuses the same configuration at the write
-whether or not the webhook ran, which is why its `failurePolicy` is `Ignore`. This is the feedback
-latency trade above, taken where a webhook is installed anyway, and never as the only gate.
-
-(`/validate-all`, in [`admission_allow_handler.go`](../../internal/webhook/admission_allow_handler.go#L17),
-is an always-allow observation surface wired only by the e2e SUT. The chart does not ship it.)
+GitOps Reverser installs no admission webhook. The one it had captured the creator of a
+`CommitRequest` at admission, the textbook case for one: identity exists in the `AdmissionRequest`
+and on no persisted field. It went once the audit pipeline could give a request's author the same
+way it gives an edit's: from the request's own audit event, awaited from the same index with the
+same grace ([`attribution.md`](attribution.md)). The same endpoint also rejected a `WatchRule` that
+would bring a second source namespace to a `GitTarget` declaring `spec.serializeNamespace: false`.
+That was feedback, never the gate: the writer refuses the configuration whether or not the webhook
+ran, and the `GitTarget` reports it as `MultipleSourceNamespaces`.
 
 ## Applying this
 

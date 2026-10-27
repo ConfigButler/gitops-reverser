@@ -116,8 +116,9 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   `Invalidate` re-issues one (`internal/git/render_fidelity_gate.go`), and close the retention
   revision-mismatch question in
   [watch-plane-status-convergence-failures.md](design/watch-plane-status-convergence-failures.md) §3.
-- [ ] Filter more cluster-generated noise, such as `kube-root-ca.crt`; decide which objects and
-  whether a user can opt back in (`resource_policy.go` is a type-level denylist only).
+- [ ] Filter more cluster-generated noise beyond `kube-root-ca.crt` (always left out, no opt-in:
+  `internal/watch/cluster_generated.go`), such as OpenShift's `openshift-service-ca.crt`, once
+  measured on such a cluster.
 - [ ] A manifest whose CRD is missing refuses the whole folder (`IssueUnresolvedKRM`,
   `manifestanalyzer/acceptance.go`): keep that, or defer only that document. The scan already
   records `unresolved-mapping` instead of failing.

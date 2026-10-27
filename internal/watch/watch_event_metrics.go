@@ -30,6 +30,7 @@ const (
 	watchOutcomeUnchanged   = "unchanged"
 	watchOutcomeNotObject   = "not_object"
 	watchOutcomeBookmark    = "bookmark"
+	watchOutcomeGenerated   = "cluster_generated"
 	watchOutcomeRouteFailed = "route_failed"
 	watchOutcomeShutdown    = "shutdown"
 	watchOutcomeStreamError = "stream_error"

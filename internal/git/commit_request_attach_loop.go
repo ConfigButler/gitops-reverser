@@ -60,6 +60,7 @@ func (w *BranchWorker) recordCommitRequestOutcomeLocked(id commitRequestID, resu
 			w.crOwners.release(k, w)
 		}
 	}
+	w.collectSaveApplies(now)
 }
 
 // countQueuedAttach records an attach entering the FIFO. The caller holds pendingResyncsMu, so the
@@ -213,6 +214,14 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		idleTimeout:        req.IdleTimeout,
 		maxDuration:        req.MaxDuration,
 		commitEmpty:        req.CommitEmpty,
+		catchUpNow:         req.CatchUpNow,
+	}
+	if earlier := l.saveInProgress(pcr, req.Attach); earlier != nil {
+		l.w.recordCommitRequestOutcome(id, FinalizeResult{Branch: l.w.Branch, Outcome: FinalizeSaveInProgress})
+		l.w.Log.Info("CommitRequest refused: an earlier save of the same author on the GitTarget is in progress",
+			"request", id.Namespace+"/"+id.Name, "earlier", earlier.id.Namespace+"/"+earlier.id.Name,
+			"author", req.Author, "target", req.GitTargetNamespace+"/"+req.GitTargetName)
+		return
 	}
 	l.pendingCRs[id] = pcr
 	l.w.setCommitRequestPhase(id, PhaseWaitingForWindow)
@@ -246,6 +255,31 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		// consulted, which is what lets attachTimeout: 0s attach at all.
 		l.attachToOpenWindow(pcr)
 	}
+}
+
+// saveInProgress returns the earlier request a newly registered one would race for one window, or nil.
+// That is one of the same author on the same GitTarget (sameSaver) that is still waiting for a window,
+// or that is collecting the open one. A request that asks for the Next window does not race one that
+// is collecting: it closes that window under the earlier request's message first. A request already
+// waiting for its push holds no window, so it races nothing.
+func (l *branchWorkerEventLoop) saveInProgress(
+	pcr *pendingCommitRequest, attach v1alpha3.AttachPolicy,
+) *pendingCommitRequest {
+	now := time.Now()
+	for _, earlier := range l.pendingCRs {
+		if !earlier.sameSaver(pcr) {
+			continue
+		}
+		if earlier.waiting(now) {
+			return earlier
+		}
+		collecting := earlier.attached && l.openWindow != nil && l.openWindow.pendingCR != nil &&
+			*l.openWindow.pendingCR == earlier.id
+		if collecting && attach != v1alpha3.AttachNext {
+			return earlier
+		}
+	}
+	return nil
 }
 
 // serviceCommitRequests runs after every loop wake: note foreign windows, resolve waiting requests
@@ -472,6 +506,9 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 		result.Branch = l.w.Branch
 	}
 	l.w.recordCommitRequestOutcome(id, result)
+	if pcr := l.pendingCRs[id]; pcr != nil && pcr.catchUpNow {
+		l.catchUpAfterSave(pcr, result.Commit)
+	}
 	delete(l.pendingCRs, id)
 	l.w.setCommitRequestPhase(id, "")
 	l.w.Log.Info("CommitRequest resolved",

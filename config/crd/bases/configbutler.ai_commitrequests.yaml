@@ -24,15 +24,18 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
+    - jsonPath: .status.author
+      name: Author
+      type: string
     - jsonPath: .status.commit
       name: Commit
       type: string
-    - jsonPath: .status.conditions[?(@.type=="AuthorAttributed")].status
-      name: AuthorAttributed
-      priority: 1
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Pushed")].status
       name: Pushed
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Applied")].status
+      name: Applied
       priority: 1
       type: string
     - jsonPath: .status.branch
@@ -52,8 +55,12 @@ spec:
         description: |-
           CommitRequest asks for a save: it attaches to its author's current or next
           commit window on a GitTarget, closes that window on its own timers, and
-          gives the commit its message. Its spec is immutable, and status.commit
-          reports the commit once it is on the remote.
+          gives the commit its message. Create it on the cluster GitOps Reverser runs
+          in, or on a source cluster whose KubeProvider sets spec.commitRequests. Its
+          spec is immutable, and status.commit reports the commit once it is on the
+          remote.
+
+          Schema revision 1, compatible from revision 1.
         properties:
           apiVersion:
             description: |-
@@ -77,13 +84,34 @@ spec:
               spec defines the desired state of CommitRequest. It is immutable after
               creation.
             properties:
+              catchUp:
+                default: AsDefinedOnClaim
+                description: |-
+                  CatchUp decides when the GitTarget's applier is asked to apply the branch
+                  after this request pushes a commit. "AsDefinedOnClaim" leaves it to the
+                  applier claim's spec.catchUpAfter. "AfterPush" asks right after the push.
+                  The apply takes the latest branch tip, which may hold later commits, and
+                  saves pushed close together can share one apply; the Applied condition
+                  reports how it went. The cluster already holds the saved objects:
+                  the apply brings the applier's own state, such as a Kustomization's
+                  status.lastAppliedRevision, to the tip. Defaults to "AsDefinedOnClaim".
+                enum:
+                - AsDefinedOnClaim
+                - AfterPush
+                type: string
               gitTargetRef:
                 description: |-
-                  GitTargetRef names the GitTarget, in this namespace, whose commit window
-                  this request attaches to.
+                  GitTargetRef names the GitTarget whose commit window this request
+                  attaches to: in this namespace, or namespace names another. The
+                  GitTarget's spec.allowedCommitRequests must admit this namespace, or the
+                  request fails with reason "NotAllowed".
                 properties:
                   name:
                     description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
                     type: string
                 required:
                 - name
@@ -127,14 +155,14 @@ spec:
               window:
                 default:
                   attach: CurrentOrNext
-                  attachTimeout: 2s
+                  attachTimeout: 5s
                   maxDuration: 2s
                 description: |-
                   Window says which commit window this request attaches to, how long it waits
                   for one, and the timers that close the window once it has. They replace the
                   GitTarget's timers for that window. A request never opens a window: only a
                   write does. Omitted, the request attaches to the author's current or next
-                  window within 2s and closes it 2s later.
+                  window within 5s and closes it 2s later.
                 properties:
                   attach:
                     default: CurrentOrNext
@@ -149,13 +177,13 @@ spec:
                     - Next
                     type: string
                   attachTimeout:
-                    default: 2s
+                    default: 5s
                     description: |-
                       AttachTimeout is how long the request waits for a window, as a Go duration,
-                      from when GitOps Reverser picks the request up. "0s" attaches only to a
-                      window already open. A request whose wait ran out never takes a later
-                      window. At most "5m". Defaults to "2s", which covers a write's wait for its
-                      audit event.
+                      from when GitOps Reverser picks the request up, which is after its own
+                      author was found. "0s" attaches only to a window already open. A request
+                      whose wait ran out never takes a later window. At most "5m". Defaults to
+                      "5s", which covers a write's wait for its audit event.
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                     type: string
                     x-kubernetes-validations:
@@ -203,7 +231,9 @@ spec:
                 == has(oldSelf.message) && (!has(self.message) || self.message ==
                 oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit)
                 == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit)
-                || self.whenNothingToCommit == oldSelf.whenNothingToCommit)
+                || self.whenNothingToCommit == oldSelf.whenNothingToCommit) && has(self.catchUp)
+                == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp ==
+                oldSelf.catchUp)
             - message: 'whenNothingToCommit: CommitEmpty requires spec.message, because
                 a message is all an empty commit records'
               rule: '!has(self.whenNothingToCommit) || self.whenNothingToCommit !=
@@ -211,6 +241,20 @@ spec:
           status:
             description: status defines the observed state of CommitRequest.
             properties:
+              appliedRevision:
+                description: |-
+                  AppliedRevision is the revision the GitTarget's applier reported applying
+                  for this request, as in a Kustomization's status.lastAppliedRevision. It
+                  holds the request's commit, and may be a later one. Set once Applied is
+                  True with reason Applied.
+                type: string
+              author:
+                description: |-
+                  Author is who created this request, as the audit events of the cluster
+                  it was created on name them. Empty when they name nobody, or when author
+                  attribution is off: then the request saves only writes that name nobody
+                  either.
+                type: string
               branch:
                 description: Branch is the branch the commit is made on. Set once
                   the request ends.
@@ -221,12 +265,31 @@ spec:
                 type: string
               conditions:
                 description: |-
-                  Conditions are the latest observations of this CommitRequest's state. Ready,
-                  Reconciling and Stalled follow kstatus: Ready is True once the request ended
-                  without error, with a pushed commit or with nothing to save. Pushed is True
-                  once the commit is on the remote. AuthorAttributed says whether the
-                  request's creator, recorded at admission, names the commit author; False is
-                  not a failure and does not affect Ready.
+                  Conditions are the latest observations of this CommitRequest's state.
+                  Reconciling and Stalled follow kstatus.
+
+                  Three conditions say how far the save got:
+
+                  - Ready (kstatus): Unknown while the save runs. True once the request
+                    ended without error, with a pushed commit or with nothing to save; it
+                    never waits for an apply. False when it failed: reason NotAllowed,
+                    GitTargetNotFound, SaveInProgress or FinalizeFailed.
+                  - Pushed: True once the commit is on the remote.
+                  - Applied: set only with spec.catchUp "AfterPush", once Ready is True.
+
+                  Applied says whether the cluster's applier caught up with the commit:
+
+                  - Unknown, reason Applying or Retrying: the apply runs, or did not
+                    complete and is asked again; the message says why.
+                  - True, reason Applied: the applier applied a revision that holds the
+                    commit, named in status.appliedRevision.
+                  - True, reason NothingToApply, NoApplierClaim or ApplierGone: no apply
+                    was needed. The request pushed no commit, or the GitTarget names no
+                    applier claim, or stopped naming the one asked; the cluster already
+                    holds the saved objects.
+                  - False, reason CommitDropped: the branch no longer holds the commit;
+                    its history was rewritten after the push. Only this is False.
+                  - Unknown, reason Lost: GitOps Reverser restarted before it knew.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -285,6 +348,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              gitTargetUID:
+                description: |-
+                  GitTargetUID is the UID of the GitTarget whose spec.allowedCommitRequests
+                  admitted this request. A GitTarget with another UID, such as one created
+                  after the request under the same name, must admit it again.
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.

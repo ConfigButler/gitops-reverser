@@ -251,3 +251,38 @@ func TestResync_SweepsAGeneratedConfigMapTheClusterNoLongerHas(t *testing.T) {
 		assertFileBytes(t, envPath, generatorFlagsEnv, "onEvent never sweeps")
 	})
 }
+
+// Two generated ConfigMaps deleted in one batch: the second entry moved up when the first went, and
+// its removal still finds it, so both entries and their env files go.
+func TestPlanFlush_TwoDeletedGeneratedConfigMapsInOneBatch(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem().Root()
+	seedFile(t, root, "kustomization.yaml", `configMapGenerator:
+  - name: coffee-flags
+    envs:
+      - flags.env
+  - name: coffee-menu
+    envs:
+      - menu.env
+generatorOptions:
+  disableNameSuffixHash: true
+`)
+	seedFile(t, root, "flags.env", "ENABLE_VOUCHERS=true\n")
+	seedFile(t, root, "menu.env", "ESPRESSO=275\n")
+	commitCorpusWorktree(t, worktree, "seed two generators")
+	deleted := func(name string) Event {
+		return Event{
+			Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "coffee", name),
+			Operation:  "DELETE",
+		}
+	}
+
+	changed, err := flushEventsForTest(t, newContentWriter(types.SensitiveResourcePolicy{}), worktree, corpusMapper(),
+		deleted("coffee-flags"), deleted("coffee-menu"))
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.NoFileExists(t, filepath.Join(root, "flags.env"))
+	assert.NoFileExists(t, filepath.Join(root, "menu.env"))
+	assertFileBytes(t, filepath.Join(root, "kustomization.yaml"),
+		"generatorOptions:\n  disableNameSuffixHash: true\n", "both entries are gone")
+}

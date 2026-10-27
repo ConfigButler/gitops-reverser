@@ -143,7 +143,7 @@ var commitRequestOutcomes = []string{
 // DIAGNOSTIC, not a gate. A suite-wide "none failed" assertion would first have to establish that
 // the last save had been scraped, and until that is handled a green result would mean less than it
 // looks. The wiring claim this counter has to support is made where the evidence is local: the
-// Commit Request spec asserts its own save appears, scoped to its own GitTarget.
+// Save Request spec asserts its own save appears, scoped to its own GitTarget.
 //
 // The breakdown is the point. `committed` is what the happy path looks like and the only value
 // these specs produce: `window_mismatch` needs two authors contending for one branch's window,
@@ -157,7 +157,7 @@ func reportCommitRequestOutcomes() {
 		n, err := queryPrometheus(fmt.Sprintf(
 			`sum(max_over_time(gitopsreverser_commit_requests_total{outcome=%q}[2h])) or vector(0)`, oc))
 		if err == nil {
-			_, _ = fmt.Fprintf(GinkgoWriter, "   commit request outcome %-16s = %.0f\n", oc, n)
+			_, _ = fmt.Fprintf(GinkgoWriter, "   save request outcome %-16s = %.0f\n", oc, n)
 		}
 	}
 }

@@ -47,8 +47,13 @@ To mirror live state into Git the controller must:
   or `applierAccess.argocd`.
 
 Apart from the applier an applier claim holds, the controller never writes to a watched type. Its
-write targets are Git, that applier, and the Secrets it generates itself (the signing key, and the
-age key under `generateWhenMissing`).
+write targets are Git, that applier, the Secrets it generates itself (the signing key, and the
+age key under `generateWhenMissing`), and the status of the `CommitRequest`s it serves. On a source
+cluster that last write is opt-in: a `KubeProvider` with `spec.commitRequests` set writes
+`CommitRequest` status there, and, with `ReconcileAndDeleteFinished`, deletes finished requests,
+through its own credential, in the namespaces it lends. It never writes the CRD.
+
+GitOps Reverser installs no admission webhook, so it never sits in the write path of the API server.
 
 ### Which namespaces a rule may read from
 
@@ -113,13 +118,14 @@ namespace it already knows. Narrowing that further is
 |---|---|
 | Git credentials Secret | Grants push access to your repository. |
 | SOPS/age key material | Decrypts (and the public key encrypts) Secret data written to Git. |
-| Redis/Valkey queue | Buffers decoded audit events in transit; not an audit archive. |
+| Redis/Valkey queue | Holds each `GitTarget`'s watch resume cursors, and, with the `redis` attribution transport, the attribution facts decoded from audit events, keyed by audit route, type and object, until their TTL; not an audit archive. |
 | Audit ingress (`/audit-webhook/<route>`, such as `/audit-webhook/gitops-reverser.local` for the chart's provider) | Accepts audit traffic; protected by mutual TLS via cert-manager. A route is held by one namespace: a `KubeProvider` elsewhere that carries it is `Stalled` (`AuditRouteConflict`) and reads none of its facts. |
 | Push receiver (`--receiver-bind-address`, off by default) | Plain HTTP for Git hosts' push webhooks. Each `GitReceiver` route is a path derived from its token, whose Secret lives in the receiver's own namespace, and a delivery must carry a valid signature or token for it before its body is read. A delivery is only a hint: it wakes the branch worker of every `GitProvider`, in any namespace, whose `spec.url` names the repository it reports, and that worker reads the remote with its own provider's credential. The payload's repository URL is only compared with `spec.url`, never fetched, so a delivery cannot choose a URL, a credential or a commit. A worker holds at most one pending look however many deliveries arrive, so deliveries never queue up behind its writes; but they are not rate-limited, so a token holder, in whatever namespace, who keeps delivering can keep a matching worker reading its remote continuously. That availability cost is accepted: there is no per-worker cooldown. The `202` carries no body, so it does not say whether another namespace tracks a repository. |
 | Generated Secret material | Signing keys and generated age keys live in cluster Secrets. |
 | Grants (`allowedGitBranches`, `allowedGitTargets`, `allowedApplierClaims`) | Nothing is admitted automatically, an object's own namespace included. A `from: Selector` grant admits every control-cluster namespace whose labels match, so it is only as strong as the right to set those labels: whoever can label a namespace can admit it, including a tenant allowed to edit its own namespace. Select on labels only the platform can set, or use `from: Names`. A `Names` grant also admits a namespace deleted and recreated with the same name. Grants decide who may use a provider's identity; every operation still runs as that identity, never as the referrer. |
 | Another provider on the same repository | The branch claim is keyed by repository and branch, not by provider, so grants cannot stop a `GitBranch` that claims a branch through a second `GitProvider` for the same URL with a copied credential. On Gitea and Forgejo a read-only token opens a push session. Keep tenants from creating `GitProvider`s where they share a repository. |
 | `KubeProvider.spec.inCluster` and `--in-cluster-kube-providers` | `inCluster` wields the operator's own identity in the cluster it runs in. It is honored only for a `KubeProvider` the flag lists by exact `namespace/name` (no wildcards, empty by default); any other is `Stalled` (`InClusterNotAuthorized`) and never used. Anyone who can create a `KubeProvider` under a listed name wields that identity through it, so list only names in namespaces you control. |
+| `GitTarget.spec.allowedCommitRequests` | Lets whoever may create a `CommitRequest` in an admitted namespace save their own commit window on the `GitTarget`: its message, its timers and an apply. `consumerNamespaces` admit namespaces of the cluster GitOps Reverser runs in; `sourceNamespaces` admit namespaces of the cluster the `GitTarget` mirrors, by name only, and never one its `KubeProvider` does not lend it. A request's author comes from its own audit event, never from a name it carries, so a grant decides who may save, not who authored the commit. |
 | `KubeProvider.spec.allowedApplierClaims` | Lets the namespaces a grant admits suspend and apply a `Kustomization` or `Application` in its `applierNamespaces`, such as `flux-system`, through the provider's identity. Admission to mirror does not admit to apply. A delegation, not owner consent: it does not prove the namespace owns the applier or its repository. An applier claim only acts while an eligible `GitTarget` names it, and the binding check compares the `GitProvider` URL, not write access. A denial hands the applier back. |
 
 ## Secret data the controller writes to Git

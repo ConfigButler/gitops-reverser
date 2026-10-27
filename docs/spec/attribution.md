@@ -18,7 +18,6 @@
 > [what attribution gives up, on purpose](#what-attribution-gives-up-on-purpose).
 >
 > Related: [`watch-event-ordering-and-attribution-grace.md`](watch-event-ordering-and-attribution-grace.md),
-> [`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md),
 > [`../attribution-setup-guide.md`](../attribution-setup-guide.md),
 > [`../interpreting-metrics.md`](../interpreting-metrics.md).
 
@@ -63,8 +62,8 @@ That is why `CommitRequest` has no `spec.author`, although one was asked for (co
 
 To commit under your own name, authenticate as yourself. Use your identity provider (OIDC, for
 example) so that the API server knows who you are. A request that cannot be attributed claims no
-actor (`AuthorAttributed=False`); it never falls back to a name it was given. See
-[`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md).
+actor; it never falls back to a name it was given. A `CommitRequest`'s own author comes from its
+audit event the same way, in [`commitrequest-design.md`](commitrequest-design.md).
 
 ## 1. Deletion is attributed at intent time
 

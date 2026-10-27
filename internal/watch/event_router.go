@@ -161,6 +161,24 @@ func (r *EventRouter) WithdrawCommitRequest(
 	return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
 }
 
+// LookupCommitRequestApply reports where the apply a CommitRequest asked for stands, from the
+// branch worker of its GitTarget, and false while that worker knows nothing of it or none runs.
+func (r *EventRouter) LookupCommitRequestApply(
+	ctx context.Context,
+	attach git.AttachCommitRequest,
+) (git.SaveApply, bool, error) {
+	worker, _, err := r.commitRequestWorker(ctx, attach)
+	if errors.Is(err, errGitTargetGone) {
+		return git.SaveApply{Done: true, Applied: true, Reason: git.SaveApplyApplierGone,
+			Message: "the GitTarget is gone, so its applier is asked for nothing"}, true, nil
+	}
+	if err != nil || worker == nil {
+		return git.SaveApply{}, false, err
+	}
+	apply, known := worker.LookupSaveApply(attach.Namespace, attach.Name, attach.UID)
+	return apply, known, nil
+}
+
 // heldBecause is why a request waiting for its push has not reached the remote: the worker's
 // publication report while it cannot publish, empty otherwise.
 func heldBecause(worker *git.BranchWorker, phase git.CommitRequestPhase) string {
@@ -175,7 +193,9 @@ func heldBecause(worker *git.BranchWorker, phase git.CommitRequestPhase) string 
 // The worker that holds the request comes first, whatever its GitTarget says now: a shared worker
 // outlives a deleted target, and a retired one finishes its last push after the manager stopped
 // listing it. Only a request no worker holds falls back to the GitTarget's current worker, which is
-// nil while that worker has not started. A GitTarget that is gone is errGitTargetGone.
+// nil while that worker has not started. A GitTarget that is gone is errGitTargetGone, and so is one
+// that replaced the GitTarget that admitted the request (attach.GitTargetUID): the replacement admitted
+// nothing.
 func (r *EventRouter) commitRequestWorker(
 	ctx context.Context,
 	attach git.AttachCommitRequest,
@@ -194,6 +214,10 @@ func (r *EventRouter) commitRequestWorker(
 		}
 		return nil, "", fmt.Errorf("get GitTarget %s/%s: %w",
 			attach.GitTargetNamespace, attach.GitTargetName, err)
+	}
+	if attach.GitTargetUID != "" && string(gitTarget.UID) != attach.GitTargetUID {
+		return nil, "", fmt.Errorf("%w: %s/%s was replaced", errGitTargetGone,
+			attach.GitTargetNamespace, attach.GitTargetName)
 	}
 
 	worker, exists := r.WorkerManager.WorkerForTarget(&gitTarget)

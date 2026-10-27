@@ -23,7 +23,10 @@ func isDefaultResourceExcluded(group, resource string) bool {
 		groupResourceKey("flowcontrol.apiserver.k8s.io", "flowschemas"),
 		groupResourceKey("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations"),
 		groupResourceKey("batch", "jobs"),
-		groupResourceKey("batch", "cronjobs"):
+		groupResourceKey("batch", "cronjobs"),
+		// A save is a request to GitOps Reverser, never state to mirror. A CommitRequest may sit in a
+		// namespace a WatchRule mirrors, on a source cluster as on the control cluster.
+		groupResourceKey("configbutler.ai", "commitrequests"):
 		return true
 	default:
 		return false

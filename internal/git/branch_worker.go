@@ -163,6 +163,10 @@ type BranchWorker struct {
 	applyEpoch    atomic.Uint64
 	appliersAhead atomic.Bool
 	hasAppliers   atomic.Bool
+	// liveEdits counts the live events the loop has mirrored, for the requester's goroutine to read: a
+	// converge that only catches the applier's state up yields to an edit that arrives before its
+	// resume (convergeHolds).
+	liveEdits atomic.Uint64
 	// initialSnapshots reports whether every collection a GitTarget watches has a settled
 	// snapshot, and resyncRecheck asks the watch side for fresh snapshots of a GitTarget. Set by the
 	// WorkerManager before Start; nil in the CLI and in tests (apply_epoch.go).
@@ -172,6 +176,10 @@ type BranchWorker struct {
 	// admits every GitTarget.
 	applierAdmitted ApplierAdmission
 	resyncRecheck   func(target itypes.ResourceReference)
+	// applyBarrier lets an apply window wait for the watch after its operation completed
+	// (apply_barrier.go). Set by the WorkerManager; nil in the CLI and in tests, where a window closes
+	// after its grace alone.
+	applyBarrier ApplyBarrierFunc
 	// replacementPending reports whether this worker replaced one whose GitTargets have not been told
 	// yet (WorkerManager.ReplacementPending): until they are, their snapshot record is the old
 	// worker's, and no applier is asked for anything. Nil in the CLI and in tests.
@@ -366,6 +374,9 @@ type BranchWorker struct {
 	// crPhases holds where each unresolved CommitRequest stands, for the controller to report
 	// while it waits. Guarded by crOutcomesMu; the event loop is the only writer.
 	crPhases map[commitRequestID]CommitRequestPhase
+	// crApplies holds where the apply each CommitRequest asked for stands (save_apply.go). Guarded by
+	// crOutcomesMu; the event loop is the only writer.
+	crApplies map[commitRequestID]saveApplyEntry
 	// crQueuedAttaches counts, per request, the attaches on the FIFO that the loop has not handled
 	// yet. An outcome is not collected while any are queued: the outcome is what turns a late attach
 	// into a no-op, so collecting it first would let that attach register a withdrawn request
@@ -999,6 +1010,9 @@ func (w *BranchWorker) processEvents() {
 type branchWorkerEventLoop struct {
 	w *BranchWorker
 
+	// barrierSeq numbers the barriers this loop's apply windows take (apply_barrier.go).
+	barrierSeq uint64
+
 	// defaultWindow is the operator-level default for a GitTarget's commit window timers, used
 	// for any target that declares no spec.commit.window field and for one that cannot be read.
 	defaultWindow commitWindowDefaults
@@ -1040,6 +1054,10 @@ type branchWorkerEventLoop struct {
 	// window opens (then it attaches to it) or its attach deadline passes.
 	// Loop-goroutine only.
 	pendingCRs map[commitRequestID]*pendingCommitRequest
+	// savedCatchUps is the CommitRequests, by GitTarget, whose pushed commit asked their applier to
+	// catch up at once (catchUp: AfterPush), with that commit, until the appliers are next listed
+	// (takeReasons, save_apply.go).
+	savedCatchUps map[itypes.ResourceReference]map[commitRequestID]string
 	// crSeq numbers registrations, so competing requests attach first come, first served.
 	crSeq uint64
 	// refusalTimer fires at the earliest deadline in refusalPending. See refusal_reapply.go.
@@ -1244,6 +1262,8 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 		l.handleAttachCommitRequest(item.Attach)
 	case item.Withdraw != nil:
 		l.handleWithdrawCommitRequest(item.Withdraw)
+	case item.ApplyBarrier != nil:
+		l.handleApplyBarrier(item.ApplyBarrier)
 	case item.Resync != nil:
 		// Take the CURRENT request for this scope: a newer one may have replaced it while this
 		// marker waited in the FIFO. Running it here keeps the original queue position, so a resync
@@ -1275,6 +1295,7 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 		if !l.mirrors(event) {
 			continue
 		}
+		l.w.liveEdits.Add(1)
 		l.appendLiveEvent(event)
 	}
 }

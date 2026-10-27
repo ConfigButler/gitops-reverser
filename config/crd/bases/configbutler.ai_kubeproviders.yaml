@@ -32,6 +32,10 @@ spec:
       name: Validated
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="CommitRequestsServed")].reason
+      name: Saves
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Message
       priority: 1
@@ -501,6 +505,34 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
+              commitRequests:
+                default: Ignore
+                description: |-
+                  CommitRequests says whether GitOps Reverser serves the CommitRequests
+                  created on this cluster, for the GitTargets that mirror through this
+                  KubeProvider:
+
+                  - "Ignore": they are left alone.
+                  - "Reconcile": the requests in the namespaces this KubeProvider lends
+                    its GitTargets in spec.allowedGitTargets are served, and their status
+                    is written. A finished request stays.
+                  - "ReconcileAndDeleteFinished": as "Reconcile", and a finished request
+                    is annotated configbutler.ai/delete-after and deleted once that time
+                    has passed.
+
+                  Defaults to "Ignore". Only "Ignore" goes with inCluster: the
+                  CommitRequests of the cluster GitOps Reverser runs in are always served.
+
+                  The credential needs get, list and watch on commitrequests, and update
+                  on commitrequests/status, in the configbutler.ai group, in each lent
+                  namespace; "ReconcileAndDeleteFinished" also needs patch and delete on
+                  commitrequests. The CommitRequest CRD must be installed on the cluster.
+                  The CommitRequestsServed condition reports how it goes.
+                enum:
+                - Ignore
+                - Reconcile
+                - ReconcileAndDeleteFinished
+                type: string
               inCluster:
                 description: |-
                   InCluster makes this KubeProvider use the operator's own identity in the
@@ -542,6 +574,11 @@ spec:
                 recreate the KubeProvider to point it at a different cluster
               rule: has(self.inCluster) == has(oldSelf.inCluster) && (!has(self.secretRef)
                 || self.secretRef == oldSelf.secretRef)
+            - message: 'spec.commitRequests must be Ignore beside spec.inCluster:
+                the CommitRequests of the cluster GitOps Reverser runs in are always
+                served'
+              rule: '!has(self.inCluster) || !has(self.commitRequests) || self.commitRequests
+                == ''Ignore'''
           status:
             description: status defines the observed state of KubeProvider.
             properties:
@@ -551,6 +588,21 @@ spec:
                   <namespace>.<name> when that is empty. The AuditFactsReceived condition
                   describes this route, and starts over when it changes.
                 type: string
+              commitRequests:
+                description: |-
+                  CommitRequests is what this KubeProvider serves of its cluster's
+                  CommitRequests. Absent while spec.commitRequests is "Ignore".
+                properties:
+                  namespaces:
+                    description: |-
+                      Namespaces are the namespaces whose CommitRequests are watched: the ones
+                      this KubeProvider lends the GitTargets that mirror through it. "*" is
+                      every namespace, in one watch.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
               conditions:
                 description: |-
                   Conditions are the latest observations of this KubeProvider's state. Ready,
@@ -566,6 +618,19 @@ spec:
                   NoAuditDelivery (no audit events arrive at all), or RouteUnused (audit
                   events arrive, but never on this route). It is absent when author
                   attribution is off.
+
+                  CommitRequestsServed, which is not part of Ready either, says whether
+                  this cluster's CommitRequests are served. It is absent while
+                  spec.commitRequests is "Ignore". Each reason that is not True ends with
+                  its fix:
+
+                  - True, Watching: watched in status.commitRequests.namespaces.
+                  - True, NothingToWatch: no GitTarget mirroring through this KubeProvider
+                    is lent a namespace.
+                  - False, CRDNotInstalled: the cluster serves no CommitRequest CRD.
+                  - False, VersionNotServed: the CRD does not serve v1alpha3.
+                  - False, Forbidden: the credential may not list or watch them.
+                  - Unknown, Unreachable: the cluster's API could not be read.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

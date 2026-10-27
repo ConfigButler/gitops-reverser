@@ -138,9 +138,9 @@ func (r *quickstartFrameworkRun) helmInstallReadmeQuickstart() {
 		chart = "charts/gitops-reverser"
 	}
 
-	// ONE apply, exactly as the README's step 4 does it. This works because no webhook this chart
-	// installs is failurePolicy: Fail — the starter GitTarget is gated by nothing, so it is admitted
-	// while the Deployment it rolls is still coming up. Namespace authorization is enforced at
+	// ONE apply, exactly as the quickstart's install step does it. This works because the chart installs no
+	// admission webhook — the starter GitTarget is gated by nothing, so it is admitted while the
+	// Deployment it rolls is still coming up. Namespace authorization is enforced at
 	// reconcile instead (checkSourceAuthorization, inside the Validated gate), which does not need
 	// the manager to be reachable at admission time.
 	args := []string{
@@ -177,7 +177,7 @@ func (r *quickstartFrameworkRun) helmInstallReadmeQuickstart() {
 // verifyNoRedisConfiguredAuthor asserts the controller logged the no-Redis
 // configured-author sentinel (main.go emits "configured-author mode: no Redis
 // configured" only when queue.redis.addr is empty) and that the pod is not
-// crash-looping — proving admission-on-without-Redis is a healthy no-op.
+// crash-looping — proving running without Redis is a healthy mode.
 func (r *quickstartFrameworkRun) verifyNoRedisConfiguredAuthor() {
 	releaseNs := resolveE2ENamespace()
 	release := resolveE2EInstallName(releaseNs)
@@ -199,7 +199,7 @@ func (r *quickstartFrameworkRun) verifyNoRedisConfiguredAuthor() {
 	for _, field := range strings.Fields(restarts) {
 		count, convErr := strconv.Atoi(field)
 		Expect(convErr).NotTo(HaveOccurred())
-		Expect(count).To(Equal(0), "controller must not crash-loop with admission on and no Redis")
+		Expect(count).To(Equal(0), "controller must not crash-loop without Redis")
 	}
 }
 

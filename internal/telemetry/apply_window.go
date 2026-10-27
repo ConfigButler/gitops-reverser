@@ -22,6 +22,22 @@ import "go.opentelemetry.io/otel/metric"
 // Registered in registerCounters (exporter.go) with every other counter.
 var ApplyWindowCollisionsTotal metric.Int64Counter
 
+// ApplyWindowBarriersTotal counts the barriers apply windows took after their operation completed: a
+// wait until the watch had delivered every write the source clusters held by then, so the applier's
+// own writes are judged inside the window however far behind the watch was. Labelled by
+// {gitbranch_*, provider_*, outcome}. outcome is a frozen enum:
+//
+//	met       — every stream delivered every such write; the window then closed at the end of its grace.
+//	timed_out — the window closed at the limit (2 minutes) with a stream still behind: a write of the
+//	            applier's arriving later is mirrored as an edit (apply_echoes_total{outcome="late"}).
+//	failed    — the barrier could not be taken (the source cluster could not be listed, or its
+//	            resourceVersions are not numbers); the window closed after its grace alone.
+//
+// A steady timed_out or failed rate means the window cannot see every apply it asked for land.
+//
+// Registered in registerCounters (exporter.go) with every other counter.
+var ApplyWindowBarriersTotal metric.Int64Counter
+
 // ApplyEchoesTotal counts the applier's own writes the apply window judged: an apply GitOps Reverser
 // asked for landing, object by object. Labelled by {gitbranch_*, provider_*,
 // outcome}. outcome is a frozen enum:

@@ -139,6 +139,9 @@ applierAccess:
 # backs them all, so the issuer is genuinely cross-cutting and lives here; each server
 # opts into a cert via servers.<name>.tls.certManager. (Deliberately NOT duplicated per
 # server — that one shared resource is the exception to the "servers as peers" rule.)
+# The issuer renders only when some certificate does: the audit ingress certificates
+# with attribution.enabled, or the metrics certificate with servers.metrics.tls.enabled.
+# The default install renders neither, so it needs no cert-manager.
 certManager:
   enabled: true
   issuer:
@@ -169,36 +172,6 @@ servers:
       # Mint the serving cert via cert-manager (only used when tls.enabled).
       certManager: true
       certPath: "/tmp/k8s-metrics-server/metrics-server-certs"
-      certName: "tls.crt"
-      certKey: "tls.key"
-      # Leave empty to use the chart-generated Secret name.
-      secretNameOverride: ""
-
-  # Validating admission server hosting the validate-operator-types webhook, which captures
-  # the submitter of each CommitRequest at admission and records it as the request's named actor
-  # (read back by the controller with no wait). Independent of `attribution` below:
-  # attribution governs *mirrored-resource* authorship (from audit), this governs
-  # *command* authorship (from admission). Off → CommitRequests claim no actor and report
-  # AuthorAttributed=False. See
-  # docs/spec/commitrequest-admission-authorship.md.
-  #
-  # Command-author capture is Redis-backed: the captured author is written to Redis at admission and
-  # read back at reconcile. Enabled by default so the webhook is always installed, but it is a no-op
-  # without Redis: the pod runs healthy and CommitRequests claim no actor
-  # (AuthorAttributed=False) until queue.redis.addr is set.
-  admission:
-    enabled: true
-    bindAddress: ":9443"
-    port: 9443
-    # Bounded per-request wait before the apiserver gives up on the webhook.
-    # failurePolicy is Ignore, so a slow/unreachable backend admits the command anyway.
-    timeoutSeconds: 2
-    tls:
-      # The admission server always serves TLS (the apiserver requires HTTPS); the only
-      # choice is who mints the cert. certManager=false means BYO via secretNameOverride
-      # (and patch the webhook caBundle out of band).
-      certManager: true
-      certPath: "/tmp/k8s-webhook-server/serving-certs"
       certName: "tls.crt"
       certKey: "tls.key"
       # Leave empty to use the chart-generated Secret name.

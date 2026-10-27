@@ -61,6 +61,27 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 	require.ErrorIs(t, err, errGitTargetGone)
 }
 
+// A save whose GitTarget is gone needs no apply: Applied=True with ApplierGone. Only a commit the
+// branch lost is ever Applied=False.
+func TestLookupCommitRequestApply_GitTargetGoneIsApplied(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+
+	apply, known, err := router.LookupCommitRequestApply(context.Background(), saveAttach("missing", "team-a"))
+	require.NoError(t, err)
+	require.True(t, known)
+	assert.True(t, apply.Done)
+	assert.True(t, apply.Applied, "a save whose GitTarget is gone needs no apply; it is not Applied=False")
+	assert.Equal(t, git.SaveApplyApplierGone, apply.Reason)
+}
+
 func TestGitTargetEventStreamRegistry(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -291,6 +312,41 @@ func TestGitPathRefusalReason(t *testing.T) {
 			assert.Equal(t, c.want, got)
 		})
 	}
+}
+
+// A GitTarget of the name an attach carries, but with another UID than the GitTarget that admitted
+// the request, replaced it and admitted nothing: no worker of it is asked to take the request.
+func TestServiceCommitRequest_AReplacedGitTargetIsGone(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	gitTarget := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a", UID: "uid-second"},
+		Spec: configv1alpha3.GitTargetSpec{
+			GitBranchRef: meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget, testGitBranchObject()).Build()
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+
+	attach := saveAttach("team-a-config", "team-a")
+	attach.GitTargetUID = "uid-first"
+	_, resolved, err := router.ServiceCommitRequest(context.Background(), attach)
+	require.ErrorIs(t, err, errGitTargetGone)
+	assert.False(t, resolved)
+
+	result, resolved, err := router.WithdrawCommitRequest(context.Background(), attach)
+	require.NoError(t, err)
+	assert.True(t, resolved, "nothing holds it, and the replacement can never take it")
+	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+
+	attach.GitTargetUID = "uid-second"
+	_, _, err = router.ServiceCommitRequest(context.Background(), attach)
+	require.NoError(t, err, "the GitTarget that admitted it is asked")
 }
 
 // TestServiceCommitRequest_NoWorkerKeepsTheRequestPending pins that a missing worker is not an

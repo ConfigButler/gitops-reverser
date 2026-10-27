@@ -27,8 +27,6 @@ spec:
         - --metrics-bind-address=:8443
         - --metrics-insecure
         - --health-probe-bind-address=:8081
-        - --admission-webhook
-        - --admission-webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
         - --audit-cert-path=/tmp/k8s-audit-server/audit-server-certs
         - --audit-client-ca-path=/tmp/k8s-audit-server/audit-client-ca
         - --redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
@@ -95,9 +93,6 @@ spec:
         - containerPort: 9444
           name: audit
           protocol: TCP
-        - containerPort: 9443
-          name: webhook
-          protocol: TCP
         - containerPort: 8443
           name: metrics
           protocol: TCP
@@ -132,9 +127,6 @@ spec:
         - mountPath: /tmp/k8s-audit-server/audit-client-ca
           name: audit-client-ca
           readOnly: true
-        - mountPath: /tmp/k8s-webhook-server/serving-certs
-          name: admission-webhook-certs
-          readOnly: true
         - mountPath: /var/gocoverage
           name: gocoverage
       securityContext:
@@ -152,9 +144,6 @@ spec:
       - name: audit-client-ca
         secret:
           secretName: gitops-reverser-audit-root-ca
-      - name: admission-webhook-certs
-        secret:
-          secretName: admission-server-cert
       # Coverage output for a -cover image (GOCOVERDIR). emptyDir keeps the
       # pod compliant with the restricted PodSecurity profile; it survives a
       # container restart, so `task e2e-coverage-collect` flushes by signalling

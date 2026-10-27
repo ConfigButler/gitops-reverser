@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -60,13 +61,13 @@ func TestCommitRequestMetric_TwoTargetsAreDistinguishable(t *testing.T) {
 
 	for _, target := range []string{"team-a-config", "team-b-config"} {
 		cr := newCommitRequest("save-" + target)
-		cr.Spec.GitTargetRef = meta.LocalObjectReference{Name: target}
+		cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target}
 		c := newCommitRequestClient(t, nil, cr)
 		f := &fakeFinalizer{
 			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			resolved: true,
 		}
-		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 		reconcileCommitRequest(t, r, "save-"+target)
 	}
 
@@ -90,7 +91,7 @@ func TestCommitRequestMetric_RepeatedSavesReuseOneSeries(t *testing.T) {
 			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			resolved: true,
 		}
-		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 		reconcileCommitRequest(t, r, name)
 	}
 
@@ -108,7 +109,7 @@ func TestCommitRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
 	require.NoError(t, err)
 
 	cr := newCommitRequest("save-bogus")
-	cr.Spec.GitTargetRef = meta.LocalObjectReference{Name: "no-such-target"}
+	cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "no-such-target"}
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
 	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(cr.Spec).resolveTimeout()))
 	c := newCommitRequestClient(t, nil, cr)
@@ -119,7 +120,7 @@ func TestCommitRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
 		withdrawResult:   git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn},
 		withdrawResolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-bogus")
 
@@ -159,7 +160,7 @@ func TestCommitRequestOutcome_MapsEveryFinalizeResult(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, commitRequestOutcome(tc.result, tc.err))
+			assert.Equal(t, tc.want, commitRequestOutcomeValue(tc.result, tc.err))
 		})
 	}
 }
@@ -201,7 +202,7 @@ func TestCommitRequestMetric_EveryOutcomeIsReachableThroughReconcile(t *testing.
 
 			c := newCommitRequestClient(t, nil, newCommitRequest("save-outcome"))
 			f := &fakeFinalizer{result: tc.result, err: tc.err, resolved: true}
-			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 			reconcileCommitRequest(t, r, "save-outcome")
 
@@ -242,7 +243,7 @@ func TestCommitRequestMetric_ConflictRetriesIncrementOnce(t *testing.T) {
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-conflict")
 
@@ -275,10 +276,15 @@ func TestCommitRequestMetric_FailedStatusWriteThenRedeliveryCountsTwice(t *testi
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
-	reconcileCommitRequest(t, r, "save-lost")
-	reconcileCommitRequest(t, r, "save-lost")
+	// The failed write is returned, so the request is reconciled again.
+	for range 2 {
+		_, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: client.ObjectKey{Namespace: "default", Name: "save-lost"},
+		})
+		require.Error(t, err)
+	}
 
 	value, ok := outcomeCount(t, reader, crOutcomeCommitted)
 	require.True(t, ok)
@@ -296,13 +302,13 @@ func TestCommitRequestMetric_PrunedGitTargetRefCountsFailed(t *testing.T) {
 	pruned := &configv1alpha3.CommitRequest{
 		ObjectMeta: metav1.ObjectMeta{Name: "save-pruned", Namespace: "default", UID: types.UID("uid-save-pruned")},
 		Spec: configv1alpha3.CommitRequestSpec{
-			GitTargetRef: meta.LocalObjectReference{Name: ""},
+			GitTargetRef: meta.NamespacedObjectReference{Name: ""},
 			Message:      "save: pruned",
 		},
 	}
 	c := newCommitRequestClient(t, nil, pruned)
 	f := &fakeFinalizer{}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-pruned")
 
@@ -326,7 +332,7 @@ func TestCommitRequestMetric_RecreatedRequestCountsPerIncarnation(t *testing.T) 
 		result:   git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-again")
 
@@ -361,16 +367,16 @@ func TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 		},
 	}
 	fresh := newCommitRequest("save-fresh")
-	fresh.Spec.GitTargetRef = meta.LocalObjectReference{Name: target.Name}
+	fresh.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target.Name}
 	fresh.CreationTimestamp = metav1.Now()
 	stale := newCommitRequest("save-stale")
-	stale.Spec.GitTargetRef = meta.LocalObjectReference{Name: target.Name}
+	stale.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target.Name}
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
 	stale.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(stale.Spec).resolveTimeout()))
 	c := newCommitRequestClient(t, nil, fresh, stale, target, gitBranchOn("team-a-provider", "default", "main"))
 	workers := git.NewWorkerManager(c, logr.Discard(), git.BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
 	router := watch.NewEventRouter(workers, nil, c, logr.Discard())
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: router, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: router}
 
 	// Inside the safety window: pending, and the status says why.
 	res := reconcileCommitRequest(t, r, fresh.Name)

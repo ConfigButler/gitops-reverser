@@ -5,6 +5,7 @@ package v1alpha3
 import (
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // CommitRequestSpec defines the desired state of CommitRequest. The spec is
@@ -22,14 +23,16 @@ import (
 // including one that only touches metadata — was rejected as a spec change.
 // CommitRequestWindow compares its durations as durations, which compares what
 // the fields mean instead of how they were spelled.
-// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit)",message="CommitRequest spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit) && has(self.catchUp) == has(oldSelf.catchUp) && (!has(self.catchUp) || self.catchUp == oldSelf.catchUp)",message="CommitRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.whenNothingToCommit) || self.whenNothingToCommit != 'CommitEmpty' || has(self.message)",message="whenNothingToCommit: CommitEmpty requires spec.message, because a message is all an empty commit records"
 type CommitRequestSpec struct {
-	// GitTargetRef names the GitTarget, in this namespace, whose commit window
-	// this request attaches to.
+	// GitTargetRef names the GitTarget whose commit window this request
+	// attaches to: in this namespace, or namespace names another. The
+	// GitTarget's spec.allowedCommitRequests must admit this namespace, or the
+	// request fails with reason "NotAllowed".
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
-	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
+	GitTargetRef meta.NamespacedObjectReference `json:"gitTargetRef"`
 
 	// Message is the commit message this request asks for. Omitted, the
 	// GitTarget's spec.commit.message.liveTemplate words the commit.
@@ -55,9 +58,9 @@ type CommitRequestSpec struct {
 	// for one, and the timers that close the window once it has. They replace the
 	// GitTarget's timers for that window. A request never opens a window: only a
 	// write does. Omitted, the request attaches to the author's current or next
-	// window within 2s and closes it 2s later.
+	// window within 5s and closes it 2s later.
 	// +optional
-	// +kubebuilder:default={attach: "CurrentOrNext", attachTimeout: "2s", maxDuration: "2s"}
+	// +kubebuilder:default={attach: "CurrentOrNext", attachTimeout: "5s", maxDuration: "2s"}
 	Window *CommitRequestWindow `json:"window,omitempty"`
 
 	// WhenNothingToCommit decides what happens when the request ends with nothing
@@ -71,7 +74,31 @@ type CommitRequestSpec struct {
 	// +kubebuilder:validation:Enum=Resolve;CommitEmpty
 	// +kubebuilder:default=Resolve
 	WhenNothingToCommit NothingToCommitAction `json:"whenNothingToCommit,omitempty"`
+
+	// CatchUp decides when the GitTarget's applier is asked to apply the branch
+	// after this request pushes a commit. "AsDefinedOnClaim" leaves it to the
+	// applier claim's spec.catchUpAfter. "AfterPush" asks right after the push.
+	// The apply takes the latest branch tip, which may hold later commits, and
+	// saves pushed close together can share one apply; the Applied condition
+	// reports how it went. The cluster already holds the saved objects:
+	// the apply brings the applier's own state, such as a Kustomization's
+	// status.lastAppliedRevision, to the tip. Defaults to "AsDefinedOnClaim".
+	// +optional
+	// +kubebuilder:validation:Enum=AsDefinedOnClaim;AfterPush
+	// +kubebuilder:default=AsDefinedOnClaim
+	CatchUp CatchUpPolicy `json:"catchUp,omitempty"`
 }
+
+// CatchUpPolicy is when a CommitRequest's commit is applied by the GitTarget's
+// applier.
+type CatchUpPolicy string
+
+const (
+	// CatchUpAsDefinedOnClaim leaves the apply to the applier claim's spec.catchUpAfter.
+	CatchUpAsDefinedOnClaim CatchUpPolicy = "AsDefinedOnClaim"
+	// CatchUpAfterPush asks the applier to apply the tip right after the commit is pushed.
+	CatchUpAfterPush CatchUpPolicy = "AfterPush"
+)
 
 // NothingToCommitAction is what a CommitRequest does when it ends with nothing
 // to commit.
@@ -119,14 +146,14 @@ type CommitRequestWindow struct {
 	Attach AttachPolicy `json:"attach,omitempty"`
 
 	// AttachTimeout is how long the request waits for a window, as a Go duration,
-	// from when GitOps Reverser picks the request up. "0s" attaches only to a
-	// window already open. A request whose wait ran out never takes a later
-	// window. At most "5m". Defaults to "2s", which covers a write's wait for its
-	// audit event.
+	// from when GitOps Reverser picks the request up, which is after its own
+	// author was found. "0s" attaches only to a window already open. A request
+	// whose wait ran out never takes a later window. At most "5m". Defaults to
+	// "5s", which covers a write's wait for its audit event.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
-	// +kubebuilder:default="2s"
+	// +kubebuilder:default="5s"
 	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="spec.window.attachTimeout must not exceed 5m"
 	AttachTimeout *metav1.Duration `json:"attachTimeout,omitempty"`
 
@@ -156,36 +183,64 @@ type CommitRequestWindow struct {
 //
 //   - Ready (summary): True once the request reached a terminal outcome that
 //     is not an error — a pushed commit, or a benign no-commit (nothing to
-//     save, already present, or a foreign open window). False while in
-//     progress or when it failed.
+//     save, already present, or a foreign open window). Unknown while in
+//     progress, from the first status write, which records the author. False
+//     when it failed.
 //   - Reconciling / Stalled: the kstatus progress / blocked pair.
 //     Reconciling=True while finalizing; Stalled=True when the finalize failed
 //     and needs attention.
-//   - AuthorAttributed (domain): binary and settled immediately. True
-//     (AttributedFromAdmission) when the submitter captured at admission named
-//     the commit author; False (CommitterFallback) when capture ran but no
-//     admission record exists, or False (AuthorCaptureDisabled) when capture
-//     is disabled. In either False case the request claims no actor. False is
-//     not a failure and does not affect Ready; the final Git author remains
-//     the matching watch window's author.
 //   - Pushed (domain): True once the commit is in the remote repository.
+//   - Applied (domain): with spec.catchUp "AfterPush", whether the applier
+//     caught up with the commit. It never affects Ready.
 type CommitRequestStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions are the latest observations of this CommitRequest's state. Ready,
-	// Reconciling and Stalled follow kstatus: Ready is True once the request ended
-	// without error, with a pushed commit or with nothing to save. Pushed is True
-	// once the commit is on the remote. AuthorAttributed says whether the
-	// request's creator, recorded at admission, names the commit author; False is
-	// not a failure and does not affect Ready.
+	// Author is who created this request, as the audit events of the cluster
+	// it was created on name them. Empty when they name nobody, or when author
+	// attribution is off: then the request saves only writes that name nobody
+	// either.
+	// +optional
+	Author string `json:"author,omitempty"`
+
+	// Conditions are the latest observations of this CommitRequest's state.
+	// Reconciling and Stalled follow kstatus.
+	//
+	// Three conditions say how far the save got:
+	//
+	// - Ready (kstatus): Unknown while the save runs. True once the request
+	//   ended without error, with a pushed commit or with nothing to save; it
+	//   never waits for an apply. False when it failed: reason NotAllowed,
+	//   GitTargetNotFound, SaveInProgress or FinalizeFailed.
+	// - Pushed: True once the commit is on the remote.
+	// - Applied: set only with spec.catchUp "AfterPush", once Ready is True.
+	//
+	// Applied says whether the cluster's applier caught up with the commit:
+	//
+	// - Unknown, reason Applying or Retrying: the apply runs, or did not
+	//   complete and is asked again; the message says why.
+	// - True, reason Applied: the applier applied a revision that holds the
+	//   commit, named in status.appliedRevision.
+	// - True, reason NothingToApply, NoApplierClaim or ApplierGone: no apply
+	//   was needed. The request pushed no commit, or the GitTarget names no
+	//   applier claim, or stopped naming the one asked; the cluster already
+	//   holds the saved objects.
+	// - False, reason CommitDropped: the branch no longer holds the commit;
+	//   its history was rewritten after the push. Only this is False.
+	// - Unknown, reason Lost: GitOps Reverser restarted before it knew.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	// +patchStrategy=merge
 	// +patchMergeKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// GitTargetUID is the UID of the GitTarget whose spec.allowedCommitRequests
+	// admitted this request. A GitTarget with another UID, such as one created
+	// after the request under the same name, must admit it again.
+	// +optional
+	GitTargetUID string `json:"gitTargetUID,omitempty"`
 
 	// Branch is the branch the commit is made on. Set once the request ends.
 	// +optional
@@ -194,24 +249,44 @@ type CommitRequestStatus struct {
 	// Commit is the commit hash. Set once the commit is pushed (Pushed=True).
 	// +optional
 	Commit string `json:"commit,omitempty"`
+
+	// AppliedRevision is the revision the GitTarget's applier reported applying
+	// for this request, as in a Kustomization's status.lastAppliedRevision. It
+	// holds the request's commit, and may be a later one. Set once Applied is
+	// True with reason Applied.
+	// +optional
+	AppliedRevision string `json:"appliedRevision,omitempty"`
 }
+
+// The last line of the kind's description is its schema revision, which a cluster that installed the
+// CRD on its own, as a source cluster does, can be judged by. It ships in the CRD, so the same
+// published schema reads it back: CommitRequestSchemaRevision and CommitRequestSchemaFloor below
+// must say the same, and TestCommitRequestSchemaRevision fails when the generated CRD changes and
+// they do not move. Raise the revision with every change to the generated CRD, and the floor ("compatible
+// from") with a change that breaks an older reader or writer: a new required field, a removed field,
+// or a changed meaning.
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Author",type=string,JSONPath=`.status.author`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.commit`
-// +kubebuilder:printcolumn:name="AuthorAttributed",type=string,JSONPath=`.status.conditions[?(@.type=="AuthorAttributed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`,priority=1
+// +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`,priority=1
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`,priority=1
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CommitRequest asks for a save: it attaches to its author's current or next
 // commit window on a GitTarget, closes that window on its own timers, and
-// gives the commit its message. Its spec is immutable, and status.commit
-// reports the commit once it is on the remote.
+// gives the commit its message. Create it on the cluster GitOps Reverser runs
+// in, or on a source cluster whose KubeProvider sets spec.commitRequests. Its
+// spec is immutable, and status.commit reports the commit once it is on the
+// remote.
+//
+// Schema revision 1, compatible from revision 1.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -238,6 +313,24 @@ type CommitRequestList struct {
 
 	Items []CommitRequest `json:"items"`
 }
+
+// GitTargetKey is the GitTarget spec.gitTargetRef names: in the request's namespace unless the ref
+// names another.
+func (s *CommitRequest) GitTargetKey() types.NamespacedName {
+	namespace := s.Spec.GitTargetRef.Namespace
+	if namespace == "" {
+		namespace = s.Namespace
+	}
+	return types.NamespacedName{Namespace: namespace, Name: s.Spec.GitTargetRef.Name}
+}
+
+// CommitRequestSchemaRevision and CommitRequestSchemaFloor are the revision of the CommitRequest
+// schema this operator was built with, and the oldest revision it can serve: the last line of the
+// kind's description.
+const (
+	CommitRequestSchemaRevision = 1
+	CommitRequestSchemaFloor    = 1
+)
 
 func init() {
 	SchemeBuilder.Register(&CommitRequest{}, &CommitRequestList{})

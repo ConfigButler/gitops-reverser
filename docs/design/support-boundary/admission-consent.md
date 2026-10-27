@@ -165,8 +165,7 @@ RBAC). This boundary is the same class of "no" as correctness — not lift­able
 Consent needs a synchronous surface, and admission is the only one: it is the sole point where the
 user's intent can be accepted or rejected **whole, before persistence** — the property the
 write-gating doc names as the real argument for the gate. The infrastructure exists (the operator
-already runs admission webhooks,
-[`validate_operator_types_handler.go`](../../../internal/webhook/validate_operator_types_handler.go)),
+ran an admission webhook for `CommitRequest` authorship, since removed),
 and the preflight design specifies the baseline. Consent would add one branch:
 
 ```mermaid

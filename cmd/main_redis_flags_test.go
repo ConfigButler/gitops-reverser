@@ -34,20 +34,6 @@ func TestParseFlags_RedisAddrIsOnlyRequiredByAttribution(t *testing.T) {
 				"--audit-insecure",
 			},
 		},
-		// The webhook is failurePolicy: Ignore by design and the controller is the real gate,
-		// so running it without Redis is a supported, degraded mode — not a usage error.
-		// (--admission-webhook-cert-path has no default and is required whenever the webhook
-		// is on; that requirement is about TLS, not about Redis.)
-		"admission webhook runs without redis": {
-			args: []string{
-				"--redis-addr=", "--author-attribution=false",
-				"--admission-webhook", "--admission-webhook-cert-path=/tmp/certs",
-			},
-		},
-		"admission webhook still requires its cert path": {
-			args:    []string{"--redis-addr=", "--author-attribution=false", "--admission-webhook"},
-			wantErr: "admission-webhook-cert-path is required",
-		},
 		"configured-author runs without redis": {
 			args: []string{"--redis-addr=", "--author-attribution=false"},
 		},

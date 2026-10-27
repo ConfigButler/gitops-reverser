@@ -35,8 +35,6 @@ const featureGeneratorBehavior = "configMapGenerator-behavior"
 type ConfigMapGeneratorEntry struct {
 	// KustomizationPath is the kustomization file declaring the entry (slash).
 	KustomizationPath string
-	// Index is the entry's position in configMapGenerator:.
-	Index int
 	// Name and Namespace are the entry's own fields. Namespace is usually empty: a namespace:
 	// transformer supplies it.
 	Name, Namespace string
@@ -53,6 +51,12 @@ type ConfigMapGeneratorEntry struct {
 type GeneratorFileSource struct {
 	Key  string
 	Path string
+}
+
+// ID names the entry in its kustomization: by its name and namespace, which an edit of the file
+// leaves as they are, where its position may move.
+func (e ConfigMapGeneratorEntry) ID() manifestedit.GeneratorEntryID {
+	return manifestedit.GeneratorEntryID{Name: e.Name, Namespace: e.Namespace}
 }
 
 // inputPaths lists every file the entry reads.
@@ -75,7 +79,7 @@ func configMapGenerators(k kustypes.Kustomization, kustomizationPath string) ([]
 	globalHashOff := k.GeneratorOptions != nil && k.GeneratorOptions.DisableNameSuffixHash
 	features := map[string]struct{}{}
 	var out []ConfigMapGeneratorEntry
-	for i, g := range k.ConfigMapGenerator {
+	for _, g := range k.ConfigMapGenerator {
 		switch g.Behavior {
 		case "", "create":
 			// kustomize ORs the two (types.MergeGlobalOptionsIntoLocal): either one disables it.
@@ -87,7 +91,7 @@ func configMapGenerators(k kustypes.Kustomization, kustomizationPath string) ([]
 			// it would not make the entry adoptable.
 			features[featureGeneratorBehavior] = struct{}{}
 		}
-		entry, ok := generatorEntry(g, kustomizationPath, dir, i)
+		entry, ok := generatorEntry(g, kustomizationPath, dir)
 		if ok {
 			out = append(out, entry)
 		}
@@ -97,14 +101,9 @@ func configMapGenerators(k kustypes.Kustomization, kustomizationPath string) ([]
 
 // generatorEntry resolves one entry's sources. ok is false when a files: source does not parse
 // the way kustomize parses it.
-func generatorEntry(
-	g kustypes.ConfigMapArgs,
-	kustomizationPath, dir string,
-	index int,
-) (ConfigMapGeneratorEntry, bool) {
+func generatorEntry(g kustypes.ConfigMapArgs, kustomizationPath, dir string) (ConfigMapGeneratorEntry, bool) {
 	entry := ConfigMapGeneratorEntry{
 		KustomizationPath: kustomizationPath,
-		Index:             index,
 		Name:              g.Name,
 		Namespace:         g.Namespace,
 		Literals:          append([]string(nil), g.LiteralSources...),

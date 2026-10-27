@@ -27,14 +27,14 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 ## Prerequisites
 
 - Kubernetes 1.36 (probably works for older versions, but not tested)
-- cert-manager (for TLS certificates)
 - **Valkey or Redis: optional but advised.** The default install runs without it in
   `configured-author` mode (watches cold-replay on restart). Add it to unlock warm-restart resume
-  cursors, CommitRequest author capture (the admission webhook), and attributed-author mode; enabling
-  any of those requires a non-empty `queue.redis.addr`.
-- **Optional, attributed-author mode only:** kube-apiserver audit delivery, which adds
-  mirrored-resource commit-author attribution. Without it the operator still mirrors state, authored by
-  the configured committer.
+  cursors and attributed-author mode; enabling either requires a non-empty `queue.redis.addr`.
+- **Optional, attributed-author mode only:** kube-apiserver audit delivery, which adds commit-author
+  attribution for mirrored resources and `CommitRequest`s, and cert-manager, which mints the audit
+  ingress certificates (or bring the Secrets yourself with `servers.audit.tls.certManager: false`).
+  Without them the operator still mirrors state, authored by the configured committer. The default
+  install renders no certificate, so it needs no cert-manager.
 
 ## Installation
 
@@ -198,7 +198,7 @@ nodeSelector:
 | `quickstart.gitBranch.branch` | Branch the starter `GitBranch` writes. Must match `quickstart.gitProvider.branchPatterns` | `main` |
 | `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
-| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty means cold-replay on restart. Set it for warm-restart cursors and for the admission webhook to actually record CommitRequest authors (admission runs as a no-op without it); **required** when `attribution.enabled=true` unless `attribution.transport=memory` | `""` |
+| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty means cold-replay on restart. Set it for warm-restart cursors; **required** when `attribution.enabled=true` unless `attribution.transport=memory` | `""` |
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password (only used when `queue.redis.addr` is set) | `""` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
@@ -220,7 +220,6 @@ nodeSelector:
 | `kubeProvider.secretRef.key` | Key within that Secret. Empty reads `value` then `value.yaml` | `""` |
 | `kubeProvider.allowedGitTargets` | Rendered as the provider's `spec.allowedGitTargets`: which namespaces' `GitTarget`s may mirror through it, and what. Each grant has a `consumerNamespaces` block (`from`: `Same`, `Names`, `Selector`, `All`), and `sourceNamespaces`, `clusterResources` or both beside it. **Unset, the field is omitted and the CRD defaults it to the release namespace mirroring its own**; a list is the whole policy, and `[]` admits nobody, the release namespace included: a refused `GitTarget` names `spec.allowedGitTargets`. `quickstart.enabled` adds a grant for the quickstart namespace, and [`values-playground.yaml`](values-playground.yaml) grants every namespace its own. With an `inCluster` provider a grant bypasses live namespace RBAC through the operator's identity | `null` |
 | `kubeProvider.allowedApplierClaims` | Rendered as the provider's `spec.allowedApplierClaims`: which namespaces' `FluxClaim`s and `ArgoCDClaim`s may hold an applier through it (`consumerNamespaces`), and in which `applierNamespaces` it may live, such as `flux-system`. Admission to mirror is no admission to apply. Unset, the CRD defaults it to the release namespace holding appliers in its own; `[]` admits nobody | `null` |
-| `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
 | `rbac.create` | Create the manager ClusterRole and its binding | `true` |
 | `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything, including every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
 | `rbac.watchTypes.selected` | Types to grant when `mode: selected`, as `{apiGroups, resources}` entries (verbs are always `get,list,watch`). Required and non-empty in that mode; `namespaces`, `customresourcedefinitions` and `apiservices` come from the manager role and must not be restated | `[]` |
@@ -233,13 +232,9 @@ nodeSelector:
 | `service.ports.receiver` | Port of the `<release>-receiver` Service when `servers.receiver.enabled=true` | `80` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
-| `servers.admission.port` | Admission webhook container/Service port | `9443` |
-| `servers.admission.timeoutSeconds` | Admission webhook timeout (failurePolicy is Ignore) | `2` |
-| `servers.admission.tls.certManager` | Mint the admission serving cert via cert-manager (false = BYO via `secretNameOverride`) | `true` |
-| `servers.admission.tls.secretNameOverride` | Override Secret name for the admission serving cert | `<release>-admission-server-cert` |
 | `certManager.enabled` | Use cert-manager to mint the chart's serving/client certs | `true` |
 | `certManager.issuer.name` | Name of the (shared) cert-manager issuer | `selfsigned-issuer` |
-| `certManager.issuer.create` | Create the self-signed issuer (set false to reuse an existing one) | `true` |
+| `certManager.issuer.create` | Create the self-signed issuer when a certificate needs it (set false to reuse an existing one) | `true` |
 | `servers.metrics.tls.certManager` | Mint the metrics serving cert via cert-manager (used when `servers.metrics.tls.enabled`) | `true` |
 | `servers.audit.tls.certManager` | Let the chart mint audit TLS Secrets (server + kube-apiserver client) via cert-manager when `attribution.enabled=true` | `true` |
 | `servers.audit.tls.rootCA.secretNameOverride` | Override Secret name for the audit root CA | `<release>-audit-root-ca` |

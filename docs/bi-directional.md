@@ -281,6 +281,12 @@ nothing else.
   `KubeProvider`s, and, for a `Refusal`, still consents; and the applier claim still holds the applier.
   When any of that changed, it asks nothing and decides again, after a new flush. It never asks for
   something weaker than what it was told.
+- **The apply window waits for the watch.** After the applier reports the apply finished, the window
+  stays open for a 10-second grace, and until the watch has delivered every write the source cluster
+  held at that moment, for at most two minutes. Each event waits for its audit fact first, and on a
+  cluster that sends none, for the whole attribution grace, so the applier's writes can reach the
+  branch worker long after the apply finished. They are still judged inside the window
+  (`apply_window_barriers_total`).
 - **The apply's own writes are not mirrored.** Inside the apply window, a write whose newest field
   managers are the applier's alone, made since the request was sent, to an object nobody edited in
   the window, is the apply landing. It is kept out of Git and counted in

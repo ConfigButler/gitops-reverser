@@ -129,21 +129,7 @@ func (p *timingPipeline) start() {
 	p.hookID = registerOperatorReceiver(p.testNs, p.receiverName, p.repo.RepoName)
 
 	createGitTarget(p.targetName, p.testNs, p.providerName, p.gitPath, "main")
-	_, err = kubectlRunWithStdin(p.testNs, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: WatchRule
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  gitTargetRef:
-    name: %s
-  rules:
-  - resources: ["configmaps"]
-    objectSelector:
-      matchLabels:
-        %s: "true"
-`, p.ruleName, p.testNs, p.targetName, timingLabelKey), "apply", "-f", "-")
-	Expect(err).NotTo(HaveOccurred(), "failed to apply the WatchRule")
+	p.applyWatchRule()
 	verifyResourceStatus("gittarget", p.targetName, p.testNs, "True", "Succeeded", "")
 	waitForStreamsRunning(p.targetName, p.testNs)
 
@@ -161,6 +147,26 @@ data:
 	Eventually(func(g Gomega) {
 		g.Expect(p.committedValue(g)).To(Equal("seed"))
 	}, timingCommitBudget, timingPoll).Should(Succeed(), "the ConfigMap must be in Git before an applier applies it")
+}
+
+// applyWatchRule applies the WatchRule that mirrors the labeled ConfigMaps of testNs to the GitTarget.
+func (p *timingPipeline) applyWatchRule() {
+	GinkgoHelper()
+	_, err := kubectlRunWithStdin(p.testNs, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  gitTargetRef:
+    name: %s
+  rules:
+  - resources: ["configmaps"]
+    objectSelector:
+      matchLabels:
+        %s: "true"
+`, p.ruleName, p.testNs, p.targetName, timingLabelKey), "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "failed to apply the WatchRule")
 }
 
 func (p *timingPipeline) cleanup() {

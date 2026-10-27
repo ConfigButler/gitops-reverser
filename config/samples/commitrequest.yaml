@@ -5,7 +5,13 @@
 # reported in .status.commit once it has been pushed.
 #
 # Frontends typically use metadata.generateName so each "save" is a fresh
-# object. The referenced GitTarget must live in the same namespace.
+# object. The referenced GitTarget is in the same namespace unless
+# gitTargetRef.namespace names another, whose spec.allowedCommitRequests must
+# admit this one. The request's author comes from its own audit event.
+#
+# For a GitTarget that mirrors another cluster, create the request on that
+# cluster instead, with gitTargetRef.namespace set, once its KubeProvider sets
+# spec.commitRequests and the cluster has the CommitRequest CRD.
 apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
@@ -24,8 +30,8 @@ spec:
     # opens. Next first closes the open window, under its own message.
     attach: CurrentOrNext
     # How long to wait for a window, from when the branch worker registers the
-    # request. "2s" covers a write's wait for its audit fact.
-    attachTimeout: "2s"
+    # request. "5s" covers a write's wait for its audit fact.
+    attachTimeout: "5s"
     # Close the attached window this long after the attach. Add idleTimeout (at
     # most maxDuration) to also close it after that much silence.
     maxDuration: "2s"

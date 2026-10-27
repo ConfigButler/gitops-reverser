@@ -16,8 +16,7 @@ import (
 // GitTarget path may be equal to, an ancestor of, or a descendant of another's.
 // Sibling folders are fine; nesting is rejected at the Validated gate so every
 // materialized folder has exactly one owner. The reject path surfaces as a
-// reconcile-time status condition (Ready=False / ValidationFailed), not through
-// the current allow-only validating admission webhook.
+// reconcile-time status condition (Ready=False / ValidationFailed).
 var _ = Describe("Manager GitTarget Overlap Guard", Label("manager"), Ordered, func() {
 	const providerName = "gitprovider-overlap"
 

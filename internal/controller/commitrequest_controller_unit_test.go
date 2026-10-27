@@ -12,6 +12,7 @@ import (
 	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,7 +26,6 @@ import (
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
 
 // fakeFinalizer records the reconciler's attach calls and replies with a canned
@@ -45,6 +45,19 @@ type fakeFinalizer struct {
 	withdrawErr      error
 	withdrawPending  bool
 	withdrawCalls    []git.AttachCommitRequest
+
+	// The apply a request with catchUp: AfterPush asked for, and the lookups made.
+	apply        git.SaveApply
+	applyKnown   bool
+	applyErr     error
+	applyLookups int
+}
+
+func (f *fakeFinalizer) LookupCommitRequestApply(
+	_ context.Context, _ git.AttachCommitRequest,
+) (git.SaveApply, bool, error) {
+	f.applyLookups++
+	return f.apply, f.applyKnown, f.applyErr
 }
 
 func (f *fakeFinalizer) WithdrawCommitRequest(
@@ -64,26 +77,6 @@ func (f *fakeFinalizer) ServiceCommitRequest(
 	return f.result, f.resolved, f.err
 }
 
-// fakeAuthorLookup is the command-author source stub: found=false models a miss
-// (the validate-operator-types webhook is not configured, or a best-effort write missed),
-// which the controller resolves to the committer immediately — present-or-never.
-type fakeAuthorLookup struct {
-	author queue.CommandAuthor
-	found  bool
-	calls  int
-}
-
-func (f *fakeAuthorLookup) LookupCommandAuthor(
-	_ context.Context, _ types.UID,
-) (queue.CommandAuthor, bool) {
-	f.calls++
-	return f.author, f.found
-}
-
-func attributedAlice() *fakeAuthorLookup {
-	return &fakeAuthorLookup{author: queue.CommandAuthor{Author: "alice"}, found: true}
-}
-
 // newCommitRequest builds a request created just now, inside its safety window, as the API server
 // would stamp it. pastTheBound ages one beyond it.
 func newCommitRequest(name string) *configv1alpha3.CommitRequest {
@@ -95,7 +88,7 @@ func newCommitRequest(name string) *configv1alpha3.CommitRequest {
 			CreationTimestamp: metav1.Now(),
 		},
 		Spec: configv1alpha3.CommitRequestSpec{
-			GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
+			GitTargetRef: meta.NamespacedObjectReference{Name: "team-a-config"},
 			Message:      "save: " + name,
 		},
 	}
@@ -116,24 +109,29 @@ func withReadyCommitted(cr *configv1alpha3.CommitRequest) *configv1alpha3.Commit
 	return cr
 }
 
-// withInProgress stamps the still-running conditions a post-restart redelivery
-// would already carry (Ready=False, Reconciling=True), which is non-terminal.
+// withInProgress stamps the claim a post-restart redelivery would already carry (Ready=Unknown,
+// Reconciling=True), which is non-terminal.
 func withInProgress(cr *configv1alpha3.CommitRequest) *configv1alpha3.CommitRequest {
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
-		Type: ConditionTypeReady, Status: metav1.ConditionFalse,
+		Type: ConditionTypeReady, Status: metav1.ConditionUnknown,
 		Reason: string(git.PhaseWaitingForWindow), Message: "in progress",
 	})
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
 		Type: ConditionTypeReconciling, Status: metav1.ConditionTrue,
 		Reason: string(git.PhaseWaitingForWindow), Message: "in progress",
 	})
+	// Admitted when it was first seen, by the GitTarget withGitTargets gives it.
+	key := cr.GitTargetKey()
+	cr.Status.GitTargetUID = "uid-" + key.Namespace + "-" + key.Name
 	return cr
 }
 
 func newCommitRequestClient(t *testing.T, fns *interceptor.Funcs, objects ...client.Object) client.WithWatch {
 	t.Helper()
+	objects = withGitTargets(objects)
 	scheme := runtime.NewScheme()
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 	builder := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).
@@ -142,6 +140,70 @@ func newCommitRequestClient(t *testing.T, fns *interceptor.Funcs, objects ...cli
 		builder = builder.WithInterceptorFuncs(*fns)
 	}
 	return builder.Build()
+}
+
+// localProvider is the KubeProvider every fixture GitTarget mirrors through: the operator's own
+// identity, so the control-cluster path owns its requests.
+const localProvider = "local"
+
+// withGitTargets gives each GitTarget a UID, as the API server would, and a KubeProvider, the in-cluster
+// localProvider in its namespace unless it names one. When objects hold no GitTarget at all, it adds the
+// one each CommitRequest names: a request is only attached once a GitTarget admitted it. A test that
+// passes GitTargets of its own gets only those.
+func withGitTargets(objects []client.Object) []client.Object {
+	present := map[client.ObjectKey]bool{}
+	for _, obj := range objects {
+		if target, ok := obj.(*configv1alpha3.GitTarget); ok {
+			present[client.ObjectKeyFromObject(target)] = true
+			if target.UID == "" {
+				target.UID = types.UID("uid-" + target.Namespace + "-" + target.Name)
+			}
+			if target.Spec.KubeProviderRef.Name == "" {
+				target.Spec.KubeProviderRef.Name = localProvider
+			}
+		}
+	}
+	if len(present) > 0 {
+		return withLocalProviders(objects)
+	}
+	for _, obj := range objects {
+		request, ok := obj.(*configv1alpha3.CommitRequest)
+		if !ok || request.Spec.GitTargetRef.Name == "" || present[request.GitTargetKey()] {
+			continue
+		}
+		key := request.GitTargetKey()
+		present[key] = true
+		objects = append(objects, &configv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: key.Name, Namespace: key.Namespace, UID: types.UID("uid-" + key.Namespace + "-" + key.Name),
+			},
+			Spec: configv1alpha3.GitTargetSpec{KubeProviderRef: meta.NamespacedObjectReference{Name: localProvider}},
+		})
+	}
+	return withLocalProviders(objects)
+}
+
+// withLocalProviders adds the in-cluster localProvider to each namespace a GitTarget names it in, unless
+// objects hold a KubeProvider of that name already.
+func withLocalProviders(objects []client.Object) []client.Object {
+	present := map[client.ObjectKey]bool{}
+	for _, obj := range objects {
+		if provider, ok := obj.(*configv1alpha3.KubeProvider); ok {
+			present[client.ObjectKeyFromObject(provider)] = true
+		}
+	}
+	for _, obj := range objects {
+		target, ok := obj.(*configv1alpha3.GitTarget)
+		if !ok || target.KubeProviderKey().Name != localProvider || present[target.KubeProviderKey()] {
+			continue
+		}
+		present[target.KubeProviderKey()] = true
+		objects = append(objects, &configv1alpha3.KubeProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: localProvider, Namespace: target.KubeProviderKey().Namespace},
+			Spec:       configv1alpha3.KubeProviderSpec{InCluster: &configv1alpha3.KubeProviderInCluster{}},
+		})
+	}
+	return objects
 }
 
 func reconcileCommitRequest(t *testing.T, r *CommitRequestReconciler, name string) ctrl.Result {
@@ -186,14 +248,13 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc123", Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-1")
 
 	got := fetchCommitRequest(t, c, "save-1")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
-	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
 	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionFalse, "")
 	requireCondition(t, got, ConditionTypeStalled, metav1.ConditionFalse, "")
 	assert.Equal(t, "abc123", got.Status.Commit)
@@ -201,8 +262,7 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 
 	require.Len(t, f.calls, 1)
 	call := f.calls[0]
-	assert.Equal(t, "alice", call.Author,
-		"the attach must carry the author captured at admission")
+	assert.Empty(t, call.Author, "with attribution off, the request names no author")
 	assert.Equal(t, "team-a-config", call.GitTargetName)
 	assert.Equal(t, "default", call.GitTargetNamespace)
 	assert.Equal(t, "save: save-1", call.Message)
@@ -217,7 +277,7 @@ func TestCommitRequestReconcile_NoOpenWindow(t *testing.T) {
 		result:   git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-now")
 
@@ -247,7 +307,7 @@ func TestCommitRequestReconcile_CommitEmptyRecordsTheMessageAndKeepsTheCause(t *
 				result:   git.FinalizeResult{Outcome: tc.outcome, Commit: "abc123", Branch: "main"},
 				resolved: true,
 			}
-			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 			reconcileCommitRequest(t, r, "save-empty")
 
@@ -273,7 +333,7 @@ func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {
 		result:   git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-foreign")
 
@@ -293,7 +353,7 @@ func TestCommitRequestReconcile_AlreadyPresentRejected(t *testing.T) {
 		result:   git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-noop")
 
@@ -311,7 +371,7 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 		result:   git.FinalizeResult{Err: errors.New("commit failed: unreachable remote")},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-fail")
 
@@ -320,34 +380,6 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 	stalled := requireCondition(t, got, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)
 	assert.Contains(t, stalled.Message, "unreachable remote")
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, "")
-}
-
-// TestCommitRequestReconcile_LookupMissClaimsNoActor verifies that a lookup miss claims no actor
-// immediately — present-or-never, no wait. A freshly created CommitRequest attaches at once with a
-// blank author and records AuthorAttributed=False (CommitterFallback). The matching window determines
-// the Git author.
-func TestCommitRequestReconcile_LookupMissClaimsNoActor(t *testing.T) {
-	cr := newCommitRequest("save-fresh")
-	cr.CreationTimestamp = metav1.Now() // fresh: the old path would have requeued here
-	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Branch: "main"},
-		resolved: true,
-	}
-	lookup := &fakeAuthorLookup{found: false}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: lookup}
-
-	res := reconcileCommitRequest(t, r, "save-fresh")
-
-	assert.Zero(t, res.RequeueAfter, "a miss is final; the request must not poll for an author")
-	assert.Equal(t, 1, lookup.calls, "the author is looked up exactly once, synchronously")
-	require.Len(t, f.calls, 1, "the attach is sent immediately on a miss")
-	assert.Empty(t, f.calls[0].Author, "a miss attaches with a blank, unnamed actor")
-
-	got := fetchCommitRequest(t, c, "save-fresh")
-	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
-	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 }
 
 // A request whose window was never defaulted must reach the worker carrying the schema defaults,
@@ -360,7 +392,7 @@ func TestCommitRequestReconcile_AnOmittedWindowUsesTheDefaults(t *testing.T) {
 	require.Nil(t, cr.Spec.Window, "the fixture must leave the block unset")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-default")
 
@@ -383,7 +415,7 @@ func TestCommitRequestReconcile_ExplicitZerosArePreservedFieldByField(t *testing
 	}
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-now")
 
@@ -403,7 +435,7 @@ func TestCommitRequestReconcile_NotResolvedReportsTheWorkersPhase(t *testing.T) 
 	cr.Spec.Window = &configv1alpha3.CommitRequestWindow{MaxDuration: &metav1.Duration{Duration: 30 * time.Second}}
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	res := reconcileCommitRequest(t, r, "save-linger")
 
@@ -414,8 +446,7 @@ func TestCommitRequestReconcile_NotResolvedReportsTheWorkersPhase(t *testing.T) 
 		"the window is passed to the worker, not consumed here")
 
 	got := fetchCommitRequest(t, c, "save-linger")
-	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, ReasonProgressing)
+	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonSaving)
 	assert.False(t, commitRequestIsTerminal(&got), "an unresolved request is not terminal")
 
 	for _, phase := range []git.CommitRequestPhase{
@@ -425,7 +456,7 @@ func TestCommitRequestReconcile_NotResolvedReportsTheWorkersPhase(t *testing.T) 
 		reconcileCommitRequest(t, r, "save-linger")
 		got = fetchCommitRequest(t, c, "save-linger")
 		requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, string(phase))
-		requireCondition(t, got, ConditionTypeReady, metav1.ConditionFalse, string(phase))
+		requireCondition(t, got, ConditionTypeReady, metav1.ConditionUnknown, string(phase))
 	}
 
 	// A phase the worker has not (yet) reported keeps what is shown rather than guessing.
@@ -442,13 +473,13 @@ func TestCommitRequestReconcile_ServiceErrorPolls(t *testing.T) {
 	cr.CreationTimestamp = metav1.Now()
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{err: errors.New("get GitTarget: not found")}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	res := reconcileCommitRequest(t, r, "save-transient")
 
 	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter)
 	got := fetchCommitRequest(t, c, "save-transient")
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, ReasonProgressing)
+	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonSaving)
 	assert.False(t, commitRequestIsTerminal(&got))
 }
 
@@ -462,7 +493,7 @@ func TestCommitRequestReconcile_ResolveTimeoutFailsClosed(t *testing.T) {
 		withdrawResult:   git.FinalizeResult{Branch: "main", Err: git.ErrCommitRequestWithdrawn},
 		withdrawResolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-stuck")
 
@@ -482,7 +513,7 @@ func TestCommitRequestReconcile_AHeldRequestOutlivesTheBound(t *testing.T) {
 			cr := pastTheBound(newCommitRequest("save-held"))
 			c := newCommitRequestClient(t, nil, cr)
 			f := &fakeFinalizer{result: git.FinalizeResult{Phase: phase}}
-			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 			res := reconcileCommitRequest(t, r, "save-held")
 
@@ -517,7 +548,7 @@ func TestCommitRequestReconcile_AnUnansweredWithdrawKeepsPolling(t *testing.T) {
 				withdrawResult:  reply,
 				withdrawPending: true,
 			}
-			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 			res := reconcileCommitRequest(t, r, "save-race")
 
@@ -537,7 +568,7 @@ func TestCommitRequestReconcile_AWithdrawThatLostTheRaceReportsTheRealOutcome(t 
 		withdrawResult:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		withdrawResolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-late")
 
@@ -557,7 +588,7 @@ func TestCommitRequestReconcile_NoWorkerIsNamedWhenItFailsClosed(t *testing.T) {
 		},
 		withdrawResolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-no-worker")
 
@@ -570,12 +601,10 @@ func TestCommitRequestReconcile_TerminalShortCircuits(t *testing.T) {
 	cr := withReadyCommitted(newCommitRequest("save-done"))
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{}
-	lookup := attributedAlice()
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: lookup}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-done")
 
-	assert.Zero(t, lookup.calls)
 	assert.Empty(t, f.calls, "a terminal CommitRequest must never re-attach")
 }
 
@@ -589,16 +618,15 @@ func TestCommitRequestReconcile_StaleCacheEchoDoesNotRefinalize(t *testing.T) {
 	live := newCommitRequestClient(t, nil, terminal)
 
 	f := &fakeFinalizer{}
-	r := &CommitRequestReconciler{Client: cached, APIReader: live, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: cached, APIReader: live, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-echo")
 
 	assert.Empty(t, f.calls)
 }
 
-// Webhook-disabled mode (no AuthorLookup) never waits: a freshly created CommitRequest
-// attaches immediately with a blank author and records AuthorAttributed=False
-// (AuthorCaptureDisabled). The matching window determines the Git author.
+// A freshly created CommitRequest attaches immediately with a blank author. The matching window
+// determines the Git author.
 func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing.T) {
 	cr := newCommitRequest("save-configured-author")
 	cr.CreationTimestamp = metav1.Now() // fresh: a waiting path would requeue instead of commit
@@ -607,7 +635,7 @@ func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f} // AuthorLookup nil
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	res := reconcileCommitRequest(t, r, "save-configured-author")
 
@@ -615,32 +643,9 @@ func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing
 	got := fetchCommitRequest(t, c, "save-configured-author")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
-	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
 	assert.Equal(t, "c0ffee", got.Status.Commit)
 	require.Len(t, f.calls, 1, "the attach is sent immediately, with no attribution wait")
 	assert.Empty(t, f.calls[0].Author, "webhook-disabled mode attaches with a blank author")
-}
-
-// Webhook-disabled mode settles AuthorAttributed=False (AuthorCaptureDisabled) immediately
-// and never parks the request in a "waiting for the author" state: even while the
-// attach is still being polled, the request reports progress.
-func TestCommitRequestReconcile_ConfiguredAuthorAttributedImmediately(t *testing.T) {
-	cr := newCommitRequest("save-committer-poll")
-	cr.CreationTimestamp = metav1.Now()
-	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{resolved: false}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f} // AuthorLookup nil
-
-	res := reconcileCommitRequest(t, r, "save-committer-poll")
-
-	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter, "an unresolved attach is polled")
-	require.Len(t, f.calls, 1)
-	assert.Empty(t, f.calls[0].Author)
-
-	got := fetchCommitRequest(t, c, "save-committer-poll")
-	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, ReasonProgressing)
-	assert.False(t, commitRequestIsTerminal(&got), "in progress, not terminal")
 }
 
 // With no Finalizer wired the controller is inert: it neither attaches, stamps any
@@ -649,7 +654,7 @@ func TestCommitRequestReconcile_ConfiguredAuthorAttributedImmediately(t *testing
 func TestCommitRequestReconcile_NilFinalizerIsInert(t *testing.T) {
 	cr := newCommitRequest("save-no-finalizer")
 	c := newCommitRequestClient(t, nil, cr)
-	r := &CommitRequestReconciler{Client: c, APIReader: c} // Finalizer nil, AuthorLookup nil
+	r := &CommitRequestReconciler{Client: c, APIReader: c} // Finalizer nil
 
 	res := reconcileCommitRequest(t, r, "save-no-finalizer")
 
@@ -662,7 +667,7 @@ func TestCommitRequestReconcile_NilFinalizerIsInert(t *testing.T) {
 func TestCommitRequestReconcile_ObjectDeletedIsBenign(t *testing.T) {
 	c := newCommitRequestClient(t, nil)
 	f := &fakeFinalizer{}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "gone")
 
@@ -697,7 +702,7 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "ddd111", Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-retry")
 
@@ -720,31 +725,28 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 				Branch:  "main",
 			},
 			nil,
-			attributionFromAdmission,
 		)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 		requireCondition(t, cr, ConditionTypeReconciling, metav1.ConditionFalse, "")
 		requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionFalse, "")
-		requireCondition(t, cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
 		assert.Equal(t, "abc", cr.Status.Commit)
 		assert.Equal(t, "main", cr.Status.Branch)
 	})
 
-	t.Run("no window in grace is a benign ready (no admission author)", func(t *testing.T) {
+	t.Run("no window in grace is a benign ready", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil, attributionCommitter)
+			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindow)
 		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionFalse, crReasonNoWindow)
-		requireCondition(t, cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 		assert.Empty(t, cr.Status.Commit)
 	})
 
 	t.Run("window mismatch surfaces the reason", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"}, nil, attributionFromAdmission)
+			git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"}, nil)
 		ready := requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonWindowMismatch)
 		assert.Equal(t, windowMismatchMessage, ready.Message)
 	})
@@ -752,7 +754,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	t.Run("already present is a benign ready", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"}, nil, attributionFromAdmission)
+			git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"}, nil)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonAlreadyPresent)
 		assert.Empty(t, cr.Status.Commit)
 	})
@@ -761,7 +763,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc"},
-			errors.New("boom"), attributionFromAdmission)
+			errors.New("boom"))
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionFalse, crReasonFinalizeFailed)
 		stalled := requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)
 		assert.Equal(t, "boom", stalled.Message)
@@ -769,7 +771,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 
 	t.Run("unknown outcome stalls", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
-		applyFinalizeResultToStatus(&cr, git.FinalizeResult{}, nil, attributionFromAdmission)
+		applyFinalizeResultToStatus(&cr, git.FinalizeResult{}, nil)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionFalse, crReasonUnexpectedOutcome)
 		stalled := requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionTrue, crReasonUnexpectedOutcome)
 		assert.Contains(t, stalled.Message, "unexpected finalize outcome")
@@ -800,7 +802,7 @@ func TestCommitRequestReconciler_PrunedGitTargetRefIsTerminal(t *testing.T) {
 			UID:       "cr-uid",
 		},
 		Spec: configv1alpha3.CommitRequestSpec{
-			GitTargetRef: meta.LocalObjectReference{Name: ""},
+			GitTargetRef: meta.NamespacedObjectReference{Name: ""},
 		},
 	}
 
@@ -862,6 +864,197 @@ func TestCommitRequestReconciler_LiteralValidation(t *testing.T) {
 				require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(cr), &got))
 				assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeStalled))
 			}
+		})
+	}
+}
+
+// A CommitRequest may name a GitTarget in another namespace, which saves for it only when a grant in its
+// spec.allowedCommitRequests admits the request's namespace. Omitted, the list admits the GitTarget's own
+// namespace alone; a refused request fails at once, before anything is attached.
+func TestCommitRequestAttach_AGitTargetElsewhereMustAdmitTheRequest(t *testing.T) {
+	platformTarget := func(grants []configv1alpha3.GitTargetCommitRequestGrant) *configv1alpha3.GitTarget {
+		return &configv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "platform"},
+			Spec:       configv1alpha3.GitTargetSpec{AllowedCommitRequests: grants},
+		}
+	}
+	fromNames := func(names ...configv1alpha3.GrantNamespace) []configv1alpha3.GitTargetCommitRequestGrant {
+		return []configv1alpha3.GitTargetCommitRequestGrant{{
+			ConsumerNamespaces: &configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromNames, Names: names},
+		}}
+	}
+	cases := []struct {
+		name     string
+		grants   []configv1alpha3.GitTargetCommitRequestGrant
+		admitted bool
+	}{
+		{"the default admits only the GitTarget's own namespace", nil, false},
+		{"a grant for another namespace", fromNames("team-b"), false},
+		{"a grant for the request's namespace", fromNames("default"), true},
+		{"every namespace", []configv1alpha3.GitTargetCommitRequestGrant{{
+			ConsumerNamespaces: &configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromAll},
+		}}, true},
+		{"an empty list admits nobody", []configv1alpha3.GitTargetCommitRequestGrant{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := newCommitRequest("save")
+			cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "shared", Namespace: "platform"}
+			c := newCommitRequestClient(t, nil, cr, platformTarget(tc.grants))
+			f := &fakeFinalizer{}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+			reconcileCommitRequest(t, r, "save")
+
+			if tc.admitted {
+				require.NotEmpty(t, f.calls, "the request must be attached")
+				assert.Equal(t, "platform", f.calls[0].GitTargetNamespace)
+				assert.Equal(t, "shared", f.calls[0].GitTargetName)
+				return
+			}
+			assert.Empty(t, f.calls, "a refused request is never attached")
+			var got configv1alpha3.CommitRequest
+			require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "save"}, &got))
+			ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+			require.NotNil(t, ready)
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			assert.Equal(t, crReasonNotAllowed, ready.Reason)
+			assert.Contains(t, ready.Message, "spec.allowedCommitRequests")
+			assert.True(t, apimeta.IsStatusConditionTrue(got.Status.Conditions, ConditionTypeStalled))
+		})
+	}
+}
+
+// A request whose GitTarget does not exist is not attached: it waits, writing nothing, since no path
+// knows it owns it, and once a GitTarget by that name appears it must admit the request first.
+func TestCommitRequestAttach_AGitTargetCreatedLaterMustAdmitTheRequest(t *testing.T) {
+	cr := newCommitRequest("save")
+	cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "later", Namespace: "platform"}
+	c := newCommitRequestClient(t, nil, cr, &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "platform"},
+	})
+	f := &fakeFinalizer{resolved: true, result: git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee"}}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+	res := reconcileCommitRequest(t, r, "save")
+	assert.Empty(t, f.calls, "nothing is attached before a GitTarget admitted the request")
+	assert.Positive(t, res.RequeueAfter, "it waits for the GitTarget")
+	got := fetchCommitRequest(t, c, "save")
+	assert.Empty(t, got.Status.Conditions, "within attachTimeout nothing is written")
+
+	require.NoError(t, c.Create(context.Background(), &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "later", Namespace: "platform", UID: "uid-later"},
+		Spec: configv1alpha3.GitTargetSpec{
+			KubeProviderRef:       meta.NamespacedObjectReference{Name: localProvider},
+			AllowedCommitRequests: []configv1alpha3.GitTargetCommitRequestGrant{},
+		},
+	}))
+	reconcileCommitRequest(t, r, "save")
+
+	assert.Empty(t, f.calls, "the GitTarget that appeared admits nobody")
+	got = fetchCommitRequest(t, c, "save")
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, crReasonNotAllowed, ready.Reason)
+}
+
+// The GitTarget that admitted a request is recorded by UID, and a refusal by that same GitTarget
+// afterwards, once its grants were lowered, does not fail a request an attach may already have reached.
+func TestCommitRequestAttach_ALoweredGrantKeepsARequestItAdmitted(t *testing.T) {
+	cr := newCommitRequest("save")
+	target := &configv1alpha3.GitTarget{ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"}}
+	c := newCommitRequestClient(t, nil, cr, target)
+	f := &fakeFinalizer{}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+	reconcileCommitRequest(t, r, "save")
+	require.Len(t, f.calls, 1)
+	assert.Equal(t, string(target.UID), f.calls[0].GitTargetUID, "the attach is bound to the admitting GitTarget")
+	got := fetchCommitRequest(t, c, "save")
+	assert.Equal(t, string(target.UID), got.Status.GitTargetUID)
+
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(target), target))
+	target.Spec.AllowedCommitRequests = []configv1alpha3.GitTargetCommitRequestGrant{}
+	require.NoError(t, c.Update(context.Background(), target))
+	reconcileCommitRequest(t, r, "save")
+
+	assert.Len(t, f.calls, 2, "the attach is sent again, as before the grant was lowered")
+	got = fetchCommitRequest(t, c, "save")
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+	require.NotNil(t, ready)
+	assert.NotEqual(t, crReasonNotAllowed, ready.Reason)
+}
+
+// A GitTarget recreated with grants that refuse a request does not fail it while the worker the
+// GitTarget it replaced sent it to may hold it: that worker answers first. A save it committed is
+// reported as committed; one nothing held is refused; one it holds is waited for.
+func TestCommitRequestAttach_ARefusingReplacementAsksTheWorkerFirst(t *testing.T) {
+	tests := []struct {
+		name       string
+		withdraw   git.FinalizeResult
+		resolved   bool
+		wantReason string
+		wantCommit string
+	}{
+		{
+			name:       "the worker committed it",
+			withdraw:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"},
+			resolved:   true,
+			wantReason: crReasonCommitted,
+			wantCommit: "c0ffee",
+		},
+		{
+			name:       "nothing held it",
+			withdraw:   git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn},
+			resolved:   true,
+			wantReason: crReasonNotAllowed,
+		},
+		{
+			name:     "the worker holds it",
+			withdraw: git.FinalizeResult{Phase: git.PhaseWaitingForPush},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := newCommitRequest("save")
+			target := &configv1alpha3.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default", UID: "uid-first"},
+			}
+			c := newCommitRequestClient(t, nil, cr, target)
+			f := &fakeFinalizer{}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
+
+			reconcileCommitRequest(t, r, "save")
+			require.Len(t, f.calls, 1)
+
+			require.NoError(t, c.Delete(context.Background(), target))
+			refusing := configv1alpha3.GitTargetSpec{
+				AllowedCommitRequests: []configv1alpha3.GitTargetCommitRequestGrant{},
+			}
+			refusing.KubeProviderRef = meta.NamespacedObjectReference{Name: localProvider}
+			require.NoError(t, c.Create(context.Background(), &configv1alpha3.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default", UID: "uid-second"},
+				Spec:       refusing,
+			}))
+			f.withdrawResult, f.withdrawResolved, f.withdrawPending = tc.withdraw, tc.resolved, true
+			res := reconcileCommitRequest(t, r, "save")
+
+			assert.Len(t, f.calls, 1, "nothing is attached through the replacement")
+			require.Len(t, f.withdrawCalls, 1)
+			assert.Equal(t, "uid-first", f.withdrawCalls[0].GitTargetUID, "the worker is asked about the first one")
+			got := fetchCommitRequest(t, c, "save")
+			assert.Equal(t, "uid-first", got.Status.GitTargetUID)
+			ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+			require.NotNil(t, ready)
+			if tc.wantReason == "" {
+				assert.Positive(t, res.RequeueAfter, "a held request is waited for")
+				assert.NotEqual(t, metav1.ConditionTrue, ready.Status)
+				assert.NotEqual(t, crReasonNotAllowed, ready.Reason)
+				return
+			}
+			assert.Equal(t, tc.wantReason, ready.Reason)
+			assert.Equal(t, tc.wantCommit, got.Status.Commit)
 		})
 	}
 }

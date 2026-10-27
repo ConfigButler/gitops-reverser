@@ -4,6 +4,7 @@ package v1alpha3
 
 import (
 	"strings"
+	"time"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -54,6 +55,27 @@ type ArgoCDClaimSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.applicationRef is immutable; delete and recreate the ArgoCDClaim to hold another Application"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.applicationRef.name must not be empty"
 	ApplicationRef meta.NamespacedObjectReference `json:"applicationRef"`
+
+	// Why off by default, where a FluxClaim's is on: a sync runs the Application's hooks, which
+	// cost more than a no-op apply, and Argo CD's own refresh already compares the live state
+	// against the tip without a sync. Only the last sync's revision lags.
+
+	// CatchUpAfter is how long the Application stays behind the branch after
+	// a push of GitOps Reverser's own before a sync of the tip is asked for,
+	// as a Go duration ("5m"). Such a push changes nothing on the cluster,
+	// which already holds the edit, but leaves the Application's last sync at
+	// the commit before it. The interval starts when the Application is first
+	// seen behind, so a burst of saves costs one sync, hooks included, and one
+	// at the tip costs none. The sync can still wait for startup, a retry
+	// backoff or edits being published. "0s" never asks for this reason, and
+	// drops a sync it asked for that has not started. Otherwise at least "10s"
+	// and at most "24h". Defaults to "0s".
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:default="0s"
+	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || (duration(self) >= duration('10s') && duration(self) <= duration('24h'))",message="spec.catchUpAfter must be 0s, or a Go duration from 10s to 24h"
+	CatchUpAfter *metav1.Duration `json:"catchUpAfter,omitempty"`
 }
 
 // ArgoCDClaimStatus is what the applier claim knows about its Application, and
@@ -162,7 +184,9 @@ type ArgoCDClaimSource struct {
 //   - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
 //   - after a sync reverted an edit made through the API;
 //   - after objects were created through the API in its folders;
-//   - once at startup, and when a GitTarget first names this ArgoCDClaim.
+//   - once at startup, and when a GitTarget first names this ArgoCDClaim;
+//   - once spec.catchUpAfter passed since a push of GitOps Reverser's own;
+//   - after a CommitRequest with spec.catchUp "AfterPush" pushed a commit.
 //
 // GitTargets name it with spec.applierClaimRef.
 type ArgoCDClaim struct {
@@ -194,6 +218,9 @@ type ArgoCDClaimList struct {
 func init() {
 	SchemeBuilder.Register(&ArgoCDClaim{}, &ArgoCDClaimList{})
 }
+
+// DefaultArgoCDCatchUpAfter is an ArgoCDClaim's spec.catchUpAfter when it is omitted: off.
+const DefaultArgoCDCatchUpAfter = 0
 
 var _ ApplierClaim = (*ArgoCDClaim)(nil)
 
@@ -233,6 +260,11 @@ func (t *ArgoCDClaim) SourceBinding() (string, string, bool) {
 // do not disturb each other's operations.
 func (t *ArgoCDClaim) SharedSource() (types.NamespacedName, bool) {
 	return types.NamespacedName{}, false
+}
+
+// CatchUpAfter is spec.catchUpAfter, or DefaultArgoCDCatchUpAfter when it is omitted.
+func (t *ArgoCDClaim) CatchUpAfter() time.Duration {
+	return durationOr(t.Spec.CatchUpAfter, DefaultArgoCDCatchUpAfter)
 }
 
 // Operation is status.operation.

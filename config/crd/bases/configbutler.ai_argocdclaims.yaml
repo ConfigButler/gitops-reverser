@@ -66,7 +66,9 @@ spec:
             - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
             - after a sync reverted an edit made through the API;
             - after objects were created through the API in its folders;
-            - once at startup, and when a GitTarget first names this ArgoCDClaim.
+            - once at startup, and when a GitTarget first names this ArgoCDClaim;
+            - once spec.catchUpAfter passed since a push of GitOps Reverser's own;
+            - after a CommitRequest with spec.catchUp "AfterPush" pushed a commit.
 
           GitTargets name it with spec.applierClaimRef.
         properties:
@@ -124,6 +126,26 @@ spec:
                   rule: self == oldSelf
                 - message: spec.applicationRef.name must not be empty
                   rule: self.name != ''
+              catchUpAfter:
+                default: 0s
+                description: |-
+                  CatchUpAfter is how long the Application stays behind the branch after
+                  a push of GitOps Reverser's own before a sync of the tip is asked for,
+                  as a Go duration ("5m"). Such a push changes nothing on the cluster,
+                  which already holds the edit, but leaves the Application's last sync at
+                  the commit before it. The interval starts when the Application is first
+                  seen behind, so a burst of saves costs one sync, hooks included, and one
+                  at the tip costs none. The sync can still wait for startup, a retry
+                  backoff or edits being published. "0s" never asks for this reason, and
+                  drops a sync it asked for that has not started. Otherwise at least "10s"
+                  and at most "24h". Defaults to "0s".
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: spec.catchUpAfter must be 0s, or a Go duration from 10s
+                    to 24h
+                  rule: duration(self) == duration('0s') || (duration(self) >= duration('10s')
+                    && duration(self) <= duration('24h'))
               kubeProviderRef:
                 description: |-
                   KubeProviderRef names the KubeProvider of the cluster that runs the

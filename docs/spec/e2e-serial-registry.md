@@ -71,11 +71,11 @@ commit it asserts on.
 
 The two `audit-consumer`-labelled containers (`Commit Window Batching`
 ([commit_window_batching_e2e_test.go](../../test/e2e/commit_window_batching_e2e_test.go)),
-`Commit Request` ([commit_request_e2e_test.go](../../test/e2e/commit_request_e2e_test.go)))
+`Save Request` ([commit_request_e2e_test.go](../../test/e2e/commit_request_e2e_test.go)))
 were also de-serialized. Their real serial cause was **not** the shared audit
 *pipeline* — namespace-scoped WatchRules already route each spec's events only to
 its own GitTarget — but a shared *repo*: both borrowed one Gitea repo from a
-`sync.Once` helper and asserted on whole-branch state (`Commit Request` reads
+`sync.Once` helper and asserted on whole-branch state (`Save Request` reads
 `HEAD`/`status.commit`; `Commit Window Batching` reads `git rev-list --count main`),
 so the *other* audit spec's commits to the same `main` corrupted those reads.
 Each now provisions its **own** repo via `SetupRepo`, so the only writer to its

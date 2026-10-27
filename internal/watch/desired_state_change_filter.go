@@ -125,11 +125,16 @@ type replaySnapshot struct {
 	// owners is the applier that owns each object some applier owns, read from the raw object
 	// before sanitize strips it (git.AppliedByOf).
 	owners map[types.ResourceIdentifier]git.AppliedBy
+	// generated counts the cluster-generated objects left out (clusterGenerated), for the log.
+	generated int
 }
 
 // add folds one observed object into the snapshot. An object desiredFromObject excludes (a
 // Terminating one) gets no baseline either: Git does not hold it.
 func (r *replaySnapshot) add(gvr schema.GroupVersionResource, u *unstructured.Unstructured) {
+	if clusterGenerated(gvr, u) {
+		r.generated++
+	}
 	desired, ok := desiredFromObject(gvr, u)
 	if !ok {
 		return

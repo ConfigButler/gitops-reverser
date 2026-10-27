@@ -349,3 +349,33 @@ func TestGitBranch_GitProviderKey(t *testing.T) {
 	branch.Spec.GitProviderRef.Namespace = "platform"
 	assert.Equal(t, "platform/shared-repo", branch.GitProviderKey().String())
 }
+
+// A GitTarget admits a CommitRequest by the side its grant names: consumerNamespaces admit a
+// namespace of the control cluster, sourceNamespaces a namespace of the cluster the GitTarget mirrors.
+// A grant for one side admits nothing on the other.
+func TestGitTarget_AdmitsCommitRequestBySide(t *testing.T) {
+	target := func(grants ...GitTargetCommitRequestGrant) *GitTarget {
+		return &GitTarget{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}, Spec: GitTargetSpec{
+			AllowedCommitRequests: grants,
+		}}
+	}
+	source := func(namespaces ...SourceNamespace) GitTargetCommitRequestGrant {
+		return GitTargetCommitRequestGrant{SourceNamespaces: namespaces}
+	}
+
+	defaulted := &GitTarget{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}}
+	admitted, err := defaulted.AdmitsCommitRequest("team-a", nil)
+	require.NoError(t, err)
+	assert.True(t, admitted, "the default admits the GitTarget's own namespace")
+	assert.False(t, defaulted.AdmitsSourceCommitRequest("team-a"), "the default admits nothing on a source cluster")
+
+	assert.False(t, target().AdmitsSourceCommitRequest("shop"), "an empty list admits nobody")
+	assert.True(t, target(source("*")).AdmitsSourceCommitRequest("shop"))
+	assert.True(t, target(source("shop")).AdmitsSourceCommitRequest("shop"))
+	assert.False(t, target(source("cart")).AdmitsSourceCommitRequest("shop"))
+
+	admitted, err = target(source("*")).AdmitsCommitRequest("team-a", nil)
+	require.NoError(t, err)
+	assert.False(t, admitted, "a source grant admits nothing on the control cluster")
+	assert.Equal(t, "admits no namespace", target(source("*")).DescribeAllowedCommitRequests())
+}

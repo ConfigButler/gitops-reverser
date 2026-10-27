@@ -198,14 +198,14 @@ var _ = Describe("Duration fields", func() {
 		omitted := &configbutleraiv1alpha3.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{Name: "window-omitted", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "any-target"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, omitted)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, omitted) })
 		Expect(omitted.Spec.Window).NotTo(BeNil(), "the block default must be filled in")
 		Expect(omitted.Spec.Window.Attach).To(Equal(configbutleraiv1alpha3.AttachCurrentOrNext))
-		Expect(omitted.Spec.Window.AttachTimeout.Duration).To(Equal(2 * time.Second))
+		Expect(omitted.Spec.Window.AttachTimeout.Duration).To(Equal(5 * time.Second))
 		Expect(omitted.Spec.Window.MaxDuration.Duration).To(Equal(2 * time.Second))
 		Expect(omitted.Spec.Window.IdleTimeout).To(BeNil(), "no idle close unless one is asked for")
 		Expect(omitted.Spec.WhenNothingToCommit).To(Equal(configbutleraiv1alpha3.NothingToCommitResolve))
@@ -215,7 +215,7 @@ var _ = Describe("Duration fields", func() {
 		zero := &configbutleraiv1alpha3.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{Name: "window-zeros", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "any-target"},
 				Window: &configbutleraiv1alpha3.CommitRequestWindow{
 					AttachTimeout: &metav1.Duration{},
 					IdleTimeout:   &metav1.Duration{},
@@ -309,7 +309,7 @@ var _ = Describe("Duration fields", func() {
 			request := &configbutleraiv1alpha3.CommitRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 				Spec: configbutleraiv1alpha3.CommitRequestSpec{
-					GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
+					GitTargetRef: meta.NamespacedObjectReference{Name: "any-target"},
 					Message:      "save",
 					Window: &configbutleraiv1alpha3.CommitRequestWindow{
 						MaxDuration: &metav1.Duration{Duration: time.Minute},

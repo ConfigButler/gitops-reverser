@@ -107,6 +107,180 @@ spec:
           spec:
             description: spec defines the desired state of GitTarget.
             properties:
+              allowedCommitRequests:
+                default:
+                - consumerNamespaces:
+                    from: Same
+                description: |-
+                  AllowedCommitRequests says which CommitRequests may save this GitTarget's
+                  commit windows. Each grant sets one of:
+
+                  - consumerNamespaces: namespaces of the cluster GitOps Reverser runs
+                    in. They admit requests only when spec.kubeProviderRef names an
+                    inCluster KubeProvider.
+                  - sourceNamespaces: namespaces of the cluster spec.kubeProviderRef
+                    names, which must set spec.commitRequests. They admit requests only
+                    when that KubeProvider names a kubeconfig.
+
+                  Omitted, the CommitRequests in this GitTarget's namespace are admitted,
+                  as one grant with consumerNamespaces from: "Same". An empty list ([])
+                  admits none. A list replaces the default. A request no grant admits
+                  fails with reason "NotAllowed".
+
+                  An admitted request saves its creator's whole commit window on this
+                  GitTarget, writes outside the request's namespace included.
+                items:
+                  description: |-
+                    GitTargetCommitRequestGrant admits the CommitRequests of some namespaces to
+                    save a GitTarget's commit windows: on the cluster GitOps Reverser runs in
+                    (consumerNamespaces), or on the cluster the GitTarget mirrors
+                    (sourceNamespaces). It sets exactly one of the two.
+                  properties:
+                    consumerNamespaces:
+                      description: |-
+                        ConsumerNamespaces are the namespaces, on the cluster GitOps Reverser
+                        runs in, whose CommitRequests this grant admits. from: "Same" is this
+                        GitTarget's namespace. It admits requests only for a GitTarget whose
+                        KubeProvider sets spec.inCluster.
+                      properties:
+                        from:
+                          description: |-
+                            From selects which namespaces this grant allows consumers from:
+
+                            - "Same": the namespace of the object that holds the grant.
+                            - "Names": the namespaces listed in names.
+                            - "Selector": the namespaces whose labels match selector.
+                            - "All": every namespace.
+                          enum:
+                          - Same
+                          - Names
+                          - Selector
+                          - All
+                          type: string
+                        names:
+                          description: 'Names are the namespaces allowed with from:
+                            "Names", by exact name.'
+                          items:
+                            description: |-
+                              GrantNamespace is a namespace a grant admits, by exact name. A variable and
+                              "*" are refused.
+                            maxLength: 63
+                            type: string
+                            x-kubernetes-validations:
+                            - message: 'names: a variable is refused, because names
+                                are matched against the consumer''s namespace and
+                                ''{consumer.namespace}'' would admit every consumer;
+                                use from: All to admit every namespace, or from: Same
+                                for the namespace of the object holding the grant'
+                              rule: self != '{consumer.namespace}' && self != '{consumer.name}'
+                            - message: 'names: ''*'' is refused; use from: All to
+                                admit every namespace'
+                              rule: self != '*'
+                            - message: names holds namespace names (DNS labels)
+                              rule: self == '{consumer.namespace}' || self == '{consumer.name}'
+                                || self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                          maxItems: 64
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        selector:
+                          description: |-
+                            Selector matches the labels of the namespaces allowed with from:
+                            "Selector". It must not be empty: to allow every namespace, use from:
+                            "All".
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                      required:
+                      - from
+                      type: object
+                      x-kubernetes-validations:
+                      - message: 'from: Names needs names'
+                        rule: self.from != 'Names' || has(self.names)
+                      - message: 'names goes only with from: Names'
+                        rule: '!has(self.names) || self.from == ''Names'''
+                      - message: 'from: Selector needs a selector; to admit every
+                          namespace, use from: All'
+                        rule: self.from != 'Selector' || has(self.selector)
+                      - message: 'selector goes only with from: Selector'
+                        rule: '!has(self.selector) || self.from == ''Selector'''
+                      - message: 'selector: {} is refused; to admit every namespace,
+                          use from: All'
+                        rule: '!has(self.selector) || (has(self.selector.matchLabels)
+                          && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
+                          && size(self.selector.matchExpressions) > 0)'
+                    sourceNamespaces:
+                      description: |-
+                        SourceNamespaces are the namespaces, on the cluster spec.kubeProviderRef
+                        names, whose CommitRequests this grant admits: exact names, or "*" for
+                        every namespace this GitTarget may mirror. Variables are refused. A
+                        namespace the KubeProvider does not lend this GitTarget in
+                        spec.allowedGitTargets is never admitted. It admits requests only for a
+                        GitTarget whose KubeProvider names a kubeconfig.
+                      items:
+                        description: |-
+                          SourceNamespace is a namespace of a source cluster, by exact name, or "*"
+                          for every namespace.
+                        maxLength: 63
+                        type: string
+                        x-kubernetes-validations:
+                        - message: a source namespace is a namespace name, or '*'
+                            alone; variables are refused, because a source cluster's
+                            namespaces are not the control cluster's
+                          rule: self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                  type: object
+                  x-kubernetes-validations:
+                  - message: a grant in allowedCommitRequests sets exactly one of
+                      consumerNamespaces and sourceNamespaces
+                    rule: has(self.consumerNamespaces) != has(self.sourceNamespaces)
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
               applierClaimRef:
                 description: |-
                   ApplierClaimRef names the FluxClaim or ArgoCDClaim, in this namespace, that

@@ -572,6 +572,8 @@ func (m *Manager) runTargetWatch(
 	// sweep, and leave the scope pending all the same.
 	stream.replayed = &atomic.Bool{}
 	stream.changes = newDesiredStateChangeFilter()
+	progress := m.trackStreamProgress(gitDest, stream.key)
+	defer m.untrackStreamProgress(gitDest, stream.key, progress)
 	for ctx.Err() == nil {
 		err := m.targetWatchReplayAndStream(ctx, log, gitDest, stream, stream.hasReplayed())
 		recordWatchSessionEnded(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, sessionEndReason(ctx, err))
@@ -1075,6 +1077,11 @@ func (m *Manager) enqueueReplayResync(
 	// its content is the baseline for those events. A refused or never-completed snapshot never
 	// gets here, and the stream keeps the baselines of what the worker did accept.
 	stream.changes.adopt(snapshot.baselines)
+	if snapshot.generated > 0 {
+		log.Info("target snapshot left out cluster-generated objects on purpose; Git never holds them",
+			"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace,
+			"name", kubeRootCAConfigMap, "count", snapshot.generated)
+	}
 	log.V(1).Info("target replay resync enqueued",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
 		"resourceVersion", resourceVersion, "count", len(snapshot.desired))
@@ -1189,6 +1196,13 @@ func (m *Manager) routeLiveTargetWatchEvent(
 			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeNotObject)
 			log.V(1).Info("target watch non-unstructured event skipped",
 				"gvr", stream.key.GVR.String(), "type", string(ev.Type))
+			return rv, nil
+		}
+		if clusterGenerated(stream.key.GVR, u) {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeGenerated)
+			log.V(1).Info("target watch skipped a cluster-generated object on purpose",
+				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
+				"namespace", u.GetNamespace(), "name", u.GetName(), "type", string(ev.Type))
 			return rv, nil
 		}
 		op := operationForLiveTargetWatchEvent(ev.Type, u)
@@ -1462,6 +1476,9 @@ func (m *Manager) recordTargetWatchCursor(
 	key targetWatchKey,
 	rv string,
 ) error {
+	// Every event the stream handled, routed or not, and every bookmark passes through here after it
+	// was routed, which makes it where an apply window's barrier learns how far the stream has got.
+	m.advanceStreamProgress(gitDest, key, rv)
 	uid := m.resolveGitTargetUID(gitDest)
 	if m.WatchCursorStore == nil || rv == "" || uid == "" {
 		return nil

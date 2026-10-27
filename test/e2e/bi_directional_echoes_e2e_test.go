@@ -93,6 +93,16 @@ type echoRun struct {
 	*timingPipeline
 
 	applier echoApplier
+	// kubectl runs kubectl in testNs on the cluster the GitTarget mirrors; nil is the operator's own.
+	kubectl func(args ...string) (string, error)
+}
+
+// liveKubectl runs kubectl in testNs on the cluster the GitTarget mirrors.
+func (r *echoRun) liveKubectl(args ...string) (string, error) {
+	if r.kubectl != nil {
+		return r.kubectl(args...)
+	}
+	return kubectlRunInNamespace(r.testNs, args...)
 }
 
 // cmFile is where the GitTarget writes the ConfigMap name.
@@ -124,7 +134,7 @@ func (r *echoRun) createThroughAPI(name, value string) {
 // editThroughAPI sets data.value of the ConfigMap name through the Kubernetes API.
 func (r *echoRun) editThroughAPI(name, value string) {
 	GinkgoHelper()
-	_, err := kubectlRunInNamespace(r.testNs, "patch", "configmap", name, "--type=merge", "-p",
+	_, err := r.liveKubectl("patch", "configmap", name, "--type=merge", "-p",
 		fmt.Sprintf(`{"data":{"value":%q}}`, value))
 	Expect(err).NotTo(HaveOccurred(), "failed to edit ConfigMap %s through the API", name)
 }
@@ -144,7 +154,7 @@ func (r *echoRun) committedValue(g Gomega, name string) (string, bool) {
 
 // liveValue is data.value of the live ConfigMap name, and whether it exists.
 func (r *echoRun) liveValue(g Gomega, name string) (string, bool) {
-	out, err := kubectlRunInNamespace(r.testNs, "get", "configmap", name, "--ignore-not-found",
+	out, err := r.liveKubectl("get", "configmap", name, "--ignore-not-found",
 		"-o", "jsonpath={.metadata.name}|{.data.value}")
 	g.Expect(err).NotTo(HaveOccurred())
 	gotName, value, _ := strings.Cut(strings.TrimSpace(out), "|")
@@ -220,6 +230,27 @@ func (r *echoRun) eventuallyPruned(name string) {
 	}, echoHold, 2*time.Second).Should(Succeed())
 }
 
+// editDuringApply pushes a Git-side change to one object and edits another through the API while
+// that apply runs: the apply reverts the edit on the cluster, and the window withholds that write.
+// The edit is in Git at once, and on the cluster again after the Repair (E5).
+func (r *echoRun) editDuringApply() {
+	GinkgoHelper()
+	r.pushFromOutside("during", "d0")
+	r.eventuallyEverywhere("during", "d0", echoApplyBudget)
+
+	By("pushing a Git-side change to another object, and editing this one while that apply runs")
+	before := r.applier.operation(Default).Token
+	r.pushFromOutside("during-other", "o1")
+	Eventually(func(g Gomega) {
+		g.Expect(r.applier.operation(g).Token).NotTo(Equal(before), "the apply is asked for")
+	}, echoApplyBudget, 250*time.Millisecond).Should(Succeed())
+	r.editThroughAPI("during", "d-edit")
+
+	r.eventuallyEverywhere("during", "d-edit", echoApplyBudget)
+	r.eventuallyEverywhere("during-other", "o1", echoApplyBudget)
+	r.consistentlyEverywhere("during", "d-edit")
+}
+
 // echoScenarios are the scenarios that run the same for both appliers, against run.
 func echoScenarios(run func() *echoRun) {
 	It("adopts an object the API created, so a Git-side delete prunes it (E2)", func() {
@@ -250,21 +281,7 @@ func echoScenarios(run func() *echoRun) {
 	})
 
 	It("keeps an edit made during an apply, in Git at once and on the cluster after the Repair (E5)", func() {
-		r := run()
-		r.pushFromOutside("during", "d0")
-		r.eventuallyEverywhere("during", "d0", echoApplyBudget)
-
-		By("pushing a Git-side change to another object, and editing this one while that apply runs")
-		before := r.applier.operation(Default).Token
-		r.pushFromOutside("during-other", "o1")
-		Eventually(func(g Gomega) {
-			g.Expect(r.applier.operation(g).Token).NotTo(Equal(before), "the apply is asked for")
-		}, echoApplyBudget, 250*time.Millisecond).Should(Succeed())
-		r.editThroughAPI("during", "d-edit")
-
-		r.eventuallyEverywhere("during", "d-edit", echoApplyBudget)
-		r.eventuallyEverywhere("during-other", "o1", echoApplyBudget)
-		r.consistentlyEverywhere("during", "d-edit")
+		run().editDuringApply()
 	})
 
 	It("applies a Git-side push while edits keep arriving, and keeps every edit (E6)", func() {
@@ -380,6 +397,7 @@ func echoScenarios(run func() *echoRun) {
 
 		By("saving an API edit with a CommitRequest while a Git-side push changes the same object")
 		name := applyCommitRequestWithGenerateName(r.testNs, "echo-save-", r.targetName, "e2e: save the edit")
+		waitForCommitRequestClaimed(r.testNs, name)
 		r.editThroughAPI("saved", "s-save")
 		r.pushFromOutside("saved", "s-git")
 

@@ -53,8 +53,13 @@ type GeneratedObject struct {
 	// Roots are the render roots that render this entry, in any namespace, sorted.
 	Roots []string
 	// SharedInputs are the entry's input files something else also reads: another generator
-	// entry, a resources: entry or a patch. A delete of the object keeps them.
+	// entry, a resources: entry, a patch or a release's values files. A delete of the object
+	// keeps them.
 	SharedInputs map[string]struct{}
+	// ValuesInputs are the entry's input files a release names as a values file: an Argo CD
+	// Application's helm.valueFiles or a Flux HelmRelease's valuesFiles. A write to one is
+	// refused, since the render shows nothing of what it does to the release.
+	ValuesInputs map[string]struct{}
 	// Resource is the API-side identity of the rendered object, as a document's ResourceIdentity
 	// is: set only when the registry resolves its GVK to a followable resource. The resync sweep
 	// drops only a generated object it can name this way.
@@ -109,8 +114,13 @@ type generatedRender struct {
 }
 
 // generatedObjects groups the generated renders of a scan into one GeneratedObject per entry and
-// namespace, each naming every root that renders the entry.
-func generatedObjects(renders []generatedRender, kusts map[string]*kustomizationDoc) []*GeneratedObject {
+// namespace, each naming every root that renders the entry. valuesFiles are the files a release
+// names as a values file (helmValueFileRefs).
+func generatedObjects(
+	renders []generatedRender,
+	kusts map[string]*kustomizationDoc,
+	valuesFiles map[string]struct{},
+) []*GeneratedObject {
 	type entryKey struct{ in, kind, name string }
 	type objectKey struct {
 		entry     entryKey
@@ -118,7 +128,7 @@ func generatedObjects(renders []generatedRender, kusts map[string]*kustomization
 	}
 	roots := map[entryKey]map[string]struct{}{}
 	byObject := map[objectKey]*GeneratedObject{}
-	inputUses := inputUseCounts(kusts)
+	inputUses := inputUseCounts(kusts, valuesFiles)
 	var order []objectKey
 	for _, r := range renders {
 		ek := entryKey{in: r.in, kind: r.object.GetKind(), name: r.object.GetName()}
@@ -136,6 +146,7 @@ func generatedObjects(renders []generatedRender, kusts map[string]*kustomization
 			Entry:        entry,
 			Rendered:     r.object,
 			SharedInputs: sharedInputsOf(entry, inputUses),
+			ValuesInputs: valuesInputsOf(entry, valuesFiles),
 		}
 		order = append(order, ok)
 	}
@@ -149,8 +160,8 @@ func generatedObjects(renders []generatedRender, kusts map[string]*kustomization
 }
 
 // inputUseCounts counts, per file, how many generator entries, resources: entries and patches of
-// the scan read it.
-func inputUseCounts(kusts map[string]*kustomizationDoc) map[string]int {
+// the scan read it, and one more for a file a release names as a values file.
+func inputUseCounts(kusts map[string]*kustomizationDoc, valuesFiles map[string]struct{}) map[string]int {
 	uses := map[string]int{}
 	for _, doc := range kusts {
 		for _, entry := range doc.configMapGenerators {
@@ -169,6 +180,9 @@ func inputUseCounts(kusts map[string]*kustomizationDoc) map[string]int {
 	for p := range reachedResourceFiles(kusts) {
 		uses[p]++
 	}
+	for p := range valuesFiles {
+		uses[p]++
+	}
 	return uses
 }
 
@@ -180,6 +194,20 @@ func sharedInputsOf(entry *ConfigMapGeneratorEntry, uses map[string]int) map[str
 	out := map[string]struct{}{}
 	for _, p := range entry.inputPaths() {
 		if uses[p] > 1 {
+			out[p] = struct{}{}
+		}
+	}
+	return out
+}
+
+// valuesInputsOf is the entry's inputs a release names as a values file.
+func valuesInputsOf(entry *ConfigMapGeneratorEntry, valuesFiles map[string]struct{}) map[string]struct{} {
+	if entry == nil {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for _, p := range entry.inputPaths() {
+		if _, ok := valuesFiles[p]; ok {
 			out[p] = struct{}{}
 		}
 	}
@@ -250,12 +278,19 @@ var errGeneratedWrite = errors.New("no destination for the change")
 // the inputs of the generator that renders gen. writeScope is the write jail (empty: everything
 // is writable), and read returns an input file's current bytes. An error is a refusal and names
 // the reason; nothing has been written.
+//
+// A desired object the generator already renders plans nothing, and so needs no input it may
+// write: a generator in a read-only base, or one two render roots share, is matched as it stands.
+// The oracle still proves the render equals the live object.
 func PlanGeneratedWrite(
 	gen *GeneratedObject,
 	desired *unstructured.Unstructured,
 	writeScope string,
 	read func(path string) ([]byte, bool),
 ) ([]GeneratedWrite, error) {
+	if rendersUnchanged(gen.Rendered, desired) {
+		return nil, nil
+	}
 	entry, err := writableEntry(gen, writeScope)
 	if err != nil {
 		return nil, err
@@ -275,7 +310,9 @@ func PlanGeneratedWrite(
 			errGeneratedWrite)
 	}
 
-	plan := generatorPlan{entry: entry, writeScope: writeScope, read: read, files: map[string][]byte{}}
+	plan := generatorPlan{
+		entry: entry, writeScope: writeScope, valuesInputs: gen.ValuesInputs, read: read, files: map[string][]byte{},
+	}
 	liveData, _, _ := unstructured.NestedStringMap(desired.Object, "data")
 	for _, key := range sortedKeysOfSet(unionStringKeys(liveData, current.data)) {
 		if err := plan.key(key, liveData, current); err != nil {
@@ -286,6 +323,22 @@ func PlanGeneratedWrite(
 		return nil, err
 	}
 	return plan.writes(read), nil
+}
+
+// rendersUnchanged reports whether rendered, the generator's render as Git stands, already is
+// desired, setting the namespace aside as changedOutsideData does: the oracle compares it.
+func rendersUnchanged(rendered, desired *unstructured.Unstructured) bool {
+	if len(changedOutsideData(desired, rendered)) > 0 {
+		return false
+	}
+	for _, field := range []string{"data", "binaryData"} {
+		want, _, _ := unstructured.NestedStringMap(desired.Object, field)
+		have, _, _ := unstructured.NestedStringMap(rendered.Object, field)
+		if !equalStringMaps(want, have) {
+			return false
+		}
+	}
+	return true
 }
 
 // writableEntry is the entry behind gen, or the refusal that says why its inputs are not this
@@ -324,8 +377,7 @@ func PlanGeneratedDelete(
 	if !ok {
 		return nil, fmt.Errorf("%w: cannot read %s", errGeneratedWrite, entry.KustomizationPath)
 	}
-	res, diags := manifestedit.RemoveConfigMapGeneratorEntry(
-		entry.KustomizationPath, kustomization, entry.Index, entry.Name)
+	res, diags := manifestedit.RemoveConfigMapGeneratorEntry(entry.KustomizationPath, kustomization, entry.ID())
 	if res.Mode != manifestedit.EditPatched {
 		return nil, fmt.Errorf("%w: the entry cannot be removed from %s%s",
 			errGeneratedWrite, entry.KustomizationPath, diagnosticSuffix(diags))
@@ -366,8 +418,10 @@ func diagnosticSuffix(diags []manifestedit.Diagnostic) string {
 type generatorPlan struct {
 	entry      *ConfigMapGeneratorEntry
 	writeScope string
-	read       func(string) ([]byte, bool)
-	files      map[string][]byte
+	// valuesInputs are the inputs a release names as a values file, which no write may touch.
+	valuesInputs map[string]struct{}
+	read         func(string) ([]byte, bool)
+	files        map[string][]byte
 	// literals are the literals: edits, applied to the kustomization in one call at the end.
 	literals []manifestedit.LiteralEdit
 }
@@ -429,8 +483,7 @@ func (p *generatorPlan) applyLiterals() error {
 		return nil
 	}
 	path := p.entry.KustomizationPath
-	res, diags := manifestedit.EditConfigMapGeneratorLiterals(
-		path, p.content(path), p.entry.Index, p.entry.Name, p.literals)
+	res, diags := manifestedit.EditConfigMapGeneratorLiterals(path, p.content(path), p.entry.ID(), p.literals)
 	switch res.Mode {
 	case manifestedit.EditPatched:
 		p.files[path] = res.Content
@@ -469,10 +522,15 @@ func (p *generatorPlan) setEnv(path, key, value string) error {
 	return nil
 }
 
-// writable refuses an input file outside the write jail.
+// writable refuses an input file outside the write jail, and one a release reads as a values file:
+// the oracle renders the kustomization, and cannot see what the edit does to the release.
 func (p *generatorPlan) writable(path string) error {
 	if p.writeScope != "" && !pathWithin(path, p.writeScope) {
 		return fmt.Errorf("%w: %s is outside spec.path", errGeneratedWrite, path)
+	}
+	if _, values := p.valuesInputs[path]; values {
+		return fmt.Errorf("%w: %s is also a release's values file, which the render cannot check",
+			errGeneratedWrite, path)
 	}
 	return nil
 }

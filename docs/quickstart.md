@@ -10,26 +10,14 @@ cluster, which the starter target names as its source.
 
 ![Config basics: a WatchRule or ClusterWatchRule selects what a GitTarget mirrors; the GitTarget writes its folder through a GitBranch and a GitProvider with a credentials Secret, and reads the cluster through a KubeProvider. The direction is always from the cluster into Git](images/config-basics.excalidraw.svg)
 
-**Prerequisites:** a Kubernetes cluster with `kubectl`, Helm 3, and cert-manager for TLS.
+**Prerequisites:** a Kubernetes cluster with `kubectl` and Helm 3. The default install renders no
+certificate, so it needs no cert-manager; [named users](#want-named-users-on-your-commits) do.
 
 To write the objects yourself instead of letting the chart generate them, start from
 [`config/samples/`](../config/samples/): one manifest per object, consistent enough to apply
 together. [`configuration.md`](configuration.md) explains every field.
 
-## 1. Install cert-manager
-
-Skip this step if cert-manager is already installed and healthy.
-
-The controller mounts an admission certificate at startup, so cert-manager must be healthy *before*
-you install the chart. (`--set servers.admission.enabled=false` drops the dependency; the
-[chart README](../charts/gitops-reverser/README.md) covers bring-your-own certificates.)
-
-```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.3/cert-manager.yaml
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
-```
-
-## 2. Create a Git repo and a deploy key
+## 1. Create a Git repo and a deploy key
 
 Create an (empty) repository the operator will write to, then generate a key. Add the public half as a
 **deploy key with write access**; the private half becomes the Secret in the next step:
@@ -39,7 +27,7 @@ ssh-keygen -t ed25519 -C "gitops-reverser@cluster" -f /tmp/gitops-reverser-key -
 # Add /tmp/gitops-reverser-key.pub to your Git provider as a deploy key (write access)
 ```
 
-## 3. Create the demo namespace and Git credentials
+## 2. Create the demo namespace and Git credentials
 
 Do this **before** installing. The starter `GitProvider` is only re-checked about every 5 minutes, so
 if the Secret is missing at install time your first commit can be minutes late; having it ready up
@@ -72,7 +60,7 @@ credentials Secrets are accepted as-is (they must have **write** access). See
 [`github-setup-guide.md`](github-setup-guide.md) for the full GitHub guide and HTTPS/PAT
 fallback.
 
-## 4. Install GitOps Reverser with the demo enabled
+## 3. Install GitOps Reverser with the demo enabled
 
 Point the starter `GitProvider` at your repo and install:
 
@@ -89,14 +77,14 @@ Replace `OWNER/REPO` with your repository (angle brackets would be parsed by the
 
 This install has these defaults:
 
-- **No Redis**, so warm-restart cursors and author capture stay inactive. Add one with
+- **No Redis**, so warm-restart cursors and author attribution stay inactive. Add one with
   `--set queue.redis.addr=HOST:PORT` (plus `queue.redis.auth.existingSecret` if it needs auth).
 - **Cluster-wide read on every watchable type, including Secrets** (`rbac.watchTypes.mode=any`).
   [`rbac.md`](rbac.md) explains how to narrow it.
 - **SOPS is on for the starter target**, so a `sops-age-key` Secret is generated in the demo namespace
   with a backup reminder. Only matters once you mirror Secrets; back it up if you keep the demo.
 
-Wait for the controller. On a fresh install this waits on cert-manager issuing the certificate:
+Wait for the controller:
 
 ```bash
 kubectl rollout status deployment/gitops-reverser -n gitops-reverser --timeout=300s
@@ -134,7 +122,7 @@ A `Reason` that names a missing or unauthorized dependency (`KubeProviderNotFoun
 streams still settling is initialization, and resolves on its own. `describe` prints every condition
 with its message, which is where the specific cause is written.
 
-## 5. Test it
+## 4. Test it
 
 ```bash
 kubectl create configmap test-config --from-literal=key=value -n gitops-reverser-quickstart-demo
@@ -166,3 +154,14 @@ To tear the demo down: `helm uninstall gitops-reverser -n gitops-reverser` and
 Enable audit attribution to use the Kubernetes actor as the Git author while keeping the
 committer unchanged. The [attribution setup guide](attribution-setup-guide.md) covers receiver
 configuration, API server delivery, and verification. It requires control over kube-apiserver settings.
+
+The audit ingress serves TLS with certificates cert-manager mints, so install cert-manager first,
+and wait until it is healthy *before* you enable attribution: the controller mounts the audit
+certificates at startup. Skip this if cert-manager is already installed and healthy, or bring the
+Secrets yourself with `servers.audit.tls.certManager: false`; the
+[chart README](../charts/gitops-reverser/README.md) covers bring-your-own certificates.
+
+```bash
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.3/cert-manager.yaml
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+```

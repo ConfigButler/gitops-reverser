@@ -10,11 +10,10 @@ import (
 )
 
 // FuzzDecodeEventList is the project's dynamic-analysis (fuzzing) gate for the
-// network-facing admission/audit surface — the code that decodes untrusted JSON
-// posted by the Kubernetes API server. It varies the request body and asserts
-// that the whole audit ingress path (decode -> intrinsic accept gate -> record)
-// never panics and always answers with a valid HTTP status, and that the sibling
-// admission uid probe never panics on the same untrusted bytes.
+// network-facing audit surface — the code that decodes untrusted JSON posted by
+// the Kubernetes API server. It varies the request body and asserts that the
+// whole audit ingress path (decode -> intrinsic accept gate -> record) never
+// panics and always answers with a valid HTTP status.
 //
 // The handler carries no FactRecorder, so processing is side-effect-free: this
 // exercises decoding and classification without a live store. Seed inputs are
@@ -30,7 +29,6 @@ func FuzzDecodeEventList(f *testing.F) {
 		`{`,            // truncated
 		`not json`,
 		``,
-		`{"metadata":{"uid":"abc-123"}}`, // admission uid probe shape
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -52,9 +50,5 @@ func FuzzDecodeEventList(f *testing.F) {
 		if w.Code < 100 || w.Code > 599 {
 			t.Fatalf("invalid HTTP status %d for body %q", w.Code, body)
 		}
-
-		// The admission command-authorship path parses the same class of untrusted
-		// JSON with a lightweight probe; it must also never panic.
-		_ = commandObjectUID(body)
 	})
 }

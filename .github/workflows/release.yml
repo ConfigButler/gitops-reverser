@@ -354,6 +354,11 @@ jobs:
       - name: Sign crds.yaml (cosign keyless)
         run: cosign sign-blob --bundle crds.yaml.sigstore.json --yes dist/crds.yaml
 
+      # The CommitRequest CRD alone, for the source clusters that serve CommitRequests and need
+      # none of the other kinds. It is part of crds.yaml too; this copy is signed on its own.
+      - name: Sign commitrequest-crd.yaml (cosign keyless)
+        run: cosign sign-blob --bundle commitrequest-crd.yaml.sigstore.json --yes dist/commitrequest-crd.yaml
+
       - name: Attest SLSA provenance for install.yaml
         id: attest-install-yaml
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -372,6 +377,15 @@ jobs:
       - name: Rename crds provenance bundle to the Scorecard-recognized suffix
         run: cp "${{ steps.attest-crds-yaml.outputs.bundle-path }}" crds.yaml.intoto.jsonl
 
+      - name: Attest SLSA provenance for commitrequest-crd.yaml
+        id: attest-commitrequest-crd
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/commitrequest-crd.yaml
+
+      - name: Rename commitrequest-crd provenance bundle to the Scorecard-recognized suffix
+        run: cp "${{ steps.attest-commitrequest-crd.outputs.bundle-path }}" commitrequest-crd.yaml.intoto.jsonl
+
       - name: Upload installer bundle as release assets
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
@@ -384,6 +398,9 @@ jobs:
             dist/crds.yaml
             crds.yaml.sigstore.json
             crds.yaml.intoto.jsonl
+            dist/commitrequest-crd.yaml
+            commitrequest-crd.yaml.sigstore.json
+            commitrequest-crd.yaml.intoto.jsonl
             dist/install.yaml
             install.yaml.sigstore.json
             install.yaml.intoto.jsonl

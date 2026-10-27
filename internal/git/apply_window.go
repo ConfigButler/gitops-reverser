@@ -126,31 +126,76 @@ type applyWindow struct {
 	// time of the latest such write's managedFields entries (zero when the event carried none).
 	edited map[string]time.Time
 	// carried holds the objects the window before this one had seen edited, when that window was
-	// still open as this attempt was sent, and carriedUntil is when it would have closed: the
-	// earlier apply's writes can arrive until then (openApplyWindow). carriedSentAt is the earliest
-	// send of the windows carried, zero when none is.
+	// still open as this attempt was sent, and carriedUntil is when its grace would have ended;
+	// carriedWaits are its barriers still waiting for the watch. The earlier apply's writes can arrive
+	// until both have passed (openApplyWindow). carriedSentAt is the earliest send of the windows
+	// carried, zero when none is.
 	carried       map[string]time.Time
 	carriedUntil  time.Time
+	carriedWaits  []*applyBarrierWait
 	carriedSentAt time.Time
 	// echoes counts the applier's writes the window kept out of Git: the apply landing, object by
 	// object. reported is set once that count was logged (reportApplyWindows).
 	echoes   int
 	reported bool
+	// barrier is what the window waits for once its operation completed: the watch delivering every
+	// write the GitTargets' source clusters held by then (apply_barrier.go). Nil when it waits for
+	// none, or once it was met.
+	barrier *applyBarrierWait
 }
 
 // earliestSend is the lower bound of the applier's own writes at now: the earliest send of this
 // window and of the windows it still carries. A delayed echo of the attempt before, arriving after
 // this one was sent and inside that one's grace, is still that apply.
 func (a *applyWindow) earliestSend(now time.Time) time.Time {
-	if !a.carriedSentAt.IsZero() && now.Before(a.carriedUntil) {
+	if !a.carriedSentAt.IsZero() && a.carrying(now) {
 		return a.carriedSentAt
 	}
 	return a.sentAt
 }
 
-// open reports whether the window is open at now.
+// carrying reports whether the windows this one carries could still see their applies' writes arrive
+// at now: until their grace has passed, and while one of their barriers still waits for the watch.
+func (a *applyWindow) carrying(now time.Time) bool {
+	return now.Before(a.carriedUntil) || a.carriedWaitHolds(now)
+}
+
+// carriedWaitHolds reports whether a barrier carried from the window before still waits at now.
+func (a *applyWindow) carriedWaitHolds(now time.Time) bool {
+	return slices.ContainsFunc(a.carriedWaits, func(wait *applyBarrierWait) bool { return wait.holds(now) })
+}
+
+// open reports whether the window is open at now: until its grace has passed, which settling the
+// window extends to the grace it carries, and for as long as it, or a window it carries, still waits
+// for the watch (barrier).
 func (a *applyWindow) open(now time.Time) bool {
-	return a != nil && (a.closesAt.IsZero() || now.Before(a.closesAt))
+	return a != nil &&
+		(a.closesAt.IsZero() || now.Before(a.closesAt) || a.barrier.holds(now) || a.carriedWaitHolds(now))
+}
+
+// closesBy is when the window closes at the latest: zero while the attempt is out, and past the grace
+// while a barrier waits for the watch.
+func (a *applyWindow) closesBy() time.Time {
+	if a.closesAt.IsZero() {
+		return a.closesAt
+	}
+	by := latest(a.closesAt, a.carriedUntil)
+	if a.barrier != nil {
+		by = latest(by, a.barrier.until)
+	}
+	for _, wait := range a.carriedWaits {
+		by = latest(by, wait.until)
+	}
+	return by
+}
+
+// pendingWaits are the barriers that hold the window: its own and the ones it carries.
+func (a *applyWindow) pendingWaits() []*applyBarrierWait {
+	waits := slices.Clone(a.carriedWaits)
+	if a.barrier != nil {
+		waits = append(waits, a.barrier)
+	}
+	return waits
 }
 
 // objectKey is an event's object without its API version: a preferred-version bump during the
@@ -166,7 +211,7 @@ func objectKey(id itypes.ResourceIdentifier) string {
 // attempt's apply of a commit that holds every edit published before it (S1).
 func (a *applyWindow) editedSince(key string, now, written time.Time) (time.Time, bool) {
 	at, edited := a.edited[key]
-	if carriedAt, carried := a.carried[key]; carried && now.Before(a.carriedUntil) &&
+	if carriedAt, carried := a.carried[key]; carried && a.carrying(now) &&
 		written.Before(a.sentAt.Truncate(time.Second)) {
 		return latest(at, carriedAt), true
 	}
@@ -179,18 +224,24 @@ func (a *applyWindow) recordEdit(key string, at time.Time) {
 }
 
 // openApplyWindow starts an applier's window as its attempt is sent. The window before it can still
-// be open: an attempt may follow one that completed within its grace, and that apply's writes are
-// still arriving. Its edits are carried until it would have closed, so a late write of the earlier
-// apply over one of them is still withheld. Replacing the window lost them, and the revert was
-// mirrored.
+// be open: an attempt may follow one that completed within its grace, or whose barrier still waits for
+// the watch, and that apply's writes are still arriving. Its edits are carried until its grace ends
+// and its barriers are met, so a late write of the earlier apply over one of them is still withheld.
+// Replacing the window lost them, and the revert was mirrored. Its barriers are carried as they are,
+// not as their limits: one that is met stops holding the new window.
 func (state *applierState) openApplyWindow(attempt uint64, commit string, now time.Time) {
 	next := &applyWindow{attempt: attempt, commit: commit, sentAt: now, edited: map[string]time.Time{}}
 	if before := state.window; before.open(now) {
 		next.carried = maps.Clone(before.edited)
-		if now.Before(before.carriedUntil) {
+		if before.carrying(now) {
 			maps.Copy(next.carried, before.carried)
 		}
-		next.carriedUntil = before.closesAt
+		next.carriedUntil = latest(before.closesAt, before.carriedUntil)
+		for _, wait := range before.pendingWaits() {
+			if wait.holds(now) {
+				next.carriedWaits = append(next.carriedWaits, wait)
+			}
+		}
 		next.carriedSentAt = before.earliestSend(now)
 	}
 	state.window = next
@@ -207,7 +258,7 @@ func (state *applierState) settleApplyWindow(attempt uint64, operated bool, now 
 	switch {
 	case operated:
 		window.closesAt = latest(now.Add(applyWindowGrace), window.carriedUntil)
-	case now.Before(window.carriedUntil):
+	case window.carrying(now):
 		window.closesAt = window.carriedUntil
 	default:
 		state.window = nil
@@ -341,9 +392,10 @@ func (l *branchWorkerEventLoop) reportApplyWindows(now time.Time) time.Time {
 		switch {
 		case window == nil || window.reported:
 		case !window.open(now):
+			l.barrierTimedOut(state)
 			l.reportApplyWindow(state)
-		case !window.closesAt.IsZero() && (next.IsZero() || window.closesAt.Before(next)):
-			next = window.closesAt
+		case !window.closesAt.IsZero() && (next.IsZero() || window.closesBy().Before(next)):
+			next = window.closesBy()
 		}
 	}
 	return next

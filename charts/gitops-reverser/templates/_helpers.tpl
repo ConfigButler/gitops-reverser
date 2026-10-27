@@ -93,20 +93,6 @@ Default Secret name for the kube-apiserver audit client certificate.
 {{- .Values.servers.audit.tls.client.secretNameOverride | default (printf "%s-audit-client-cert" (include "gitops-reverser.fullname" .)) -}}
 {{- end }}
 
-{{/*
-Default Secret name for the validating admission (validate-operator-types) serving certificate.
-*/}}
-{{- define "gitops-reverser.admissionServerSecretName" -}}
-{{- .Values.servers.admission.tls.secretNameOverride | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) -}}
-{{- end }}
-
-{{/*
-Name of the cert-manager Certificate that mints the admission serving cert. Used both
-as the Certificate name and in the webhook's cert-manager.io/inject-ca-from annotation.
-*/}}
-{{- define "gitops-reverser.admissionServerCertName" -}}
-{{- printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .) -}}
-{{- end }}
 
 {{/*
 Name of the push receiver Service.
@@ -136,4 +122,22 @@ The audit route of the KubeProvider the chart renders: <release namespace>.<name
 */}}
 {{- define "gitops-reverser.kubeProviderAuditRoute" -}}
 {{- printf "%s.%s" .Release.Namespace .Values.kubeProvider.name -}}
+{{- end }}
+
+{{/*
+"true" when cert-manager mints the audit ingress certificates: attribution is on, with audit TLS.
+*/}}
+{{- define "gitops-reverser.auditCertificates" -}}
+{{- if and .Values.attribution.enabled .Values.certManager.enabled .Values.servers.audit.tls.certManager .Values.servers.audit.tls.enabled -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+"true" when cert-manager mints the metrics serving certificate.
+*/}}
+{{- define "gitops-reverser.metricsCertificate" -}}
+{{- if and .Values.certManager.enabled .Values.servers.metrics.tls.enabled .Values.servers.metrics.tls.certManager -}}
+true
+{{- end -}}
 {{- end }}

@@ -16,7 +16,7 @@ import "testing"
 // configured-author row below therefore turns attribution off explicitly.
 func TestConfiguredAuthorModeFromArgs_AllScenarios(t *testing.T) {
 	// The real jsonpath output shape: a bracketed, quoted, comma-separated list.
-	const live = `["--metrics-bind-address=:8443","--admission-webhook",` +
+	const live = `["--metrics-bind-address=:8443",` +
 		`"--redis-addr=valkey.valkey-e2e.svc.cluster.local:6379","--redis-insecure"]`
 
 	for _, tc := range []struct {

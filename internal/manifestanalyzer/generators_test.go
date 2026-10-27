@@ -406,7 +406,8 @@ func TestLiteralValue_AgreesWithKustomize(t *testing.T) {
 	}
 	kustomization := []byte("configMapGenerator:\n  - name: probe\n    literals: [SEED=x]\n" +
 		"generatorOptions:\n  disableNameSuffixHash: true\n")
-	res, diags := manifestedit.EditConfigMapGeneratorLiterals("kustomization.yaml", kustomization, 0, "probe", edits)
+	res, diags := manifestedit.EditConfigMapGeneratorLiterals("kustomization.yaml", kustomization,
+		manifestedit.GeneratorEntryID{Name: "probe"}, edits)
 	require.Equal(t, manifestedit.EditPatched, res.Mode, "%v", diags)
 
 	rendered, err := renderRoot([]manifestedit.FileContent{{Path: "kustomization.yaml", Content: res.Content}}, ".")
@@ -443,4 +444,134 @@ func TestBuildPlan_SweepsAGeneratedObject(t *testing.T) {
 
 	structureOnly := buildStoreFS(context.Background(), fsys, nil, WriterAllowlist())
 	require.Empty(t, drops(structureOnly, allInScope), "a scan with no registry names nothing to drop")
+}
+
+// A live object the generator already renders plans no write, so it needs no input it may write:
+// a generator two render roots share, or one in a read-only base, is matched as it stands.
+func TestPlanGeneratedWrite_AnUnchangedObjectNeedsNoWritableEntry(t *testing.T) {
+	sharedBase := fstest.MapFS{
+		"base/kustomization.yaml": {Data: []byte("configMapGenerator:\n  - name: menu\n    envs: [menu.env]\n" +
+			"generatorOptions:\n  disableNameSuffixHash: true\n")},
+		"base/menu.env":                 {Data: []byte("A=1\n")},
+		"overlays/a/kustomization.yaml": {Data: []byte("resources: [../../base]\n")},
+		"overlays/b/kustomization.yaml": {Data: []byte("resources: [../../base]\n")},
+	}
+	cases := map[string]struct {
+		fsys       fstest.MapFS
+		live       *unstructured.Unstructured
+		writeScope string
+	}{
+		"shared by two render roots": {
+			fsys: sharedBase,
+			live: liveConfigMap("", "menu", map[string]interface{}{"A": "1"}),
+		},
+		"in a read-only base": {
+			fsys: coffeeFS(),
+			live: liveConfigMap("coffee", "coffee-flags", map[string]interface{}{
+				"ENABLE_VOUCHERS": "true", "SHOW_BANNER": "true",
+			}),
+			writeScope: "overlays/prod",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			generated := generatedFor(t, tc.fsys, tc.live)
+			require.NotEmpty(t, generated)
+			writes, err := PlanGeneratedWrite(generated[0], tc.live, tc.writeScope, func(string) ([]byte, bool) {
+				t.Fatal("an unchanged object reads no input")
+				return nil, false
+			})
+			require.NoError(t, err)
+			require.Empty(t, writes)
+		})
+	}
+}
+
+// An input a HelmRelease also names as a values file is the release's too, and the render cannot
+// show what an edit does to the release: a delete keeps it, and a write to it is refused.
+func TestGeneratedInputs_AReleasesValuesFileIsKeptAndNeverWritten(t *testing.T) {
+	fsys := fstest.MapFS{
+		"kustomization.yaml": {Data: []byte("resources: [release.yaml]\n" +
+			"configMapGenerator:\n  - {name: chart-values, files: [values.yaml], literals: [MODE=a]}\n" +
+			"generatorOptions:\n  disableNameSuffixHash: true\n")},
+		"release.yaml": {Data: []byte("apiVersion: helm.toolkit.fluxcd.io/v2\nkind: HelmRelease\n" +
+			"metadata: {name: shop}\nspec:\n  chart:\n    spec:\n      chart: shop\n      valuesFiles: [values.yaml]\n")},
+		"values.yaml": {Data: []byte("replicas: 2\n")},
+	}
+	read := func(p string) ([]byte, bool) {
+		f, ok := fsys[p]
+		if !ok {
+			return nil, false
+		}
+		return f.Data, true
+	}
+	live := liveConfigMap("", "chart-values", map[string]interface{}{"values.yaml": "replicas: 2\n", "MODE": "a"})
+	generated := generatedFor(t, fsys, live)
+	require.Len(t, generated, 1)
+
+	writes, err := PlanGeneratedDelete(generated[0], "", read)
+	require.NoError(t, err)
+	require.Equal(t, []string{"kustomization.yaml"}, pathsOf(toFileContents(writes)), "values.yaml stays")
+
+	_, err = PlanGeneratedWrite(
+		generated[0],
+		liveConfigMap(
+			"",
+			"chart-values",
+			map[string]interface{}{"values.yaml": "replicas: 3\n", "MODE": "a"},
+		),
+		"",
+		read,
+	)
+	require.ErrorContains(t, err, "values.yaml is also a release's values file")
+
+	writes, err = PlanGeneratedWrite(
+		generated[0],
+		liveConfigMap(
+			"",
+			"chart-values",
+			map[string]interface{}{"values.yaml": "replicas: 2\n", "MODE": "b"},
+		),
+		"",
+		read,
+	)
+	require.NoError(t, err, "a key of another input is written as before")
+	require.Equal(t, []string{"kustomization.yaml"}, pathsOf(toFileContents(writes)))
+}
+
+func toFileContents(writes []GeneratedWrite) []manifestedit.FileContent {
+	out := make([]manifestedit.FileContent, 0, len(writes))
+	for _, w := range writes {
+		out = append(out, manifestedit.FileContent{Path: w.Path, Content: w.Content})
+	}
+	return out
+}
+
+// Two generated objects of one name, from one kustomization, in two namespaces are two objects to
+// the oracle: removing one is not refused because the other still renders, and a write to one is
+// checked against that one.
+func TestVerifyBatchRenders_GeneratedObjectsInTwoNamespaces(t *testing.T) {
+	kustomization := func(entries string) manifestedit.FileContent {
+		return manifestedit.FileContent{Path: "kustomization.yaml", Content: []byte("configMapGenerator:\n" + entries +
+			"generatorOptions:\n  disableNameSuffixHash: true\n")}
+	}
+	eu := "  - {name: menu, namespace: eu, literals: [A=1]}\n"
+	us := "  - {name: menu, namespace: us, literals: [A=1]}\n"
+	before := []manifestedit.FileContent{kustomization(eu + us)}
+
+	removed := WriteIntent{SourcePath: "kustomization.yaml", Kind: "ConfigMap", Name: "menu", Namespace: "eu",
+		Removed: true}
+	require.NoError(t, VerifyBatchRenders(before, []manifestedit.FileContent{kustomization(us)},
+		[]WriteIntent{removed}, VerifyOptions{}))
+
+	written := liveConfigMap("us", "menu", map[string]interface{}{"A": "2"})
+	intent := WriteIntent{SourcePath: "kustomization.yaml", Kind: "ConfigMap", Name: "menu", Namespace: "us",
+		Desired: written, Governed: true}
+	after := []manifestedit.FileContent{kustomization(eu + "  - {name: menu, namespace: us, literals: [A=2]}\n")}
+	require.NoError(t, VerifyBatchRenders(before, after, []WriteIntent{intent}, VerifyOptions{}))
+
+	intent.Namespace = "eu"
+	written.SetNamespace("eu")
+	require.Error(t, VerifyBatchRenders(before, after, []WriteIntent{intent}, VerifyOptions{}),
+		"eu did not move, and us moved without an intent")
 }

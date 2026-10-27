@@ -116,7 +116,7 @@ commits. If both touch the same resource, the API wins
 
 Follow the [installation walkthrough](docs/quickstart.md) to capture ConfigMaps from a demo namespace
 into a disposable repo. You need a Kubernetes cluster, `kubectl`, Helm 3, and Git write access.
-The walkthrough includes cert-manager setup; Redis and audit delivery are optional.
+Redis, audit delivery and cert-manager are optional: they come in with named commit authors.
 
 The demo captures a live change:
 

@@ -239,13 +239,12 @@ optional and only add *who* did something:
 |---|---|---|---|
 | **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface: served GVRs, scope, preferred version, subresources; rules resolve against it |
 | **Watch** (per claimed `(GVR, scope)`) | *what changed* | yes | the object body, ordered per type; the only object-state source, with deletes reconciled via `sendInitialEvents` replay + mark-and-sweep |
-| **Audit webhook** (`/audit-webhook/<audit-route>`) | *who changed mirrored state* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
-| **Validating admission webhook** (`/validate-operator-types`) | *who issued a command* | no | the submitter of a `CommitRequest`, captured at admission and keyed 1:1 by UID ([CommitRequest Finalize](#commitrequest-finalize)) |
+| **Audit webhook** (`/audit-webhook/<audit-route>`) | *who changed mirrored state, and who created a `CommitRequest`* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event, or to the `CommitRequest`, by resourceVersion ([Optional Attribution](#optional-attribution)) |
 
-With both optional sources off, the product still mirrors state correctly, and every commit is authored
+With the optional source off, the product still mirrors state correctly, and every commit is authored
 by the committer.
 
-### Why audit, not admission, attributes a mirrored change
+### Why audit, not admission, attributes a change
 
 For a mirrored change, taking the author from a validating admission webhook is tempting, because the request
 already carries `userInfo`. We tried it; the edge cases are not fixable, because **admission runs *before*
@@ -263,13 +262,11 @@ the write reaches etcd**:
 Audit avoids both: kube-apiserver posts a `ResponseComplete` event *after* the write persisted, carrying
 the resourceVersion that joins it to the watch event.
 
-The one place admission *is* the right source is the `CommitRequest`, and only for its **command** meaning
-(*who issued the save*) and not for mirroring the object. That holds because it is **our own type with a
-memory model we control**: the controller reconciles off its own watch, which only delivers persisted
-objects, so the author is captured at admission and read back 1:1 by UID: no resourceVersion join, no
-persistence proof from audit needed. (We still can't guarantee a create is never blocked, but it holds
-across our edge cases.) If a `WatchRule` also selects CommitRequests, that *mirroring* runs through the
-normal pipeline and is audit-attributed like any other resource. See
+A `CommitRequest`'s author comes from audit too, for the same reasons: its own `ResponseComplete` event,
+joined by the UID and resourceVersion it was created with, from the same index and with the same grace
+as the edits it saves. So the request and its edits are attributed by one pipeline, on the cluster both
+were made on, and a request on a source cluster needs nothing from the control cluster. A
+`CommitRequest` is never mirrored, whatever a `WatchRule` selects. See
 [CommitRequest Finalize](#commitrequest-finalize).
 
 ### Proving it on new Kubernetes versions
@@ -407,24 +404,27 @@ One `KubeProvider` grant answers two questions in different planes:
 ### CommitRequest
 
 - **Source**: [api/v1alpha3/commitrequest_types.go](../api/v1alpha3/commitrequest_types.go)
-- **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
+- **Core**: [internal/controller/commitrequest_core.go](../internal/controller/commitrequest_core.go)
 
-A one shot "save now" signal that finalizes the open commit window for a same namespace `GitTarget`
-instead of waiting for the silence timer. The **entire spec is immutable**. Key fields:
+A one shot "save now" signal that finalizes the open commit window for a `GitTarget` instead of waiting
+for the silence timer. It is created on the cluster the `GitTarget` mirrors: the control cluster, or a
+source cluster whose `KubeProvider` sets `spec.commitRequests`. The **entire spec is immutable**. Key
+fields:
 
-- `spec.gitTargetRef.name`: target whose window the request attaches to.
+- `spec.gitTargetRef`: target whose window the request attaches to, admitted by its
+  `spec.allowedCommitRequests`. On a source cluster the namespace is required.
 - `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
-- `spec.window`: `attach` (`CurrentOrNext` or `Next`), `attachTimeout` (default `2s`, the wait for a
+- `spec.window`: `attach` (`CurrentOrNext` or `Next`), `attachTimeout` (default `5s`, the wait for a
   window), and the timers that replace the target's for the attached window: `idleTimeout` (none by
   default) and `maxDuration` (default `2s`). A request never opens a window; only writes do.
 - `spec.whenNothingToCommit`: `Resolve` (default) or `CommitEmpty`, which records the message in an
   empty commit when the request ends with nothing to commit.
-- `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
-  terminal outcome that is not an error: a pushed commit, or a benign no-commit);
-  **Reconciling**/**Stalled** are the kstatus progress/blocked pair; **AuthorAttributed** reports
-  whether the `/validate-operator-types` validating admission webhook named the submitter; an absent record
-  means the request claims no actor and can attach only to an unnamed window. **Pushed** reports whether the
-  commit reached the remote. The `Ready`
+- `status.author`: the creator, as the request's audit event names them; empty when it names nobody,
+  and then the request can attach only to an unnamed window.
+- `status.conditions`: kstatus-compatible. **Ready** is the summary (Unknown while the save runs, True
+  once the request reached a terminal outcome that is not an error: a pushed commit, or a benign
+  no-commit); **Reconciling**/**Stalled** are the kstatus progress/blocked pair. **Pushed** reports
+  whether the commit reached the remote. The `Ready`
   condition's `reason` carries `Committed`, `NoWindow`, `WindowMismatch`, `AlreadyPresent`, or
   `FinalizeFailed`. A benign no-commit (e.g. `NoWindow`) is `Ready=True`, `Stalled=False`, a correct
   non-error outcome, whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
@@ -743,8 +743,8 @@ flowchart TD
     TIMER -->|silence timer| BASE
     TIMER -->|buffer limit or resync boundary| BASE
 
-    CR[CommitRequest persisted] --> ADMISSION[Admission submitter lookup<br/>named or unnamed]
-    ADMISSION --> ATTACH[Attach to matching open window]
+    CR[CommitRequest persisted] --> AUTHOR[Author from its audit fact<br/>named or unnamed]
+    AUTHOR --> ATTACH[Attach to matching open window]
     ATTACH -->|same author + GitTarget| BASE
     ATTACH -->|no matching window| BENIGN[Ready=True, Pushed=False]
 
@@ -1114,9 +1114,8 @@ queued behind it on the same `(GitTarget, GVR, scope)` goroutine. That cost, and
 is in [Watch Event Ordering](#watch-event-ordering) and
 [attribution-removal-wait-options.md](design/attribution-removal-wait-options.md).
 
-The CommitRequest controller does **not** read this audit index. A CommitRequest's submitter is named by
-the `/validate-operator-types` validating admission webhook instead, captured synchronously at admission,
-never joined from an audit fact (see [CommitRequest Finalize](#commitrequest-finalize)).
+A `CommitRequest`'s author is read from this index too, on the route of its `GitTarget`'s `KubeProvider`,
+with the same grace (see [CommitRequest Finalize](#commitrequest-finalize)).
 
 ### Author and committer identity in Git
 
@@ -1187,12 +1186,10 @@ CommitDate: Mon Jun 30 12:00:05 2026 +0000
 ### Wiring OIDC author claims
 
 - **Audit-path extractor**: [internal/queue/audit_event_parsing.go](../internal/queue/audit_event_parsing.go)
-- **Admission-path extractor**:
-  [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
 - **Signature construction**: [internal/git/commit.go](../internal/git/commit.go) (`authorName` / `authorEmail`)
 
 The operator never talks to the identity provider. It reads two fixed keys from the request's `user.extra`
-map: the audit attribution path and the CommitRequest admission path resolve the **same** two keys:
+map, from the audit event that names the actor:
 
 | `user.extra` key | OIDC claim it carries | Used for |
 |---|---|---|
@@ -1760,44 +1757,53 @@ unsafely: logged per-resource, counted in the resync summary as `placementSkippe
 
 ## CommitRequest finalize
 
-- **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
-- **Admission handler**:
-  [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
-- **Admission author cache**:
-  [internal/queue/command_author_store.go](../internal/queue/command_author_store.go)
+- **Core**: [internal/controller/commitrequest_core.go](../internal/controller/commitrequest_core.go)
+- **Control-cluster path**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
+- **Source-cluster path**: [internal/controller/commitrequest_server.go](../internal/controller/commitrequest_server.go)
 
-A `CommitRequest` finalizes the open commit window for its GitTarget. The request author is resolved from
-the `/validate-operator-types` validating admission webhook, which captures the authenticated submitter at
-admission (keyed by the object's UID) before the object is visible. The lookup is **present-or-never**: if
-the record is missing, the request is marked `AuthorAttributed=False`, claims no actor, and still attaches
-immediately. That is not a failure:
+A `CommitRequest` finalizes the open commit window for its GitTarget. It is picked up in one of two
+ways: by the `CommitRequestReconciler` on the control cluster, or by the `CommitRequestServer`'s watch
+of a source cluster, through the `KubeProvider` whose `spec.commitRequests` reconciles it. Both hand it
+to one core, which takes one step at a time, each decided again from the object as it is stored
+([contract](spec/commitrequest-design.md)):
 
-1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
-   `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
-2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), which
-   waits for a window until `registration + attachTimeout`. The worker binds it to an open window only
-   when the author state and GitTarget match, first come first served, and replaces the window's timers
-   with the request's own, so time spent waiting never shortens the collection. It **never finalizes
-   another author's window**; a window carries at most one request. The controller reports the phase the
-   worker reports: `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`.
-3. The window finalizes when the request's timers close it (or when it closes for any other reason).
+1. **The owner.** The `GitTarget`'s `KubeProvider` alone picks the path that serves the request: the
+   control-cluster path for an `inCluster` provider, that provider's watch for a kubeconfig. Any other
+   path writes nothing but `GitTargetNotFound`, once `attachTimeout` has passed with no `GitTarget`,
+   and only into an empty status. Every status write is conditional on the resourceVersion it was
+   decided from.
+2. **Admission and the author.** A grant in the `GitTarget`'s `spec.allowedCommitRequests` must admit
+   the request: `consumerNamespaces` on the control cluster, `sourceNamespaces` on a source cluster.
+   The request's author comes from its own audit fact, on the route of the `GitTarget`'s
+   `KubeProvider`, awaited with the attribution grace; a request no fact names, on a provider that has
+   received audit facts, is `AuthorUnresolved` and saves nothing.
+3. **The claim.** The owner writes the first status, `status.author` and `Ready=Unknown` (`Saving`),
+   and only then **attaches** the request to the worker (`AttachCommitRequest`), which waits for a
+   window until `registration + attachTimeout`. The worker binds it to an open window only when the
+   author state and GitTarget match, first come first served, and replaces the window's timers with the
+   request's own, so time spent waiting never shortens the collection. It **never finalizes another
+   author's window**; a window carries at most one request. The owner reports the phase the worker
+   reports: `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`.
+4. The window finalizes when the request's timers close it (or when it closes for any other reason).
    If a finalize closes an open window, the worker always schedules a push, so a window closed by an
    otherwise no-op resync is not stranded.
-4. Outcomes resolve on push and are reported as conditions: a pushed commit sets `Ready=True` /
+5. Outcomes resolve on push and are reported as conditions: a pushed commit sets `Ready=True` /
    `Pushed=True` with `branch`/`commit`; a benign no-commit sets `Ready=True` with the reason on `Ready` and
    `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message. **Between the window's
-   finalize and that push the request is still in flight**, which matters because the controller keeps
+   finalize and that push the request is still in flight**, which matters because the owner keeps
    re-sending its attach until it reads an outcome: the worker marks the request committed rather than
    forgetting it, so a re-send is recognized as the same request and cannot resolve early or claim a
    later window. A worker that stops without pushing fails the request instead of leaving it to time out.
    `AlreadyPresent` therefore means the remote confirmed there was nothing to add, not that a local plan
-   found no diff.
+   found no diff. A conflict on the outcome's write re-applies the outcome onto the fresh object; the
+   save is never restarted.
+6. **Retention.** A finished request is stamped `configbutler.ai/delete-after` and deleted once it has
+   passed: always on the control cluster, and on a source cluster only with
+   `commitRequests: ReconcileAndDeleteFinished`.
 
-The CommitRequest submitter is not recoverable from object state alone, so without an admission record the
-request cannot claim an actor. The final Git author remains the attached watch window's author: configured
-committer when attribution was disabled, or the explicit unresolved author when live attribution ran but
-could not resolve. There is no audit-fact join for the request itself: its submitter is captured at admission
-by the validating webhook, not derived from the audit attribution index.
+A request whose audit event names nobody claims no actor. The final Git author remains the attached
+watch window's author: configured committer when attribution was disabled, or the explicit unresolved
+author when live attribution ran but could not resolve.
 
 ***
 
@@ -1830,10 +1836,12 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   at all (the installation's `inCluster` consent, and which namespace holds its audit route), and
   projects its readiness to dependent targets. A provider created, deleted or moved to another route
   wakes the others carrying that route, so an `AuditRouteConflict` clears without waiting for a requeue.
-- `CommitRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
-  optional `AuthorLookup` is the command-author cache populated by the `/validate-operator-types` webhook
-  (wired whenever the admission webhook is enabled, independent of `--author-attribution`, and nil
-  otherwise, so the request claims no actor).
+- `CommitRequestReconciler` serves the control cluster's `CommitRequest`s through the shared core, four
+  at a time, so one request's author wait does not hold up the others. It reads through the uncached
+  API reader, and shares the watch plane's author resolver and fact streams, which are nil with
+  attribution off. The `CommitRequestServer` serves the source clusters' requests through the same core,
+  one watch per `KubeProvider` that reconciles them, and reports each to the `KubeProviderReconciler`,
+  which writes it as `CommitRequestsServed`.
 
 Dependency watches use narrow predicates to avoid status-only heartbeat churn: a `KubeProvider` also
 admits a `Ready` transition, and a `Namespace` admits only label changes. `GitProvider`, `GitBranch`,
@@ -1868,7 +1876,7 @@ flowchart TD
     Hq -->|no| J[Configured-author: no fact streams or index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
-    K --> L[Register GitProvider + GitReceiver + KubeProvider + GitBranch + GitTarget<br/>+ FluxClaim + ArgoCDClaim + CommitRequest controllers; admission webhooks]
+    K --> L[Register GitProvider + GitReceiver + KubeProvider + GitBranch + GitTarget<br/>+ FluxClaim + ArgoCDClaim + CommitRequest controllers; CommitRequest server]
     L --> M[Add cert watchers + health checks]
     M --> N[mgr.Start]
 ```
@@ -2016,7 +2024,7 @@ Current limitations:
 | [internal/types/](../internal/types/) | shared resource identity/reference and sensitivity policy |
 | [internal/typeset/](../internal/typeset/) | type followability registry, lookup model, and the relevance filter (controller-owned → don't mirror) |
 | [internal/watch/](../internal/watch/) | discovery catalog, watch manager, per-`(GVR, scope)` raw watches with `sendInitialEvents` replay + mark-and-sweep, the author resolver, watched type tables, event router |
-| [internal/webhook/](../internal/webhook/) | `/audit-webhook` ingress and attribution fact extraction (no body joiner), the `/validate-operator-types` admission handler, and the `/git-push` receiver |
+| [internal/webhook/](../internal/webhook/) | `/audit-webhook` ingress and attribution fact extraction (no body joiner), and the `/git-push` receiver |
 
 ***
 

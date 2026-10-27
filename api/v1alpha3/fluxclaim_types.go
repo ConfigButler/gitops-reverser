@@ -3,6 +3,8 @@
 package v1alpha3
 
 import (
+	"time"
+
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,6 +47,29 @@ type FluxClaimSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.kustomizationRef is immutable; delete and recreate the FluxClaim to hold another Kustomization"
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.kustomizationRef.name must not be empty"
 	KustomizationRef meta.NamespacedObjectReference `json:"kustomizationRef"`
+
+	// Why a timer: a push of GitOps Reverser's own needs no apply for the cluster (the flush
+	// already put the edit there), so none is asked for at once; but what reads the applier's own
+	// state (its applied revision, its source artifact) would stay at the last foreign commit until
+	// someone else pushed. One apply per interval keeps that level and batches a burst of saves.
+
+	// CatchUpAfter is how long the Kustomization stays behind the branch after
+	// a push of GitOps Reverser's own before an apply of the tip is asked for,
+	// as a Go duration ("1m", "90s"). Such a push changes nothing on the
+	// cluster, which already holds the edit, but leaves
+	// status.lastAppliedRevision and the GitRepository's artifact at the commit
+	// before it. The interval starts when the Kustomization is first seen
+	// behind, so a burst of saves costs one apply, and one at the tip costs
+	// none. The apply can still wait for startup, a retry backoff or edits
+	// being published. "0s" never asks for this reason, and drops an apply it
+	// asked for that has not started. Otherwise at least "10s" and at most
+	// "24h". Defaults to "1m".
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:default="1m"
+	// +kubebuilder:validation:XValidation:rule="duration(self) == duration('0s') || (duration(self) >= duration('10s') && duration(self) <= duration('24h'))",message="spec.catchUpAfter must be 0s, or a Go duration from 10s to 24h"
+	CatchUpAfter *metav1.Duration `json:"catchUpAfter,omitempty"`
 }
 
 // FluxClaimStatus is what the applier claim knows about its Kustomization, and
@@ -165,7 +190,9 @@ type FluxClaimSource struct {
 //   - after a refused edit, on a GitTarget with spec.onRefusal "Reapply";
 //   - after an apply reverted an edit made through the API;
 //   - after objects were created through the API in its folders;
-//   - once at startup, and when a GitTarget first names this FluxClaim.
+//   - once at startup, and when a GitTarget first names this FluxClaim;
+//   - once spec.catchUpAfter passed since a push of GitOps Reverser's own;
+//   - after a CommitRequest with spec.catchUp "AfterPush" pushed a commit.
 //
 // GitTargets name it with spec.applierClaimRef.
 type FluxClaim struct {
@@ -197,6 +224,9 @@ type FluxClaimList struct {
 func init() {
 	SchemeBuilder.Register(&FluxClaim{}, &FluxClaimList{})
 }
+
+// DefaultFluxCatchUpAfter is a FluxClaim's spec.catchUpAfter when it is omitted.
+const DefaultFluxCatchUpAfter = time.Minute
 
 var _ ApplierClaim = (*FluxClaim)(nil)
 
@@ -234,6 +264,11 @@ func (t *FluxClaim) SharedSource() (types.NamespacedName, bool) {
 	}
 	source := t.Status.Source.GitRepository
 	return types.NamespacedName{Namespace: source.Namespace, Name: source.Name}, true
+}
+
+// CatchUpAfter is spec.catchUpAfter, or DefaultFluxCatchUpAfter when it is omitted.
+func (t *FluxClaim) CatchUpAfter() time.Duration {
+	return durationOr(t.Spec.CatchUpAfter, DefaultFluxCatchUpAfter)
 }
 
 // Operation is status.operation.

@@ -272,16 +272,10 @@ var _ = Describe(
 // holds every line the human wrote, in order, and that anything added to it is a `resources:`
 // entry.
 //
-// It replaces a byte-equality assertion, which is no longer the right question. This namespace
-// holds a ConfigMap nobody in the test created — the cluster's own `kube-root-ca.crt` — and the
-// WatchRule selects every ConfigMap, so the operator has a watched resource with no document in
-// Git. Placement gives it a file beside this folder's one kustomization and registers it, which
-// is the documented kustomize-root behaviour (and what the new-file-placement spec asserts
-// directly). Before sibling inference was deleted, that resource was appended to the existing
-// bundle instead, and the bundle was already listed — so the build file happened to stay
-// byte-identical. Byte equality was therefore pinning a side effect of inference, not the
-// property this spec is about: a hand-authored build file must not be reordered, reformatted, or
-// have anything taken out of it.
+// It replaces a byte-equality assertion, which pinned a side effect rather than the property this
+// spec is about: a hand-authored build file must not be reordered, reformatted, or have anything
+// taken out of it. A watched object with no document in Git is given a file beside the folder's
+// kustomization and registered there, which is the documented kustomize-root behaviour.
 func expectKustomizationOnlyGainedResourceEntries(g Gomega, original, committed string) {
 	GinkgoHelper()
 

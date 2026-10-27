@@ -334,34 +334,32 @@ trio; the bounded "did the work actually happen" signal lives on the `Pushed` do
 
 ```go
 const (
-    TypeReady            = "Ready"            // True at a non-error terminal outcome
-    TypeReconciling      = "Reconciling"      // True until the request reaches a terminal outcome
-    TypeStalled          = "Stalled"          // True when the finalize failed (kstatus Failed)
-    TypeAuthorAttributed = "AuthorAttributed" // Whether admission captured the command submitter
-    TypePushed           = "Pushed"           // True once the commit is in the remote repository
+    TypeReady       = "Ready"       // Unknown while the save runs; True at a non-error terminal outcome
+    TypeReconciling = "Reconciling" // True until the request reaches a terminal outcome
+    TypeStalled     = "Stalled"     // True when the request failed (kstatus Failed)
+    TypePushed      = "Pushed"      // True once the commit is in the remote repository
 )
 ```
 
 A request's progress runs through the phases the branch worker reports: waiting for a window,
-collecting in it, and waiting for the push. `AuthorAttributed` settles at first sight because command
-authorship is captured synchronously at admission; it never has an `Unknown` or audit-wait state.
+collecting in it, and waiting for the push. Its author is found from its audit event before its first
+status write, which records it in `status.author`, so no condition carries it.
 
 Canonical reads:
 
-- in progress: `Reconciling=True` reason `Progressing` or `WaitingForWorker`, then `WaitingForWindow`,
-  `CollectingWindow` or `WaitingForPush` as the worker reports it, `AuthorAttributed` settled,
+- in progress: `Ready=Unknown`, `Reconciling=True` reason `Saving` or `WaitingForWorker`, then
+  `WaitingForWindow`, `CollectingWindow` or `WaitingForPush` as the worker reports it,
   `Pushed=Unknown` → kstatus InProgress
 - committed: `Ready=True`, `Pushed=True`, `Stalled=False`, reason `Committed` → kstatus Current
-- benign no-commit (nothing to save / already present / foreign open window): `Ready=True`, `Pushed=False`,
-  `Stalled=False`, with the specific reason on `Ready` (`NoWindow`, `AlreadyPresent`, `WindowMismatch`)
-  → kstatus Current (a correct, non-error outcome). With `whenNothingToCommit: CommitEmpty`, nothing to
-  save or already present records an empty commit instead: `Pushed=True`, the reason still naming the
-  cause
-- failed finalize: `Ready=False`, `Stalled=True`, reason `FinalizeFailed` → kstatus Failed
+- benign no-commit (nothing to save / already present / foreign open window / a missing audit fact):
+  `Ready=True`, `Pushed=False`, `Stalled=False`, with the specific reason on `Ready` (`NoWindow`,
+  `AlreadyPresent`, `WindowMismatch`, `AuthorUnresolved`) → kstatus Current (a correct, non-error
+  outcome). With `whenNothingToCommit: CommitEmpty`, nothing to save or already present records an
+  empty commit instead: `Pushed=True`, the reason still naming the cause
+- failed: `Ready=False`, `Stalled=True`, reason `FinalizeFailed`, `NotAllowed`, `GitTargetNotFound` or
+  `SaveInProgress` → kstatus Failed
 
-`AuthorAttributed=True` (`AttributedFromAdmission`) means the command submitter was captured. `False`
-(`CommitterFallback`) means capture ran but no admission author record exists; `False`
-(`AuthorCaptureDisabled`) means capture is disabled. Both claim no actor and can attach only to an unnamed
-window. That condition does not itself determine the Git author: the attached watch window is
-configured-author (the committer) when watch attribution is disabled, or explicitly unresolved when watch
-attribution ran but could not name an actor.
+`status.author` empty means no audit fact named the creator, or attribution is off: the request
+claims no actor and can attach only to an unnamed window. That does not itself determine the Git
+author: the attached watch window is configured-author (the committer) when watch attribution is
+disabled, or explicitly unresolved when watch attribution ran but could not name an actor.

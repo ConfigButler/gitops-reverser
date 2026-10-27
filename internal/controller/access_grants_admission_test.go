@@ -120,9 +120,46 @@ var _ = Describe("Access grants at admission", func() {
 		refused(kubeProvider("allowedApplierClaims", consumers(same)), "applierNamespaces: Required value")
 	})
 
-	// consumerNamespaces is required on every grant type and from is required inside it, with no default
-	// for either, so a grant that leaves the "who" out admits nobody instead of its holder's namespace.
-	// The block's own rules cannot make it required, so each list is checked here.
+	It("takes a GitTarget's CommitRequest grants with exactly one of consumerNamespaces and sourceNamespaces", func() {
+		gitTarget := func(grants ...any) *unstructured.Unstructured {
+			return object("GitTarget", map[string]any{
+				"gitBranchRef": map[string]any{"name": "b"}, "path": "apps",
+				"kubeProviderRef": map[string]any{"name": "k"}, "allowedCommitRequests": grants,
+			})
+		}
+		from := func(namespaces ...any) map[string]any { return map[string]any{"sourceNamespaces": namespaces} }
+		accepted(gitTarget(from("shop", "billing")))
+		accepted(gitTarget(from("*")))
+		accepted(gitTarget(map[string]any{"consumerNamespaces": same}, from("shop")))
+		refused(gitTarget(from("{consumer.namespace}")), "variables are refused")
+		refused(gitTarget(from("Shop")), "a source namespace is a namespace name")
+		refused(gitTarget(from()), "sourceNamespaces")
+		refused(gitTarget(map[string]any{}), "exactly one of consumerNamespaces and sourceNamespaces")
+		refused(gitTarget(map[string]any{"consumerNamespaces": map[string]any{}}), "from: Required value")
+		both := from("shop")
+		both["consumerNamespaces"] = same
+		refused(gitTarget(both), "exactly one of consumerNamespaces and sourceNamespaces")
+	})
+
+	It("takes only Ignore for spec.commitRequests beside spec.inCluster", func() {
+		inCluster := func(commitRequests string) *unstructured.Unstructured {
+			return object(
+				"KubeProvider",
+				map[string]any{"inCluster": map[string]any{}, "commitRequests": commitRequests},
+			)
+		}
+		accepted(inCluster("Ignore"))
+		refused(inCluster("Reconcile"), "spec.commitRequests must be Ignore beside spec.inCluster")
+		refused(inCluster("ReconcileAndDeleteFinished"), "spec.commitRequests must be Ignore beside spec.inCluster")
+		accepted(object("KubeProvider", map[string]any{
+			"secretRef": map[string]any{"name": "kubeconfig"}, "commitRequests": "ReconcileAndDeleteFinished",
+		}))
+	})
+
+	// consumerNamespaces is required on every grant type but a GitTarget's CommitRequest grant, which
+	// sets it or sourceNamespaces, and from is required inside it, with no default for either, so a
+	// grant that leaves the "who" out admits nobody instead of its holder's namespace. The block's own
+	// rules cannot make it required, so each list is checked here.
 	for _, list := range []struct {
 		name  string
 		build func(grant map[string]any) *unstructured.Unstructured

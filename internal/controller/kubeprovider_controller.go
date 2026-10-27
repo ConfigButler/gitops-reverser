@@ -55,6 +55,10 @@ type KubeProviderReconciler struct {
 	// absent rather than Unknown.
 	AuditFacts AuditRouteFacts
 
+	// CommitRequests reports what each KubeProvider serves of its cluster's CommitRequests, for the
+	// CommitRequestsServed condition. Nil reports nothing.
+	CommitRequests CommitRequestsReporter
+
 	firsts kubeProviderLogFirsts
 
 	// Recorder emits a Kubernetes Event on every persisted Ready transition; nil disables Events.
@@ -152,6 +156,7 @@ func (r *KubeProviderReconciler) reconcileKubeProvider(
 	// nobody posts under costs the commit AUTHOR, never the mirror, so it must not make a working
 	// provider look broken to a kstatus reader.
 	r.applyAuditFactsCondition(st, provider)
+	r.applyCommitRequestsServed(st, provider)
 	st.applyReadiness(rd)
 
 	// A failed status write is a real failure, not a verdict: propagate it so the provider is
@@ -254,6 +259,12 @@ func (r *KubeProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				handler.EnqueueRequestsFromMapFunc(r.auditRouteToKubeProviders),
 			))
 		}
+	}
+	// A changed CommitRequest report, such as a CRD applied by hand, is written at once.
+	if r.CommitRequests != nil {
+		b = b.WatchesRawSource(
+			source.Channel(r.CommitRequests.CommitRequestsEvents(), &handler.EnqueueRequestForObject{}),
+		)
 	}
 
 	return b.Complete(r)

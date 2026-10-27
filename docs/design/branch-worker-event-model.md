@@ -260,7 +260,7 @@ collect entries older than 15 minutes when no attach is queued. Collection is no
 durable receipt proving that status was written.
 
 Authorship has a separate lifetime. The
-[admission author store](../../internal/queue/command_author_store.go) retains records for an hour;
+admission author store (since removed) retained records for an hour;
 the `CommitRequest` object cannot reconstruct the authenticated submitter by itself. Recovering a
 previously accepted save must preserve its resolved attribution, including an unresolved result.
 Re-running the lookup later can produce a different decision.
@@ -315,7 +315,7 @@ Represent intent, decisions, and external work separately so recovery knows what
 
 | Category | Example | Meaning |
 |---|---|---|
-| Command | `SaveRequested` | A caller asks to attach a save |
+| Command | `CommitRequested` | A caller asks to attach a save |
 | Fact | `SaveAttached` | The worker bound that request to a particular window |
 | Effect intent | `PublishBatch` | A recorded decision that a push must still be attempted |
 | Effect result | `PublicationConfirmed` | Evidence that a particular attempt published its work |
@@ -380,7 +380,7 @@ The current attach loop and controller already preserve several rules:
 Retain those rules in a durable lifecycle. One illustrative successful path is:
 
 ```text
-SaveRequested(request UID, target UID, attribution, message, timing policy)
+CommitRequested(request UID, target UID, attribution, message, timing policy)
 SaveRegistered(request UID, sequence, registration time, attach deadline)
 SaveAttached(request UID, window ID)
 WindowClosed(window ID, included inputs, reason)

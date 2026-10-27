@@ -185,6 +185,9 @@ type WorkerManager struct {
 	// tests.
 	initialSnapshots func(target types.ResourceReference) bool
 	resyncRecheck    func(target types.ResourceReference)
+	// applyBarrier lets every worker's apply windows wait for the watch (apply_barrier.go). Set once
+	// at startup (SetApplyBarrier); nil in the CLI and in tests.
+	applyBarrier ApplyBarrierFunc
 
 	// applyRequester delivers every worker's apply requests. Set once at startup
 	// (SetApplyRequester) before any worker is created; nil in the CLI and in tests, which switches
@@ -277,6 +280,15 @@ func (m *WorkerManager) SetSnapshotHooks(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.initialSnapshots, m.resyncRecheck = settled, recheck
+}
+
+// SetApplyBarrier injects the watch side's barrier, which lets an apply window wait until the watch
+// delivered every write made before its apply completed (apply_barrier.go). Like SetMapper, it is
+// called once at startup before any worker is created.
+func (m *WorkerManager) SetApplyBarrier(barrier ApplyBarrierFunc) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applyBarrier = barrier
 }
 
 // SetSSHHostKeyConfig injects the SSH host-key resolution config used by every worker's credential
@@ -522,6 +534,7 @@ func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest, gitB
 	worker.claimStatus = m.claimStatus
 	worker.initialSnapshots = m.initialSnapshots
 	worker.resyncRecheck = m.resyncRecheck
+	worker.applyBarrier = m.applyBarrier
 	worker.replacementPending = func() bool { return m.ReplacementPending(key) }
 	worker.applierAdmitted = m.applierAdmitted
 	worker.renderFidelityGate = m.renderFidelityGate

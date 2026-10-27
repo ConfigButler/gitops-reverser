@@ -7,6 +7,62 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## The admission webhook is gone; a `CommitRequest`'s author comes from audit
+
+GitOps Reverser installs no admission webhook. The chart no longer renders the
+`ValidatingWebhookConfiguration`, its `Certificate` and Secret, or port `9443` on the controller
+`Service`, and the command-author records in Redis (`author:v1:command:*`) are no longer written;
+those that remain expire on their own.
+
+- **Values and flags.** Drop `servers.admission` from your values, and the `--admission-webhook`,
+  `--admission-webhook-bind-address` and `--admission-webhook-cert-*` flags from a hand-written
+  Deployment: the controller refuses to start with one of them.
+- **cert-manager is needed only for a certificate.** The chart renders its self-signed `Issuer` only
+  when it mints one: the audit ingress certificates with `attribution.enabled`, or the metrics
+  certificate with `servers.metrics.tls.enabled`. The default install needs no cert-manager.
+- **A request's author.** A `CommitRequest`'s author comes from its own audit event, as a write's
+  does, and is reported in `status.author`. The `AuthorAttributed` condition is gone. Keep `create`
+  of `commitrequests` in your audit policy; the write catch-all of the
+  [tuned policy](../test/e2e/cluster/audit/policy.yaml) covers it. A request no audit event names, on
+  a cluster that sends audit events, ends `Ready=True` with reason `AuthorUnresolved` and saves
+  nothing. With attribution off, a request names nobody, as it did with the webhook off.
+- **Status while it runs.** A `CommitRequest` in progress is `Ready=Unknown`, reason `Saving` until the
+  branch worker reports a phase, rather than `Ready=False`. Automation that waits for `Ready=True` or
+  `Stalled=True` is unaffected.
+- **`spec.window.attachTimeout` defaults to `5s`**, since the request now waits for its own audit event
+  as its edits do. A request that sets it keeps its value.
+- **A request is registered once its author is found**, no longer at creation. A client that creates a
+  request and then makes the edit it saves, on a `GitTarget` whose windows close on the first silence
+  (`idleTimeout: "0s"`), waits for `Ready=Unknown` before the edit, or the edit can commit alone.
+- **A `GitTarget` that mirrors another cluster.** A `CommitRequest` on the cluster GitOps Reverser runs
+  in, for such a `GitTarget`, is refused with reason `NotAllowed`. Create it on the cluster the
+  `GitTarget` mirrors instead, as described in
+  [serving the `CommitRequest`s of a source cluster](configuration.md#serving-the-commitrequests-of-a-source-cluster).
+
+A `CommitRequest` may also name a `GitTarget` in another namespace now, in
+`spec.gitTargetRef.namespace`, which that `GitTarget` admits in `spec.allowedCommitRequests`. Omitted,
+the list admits the `GitTarget`'s own namespace, as before.
+
+## A `FluxClaim` applies the tip a minute after GitOps Reverser's own pushes
+
+A push of GitOps Reverser's own asks no apply at once, and in 0.54.0 asked none at all, so a
+`Kustomization`'s `status.lastAppliedRevision` and its `GitRepository`'s artifact stayed at the last
+commit somebody else pushed. `spec.catchUpAfter` sets when that lag is caught up: once the applier
+has stayed behind the tip that long, an apply of the tip is asked for, one for a whole burst of
+saves. A `FluxClaim` defaults to `1m`; set `0s` to keep 0.54.0's behaviour. An `ArgoCDClaim`
+defaults to `0s`. A `CommitRequest` that sets `catchUp: AfterPush` has the tip applied right after
+its commit is pushed, whatever the claim's interval, and reports the outcome in its `Applied`
+condition and `status.appliedRevision`.
+
+## `kube-root-ca.crt` is not mirrored
+
+The `kube-root-ca.crt` ConfigMap the cluster writes into every namespace is never mirrored, whatever
+a `WatchRule` selects: it holds that one cluster's CA, and the cluster overwrites any other value.
+A copy already in Git is left like any document the cluster does not hold. Under prune mode
+`Always` the next resync removes it; under `OnEvent` (the default) delete it from Git yourself. If an
+applier applied that folder, it prunes the ConfigMap when the file goes, and the cluster recreates
+it at once.
+
 ## Upgrading from 0.53.0: recreate the connection objects in one pass
 
 **Breaking, with no in-place conversion.** The objects that connect a folder to a cluster, a

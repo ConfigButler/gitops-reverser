@@ -128,6 +128,11 @@ kinds:
         doc: >-
           Audit route this provider joins. A route is held by one namespace. See
           [audit route](#audit-route-and-auditfactsreceived)
+      - path: commitRequests
+        doc: >-
+          Whether the `CommitRequest`s created on this cluster are served, and finished ones deleted:
+          `Ignore`, `Reconcile`, `ReconcileAndDeleteFinished`. See
+          [serving them](#serving-the-commitrequests-of-a-source-cluster)
 
   - kind: GitTarget
     title: "`GitTarget` (namespaced): which branch and folder"
@@ -154,6 +159,11 @@ kinds:
       - path: commit.message
         default: the built-in templates
         doc: How commits are phrased. See [commit messages](commit-messages.md)
+      - path: allowedCommitRequests
+        doc: >-
+          The `CommitRequest`s that may save this target's windows: `consumerNamespaces` on the
+          cluster GitOps Reverser runs in, `sourceNamespaces` on the one it mirrors. See
+          [who may save](#who-may-save-specallowedcommitrequests)
       - path: placement.byType
         default: the built-in path
         doc: >-
@@ -258,6 +268,15 @@ kinds:
         doc: >-
           The `Kustomization` that applies the folders of the `GitTarget`s naming this applier claim. See
           [who applies this folder](#who-applies-this-folder-specapplierclaimref)
+      - path: catchUpAfter
+        doc: >-
+          How long the `Kustomization` stays behind the branch after a push of GitOps Reverser's own
+          before an apply of the tip is asked for. Such a push needs no apply for the cluster, but leaves
+          `status.lastAppliedRevision` and the `GitRepository`'s artifact at the commit before it. The
+          interval starts when the `Kustomization` is first seen behind, so a burst of saves costs one
+          apply; the apply can still wait for startup, a retry backoff or edits being published, and an
+          edit arriving before the resume defers it by an interval. `0s` never asks for this reason, and
+          drops an apply it asked for that has not started; otherwise `10s` to `24h`
 
   - kind: ArgoCDClaim
     title: "`ArgoCDClaim` (namespaced): the Argo CD `Application` GitOps Reverser asks to sync"
@@ -271,12 +290,21 @@ kinds:
         doc: >-
           The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s
           naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref)
+      - path: catchUpAfter
+        doc: >-
+          As a `FluxClaim`'s: how long the `Application`'s last sync stays behind the branch after a push
+          of GitOps Reverser's own before a sync of the tip is asked for. Off by default, since a sync runs
+          the `Application`'s hooks and Argo CD's refresh already compares the live state against the tip.
+          Otherwise `10s` to `24h`
 
   - kind: CommitRequest
-    title: "`CommitRequest` (namespaced): save now"
+    title: "`CommitRequest` (namespaced, here or on a source cluster): save now"
     fields:
       - path: gitTargetRef
-        doc: The target whose commit window the request attaches to
+        doc: >-
+          The target whose commit window the request attaches to: in this namespace, or `namespace`
+          names another, whose `allowedCommitRequests` must admit this one. On a source cluster
+          `namespace` is required. See [where a request is created](#where-a-request-is-created)
       - path: message
         default: the target's templates
         doc: Commit message, committed verbatim unless `requestTemplate` frames it
@@ -293,3 +321,9 @@ kinds:
         doc: Close the attached window this long after the attach
       - path: whenNothingToCommit
         doc: "`CommitEmpty` records the message in an empty commit when nothing changed"
+      - path: catchUp
+        doc: >-
+          `AfterPush` asks the `GitTarget`'s applier to apply the branch tip right after the commit is
+          pushed, instead of after the applier claim's `catchUpAfter`. The tip may hold later commits,
+          and saves pushed close together can share one apply; the `Applied` condition reports it
+

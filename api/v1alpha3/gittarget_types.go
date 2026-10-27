@@ -184,6 +184,29 @@ type GitTargetSpec struct {
 	// +optional
 	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 
+	// AllowedCommitRequests says which CommitRequests may save this GitTarget's
+	// commit windows. Each grant sets one of:
+	//
+	// - consumerNamespaces: namespaces of the cluster GitOps Reverser runs
+	//   in. They admit requests only when spec.kubeProviderRef names an
+	//   inCluster KubeProvider.
+	// - sourceNamespaces: namespaces of the cluster spec.kubeProviderRef
+	//   names, which must set spec.commitRequests. They admit requests only
+	//   when that KubeProvider names a kubeconfig.
+	//
+	// Omitted, the CommitRequests in this GitTarget's namespace are admitted,
+	// as one grant with consumerNamespaces from: "Same". An empty list ([])
+	// admits none. A list replaces the default. A request no grant admits
+	// fails with reason "NotAllowed".
+	//
+	// An admitted request saves its creator's whole commit window on this
+	// GitTarget, writes outside the request's namespace included.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:default={{consumerNamespaces: {from: Same}}}
+	AllowedCommitRequests []GitTargetCommitRequestGrant `json:"allowedCommitRequests"`
+
 	// The scan keeps running while writes are suspended: freezing status.placement too would leave
 	// a stale answer at the moment it costs most. A suspended target is Ready=True reason
 	// Suspended, because not writing is the configured outcome rather than ill health. A local

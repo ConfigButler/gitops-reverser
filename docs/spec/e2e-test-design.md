@@ -251,7 +251,7 @@ The only cluster-level variable still consumed across files is:
 Repo state (names, checkout paths, Secret names, optional receiver webhook info) flows through a typed
 `RepoArtifacts` struct returned by `SetupRepo`, not through package-global env vars.
 
-The audit-consumer specs (`Commit Window Batching`, `Commit Request`) each provision their own repo
+The audit-consumer specs (`Commit Window Batching`, `Save Request`) each provision their own repo
 via `SetupRepo`, like every other file.
 
 ## Repo Model: One Repo Per E2E Test File

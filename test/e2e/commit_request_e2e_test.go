@@ -26,7 +26,7 @@ import (
 // namespace. The HEAD/SHA assertions below therefore read back only this spec's
 // own commit; concurrent audit traffic for other GitTargets lands in other
 // repos and cannot move this repo's HEAD. See docs/spec/e2e-serial-registry.md.
-var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Ordered, func() {
+var _ = Describe("Save Request", Label("commit-request", "audit-consumer"), Ordered, func() {
 	var (
 		testNs        string
 		repo          *RepoArtifacts
@@ -54,7 +54,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		seed := GinkgoRandomSeed()
 		deployName := fmt.Sprintf("commit-request-deploy-%d", seed)
 		commitRequestName := fmt.Sprintf("commit-request-save-%d", seed)
-		message := fmt.Sprintf("save: commit request from e2e seed %d", seed)
+		message := fmt.Sprintf("save: save request from e2e seed %d", seed)
 
 		By("creating a Deployment to open a commit window")
 		applyScaleTestDeployment(testNs, deployName, 0)
@@ -111,6 +111,20 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				"the save must produce exactly one commit on main\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		if !configuredAuthorModeEnabled() {
+			// The round trip admission used to stand in for: the request's author comes from its own
+			// audit event, and it is the author of the edit's window, which it saved.
+			By("verifying the CommitRequest's author came from audit and authored the commit")
+			Eventually(func(g Gomega) {
+				author := commitRequestField(g, testNs, commitRequestName, "{.status.author}")
+				g.Expect(author).NotTo(BeEmpty(), "the request's author is found from its audit event")
+				commitAuthor, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%an")
+				g.Expect(logErr).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(commitAuthor)).To(Equal(author),
+					"the request saved its own author's window")
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+		}
 
 		// The wiring check for the metric instruments, made here because this is where the evidence
 		// is: the commit above is verified in Git, so a missing series is a broken exporter rather
@@ -216,21 +230,15 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 
-	// generateName authorship is now captured at admission, not from the audit
-	// response body: the API server assigns metadata.name and metadata.uid before
-	// validating admission runs, so the validate-operator-types webhook records the
-	// submitter keyed by uid with no response-body name recovery (the old audit
-	// generateName headache is gone, see
-	// docs/spec/commitrequest-admission-authorship.md). This spec proves a
-	// generateName CommitRequest still finalizes and becomes Ready. It is skipped in
-	// configured-author mode, where the edit's window is committer-authored and the
-	// named admission author would not match it end to end.
+	// A generateName CommitRequest is attributed from its audit fact, keyed by the uid and
+	// resourceVersion the API server assigned, so no name recovery from the response body is needed.
+	// This spec proves a generateName CommitRequest still finalizes and becomes Ready.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
 		deployName := fmt.Sprintf("commit-request-gen-deploy-%d", seed)
 		commitRequestPrefix := fmt.Sprintf("commit-request-gen-%d-", seed)
-		message := fmt.Sprintf("save: generateName commit request from e2e seed %d", seed)
+		message := fmt.Sprintf("save: generateName save request from e2e seed %d", seed)
 
 		By("creating a Deployment to open a commit window")
 		applyScaleTestDeployment(testNs, deployName, 0)
@@ -278,7 +286,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 // Deployment WatchRule) makes the one-commit assertion unambiguous: main does not
 // exist until the bundle is finalized, so the bundle commit is the only commit on
 // main.
-var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-consumer"), Ordered, func() {
+var _ = Describe("Save Request Bundle (UC2)", Label("commit-request", "audit-consumer"), Ordered, func() {
 	var (
 		testNs        string
 		repo          *RepoArtifacts
@@ -426,9 +434,9 @@ spec:
 
 // applyCommitRequestWithGenerateName creates a CommitRequest using
 // metadata.generateName and returns the server-allocated name. The spec creates its work and this
-// CommitRequest back-to-back: authorship is settled synchronously at admission (no controller-side
-// wait), so a zero wait would race the work's watch event and could resolve NoWindow before the
-// window opens. Waiting to attach is the documented mechanism for a CommitRequest issued
+// CommitRequest back-to-back: the request's author and its work's arrive through the same audit join,
+// so a zero wait would race the work's watch event and could resolve NoWindow before the window
+// opens. Waiting to attach is the documented mechanism for a CommitRequest issued
 // concurrently with its work (UC2).
 //
 // The wait is deliberately tight: it covers audit delivery (--audit-webhook-batch-max-wait=1s) and
@@ -478,6 +486,18 @@ spec:
 `, name, namespace, gitTargetName, message)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to apply CommitRequest %s/%s", namespace, name))
+}
+
+// waitForCommitRequestClaimed waits until the request is claimed: Ready=Unknown, written once its own
+// audit event named its author and before it is attached. A save made before its edit waits for this
+// on a GitTarget whose windows close on the first silence (e2eCommitWindow): the request is
+// registered only after its author is found, and its edit, attributed the same way, could otherwise
+// reach the worker first and commit alone.
+func waitForCommitRequestClaimed(namespace, name string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		g.Expect(commitRequestCondition(g, namespace, name, "Ready")).To(Equal("Unknown"))
+	}, time.Minute, 250*time.Millisecond).Should(Succeed(), "CommitRequest %s/%s is claimed", namespace, name)
 }
 
 // commitRequestField reads a jsonpath field off a CommitRequest object.
@@ -603,10 +623,9 @@ func setupWindowedDeploymentPipeline(name, basePath, commitWindow string) window
 	By(fmt.Sprintf("creating GitTarget with spec.commit.window=%s", commitWindow))
 	createValidatedGitTargetWithCommitWindow(p.gitTarget, p.ns, p.gitProvider, basePath, commitWindow)
 
-	// Watch Deployments, not ConfigMaps: a fresh namespace contains NO Deployments, whereas every
-	// namespace is pre-populated with a kube-root-ca.crt ConfigMap that a configmaps WatchRule
-	// would match — its initial reconcile would establish main before the spec's own edit, hiding
-	// the pure "branch not even created until something is finalized" behaviour these suites test.
+	// Watch Deployments: a fresh namespace contains NO Deployments, so the initial reconcile
+	// commits nothing and cannot establish main before the spec's own edit, which would hide the
+	// pure "branch not even created until something is finalized" behaviour these suites test.
 	applyDeploymentWatchRule(p.ns, p.watchRule, p.gitTarget)
 	verifyResourceStatus("watchrule", p.watchRule, p.ns, "True", "Succeeded", "")
 

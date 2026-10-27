@@ -53,6 +53,11 @@ const (
 	// produced no diff — the change already matches the remote, so no commit was
 	// made (loop prevention). Resolved at finalize, never waiting on a push.
 	FinalizeAlreadyPresent FinalizeOutcome = "AlreadyPresent"
+	// FinalizeSaveInProgress means an earlier request of the same author on the same GitTarget was
+	// still waiting for a window, or collecting the open one, when this one was registered. Both
+	// would race for one window, which carries one message, so this one is refused at once rather
+	// than left to lose its message to the first, or its edits to the first's commit.
+	FinalizeSaveInProgress FinalizeOutcome = "SaveInProgress"
 )
 
 // CommitRequestPhase is where an unresolved CommitRequest stands on the worker. It is what the
@@ -131,6 +136,10 @@ type AttachCommitRequest struct {
 	// GitTargetName / GitTargetNamespace scope the finalize to one GitTarget.
 	GitTargetName      string
 	GitTargetNamespace string
+	// GitTargetUID is the UID of the GitTarget that admitted the request. A GitTarget of that name
+	// with another UID replaced it and admitted nothing, so it is never asked to take the request.
+	// Empty matches any.
+	GitTargetUID string
 
 	// Message is the verbatim commit message to attach to the window. Empty keeps
 	// the generated grouped-commit message.
@@ -146,6 +155,9 @@ type AttachCommitRequest struct {
 	// CommitEmpty records Message in an empty commit when the request ends with nothing to
 	// commit: whenNothingToCommit: CommitEmpty.
 	CommitEmpty bool
+	// CatchUpNow asks the GitTarget's applier to apply the tip as soon as the request's commit is
+	// pushed: catchUp: AfterPush.
+	CatchUpNow bool
 }
 
 // commitRequestID is the worker-local key for a CommitRequest: its namespaced
@@ -184,6 +196,8 @@ type pendingCommitRequest struct {
 	// commitEmpty records the message in an empty commit when the request ends with nothing to
 	// commit. Never for a WindowMismatch: that would claim more than happened.
 	commitEmpty bool
+	// catchUpNow asks the GitTarget's applier for a converge once the request's commit is pushed.
+	catchUpNow bool
 	// attached is true once this request is bound to a write: its message to the open window, or
 	// its own empty-commit record. From then on only that write's outcome settles it, and it stays
 	// set while the write is pending, waiting for the push.
@@ -246,10 +260,17 @@ func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false
 	}
-	return p.author == w.Author &&
-		p.attribution.NamesActor() == w.Attribution.NamesActor() &&
-		p.gitTargetName == w.GitTarget &&
-		p.gitTargetNamespace == w.GitTargetNamespace
+	if p.gitTargetName != w.GitTarget || p.gitTargetNamespace != w.GitTargetNamespace {
+		return false
+	}
+	return p.author == w.Author && p.attribution.NamesActor() == w.Attribution.NamesActor()
+}
+
+// sameSaver reports whether two requests would save one window: the same GitTarget and the same
+// author, by the comparison matchesWindow makes.
+func (p *pendingCommitRequest) sameSaver(other *pendingCommitRequest) bool {
+	return p.gitTargetName == other.gitTargetName && p.gitTargetNamespace == other.gitTargetNamespace &&
+		p.author == other.author && p.attribution.NamesActor() == other.attribution.NamesActor()
 }
 
 // commitRequestOutcomeEntry is a resolved outcome retained for the controller to

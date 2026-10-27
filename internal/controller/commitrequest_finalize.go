@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -17,22 +18,26 @@ import (
 
 // CommitRequest condition reasons (CamelCase tokens surfaced on status.conditions).
 const (
-	crReasonCommitted               = "Committed"
-	crReasonNoWindow                = "NoWindow"
-	crReasonWindowMismatch          = "WindowMismatch"
-	crReasonAlreadyPresent          = "AlreadyPresent"
-	crReasonFinalizeFailed          = "FinalizeFailed"
-	crReasonUnexpectedOutcome       = "UnexpectedOutcome"
-	crReasonAttributedFromAdmission = "AttributedFromAdmission"
-	crReasonCommitterFallback       = "CommitterFallback"
-	crReasonAuthorCaptureDisabled   = "AuthorCaptureDisabled"
-	crReasonGitTargetRefPruned      = "GitTargetRefPruned"
+	crReasonCommitted          = "Committed"
+	crReasonNoWindow           = "NoWindow"
+	crReasonWindowMismatch     = "WindowMismatch"
+	crReasonAlreadyPresent     = "AlreadyPresent"
+	crReasonFinalizeFailed     = "FinalizeFailed"
+	crReasonUnexpectedOutcome  = "UnexpectedOutcome"
+	crReasonGitTargetRefPruned = "GitTargetRefPruned"
+	crReasonNotAllowed         = "NotAllowed"
+	crReasonSaveInProgress     = "SaveInProgress"
+	crReasonGitTargetNotFound  = "GitTargetNotFound"
+	crReasonAuthorUnresolved   = "AuthorUnresolved"
+	// crReasonSaving is the progress reason of a request just claimed, before the worker reports a
+	// phase.
+	crReasonSaving = "Saving"
 )
 
 // The bounded `outcome` values on gitopsreverser_commit_requests_total.
 //
 // They are derived from git.FinalizeOutcome rather than from the condition reasons above: the
-// FinalizeResult is what DECIDES, and the reasons include non-terminal and attribution-only values
+// FinalizeResult is what DECIDES, and the reasons include non-terminal values
 // that have no business on a terminal counter. The set is closed, and outcomeFailed absorbs every
 // hard failure so an unmapped result can never go uncounted.
 const (
@@ -40,16 +45,19 @@ const (
 	crOutcomeNoWindow       = "no_window"
 	crOutcomeWindowMismatch = "window_mismatch"
 	crOutcomeAlreadyPresent = "already_present"
+	crOutcomeSaveInProgress = "save_in_progress"
 	crOutcomeFailed         = "failed"
+	// crOutcomeAuthorUnresolved is a request no audit fact names, on a cluster that sends them.
+	crOutcomeAuthorUnresolved = "author_unresolved"
 )
 
-// commitRequestOutcome maps one finalize result to its counter value.
+// commitRequestOutcomeValue maps one finalize result to its counter value.
 //
 // A finalize error outranks the outcome because FinalizeResult.Outcome is only set when Err is nil,
 // and an unrecognized outcome counts as failed for the same reason applyFinalizeResultToStatus
 // fails it: an empty or unknown outcome with no error is a bug, and a bug that increments nothing
 // is a bug nobody sees.
-func commitRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
+func commitRequestOutcomeValue(result git.FinalizeResult, finalizeErr error) string {
 	if finalizeErr != nil {
 		return crOutcomeFailed
 	}
@@ -62,6 +70,8 @@ func commitRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
 		return crOutcomeWindowMismatch
 	case git.FinalizeAlreadyPresent:
 		return crOutcomeAlreadyPresent
+	case git.FinalizeSaveInProgress:
+		return crOutcomeSaveInProgress
 	default:
 		return crOutcomeFailed
 	}
@@ -88,10 +98,11 @@ type commitRequestTarget struct {
 // needed to bound the label — the plan's rule that metric recording must not block terminal status
 // on another failing call.
 //
-// The namespace is the REQUEST's, not a field: a CommitRequest names a same-namespace GitTarget,
-// which is the same assumption ServiceCommitRequest makes when it builds the object key.
+// The key is CommitRequest.GitTargetKey, the GitTarget the attach names, which is the key
+// ServiceCommitRequest gets.
 func resolvedCommitRequestTarget(cr *configv1alpha3.CommitRequest) commitRequestTarget {
-	return commitRequestTarget{namespace: cr.Namespace, name: cr.Spec.GitTargetRef.Name}
+	key := cr.GitTargetKey()
+	return commitRequestTarget{namespace: key.Namespace, name: key.Name}
 }
 
 // recordCommitRequestOutcome increments the terminal-outcome counter once.
@@ -126,46 +137,6 @@ const alreadyPresentMessage = "the change already matches the remote, so no comm
 // notStalledMessage is the boilerplate message for a False Stalled condition.
 const notStalledMessage = "the CommitRequest is not stalled"
 
-// commitRequestAttribution is the settled author decision threaded from the
-// attribute step into the terminal status write so the AuthorAttributed condition can
-// record whether the commit author was named. It is binary and always settled at
-// first sight (present-or-never, §2) — there is no pending or timed-out state.
-type commitRequestAttribution int
-
-const (
-	// attributionUnset is the defensive zero value. It must never report a resolved
-	// actor when a caller neglected to initialize the attribution decision.
-	attributionUnset commitRequestAttribution = iota
-	// attributionFromAdmission means the submitter was captured at admission by the
-	// validate-operator-types webhook and named as the commit author.
-	attributionFromAdmission
-	// attributionCommitter means command-author capture ran but no admission author record
-	// exists, so the request does not claim an actor.
-	attributionCommitter
-	// attributionNotAttempted means command-author capture is switched off entirely (the
-	// validate-operator-types webhook is not running), so no submitter was ever sought. It is
-	// distinct from attributionCommitter, where capture DID run and found nothing.
-	attributionNotAttempted
-)
-
-// gitOutcome projects the controller's attribution state onto the git layer's outcome, which
-// is what the worker matches windows on. Keeping the projection here — rather than passing the
-// controller's own enum down — means the git package never learns about admission records.
-func (a commitRequestAttribution) gitOutcome() git.AttributionOutcome {
-	switch a {
-	case attributionUnset:
-		return git.AttributionNotAttempted
-	case attributionFromAdmission:
-		return git.AttributionResolved
-	case attributionCommitter:
-		return git.AttributionUnresolved
-	case attributionNotAttempted:
-		return git.AttributionNotAttempted
-	default:
-		return git.AttributionNotAttempted
-	}
-}
-
 // setCommitRequestCondition upserts a condition keyed by type, stamping it with
 // the request's generation so kstatus can tell a current status from a stale one.
 func setCommitRequestCondition(
@@ -177,11 +148,11 @@ func setCommitRequestCondition(
 	cr.Status.Conditions = upsertCondition(cr.Status.Conditions, conditionType, status, reason, message, cr.Generation)
 }
 
-// Progress-condition messages, one per phase the worker reports. The author is settled
-// synchronously at first sight (present-or-never, §2), so there is no "waiting for the author"
-// phase. Until the worker has registered the request the reason is the generic Progressing.
+// Progress-condition messages, one per phase the worker reports. The author is found before the
+// claim, so there is no "waiting for the author" phase. From the claim until the worker has registered
+// the request the reason is Saving.
 const (
-	progressingMessage      = "sent to the branch worker; waiting for it to register the request"
+	progressingMessage      = "claimed; sent to the branch worker, waiting for it to register the request"
 	waitingForWorkerMessage = "the GitTarget has no branch worker yet; waiting for its reconcile to start one"
 	waitingForWindowMessage = "registered with the worker; waiting for a matching commit window to attach to"
 	collectingWindowMessage = "attached to a commit window; collecting writes until its timers close it"
@@ -206,15 +177,15 @@ func progressFor(phase git.CommitRequestPhase, held string) (string, string) {
 		}
 		return string(phase), waitingForPushMessage
 	default:
-		return ReasonProgressing, progressingMessage
+		return crReasonSaving, progressingMessage
 	}
 }
 
-// setCommitRequestProgress stamps the four progress conditions (Ready=False,
+// setCommitRequestProgress stamps the four progress conditions (Ready=Unknown,
 // Reconciling=True, Stalled=False, Pushed=Unknown) with one unifying reason, so a
 // single wait reads consistently across them.
 func setCommitRequestProgress(cr *configv1alpha3.CommitRequest, reason, message string) {
-	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionFalse, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionUnknown, reason, message)
 	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
 	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
 	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionUnknown, reason, pushPendingMessage)
@@ -224,62 +195,34 @@ func setCommitRequestProgress(cr *configv1alpha3.CommitRequest, reason, message 
 // (Reconciling=True). An empty phase is the generic Progressing: sent, not yet confirmed.
 func markCommitRequestProgressing(
 	cr *configv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
 	phase git.CommitRequestPhase,
 	held string,
 ) {
 	cr.Status.ObservedGeneration = cr.Generation
-	setCommitRequestAttributed(cr, attribution)
 	reason, message := progressFor(phase, held)
 	setCommitRequestProgress(cr, reason, message)
 }
 
-// setCommitRequestAttributed records the settled, binary author decision on the
-// AuthorAttributed condition. A False reason distinguishes an absent record
-// (CommitterFallback) from capture disabled (AuthorCaptureDisabled). Neither is a failure or
-// affects Ready; the request claims no actor.
-func setCommitRequestAttributed(cr *configv1alpha3.CommitRequest, attribution commitRequestAttribution) {
-	switch attribution {
-	case attributionUnset:
-		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
-			crReasonAuthorCaptureDisabled,
-			"command-author capture state was unset; the request can attach only to a window with no named actor")
-	case attributionFromAdmission:
-		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue,
-			crReasonAttributedFromAdmission,
-			"the submitter was captured at admission and named as the commit author")
-	case attributionCommitter:
-		// Capture RAN and found nothing. Distinct from attributionNotAttempted below, whose
-		// message this used to carry — reporting "the webhook is not configured" for a
-		// webhook that is configured and simply missed sends operators to the wrong place.
-		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
-			crReasonCommitterFallback,
-			"no admission author record was found for this request; it can attach only to a "+
-				"window with no named actor")
-	case attributionNotAttempted:
-		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
-			crReasonAuthorCaptureDisabled,
-			"command-author capture is disabled (the validate-operator-types webhook is not "+
-				"configured); the request can attach only to a window with no named actor")
-	}
-}
-
-// applyFinalizeResultToStatus maps a FinalizeResult (or a finalize error) and the
-// settled attribution onto a CommitRequest's terminal conditions. Ready is the
-// summary; Reconciling/Stalled carry kstatus; Attributed records the author
-// decision; Pushed records whether a commit reached the remote.
+// applyFinalizeResultToStatus maps a FinalizeResult (or a finalize error) onto a
+// CommitRequest's terminal conditions. Ready is the summary; Reconciling/Stalled
+// carry kstatus; Pushed records whether a commit reached the remote.
 func applyFinalizeResultToStatus(
 	cr *configv1alpha3.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
-	attribution commitRequestAttribution,
 ) {
 	cr.Status.ObservedGeneration = cr.Generation
 	cr.Status.Branch = result.Branch
-	setCommitRequestAttributed(cr, attribution)
 
 	if finalizeErr != nil {
-		failCommitRequest(cr, crReasonFinalizeFailed, finalizeErr.Error())
+		reason := crReasonFinalizeFailed
+		switch {
+		case errors.Is(finalizeErr, errCommitRequestNotAllowed):
+			reason = crReasonNotAllowed
+		case errors.Is(finalizeErr, errGitTargetNotFound):
+			reason = crReasonGitTargetNotFound
+		}
+		failCommitRequest(cr, reason, finalizeErr.Error())
 		return
 	}
 
@@ -302,6 +245,10 @@ func applyFinalizeResultToStatus(
 	case git.FinalizeAlreadyPresent:
 		// The change already matches the remote, so the commit was dropped.
 		resolveNothingToCommit(cr, result, crReasonAlreadyPresent, alreadyPresentMessage)
+	case git.FinalizeSaveInProgress:
+		// Refused, not failed by the worker: the spec is immutable, so the caller saves again with a
+		// new request once the earlier one resolved.
+		failCommitRequest(cr, crReasonSaveInProgress, saveInProgressMessage)
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; fail it so it is not silently hidden.
@@ -354,6 +301,13 @@ func failCommitRequest(cr *configv1alpha3.CommitRequest, reason, message string)
 func commitRequestIsTerminal(cr *configv1alpha3.CommitRequest) bool {
 	return conditionIsTrue(cr.Status.Conditions, ConditionTypeReady) ||
 		conditionIsTrue(cr.Status.Conditions, ConditionTypeStalled)
+}
+
+// commitRequestClaimed reports whether a request's owner claimed it and its save has not ended:
+// Ready=Unknown.
+func commitRequestClaimed(cr *configv1alpha3.CommitRequest) bool {
+	ready := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady)
+	return ready != nil && ready.Status == metav1.ConditionUnknown && !commitRequestIsTerminal(cr)
 }
 
 // commitRequestConditionStatus returns the status of one condition as a loggable

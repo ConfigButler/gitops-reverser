@@ -428,36 +428,91 @@ func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
 		"bob was refused by a window that has since closed; the refusal still happened")
 }
 
-// A window bob COULD have claimed, already taken by another of his own saves, is contention rather
-// than a mismatch: it resolves on the next window, and calling it a mismatch would blame a
-// queueing delay on the wrong cause.
-func TestAttach_ClaimedSameAuthorWindowIsNotAMismatch(t *testing.T) {
-	worker, _, _ := setupCommitPushSplitWorker(t)
-	createPlainGitTarget(t, worker, "team-a", "team-a")
+// A second save of one author on one GitTarget, made while the first still waits for a window or
+// collects one, would race it for that window, which carries one message: the second is refused at
+// once, SaveInProgress, instead of losing its message or its edits to the first. It is not a
+// mismatch, and it holds nothing.
+func TestAttach_ASecondSaveOfTheSameAuthorIsRefusedWhileTheFirstIsInProgress(t *testing.T) {
+	second := func() *AttachCommitRequest {
+		req := attachReq("alice", 60*time.Second)
+		req.Name, req.UID = "save-second", "uid-save-second"
+		return req
+	}
+	secondOutcome := func(t *testing.T, w *BranchWorker) (FinalizeResult, bool) {
+		t.Helper()
+		return w.LookupCommitRequestOutcome("default", "save-second", "uid-save-second")
+	}
 
-	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
-	defer loop.stopTimers()
+	t.Run("while the first collects the window", func(t *testing.T) {
+		worker, _, _ := setupCommitPushSplitWorker(t)
+		createPlainGitTarget(t, worker, "team-a", "team-a")
+		loop := newBranchWorkerEventLoop(worker, time.Hour)
+		loop.lastPushAt = time.Now()
+		defer loop.stopTimers()
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+			Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
+		}})
+		serviceAttach(loop, attachReq("alice", 60*time.Second))
+		require.NotNil(t, loop.openWindow.pendingCR, "precondition: the first save collects the window")
 
-	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
-	}})
-	require.NotNil(t, loop.openWindow)
+		serviceAttach(loop, second())
 
-	// Alice's first save claims the window; her second one has to wait for the next.
-	first := attachReq("alice", 60*time.Second)
-	serviceAttach(loop, first)
-	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the window is claimed")
+		res, ok := secondOutcome(t, worker)
+		require.True(t, ok)
+		assert.Equal(t, FinalizeSaveInProgress, res.Outcome)
+		assert.Len(t, loop.pendingCRs, 1, "the refused save holds nothing")
+	})
 
-	second := attachReq("alice", 60*time.Second)
-	second.Name = "save-second"
-	second.UID = "uid-save-second"
-	serviceAttach(loop, second)
+	t.Run("while the first waits for a window", func(t *testing.T) {
+		worker, _, _ := setupCommitPushSplitWorker(t)
+		createPlainGitTarget(t, worker, "team-a", "team-a")
+		loop := newBranchWorkerEventLoop(worker, time.Hour)
+		defer loop.stopTimers()
+		serviceAttach(loop, attachReq("alice", 60*time.Second))
 
-	pending := loop.pendingCRs[commitRequestID{Namespace: second.Namespace, Name: second.Name, UID: second.UID}]
-	require.NotNil(t, pending)
-	assert.False(t, pending.sawForeignWindow,
-		"a window this author could have claimed is contention, never a mismatch")
+		serviceAttach(loop, second())
+
+		res, ok := secondOutcome(t, worker)
+		require.True(t, ok)
+		assert.Equal(t, FinalizeSaveInProgress, res.Outcome)
+	})
+
+	t.Run("another author's save is not refused", func(t *testing.T) {
+		worker, _, _ := setupCommitPushSplitWorker(t)
+		createPlainGitTarget(t, worker, "team-a", "team-a")
+		loop := newBranchWorkerEventLoop(worker, time.Hour)
+		defer loop.stopTimers()
+		serviceAttach(loop, attachReq("alice", 60*time.Second))
+
+		bob := second()
+		bob.Author = "bob"
+		serviceAttach(loop, bob)
+
+		_, resolved := secondOutcome(t, worker)
+		assert.False(t, resolved, "bob waits for his own window")
+		assert.Len(t, loop.pendingCRs, 2)
+	})
+
+	t.Run("a save for the Next window closes the collecting one instead", func(t *testing.T) {
+		worker, _, _ := setupCommitPushSplitWorker(t)
+		createPlainGitTarget(t, worker, "team-a", "team-a")
+		loop := newBranchWorkerEventLoop(worker, time.Hour)
+		loop.lastPushAt = time.Now()
+		defer loop.stopTimers()
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+			Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
+		}})
+		serviceAttach(loop, attachReq("alice", 60*time.Second))
+		require.NotNil(t, loop.openWindow.pendingCR, "precondition: the first save collects the window")
+
+		next := second()
+		next.Attach = configv1alpha3.AttachNext
+		serviceAttach(loop, next)
+
+		_, resolved := secondOutcome(t, worker)
+		assert.False(t, resolved, "it waits for the next window")
+		assert.Nil(t, loop.openWindow, "the first save's window was closed under its own message")
+	})
 }
 
 // A window that opens AFTER the grace has already elapsed was never a refusal: the request waited
