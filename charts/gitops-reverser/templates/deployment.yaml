@@ -92,13 +92,6 @@ spec:
             {{- if .Values.attribution.auditRouteAnnotationKey }}
             - --author-attribution-audit-route-annotation-key={{ .Values.attribution.auditRouteAnnotationKey }}
             {{- end }}
-            {{- if .Values.servers.admission.enabled }}
-            - --admission-webhook
-            - --admission-webhook-bind-address={{ .Values.servers.admission.bindAddress }}
-            - --admission-webhook-cert-path={{ .Values.servers.admission.tls.certPath }}
-            - --admission-webhook-cert-name={{ .Values.servers.admission.tls.certName }}
-            - --admission-webhook-cert-key={{ .Values.servers.admission.tls.certKey }}
-            {{- end }}
             {{- with .Values.controllerManager.additionalSensitiveResources }}
             - {{ printf "--additional-sensitive-resources=%s" (join "," .) | quote }}
             {{- end }}
@@ -136,11 +129,6 @@ spec:
             - name: metrics
               containerPort: {{ .Values.servers.metrics.port }}
               protocol: TCP
-            {{- if .Values.servers.admission.enabled }}
-            - name: webhook
-              containerPort: {{ .Values.servers.admission.port }}
-              protocol: TCP
-            {{- end }}
             {{- if .Values.servers.receiver.enabled }}
             - name: receiver
               containerPort: {{ .Values.servers.receiver.port }}
@@ -195,11 +183,6 @@ spec:
               mountPath: {{ .Values.servers.audit.tls.clientCAPath }}
               readOnly: true
             {{- end }}
-            {{- if .Values.servers.admission.enabled }}
-            - name: admission-cert
-              mountPath: {{ .Values.servers.admission.tls.certPath }}
-              readOnly: true
-            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -220,12 +203,6 @@ spec:
         - name: audit-client-ca
           secret:
             secretName: {{ include "gitops-reverser.auditRootCASecretName" . }}
-            defaultMode: 420
-        {{- end }}
-        {{- if .Values.servers.admission.enabled }}
-        - name: admission-cert
-          secret:
-            secretName: {{ include "gitops-reverser.admissionServerSecretName" . }}
             defaultMode: 420
         {{- end }}
         {{- with .Values.volumes }}

@@ -1189,12 +1189,10 @@ CommitDate: Mon Jun 30 12:00:05 2026 +0000
 ### Wiring OIDC author claims
 
 - **Audit-path extractor**: [internal/queue/audit_event_parsing.go](../internal/queue/audit_event_parsing.go)
-- **Admission-path extractor**:
-  [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
 - **Signature construction**: [internal/git/commit.go](../internal/git/commit.go) (`authorName` / `authorEmail`)
 
 The operator never talks to the identity provider. It reads two fixed keys from the request's `user.extra`
-map: the audit attribution path and the CommitRequest admission path resolve the **same** two keys:
+map, from the audit event that names the actor:
 
 | `user.extra` key | OIDC claim it carries | Used for |
 |---|---|---|
@@ -1763,10 +1761,6 @@ unsafely: logged per-resource, counted in the resync summary as `placementSkippe
 ## CommitRequest finalize
 
 - **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
-- **Admission handler**:
-  [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
-- **Admission author cache**:
-  [internal/queue/command_author_store.go](../internal/queue/command_author_store.go)
 
 A `CommitRequest` finalizes the open commit window for its GitTarget. The request author is resolved from
 the `/validate-operator-types` validating admission webhook, which captures the authenticated submitter at

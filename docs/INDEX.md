@@ -103,8 +103,7 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 | [`gitpath-foreign-content-stringency.md`](spec/gitpath-foreign-content-stringency.md) | refusing a path that shadows foreign content |
 | [`unsupported-folder-refusal-plan.md`](spec/unsupported-folder-refusal-plan.md) | `GitPathAccepted`, and refusing what we cannot own |
 | [`commitrequest-design.md`](spec/commitrequest-design.md) | the CommitRequest window and its conditions |
-| [`commitrequest-admission-authorship.md`](spec/commitrequest-admission-authorship.md) | how command submitters are captured and matched to commit windows |
-| [`where-validation-lives.md`](spec/where-validation-lives.md) | schema → CEL → **the reconciler**; a webhook only for what exists solely at admission |
+| [`where-validation-lives.md`](spec/where-validation-lives.md) | schema → CEL → **the reconciler**; no admission webhook ships |
 | [`e2e-serial-registry.md`](spec/e2e-serial-registry.md) | which e2e specs must run Serial, and why |
 
 ## What is being decided now — [`design/`](design/)

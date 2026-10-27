@@ -34,8 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
-	ctrladmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/applier"
@@ -58,15 +56,14 @@ var (
 )
 
 const (
-	flagParseFailureExitCode        = 2
-	defaultAdmissionWebhookBindAddr = ":9443"
-	defaultAuditBindAddr            = "0.0.0.0:9444"
-	defaultAuditMaxBodyBytes        = int64(10 * 1024 * 1024)
-	defaultAuditReadTimeout         = 15 * time.Second
-	defaultAuditWriteTimeout        = 30 * time.Second
-	defaultAuditIdleTimeout         = 60 * time.Second
-	defaultAuditShutdownTimeout     = 10 * time.Second
-	defaultBranchBufferMaxSizeStr   = "8Mi"
+	flagParseFailureExitCode      = 2
+	defaultAuditBindAddr          = "0.0.0.0:9444"
+	defaultAuditMaxBodyBytes      = int64(10 * 1024 * 1024)
+	defaultAuditReadTimeout       = 15 * time.Second
+	defaultAuditWriteTimeout      = 30 * time.Second
+	defaultAuditIdleTimeout       = 60 * time.Second
+	defaultAuditShutdownTimeout   = 10 * time.Second
+	defaultBranchBufferMaxSizeStr = "8Mi"
 )
 
 func init() {
@@ -92,9 +89,7 @@ func main() {
 		"metricsAddr", cfg.metricsAddr,
 		"metricsInsecure", cfg.metricsInsecure,
 		"auditBindAddress", cfg.auditBindAddress,
-		"auditInsecure", cfg.auditInsecure,
-		"admissionWebhookEnabled", cfg.admissionWebhookEnabled,
-		"admissionWebhookBindAddress", cfg.admissionWebhookBindAddress)
+		"auditInsecure", cfg.auditInsecure)
 	setupLog.Info("Sensitive resource policy", "resources", cfg.sensitiveResources.Entries())
 
 	// Initialize metrics
@@ -113,7 +108,7 @@ func main() {
 	)
 
 	// Manager
-	mgr := newManager(metricsServerOptions, cfg.probeAddr, cfg, tlsOpts)
+	mgr := newManager(metricsServerOptions, cfg.probeAddr)
 
 	// Expose build metadata on the metrics server so an operator can confirm a
 	// running pod is the build they expect (also logged at startup above).
@@ -222,8 +217,8 @@ func main() {
 	// Valkey/Redis is optional. When configured it holds each GitTarget's watch resume cursor so work
 	// is re-picked up exactly where it left off after a restart or reconnect. When not configured the
 	// WatchCursorStore stays nil and watches cold-replay from scratch on restart instead of resuming.
-	// Author attribution and the admission webhook both require Redis; validation has already rejected
-	// those combinations when redis-addr is empty.
+	// Author attribution over the Redis transport requires it; validation has already rejected that
+	// combination when redis-addr is empty.
 	var redisStore *queue.RedisStore
 	var redisGate *redisReadinessGate
 	if cfg.redisAddr != "" {
@@ -413,43 +408,15 @@ func main() {
 			Follower:       applyDispatcher,
 		}).SetupWithManager(mgr), "unable to create controller", "controller", kind)
 	}
-	// Command authorship is captured at admission by the validate-operator-types webhook and
-	// lives in its own Redis corner (author:v1:command), independent of
-	// --author-attribution (which governs mirrored-resource attribution). It is wired
-	// whenever the admission server is on; the controller reads the captured submitter
-	// back with no wait (docs/spec/commitrequest-admission-authorship.md).
-	//
-	// AuthorLookup must be a nil interface — not a non-nil interface wrapping a nil
-	// *CommandAuthorStore — when the webhook is off, so the controller's nil check
-	// selects the no-actor path immediately (AuthorAttributed=False) instead of
-	// dereferencing a nil store.
-	var commandAuthorStore *queue.CommandAuthorStore
-	var commandAuthorLookup controller.CommandAuthorLookup
-	if cfg.admissionWebhookEnabled {
-		if redisStore != nil {
-			commandAuthorStore = redisStore.CommandAuthorStore()
-			commandAuthorLookup = commandAuthorStore
-			setupLog.Info("validate-operator-types webhook enabled: command submitters are captured at admission " +
-				"and recorded as the request's named actor")
-		} else {
-			setupLog.Info("validate-operator-types webhook enabled without Redis: command author capture is a " +
-				"no-op; CommitRequests claim no actor (AuthorAttributed=False). " +
-				"Set --redis-addr to capture command authors.")
-		}
-	}
 	if err := (&controller.CommitRequestReconciler{
-		Client:       mgr.GetClient(),
-		Scheme:       mgr.GetScheme(),
-		APIReader:    mgr.GetAPIReader(),
-		Finalizer:    eventRouter,
-		AuthorLookup: commandAuthorLookup,
-		TTL:          cfg.commitRequestTTL,
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIReader: mgr.GetAPIReader(),
+		Finalizer: eventRouter,
+		TTL:       cfg.commitRequestTTL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)
-	}
-	if cfg.admissionWebhookEnabled {
-		setupAdmissionWebhooks(mgr, commandAuthorStore)
 	}
 	// +kubebuilder:scaffold:builder
 
@@ -477,11 +444,6 @@ type appConfig struct {
 	metricsCertKey              string
 	probeAddr                   string
 	metricsInsecure             bool
-	admissionWebhookEnabled     bool
-	admissionWebhookBindAddress string
-	admissionWebhookCertPath    string
-	admissionWebhookCertName    string
-	admissionWebhookCertKey     string
 	enableHTTP2                 bool
 	auditBindAddress            string
 	auditCertPath               string
@@ -548,20 +510,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	fs.BoolVar(&cfg.metricsInsecure, "metrics-insecure", false,
 		"Serve the metrics endpoint over plain HTTP instead of HTTPS (default false; HTTPS).")
-	fs.BoolVar(&cfg.admissionWebhookEnabled, "admission-webhook", false,
-		"Serve the validating admission webhook endpoint (default false; off). When true, the webhook "+
-			"server binds --admission-webhook-bind-address and requires --admission-webhook-cert-path.")
-	fs.StringVar(&cfg.admissionWebhookBindAddress, "admission-webhook-bind-address", defaultAdmissionWebhookBindAddr,
-		"Address (host:port) the validating admission webhook HTTPS server binds to; "+
-			"an empty host (\":9443\") binds all interfaces.")
-	bindServerCertFlags(
-		fs,
-		"admission-webhook",
-		"validating admission webhook TLS",
-		&cfg.admissionWebhookCertPath,
-		&cfg.admissionWebhookCertName,
-		&cfg.admissionWebhookCertKey,
-	)
 	bindServerCertFlags(
 		fs,
 		"metrics",
@@ -595,8 +543,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"and, with --author-attribution-transport=redis, the attribution fact streams. Leave empty to "+
 			"run without Redis: watches cold-replay on restart instead of resuming, and attribution needs "+
 			"--author-attribution-transport=memory. Required by --author-attribution-transport=redis when "+
-			"attribution is on. --admission-webhook still runs without it, but command-author capture is a "+
-			"no-op: CommitRequests claim no actor.")
+			"attribution is on.")
 	fs.BoolVar(&cfg.authorAttribution, "author-attribution", true,
 		"Name the real actor (human or service account) who caused each change as the Git commit author, "+
 			"resolved from matching audit facts; this runs the audit webhook ingress (default true). When "+
@@ -761,9 +708,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if err := validateAuditConfig(cfg); err != nil {
 		return appConfig{}, err
 	}
-	if err := validateAdmissionWebhookConfig(cfg); err != nil {
-		return appConfig{}, err
-	}
 	if err := validateReceiverConfig(cfg); err != nil {
 		return appConfig{}, err
 	}
@@ -852,8 +796,7 @@ func validateAuditConfig(cfg appConfig) error {
 	if strings.TrimSpace(cfg.redisAddr) == "" {
 		// Attribution no longer implies Redis. It needs a fact transport, and the in-memory one is a
 		// supported configuration rather than a rejected one — which is the whole reason the transport
-		// is selectable. Redis stays required for the transport that uses it, and for the admission
-		// webhook's command-author capture, which has no in-memory counterpart.
+		// is selectable. Redis stays required for the transport that uses it.
 		if cfg.authorAttribution && cfg.attributionTransport == transportRedis {
 			return errors.New(
 				"redis-addr is required when author-attribution is enabled with " +
@@ -930,22 +873,6 @@ func validateAttributionTransport(cfg appConfig) error {
 	}
 	if cfg.attributionCollectionUIDCap <= 0 {
 		return fmt.Errorf("author-attribution-collection-uid-cap must be > 0, got %d", cfg.attributionCollectionUIDCap)
-	}
-	return nil
-}
-
-func validateAdmissionWebhookConfig(cfg appConfig) error {
-	if !cfg.admissionWebhookEnabled {
-		return nil
-	}
-	// No redis-addr requirement here: the admission webhook stays enabled without Redis and
-	// simply no-ops command-author capture (CommitRequests claim no actor). Redis is
-	// wired only when configured; see the commandAuthorStore setup.
-	if _, _, err := splitBindAddress(cfg.admissionWebhookBindAddress); err != nil {
-		return fmt.Errorf("invalid admission-webhook-bind-address %q: %w", cfg.admissionWebhookBindAddress, err)
-	}
-	if strings.TrimSpace(cfg.admissionWebhookCertPath) == "" {
-		return errors.New("admission-webhook-cert-path is required when admission webhook is enabled")
 	}
 	return nil
 }
@@ -1244,35 +1171,11 @@ func loadCertPoolFromPEMFile(path string) (*x509.CertPool, error) {
 }
 
 // newManager creates a new controller-runtime Manager with common options.
-func newManager(
-	metricsOptions metricsserver.Options,
-	probeAddr string,
-	cfg appConfig,
-	baseTLS []func(*tls.Config),
-) ctrl.Manager {
-	var webhookServer ctrlwebhook.Server
-	if cfg.admissionWebhookEnabled {
-		// The bind address was validated in validateAdmissionWebhookConfig; controller-runtime's
-		// webhook server takes Host and Port separately, so split it back here.
-		host, port, err := splitBindAddress(cfg.admissionWebhookBindAddress)
-		if err != nil {
-			setupLog.Error(err, "invalid --admission-webhook-bind-address")
-			os.Exit(1)
-		}
-		webhookServer = ctrlwebhook.NewServer(ctrlwebhook.Options{
-			Host:     host,
-			Port:     port,
-			CertDir:  cfg.admissionWebhookCertPath,
-			CertName: cfg.admissionWebhookCertName,
-			KeyName:  cfg.admissionWebhookCertKey,
-			TLSOpts:  baseTLS,
-		})
-	}
+func newManager(metricsOptions metricsserver.Options, probeAddr string) ctrl.Manager {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOptions,
 		HealthProbeBindAddress: probeAddr,
-		WebhookServer:          webhookServer,
 		// Never cache Secret values. The control plane reads a small set of named
 		// Secrets (Git credentials, signing keys, age keys) directly by name; caching
 		// them would start a cluster-wide Secret informer that retains every Secret
@@ -1291,27 +1194,6 @@ func newManager(
 		os.Exit(1)
 	}
 	return mgr
-}
-
-// setupAdmissionWebhooks registers both handlers on the one admission server: the
-// always-allow observer (a future-policy extension point) and the validate-operator-types
-// handler, which captures the submitter of our own command kinds into commandAuthorStore and
-// validates a WatchRule's source namespaces against the GitTarget it names.
-func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandAuthorStore) {
-	mgr.GetWebhookServer().Register(
-		webhookhandler.ValidateAllPath,
-		&ctrladmission.Webhook{Handler: webhookhandler.AdmissionAllowHandler{}},
-	)
-	// Leave Store as a nil interface when there is no Redis-backed store, so the handler
-	// no-ops rather than dereferencing a typed-nil *CommandAuthorStore.
-	operatorTypesHandler := &webhookhandler.ValidateOperatorTypesHandler{Client: mgr.GetClient()}
-	if commandAuthorStore != nil {
-		operatorTypesHandler.Store = commandAuthorStore
-	}
-	mgr.GetWebhookServer().Register(
-		webhookhandler.ValidateOperatorTypesPath,
-		&ctrladmission.Webhook{Handler: operatorTypesHandler},
-	)
 }
 
 // addCertWatchersToManager attaches optional certificate watchers to the manager.

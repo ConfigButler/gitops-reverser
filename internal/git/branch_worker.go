@@ -1547,14 +1547,6 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		return
 	}
 	pendingWrite.CommitMessage = effectiveMessage
-	switch l.openWindow.claim {
-	case UnattributedClaimTakeOver:
-		pendingWrite.RequestAuthor, pendingWrite.RequestAttribution = l.openWindow.claimedBy, AttributionResolved
-		pendingWrite.TakenOver = true
-	case UnattributedClaimSavedBy:
-		pendingWrite.SavedBy = l.openWindow.claimedBy
-	case UnattributedClaimNone:
-	}
 	pendingCR, proceed := l.gateBuiltWindow(pendingCR, pendingWrite.Target(), reason)
 	if !proceed {
 		return

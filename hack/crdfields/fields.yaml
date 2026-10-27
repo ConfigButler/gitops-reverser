@@ -160,8 +160,7 @@ kinds:
         doc: How commits are phrased. See [commit messages](commit-messages.md)
       - path: allowedCommitRequests
         doc: >-
-          The namespaces whose `CommitRequest`s may save this target's windows, and how much each may
-          claim of a window whose writes name no author. See
+          The namespaces whose `CommitRequest`s may save this target's windows. See
           [who may save](#who-may-save-specallowedcommitrequests)
       - path: allowedRemoteSaveRequests
         default: none admitted
@@ -315,10 +314,6 @@ kinds:
         doc: >-
           Which window to attach to: the author's current or next one, or only the next. See
           [the request window](#the-request-window-specwindow)
-      - path: window.author
-        doc: >-
-          Whose window to attach to: `Own`, or also claim a window whose writes name no author with
-          `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author)
       - path: window.attachTimeout
         doc: How long to wait for a window to attach to
       - path: window.idleTimeout

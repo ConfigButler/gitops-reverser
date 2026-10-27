@@ -111,14 +111,12 @@ spec:
                 default:
                 - consumerNamespaces:
                     from: Same
-                  unattributedWindows: Keep
                 description: |-
                   AllowedCommitRequests says which CommitRequests may save this GitTarget's
-                  commit windows, by the namespace they are in, and how much each may
-                  claim of a window whose writes name no author:
+                  commit windows, by the namespace they are in:
 
                   - Omitted: the CommitRequests in this GitTarget's namespace, as one grant
-                    with from: "Same" that claims nothing.
+                    with from: "Same".
                   - Empty list ([]): no CommitRequest.
                   - A list of grants: the CommitRequests that at least one grant allows.
 
@@ -128,8 +126,7 @@ spec:
                 items:
                   description: |-
                     GitTargetCommitRequestGrant admits the CommitRequests of some namespaces to
-                    save a GitTarget's commit windows, and bounds what they may claim of a
-                    window whose writes name no author.
+                    save a GitTarget's commit windows.
                   properties:
                     consumerNamespaces:
                       description: |-
@@ -243,31 +240,6 @@ spec:
                         rule: '!has(self.selector) || (has(self.selector.matchLabels)
                           && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
                           && size(self.selector.matchExpressions) > 0)'
-                    unattributedWindows:
-                      default: Keep
-                      description: |-
-                        UnattributedWindows says how much an admitted CommitRequest may claim of a
-                        commit window whose writes name no author, when it asks in
-                        spec.window.author. It acts only while the GitTarget's KubeProvider has
-                        never received an audit fact; on a cluster that has, a write naming no
-                        author is never claimed. Defaults to "Keep".
-
-                        - "Keep": a request attaches only to its creator's own window.
-                        - "SavedBy": a request may give such a window its message. The commit
-                          names no author, and its message ends with a Saved-By line naming the
-                          request's creator.
-                        - "TakeOver": a request may also take such a window over. Its creator
-                          authors the commit, and the message ends with an Author-Source line.
-
-                        Every write that names no author shares one window, whoever made it, so
-                        a takeover names the creator as the author of all of them. Allow it only
-                        where one person edits the mirrored namespaces at a time. A request
-                        admitted by several grants may claim the most any of them allows.
-                      enum:
-                      - Keep
-                      - SavedBy
-                      - TakeOver
-                      type: string
                   required:
                   - consumerNamespaces
                   type: object

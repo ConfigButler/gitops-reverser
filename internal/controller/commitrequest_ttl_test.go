@@ -48,7 +48,7 @@ func committedFinalizer() *fakeFinalizer {
 func TestCommitRequestTTL_FinishingStampsTheDeletionTime(t *testing.T) {
 	c := newCommitRequestClient(t, nil, newCommitRequest("save-now"))
 	r := &CommitRequestReconciler{
-		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
+		Client: c, APIReader: c, Finalizer: committedFinalizer(),
 		TTL: 48 * time.Hour,
 	}
 
@@ -65,7 +65,7 @@ func TestCommitRequestTTL_FinishingStampsTheDeletionTime(t *testing.T) {
 func TestCommitRequestTTL_ZeroStampsNothing(t *testing.T) {
 	c := newCommitRequestClient(t, nil, newCommitRequest("save-now"))
 	r := &CommitRequestReconciler{
-		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
+		Client: c, APIReader: c, Finalizer: committedFinalizer(),
 	}
 
 	reconcileCommitRequest(t, r, "save-now")
@@ -128,7 +128,7 @@ func TestCommitRequestTTL_LeavesARequestInProgressAlone(t *testing.T) {
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{
-		Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice(), TTL: time.Nanosecond,
+		Client: c, APIReader: c, Finalizer: f, TTL: time.Nanosecond,
 	}
 
 	res := reconcileCommitRequest(t, r, "save-pending")
@@ -161,7 +161,7 @@ func TestCommitRequestTTL_StampDoesNotOverwriteAConcurrentExtension(t *testing.T
 		},
 	}, newCommitRequest("save-now"))
 	r := &CommitRequestReconciler{
-		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
+		Client: c, APIReader: c, Finalizer: committedFinalizer(),
 		TTL: time.Hour,
 	}
 
@@ -179,7 +179,7 @@ func TestCommitRequestTTL_AValueSetAtCreationIsKept(t *testing.T) {
 	cr.Annotations = map[string]string{CommitRequestDeleteAfterAnnotation: chosen}
 	c := newCommitRequestClient(t, nil, cr)
 	r := &CommitRequestReconciler{
-		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
+		Client: c, APIReader: c, Finalizer: committedFinalizer(),
 		TTL: time.Hour,
 	}
 

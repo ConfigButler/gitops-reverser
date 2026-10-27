@@ -60,7 +60,7 @@ type CommitRequestSpec struct {
 	// write does. Omitted, the request attaches to the author's current or next
 	// window within 2s and closes it 2s later.
 	// +optional
-	// +kubebuilder:default={attach: "CurrentOrNext", author: "Own", attachTimeout: "2s", maxDuration: "2s"}
+	// +kubebuilder:default={attach: "CurrentOrNext", attachTimeout: "2s", maxDuration: "2s"}
 	Window *CommitRequestWindow `json:"window,omitempty"`
 
 	// WhenNothingToCommit decides what happens when the request ends with nothing
@@ -124,20 +124,6 @@ const (
 	AttachNext AttachPolicy = "Next"
 )
 
-// WindowAuthor is whose commit window a CommitRequest may attach to.
-type WindowAuthor string
-
-const (
-	// WindowAuthorOwn attaches only to the creator's own window.
-	WindowAuthorOwn WindowAuthor = "Own"
-	// WindowAuthorSavedBy may also give the request's message to a window whose writes name no
-	// author, naming no author.
-	WindowAuthorSavedBy WindowAuthor = "SavedBy"
-	// WindowAuthorTakeOver may also take a window whose writes name no author over, and the
-	// creator authors its commit.
-	WindowAuthorTakeOver WindowAuthor = "TakeOver"
-)
-
 // CommitRequestWindow is how a CommitRequest attaches to a commit window and
 // when that window closes. A window is only ever opened by a write; a request
 // waits for one and never opens one.
@@ -145,7 +131,7 @@ const (
 // Every duration shares the shape GitTargetCommitSpec documents: a Go duration
 // string behind a pattern and a CEL bound. The immutability rule compares them
 // as durations, for the reason CommitRequestSpec gives.
-// +kubebuilder:validation:XValidation:rule="self.attach == oldSelf.attach && self.author == oldSelf.author && duration(self.attachTimeout) == duration(oldSelf.attachTimeout) && duration(self.maxDuration) == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))",message="CommitRequest spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="self.attach == oldSelf.attach && duration(self.attachTimeout) == duration(oldSelf.attachTimeout) && duration(self.maxDuration) == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))",message="CommitRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)",message="spec.window.idleTimeout must not exceed maxDuration"
 // +kubebuilder:validation:XValidation:rule="self.attach != 'Next' || duration(self.attachTimeout) > duration('0s')",message="attach: Next needs a positive attachTimeout; with 0s it would close the author's window and give up in the same instant"
 type CommitRequestWindow struct {
@@ -158,18 +144,6 @@ type CommitRequestWindow struct {
 	// +kubebuilder:validation:Enum=CurrentOrNext;Next
 	// +kubebuilder:default=CurrentOrNext
 	Attach AttachPolicy `json:"attach,omitempty"`
-
-	// Author says whose window the request may attach to. "Own" attaches only
-	// to the creator's own window. "SavedBy" may also give its message to a
-	// window whose writes name no author, naming no author. "TakeOver" may
-	// also take such a window over, and the creator authors the commit. The
-	// unattributedWindows of a grant in the GitTarget's spec.allowedCommitRequests
-	// that admits this namespace must allow what is asked, or the request fails
-	// with reason TakeOverNotAllowed. Defaults to "Own".
-	// +optional
-	// +kubebuilder:validation:Enum=Own;SavedBy;TakeOver
-	// +kubebuilder:default=Own
-	Author WindowAuthor `json:"author,omitempty"`
 
 	// AttachTimeout is how long the request waits for a window, as a Go duration,
 	// from when GitOps Reverser picks the request up. "0s" attaches only to a
@@ -214,14 +188,6 @@ type CommitRequestWindow struct {
 //   - Reconciling / Stalled: the kstatus progress / blocked pair.
 //     Reconciling=True while finalizing; Stalled=True when the finalize failed
 //     and needs attention.
-//   - AuthorAttributed (domain): binary and settled immediately. True
-//     (AttributedFromAdmission) when the submitter captured at admission named
-//     the commit author; False (CommitterFallback) when capture ran but no
-//     admission record exists, or False (AuthorCaptureDisabled) when capture
-//     is disabled. In either False case the request claims no actor. False is
-//     not a failure and does not affect Ready; the final Git author remains
-//     the matching watch window's author, unless the request took over a
-//     window whose writes name no author (spec.window.author "TakeOver").
 //   - Pushed (domain): True once the commit is in the remote repository.
 //   - Applied (domain): with spec.catchUp "AfterPush", whether the applier
 //     caught up with the commit. It never affects Ready.
@@ -231,9 +197,7 @@ type CommitRequestStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions are the latest observations of this CommitRequest's state.
-	// Reconciling and Stalled follow kstatus. AuthorAttributed says whether the
-	// request's creator, recorded at admission, names the commit author; False
-	// is not a failure and does not affect Ready.
+	// Reconciling and Stalled follow kstatus.
 	//
 	// Three conditions say how far the save got:
 	//
@@ -290,7 +254,6 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.commit`
-// +kubebuilder:printcolumn:name="AuthorAttributed",type=string,JSONPath=`.status.conditions[?(@.type=="AuthorAttributed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`,priority=1
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`,priority=1
@@ -299,10 +262,8 @@ type CommitRequestStatus struct {
 
 // CommitRequest asks for a save: it attaches to its author's current or next
 // commit window on a GitTarget, closes that window on its own timers, and
-// gives the commit its message. With spec.window.author, and where the
-// GitTarget allows it, it may also claim a window whose writes name no
-// author. Its spec is immutable, and status.commit reports the commit once
-// it is on the remote.
+// gives the commit its message. Its spec is immutable, and status.commit
+// reports the commit once it is on the remote.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 

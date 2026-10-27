@@ -505,8 +505,8 @@ the participant's message on the commit.
 
 - [`../spec/commitrequest-design.md`](../spec/commitrequest-design.md), the current contract. The
   code depends on it, so each phase changes that page in the same commit.
-- [`../spec/commitrequest-admission-authorship.md`](../spec/commitrequest-admission-authorship.md),
-  where the submitter comes from and why the lookup is present-or-never.
+- `commitrequest-admission-authorship.md`, since removed with the admission webhook: where the
+  submitter came from and why the lookup was present-or-never.
 - [`../spec/watch-event-ordering-and-attribution-grace.md`](../spec/watch-event-ordering-and-attribution-grace.md),
   the head-of-line wait this page proposes to wait behind rather than shorten.
 - [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md), the same shape of

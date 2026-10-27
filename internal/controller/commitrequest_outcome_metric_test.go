@@ -66,7 +66,7 @@ func TestCommitRequestMetric_TwoTargetsAreDistinguishable(t *testing.T) {
 			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			resolved: true,
 		}
-		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 		reconcileCommitRequest(t, r, "save-"+target)
 	}
 
@@ -90,7 +90,7 @@ func TestCommitRequestMetric_RepeatedSavesReuseOneSeries(t *testing.T) {
 			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			resolved: true,
 		}
-		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 		reconcileCommitRequest(t, r, name)
 	}
 
@@ -119,7 +119,7 @@ func TestCommitRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
 		withdrawResult:   git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn},
 		withdrawResolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-bogus")
 
@@ -201,7 +201,7 @@ func TestCommitRequestMetric_EveryOutcomeIsReachableThroughReconcile(t *testing.
 
 			c := newCommitRequestClient(t, nil, newCommitRequest("save-outcome"))
 			f := &fakeFinalizer{result: tc.result, err: tc.err, resolved: true}
-			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 			reconcileCommitRequest(t, r, "save-outcome")
 
@@ -242,7 +242,7 @@ func TestCommitRequestMetric_ConflictRetriesIncrementOnce(t *testing.T) {
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-conflict")
 
@@ -275,7 +275,7 @@ func TestCommitRequestMetric_FailedStatusWriteThenRedeliveryCountsTwice(t *testi
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-lost")
 	reconcileCommitRequest(t, r, "save-lost")
@@ -302,7 +302,7 @@ func TestCommitRequestMetric_PrunedGitTargetRefCountsFailed(t *testing.T) {
 	}
 	c := newCommitRequestClient(t, nil, pruned)
 	f := &fakeFinalizer{}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-pruned")
 
@@ -326,7 +326,7 @@ func TestCommitRequestMetric_RecreatedRequestCountsPerIncarnation(t *testing.T) 
 		result:   git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-again")
 
@@ -370,7 +370,7 @@ func TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 	c := newCommitRequestClient(t, nil, fresh, stale, target, gitBranchOn("team-a-provider", "default", "main"))
 	workers := git.NewWorkerManager(c, logr.Discard(), git.BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
 	router := watch.NewEventRouter(workers, nil, c, logr.Discard())
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: router, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: router}
 
 	// Inside the safety window: pending, and the status says why.
 	res := reconcileCommitRequest(t, r, fresh.Name)

@@ -10,9 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -21,7 +19,6 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
 
 // CommitRequestFinalizer is the EventRouter seam the reconciler drives, using the
@@ -43,16 +40,6 @@ type CommitRequestFinalizer interface {
 	// LookupCommitRequestApply reports where the apply a request with catchUp:
 	// AfterPush asked for stands, and false while the worker knows nothing of it.
 	LookupCommitRequestApply(ctx context.Context, attach git.AttachCommitRequest) (git.SaveApply, bool, error)
-}
-
-// CommandAuthorLookup resolves the author of a CommitRequest from the submitter
-// captured at admission by the validate-operator-types webhook, keyed by the persisted
-// object's UID. *queue.CommandAuthorStore satisfies it without adaptation. The lookup
-// is present-or-never (docs/spec/commitrequest-admission-authorship.md): a miss is
-// immediate and final — the webhook is not configured (or a best-effort write missed) —
-// and the request claims no actor with no wait.
-type CommandAuthorLookup interface {
-	LookupCommandAuthor(ctx context.Context, uid types.UID) (queue.CommandAuthor, bool)
 }
 
 // windowMismatchMessage explains the author-bound refusal: an open window
@@ -151,21 +138,12 @@ func (w requestWindow) resolveTimeout() time.Duration {
 //     NoOpenWindow that never happened.)
 //
 // CommitRequestReconciler drives a CommitRequest through its state machine
-// (docs/spec/commitrequest-design.md and
-// docs/spec/commitrequest-admission-authorship.md):
-//
-//  1. ATTRIBUTE — a single synchronous read of the submitter captured at admission
-//     (present-or-never). A hit names that submitter as the author
-//     (AuthorAttributed=True); a miss claims no actor immediately
-//     (AuthorAttributed=False). There is no wait and no requeue for the
-//     author: the record is written before the object is visible, so waiting cannot
-//     help.
-//  2. ATTACH + POLL — the instant the author is settled, send the attach to the
-//     GitTarget's worker, which attaches the request to the author's window with its
-//     message and timers, and poll the outcome. The attach wait is anchored at the worker's
-//     registration, so there is no controller-side delay. While it polls, the controller
-//     reports the phase the worker reports. No window before the attach deadline resolves
-//     NoWindow; a window belonging to someone else stays open for its own author.
+// (docs/spec/commitrequest-design.md): it sends the attach to the GitTarget's worker, which
+// attaches the request to the author's window with its message and timers, and polls the
+// outcome. The attach wait is anchored at the worker's registration, so there is no
+// controller-side delay. While it polls, the controller reports the phase the worker reports. No
+// window before the attach deadline resolves NoWindow; a window belonging to someone else stays
+// open for its own author.
 type CommitRequestReconciler struct {
 	client.Client
 
@@ -177,12 +155,8 @@ type CommitRequestReconciler struct {
 	APIReader client.Reader
 
 	// Finalizer attaches the request to the author-bound open window and reports
-	// its outcome; AuthorLookup resolves the submitter captured at admission. When
-	// AuthorLookup is nil (the validate-operator-types webhook is disabled), requests
-	// claim no actor immediately, with AuthorAttributed=False. The attached window
-	// determines the eventual Git author.
-	Finalizer    CommitRequestFinalizer
-	AuthorLookup CommandAuthorLookup
+	// its outcome. The attached window determines the eventual Git author.
+	Finalizer CommitRequestFinalizer
 
 	// TTL is how long a request is kept once it finishes. It is written onto the request as
 	// CommitRequestDeleteAfterAnnotation at that moment; zero writes nothing, so the request stays.
@@ -229,17 +203,12 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// 1. ATTRIBUTE: settle the request's actor synchronously (present-or-never).
-	// A hit names the admission submitter; a miss claims no actor. Either way the
-	// decision is final — there is no wait and no requeue for the author.
-	author, attribution := r.attributeAuthor(ctx, commitRequest)
-
-	claim, admitted, refusal, err := r.admitAtFirstSight(ctx, log, commitRequest, attribution)
+	admitted, refusal, err := r.admitAtFirstSight(ctx, log, commitRequest)
 	if err != nil || admitted == commitRequestRefused {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.stampFirstSightConditions(ctx, commitRequest, attribution); err != nil {
+	if err := r.stampFirstSightConditions(ctx, commitRequest); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -249,7 +218,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := git.ValidateLiteralCommitMessage(commitRequest.Spec.Message); err != nil {
 		// The fallback identity: this fails before ServiceCommitRequest, so nothing has
 		// confirmed the named GitTarget exists.
-		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err, attribution,
+		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err,
 			commitRequestTarget{})
 		return ctrl.Result{}, nil
 	}
@@ -262,8 +231,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Namespace:          commitRequest.Namespace,
 		Name:               commitRequest.Name,
 		UID:                string(commitRequest.UID),
-		Author:             author.Author,
-		Attribution:        attribution.gitOutcome(),
+		Attribution:        git.AttributionNotAttempted,
 		GitTargetName:      commitRequest.GitTargetKey().Name,
 		GitTargetNamespace: commitRequest.GitTargetKey().Namespace,
 		GitTargetUID:       commitRequest.Status.GitTargetUID,
@@ -274,12 +242,11 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		MaxDuration:        window.maxDuration,
 		CommitEmpty:        commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
 		CatchUpNow:         commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
-		Unattributed:       claim,
 	}
 	if admitted == commitRequestReplaced {
-		return r.refuseOnceUnheld(ctx, log, req, commitRequest, attribution, attach, refusal)
+		return r.refuseOnceUnheld(ctx, log, req, commitRequest, attach, refusal)
 	}
-	return r.sendCommitRequest(ctx, log, req, commitRequest, attribution, attach,
+	return r.sendCommitRequest(ctx, log, req, commitRequest, attach,
 		time.Since(commitRequest.CreationTimestamp.Time) >= window.resolveTimeout(),
 		admitted == commitRequestTargetMissing)
 }
@@ -292,7 +259,6 @@ func (r *CommitRequestReconciler) sendCommitRequest(
 	log logr.Logger,
 	req ctrl.Request,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
 	attach git.AttachCommitRequest,
 	pastTheBound, targetMissing bool,
 ) (ctrl.Result, error) {
@@ -300,11 +266,11 @@ func (r *CommitRequestReconciler) sendCommitRequest(
 	case pastTheBound:
 		// Past the bound the controller only withdraws: an attach sent now would sit behind the
 		// withdraw on the worker's FIFO and could register the request after it was cancelled.
-		return r.withdrawCommitRequest(ctx, log, req, commitRequest, attribution, attach)
+		return r.withdrawCommitRequest(ctx, log, req, commitRequest, attach)
 	case targetMissing:
-		return r.pollCommitRequest(ctx, commitRequest, attribution, git.PhaseWaitingForWorker, "")
+		return r.pollCommitRequest(ctx, commitRequest, git.PhaseWaitingForWorker, "")
 	}
-	return r.attachCommitRequest(ctx, log, req, commitRequest, attribution, attach)
+	return r.attachCommitRequest(ctx, log, req, commitRequest, attach)
 }
 
 // commitRequestAdmission is how admitAtFirstSight left a request.
@@ -333,38 +299,37 @@ func (r *CommitRequestReconciler) admitAtFirstSight(
 	ctx context.Context,
 	log logr.Logger,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
-) (git.UnattributedClaim, commitRequestAdmission, error, error) {
-	claim, targetUID, err := r.admitCommitRequest(ctx, commitRequest)
+) (commitRequestAdmission, error, error) {
+	targetUID, err := r.admitCommitRequest(ctx, commitRequest)
 	recorded := commitRequest.Status.GitTargetUID
 	switch {
 	case err == nil && targetUID == "":
 		if recorded != "" {
 			// Its GitTarget is gone since it admitted the request: the attach path reports that.
-			return claim, commitRequestAdmitted, nil, nil
+			return commitRequestAdmitted, nil, nil
 		}
-		return claim, commitRequestTargetMissing, nil, r.stampFirstSightConditions(ctx, commitRequest, attribution)
+		return commitRequestTargetMissing, nil, r.stampFirstSightConditions(ctx, commitRequest)
 	case err == nil:
 		if recorded == targetUID {
-			return claim, commitRequestAdmitted, nil, nil
+			return commitRequestAdmitted, nil, nil
 		}
 		// Recorded before any attach is sent for this GitTarget, so a later refusal can tell the two
 		// apart. At first sight the in-progress stamp that follows writes it.
 		commitRequest.Status.GitTargetUID = targetUID
 		if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) == nil {
-			return claim, commitRequestAdmitted, nil, nil
+			return commitRequestAdmitted, nil, nil
 		}
-		return claim, commitRequestAdmitted, nil, r.Status().Update(ctx, commitRequest)
-	case !errors.Is(err, errCommitRequestNotAllowed) && !errors.Is(err, errTakeOverNotAllowed):
-		return claim, commitRequestAdmitted, nil, err
+		return commitRequestAdmitted, nil, r.Status().Update(ctx, commitRequest)
+	case !errors.Is(err, errCommitRequestNotAllowed):
+		return commitRequestAdmitted, nil, err
 	case recorded == targetUID:
-		return git.UnattributedClaimNone, commitRequestAdmitted, nil, nil
+		return commitRequestAdmitted, nil, nil
 	case recorded != "":
-		return git.UnattributedClaimNone, commitRequestReplaced, err, nil
+		return commitRequestReplaced, err, nil
 	}
-	r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err, attribution,
+	r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err,
 		resolvedCommitRequestTarget(commitRequest))
-	return claim, commitRequestRefused, nil, nil
+	return commitRequestRefused, nil, nil
 }
 
 // refuseOnceUnheld fails a request that a replacement of its GitTarget refuses. The GitTarget it
@@ -376,7 +341,6 @@ func (r *CommitRequestReconciler) refuseOnceUnheld(
 	log logr.Logger,
 	req ctrl.Request,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
 	attach git.AttachCommitRequest,
 	refusal error,
 ) (ctrl.Result, error) {
@@ -386,93 +350,46 @@ func (r *CommitRequestReconciler) refuseOnceUnheld(
 			log.V(1).Info("CommitRequest withdraw not yet serviceable; will retry",
 				"name", req.NamespacedName, "err", withdrawErr.Error())
 		}
-		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase, result.Held)
+		return r.pollCommitRequest(ctx, commitRequest, result.Phase, result.Held)
 	}
 	finalizeErr := result.Err
 	if errors.Is(finalizeErr, git.ErrCommitRequestWithdrawn) {
 		result, finalizeErr = git.FinalizeResult{}, refusal
 	}
-	r.writeTerminalStatus(ctx, log, commitRequest, result, finalizeErr, attribution,
+	r.writeTerminalStatus(ctx, log, commitRequest, result, finalizeErr,
 		resolvedCommitRequestTarget(commitRequest))
 	return ctrl.Result{}, nil
 }
-
-// errTakeOverNotAllowed is a request that asks to claim more of a window whose writes name no author
-// than the grants admitting it allow. It is terminal: the spec is immutable.
-var errTakeOverNotAllowed = errors.New("spec.window.author asks for more than the GitTarget allows")
 
 // errCommitRequestNotAllowed is a request whose GitTarget's spec.allowedCommitRequests admits no grant for
 // its namespace. It is terminal: the spec is immutable, so a later grant reaches only a new request.
 var errCommitRequestNotAllowed = errors.New("the GitTarget does not admit CommitRequests from this namespace")
 
-// admitCommitRequest decides whether the request may save its GitTarget's windows, and what it may claim
-// of a window whose writes name no author (git.AttachCommitRequest.Unattributed).
-//
-// A grant in the GitTarget's spec.allowedCommitRequests must admit the request's namespace, or the
-// request is errCommitRequestNotAllowed. It then claims what spec.window.author asks for, and only while
-// the GitTarget's KubeProvider has never received an audit fact: its AuditFactsReceived condition is
-// not True, so no write watched on that cluster can name its author. On a cluster that has sent one, a
-// write naming no author means its fact went missing, and nothing is claimed. A request that asks for
-// more than the admitting grants' unattributedWindows allow is errTakeOverNotAllowed.
+// admitCommitRequest decides whether the request may save its GitTarget's windows: a grant in the
+// GitTarget's spec.allowedCommitRequests must admit the request's namespace, or the request is
+// errCommitRequestNotAllowed. It returns the UID of the GitTarget that decided.
 //
 // A GitTarget that does not exist admits nothing yet, and is reported with an empty UID. Any other
 // read error is returned as is, so the request is retried rather than refused.
 func (r *CommitRequestReconciler) admitCommitRequest(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-) (git.UnattributedClaim, string, error) {
+) (string, error) {
 	var target configbutleraiv1alpha3.GitTarget
 	if err := r.Get(ctx, commitRequest.GitTargetKey(), &target); err != nil {
 		if apierrors.IsNotFound(err) {
-			return git.UnattributedClaimNone, "", nil
+			return "", nil
 		}
-		return git.UnattributedClaimNone, "", fmt.Errorf("read GitTarget %s: %w", commitRequest.GitTargetKey(), err)
+		return "", fmt.Errorf("read GitTarget %s: %w", commitRequest.GitTargetKey(), err)
 	}
-	uid := string(target.UID)
-	claim, err := r.claimOn(ctx, commitRequest, &target)
-	return claim, uid, err
-}
-
-// claimOn is admitCommitRequest for a GitTarget that exists.
-func (r *CommitRequestReconciler) claimOn(
-	ctx context.Context,
-	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	target *configbutleraiv1alpha3.GitTarget,
-) (git.UnattributedClaim, error) {
-	decision, admission, err := authz.CommitRequestAdmitted(ctx, r.Client, commitRequest, target)
+	decision, err := authz.CommitRequestAdmitted(ctx, r.Client, commitRequest, &target)
 	if err != nil {
-		return git.UnattributedClaimNone, err
+		return string(target.UID), err
 	}
 	if !decision.Allowed {
-		return git.UnattributedClaimNone, fmt.Errorf("%w: %s", errCommitRequestNotAllowed, decision.Message)
+		return string(target.UID), fmt.Errorf("%w: %s", errCommitRequestNotAllowed, decision.Message)
 	}
-	ask := configbutleraiv1alpha3.WindowAuthorOwn
-	if window := commitRequest.Spec.Window; window != nil && window.Author != "" {
-		ask = window.Author
-	}
-	if ask == configbutleraiv1alpha3.WindowAuthorOwn {
-		return git.UnattributedClaimNone, nil
-	}
-	if !admission.UnattributedWindows.Allows(ask) {
-		return git.UnattributedClaimNone, fmt.Errorf("%w: spec.window.author is %q, and the grants of GitTarget %s "+
-			"that admit namespace %q allow unattributedWindows %q", errTakeOverNotAllowed, ask,
-			commitRequest.GitTargetKey(), commitRequest.Namespace, admission.UnattributedWindows)
-	}
-	key := target.KubeProviderKey()
-	if key.Name == "" {
-		return git.UnattributedClaimNone, nil
-	}
-	var provider configbutleraiv1alpha3.KubeProvider
-	if err := r.Get(ctx, key, &provider); err != nil {
-		return git.UnattributedClaimNone, nil //nolint:nilerr // an unread provider claims nothing
-	}
-	if apimeta.IsStatusConditionTrue(provider.Status.Conditions, KubeProviderConditionAuditFactsReceived) {
-		return git.UnattributedClaimNone, nil
-	}
-	if ask == configbutleraiv1alpha3.WindowAuthorTakeOver {
-		return git.UnattributedClaimTakeOver, nil
-	}
-	return git.UnattributedClaimSavedBy, nil
+	return string(target.UID), nil
 }
 
 // attachCommitRequest sends the attach and reports the outcome once the worker has one. Until then
@@ -483,7 +400,6 @@ func (r *CommitRequestReconciler) attachCommitRequest(
 	log logr.Logger,
 	req ctrl.Request,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
 	attach git.AttachCommitRequest,
 ) (ctrl.Result, error) {
 	result, resolved, serviceErr := r.Finalizer.ServiceCommitRequest(ctx, attach)
@@ -492,14 +408,14 @@ func (r *CommitRequestReconciler) attachCommitRequest(
 			log.V(1).Info("CommitRequest attach not yet serviceable; will retry",
 				"name", req.NamespacedName, "err", serviceErr.Error())
 		}
-		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase, result.Held)
+		return r.pollCommitRequest(ctx, commitRequest, result.Phase, result.Held)
 	}
 
 	if result.Err != nil {
 		log.Error(result.Err, "CommitRequest finalize failed",
 			"gitTarget", commitRequest.GitTargetKey().String(), "name", req.NamespacedName)
 	}
-	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution,
+	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err,
 		resolvedCommitRequestTarget(commitRequest))
 	return ctrl.Result{}, nil
 }
@@ -513,7 +429,6 @@ func (r *CommitRequestReconciler) withdrawCommitRequest(
 	log logr.Logger,
 	req ctrl.Request,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
 	attach git.AttachCommitRequest,
 ) (ctrl.Result, error) {
 	result, resolved, withdrawErr := r.Finalizer.WithdrawCommitRequest(ctx, attach)
@@ -523,13 +438,13 @@ func (r *CommitRequestReconciler) withdrawCommitRequest(
 				"name", req.NamespacedName, "err", withdrawErr.Error())
 		}
 		// Not answered yet, or the worker holds the request: keep polling.
-		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase, result.Held)
+		return r.pollCommitRequest(ctx, commitRequest, result.Phase, result.Held)
 	}
 
 	if !errors.Is(result.Err, git.ErrCommitRequestWithdrawn) {
 		// The worker resolved it on its own before the withdraw: report that outcome, as the
 		// attach path would have.
-		r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution,
+		r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err,
 			resolvedCommitRequestTarget(commitRequest))
 		return ctrl.Result{}, nil
 	}
@@ -550,7 +465,7 @@ func (r *CommitRequestReconciler) withdrawCommitRequest(
 	}
 	log.Info("CommitRequest was not acted on within the safety window; withdrawn and failed closed",
 		"name", req.NamespacedName, "reason", message)
-	r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, errors.New(message), attribution, target)
+	r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, errors.New(message), target)
 	return ctrl.Result{}, nil
 }
 
@@ -558,28 +473,26 @@ func (r *CommitRequestReconciler) withdrawCommitRequest(
 func (r *CommitRequestReconciler) pollCommitRequest(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
 	phase git.CommitRequestPhase,
 	held string,
 ) (ctrl.Result, error) {
-	if err := r.recordWorkerPhase(ctx, commitRequest, attribution, phase, held); err != nil {
+	if err := r.recordWorkerPhase(ctx, commitRequest, phase, held); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
 }
 
 // stampFirstSightConditions stamps the still-running conditions the first time a request is seen,
-// so the object reports its progress (kstatus InProgress) and AuthorAttributed is settled
-// immediately. A disabled controller returns before this, so it never stamps.
+// so the object reports its progress (kstatus InProgress). A disabled controller returns before
+// this, so it never stamps.
 func (r *CommitRequestReconciler) stampFirstSightConditions(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
 ) error {
 	if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) != nil {
 		return nil
 	}
-	markCommitRequestProgressing(commitRequest, attribution, "", "")
+	markCommitRequestProgressing(commitRequest, "", "")
 	if err := r.Status().Update(ctx, commitRequest); err != nil {
 		return err
 	}
@@ -625,37 +538,6 @@ func (r *CommitRequestReconciler) refusePrunedGitTargetRef(
 	return true, nil
 }
 
-// attributeAuthor settles the commit author with a single synchronous lookup of the
-// submitter captured at admission (present-or-never). It never waits: a nil
-// AuthorLookup (the validate-operator-types webhook is disabled) or a miss both claim no
-// actor immediately. The miss case is final — the record is written before the object is
-// visible, so there is no asynchronous arrival to wait for.
-//
-// The lookup result is logged at Info: it is the counterpart to the admission handler's
-// "recorded command author" line, so a hit/miss pair makes the whole capture→read path
-// legible (the first thing to check when a request unexpectedly claims no actor).
-func (r *CommitRequestReconciler) attributeAuthor(
-	ctx context.Context,
-	commitRequest *configbutleraiv1alpha3.CommitRequest,
-) (queue.CommandAuthor, commitRequestAttribution) {
-	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
-	if r.AuthorLookup == nil {
-		log.Info("command-author lookup disabled (validate-operator-types webhook off); request claims no actor",
-			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
-		// Capture is off, so nothing was attempted — distinct from a capture that ran and
-		// found no record, which is what attributionCommitter now means.
-		return queue.CommandAuthor{}, attributionNotAttempted
-	}
-	if author, ok := r.AuthorLookup.LookupCommandAuthor(ctx, commitRequest.UID); ok {
-		log.Info("command author resolved from admission record",
-			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID, "author", author.Author)
-		return author, attributionFromAdmission
-	}
-	log.Info("no admission command-author record found; request claims no actor",
-		"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
-	return queue.CommandAuthor{}, attributionCommitter
-}
-
 // recordWorkerPhase reports the phase the worker says the request is in. It writes only on a
 // change, so polling does not re-write status every interval. An empty phase — the worker has not
 // registered the request yet — keeps whatever is shown, so the controller never reports a phase
@@ -663,14 +545,13 @@ func (r *CommitRequestReconciler) attributeAuthor(
 func (r *CommitRequestReconciler) recordWorkerPhase(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-	attribution commitRequestAttribution,
 	phase git.CommitRequestPhase,
 	held string,
 ) error {
 	if progressRecorded(commitRequest, phase, held) {
 		return nil
 	}
-	markCommitRequestProgressing(commitRequest, attribution, phase, held)
+	markCommitRequestProgressing(commitRequest, phase, held)
 	return r.Status().Update(ctx, commitRequest)
 }
 
@@ -840,7 +721,6 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
-	attribution commitRequestAttribution,
 	target commitRequestTarget,
 ) {
 	expectedUID := commitRequest.UID
@@ -856,7 +736,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 
 	current := commitRequest
 	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
-		applyFinalizeResultToStatus(current, result, finalizeErr, attribution)
+		applyFinalizeResultToStatus(current, result, finalizeErr)
 
 		err := r.Status().Update(ctx, current)
 		if err == nil {
@@ -871,7 +751,6 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 				"ready", commitRequestConditionStatus(current, ConditionTypeReady),
 				"reason", readyReason,
 				"message", readyMessage,
-				"authorAttributed", commitRequestConditionStatus(current, ConditionTypeAuthorAttributed),
 				"pushed", commitRequestConditionStatus(current, ConditionTypePushed),
 				"branch", current.Status.Branch,
 				"commit", current.Status.Commit,

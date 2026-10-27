@@ -24,7 +24,7 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 		wantMsg    string
 	}{
 		{
-			name: "missing admission author in the close-delay wait (AuthorAttributed=False is not a failure)",
+			name: "in the close-delay wait",
 			conds: []map[string]interface{}{
 				conditionMap(ConditionTypeReady, "False", string(git.PhaseWaitingForWindow), waitingForWindowMessage),
 				conditionMap(
@@ -34,23 +34,6 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 					waitingForWindowMessage,
 				),
 				conditionMap(ConditionTypeStalled, "False", string(git.PhaseWaitingForWindow), notStalledMessage),
-				conditionMap(ConditionTypeAuthorAttributed, "False", crReasonCommitterFallback, "no admission record"),
-				conditionMap(ConditionTypePushed, "Unknown", string(git.PhaseWaitingForWindow), pushPendingMessage),
-			},
-			wantStatus: kstatus.InProgressStatus,
-		},
-		{
-			name: "admission-attributed in the close-delay wait",
-			conds: []map[string]interface{}{
-				conditionMap(ConditionTypeReady, "False", string(git.PhaseWaitingForWindow), waitingForWindowMessage),
-				conditionMap(
-					ConditionTypeReconciling,
-					"True",
-					string(git.PhaseWaitingForWindow),
-					waitingForWindowMessage,
-				),
-				conditionMap(ConditionTypeStalled, "False", string(git.PhaseWaitingForWindow), notStalledMessage),
-				conditionMap(ConditionTypeAuthorAttributed, "True", crReasonAttributedFromAdmission, "from admission"),
 				conditionMap(ConditionTypePushed, "Unknown", string(git.PhaseWaitingForWindow), pushPendingMessage),
 			},
 			wantStatus: kstatus.InProgressStatus,
@@ -61,7 +44,6 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 				conditionMap(ConditionTypeReady, "True", crReasonCommitted, "closed, committed, and pushed"),
 				conditionMap(ConditionTypeReconciling, "False", crReasonCommitted, "closed, committed, and pushed"),
 				conditionMap(ConditionTypeStalled, "False", crReasonCommitted, notStalledMessage),
-				conditionMap(ConditionTypeAuthorAttributed, "True", crReasonAttributedFromAdmission, "from admission"),
 				conditionMap(ConditionTypePushed, "True", ReasonSucceeded, "pushed"),
 			},
 			wantStatus: kstatus.CurrentStatus,

@@ -807,24 +807,10 @@ spec:
 		// each request reports the apply: Applied=True, with the revision Flux applied. The second save
 		// is made as soon as the first is pushed, so the two may share one apply.
 		//
-		// No write in the workspace names its author, since kcp sends no audit facts, and the request's
-		// submitter is captured at admission in this cluster. The GitTarget's grant for its own namespace
-		// allows a takeover, each request asks for one, and the workspace's KubeProvider has never
-		// received a fact, so each request takes over the window of its edit: its submitter authors the commit, and the message
-		// ends with a trailer that says so. Every event from the workspace waits out the attribution
-		// grace first, so the requests wait longer than that for their window.
-		It("takes over the window of an edit in the workspace, and reports the apply on each of two saves", func() {
-			verifyResourceCondition("kubeprovider", ws, testNs, "AuditFactsReceived", "Unknown", "", "")
-			_, err := kubectlRunInNamespace(
-				testNs,
-				"patch",
-				"gittarget",
-				p.targetName,
-				"--type=merge",
-				"-p",
-				`{"spec":{"allowedCommitRequests":[{"consumerNamespaces":{"from":"Same"},"unattributedWindows":"TakeOver"}]}}`,
-			)
-			Expect(err).NotTo(HaveOccurred())
+		// No write in the workspace names its author, since kcp sends no audit facts, and neither does
+		// the request, so each request attaches to the window of its edit. Every event from the workspace
+		// waits out the attribution grace first, so the requests wait longer than that for their window.
+		It("saves an edit in the workspace, and reports the apply on each of two saves", func() {
 			names := []string{"sc-flux-save-1", "sc-flux-save-2"}
 			commits := map[string]string{}
 			for i, name := range names {
@@ -841,10 +827,6 @@ spec:
 				committed, inGit := r.committedValue(Default, timingConfigMap)
 				Expect(inGit).To(BeTrue())
 				Expect(committed).To(Equal(value), "the save's commit holds its edit")
-				message, err := gitRun(p.repo.CheckoutDir, "show", "-s", "--format=%B", commits[name])
-				Expect(err).NotTo(HaveOccurred())
-				Expect(message).To(ContainSubstring("Author-Source: CommitRequest "+testNs+"/"+name),
-					"the commit says its author is the request's submitter")
 			}
 
 			last := commits[names[len(names)-1]]
@@ -872,7 +854,7 @@ spec:
 		// A save made in the workspace itself: a RemoteSaveRequest, served because the workspace's
 		// KubeProvider enables them. It names the GitTarget, which must admit it: one is refused while
 		// the GitTarget admits none. kcp sends no audit facts, so the request names nobody, like the
-		// edit, and attaches to the edit's window under the ordinary rule, with no takeover. Its own author is
+		// edit, and attaches to the edit's window under the ordinary rule. Its own author is
 		// looked for first, for the whole attribution grace, so the edit is made once the request is
 		// waiting for a window.
 		It("saves an edit made in the workspace with a RemoteSaveRequest created there", func() {
@@ -1048,7 +1030,6 @@ spec:
   message: "e2e: save %s and apply it"
   catchUp: AfterPush
   window:
-    author: TakeOver
     attachTimeout: "45s"
     maxDuration: "4s"
 `, name, namespace, gitTarget, name), "apply", "-f", "-")

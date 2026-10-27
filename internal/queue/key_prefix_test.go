@@ -91,8 +91,6 @@ func TestRedisStore_KeyPrefixReachesEveryKeyFamily(t *testing.T) {
 	stream := store.FactStream(RedisFactStreamConfig{})
 	require.Equal(t, "cell-a:tenant-7:author:v2:audit:route:default:apps/deployments",
 		stream.streamKey(FactStreamKeyFor("default", gvr.GroupResource())))
-
-	require.Equal(t, "cell-a:tenant-7:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
 }
 
 func TestRedisStore_DefaultPrefixIsUnchanged(t *testing.T) {
@@ -103,7 +101,6 @@ func TestRedisStore_DefaultPrefixIsUnchanged(t *testing.T) {
 	store := newPrefixedRedisStore(t, DefaultKeyPrefix)
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
 		store.watchCursorKey("gtuid-3", types.CollectionKeyFor(coreConfigmapsGVR(), "")))
-	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
 }
 
 // A store built without NewRedisStore — a zero-value struct in a test, a future constructor
@@ -116,7 +113,6 @@ func TestRedisStore_ZeroValueStoreStillWritesPrefixedKeys(t *testing.T) {
 	var store RedisStore // keyPrefix == ""
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
 		store.watchCursorKey("gtuid-3", types.CollectionKeyFor(coreConfigmapsGVR(), "")))
-	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
 	require.Equal(t, "gitops-reverser:author:v2:audit:route:default:configmaps",
 		store.FactStream(RedisFactStreamConfig{}).streamKey(
 			FactStreamKeyFor("default", coreConfigmapsGVR().GroupResource())))

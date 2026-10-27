@@ -384,14 +384,6 @@ type PendingWrite struct {
 	// window's author is.
 	RequestAuthor      UserInfo
 	RequestAttribution AttributionOutcome
-	// TakenOver says the CommitRequest attached to this grouped write took over a window whose
-	// writes named no author: RequestAuthor and RequestAttribution, the submitter's, author the
-	// commit, and its message ends with an Author-Source trailer (withTakeOverNote).
-	TakenOver bool
-	// SavedBy is the submitter of the CommitRequest that gave this grouped write its message without
-	// claiming its writes, which named no author: the commit stays unattributed, and its message ends
-	// with a Saved-By trailer naming them (withSavedByNote). Zero when no request did.
-	SavedBy UserInfo
 	// emptyCommitted is stamped by executePendingWrites, the way CommitSHA is: the commit this
 	// write made changed no file. A request riding it resolves with the cause (AlreadyPresent or
 	// NoOpenWindow) and the commit, so a caller can tell "saved your changes" from "recorded your

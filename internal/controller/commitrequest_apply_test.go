@@ -27,7 +27,7 @@ func catchingUp(cr *configv1alpha3.CommitRequest) *configv1alpha3.CommitRequest 
 func TestCommitRequestReconcile_ReportsTheApplyItAskedFor(t *testing.T) {
 	c := newCommitRequestClient(t, nil, catchingUp(newCommitRequest("save-1")))
 	f := committedFinalizer()
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-1")
 	assert.Zero(t, f.applyLookups, "the save resolves first")
@@ -71,7 +71,7 @@ func TestCommitRequestReconcile_ASettledApplyWithoutAnApply(t *testing.T) {
 			c := newCommitRequestClient(t, nil, catchingUp(newCommitRequest("save-1")))
 			f := committedFinalizer()
 			f.apply, f.applyKnown = tc.apply, true
-			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 			reconcileCommitRequest(t, r, "save-1")
 			reconcileCommitRequest(t, r, "save-1")
@@ -88,7 +88,7 @@ func TestCommitRequestReconcile_ASettledApplyWithoutAnApply(t *testing.T) {
 func TestCommitRequestReconcile_AnApplyNobodyKnowsIsLost(t *testing.T) {
 	c := newCommitRequestClient(t, nil, catchingUp(newCommitRequest("save-1")))
 	f := committedFinalizer()
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 	reconcileCommitRequest(t, r, "save-1")
 
 	reconcileCommitRequest(t, r, "save-1")
@@ -108,7 +108,7 @@ func TestCommitRequestReconcile_AnApplyNobodyKnowsIsLost(t *testing.T) {
 func TestCommitRequestReconcile_NoCatchUpReportsNoApply(t *testing.T) {
 	c := newCommitRequestClient(t, nil, newCommitRequest("save-1"))
 	f := committedFinalizer()
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
 	reconcileCommitRequest(t, r, "save-1")
 	reconcileCommitRequest(t, r, "save-1")

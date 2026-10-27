@@ -119,7 +119,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
 | `commit.window.maxDuration` | `1m` | Close a commit window this long after it opened, however much keeps arriving |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
-| `allowedCommitRequests` | `[{"consumerNamespaces":{"from":"Same"},"unattributedWindows":"Keep"}]` | The namespaces whose `CommitRequest`s may save this target's windows, and how much each may claim of a window whose writes name no author. See [who may save](#who-may-save-specallowedcommitrequests) |
+| `allowedCommitRequests` | `[{"consumerNamespaces":{"from":"Same"}}]` | The namespaces whose `CommitRequest`s may save this target's windows. See [who may save](#who-may-save-specallowedcommitrequests) |
 | `allowedRemoteSaveRequests` | none admitted | The `RemoteSaveRequest`s, by source namespace and labels, that may name this target and save its windows. See [`RemoteSaveRequest`](#remotesaverequest) |
 | `placement.byType` | the built-in path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
 | `placement.default` | the built-in path | Catch-all path template for types with no `byType` entry |
@@ -181,7 +181,6 @@ The references are immutable: to hold another `Application`, delete the applier 
 | `gitTargetRef` | **required** | The target whose commit window the request attaches to: in this namespace, or `namespace` names another, whose `allowedCommitRequests` must admit this one |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
 | `window.attach` | `CurrentOrNext` | Which window to attach to: the author's current or next one, or only the next. See [the request window](#the-request-window-specwindow) |
-| `window.author` | `Own` | Whose window to attach to: `Own`, or also claim a window whose writes name no author with `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author) |
 | `window.attachTimeout` | `2s` | How long to wait for a window to attach to |
 | `window.idleTimeout` | no idle close | Close the attached window after this much silence |
 | `window.maxDuration` | `2s` | Close the attached window this long after the attach |

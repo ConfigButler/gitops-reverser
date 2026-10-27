@@ -33,8 +33,6 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.False(t, cfg.metricsInsecure)
-	assert.False(t, cfg.admissionWebhookEnabled)
-	assert.Equal(t, ":9443", cfg.admissionWebhookBindAddress)
 	assert.False(t, cfg.auditInsecure)
 	assert.Equal(t, "0.0.0.0:9444", cfg.auditBindAddress)
 	assert.Equal(t, "/tmp/k8s-audit-server/audit-client-ca", cfg.auditClientCAPath)
@@ -54,26 +52,6 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.False(t, cfg.zapOpts.Development)
 	assert.Equal(t, []string{"secrets"}, cfg.sensitiveResources.Entries())
 	assert.False(t, cfg.credentialPolicy.AllowInsecureGitHTTP)
-}
-
-func TestParseFlagsWithArgs_AdmissionWebhookValues(t *testing.T) {
-	fs := flag.NewFlagSet("test-admission-webhook", flag.ContinueOnError)
-	args := []string{
-		"--admission-webhook",
-		"--admission-webhook-bind-address=:9445",
-		"--admission-webhook-cert-path=/tmp/admission-certs",
-		"--admission-webhook-cert-name=cert.pem",
-		"--admission-webhook-cert-key=key.pem",
-	}
-
-	cfg, err := parseFlagsWithArgs(fs, args)
-	require.NoError(t, err)
-
-	assert.True(t, cfg.admissionWebhookEnabled)
-	assert.Equal(t, ":9445", cfg.admissionWebhookBindAddress)
-	assert.Equal(t, "/tmp/admission-certs", cfg.admissionWebhookCertPath)
-	assert.Equal(t, "cert.pem", cfg.admissionWebhookCertName)
-	assert.Equal(t, "key.pem", cfg.admissionWebhookCertKey)
 }
 
 func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
@@ -282,16 +260,10 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 			args: []string{"--additional-sensitive-resources=example.io/v1/credentials"},
 		},
 		{
-			name: "invalid admission webhook bind address port",
-			args: []string{"--admission-webhook", "--admission-webhook-bind-address=:0"},
-		},
-		{
-			name: "missing admission webhook cert path",
-			args: []string{"--admission-webhook", "--admission-webhook-cert-path="},
-		},
-		{
-			name: "admission webhook without redis",
-			args: []string{"--admission-webhook", "--admission-webhook-cert-path=/tmp/certs", "--redis-addr="},
+			// The admission webhook is gone, and so are its flags: an install that still passes one
+			// fails at startup rather than running without what it asked for.
+			name: "the removed admission webhook flag",
+			args: []string{"--admission-webhook"},
 		},
 	}
 

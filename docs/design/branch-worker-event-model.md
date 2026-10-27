@@ -260,7 +260,7 @@ collect entries older than 15 minutes when no attach is queued. Collection is no
 durable receipt proving that status was written.
 
 Authorship has a separate lifetime. The
-[admission author store](../../internal/queue/command_author_store.go) retains records for an hour;
+admission author store (since removed) retained records for an hour;
 the `CommitRequest` object cannot reconstruct the authenticated submitter by itself. Recovering a
 previously accepted save must preserve its resolved attribution, including an unresolved result.
 Re-running the lookup later can produce a different decision.

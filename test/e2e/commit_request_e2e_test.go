@@ -216,15 +216,9 @@ var _ = Describe("Save Request", Label("commit-request", "audit-consumer"), Orde
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 
-	// generateName authorship is now captured at admission, not from the audit
-	// response body: the API server assigns metadata.name and metadata.uid before
-	// validating admission runs, so the validate-operator-types webhook records the
-	// submitter keyed by uid with no response-body name recovery (the old audit
-	// generateName headache is gone, see
-	// docs/spec/commitrequest-admission-authorship.md). This spec proves a
-	// generateName CommitRequest still finalizes and becomes Ready. It is skipped in
-	// configured-author mode, where the edit's window is committer-authored and the
-	// named admission author would not match it end to end.
+	// A generateName CommitRequest is attributed from its audit fact, keyed by the uid and
+	// resourceVersion the API server assigned, so no name recovery from the response body is needed.
+	// This spec proves a generateName CommitRequest still finalizes and becomes Ready.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()

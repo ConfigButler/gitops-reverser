@@ -81,14 +81,6 @@ func (s *RedisStore) KeyPrefix() string {
 	return s.keyPrefix
 }
 
-// CommandAuthorStore builds the command-authorship store on this connection. Wire it
-// when the validate-operator-types webhook is enabled; it does not depend on attribution. The
-// record lives in the same top-level author domain as audit facts but in the separate
-// command subfamily, with its own fixed cleanup TTL.
-func (s *RedisStore) CommandAuthorStore() *CommandAuthorStore {
-	return &CommandAuthorStore{client: s.client, ttl: commandAuthorRecordTTL, keyPrefix: s.keyPrefix}
-}
-
 // Ping checks liveness of the underlying Redis/Valkey connection. The readiness gate
 // uses it so the pod does not report ready before its resume-cursor store is reachable.
 func (s *RedisStore) Ping(ctx context.Context) error {

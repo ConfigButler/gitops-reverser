@@ -215,8 +215,6 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		maxDuration:        req.MaxDuration,
 		commitEmpty:        req.CommitEmpty,
 		catchUpNow:         req.CatchUpNow,
-
-		unattributed: req.Unattributed,
 	}
 	if earlier := l.saveInProgress(pcr, req.Attach); earlier != nil {
 		l.w.recordCommitRequestOutcome(id, FinalizeResult{Branch: l.w.Branch, Outcome: FinalizeSaveInProgress})
@@ -379,12 +377,6 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 	}
 	l.openWindow.timers = timers
 	l.openWindow.lastWriteAt = now
-	if pcr.claims(l.openWindow) {
-		l.openWindow.claim, l.openWindow.claimedBy = pcr.unattributed, UserInfo{Username: pcr.author}
-		l.w.Log.Info("CommitRequest claimed a window whose writes name no author",
-			"request", id.Namespace+"/"+id.Name, "author", pcr.author, "claim", string(pcr.unattributed),
-			"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName)
-	}
 	l.w.setCommitRequestPhase(id, PhaseCollectingWindow)
 	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,

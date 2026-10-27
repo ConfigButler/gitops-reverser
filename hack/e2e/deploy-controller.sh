@@ -75,8 +75,8 @@ else
 	kubectl --context "${CTX}" -n "${NAMESPACE}" \
 		rollout restart "deployment/${deploy}"
 fi
-# 300s: a fresh-namespace install waits on cert-manager issuing the admission
-# cert before the pod can mount it, and CI runners near their disk-eviction
+# 300s: a fresh-namespace install waits on cert-manager issuing the audit
+# certs before the pod can mount them, and CI runners near their disk-eviction
 # threshold start pods slowly; 180s was too tight in the tail (CI run
 # 28623232380). On timeout, dump the state that explains *why* the pod never
 # became ready — node conditions expose DiskPressure, describe/events expose

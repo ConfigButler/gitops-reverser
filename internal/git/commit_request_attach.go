@@ -158,27 +158,7 @@ type AttachCommitRequest struct {
 	// CatchUpNow asks the GitTarget's applier to apply the tip as soon as the request's commit is
 	// pushed: catchUp: AfterPush.
 	CatchUpNow bool
-	// Unattributed is what a request that names its submitter may claim of a window on its GitTarget
-	// whose writes name no author: nothing, its message (SavedBy), or the window (TakeOver). The
-	// controller sets more than nothing only when the request asked, its GitTarget allows it, and
-	// the GitTarget's KubeProvider has never received an audit fact. Once it has, a write naming no
-	// author means its fact went missing, and that window stays another's.
-	Unattributed UnattributedClaim
 }
-
-// UnattributedClaim is what a CommitRequest may claim of a commit window whose writes name no author.
-type UnattributedClaim string
-
-const (
-	// UnattributedClaimNone attaches only to the submitter's own window.
-	UnattributedClaimNone UnattributedClaim = ""
-	// UnattributedClaimSavedBy gives the window the request's message and names no author: the
-	// commit stays unattributed, and its message ends with a Saved-By trailer.
-	UnattributedClaimSavedBy UnattributedClaim = "SavedBy"
-	// UnattributedClaimTakeOver takes the window over: the submitter authors the commit, and its
-	// message ends with an Author-Source trailer.
-	UnattributedClaimTakeOver UnattributedClaim = "TakeOver"
-)
 
 // commitRequestID is the worker-local key for a CommitRequest: its namespaced
 // name plus UID when available. Two CommitRequests with the same name but
@@ -218,9 +198,6 @@ type pendingCommitRequest struct {
 	commitEmpty bool
 	// catchUpNow asks the GitTarget's applier for a converge once the request's commit is pushed.
 	catchUpNow bool
-	// unattributed is what the request may claim of a window whose writes name no author
-	// (AttachCommitRequest.Unattributed).
-	unattributed UnattributedClaim
 	// attached is true once this request is bound to a write: its message to the open window, or
 	// its own empty-commit record. From then on only that write's outcome settles it, and it stays
 	// set while the write is pending, waiting for the push.
@@ -286,7 +263,7 @@ func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p.gitTargetName != w.GitTarget || p.gitTargetNamespace != w.GitTargetNamespace {
 		return false
 	}
-	return p.author == w.Author && p.attribution.NamesActor() == w.Attribution.NamesActor() || p.claims(w)
+	return p.author == w.Author && p.attribution.NamesActor() == w.Attribution.NamesActor()
 }
 
 // sameSaver reports whether two requests would save one window: the same GitTarget and the same
@@ -294,13 +271,6 @@ func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 func (p *pendingCommitRequest) sameSaver(other *pendingCommitRequest) bool {
 	return p.gitTargetName == other.gitTargetName && p.gitTargetNamespace == other.gitTargetNamespace &&
 		p.author == other.author && p.attribution.NamesActor() == other.attribution.NamesActor()
-}
-
-// claims reports whether the request matches a window on its GitTarget whose writes name no author
-// only because it may claim such a window: it names its submitter, and asked for more than its own
-// windows (AttachCommitRequest.Unattributed).
-func (p *pendingCommitRequest) claims(w *openWindow) bool {
-	return p.unattributed != UnattributedClaimNone && p.attribution.NamesActor() && !w.Attribution.NamesActor()
 }
 
 // commitRequestOutcomeEntry is a resolved outcome retained for the controller to

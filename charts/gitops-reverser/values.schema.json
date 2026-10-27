@@ -221,32 +221,6 @@
             }
           }
         },
-        "admission": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "bindAddress": { "type": "string" },
-            "port": { "$ref": "#/$defs/port" },
-            "timeoutSeconds": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 30,
-              "description": "The apiserver rejects a webhook timeout outside 1-30s."
-            },
-            "tls": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "certManager": { "type": "boolean" },
-                "certPath": { "type": "string" },
-                "certName": { "type": "string" },
-                "certKey": { "type": "string" },
-                "secretNameOverride": { "$ref": "#/$defs/secretNameOverride" }
-              }
-            }
-          }
-        },
         "audit": {
           "type": "object",
           "additionalProperties": false,

@@ -96,10 +96,10 @@ func TestCommitRequestProgress_AHeldSaveSaysWhyItIsHeld(t *testing.T) {
 	assert.Equal(t, waitingForPushMessage, plain, "a push that is merely pending says nothing more")
 
 	cr := &configbutleraiv1alpha3.CommitRequest{}
-	markCommitRequestProgressing(cr, attributionFromAdmission, git.PhaseWaitingForPush, "")
+	markCommitRequestProgressing(cr, git.PhaseWaitingForPush, "")
 	assert.True(t, progressRecorded(cr, git.PhaseWaitingForPush, ""))
 	assert.False(t, progressRecorded(cr, git.PhaseWaitingForPush, held), "the outage is news to the save")
-	markCommitRequestProgressing(cr, attributionFromAdmission, git.PhaseWaitingForPush, held)
+	markCommitRequestProgressing(cr, git.PhaseWaitingForPush, held)
 	assert.True(t, progressRecorded(cr, git.PhaseWaitingForPush, held))
 	assert.False(t, progressRecorded(cr, git.PhaseWaitingForPush, ""), "and so is the recovery")
 }

@@ -6,9 +6,6 @@ endpoint at all, and refusing it here would make a value this chart itself docum
 
 The memory transport's other requirement, a single replica, needs no check here: validate-replica-count.yaml
 already refuses replicaCount > 1 for the whole chart, so there is no configuration this could catch.
-
-The admission webhook is deliberately NOT gated here: it stays enabled without Redis and simply
-no-ops command-author capture.
 */ -}}
 {{- if and .Values.attribution.enabled (eq .Values.attribution.transport "redis") (eq (trim .Values.queue.redis.addr) "") -}}
 {{- fail "attribution.enabled=true with attribution.transport=redis requires queue.redis.addr: the redis transport carries audit facts on Redis streams. Set queue.redis.addr, select attribution.transport=memory to run attribution in-process on a single replica, or leave attribution.enabled=false." -}}

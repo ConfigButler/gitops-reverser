@@ -3,8 +3,6 @@
 package v1alpha3
 
 import (
-	"slices"
-
 	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -187,11 +185,10 @@ type GitTargetSpec struct {
 	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 
 	// AllowedCommitRequests says which CommitRequests may save this GitTarget's
-	// commit windows, by the namespace they are in, and how much each may
-	// claim of a window whose writes name no author:
+	// commit windows, by the namespace they are in:
 	//
 	// - Omitted: the CommitRequests in this GitTarget's namespace, as one grant
-	//   with from: "Same" that claims nothing.
+	//   with from: "Same".
 	// - Empty list ([]): no CommitRequest.
 	// - A list of grants: the CommitRequests that at least one grant allows.
 	//
@@ -201,7 +198,7 @@ type GitTargetSpec struct {
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
-	// +kubebuilder:default={{consumerNamespaces: {from: Same}, unattributedWindows: Keep}}
+	// +kubebuilder:default={{consumerNamespaces: {from: Same}}}
 	AllowedCommitRequests []GitTargetCommitRequestGrant `json:"allowedCommitRequests"`
 
 	// Consent lives on the GitTarget, not on the KubeProvider that serves the requests: the provider's
@@ -275,28 +272,6 @@ type GitTargetCommitSpec struct {
 	// built-in one.
 	// +optional
 	Message *CommitMessageSpec `json:"message,omitempty"`
-}
-
-// UnattributedWindowPolicy is how much a CommitRequest may claim of a commit
-// window whose writes name no author.
-type UnattributedWindowPolicy string
-
-const (
-	// UnattributedWindowsKeep lets a request attach only to its creator's own window.
-	UnattributedWindowsKeep UnattributedWindowPolicy = "Keep"
-	// UnattributedWindowsSavedBy lets a request give such a window its message, naming no author.
-	UnattributedWindowsSavedBy UnattributedWindowPolicy = "SavedBy"
-	// UnattributedWindowsTakeOver also lets a request take such a window over and author its commit.
-	UnattributedWindowsTakeOver UnattributedWindowPolicy = "TakeOver"
-)
-
-// Allows reports whether a CommitRequest asking for author may attach as it asks under this policy:
-// "TakeOver" allows every ask, "SavedBy" allows "SavedBy" and "Own", and "Keep" (or empty) allows only
-// "Own". An unknown value allows only "Own".
-func (p UnattributedWindowPolicy) Allows(author WindowAuthor) bool {
-	// Weakest first; an unknown value ranks with the weakest (-1 + 1 = 0).
-	order := []string{string(UnattributedWindowsSavedBy), string(UnattributedWindowsTakeOver)}
-	return slices.Index(order, string(author)) <= slices.Index(order, string(p))
 }
 
 // CommitWindow holds the two timers that close a GitTarget's commit windows. A

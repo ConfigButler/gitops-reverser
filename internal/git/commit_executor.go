@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -313,37 +312,8 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, messageRes
 	if err != nil {
 		return "", nil, messageResolutionUnsupported, err
 	}
-	switch {
-	case p.TakenOver:
-		message = withTakeOverNote(message, p.CommitRequest)
-	case p.SavedBy.Username != "":
-		message = withSavedByNote(message, p.SavedBy)
-	}
 	log.Log.V(1).Info("Selected commit message", "source", resolution.label())
 	return message, commitOptionsFor(p, p.CommitConfig, p.Signer, time.Now()), resolution, nil
-}
-
-// withTakeOverNote ends the message of a commit whose CommitRequest took over a window with no author
-// named (PendingWrite.TakenOver) with a trailer that says the author is the request's submitter.
-func withTakeOverNote(message string, request *commitRequestID) string {
-	name := "a CommitRequest"
-	if request != nil {
-		name = "CommitRequest " + request.Namespace + "/" + request.Name
-	}
-	return withTrailer(message, "Author-Source: "+name+"; no audit record names who made these changes")
-}
-
-// withSavedByNote ends the message of a commit whose CommitRequest gave a window with no author named
-// its message (PendingWrite.SavedBy) with a trailer naming the request's submitter, in the shape of a
-// Co-authored-by trailer.
-func withSavedByNote(message string, savedBy UserInfo) string {
-	return withTrailer(message, "Saved-By: "+authorName(savedBy)+" <"+authorEmail(savedBy)+">")
-}
-
-// withTrailer adds trailer as the message's last paragraph, keeping the message's trailing newline.
-func withTrailer(message, trailer string) string {
-	body := strings.TrimRight(message, "\n")
-	return body + "\n\n" + trailer + message[len(body):]
 }
 
 // framedRequestMessage renders the target's requestTemplate around an attached CommitRequest's

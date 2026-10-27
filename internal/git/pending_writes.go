@@ -250,7 +250,7 @@ func (p PendingWrite) Author() string {
 // writes, including any OIDC display name and email. Empty writes have no
 // per-user author and return the zero value.
 func (p PendingWrite) AuthorUserInfo() UserInfo {
-	if p.Kind == PendingWriteRequestRecord || p.TakenOver {
+	if p.Kind == PendingWriteRequestRecord {
 		return p.RequestAuthor
 	}
 	if len(p.Events) == 0 {
@@ -303,7 +303,7 @@ const (
 // mirrors AuthorUserInfo: the window is single-author, so the first event's outcome describes
 // the whole write. Empty writes never attempt attribution.
 func (p PendingWrite) AttributionOutcome() AttributionOutcome {
-	if p.Kind == PendingWriteRequestRecord || p.TakenOver {
+	if p.Kind == PendingWriteRequestRecord {
 		return p.RequestAttribution
 	}
 	if len(p.Events) == 0 {

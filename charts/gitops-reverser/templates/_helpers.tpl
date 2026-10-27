@@ -93,20 +93,6 @@ Default Secret name for the kube-apiserver audit client certificate.
 {{- .Values.servers.audit.tls.client.secretNameOverride | default (printf "%s-audit-client-cert" (include "gitops-reverser.fullname" .)) -}}
 {{- end }}
 
-{{/*
-Default Secret name for the validating admission (validate-operator-types) serving certificate.
-*/}}
-{{- define "gitops-reverser.admissionServerSecretName" -}}
-{{- .Values.servers.admission.tls.secretNameOverride | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) -}}
-{{- end }}
-
-{{/*
-Name of the cert-manager Certificate that mints the admission serving cert. Used both
-as the Certificate name and in the webhook's cert-manager.io/inject-ca-from annotation.
-*/}}
-{{- define "gitops-reverser.admissionServerCertName" -}}
-{{- printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .) -}}
-{{- end }}
 
 {{/*
 Name of the push receiver Service.

@@ -46,11 +46,6 @@ type openWindow struct {
 	// pendingCR identifies the CommitRequest attached to this window; at most one. On
 	// finalize its outcome is resolved (Committed once the carrying write pushes).
 	pendingCR *commitRequestID
-	// claim and claimedBy say what the attached CommitRequest claimed of the window, whose writes
-	// name no author, and who submitted it (pendingCommitRequest.claims): its message (SavedBy), or
-	// the window, which the submitter then authors (TakeOver). Empty when it claimed nothing.
-	claim     UnattributedClaim
-	claimedBy UserInfo
 
 	// timers decide when the window closes. They are the GitTarget's, snapshotted when the window
 	// opened, until a CommitRequest attaches and replaces them with its own.

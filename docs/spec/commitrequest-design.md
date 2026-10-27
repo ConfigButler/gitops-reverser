@@ -91,8 +91,7 @@ that:
 - a resolved live attribution fact uses the authenticated actor; and
 - a live attribution miss uses `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`.
 
-See [CommitRequest admission authorship](commitrequest-admission-authorship.md) for capture provenance and
-[architecture: author identity](../architecture.md#author-and-committer-identity-in-git) for the three Git
+See [architecture: author identity](../architecture.md#author-and-committer-identity-in-git) for the three Git
 author states.
 
 ## Lifecycle and outcomes
