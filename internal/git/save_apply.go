@@ -23,6 +23,10 @@ import (
 // carries them again. A save that pushed no commit, whose GitTarget names no applier, or whose applier
 // stops being named is settled as applied: no apply is needed, and the cluster, where the saved objects
 // came from, already holds them. Only a save whose commit the branch lost is settled as not applied.
+//
+// A save's apply is followed for SaveApplyTimeout at most: the controller then stops following it
+// and says so in Applied. The worker keeps a record that is not settled at least that long, so it
+// never ages out while the controller still reads it.
 
 // Why a save's apply was settled, or why it still waits: the Applied condition's reasons.
 const (
@@ -34,6 +38,11 @@ const (
 	SaveApplyApplierGone    = "ApplierGone"
 	SaveApplyCommitDropped  = "CommitDropped"
 )
+
+// SaveApplyTimeout is how long, from Ready, the controller follows the apply a CommitRequest asked
+// for. A save is not kept waiting on an applier that does not catch up: past it, Applied settles as
+// timed out, though the commit stays pushed and the applier may still apply it.
+const SaveApplyTimeout = 10 * time.Minute
 
 // SaveApply is how the apply a CommitRequest asked for stands.
 type SaveApply struct {
@@ -50,7 +59,9 @@ type SaveApply struct {
 }
 
 type saveApplyEntry struct {
-	apply     SaveApply
+	apply SaveApply
+	// askedAt is when the save asked for its apply, and updatedAt when apply was last recorded.
+	askedAt   time.Time
 	updatedAt time.Time
 }
 
@@ -62,7 +73,12 @@ func (w *BranchWorker) recordSaveApply(id commitRequestID, apply SaveApply) {
 	if w.crApplies == nil {
 		w.crApplies = map[commitRequestID]saveApplyEntry{}
 	}
-	w.crApplies[id] = saveApplyEntry{apply: apply, updatedAt: time.Now()}
+	now := time.Now()
+	askedAt := now
+	if entry, ok := w.crApplies[id]; ok {
+		askedAt = entry.askedAt
+	}
+	w.crApplies[id] = saveApplyEntry{apply: apply, askedAt: askedAt, updatedAt: now}
 }
 
 // LookupSaveApply reports where the apply a CommitRequest asked for stands, and false while the
@@ -74,10 +90,17 @@ func (w *BranchWorker) LookupSaveApply(namespace, name, uid string) (SaveApply, 
 	return entry.apply, ok
 }
 
-// collectSaveApplies drops the entries older than the outcome TTL. The caller holds crOutcomesMu.
+// collectSaveApplies drops a settled entry once it is older than the outcome TTL. One not settled is
+// kept the outcome TTL past SaveApplyTimeout, counted from when it was asked: the controller reads
+// Ready within the outcome TTL of that, and stops following at SaveApplyTimeout from Ready. The
+// caller holds crOutcomesMu.
 func (w *BranchWorker) collectSaveApplies(now time.Time) {
 	for id, entry := range w.crApplies {
-		if now.Sub(entry.updatedAt) > commitRequestOutcomeTTL {
+		expired := now.Sub(entry.updatedAt) > commitRequestOutcomeTTL
+		if !entry.apply.Done {
+			expired = now.Sub(entry.askedAt) > commitRequestOutcomeTTL+SaveApplyTimeout
+		}
+		if expired {
 			delete(w.crApplies, id)
 		}
 	}

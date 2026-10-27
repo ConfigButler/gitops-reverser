@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// factKind names one of the six match structures a fact can land in. The set is closed: a fact
+// factKind names one of the seven match structures a fact can land in. The set is closed: a fact
 // that fits none of them is not stored, because a fact nothing can ever join is only memory.
 type factKind uint8
 
@@ -20,6 +20,9 @@ const (
 	// factKindRemoval is (uid), the sticky removal pointer: the fact that this object was DELETED and
 	// by whom. It is the one structure a later fact may not overwrite — see putRemoval.
 	factKindRemoval
+	// factKindCreation is (uid), the fact that CREATED this object. Only a creating fact is filed
+	// there, so a later write cannot overwrite it — see putCreation.
+	factKindCreation
 	// factKindRV is (rv), the escape hatch for a fact with an rv but no uid.
 	factKindRV
 	// factKindName is (namespace, name), the floor for a fact with neither a uid nor an rv. Only an
@@ -148,7 +151,10 @@ type scopeFacts struct {
 	latest map[string]*indexedFact
 	// removals is the sticky removal pointer, keyed by uid: "this object was deleted, and this actor
 	// asked for it". It is deliberately NOT swept by the TTL — see putRemoval and sweep.
-	removals    map[string]*indexedFact
+	removals map[string]*indexedFact
+	// creations is the creating fact, keyed by uid. Unlike removals it is swept by the TTL like the
+	// ordinary tiers: the one lookup that reads it waits only a grace period for its fact.
+	creations   map[string]*indexedFact
 	rvOnly      map[string]*indexedFact
 	byName      map[nameFactKey]*indexedFact
 	collections []*indexedCollection
@@ -160,11 +166,12 @@ type scopeFacts struct {
 
 func newScopeFacts() *scopeFacts {
 	return &scopeFacts{
-		exact:    map[exactFactKey]*indexedFact{},
-		latest:   map[string]*indexedFact{},
-		removals: map[string]*indexedFact{},
-		rvOnly:   map[string]*indexedFact{},
-		byName:   map[nameFactKey]*indexedFact{},
+		exact:     map[exactFactKey]*indexedFact{},
+		latest:    map[string]*indexedFact{},
+		removals:  map[string]*indexedFact{},
+		creations: map[string]*indexedFact{},
+		rvOnly:    map[string]*indexedFact{},
+		byName:    map[nameFactKey]*indexedFact{},
 	}
 }
 
@@ -195,6 +202,17 @@ func (s *scopeFacts) putLatest(uid string, entry *indexedFact) {
 // A later removal fact may replace it, because that is a statement about the same question.
 func (s *scopeFacts) putRemoval(uid string, entry *indexedFact) {
 	putKeyed(s, s.removals, uid, entry, factRef{kind: factKindRemoval, uid: uid})
+}
+
+// putCreation stores the fact that created an object. Only a fact marked Created is filed here, so
+// a later write cannot reach the slot.
+//
+// The exact tier cannot serve this, and that was measured: a no-op patch (a reapply that changes
+// nothing) returns the object at the resourceVersion it already had, so its fact is filed under the
+// creating fact's own (uid, rv) and replaces it. A CommitRequest re-applied before its author was
+// resolved then lost its creator.
+func (s *scopeFacts) putCreation(uid string, entry *indexedFact) {
+	putKeyed(s, s.creations, uid, entry, factRef{kind: factKindCreation, uid: uid})
 }
 
 // putRV stores the rv-only escape hatch.
@@ -241,20 +259,9 @@ func (s *scopeFacts) lookupLatest(uid string, cutoff time.Time) (AuthorFact, boo
 	return liveFact(s.latest[uid], cutoff)
 }
 
-// lookupCreation reads the fact that created the object with uid, from the exact tier, where every
-// fact carrying a uid and a resourceVersion is filed under its own version, so no later write
-// replaces it. It walks the tier, which costs one pass over a type's facts: it serves only the
-// CommitRequest author lookup, made once per request.
+// lookupCreation reads the fact that created the object with uid.
 func (s *scopeFacts) lookupCreation(uid string, cutoff time.Time) (AuthorFact, bool) {
-	if uid == "" {
-		return AuthorFact{}, false
-	}
-	for key, entry := range s.exact {
-		if key.uid == uid && entry.fact.Created {
-			return liveFact(entry, cutoff)
-		}
-	}
-	return AuthorFact{}, false
+	return liveFact(s.creations[uid], cutoff)
 }
 
 // lookupRemovalPointer reads the sticky removal pointer. It takes NO cutoff, and it is the only lookup here
@@ -341,6 +348,12 @@ func (s *scopeFacts) sweep(cutoff time.Time) int {
 			removed++
 		}
 	}
+	for key, entry := range s.creations {
+		if entry.at.Before(cutoff) {
+			delete(s.creations, key)
+			removed++
+		}
+	}
 	for key, entry := range s.rvOnly {
 		if entry.at.Before(cutoff) {
 			delete(s.rvOnly, key)
@@ -404,6 +417,8 @@ func (s *scopeFacts) remove(ref factRef) bool {
 		return removeKeyed(s.latest, ref.uid, ref.seq)
 	case factKindRemoval:
 		return removeKeyed(s.removals, ref.uid, ref.seq)
+	case factKindCreation:
+		return removeKeyed(s.creations, ref.uid, ref.seq)
 	case factKindRV:
 		return removeKeyed(s.rvOnly, ref.rv, ref.seq)
 	case factKindName:
@@ -480,6 +495,8 @@ func (s *scopeFacts) live(ref factRef) bool {
 		return liveKeyed(s.latest, ref.uid, ref.seq)
 	case factKindRemoval:
 		return liveKeyed(s.removals, ref.uid, ref.seq)
+	case factKindCreation:
+		return liveKeyed(s.creations, ref.uid, ref.seq)
 	case factKindRV:
 		return liveKeyed(s.rvOnly, ref.rv, ref.seq)
 	case factKindName:

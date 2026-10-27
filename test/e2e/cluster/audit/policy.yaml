@@ -52,8 +52,8 @@ rules:
     - delete
     - deletecollection
     # No resources listed = Matches everything else (including CRDs).
-    # This also captures `commitrequests.configbutler.ai` create events, which
-    # name a CommitRequest's author, as a write's event names its author. If this
-    # catch-all is ever narrowed, keep at least Metadata-level capture for
-    # `commitrequests` create events — the author is joined by uid and
-    # resourceVersion, which Metadata carries.
+    # This also captures the `commitrequests.configbutler.ai` event that created
+    # a CommitRequest, which names its author. If this catch-all is ever narrowed,
+    # keep RequestResponse capture of `commitrequests` create AND patch (server-side
+    # apply creates with a patch): the author is joined by the uid and
+    # resourceVersion in responseObject, which Metadata level leaves out.

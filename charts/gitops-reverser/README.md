@@ -345,6 +345,11 @@ curl http://localhost:8080/metrics
 
 ## Upgrading
 
+Before upgrading, read the [upgrade guide](../../docs/UPGRADING.md) entries for every release you
+cross, and follow their steps in order. Upgrading from 0.54.0 starts with
+[draining the `CommitRequest`s](../../docs/UPGRADING.md#upgrading-from-0540-drain-the-commitrequests-first).
+Then apply the new release's `crds.yaml` ([CRD lifecycle](#crd-lifecycle)), and upgrade.
+
 ### Standard Upgrade
 
 ```bash

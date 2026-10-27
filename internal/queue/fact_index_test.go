@@ -165,7 +165,7 @@ func TestFactIndex_CreationQueryReadsOnlyTheCreatingFact(t *testing.T) {
 	created := objectFact("alice", "101")
 	created.Verb, created.Created = "create", true
 	harness.publish(factIndexTestStream("prod-eu-1"), created, objectFact("label-controller", "102"))
-	harness.waitForFacts(3)
+	harness.waitForFacts(4)
 
 	creation := FactQuery{AuditRoute: "prod-eu-1", GroupResource: deploymentsGroupResource(),
 		UID: factIndexTestUID, Namespace: "team-a", ExactCapable: true, Creation: true}
@@ -181,6 +181,25 @@ func TestFactIndex_CreationQueryReadsOnlyTheCreatingFact(t *testing.T) {
 	written.UID = creation.UID
 	harness.publish(factIndexTestStream("prod-eu-1"), written)
 	harness.absent(creation)
+}
+
+// TestFactIndex_CreationSurvivesANoOpWriteAtItsVersion: a no-op patch returns the object at the
+// resourceVersion the create stamped, so its fact shares the creating fact's (uid, rv). It must not
+// replace the creator: a CommitRequest re-applied before its author was resolved lost its creator
+// that way and settled AuthorUnresolved.
+func TestFactIndex_CreationSurvivesANoOpWriteAtItsVersion(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	created := objectFact("alice", "101")
+	created.Verb, created.Created = "create", true
+	noOp := objectFact("ci-bot", "101")
+	noOp.Verb = "patch"
+	harness.publish(factIndexTestStream("prod-eu-1"), created, noOp)
+	harness.waitForFacts(3)
+
+	resolution := harness.resolve(FactQuery{AuditRoute: "prod-eu-1", GroupResource: deploymentsGroupResource(),
+		UID: factIndexTestUID, Namespace: "team-a", ExactCapable: true, Creation: true})
+	require.Equal(t, AttributionExact, resolution.Result)
+	require.Equal(t, "alice", resolution.Fact.Author, "the creator, not the no-op writer")
 }
 
 // TestFactIndex_CreationQueryWaitsForTheCreatingFact: a creation query parked before the fact arrives

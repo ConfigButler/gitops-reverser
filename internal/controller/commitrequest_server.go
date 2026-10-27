@@ -108,7 +108,9 @@ type CommitRequestServer struct {
 	watchers map[k8stypes.NamespacedName]*commitRequestWatcher
 	reports  map[k8stypes.NamespacedName]CommitRequestsReport
 	events   chan event.GenericEvent
-	streams  commitRequestStreams
+
+	streamsOnce sync.Once
+	streams     *commitRequestStreams
 }
 
 // commitRequestWatcher is the watch of one KubeProvider's CommitRequests, in the namespaces it lends.
@@ -586,11 +588,9 @@ func (s *CommitRequestServer) consider(
 }
 
 func (s *CommitRequestServer) core() *commitRequestCore {
-	s.mu.Lock()
-	s.streams.set = s.FactStreams
-	s.mu.Unlock()
+	s.streamsOnce.Do(func() { s.streams = &commitRequestStreams{set: s.FactStreams} })
 	return &commitRequestCore{
-		reader: s.Client, finalizer: s.Finalizer, authors: s.Authors, streams: &s.streams, ttl: s.TTL,
+		reader: s.Client, finalizer: s.Finalizer, authors: s.Authors, streams: s.streams, ttl: s.TTL,
 	}
 }
 

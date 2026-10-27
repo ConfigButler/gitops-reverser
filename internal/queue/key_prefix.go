@@ -12,8 +12,8 @@ import (
 // dwarfs the key it namespaces.
 const maxKeyPrefixLength = 128
 
-// DefaultKeyPrefix is the root namespace every Redis key (cursors, fact streams, and command
-// author records alike) carries when --redis-key-prefix is not set. It is also the value every
+// DefaultKeyPrefix is the root namespace every Redis key (cursors and fact streams alike) carries
+// when --redis-key-prefix is not set. It is also the value every
 // release before the flag existed used, so the default is a no-op upgrade.
 const DefaultKeyPrefix = "gitops-reverser"
 

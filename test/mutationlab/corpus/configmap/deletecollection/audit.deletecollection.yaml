@@ -48,7 +48,7 @@ responseObject:
       uid: <uid-5>
   kind: ConfigMapList
   metadata:
-    resourceVersion: <rv-3>
+    resourceVersion: <list-rv>
 responseStatus:
   code: 200
   metadata: {}

@@ -56,6 +56,14 @@ func expiredMessageRVs(message string) []string {
 // stable without losing the ordering that matters.
 const tsPlaceholder = "<ts>"
 
+// listRVPlaceholder replaces a list's own metadata.resourceVersion, which stays out of the
+// relational <rv-N> space. It is the revision the API server read the list at, not one any object
+// carries: on k3s v1.37.1 a deletecollection's list returned the last deleted object's
+// resourceVersion in some runs and a newer one in others, as an unrelated write landed in between.
+// Numbered with the rest, it shifted every later placeholder by one, so the corpus alternated
+// between two shapes on one cluster.
+const listRVPlaceholder = "<list-rv>"
+
 // isTimestampKey reports whether a JSON key's string value is an RFC3339
 // timestamp the normalizer collapses to tsPlaceholder. "time" covers
 // managedFields[].time; lastTransitionTime/lastUpdateTime cover status.conditions[]
@@ -188,9 +196,14 @@ func (c *collector) walk(v any) {
 		c.collectGenerateNameSuffix(t)
 		// Walk keys in sorted order so first-appearance indexing is deterministic
 		// regardless of Go's randomized map iteration.
+		list := isList(t)
 		for _, k := range sortedKeys(t) {
-			c.collectScalar(k, t[k])
-			c.walk(t[k])
+			v := t[k]
+			if list && k == "metadata" {
+				v = withoutKey(v, "resourceVersion")
+			}
+			c.collectScalar(k, v)
+			c.walk(v)
 		}
 	case []any:
 		for _, e := range t {
@@ -398,6 +411,11 @@ func (idx *indices) transform(v any) any {
 			// association key (k:{"ip":"10.42.3.14"}) does not churn the corpus.
 			out[idx.rewriteKey(k)] = idx.transformScalar(k, val, t)
 		}
+		if meta, ok := out["metadata"].(map[string]any); ok && isList(t) {
+			if _, has := meta["resourceVersion"]; has {
+				meta["resourceVersion"] = listRVPlaceholder
+			}
+		}
 		return out
 	case []any:
 		out := make([]any, len(t))
@@ -584,6 +602,28 @@ func (idx *indices) rewriteGeneratedName(v any, parent map[string]any) (string, 
 		return gn + ph, true
 	}
 	return "", false
+}
+
+// isList reports whether m is a list object: items beside its own metadata.
+func isList(m map[string]any) bool {
+	_, items := m["items"].([]any)
+	_, meta := m["metadata"].(map[string]any)
+	return items && meta
+}
+
+// withoutKey returns v with key left out when v is a map, and v unchanged otherwise.
+func withoutKey(v any, key string) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	out := make(map[string]any, len(m))
+	for k, val := range m {
+		if k != key {
+			out[k] = val
+		}
+	}
+	return out
 }
 
 func placeholder(prefix string, n int) string { return fmt.Sprintf("<%s-%d>", prefix, n) }

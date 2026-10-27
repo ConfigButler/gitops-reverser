@@ -19,7 +19,7 @@ import (
 // TestCommitRequestSchemaRevision: raise CommitRequestSchemaRevision, and the revision line, and add
 // the new hash here.
 var commitRequestSchemaHashes = map[int]string{
-	1: "ea99cba6116e0f562c0be931c13d6580eabdc2e7ba32d486d20a0a5029163e99",
+	1: "395df39c86bc4c0350eb2c476dd0ae02db2a7513f03962103416123b0cbb5476",
 }
 
 // commitRequestRevisionLine is the last line of the kind's description.
