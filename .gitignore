@@ -67,3 +67,4 @@ loadtest
 /external-sources/
 /docs/local-only/*
 hack/release-notes/node_modules
+docs/review/*
