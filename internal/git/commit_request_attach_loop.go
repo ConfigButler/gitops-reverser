@@ -210,7 +210,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		gitTargetNamespace: req.GitTargetNamespace,
 		message:            req.Message,
 		seq:                l.crSeq,
-		attachDeadline:     time.Now().Add(req.AttachTimeout),
+		attachDeadline:     l.w.now().Add(req.AttachTimeout),
 		idleTimeout:        req.IdleTimeout,
 		maxDuration:        req.MaxDuration,
 		commitEmpty:        req.CommitEmpty,
@@ -265,7 +265,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 func (l *branchWorkerEventLoop) saveInProgress(
 	pcr *pendingCommitRequest, attach v1alpha3.AttachPolicy,
 ) *pendingCommitRequest {
-	now := time.Now()
+	now := l.w.now()
 	for _, earlier := range l.pendingCRs {
 		if !earlier.sameSaver(pcr) {
 			continue
@@ -323,7 +323,7 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 	if l.openWindow == nil {
 		return
 	}
-	now := time.Now()
+	now := l.w.now()
 	for _, pcr := range l.pendingCRs {
 		if !pcr.waiting(now) || pcr.sawForeignWindow || pcr.matchesWindow(l.openWindow) {
 			continue
@@ -345,7 +345,7 @@ func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 	if l.openWindow == nil || l.openWindow.pendingCR != nil {
 		return
 	}
-	now := time.Now()
+	now := l.w.now()
 	var first *pendingCommitRequest
 	for _, pcr := range l.pendingCRs {
 		if !pcr.waiting(now) || !pcr.matchesWindow(l.openWindow) {
@@ -365,7 +365,7 @@ func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 // idle interval. A zero maxDuration closes the window right here. The message is the window's to
 // keep from now on, so it moves into the window's charge.
 func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
-	now := time.Now()
+	now := l.w.now()
 	l.openWindow.pendingMessage = pcr.message
 	id := pcr.id
 	l.openWindow.pendingCR = &id
@@ -390,7 +390,7 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 // still waiting. An attached request is not here: its window's timers close it, and whichever path
 // closes the window resolves it.
 func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
-	now := time.Now()
+	now := l.w.now()
 	for id, pcr := range l.pendingCRs {
 		if pcr.attached || pcr.attachDeadline.After(now) {
 			continue
@@ -534,7 +534,7 @@ func (l *branchWorkerEventLoop) rearmAttachTimer() {
 		l.stopAttachTimer()
 		return
 	}
-	delay := time.Until(earliest)
+	delay := earliest.Sub(l.w.now())
 	if delay < 0 {
 		delay = 0
 	}

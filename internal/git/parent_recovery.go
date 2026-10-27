@@ -52,7 +52,9 @@ type parentRecovery struct {
 	gen uint64
 }
 
-// now is the loop's clock, injectable so the retry schedule can be tested without sleeping.
+// now is the loop's clock, injectable so the retry schedule and the commit windows' timers can be
+// tested without sleeping. The timers themselves are real: a test that moves the clock past a
+// deadline delivers the wake the timer would have, as run does.
 func (w *BranchWorker) now() time.Time {
 	if w.clock != nil {
 		return w.clock()

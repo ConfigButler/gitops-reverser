@@ -386,7 +386,8 @@ type BranchWorker struct {
 	// Set by the WorkerManager before Start; nil for a worker built on its own.
 	crOwners *commitRequestOwners
 
-	// clock is the time source of the retry schedule; nil is time.Now. See now().
+	// clock is the time source of the retry schedule and of the commit windows' timers: the idle and
+	// max-duration deadlines and a CommitRequest's attach deadline. nil is time.Now. See now().
 	clock func() time.Time
 	// parentRecoveryOpen, parentRecoveryFound and parentProbeHold mirror the event loop's
 	// recovery latch for readers outside it. See parent_recovery.go.
@@ -1327,13 +1328,14 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName,
 				"resource", event.Identifier.String())
 			l.openWindow = newOpenWindow(event, l.w.contentWriter)
+			l.openWindow.openedAt = l.w.now()
 			// One window, one GitTarget: snapshot that target's timers now, so a later edit to the
 			// target never moves a deadline already running.
 			timers := l.w.commitWindowFor(
 				l.w.ctx, event.GitTargetName, event.GitTargetNamespace, l.defaultWindow)
 			l.openWindow.timers = windowTimers{
 				idle:  timers.idleTimeout,
-				maxAt: time.Now().Add(timers.maxDuration),
+				maxAt: l.w.now().Add(timers.maxDuration),
 			}
 			opened = true
 		}
@@ -1341,7 +1343,7 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 		if replaced, ok := l.openWindow.add(event); ok {
 			l.windowBytes -= eventRetainedCharge(&replaced)
 		}
-		l.openWindow.lastWriteAt = time.Now()
+		l.openWindow.lastWriteAt = l.w.now()
 		l.windowBytes += eventRetainedCharge(&event)
 
 		if opened {
@@ -1413,7 +1415,7 @@ func (l *branchWorkerEventLoop) closeOrArmWindow() {
 		return
 	}
 	closeAt, reason := l.openWindow.closeAt()
-	delay := time.Until(closeAt)
+	delay := closeAt.Sub(l.w.now())
 	if delay <= 0 {
 		l.finalizeOpenWindowWithReason(reason)
 		return
@@ -2906,7 +2908,7 @@ func (w *BranchWorker) recordWindowClosed(window *openWindow, reason windowFinal
 		)...))
 	}
 	if telemetry.GitCommitWindowDurationSeconds != nil {
-		telemetry.GitCommitWindowDurationSeconds.Record(ctx, time.Since(window.openedAt).Seconds(),
+		telemetry.GitCommitWindowDurationSeconds.Record(ctx, w.now().Sub(window.openedAt).Seconds(),
 			metric.WithAttributes(target...))
 	}
 }
