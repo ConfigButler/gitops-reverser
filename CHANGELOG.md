@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.54.0...v0.55.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* the admission webhook is removed: drop the --admission-webhook, --admission-webhook-bind-address and --admission-webhook-cert-* flags and the chart's servers.admission values. A CommitRequest's author comes from its own audit event and is reported in status.author; the AuthorAttributed condition is gone, and a request no audit event names, on a cluster that sends them, ends AuthorUnresolved. A CommitRequest in progress is Ready=Unknown rather than Ready=False, spec.window.attachTimeout defaults to 5s, and a CommitRequest on the control cluster for a GitTarget that mirrors another cluster is refused NotAllowed. The chart renders its cert-manager Issuer only when it mints a certificate. See docs/UPGRADING.md, "The admission webhook is gone; a CommitRequest's author comes from audit".
+
+### Features
+
+* **kustomize:** write a generated ConfigMap back into its configMapGenerator inputs ([#455](https://github.com/ConfigButler/gitops-reverser/issues/455)) ([7eea9e1](https://github.com/ConfigButler/gitops-reverser/commit/7eea9e118a5d6e9f14c9562c16d97e4cda85acc5))
+* one CommitRequest for the control cluster and source clusters, the applier's catch-up after saves, and late applier writes kept in the apply window ([#456](https://github.com/ConfigButler/gitops-reverser/issues/456)) ([bae402c](https://github.com/ConfigButler/gitops-reverser/commit/bae402c0971ed5d29f3c199d03c4f6a56a12c444))
+
+
+### Bug Fixes
+
+* **commitrequest:** keep the creating fact past a no-op write, and order the 0.54 upgrade ([#460](https://github.com/ConfigButler/gitops-reverser/issues/460)) ([04c3790](https://github.com/ConfigButler/gitops-reverser/commit/04c379038ae83d7fc00ff14c79d1affc399f6f46))
+* **commitrequest:** name the author from the creating write, and settle no-commit applies ([#459](https://github.com/ConfigButler/gitops-reverser/issues/459)) ([d4ef038](https://github.com/ConfigButler/gitops-reverser/commit/d4ef03826cdac8b39931196765824ca4270931c8))
+
 ## [0.54.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.53.0...v0.54.0) (2026-10-26)
 
 
