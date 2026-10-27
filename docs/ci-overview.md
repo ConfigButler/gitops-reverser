@@ -20,6 +20,7 @@ so local and CI results cannot drift apart.
 | Release & publish | [release.yml](../.github/workflows/release.yml) tail jobs | after trusted validation is green | `GITHUB_TOKEN` + OIDC | packages, releases, attestations | Version (release-please), **retag** the CI-built multi-arch digests to semver + `latest` (zero rebuilds), publish chart, sign, attest |
 | Hygiene | [scorecard.yml](../.github/workflows/scorecard.yml) | weekly + `main` | none | security-events | OpenSSF Scorecard supply-chain checks |
 | Hygiene | [pr-title.yml](../.github/workflows/pr-title.yml) | `pull_request` (including `edited`) | none | none | The PR title is a Conventional Commit, since it becomes the squash-merge subject release-please classifies |
+| Hygiene | [mutation-lab.yml](../.github/workflows/mutation-lab.yml) | nightly + manual | `GITHUB_TOKEN` (read) | none | The mutation-capture lab on its own cluster, compared to its committed corpus ([design](design/mutation-capture-lab-own-cluster.md)) |
 
 Three properties are worth calling out:
 
@@ -164,5 +165,5 @@ GitHub's OIDC identity and logged in the public Rekor transparency log.
 | Tool versions | [.devcontainer/Dockerfile](../.devcontainer/Dockerfile) (single source for devcontainer *and* CI) |
 | Validation pipeline | [.github/workflows/ci.yml](../.github/workflows/ci.yml) |
 | Release pipeline | [.github/workflows/release.yml](../.github/workflows/release.yml), [.github/workflows/release-pr.yml](../.github/workflows/release-pr.yml) |
-| Hygiene | [.github/workflows/scorecard.yml](../.github/workflows/scorecard.yml), [.github/dependabot.yml](../.github/dependabot.yml) |
+| Hygiene | [.github/workflows/scorecard.yml](../.github/workflows/scorecard.yml), [.github/workflows/mutation-lab.yml](../.github/workflows/mutation-lab.yml), [.github/dependabot.yml](../.github/dependabot.yml) |
 | Release process details | [.github/RELEASES.md](../.github/RELEASES.md) |

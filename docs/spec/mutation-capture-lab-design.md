@@ -13,9 +13,10 @@ The corpus is captured against **k8s v1.36.4+k3s1** (recorded in
 the [Difficult Cases Catalog](#difficult-cases-catalog)), plus the rows that extend it, which
 `test/mutationlab/README.md` indexes.
 
-The lab reuses the product's webhook URLs (`/validate-all`, `/audit-webhook`) on the same ports and
-TLS mounts, so capturing is just an **image swap** on an already-prepared e2e cluster — no new audit
-policy, webhook config, or certificates. The binary lives under `cmd/mutation-capture-lab/`, the
+The lab runs on a k3d cluster of its own, which delivers audit, admission, conversion, and the
+aggregated API to it through their real mechanisms
+([design](../design/mutation-capture-lab-own-cluster.md)). The binary lives under
+`cmd/mutation-capture-lab/`, the
 recorders/normalizer/store/
 record model under `internal/mutationlab/`, and the live-cluster driver plus golden corpus under
 `test/mutationlab/` (driver behind the `mutationlab_e2e` build tag, so the normal lane never needs a
@@ -386,13 +387,14 @@ sometimes itself the behavior under test.
 
 ### Golden workflow
 
-- **Default run:** capture → normalize → compare against the committed file; a mismatch fails the test
-  and prints a unified diff.
-- **Update run:** `MUTATIONLAB_UPDATE=1 task lab-e2e` (or `task lab-corpus-update`) rewrites the corpus
-  from the live capture.
-- **Validating a new Kubernetes version:** bump the k3d image, run the update, and review the `corpus/`
-  diff — it *is* the behavioral changelog for the upgrade, scoped to exactly the behaviors GitOps
-  Reverser depends on, with volatile fields normalized away. An empty diff is a positive result.
+- **Default run:** `task lab-capture`: capture → normalize → compare against the committed file; a
+  mismatch fails the test and prints a unified diff.
+- **Update run:** `task lab-corpus-update` rewrites the corpus from the live capture, and the k3s
+  image, server version, and date in `CLUSTER.md`.
+- **Validating a new Kubernetes version:** recreate the lab cluster with
+  `task lab-bootstrap LAB_K3S_IMAGE=<image>`, run the update, and review the `corpus/` diff — it
+  *is* the behavioral changelog for the upgrade, scoped to exactly the behaviors GitOps Reverser
+  depends on, with volatile fields normalized away. An empty diff is a positive result.
 
 ## Record model
 
@@ -438,13 +440,17 @@ not) after the request — never guessed from the payload alone.
 The lab gets its own everything and reuses only the integration *shape* of the real install:
 
 - **Separate binary** (`cmd/mutation-capture-lab/main.go`), built as its own image.
-- **Swap the image, reuse the wiring.** Rather than authoring its own audit policy, webhook configs,
-  and certificates, the lab serves the **same** webhook URLs as the product on the same ports and TLS
-  mounts, so `task lab-e2e` integrates by swapping the controller image on the already-prepared e2e
-  cluster (`test/mutationlab/swap-image.sh`). The cluster is left running the lab image; restore with
-  `task clean-cluster && task test-e2e`.
-- **Separate, opt-in, serial task targets** (`task lab-e2e`, `task lab-corpus-update`) — not invoked by
-  `task test-e2e` or the default CI lane; the driver is behind the `mutationlab_e2e` build tag.
+- **Its own cluster.** The lab runs on a k3d cluster of its own, `gitops-reverser-capture-lab`,
+  with its own certificates, `ValidatingWebhookConfiguration`, Service, and RBAC
+  (`test/mutationlab/deploy/`), and nothing of the product. The API server's audit webhook backend,
+  the admission registration, the Widget CRD's conversion webhook, and the `wardle` aggregated API
+  deliver to it as they would on any cluster; it shares only the cluster script, the audit policy,
+  and the sample API server's manifests with e2e. See
+  [the mutation-capture lab on its own cluster](../design/mutation-capture-lab-own-cluster.md).
+- **Separate, opt-in, serial tasks** (`task lab-bootstrap`, `task lab-capture`,
+  `task lab-corpus-update`) in `test/mutationlab/Taskfile-lab.yml`, not invoked by `task test-e2e`
+  or the per-PR CI lanes; a scheduled workflow runs `lab-capture`. The driver is behind the
+  `mutationlab_e2e` build tag.
 
 Because audit delivery is asynchronous and batched, a late event from one scenario can land after the
 next has started. The lab **isolates** scenarios rather than trusting a clean slate:
@@ -502,7 +508,7 @@ so each row remains a deliberate stop-and-read point.
 Write Git commits · reuse the GitOps Reverser controller runtime · implement the full
 `WatchRule`/`GitTarget` model · solve HA/retention/multi-cluster · prove every resource behaves
 identically · build a **mutating** admission recorder (cited, not re-proven) · re-prove **Cite**-half
-contracts · hand-author corpus files · wire the lab into `task test-e2e` or the default CI lane · add
+contracts · hand-author corpus files · wire the lab into `task test-e2e` or the per-PR CI lanes · add
 lab-only behavior to the Helm chart.
 
 ## Related

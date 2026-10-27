@@ -16,6 +16,9 @@ KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_MUTATING_REQ
 # accepted for a single-node cluster, which leaves the server untainted.
 K3D_AGENT_COUNT="${K3D_AGENT_COUNT:-1}"
 K3S_IMAGE="${K3S_IMAGE:-rancher/k3s:v1.37.1-k3s1}"
+# false leaves the kubeconfig's current context where it was, so a second cluster (the
+# mutation-capture lab) can be created without moving kubectl, or an e2e run, onto it.
+K3D_SWITCH_CONTEXT="${K3D_SWITCH_CONTEXT:-true}"
 AUDIT_DIR_REL="${AUDIT_DIR_REL:-test/e2e/cluster/audit}"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
@@ -265,7 +268,7 @@ create_cluster() {
       --servers 1
       --agents "${K3D_AGENT_COUNT}"
       --kubeconfig-update-default
-      --kubeconfig-switch-context
+      "--kubeconfig-switch-context=${K3D_SWITCH_CONTEXT}"
       -v "${audit_host_dir}:/etc/kubernetes/audit@server:0"
     )
     if [ -n "${K3D_API_PORT}" ]; then
@@ -280,17 +283,20 @@ create_cluster() {
 }
 
 merge_kubeconfig() {
-    # Ensure kubeconfig is present and current-context points at this cluster
+    # Ensure kubeconfig holds this cluster's context, and is current unless K3D_SWITCH_CONTEXT=false
     k3d kubeconfig merge "${CLUSTER_NAME}" \
-      --kubeconfig-switch-context \
+      "--kubeconfig-switch-context=${K3D_SWITCH_CONTEXT}" \
       --kubeconfig-merge-default >/dev/null
 }
 
 rewrite_kubeconfig_for_devcontainer() {
-    local cluster_entry server host port
+    local context_name cluster_entry server host port
 
-    cluster_entry="$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')"
-    server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+    # The named context, not the current one: with K3D_SWITCH_CONTEXT=false the current
+    # context is some other cluster, whose endpoint this must not touch.
+    context_name="$(cluster_context_name)"
+    cluster_entry="$(kubectl config view --context "${context_name}" --minify -o jsonpath='{.clusters[0].name}')"
+    server="$(kubectl config view --context "${context_name}" --minify -o jsonpath='{.clusters[0].cluster.server}')"
 
     # Parse https://HOST:PORT
     if [[ "$server" =~ ^https://([^:/]+):([0-9]+)$ ]]; then

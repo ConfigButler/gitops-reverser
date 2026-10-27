@@ -12,7 +12,10 @@ GitOps Reverser — see [the design](../../docs/spec/mutation-capture-lab-design
 | `cmd/mutation-capture-lab/` | the lab binary (recorders + records API) |
 | `internal/mutationlab/` | record model, normalizer, store, corpus, recorders, API |
 | `test/mutationlab/Dockerfile` | the lab image (built only by `task lab-build-image`) |
-| `test/mutationlab/swap-image.sh` | swaps the lab image onto the controller Deployment |
+| `test/mutationlab/Taskfile-lab.yml` | the lab's tasks: its own cluster, deployment, and capture |
+| `test/mutationlab/deploy/` | the lab's namespace, RBAC, Deployment, Services, and webhook registration |
+| `test/mutationlab/tools/lab-certs/` | issues the lab's CA, serving certificate, and the API server's audit client certificate |
+| `test/mutationlab/deploy.sh`, `port-forward.sh` | deploy onto the lab cluster; forward its records API |
 | `test/mutationlab/e2e/` | the live-cluster driver (build tag `mutationlab_e2e`) |
 | `test/mutationlab/corpus/` | the committed golden corpus + `CLUSTER.md` provenance |
 
@@ -69,29 +72,38 @@ transport-only events can be scenario-attributed — see the
 [watch-first ingestion architecture](../../docs/finished/watch-first-ingestion-architecture.md)
 design notes.
 
-> ⚠️ **The "no audit" rows record this cluster's audit POLICY, not the API server.** The lab runs
-> against the already-prepared e2e cluster and reuses its policy
+> ⚠️ **The "no audit" rows record this cluster's audit POLICY, not the API server.** The lab cluster
+> uses the e2e audit policy
 > ([`test/e2e/cluster/audit/policy.yaml`](../e2e/cluster/audit/policy.yaml)), which drops `pods` and
 > every `*/status` at `level: None` as runtime noise. So rows 5 and 7 show what a cluster configured
 > like this one does not tell us — a `DELETE` on a pod is an audited request like any other when the
 > policy asks for it. Read them as "excluded here", not as "unknowable". Re-capturing either row
 > against a policy that includes those types would settle it by measurement.
 
-## How it integrates: swap the image, reuse the wiring
+## How it integrates: a cluster of its own
 
-The lab serves the **same** webhook URLs as the product —
-`/validate-all` and `/audit-webhook` — on the same ports and TLS cert mounts. So
-making a cluster capture with the lab is just swapping the controller image: no
-new audit policy, webhook config, or certificates. `task lab-e2e` does this on the
-already-prepared e2e cluster, then drives the scenarios serially.
+The lab runs on its own k3d cluster, `gitops-reverser-capture-lab`, which runs the lab, the
+`wardle` sample aggregated API server, and nothing of the product
+([design](../../docs/design/mutation-capture-lab-own-cluster.md)). Every source arrives the way it
+does on any cluster:
 
-Reusing the wiring means reusing whatever the cluster's audit kubeconfig points at, and
-this one names its route: it posts to `/audit-webhook/gitops-reverser.local`, the route of the
-`local` KubeProvider in `gitops-reverser`, because the bare path is the product's shared annotation-routed
-endpoint. The lab therefore serves the whole `/audit-webhook/` subtree and records what
-arrives whichever source it was addressed to. Serving only the exact bare path 404s every
-event the cluster sends — which reads as a lab that captures watches and admission but
-never a single audit record, in every scenario at once.
+- the API server's **audit webhook backend** posts to `https://127.0.0.1:30444/audit-webhook`, a
+  NodePort on its own node, over mutual TLS: it presents a client certificate from the lab CA, and
+  the lab refuses a connection without one;
+- the `ValidatingWebhookConfiguration` `mutation-capture-lab` sends **admission** reviews to the
+  lab's Service;
+- the scenario Widget CRD's **conversion** webhook calls the same Service at `/convert`;
+- the lab **watches** through its own ServiceAccount, with read-only RBAC on what it watches.
+
+`lab-certs` issues the certificates before the cluster exists, so the audit kubeconfig the API
+server reads at startup is already the final one and the cluster never restarts. The cluster is
+created by the same [`start-cluster.sh`](../e2e/cluster/start-cluster.sh) as the e2e cluster, with
+the same audit flags and policy, on one node, and without switching the current kube context.
+
+Nothing in the lab's wiring names a product resource or depends on a product task;
+[`selfcontained_test.go`](selfcontained_test.go) enforces that in `task test`. The lab used to swap
+its image into the product's Deployment and borrow its webhook registration and certificates, and
+lost its admission source the day the product removed them, with every check still green.
 
 Row 15 (aggregated API write) is what settled the body-enrichment question: the
 official audit event for an aggregated-API write carries an empty body, yet the
@@ -101,28 +113,35 @@ retired — so the lab no longer serves or records that endpoint.
 
 ## Running it (opt-in, serial)
 
-These targets are **not** part of `task test-e2e` or the default CI lane.
+These tasks are not part of `task test-e2e` or the per-PR CI lanes; the
+[mutation lab workflow](../../.github/workflows/mutation-lab.yml) runs `lab-capture` nightly.
 
 ```bash
-# Prepare the e2e cluster + product wiring, swap in the lab image, capture, diff:
-task lab-e2e
-
-# Accept a new/changed capture as the golden corpus:
-task lab-corpus-update
+task lab-bootstrap      # certificates, cluster, image, deployment, and a live check of all five sources
+task lab-capture        # run the scenarios and compare the capture to the corpus
+task lab-corpus-update  # accept a new or changed capture as the corpus, CLUSTER.md included
+task lab-status         # the cluster, its k3s version, the lab pod, and how many records it holds
+task lab-cleanup        # delete the cluster and its stamps
 ```
 
-`task lab-e2e` leaves the cluster running the lab image. To restore the product:
-
-```bash
-task clean-cluster && task test-e2e
-```
+The lab cluster can run beside the e2e cluster: its own name, stamps
+(`.stamps/cluster/k3d-gitops-reverser-capture-lab/`), run lock, and records-API port (18081). It
+needs no restore afterwards; the e2e cluster is never touched.
 
 The unit tests for the lab packages run in the normal lane (`task test`); the
-`test/mutationlab/e2e/` driver is behind the `mutationlab_e2e` build tag and only
-runs under `task lab-e2e`.
+`test/mutationlab/e2e/` driver is behind the `mutationlab_e2e` build tag and runs only through the
+lab's tasks.
 
 ## Validating a new Kubernetes version
 
-Bump the k3d image, run `task lab-corpus-update`, and review the `corpus/` diff:
-it is the behavioral changelog for the upgrade, scoped to exactly the fine-grained
-behaviors GitOps Reverser depends on. An empty diff is a positive result.
+```bash
+task lab-cleanup
+task lab-bootstrap LAB_K3S_IMAGE=rancher/k3s:v1.38.0-k3s1
+task lab-corpus-update
+git diff test/mutationlab/corpus/
+```
+
+The `corpus/` diff is the behavioral changelog for the upgrade, scoped to exactly the fine-grained
+behaviors GitOps Reverser depends on. An empty diff is a positive result. Without `LAB_K3S_IMAGE`, a
+new lab cluster runs the k3s image `CLUSTER.md` records, and `lab-capture` fails when the cluster
+serves another version than the corpus was captured on.

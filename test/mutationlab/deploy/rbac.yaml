@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mutation-capture-lab
+  namespace: mutation-capture-lab
+---
+# Read-only, and only what the Deployment's --watch-resources names: the watch recorder and the
+# /watch-probe endpoint open watches, nothing else. A resource added there needs a rule here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mutation-capture-lab
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["mutationlab.configbutler.ai"]
+    resources: ["widgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["wardle.example.com"]
+    resources: ["flunders"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mutation-capture-lab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mutation-capture-lab
+subjects:
+  - kind: ServiceAccount
+    name: mutation-capture-lab
+    namespace: mutation-capture-lab

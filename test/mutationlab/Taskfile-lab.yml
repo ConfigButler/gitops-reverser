@@ -1,0 +1,211 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: '3'
+
+# The mutation-capture lab on its own k3d cluster
+# (docs/design/mutation-capture-lab-own-cluster.md). It runs the lab and nothing of the product,
+# beside the e2e cluster if one is up: its own cluster name, stamps, lock, and port, and it never
+# switches the current kube context.
+#
+# Self-contained by rule: no task here depends on a task outside this file, and nothing here names
+# a product resource. test/mutationlab/selfcontained_test.go enforces both in `task test`.
+#
+#   task lab-bootstrap      certificates, cluster, image, deployment, and a live check of every source
+#   task lab-capture        run the scenarios and compare the capture to the corpus
+#   task lab-corpus-update  run the scenarios and write the capture as the corpus, CLUSTER.md included
+#   task lab-status         the cluster, its k3s version, the lab pod, and how many records it holds
+#   task lab-cleanup        delete the cluster and its stamp directory
+#
+# Testing a new Kubernetes version:
+#   task lab-cleanup && task lab-bootstrap LAB_K3S_IMAGE=rancher/k3s:<version> && task lab-corpus-update
+
+vars:
+  LAB_CLUSTER_NAME: '{{.LAB_CLUSTER_NAME | default "gitops-reverser-capture-lab"}}'
+  LAB_CTX: 'k3d-{{.LAB_CLUSTER_NAME}}'
+  LAB_CS: '.stamps/cluster/{{.LAB_CTX}}'
+  LAB_NAMESPACE: mutation-capture-lab
+  LAB_API_PORT: '{{.LAB_API_PORT | default "18081"}}'
+  LAB_CONTAINER_TOOL: '{{.LAB_CONTAINER_TOOL | default "docker"}}'
+  LAB_AUDIT_POLICY_SOURCE: test/e2e/cluster/audit/policy.yaml
+  # The k3s image a new lab cluster is created with: LAB_K3S_IMAGE when given, else the one the
+  # committed corpus was captured on, as test/mutationlab/corpus/CLUSTER.md records it. An
+  # existing cluster keeps the image it was created with, recorded in its stamps.
+  LAB_K3S_IMAGE_RECORDED:
+    sh: sed -n 's/^| k3d image | `\([^`]*\)` |$/\1/p' test/mutationlab/corpus/CLUSTER.md
+  LAB_K3S_IMAGE_REQUESTED: '{{.LAB_K3S_IMAGE | default ""}}'
+  # The image tag is a content hash of the lab's sources, so a change rolls the lab pod and an
+  # unchanged source keeps it running.
+  LAB_IMAGE_HASH:
+    sh: >-
+      cat $(find cmd/mutation-capture-lab internal/mutationlab -type f -name '*.go' | sort)
+      go.mod go.sum test/mutationlab/Dockerfile | sha256sum | cut -c1-12
+  LAB_IMAGE: 'mutation-capture-lab:{{.LAB_IMAGE_HASH}}'
+
+tasks:
+  lab-bootstrap:
+    desc: Create the mutation-capture lab's own cluster, deploy the lab, and prove every source is live.
+    cmds:
+      - task: _lab-deployed
+      - task: _lab-port-forward
+      # The probe writes of every source, found among the records: audit, admission, conversion,
+      # the aggregated API, and the watch.
+      - task: _lab-driver
+        vars:
+          LAB_RUN: '^TestSourcesLive$'
+
+  lab-capture:
+    desc: Run the lab scenarios on the lab cluster and compare the capture to the committed corpus.
+    cmds:
+      - task: lab-bootstrap
+      - task: _lab-driver
+        vars:
+          LAB_SKIP: '^TestSourcesLive$'
+
+  lab-corpus-update:
+    desc: Run the lab scenarios and write the capture as the corpus, CLUSTER.md included.
+    cmds:
+      - task: lab-bootstrap
+      - task: _lab-driver
+        vars:
+          LAB_SKIP: '^TestSourcesLive$'
+          MUTATIONLAB_UPDATE: '1'
+
+  lab-status:
+    desc: Show the lab cluster, its k3s version, the lab pod, and how many records it holds.
+    cmds:
+      - |
+        if ! k3d cluster list "{{.LAB_CLUSTER_NAME}}" >/dev/null 2>&1; then
+          echo "No lab cluster '{{.LAB_CLUSTER_NAME}}'. Create it with: task lab-bootstrap"
+          exit 0
+        fi
+        k3d cluster list "{{.LAB_CLUSTER_NAME}}"
+        echo
+        echo "k3s image: $(cat "{{.LAB_CS}}/k3s-image" 2>/dev/null || echo unknown)"
+        kubectl --context "{{.LAB_CTX}}" version 2>/dev/null | grep -i '^server' || echo "Server: unreachable"
+        echo
+        kubectl --context "{{.LAB_CTX}}" -n "{{.LAB_NAMESPACE}}" get pods -o wide || true
+        echo
+        if records="$(curl -fsS "http://127.0.0.1:{{.LAB_API_PORT}}/records" 2>/dev/null)"; then
+          count="$(printf '%s' "${records}" | grep -o '"source":"[a-z]*"' | wc -l)"
+          echo "Records held: ${count}"
+        else
+          echo "Records held: unknown (no forward on {{.LAB_API_PORT}}; task lab-bootstrap starts one)"
+        fi
+
+  lab-cleanup:
+    desc: Delete the lab cluster and its stamp directory.
+    cmds:
+      - pkill -f "port-forward --context {{.LAB_CTX}} " 2>/dev/null || true
+      # Unconditional: an interrupted create leaves state `k3d cluster list` does not show, and
+      # delete exits 0 when there is nothing to delete.
+      - k3d cluster delete "{{.LAB_CLUSTER_NAME}}"
+      - rm -rf "{{.LAB_CS}}"
+
+  lab-build-image:
+    desc: Build the mutation-capture lab image.
+    status:
+      - '{{.LAB_CONTAINER_TOOL}} image inspect "{{.LAB_IMAGE}}" >/dev/null 2>&1'
+    cmds:
+      - '{{.LAB_CONTAINER_TOOL}} build -f test/mutationlab/Dockerfile -t "{{.LAB_IMAGE}}" .'
+
+  _lab-certs:
+    # Issued before the cluster exists, so the audit kubeconfig the API server reads at startup is
+    # already the final one.
+    status:
+      - test -f "{{.LAB_CS}}/certs/ca.crt"
+      - test -f "{{.LAB_CS}}/certs/tls.crt"
+      - test -f "{{.LAB_CS}}/certs/tls.key"
+      - test -f "{{.LAB_CS}}/audit/webhook-config.yaml"
+    cmds:
+      - >-
+        go run ./test/mutationlab/tools/lab-certs
+        --cert-dir "{{.LAB_CS}}/certs"
+        --audit-kubeconfig "{{.LAB_CS}}/audit/webhook-config.yaml"
+        --namespace "{{.LAB_NAMESPACE}}"
+
+  _lab-cluster-ready:
+    deps:
+      - _lab-certs
+    preconditions:
+      # A stamped cluster that does not answer is wedged (host suspend, OOM, a killed run);
+      # recreating it under the same stamps would only hide that.
+      - sh: |
+          test -f "{{.LAB_CS}}/ready" || exit 0
+          kubectl --context "{{.LAB_CTX}}" --request-timeout=5s get nodes \
+            -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null \
+            | awk 'BEGIN{n=0;t=0} {t++; if ($0=="True") n++} END{exit !(t>0 && n==t)}'
+        msg: |
+          The lab cluster '{{.LAB_CLUSTER_NAME}}' is stamped as ready but its nodes are not Ready.
+          Recreate it: task lab-cleanup && task lab-bootstrap
+      - sh: |
+          test -f "{{.LAB_CS}}/ready" || exit 0
+          test -z "{{.LAB_K3S_IMAGE_REQUESTED}}" || test "$(cat "{{.LAB_CS}}/k3s-image")" = "{{.LAB_K3S_IMAGE_REQUESTED}}"
+        msg: |
+          The lab cluster runs another k3s image than LAB_K3S_IMAGE={{.LAB_K3S_IMAGE_REQUESTED}}.
+          Recreate it on that image: task lab-cleanup && task lab-bootstrap LAB_K3S_IMAGE={{.LAB_K3S_IMAGE_REQUESTED}}
+    status:
+      - test -f "{{.LAB_CS}}/ready"
+    cmds:
+      - mkdir -p "{{.LAB_CS}}/audit"
+      # The one tracked audit policy, shared with e2e, so the corpus shows what the product's
+      # clusters audit.
+      - cp "{{.LAB_AUDIT_POLICY_SOURCE}}" "{{.LAB_CS}}/audit/policy.yaml"
+      - |
+        image="{{.LAB_K3S_IMAGE_REQUESTED | default .LAB_K3S_IMAGE_RECORDED}}"
+        test -n "${image}" || { echo "no k3s image: set LAB_K3S_IMAGE or record one in CLUSTER.md" >&2; exit 1; }
+        # One node: the lab never restarts its server, so it needs no agent to keep pods away
+        # from a restart.
+        CLUSTER_NAME="{{.LAB_CLUSTER_NAME}}" \
+          K3S_IMAGE="${image}" \
+          AUDIT_DIR_REL="{{.LAB_CS}}/audit" \
+          K3D_AGENT_COUNT=0 \
+          K3D_SWITCH_CONTEXT=false \
+          bash test/e2e/cluster/start-cluster.sh
+        printf '%s\n' "${image}" > "{{.LAB_CS}}/k3s-image"
+        touch "{{.LAB_CS}}/ready"
+
+  _lab-deployed:
+    deps:
+      - _lab-cluster-ready
+      - lab-build-image
+    cmds:
+      - |
+        LAB_CLUSTER_NAME="{{.LAB_CLUSTER_NAME}}" LAB_CTX="{{.LAB_CTX}}" LAB_CS="{{.LAB_CS}}" \
+          LAB_IMAGE="{{.LAB_IMAGE}}" LAB_NAMESPACE="{{.LAB_NAMESPACE}}" \
+          CONTAINER_TOOL="{{.LAB_CONTAINER_TOOL}}" \
+          bash test/mutationlab/deploy.sh
+
+  _lab-port-forward:
+    run: always
+    cmds:
+      - |
+        LAB_CTX="{{.LAB_CTX}}" LAB_CS="{{.LAB_CS}}" LAB_NAMESPACE="{{.LAB_NAMESPACE}}" \
+          LAB_API_PORT="{{.LAB_API_PORT}}" \
+          bash test/mutationlab/port-forward.sh
+
+  _lab-driver:
+    # always: the root Taskfile runs each task once per invocation, and this one runs twice in a
+    # capture, once for the live check and once for the scenarios.
+    run: always
+    vars:
+      LAB_RUN: '{{.LAB_RUN | default ""}}'
+      LAB_SKIP: '{{.LAB_SKIP | default ""}}'
+      MUTATIONLAB_UPDATE: '{{.MUTATIONLAB_UPDATE | default ""}}'
+    cmds:
+      - |
+        mkdir -p "{{.LAB_CS}}"
+        # Serial by construction (one `go test` package run), and one run per cluster at a time:
+        # scenarios clear the shared record store.
+        rc=0
+        LAB_API_URL="http://127.0.0.1:{{.LAB_API_PORT}}" \
+          LAB_KUBECONTEXT="{{.LAB_CTX}}" \
+          LAB_CA_FILE="$(pwd)/{{.LAB_CS}}/certs/ca.crt" \
+          LAB_K3S_IMAGE="$(cat "{{.LAB_CS}}/k3s-image")" \
+          MUTATIONLAB_UPDATE="{{.MUTATIONLAB_UPDATE}}" \
+          flock --nonblock --conflict-exit-code 75 "{{.LAB_CS}}/lab.lock" \
+          go test -tags mutationlab_e2e -count=1 -timeout 15m -v \
+            {{if .LAB_RUN}}-run '{{.LAB_RUN}}'{{end}} {{if .LAB_SKIP}}-skip '{{.LAB_SKIP}}'{{end}} \
+            ./test/mutationlab/e2e/ || rc=$?
+        if [ "${rc}" -eq 75 ]; then
+          echo "Another lab run holds {{.LAB_CS}}/lab.lock; wait for it to finish." >&2
+        fi
+        exit "${rc}"

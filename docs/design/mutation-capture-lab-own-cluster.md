@@ -1,6 +1,6 @@
 # Mutation-capture lab on its own cluster
 
-Status: proposed, 2026-10-27. Not built.
+Status: built, 2026-10-27. [As built](#as-built) lists where the build departs from this design.
 
 The [mutation-capture lab](../spec/mutation-capture-lab-design.md) records what Kubernetes emits
 through watches, audit, admission, CRD conversion, and an aggregated API, and commits it as a
@@ -15,7 +15,7 @@ the requirements that keep the capture faithful and the lab working.
 ## What broke, and why it could
 
 The lab never owned its wiring. `task lab-e2e` swapped the lab image into the product's controller
-Deployment on the e2e cluster ([`swap-image.sh`](../../test/mutationlab/swap-image.sh)) and borrowed
+Deployment on the e2e cluster (`swap-image.sh`, since removed) and borrowed
 everything around it:
 
 | The lab needs | It came from | Since `fd6f6933` |
@@ -181,7 +181,7 @@ context rather than the current one. Otherwise bootstrapping the lab would move 
 | the lab binary, recorders, normalizer, corpus, and driver | unchanged, apart from the client-CA flag, the context, and the readiness check |
 | the content-hashed lab image and its build | unchanged |
 | `lab-port-forward.sh` | with the lab's namespace and selector |
-| the audit kubeconfig template | from `generate-audit-webhook-kubeconfig.sh`, fed from files instead of Secrets |
+| the audit kubeconfig | written by the certificate command, not by `generate-audit-webhook-kubeconfig.sh` (see [As built](#as-built)) |
 
 Not reused: `inject-webhook-tls.sh`, whose node restart the lab avoids, and the Flux stack.
 
@@ -230,10 +230,28 @@ Each one names the failure it prevents.
 7. The scheduled CI job, the static self-containment check, and the lab's README and
    [spec](../spec/mutation-capture-lab-design.md#isolated-test-setup) rewritten to match.
 
-## Open questions
+## As built
 
-- **CI cadence.** Nightly plus manual dispatch is the proposal. A per-PR job would catch a break
-  in the PR that causes it, for a few runner minutes per PR.
-- **Memory beside e2e.** One k3s node with the lab and the sample API server should stay near
-  1 GiB, but that is an estimate until measured. If it is more, `lab-capture` can take the e2e lock
-  as well, so the two run in turn.
+- **Two Services, not one.** `mutation-capture-lab` is a ClusterIP Service for admission,
+  conversion (443 to 9443), and the records API (8080); `mutation-capture-lab-audit` is the NodePort
+  30444 to 9444. A NodePort Service gives every port it lists a node port.
+- **The certificate command writes the audit kubeconfig.** `generate-audit-webhook-kubeconfig.sh`
+  defaults to the product's names and reads Secrets; requirement 5 keeps the lab off it.
+- **The webhook keeps the name `validate-all.configbutler.ai`.** The API server keys the admission
+  recorder's audit annotation by it (`validate-all.configbutler.ai/scenario`) and quotes it in row
+  12's rejection, so the name is part of the corpus, like the match rules of requirement 3.
+- **The checks are tests in the driver.** `TestSourcesLive` is the five-source check:
+  `lab-bootstrap` runs it, and `lab-capture` skips it. `TestClusterProvenance` writes `CLUSTER.md`
+  on an update and fails a capture when the cluster serves another version. The static check is
+  [`selfcontained_test.go`](../../test/mutationlab/selfcontained_test.go), in `task test`.
+- **The capture on v1.36.4 differs in one field.** 19 of 21 scenarios reproduced the corpus byte for
+  byte. The other two, rows 8a and 19, gained `authenticationMetadata.impersonationConstraint:
+  impersonate:user-info` on each of their 15 impersonated audit events, and on nothing else. A plain
+  k3s v1.36.1 and v1.36.4 cluster with an audit log backend and none of the lab's wiring records the
+  same field for the same request, so it comes from the API server (constrained impersonation, beta
+  in 1.36), not from the new delivery path. Why the committed rows, captured on the e2e cluster,
+  lack it is not known.
+- **Memory.** The lab cluster's node used about 600 MiB with the lab and the sample API server
+  running, so `lab-capture` does not take the e2e lock.
+- **CI.** [`mutation-lab.yml`](../../.github/workflows/mutation-lab.yml) runs `lab-capture` nightly
+  and on manual dispatch.

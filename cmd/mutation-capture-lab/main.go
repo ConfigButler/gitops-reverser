@@ -6,9 +6,11 @@
 // deliberately NOT a second GitOps Reverser; see
 // docs/spec/mutation-capture-lab-design.md.
 //
-// It deliberately serves the SAME webhook URLs as the product
-// (/validate-all, /audit-webhook) so a lab deployment can swap the product image
-// without reconfiguring the cluster's admission/audit wiring.
+// It runs on a cluster of its own (test/mutationlab/Taskfile-lab.yml), which
+// delivers to it the way any cluster delivers: the API server's audit webhook
+// backend posts to /audit-webhook over mutual TLS, a ValidatingWebhookConfiguration
+// sends admission reviews to /validate-all, and the scenario CRD's conversion
+// webhook calls /convert.
 package main
 
 import (
@@ -121,12 +123,6 @@ func buildServers(
 
 	auditMux := http.NewServeMux()
 	auditMux.Handle("/audit-webhook", audit)
-	// Audit routes are NAMED in the e2e cluster: its bootstrap kubeconfig posts to
-	// /audit-webhook/<source-name> (the chart's local KubeProvider), because the bare
-	// path is the product's shared annotation-routed endpoint. The lab records what
-	// arrives regardless of which source it was addressed to, so it takes the whole
-	// subtree — an exact-path-only mux 404s every event the cluster sends.
-	auditMux.Handle("/audit-webhook/", audit)
 
 	return []server{
 		{name: "admission", certDir: cfg.admissionCert, srv: &http.Server{

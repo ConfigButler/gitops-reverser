@@ -1,0 +1,35 @@
+# Admission reviews, CRD conversion, and the records API. The API server addresses the webhooks
+# through this Service, so its DNS name is the one the serving certificate carries.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mutation-capture-lab
+  namespace: mutation-capture-lab
+spec:
+  selector:
+    app.kubernetes.io/name: mutation-capture-lab
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+    - name: api
+      port: 8080
+      targetPort: api
+---
+# Audit. The audit webhook backend is configured before the cluster exists, when no Service has a
+# ClusterIP yet, so the API server posts to this fixed NodePort on its own node:
+# https://127.0.0.1:30444/audit-webhook, verifying the Service's DNS name as tls-server-name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mutation-capture-lab-audit
+  namespace: mutation-capture-lab
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: mutation-capture-lab
+  ports:
+    - name: audit
+      port: 9444
+      targetPort: audit
+      nodePort: 30444
