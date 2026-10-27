@@ -172,8 +172,9 @@ the Flux `Kustomization` applier and the Argo CD `Application` applier, its auto
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches initialize from current state on startup. When an endpoint
-is configured, Redis stores cursors for reconnecting running watches and the coordination records used by
-CommitRequest author capture and HA. Attribution does not require it on its own: its facts travel on a
+is configured, Redis stores cursors for reconnecting running watches. A CommitRequest's author comes from
+the audit fact of the write that created it, like any write's, and needs no Redis record.
+Attribution does not require it on its own: its facts travel on a
 selectable transport, Redis Streams by default and an in-process ring with
 `--author-attribution-transport=memory`, which is refused with more than one replica. HA will require
 Redis as the shared store across replicas.

@@ -309,6 +309,29 @@ func TestNormalize_DeletecollectionFanoutKeepsDistinctIdentities(t *testing.T) {
 	}
 }
 
+func TestNormalize_ListResourceVersionStaysOutOfTheRelationalSpace(t *testing.T) {
+	// Row 9 on k3s v1.37.1: the deletecollection list's resourceVersion is the last item's in some
+	// runs and a newer one in others. Both must normalize alike, and the watch DELETED placeholders
+	// after it must not shift.
+	audit := func(listRV string) string {
+		return `{"responseObject":{"kind":"ConfigMapList","items":[` +
+			`{"metadata":{"uid":"ua","resourceVersion":"10"}},{"metadata":{"uid":"ub","resourceVersion":"11"}}],` +
+			`"metadata":{"resourceVersion":"` + listRV + `"}}}`
+	}
+	deleted := `{"type":"DELETED","object":{"metadata":{"uid":"ua","resourceVersion":"13"}}}`
+	want := []string{
+		`{"responseObject":{"items":[{"metadata":{"resourceVersion":"<rv-1>","uid":"<uid-1>"}},` +
+			`{"metadata":{"resourceVersion":"<rv-2>","uid":"<uid-2>"}}],"kind":"ConfigMapList",` +
+			`"metadata":{"resourceVersion":"<list-rv>"}}}`,
+		`{"object":{"metadata":{"resourceVersion":"<rv-3>","uid":"<uid-1>"}},"type":"DELETED"}`,
+	}
+	for _, listRV := range []string{"11", "12"} {
+		if got := normJSON(t, audit(listRV), deleted); !reflect.DeepEqual(got, want) {
+			t.Errorf("list rv %s:\n got %v\nwant %v", listRV, got, want)
+		}
+	}
+}
+
 func TestNormalize_FinalizerTerminalDeleteSameUIDHigherRV(t *testing.T) {
 	// Row 8: the terminal DELETED keeps the same <uid> but a higher <rv>, proving
 	// it is the same object at a later resourceVersion.

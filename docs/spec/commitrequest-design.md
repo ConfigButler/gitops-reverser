@@ -102,9 +102,9 @@ A window is only ever opened by a write; a request attaches to one and never ope
 registration, the worker sets the attach deadline to registration plus `window.attachTimeout`, and
 repeated reconciles are idempotent: they restart nothing and, for `attach: Next`, close nothing again.
 With `CurrentOrNext` the request attaches to the author's window already open at registration, before
-any deadline is consulted, so `attachTimeout: 0s` can attach at all. Otherwise it waits, and waiting
-requests are served first come, first served. A request whose deadline has passed resolves and never
-takes a later window; when its deadline and a matching write are ready on the same wake, expiry wins.
+any deadline is consulted, so `attachTimeout: 0s` can attach at all. Otherwise it waits. A request
+whose deadline has passed resolves and never takes a later window; when its deadline and a matching
+write are ready on the same wake, expiry wins.
 
 On attach, the request's `idleTimeout` and `maxDuration` replace the window's timers: `maxDuration`
 runs from the attach, and so does the first idle interval. A waiting request gets a new window before
@@ -129,7 +129,9 @@ its first edits before they reach Git. A Git host's push notice leaves an attach
 Each request attaches
 to at most one window and cannot rename a finalized commit, including one waiting for push. A bundle
 provides no ordering guarantee. The wait does not reserve a transaction. Competing requests are
-served in registration order, first come, first served.
+not queued: a later request of the same author on the same `GitTarget` is refused with
+`SaveInProgress` while the earlier one waits or collects, except that a `Next` request closes a
+collecting window under the earlier message and then waits for its own.
 
 `spec.message` is literal, including template-like text and surrounding spaces. It is never parsed
 as a template, so a request author cannot execute one. Omission uses

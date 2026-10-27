@@ -3059,9 +3059,12 @@ separates work the worker already collected from work that reaches it afterward.
 write was made after the request: a write still held for its audit fact arrives later and lands in
 the next window.
 
-Competing requests from one author are served first come, first served. A window carries at most
-one request; the next waits for the next window. A re-sent request is recognized by its identity
-and restarts nothing: its deadlines and, for `Next`, its one close are fixed at first registration.
+Competing requests from one author are not queued. A window carries one message, so while an
+earlier request of the same author on the same `GitTarget` waits for a window or collects one, a
+later request is refused at once with [`SaveInProgress`](#its-status). A `Next` request is not
+refused by one that is collecting: it closes that window under the earlier request's message, then
+waits for its own. A re-sent request is recognized by its identity and restarts nothing: its
+deadlines and, for `Next`, its one close are fixed at first registration.
 
 #### Sizing the request window
 

@@ -166,8 +166,10 @@ Two rules keep the edges honest:
   never closes a second window.
 - **`Next` needs time to wait.** CEL refuses `attach: Next` with `attachTimeout: 0s`: the save would
   close the author's window and give up in the same instant, collecting nothing.
-- **Competing saves are served first come, first served,** in the order the worker first registered
-  them. A window carries at most one save; the next waits for the next window.
+- **Competing saves are not queued.** A window carries one message, so a later save of the same
+  author on the same `GitTarget` is refused with `SaveInProgress` while the earlier one waits or
+  collects. A `Next` save closes a collecting window under the earlier message, then waits for its
+  own.
 
 What `Next` guarantees is narrower than its name suggests. It separates work the worker already
 collected from work that reaches the worker afterward. It cannot prove a write was made after the

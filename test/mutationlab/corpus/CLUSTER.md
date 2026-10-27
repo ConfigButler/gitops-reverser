@@ -32,9 +32,13 @@ records it for the same request. Every other scenario reproduced unchanged.
 Moving from `v1.36.4+k3s1` to `v1.37.1+k3s1` (2026-10-27, the e2e cluster's
 version) changed three shapes, each reproduced by a second capture:
 
-- `configmap/deletecollection/`: the `deletecollection` response's list
-  resourceVersion is now the last deleted object's own resourceVersion, where
-  1.36 returned a newer one, so the watch DELETED placeholders shift by one;
+- `configmap/deletecollection/`: the watch DELETED placeholders shifted by
+  one. The `deletecollection` response's list resourceVersion is the revision
+  the API server read the list at, which on 1.37.1 is the last deleted object's
+  resourceVersion in some runs and a newer one in others (two of four captures
+  each), where 1.36 returned a newer one in every run. The normalizer now writes
+  a list's own resourceVersion as `<list-rv>`, outside the numbered `<rv-N>`
+  placeholders, so both outcomes give the same corpus;
 - `pod/graceful-delete/`: the deleted pod's `PodReadyToStartContainers`
   condition now carries `reason: PodSandboxNotReady` and a message;
 - `configmap/owner-ref-cascade/`: the garbage collector's `userAgent` names the

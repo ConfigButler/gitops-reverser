@@ -120,10 +120,12 @@ other subresources. Keep manual scale writes if you want their authors recorded.
 The example includes Secret writes at `RequestResponse` level. To keep Secret bodies out of the
 webhook, exclude core `secrets` too. Those writes then have no audit evidence for attribution.
 
-Keep `create` of `commitrequests` in the `configbutler.ai` group covered, at `Metadata` level at
-least: a `CommitRequest`'s author comes from its own audit event, as a write's does. Without it a
-request names nobody, and cannot save the window of an author the audit names. The write catch-all
-covers it.
+Keep `create` and `patch` of `commitrequests` in the `configbutler.ai` group covered at
+`RequestResponse` level. A `CommitRequest`'s author comes from the audit event that created it,
+matched by the uid and resourceVersion in the event's `responseObject`. `Metadata` level leaves
+the response out, so the request cannot be matched. `patch` is there because server-side apply
+creates an object with a `patch`. Without the creating event, a request names nobody and cannot
+save the window of an author the audit names. The write catch-all covers both verbs.
 The audit policy controls evidence collection; `WatchRule` and `ClusterWatchRule` control what
 gets written to Git.
 

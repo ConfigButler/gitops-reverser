@@ -7,6 +7,53 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Upgrading from 0.54.0: drain the `CommitRequest`s first
+
+Existing providers, branches, targets and claims keep running across this upgrade; none of the
+0.53.0 recreation [below](#upgrading-from-0530-recreate-the-connection-objects-in-one-pass) applies.
+What needs ordering is the `CommitRequest`s that are in progress: 0.54.0 wrote progress conditions
+this release does not take over, so a request still open when it starts can stay open for good.
+
+1. Stop creating `CommitRequest`s: pause the automation and people that create them.
+2. Wait for every request to end. This lists the ones that have not, and should come back empty
+   once each has passed its `spec.window` bounds:
+
+   ```bash
+   kubectl get commitrequests -A -o json | jq -r '.items[]
+     | select([.status.conditions[]? | select((.type == "Ready" or .type == "Stalled")
+         and .status == "True")] | length == 0)
+     | "\(.metadata.namespace)/\(.metadata.name)"'
+   ```
+
+3. Adjust the audit policy and values, as the [entry below](#the-admission-webhook-is-gone-a-commitrequests-author-comes-from-audit)
+   describes: `commitrequests` `create` and `patch` at `RequestResponse` level, and no
+   `servers.admission` or `--admission-webhook*` settings.
+4. Apply the release's `crds.yaml`, then upgrade, as the
+   [chart's upgrade steps](../charts/gitops-reverser/README.md#upgrading) describe.
+5. Remove the admission webhook's leftovers.
+   - **Helm** deletes the `ValidatingWebhookConfiguration` and the `Certificate` it rendered, but
+     not the Secret cert-manager wrote for that certificate. Delete it:
+
+     ```bash
+     kubectl -n gitops-reverser delete secret gitops-reverser-admission-server-cert --ignore-not-found
+     ```
+
+   - **`install.yaml`** is applied with `kubectl apply`, which removes nothing. Delete the three
+     resources yourself:
+
+     ```bash
+     kubectl delete validatingwebhookconfiguration gitops-reverser-validate-operator-types --ignore-not-found
+     kubectl -n gitops-reverser delete certificate gitops-reverser-admission-server-cert --ignore-not-found
+     kubectl -n gitops-reverser delete secret gitops-reverser-admission-server-cert --ignore-not-found
+     ```
+
+   The names are those of a release named `gitops-reverser` in namespace `gitops-reverser`; use
+   yours if they differ.
+6. Run the command from step 2 again. A request it still lists was open across the upgrade and may
+   never end; one made on the cluster GitOps Reverser runs in, for a `GitTarget` that mirrors another
+   cluster, certainly will not. Delete each, and create it again: on the cluster the `GitTarget`
+   mirrors, for such a `GitTarget`. Then resume creating requests.
+
 ## The admission webhook is gone; a `CommitRequest`'s author comes from audit
 
 GitOps Reverser installs no admission webhook. The chart no longer renders the
@@ -22,8 +69,10 @@ those that remain expire on their own.
   certificate with `servers.metrics.tls.enabled`. The default install needs no cert-manager.
 - **A request's author.** A `CommitRequest`'s author comes from its own audit event, as a write's
   does, and is reported in `status.author`. The `AuthorAttributed` condition is gone. Keep `create`
-  of `commitrequests` in your audit policy; the write catch-all of the
-  [tuned policy](../test/e2e/cluster/audit/policy.yaml) covers it. A request no audit event names, on
+  and `patch` of `commitrequests` in your audit policy at `RequestResponse` level: the author is
+  matched by the uid and resourceVersion in the response, which `Metadata` level leaves out, and
+  server-side apply creates with a `patch`. The write catch-all of the
+  [tuned policy](../test/e2e/cluster/audit/policy.yaml) covers both. A request no audit event names, on
   a cluster that sends audit events, ends `Ready=True` with reason `AuthorUnresolved` and saves
   nothing. With attribution off, a request names nobody, as it did with the webhook off.
 - **Status while it runs.** A `CommitRequest` in progress is `Ready=Unknown`, reason `Saving` until the

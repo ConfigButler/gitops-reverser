@@ -536,6 +536,12 @@ func (i *FactIndex) file(facts *scopeFacts, scope factScope, fact AuthorFact, no
 			// tier too, and a removal query already waits on that key.
 			facts.putRemoval(fact.UID, &indexedFact{fact: fact, at: now, seq: i.nextSeq()})
 		}
+		if fact.Created {
+			// The creating fact also takes its own slot, which a later write may not overwrite: a
+			// no-op patch shares the creation's (uid, rv) and would replace it in the exact tier.
+			// Like the removal slot it needs no waiter key, since the latest tier's key covers it.
+			facts.putCreation(fact.UID, &indexedFact{fact: fact, at: now, seq: i.nextSeq()})
+		}
 		return append(keys, factWaiterKey{scope: scope, kind: factKindLatest, value: fact.UID})
 	case fact.ResourceVersion != "":
 		facts.putRV(fact.ResourceVersion, &indexedFact{fact: fact, at: now, seq: i.nextSeq()})
