@@ -3258,6 +3258,25 @@ request produced a pushed commit:
 A request is served again after GitOps Reverser restarts: the path that owns it finds its own
 claim, and resumes with the author it recorded.
 
+### How long a request lives
+
+A `CommitRequest` is a single save, not a standing order: every stage it passes through ends on its
+own, and the status says which limit ended it. To save again, create a new request.
+
+| Stage | Ends after | What the request then says |
+| --- | --- | --- |
+| Picked up, author named, waiting for a branch worker | `attachTimeout` + `maxDuration` + 2 minutes, counted from creation | `Ready=False`, `Stalled=True`, reason `FinalizeFailed`: the `GitTarget` did not start a branch worker, or the request was not acted on, within the safety window |
+| Waiting for a window (`WaitingForWindow`) | `attachTimeout` | `Ready=True`, reason `NoWindow` (see [When there is nothing to commit](#when-there-is-nothing-to-commit)) |
+| Collecting its window (`CollectingWindow`) | `maxDuration`, at most `5m` | the window closes and is committed |
+| Waiting for the push (`WaitingForPush`) | no limit of its own | stays `Ready=Unknown`; `Reconciling` says why the push waits |
+| Waiting for its apply, with `catchUp: AfterPush` | 10 minutes from `Ready` | `Applied=Unknown`, reason `TimedOut` (see [Applying a save at once](#applying-a-save-at-once)) |
+| Finished | 48 hours, by default | deleted (see [Finished requests are deleted after 48 hours](#finished-requests-are-deleted-after-48-hours)) |
+
+The push is the one wait without a limit, deliberately. Once the window is committed, the commit is
+going to the remote: failing the request while the worker still retries, every 10 seconds doubling
+to 5 minutes, would report a save as failed that then lands. A worker that stops before the push
+fails the request instead. A request that waits there needs the remote fixed, not a new request.
+
 ### Applying a save at once
 
 A save is in Git once it is pushed, and the cluster already runs it, so by default nothing applies
@@ -3279,8 +3298,9 @@ already at the tip needs none. The request reports the outcome in its `Applied` 
 | `Unknown` | `Lost` | GitOps Reverser restarted before it learnt how the apply went |
 
 Wait for `Applied=True` for "saved and applied"; `Ready=True` stays "saved". A request follows its
-apply for 10 minutes at most: an applier that cannot catch up does not keep it open. A finished
-request is deleted only after its `Applied` condition is settled.
+apply for 10 minutes at most: an applier that cannot catch up does not keep it open, and a request
+that ends `TimedOut` needs the applier looked at, not a new request. A finished request is deleted
+only after its `Applied` condition is settled.
 
 ### Finished requests are deleted after 48 hours
 
