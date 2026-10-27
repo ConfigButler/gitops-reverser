@@ -151,6 +151,30 @@ func TestAuthorFactFromEvent_ObjectWriteCarriesTheIdentityTheJoinNeeds(t *testin
 	require.Nil(t, fact.UIDs)
 }
 
+// TestAuthorFactFromEvent_MarksTheWriteThatCreatedTheObject: a create, or a patch answered 201
+// Created (server-side apply making the object), is marked Created; any other write is not.
+func TestAuthorFactFromEvent_MarksTheWriteThatCreatedTheObject(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		verb    string
+		code    int32
+		created bool
+	}{
+		{name: "create", verb: "create", code: 201, created: true},
+		{name: "server-side apply of a new object", verb: "patch", code: 201, created: true},
+		{name: "patch", verb: "patch", code: 200},
+		{name: "update", verb: "update", code: 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := mutationEvent(tc.verb, "uid-1", "101", "alice")
+			event.ResponseStatus = &metav1.Status{Code: tc.code}
+			fact, _, ok := AuthorFactFromEvent(t.Context(), event, 0)
+			require.True(t, ok)
+			require.Equal(t, tc.created, fact.Created)
+		})
+	}
+}
+
 // TestAuthorFact_UnmarshalRefusesAFactThatNamesNobody pins the wire contract. A fact exists to name
 // somebody, so `author` is the one required field, and missing, null, and empty are one violation
 // rather than three. Go cannot state that as a type — every type has a constructible zero value, and

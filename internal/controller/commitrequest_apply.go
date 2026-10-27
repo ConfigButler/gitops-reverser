@@ -45,21 +45,30 @@ func applyReported(cr *configbutleraiv1alpha3.CommitRequest) bool {
 // followApply reads where the request's apply stands, writes it to Applied, and comes back until it
 // is settled; then the request expires as any finished one does. A write that conflicts is decided
 // again on the next step, from the request as it is stored.
+//
+// A request that pushed no commit is settled here, without asking its worker: one that ended before
+// it reached a worker, such as AuthorUnresolved, is one its worker never hears of, and would
+// otherwise be reported lost.
 func (c *commitRequestCore) followApply(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 ) (time.Duration, error) {
-	attach := git.AttachCommitRequest{
-		Namespace: cr.Namespace, Name: cr.Name, UID: string(cr.UID),
-		GitTargetName: cr.GitTargetKey().Name, GitTargetNamespace: cr.GitTargetKey().Namespace,
-	}
-	apply, known, err := c.finalizer.LookupCommitRequestApply(ctx, attach)
-	if err != nil {
-		p.log.V(1).Info("Cannot read the CommitRequest's apply yet; will retry",
-			"name", client.ObjectKeyFromObject(cr), "err", err.Error())
-		return commitRequestPollInterval, nil
-	}
-	if !known {
-		apply = unknownApply(cr)
+	apply := nothingToApply()
+	if cr.Status.Commit != "" {
+		attach := git.AttachCommitRequest{
+			Namespace: cr.Namespace, Name: cr.Name, UID: string(cr.UID),
+			GitTargetName: cr.GitTargetKey().Name, GitTargetNamespace: cr.GitTargetKey().Namespace,
+		}
+		var known bool
+		var err error
+		apply, known, err = c.finalizer.LookupCommitRequestApply(ctx, attach)
+		if err != nil {
+			p.log.V(1).Info("Cannot read the CommitRequest's apply yet; will retry",
+				"name", client.ObjectKeyFromObject(cr), "err", err.Error())
+			return commitRequestPollInterval, nil
+		}
+		if !known {
+			apply = unknownApply(cr)
+		}
 	}
 	before := cr.Status.DeepCopy()
 	setAppliedCondition(cr, apply)
@@ -77,6 +86,12 @@ func (c *commitRequestCore) followApply(
 		return c.expireFinished(ctx, p, cr)
 	}
 	return commitRequestPollInterval, nil
+}
+
+// nothingToApply is the apply of a request that pushed no commit: none was needed.
+func nothingToApply() git.SaveApply {
+	return git.SaveApply{Done: true, Applied: true, Reason: git.SaveApplyNothingToApply,
+		Message: "the request pushed no commit, so there is nothing to apply"}
 }
 
 // unknownApply is the apply of a request its worker knows nothing of: still being taken on, shortly

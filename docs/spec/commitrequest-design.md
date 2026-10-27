@@ -148,10 +148,13 @@ pushed commit is required; `Ready=True` also includes successful no-commit outco
 
 ## Authorship
 
-A request's author comes from its own audit event, on the cluster it was created on, the same way a
-watched write's does: the core looks it up in the same fact index, on the audit route of the
-`GitTarget`'s `KubeProvider`, keyed by the request's UID and the resourceVersion it was created with,
-and waits up to `--author-attribution-grace`. It acquires the fact stream of `commitrequests` on that
+A request's author comes from the audit event that created it, on the cluster it was created on, the
+same way a watched write's does: the core looks it up in the same fact index, on the audit route of the
+`GitTarget`'s `KubeProvider`, by the request's UID, and waits up to `--author-attribution-grace`. Only a
+fact marked as the creating write answers: a `create`, or a `patch` answered `201 Created`
+(server-side apply of a new object). A later write to the request, such as a controller patching its
+labels before the request is claimed, names who made that write, so it never names the author and
+never moves the request to that actor's window. It acquires the fact stream of `commitrequests` on that
 route, so the fact follower reads those audit facts at all.
 
 | Outcome | The request |
@@ -163,8 +166,7 @@ route, so the fact follower reads those audit facts at all.
 
 The wait runs whenever attribution is on; whether the provider has received facts is checked only
 after it, so a request is not refused while its provider's first audit event is still in transit.
-The author is written in the claim: every status write moves the resourceVersion the fact is keyed
-by, so a later lookup could never match.
+The author is written in the claim, and read from there afterwards.
 
 The author decides which window the request attaches to. The matched window decides the Git author:
 

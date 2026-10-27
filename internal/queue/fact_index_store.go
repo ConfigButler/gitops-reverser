@@ -241,6 +241,22 @@ func (s *scopeFacts) lookupLatest(uid string, cutoff time.Time) (AuthorFact, boo
 	return liveFact(s.latest[uid], cutoff)
 }
 
+// lookupCreation reads the fact that created the object with uid, from the exact tier, where every
+// fact carrying a uid and a resourceVersion is filed under its own version, so no later write
+// replaces it. It walks the tier, which costs one pass over a type's facts: it serves only the
+// CommitRequest author lookup, made once per request.
+func (s *scopeFacts) lookupCreation(uid string, cutoff time.Time) (AuthorFact, bool) {
+	if uid == "" {
+		return AuthorFact{}, false
+	}
+	for key, entry := range s.exact {
+		if key.uid == uid && entry.fact.Created {
+			return liveFact(entry, cutoff)
+		}
+	}
+	return AuthorFact{}, false
+}
+
 // lookupRemovalPointer reads the sticky removal pointer. It takes NO cutoff, and it is the only lookup here
 // that does not: the pointer's horizon is a count rather than a clock.
 //

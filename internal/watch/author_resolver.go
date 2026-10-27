@@ -68,6 +68,8 @@ type AuthorQuery struct {
 	// Terminating reports that a removed object carried a deletionTimestamp; see
 	// queue.FactQuery.Terminating.
 	Terminating bool
+	// Creation asks only who created the object; see queue.FactQuery.Creation.
+	Creation bool
 }
 
 // factQuery renders the query the way the index is keyed.
@@ -82,6 +84,7 @@ func (q AuthorQuery) factQuery() queue.FactQuery {
 		Name:            q.Name,
 		ExactCapable:    q.ExactCapable,
 		Terminating:     q.Terminating,
+		Creation:        q.Creation,
 	}
 }
 
