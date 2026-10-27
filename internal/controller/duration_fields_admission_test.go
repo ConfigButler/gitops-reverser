@@ -205,7 +205,7 @@ var _ = Describe("Duration fields", func() {
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, omitted) })
 		Expect(omitted.Spec.Window).NotTo(BeNil(), "the block default must be filled in")
 		Expect(omitted.Spec.Window.Attach).To(Equal(configbutleraiv1alpha3.AttachCurrentOrNext))
-		Expect(omitted.Spec.Window.AttachTimeout.Duration).To(Equal(2 * time.Second))
+		Expect(omitted.Spec.Window.AttachTimeout.Duration).To(Equal(5 * time.Second))
 		Expect(omitted.Spec.Window.MaxDuration.Duration).To(Equal(2 * time.Second))
 		Expect(omitted.Spec.Window.IdleTimeout).To(BeNil(), "no idle close unless one is asked for")
 		Expect(omitted.Spec.WhenNothingToCommit).To(Equal(configbutleraiv1alpha3.NothingToCommitResolve))

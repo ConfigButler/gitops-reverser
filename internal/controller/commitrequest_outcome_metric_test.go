@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -159,7 +160,7 @@ func TestCommitRequestOutcome_MapsEveryFinalizeResult(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, commitRequestOutcome(tc.result, tc.err))
+			assert.Equal(t, tc.want, commitRequestOutcomeValue(tc.result, tc.err))
 		})
 	}
 }
@@ -277,8 +278,13 @@ func TestCommitRequestMetric_FailedStatusWriteThenRedeliveryCountsTwice(t *testi
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f}
 
-	reconcileCommitRequest(t, r, "save-lost")
-	reconcileCommitRequest(t, r, "save-lost")
+	// The failed write is returned, so the request is reconciled again.
+	for range 2 {
+		_, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: client.ObjectKey{Namespace: "default", Name: "save-lost"},
+		})
+		require.Error(t, err)
+	}
 
 	value, ok := outcomeCount(t, reader, crOutcomeCommitted)
 	require.True(t, ok)

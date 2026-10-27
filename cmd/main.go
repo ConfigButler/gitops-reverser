@@ -408,12 +408,17 @@ func main() {
 			Follower:       applyDispatcher,
 		}).SetupWithManager(mgr), "unable to create controller", "controller", kind)
 	}
+	// A CommitRequest's author comes from its audit fact on the route of its GitTarget's
+	// KubeProvider, as a watched write's does, so the reconciler shares the watch plane's resolver
+	// and fact streams; both stay nil with attribution off.
 	if err := (&controller.CommitRequestReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		APIReader: mgr.GetAPIReader(),
-		Finalizer: eventRouter,
-		TTL:       cfg.commitRequestTTL,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		APIReader:   mgr.GetAPIReader(),
+		Finalizer:   eventRouter,
+		Authors:     watchMgr.AuthorResolver,
+		FactStreams: watchMgr.FactStreams,
+		TTL:         cfg.commitRequestTTL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)

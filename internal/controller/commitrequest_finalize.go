@@ -27,6 +27,11 @@ const (
 	crReasonGitTargetRefPruned = "GitTargetRefPruned"
 	crReasonNotAllowed         = "NotAllowed"
 	crReasonSaveInProgress     = "SaveInProgress"
+	crReasonGitTargetNotFound  = "GitTargetNotFound"
+	crReasonAuthorUnresolved   = "AuthorUnresolved"
+	// crReasonSaving is the progress reason of a request just claimed, before the worker reports a
+	// phase.
+	crReasonSaving = "Saving"
 )
 
 // The bounded `outcome` values on gitopsreverser_commit_requests_total.
@@ -42,15 +47,17 @@ const (
 	crOutcomeAlreadyPresent = "already_present"
 	crOutcomeSaveInProgress = "save_in_progress"
 	crOutcomeFailed         = "failed"
+	// crOutcomeAuthorUnresolved is a request no audit fact names, on a cluster that sends them.
+	crOutcomeAuthorUnresolved = "author_unresolved"
 )
 
-// commitRequestOutcome maps one finalize result to its counter value.
+// commitRequestOutcomeValue maps one finalize result to its counter value.
 //
 // A finalize error outranks the outcome because FinalizeResult.Outcome is only set when Err is nil,
 // and an unrecognized outcome counts as failed for the same reason applyFinalizeResultToStatus
 // fails it: an empty or unknown outcome with no error is a bug, and a bug that increments nothing
 // is a bug nobody sees.
-func commitRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
+func commitRequestOutcomeValue(result git.FinalizeResult, finalizeErr error) string {
 	if finalizeErr != nil {
 		return crOutcomeFailed
 	}
@@ -141,11 +148,11 @@ func setCommitRequestCondition(
 	cr.Status.Conditions = upsertCondition(cr.Status.Conditions, conditionType, status, reason, message, cr.Generation)
 }
 
-// Progress-condition messages, one per phase the worker reports. The author is settled
-// synchronously at first sight (present-or-never, §2), so there is no "waiting for the author"
-// phase. Until the worker has registered the request the reason is the generic Progressing.
+// Progress-condition messages, one per phase the worker reports. The author is found before the
+// claim, so there is no "waiting for the author" phase. From the claim until the worker has registered
+// the request the reason is Saving.
 const (
-	progressingMessage      = "sent to the branch worker; waiting for it to register the request"
+	progressingMessage      = "claimed; sent to the branch worker, waiting for it to register the request"
 	waitingForWorkerMessage = "the GitTarget has no branch worker yet; waiting for its reconcile to start one"
 	waitingForWindowMessage = "registered with the worker; waiting for a matching commit window to attach to"
 	collectingWindowMessage = "attached to a commit window; collecting writes until its timers close it"
@@ -170,15 +177,15 @@ func progressFor(phase git.CommitRequestPhase, held string) (string, string) {
 		}
 		return string(phase), waitingForPushMessage
 	default:
-		return ReasonProgressing, progressingMessage
+		return crReasonSaving, progressingMessage
 	}
 }
 
-// setCommitRequestProgress stamps the four progress conditions (Ready=False,
+// setCommitRequestProgress stamps the four progress conditions (Ready=Unknown,
 // Reconciling=True, Stalled=False, Pushed=Unknown) with one unifying reason, so a
 // single wait reads consistently across them.
 func setCommitRequestProgress(cr *configv1alpha3.CommitRequest, reason, message string) {
-	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionFalse, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionUnknown, reason, message)
 	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
 	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
 	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionUnknown, reason, pushPendingMessage)
@@ -209,8 +216,11 @@ func applyFinalizeResultToStatus(
 
 	if finalizeErr != nil {
 		reason := crReasonFinalizeFailed
-		if errors.Is(finalizeErr, errCommitRequestNotAllowed) {
+		switch {
+		case errors.Is(finalizeErr, errCommitRequestNotAllowed):
 			reason = crReasonNotAllowed
+		case errors.Is(finalizeErr, errGitTargetNotFound):
+			reason = crReasonGitTargetNotFound
 		}
 		failCommitRequest(cr, reason, finalizeErr.Error())
 		return
@@ -291,6 +301,13 @@ func failCommitRequest(cr *configv1alpha3.CommitRequest, reason, message string)
 func commitRequestIsTerminal(cr *configv1alpha3.CommitRequest) bool {
 	return conditionIsTrue(cr.Status.Conditions, ConditionTypeReady) ||
 		conditionIsTrue(cr.Status.Conditions, ConditionTypeStalled)
+}
+
+// commitRequestClaimed reports whether a request's owner claimed it and its save has not ended:
+// Ready=Unknown.
+func commitRequestClaimed(cr *configv1alpha3.CommitRequest) bool {
+	ready := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady)
+	return ready != nil && ready.Status == metav1.ConditionUnknown && !commitRequestIsTerminal(cr)
 }
 
 // commitRequestConditionStatus returns the status of one condition as a loggable

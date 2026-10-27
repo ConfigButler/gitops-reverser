@@ -181,7 +181,7 @@ The references are immutable: to hold another `Application`, delete the applier 
 | `gitTargetRef` | **required** | The target whose commit window the request attaches to: in this namespace, or `namespace` names another, whose `allowedCommitRequests` must admit this one |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
 | `window.attach` | `CurrentOrNext` | Which window to attach to: the author's current or next one, or only the next. See [the request window](#the-request-window-specwindow) |
-| `window.attachTimeout` | `2s` | How long to wait for a window to attach to |
+| `window.attachTimeout` | `5s` | How long to wait for a window to attach to |
 | `window.idleTimeout` | no idle close | Close the attached window after this much silence |
 | `window.maxDuration` | `2s` | Close the attached window this long after the attach |
 | `whenNothingToCommit` | `Resolve` | `CommitEmpty` records the message in an empty commit when nothing changed |

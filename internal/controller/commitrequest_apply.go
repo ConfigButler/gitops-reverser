@@ -7,11 +7,10 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -44,21 +43,20 @@ func applyReported(cr *configbutleraiv1alpha3.CommitRequest) bool {
 }
 
 // followApply reads where the request's apply stands, writes it to Applied, and comes back until it
-// is settled; then the request expires as any finished one does.
-func (r *CommitRequestReconciler) followApply(
-	ctx context.Context,
-	cr *configbutleraiv1alpha3.CommitRequest,
-) (ctrl.Result, error) {
-	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
+// is settled; then the request expires as any finished one does. A write that conflicts is decided
+// again on the next step, from the request as it is stored.
+func (c *commitRequestCore) followApply(
+	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
+) (time.Duration, error) {
 	attach := git.AttachCommitRequest{
 		Namespace: cr.Namespace, Name: cr.Name, UID: string(cr.UID),
 		GitTargetName: cr.GitTargetKey().Name, GitTargetNamespace: cr.GitTargetKey().Namespace,
 	}
-	apply, known, err := r.Finalizer.LookupCommitRequestApply(ctx, attach)
+	apply, known, err := c.finalizer.LookupCommitRequestApply(ctx, attach)
 	if err != nil {
-		log.V(1).Info("Cannot read the CommitRequest's apply yet; will retry",
+		p.log.V(1).Info("Cannot read the CommitRequest's apply yet; will retry",
 			"name", client.ObjectKeyFromObject(cr), "err", err.Error())
-		return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
+		return commitRequestPollInterval, nil
 	}
 	if !known {
 		apply = unknownApply(cr)
@@ -66,17 +64,19 @@ func (r *CommitRequestReconciler) followApply(
 	before := cr.Status.DeepCopy()
 	setAppliedCondition(cr, apply)
 	if !equality.Semantic.DeepEqual(*before, cr.Status) {
-		if err := r.Status().Update(ctx, cr); err != nil {
-			// A conflict reads the request again; anything else retries the same way.
-			return ctrl.Result{}, client.IgnoreNotFound(err)
+		if err := p.store.updateStatus(ctx, cr); err != nil {
+			if apierrors.IsConflict(err) {
+				return commitRequestRequeueNow, nil
+			}
+			return 0, client.IgnoreNotFound(err)
 		}
-		log.Info("CommitRequest apply reported", "name", client.ObjectKeyFromObject(cr),
+		p.log.Info("CommitRequest apply reported", "name", client.ObjectKeyFromObject(cr),
 			"reason", apply.Reason, "appliedRevision", cr.Status.AppliedRevision, "message", apply.Message)
 	}
 	if applyReported(cr) {
-		return r.expireFinished(ctx, cr)
+		return c.expireFinished(ctx, p, cr)
 	}
-	return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
+	return commitRequestPollInterval, nil
 }
 
 // unknownApply is the apply of a request its worker knows nothing of: still being taken on, shortly

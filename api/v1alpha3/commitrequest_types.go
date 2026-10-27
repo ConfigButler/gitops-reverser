@@ -58,9 +58,9 @@ type CommitRequestSpec struct {
 	// for one, and the timers that close the window once it has. They replace the
 	// GitTarget's timers for that window. A request never opens a window: only a
 	// write does. Omitted, the request attaches to the author's current or next
-	// window within 2s and closes it 2s later.
+	// window within 5s and closes it 2s later.
 	// +optional
-	// +kubebuilder:default={attach: "CurrentOrNext", attachTimeout: "2s", maxDuration: "2s"}
+	// +kubebuilder:default={attach: "CurrentOrNext", attachTimeout: "5s", maxDuration: "2s"}
 	Window *CommitRequestWindow `json:"window,omitempty"`
 
 	// WhenNothingToCommit decides what happens when the request ends with nothing
@@ -146,14 +146,14 @@ type CommitRequestWindow struct {
 	Attach AttachPolicy `json:"attach,omitempty"`
 
 	// AttachTimeout is how long the request waits for a window, as a Go duration,
-	// from when GitOps Reverser picks the request up. "0s" attaches only to a
-	// window already open. A request whose wait ran out never takes a later
-	// window. At most "5m". Defaults to "2s", which covers a write's wait for its
-	// audit event.
+	// from when GitOps Reverser picks the request up, which is after its own
+	// author was found. "0s" attaches only to a window already open. A request
+	// whose wait ran out never takes a later window. At most "5m". Defaults to
+	// "5s", which covers a write's wait for its audit event.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
-	// +kubebuilder:default="2s"
+	// +kubebuilder:default="5s"
 	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="spec.window.attachTimeout must not exceed 5m"
 	AttachTimeout *metav1.Duration `json:"attachTimeout,omitempty"`
 
@@ -183,8 +183,9 @@ type CommitRequestWindow struct {
 //
 //   - Ready (summary): True once the request reached a terminal outcome that
 //     is not an error — a pushed commit, or a benign no-commit (nothing to
-//     save, already present, or a foreign open window). False while in
-//     progress or when it failed.
+//     save, already present, or a foreign open window). Unknown while in
+//     progress, from the first status write, which records the author. False
+//     when it failed.
 //   - Reconciling / Stalled: the kstatus progress / blocked pair.
 //     Reconciling=True while finalizing; Stalled=True when the finalize failed
 //     and needs attention.
@@ -196,13 +197,22 @@ type CommitRequestStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// Author is who created this request, as the audit events of the cluster
+	// it was created on name them. Empty when they name nobody, or when author
+	// attribution is off: then the request saves only writes that name nobody
+	// either.
+	// +optional
+	Author string `json:"author,omitempty"`
+
 	// Conditions are the latest observations of this CommitRequest's state.
 	// Reconciling and Stalled follow kstatus.
 	//
 	// Three conditions say how far the save got:
 	//
-	// - Ready (kstatus): True once the request ended without error, with a
-	//   pushed commit or with nothing to save. It never waits for an apply.
+	// - Ready (kstatus): Unknown while the save runs. True once the request
+	//   ended without error, with a pushed commit or with nothing to save; it
+	//   never waits for an apply. False when it failed: reason NotAllowed,
+	//   GitTargetNotFound, SaveInProgress or FinalizeFailed.
 	// - Pushed: True once the commit is on the remote.
 	// - Applied: set only with spec.catchUp "AfterPush", once Ready is True.
 	//
@@ -253,6 +263,7 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Author",type=string,JSONPath=`.status.author`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.commit`
 // +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`,priority=1

@@ -17,6 +17,21 @@ import (
 
 var _ = Describe("CommitRequest controller", func() {
 	const namespace = "default"
+	const targetName = "commitrequest-target"
+
+	// The GitTarget the requests name, mirroring through the suite's in-cluster KubeProvider, so the
+	// control-cluster path owns them. Its branch does not exist; the Finalizer never asks for one.
+	BeforeEach(func() {
+		target := &configbutleraiv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: targetName, Namespace: namespace},
+			Spec: configbutleraiv1alpha3.GitTargetSpec{
+				KubeProviderRef: testKubeProviderRef(),
+				GitBranchRef:    meta.NamespacedObjectReference{Name: "missing-branch"},
+				Path:            "commitrequest-folder",
+			},
+		}
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, target))).To(Succeed())
+	})
 
 	// The suite registers the reconciler with a Finalizer that never resolves, so these specs
 	// cover the in-progress stamp and the terminal short-circuit only; the full attach →
@@ -29,7 +44,7 @@ var _ = Describe("CommitRequest controller", func() {
 			},
 			Spec: configbutleraiv1alpha3.CommitRequestSpec{
 				GitTargetRef: meta.NamespacedObjectReference{
-					Name: "team-a-config",
+					Name: targetName,
 				},
 				Message: "increase checkout API memory",
 			},
@@ -45,7 +60,7 @@ var _ = Describe("CommitRequest controller", func() {
 			g.Expect(reconciling.Status).To(Equal(metav1.ConditionTrue))
 			ready := apimeta.FindStatusCondition(fetched.Status.Conditions, ConditionTypeReady)
 			g.Expect(ready).NotTo(BeNil())
-			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 
@@ -57,20 +72,20 @@ var _ = Describe("CommitRequest controller", func() {
 			},
 			Spec: configbutleraiv1alpha3.CommitRequestSpec{
 				GitTargetRef: meta.NamespacedObjectReference{
-					Name: "team-a-config",
+					Name: targetName,
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, commitRequest)).To(Succeed())
 		key := client.ObjectKeyFromObject(commitRequest)
 
-		// Wait for the initial in-progress stamp.
+		// Wait for the claim.
 		Eventually(func(g Gomega) {
 			var fetched configbutleraiv1alpha3.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			ready := apimeta.FindStatusCondition(fetched.Status.Conditions, ConditionTypeReady)
 			g.Expect(ready).NotTo(BeNil())
-			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 
 		// Simulate a finalize having recorded the terminal outcome (Ready=True).

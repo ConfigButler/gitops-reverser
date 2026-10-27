@@ -109,11 +109,11 @@ func withReadyCommitted(cr *configv1alpha3.CommitRequest) *configv1alpha3.Commit
 	return cr
 }
 
-// withInProgress stamps the still-running conditions a post-restart redelivery
-// would already carry (Ready=False, Reconciling=True), which is non-terminal.
+// withInProgress stamps the claim a post-restart redelivery would already carry (Ready=Unknown,
+// Reconciling=True), which is non-terminal.
 func withInProgress(cr *configv1alpha3.CommitRequest) *configv1alpha3.CommitRequest {
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
-		Type: ConditionTypeReady, Status: metav1.ConditionFalse,
+		Type: ConditionTypeReady, Status: metav1.ConditionUnknown,
 		Reason: string(git.PhaseWaitingForWindow), Message: "in progress",
 	})
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
@@ -142,9 +142,14 @@ func newCommitRequestClient(t *testing.T, fns *interceptor.Funcs, objects ...cli
 	return builder.Build()
 }
 
-// withGitTargets gives each GitTarget a UID, as the API server would, and, when objects hold no
-// GitTarget at all, adds the one each CommitRequest names: a request is only attached once a GitTarget
-// admitted it. A test that passes GitTargets of its own gets only those.
+// localProvider is the KubeProvider every fixture GitTarget mirrors through: the operator's own
+// identity, so the control-cluster path owns its requests.
+const localProvider = "local"
+
+// withGitTargets gives each GitTarget a UID, as the API server would, and a KubeProvider, the in-cluster
+// localProvider in its namespace unless it names one. When objects hold no GitTarget at all, it adds the
+// one each CommitRequest names: a request is only attached once a GitTarget admitted it. A test that
+// passes GitTargets of its own gets only those.
 func withGitTargets(objects []client.Object) []client.Object {
 	present := map[client.ObjectKey]bool{}
 	for _, obj := range objects {
@@ -153,10 +158,13 @@ func withGitTargets(objects []client.Object) []client.Object {
 			if target.UID == "" {
 				target.UID = types.UID("uid-" + target.Namespace + "-" + target.Name)
 			}
+			if target.Spec.KubeProviderRef.Name == "" {
+				target.Spec.KubeProviderRef.Name = localProvider
+			}
 		}
 	}
 	if len(present) > 0 {
-		return objects
+		return withLocalProviders(objects)
 	}
 	for _, obj := range objects {
 		request, ok := obj.(*configv1alpha3.CommitRequest)
@@ -165,9 +173,35 @@ func withGitTargets(objects []client.Object) []client.Object {
 		}
 		key := request.GitTargetKey()
 		present[key] = true
-		objects = append(objects, &configv1alpha3.GitTarget{ObjectMeta: metav1.ObjectMeta{
-			Name: key.Name, Namespace: key.Namespace, UID: types.UID("uid-" + key.Namespace + "-" + key.Name),
-		}})
+		objects = append(objects, &configv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: key.Name, Namespace: key.Namespace, UID: types.UID("uid-" + key.Namespace + "-" + key.Name),
+			},
+			Spec: configv1alpha3.GitTargetSpec{KubeProviderRef: meta.NamespacedObjectReference{Name: localProvider}},
+		})
+	}
+	return withLocalProviders(objects)
+}
+
+// withLocalProviders adds the in-cluster localProvider to each namespace a GitTarget names it in, unless
+// objects hold a KubeProvider of that name already.
+func withLocalProviders(objects []client.Object) []client.Object {
+	present := map[client.ObjectKey]bool{}
+	for _, obj := range objects {
+		if provider, ok := obj.(*configv1alpha3.KubeProvider); ok {
+			present[client.ObjectKeyFromObject(provider)] = true
+		}
+	}
+	for _, obj := range objects {
+		target, ok := obj.(*configv1alpha3.GitTarget)
+		if !ok || target.KubeProviderKey().Name != localProvider || present[target.KubeProviderKey()] {
+			continue
+		}
+		present[target.KubeProviderKey()] = true
+		objects = append(objects, &configv1alpha3.KubeProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: localProvider, Namespace: target.KubeProviderKey().Namespace},
+			Spec:       configv1alpha3.KubeProviderSpec{InCluster: &configv1alpha3.KubeProviderInCluster{}},
+		})
 	}
 	return objects
 }
@@ -412,7 +446,7 @@ func TestCommitRequestReconcile_NotResolvedReportsTheWorkersPhase(t *testing.T) 
 		"the window is passed to the worker, not consumed here")
 
 	got := fetchCommitRequest(t, c, "save-linger")
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, ReasonProgressing)
+	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonSaving)
 	assert.False(t, commitRequestIsTerminal(&got), "an unresolved request is not terminal")
 
 	for _, phase := range []git.CommitRequestPhase{
@@ -422,7 +456,7 @@ func TestCommitRequestReconcile_NotResolvedReportsTheWorkersPhase(t *testing.T) 
 		reconcileCommitRequest(t, r, "save-linger")
 		got = fetchCommitRequest(t, c, "save-linger")
 		requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, string(phase))
-		requireCondition(t, got, ConditionTypeReady, metav1.ConditionFalse, string(phase))
+		requireCondition(t, got, ConditionTypeReady, metav1.ConditionUnknown, string(phase))
 	}
 
 	// A phase the worker has not (yet) reported keeps what is shown rather than guessing.
@@ -445,7 +479,7 @@ func TestCommitRequestReconcile_ServiceErrorPolls(t *testing.T) {
 
 	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter)
 	got := fetchCommitRequest(t, c, "save-transient")
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, ReasonProgressing)
+	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonSaving)
 	assert.False(t, commitRequestIsTerminal(&got))
 }
 
@@ -891,8 +925,8 @@ func TestCommitRequestAttach_AGitTargetElsewhereMustAdmitTheRequest(t *testing.T
 	}
 }
 
-// A request whose GitTarget does not exist is not attached: it waits, and once a GitTarget by that
-// name appears it must admit the request first. Its earlier in-progress conditions grant nothing.
+// A request whose GitTarget does not exist is not attached: it waits, writing nothing, since no path
+// knows it owns it, and once a GitTarget by that name appears it must admit the request first.
 func TestCommitRequestAttach_AGitTargetCreatedLaterMustAdmitTheRequest(t *testing.T) {
 	cr := newCommitRequest("save")
 	cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "later", Namespace: "platform"}
@@ -906,12 +940,14 @@ func TestCommitRequestAttach_AGitTargetCreatedLaterMustAdmitTheRequest(t *testin
 	assert.Empty(t, f.calls, "nothing is attached before a GitTarget admitted the request")
 	assert.Positive(t, res.RequeueAfter, "it waits for the GitTarget")
 	got := fetchCommitRequest(t, c, "save")
-	require.NotNil(t, apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady), "it reports progress")
-	assert.Empty(t, got.Status.GitTargetUID)
+	assert.Empty(t, got.Status.Conditions, "within attachTimeout nothing is written")
 
 	require.NoError(t, c.Create(context.Background(), &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "later", Namespace: "platform", UID: "uid-later"},
-		Spec:       configv1alpha3.GitTargetSpec{AllowedCommitRequests: []configv1alpha3.GitTargetCommitRequestGrant{}},
+		Spec: configv1alpha3.GitTargetSpec{
+			KubeProviderRef:       meta.NamespacedObjectReference{Name: localProvider},
+			AllowedCommitRequests: []configv1alpha3.GitTargetCommitRequestGrant{},
+		},
 	}))
 	reconcileCommitRequest(t, r, "save")
 
@@ -996,6 +1032,7 @@ func TestCommitRequestAttach_ARefusingReplacementAsksTheWorkerFirst(t *testing.T
 			refusing := configv1alpha3.GitTargetSpec{
 				AllowedCommitRequests: []configv1alpha3.GitTargetCommitRequestGrant{},
 			}
+			refusing.KubeProviderRef = meta.NamespacedObjectReference{Name: localProvider}
 			require.NoError(t, c.Create(context.Background(), &configv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default", UID: "uid-second"},
 				Spec:       refusing,

@@ -112,6 +112,20 @@ var _ = Describe("Save Request", Label("commit-request", "audit-consumer"), Orde
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
+		if !configuredAuthorModeEnabled() {
+			// The round trip admission used to stand in for: the request's author comes from its own
+			// audit event, and it is the author of the edit's window, which it saved.
+			By("verifying the CommitRequest's author came from audit and authored the commit")
+			Eventually(func(g Gomega) {
+				author := commitRequestField(g, testNs, commitRequestName, "{.status.author}")
+				g.Expect(author).NotTo(BeEmpty(), "the request's author is found from its audit event")
+				commitAuthor, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%an")
+				g.Expect(logErr).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(commitAuthor)).To(Equal(author),
+					"the request saved its own author's window")
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+		}
+
 		// The wiring check for the metric instruments, made here because this is where the evidence
 		// is: the commit above is verified in Git, so a missing series is a broken exporter rather
 		// than a spec that did not run. Both queries are scoped to this suite's own GitTarget, so
@@ -420,9 +434,9 @@ spec:
 
 // applyCommitRequestWithGenerateName creates a CommitRequest using
 // metadata.generateName and returns the server-allocated name. The spec creates its work and this
-// CommitRequest back-to-back: authorship is settled synchronously at admission (no controller-side
-// wait), so a zero wait would race the work's watch event and could resolve NoWindow before the
-// window opens. Waiting to attach is the documented mechanism for a CommitRequest issued
+// CommitRequest back-to-back: the request's author and its work's arrive through the same audit join,
+// so a zero wait would race the work's watch event and could resolve NoWindow before the window
+// opens. Waiting to attach is the documented mechanism for a CommitRequest issued
 // concurrently with its work (UC2).
 //
 // The wait is deliberately tight: it covers audit delivery (--audit-webhook-batch-max-wait=1s) and

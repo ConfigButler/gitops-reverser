@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
+    - jsonPath: .status.author
+      name: Author
+      type: string
     - jsonPath: .status.commit
       name: Commit
       type: string
@@ -148,14 +151,14 @@ spec:
               window:
                 default:
                   attach: CurrentOrNext
-                  attachTimeout: 2s
+                  attachTimeout: 5s
                   maxDuration: 2s
                 description: |-
                   Window says which commit window this request attaches to, how long it waits
                   for one, and the timers that close the window once it has. They replace the
                   GitTarget's timers for that window. A request never opens a window: only a
                   write does. Omitted, the request attaches to the author's current or next
-                  window within 2s and closes it 2s later.
+                  window within 5s and closes it 2s later.
                 properties:
                   attach:
                     default: CurrentOrNext
@@ -170,13 +173,13 @@ spec:
                     - Next
                     type: string
                   attachTimeout:
-                    default: 2s
+                    default: 5s
                     description: |-
                       AttachTimeout is how long the request waits for a window, as a Go duration,
-                      from when GitOps Reverser picks the request up. "0s" attaches only to a
-                      window already open. A request whose wait ran out never takes a later
-                      window. At most "5m". Defaults to "2s", which covers a write's wait for its
-                      audit event.
+                      from when GitOps Reverser picks the request up, which is after its own
+                      author was found. "0s" attaches only to a window already open. A request
+                      whose wait ran out never takes a later window. At most "5m". Defaults to
+                      "5s", which covers a write's wait for its audit event.
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                     type: string
                     x-kubernetes-validations:
@@ -241,6 +244,13 @@ spec:
                   holds the request's commit, and may be a later one. Set once Applied is
                   True with reason Applied.
                 type: string
+              author:
+                description: |-
+                  Author is who created this request, as the audit events of the cluster
+                  it was created on name them. Empty when they name nobody, or when author
+                  attribution is off: then the request saves only writes that name nobody
+                  either.
+                type: string
               branch:
                 description: Branch is the branch the commit is made on. Set once
                   the request ends.
@@ -256,8 +266,10 @@ spec:
 
                   Three conditions say how far the save got:
 
-                  - Ready (kstatus): True once the request ended without error, with a
-                    pushed commit or with nothing to save. It never waits for an apply.
+                  - Ready (kstatus): Unknown while the save runs. True once the request
+                    ended without error, with a pushed commit or with nothing to save; it
+                    never waits for an apply. False when it failed: reason NotAllowed,
+                    GitTargetNotFound, SaveInProgress or FinalizeFailed.
                   - Pushed: True once the commit is on the remote.
                   - Applied: set only with spec.catchUp "AfterPush", once Ready is True.
 

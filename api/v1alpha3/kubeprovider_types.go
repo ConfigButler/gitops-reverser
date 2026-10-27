@@ -264,6 +264,12 @@ func (p *KubeProvider) Key() types.NamespacedName {
 	return types.NamespacedName{Namespace: p.Namespace, Name: p.Name}
 }
 
+// ServesCommitRequests reports whether GitOps Reverser serves the CommitRequests created on this
+// provider's cluster, through its own watch of it.
+func (p *KubeProvider) ServesCommitRequests() bool {
+	return p.Spec.RemoteSaveRequests == RemoteSaveRequestsEnabled
+}
+
 // IsInCluster reports whether this provider asks for the operator's own identity (spec.inCluster).
 // Whether it may have it is the installation's decision, not this object's.
 func (p *KubeProvider) IsInCluster() bool {
