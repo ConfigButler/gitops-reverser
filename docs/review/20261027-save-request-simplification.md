@@ -4,9 +4,9 @@ Review of `feat/gitops-api-asks-converge-root-ca` (PR #456, at `70d07d91`), on o
 much of the `SaveRequest` / `RemoteSaveRequest` machinery can go, and in particular whether the
 admission webhook can go entirely.
 
-Status: design decided on 2026-10-27, nothing built yet. The first version of this review proposed
-one kind on the source cluster only, named `SaveRequest`. The decisions below replace that
-proposal.
+Status: design decided on 2026-10-27; phase 1 is built in PR #456, phase 2 of the CRD signal is not.
+The first version of this review proposed one kind on the source cluster only, named `SaveRequest`.
+The decisions below replace that proposal. Line references are to `70d07d91`, before the change.
 
 ## Decisions
 
