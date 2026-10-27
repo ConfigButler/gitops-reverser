@@ -3,7 +3,7 @@
 > **facts** — durable reference. Index: [`../INDEX.md`](../INDEX.md)
 >
 > Written while shipping the `GitTarget` API wave
-> ([`../design/gittarget-api-wave.md`](../design/gittarget-api-wave.md)), which removed or renamed
+> (`../design/gittarget-api-wave.md` (removed)), which removed or renamed
 > five fields across three kinds and tried both of the strategies below on the way. Every claim
 > marked **measured** was run, not read: the envtests are named, and two were run against a live
 > k3d cluster. Claims marked *inferred* are reasoning from documented behaviour and are labelled so
@@ -225,9 +225,6 @@ That reasoning has an expiry date, and it is worth writing down so the reversal 
 
 ## See also
 
-- [`../design/gittarget-api-wave.md`](../design/gittarget-api-wave.md) — the wave these facts came
-  from, including the version-strategy argument for keeping `v1alpha4` as a *sweep* rather than a
-  carrier.
 - [`../UPGRADING.md`](../UPGRADING.md) — the migration guide this page's ordering constraint shaped.
 - [`../spec/where-validation-lives.md`](../spec/where-validation-lives.md) — the repo-wide rule for
   which rung a check belongs on, and why a webhook is not one of them.

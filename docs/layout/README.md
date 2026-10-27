@@ -37,13 +37,6 @@ that produced them. What moved is the evidence.
 
 ## What is deliberately not here
 
-- [`../design/gittarget-api-wave.md`](../design/gittarget-api-wave.md) sequenced the breaking work on
-  `GitTarget`, which shipped in #330. The placement work was additive and was never part of it.
-- [`../design/placement-visibility-and-declared-defaults.md`](../design/placement-visibility-and-declared-defaults.md)
-  holds the three questions the sibling-inference deletion left. Decided; `status.placement` has
-  since shipped and the rest is unbuilt. Its
-  Question 2 (a CRD default for `placement.default`) is **reopened** by [`model.md`](model.md)'s
-  reversal, not superseded by it.
 - [`../design/support-boundary/`](../design/support-boundary/README.md) owns what the operator may
   edit and what it refuses. Layout decides **where** a document goes; the support boundary decides
   **whether** it may be written at all.

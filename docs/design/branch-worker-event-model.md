@@ -574,7 +574,7 @@ The detailed design records continue to own adjacent policy:
   project them. A sibling scope's success cannot clear another scope's refusal.
 - [Configuration freshness](gittarget-configuration-freshness.md): watch-plan application and
   publication are separate observations. This design does not require new public freshness fields.
-- [API boundaries](gittarget-api-wave.md) and
+- API boundaries and
   [push notifications](apply-trigger.md): a remote-change notification
   requests work through the owner. It does not become another checkout writer or prove that Git
   changes reached the source cluster.

@@ -31,7 +31,7 @@
 > ```
 >
 > It replaces `CommitRequest.spec.closeDelay` and the string `GitTarget.spec.commit.window`, and it
-> supersedes the timer model in [`commitrequest-save-wait-options.md`](commitrequest-save-wait-options.md#the-timer-model).
+> supersedes the timer model in `commitrequest-save-wait-options.md` (removed).
 
 ## Why
 

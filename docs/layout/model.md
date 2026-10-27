@@ -68,7 +68,7 @@ new file is registered with the nearest kustomization that governs it, whatever 
 |---|---|
 | `byType` into a subdirectory produces a file no kustomization lists | **No.** That was [#295](https://github.com/ConfigButler/gitops-reverser/issues/295), and it is fixed |
 | `placement.default` does the same to every type at once | **No.** Same bug, same fix |
-| A CRD default cannot be added: a non-empty template shadows the kustomize-root rung | **Weakened**, and [`placement-visibility-and-declared-defaults.md`](../design/placement-visibility-and-declared-defaults.md) already concedes the fix turns this from a correctness wall into a legibility trade |
+| A CRD default cannot be added: a non-empty template shadows the kustomize-root rung | **Weakened**, and `placement-visibility-and-declared-defaults.md` (removed) already concedes the fix turns this from a correctness wall into a legibility trade |
 | "Where do my files go" needs a metric and a status field to be legible | **True** — but that is an argument for status, not against templates |
 | Nothing can **create** structure, so an empty repository cannot be bootstrapped | **True**, and untouched by either design. Creating a `kustomization.yaml` is not a path question |
 
@@ -473,7 +473,7 @@ reads only the scan.
 
 Neither PR is breaking, so neither waits for a coordinated consumer bump. What is breaking on
 `GitTarget` is unrelated to placement and is sequenced in
-[`gittarget-api-wave.md`](../design/gittarget-api-wave.md).
+`gittarget-api-wave.md` (removed).
 
 **PR 1 is the corpus, and it is the reason the rest is reviewable.**
 [`shapes/README.md`](../../test/fixtures/layout-corpus/shapes/README.md) already has the shape of a golden-file suite —

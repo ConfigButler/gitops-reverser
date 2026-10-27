@@ -6,7 +6,7 @@
 > Companions: [`config-surface-for-a-structured-repository.md`](config-surface-for-a-structured-repository.md)
 > (the field-level review this extends),
 > [`../layout/model.md`](../layout/model.md) and
-> [`../design/gittarget-api-wave.md`](../design/gittarget-api-wave.md) (the API work this
+> `../design/gittarget-api-wave.md` (removed) (the API work this
 > sequences), and
 > [`../design/support-boundary/helm-light-support-boundary.md`](../design/support-boundary/helm-light-support-boundary.md)
 > (the Helm option this deliberately parks).

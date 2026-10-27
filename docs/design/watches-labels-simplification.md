@@ -2,7 +2,7 @@
 
 > **Implemented.** `rules[].objectSelector` shipped with all three prune modes, including `Always`
 > with supported Kustomize layouts, filtered-removal attribution, and ordered producer replacement.
-> **Step 2 of 2.** Step 1, the [collection rename and event-filter removal](collection-terminology-rename.md),
+> **Step 2 of 2.** Step 1, the collection rename and event-filter removal,
 > shipped first. This page is now the design record; the
 > [configuration reference](../configuration.md#selecting-objects-by-label-rulesobjectselector)
 > describes the behavior.

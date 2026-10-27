@@ -10,7 +10,7 @@
 > once, replayed as decided" to "Stale snapshots are discarded" describe current behavior.
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),
-> [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
+> [type-followability.md](type-followability.md),
 > [current-manifest-support-review-feedback.md](current-manifest-support-review.md),
 > [`internal/git/manifestedit/DECISION.md`](../../internal/git/manifestedit/DECISION.md)
 
